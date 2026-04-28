@@ -1,0 +1,39 @@
+# GB_ENVIRONMENT_LOWER=staging make update-deployment-vpc
+# Alternatively,
+# export LLMB_RELEASE_NAME=staging
+# export LLMB_NAMESPACE=llm-build-staging
+# helm install --namespace $LLMB_NAMESPACE --name-template=$LLMB_RELEASE_NAME --values values.yaml --values values-staging.yaml .
+# helm upgrade --namespace $LLMB_NAMESPACE --values values.yaml --values values-staging.yaml $LLMB_RELEASE_NAME .
+# helm delete --namespace $LLMB_NAMESPACE $LLMB_RELEASE_NAME
+generateResourcesForLLMBBackendCluster: true
+deployments:
+  enable: true
+  image: us.icr.io/cil15-shared-registry/gb-staging/gbserver:latest
+  buildWatcher:
+    enable: true
+    env:
+      GB_ENVIRONMENT: STAGING
+      GBSERVER_BACKEND_SERVER_NAMESPACE_STAGING: llm-build-staging
+  restServer:
+    enable: true
+    resources:
+      limits:
+        cpu: "2"
+      requests:
+        cpu: "2"
+ingresses:
+  enable: false
+pvcs:
+  enable: true
+  workloadReadWrite:
+    enable: false
+  workloadReadOnly:
+    enable: false
+routes:
+  enable: true
+  host: api.llm-build-staging.vpc-int.res.ibm.com
+services:
+  enable: true
+secrets:
+  enable: false
+  mainSecretName: vela-414-granite-dot-build-svc-acc-secret2

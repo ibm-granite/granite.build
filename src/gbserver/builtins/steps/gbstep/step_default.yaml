@@ -1,0 +1,71 @@
+name: gbstep
+version: 1.0.0
+type: gbstep
+config:
+  retry_enabled_default: false
+  gb:
+    use_basestep: true
+environment_configs:
+  k8s:
+    launchers:
+      '{{ step.name | default(run_metadata.target_name) }}':
+        type: helm
+        monitors:
+        - log_monitor
+        config:
+          chart: 'helm-charts/{{ step.name | default(run_metadata.target_name) }}'
+    monitors:
+      log_monitor:
+        type: sidecar_monitor
+        config:
+          event_configs:
+          - event_type: MESSAGE_EVENT
+            line_regex: ".*GB_MESSAGE.*"
+            is_json: False
+            event_fields:
+              - field_name: msg
+                field_regex: ".*"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "{.*gb_new_artifact.*path.*}"
+            is_json: True
+            event_fields:
+              - field_name: binding_id # must match name of one of the outputs.{name} in build.yaml
+                field_value_template: "{% raw %}{{ fields.data.gb_new_artifact.name | default(fields.data.gb_step_name) }}{% endraw %}"
+              - field_name: binding # describes how to access element in this env, must be path in k8s
+                field_value_template: "{% raw %}{ \"path\": \"{{ fields.data.gb_new_artifact.path }}\" }{% endraw %}"
+                is_json: True
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "^LLMB_EVENT_WORKLOAD_STATUS:.+"
+            is_json: False
+            event_fields:
+              - field_name: status
+                field_regex: "(?<=LLMB_EVENT_WORKLOAD_STATUS:).+"
+          - event_type: VALIDATION_DATA_EVENT
+            line_regex: "^LLMB_EVENT_VALIDATION_DATA:.+"
+            is_json: False
+            event_fields:
+              - field_name: data
+                field_regex: "(?<=LLMB_EVENT_VALIDATION_DATA:).+"
+  Lsf:
+    launchers:
+      '{{ step.name | default(run_metadata.target_name) }}':
+        type: bsub
+        monitors:
+        - bsub_monitor
+    monitors:
+      bsub_monitor:
+        type: bsub_monitor
+        config:
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "^LLMB_EVENT_WORKLOAD_STATUS:.+"
+            is_json: False
+            event_fields:
+              - field_name: status
+                field_regex: "(?<=LLMB_EVENT_WORKLOAD_STATUS:).+"
+          - event_type: VALIDATION_DATA_EVENT
+            line_regex: "^LLMB_EVENT_VALIDATION_DATA:.+"
+            is_json: False
+            event_fields:
+              - field_name: data
+                field_regex: "(?<=LLMB_EVENT_VALIDATION_DATA:).+"

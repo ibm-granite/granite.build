@@ -1,0 +1,4 @@
+base_uri: "lh://staging/"
+config:
+  token_secretname: LAKEHOUSE_TOKEN
+  env: STAGING

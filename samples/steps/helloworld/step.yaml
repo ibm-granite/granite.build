@@ -1,0 +1,32 @@
+name: helloworld
+version: v1
+type: custom
+config:
+  string: "hello {{ name }}!"
+environment_configs:
+  Bash:
+    default_launcher: echo
+    setups:
+      env-setup:
+        type: env
+        config:
+          name: g.b
+    launchers:
+      echo:
+        type: nohup
+        setups:
+          - env-setup
+        monitors:
+          - log_regex
+        config: 
+          command: echo {{ string }} nice!
+    monitors:
+      log_regex:
+        type: logs
+        config: 
+          event_configs:
+            - event_name: greeting
+              line_regex: .*
+              event_fields:
+                - field_name: "name"
+                  field_regex: ".*"

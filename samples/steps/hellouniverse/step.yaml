@@ -1,0 +1,28 @@
+name: helloworld
+version: v1
+type: custom
+config:
+  string: "hello {{ name }}"
+environment_configs:
+  bash:
+    type: Bash
+    deployment_modes:
+      - name: echo
+        type: nohup
+        execute: 
+          commmand: echo
+  kubernetes:
+    type: Kubernetes
+    deployment_modes:
+      - name: mlbatch
+        type: Helm
+        setup:
+        execute:
+          chart: ./chart/echo
+        monitor:
+          type: log_tail_regex
+          config:
+            pods: echopod
+  lsf:
+    type: LSF
+    command: 

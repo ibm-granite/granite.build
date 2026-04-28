@@ -1,0 +1,6 @@
+apiVersion: v2
+name: olmes_eval
+description: A Helm chart for running OLMES LLM evaluations
+type: application
+version: "0.1.0"
+appVersion: "0.1.0"

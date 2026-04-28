@@ -1,0 +1,30 @@
+apiVersion: workload.codeflare.dev/v1beta2
+kind: AppWrapper
+metadata:
+  name: gb-logging-gen
+  labels:
+      kueue.x-k8s.io/queue-name: default-queue
+spec:
+  components:
+  - template:
+      # job specification
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: gb-logging-gen
+      spec:
+        template:
+          metadata:
+            labels:
+              granite-dot-build/build-id: 1f59e103-d59d-4920-9b5d-426460c06ba8
+              granite-dot-build/build-step-id: 9532ce7b-73f9-4438-92f5-adc89a9a2443
+              granite-dot-build/build-step-name: supervised-fine-tuning
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: busybox
+              image: quay.io/project-codeflare/busybox:1.36
+              command: ["sh", "-c", "for i in $(seq 1 2000); do echo \"Training epoch $i\"; echo \"Log to stderr $i\" >&2; sleep 1; done"]
+              resources:
+                requests:
+                  cpu: 1

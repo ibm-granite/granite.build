@@ -1,0 +1,16 @@
+granite.build:
+  name: bash-trl-test
+  targets:
+    finetune:
+      environment_uri: space://environments/bash
+      inputs:
+        model:
+          uri: hf:///ibm-granite/granite-4.0-350m
+      outputs:
+        finetuned_model:
+          uri: file:outputs/trl-finetune/
+      steps:
+        - step_uri: space://steps/trl-finetune
+          config:
+            compute_config:
+              num_nodes: 1

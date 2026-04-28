@@ -1,0 +1,34 @@
+{{- if .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.ingresses.enable }}
+{{- $ingressName := printf "llmbuild-ingress-%s" .Release.Name }}
+{{- $restServerName := printf "llmbuild-rest-server-%s" .Release.Name }}
+{{- $restServerPort := .Values.deployments.restServer.port }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: '{{ $ingressName }}'
+  labels:
+    'llmbuild/internal': '{{ $ingressName }}'
+  # annotations:
+  #   kubernetes.io/ingress.class: f5
+  #   ingress.kubernetes.io/allow-http: "true"
+  #   ingress.kubernetes.io/ssl-redirect: "false"
+  #   virtual-server.f5.com/balance: round-robin
+  #   virtual-server.f5.com/clientssl: '[ { "bigIpProfile": "/Common/BlueMix" } ]'
+  #   virtual-server.f5.com/ip: 9.12.246.83
+  #   virtual-server.f5.com/partition: RIS3-INT-OCP-DAL12
+spec:
+  rules:
+  - host: '{{ .Values.ingresses.host }}'
+    http:
+      paths:
+      - path: /
+        # https://kubernetes.io/docs/concepts/services-networking/ingress/#path-types
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: '{{ $restServerName }}'
+            port:
+              number: {{ $restServerPort }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,14 @@
+{{- $parentContext := . }}
+{{- $hfpush_command := include "hfpush_command" . | indent 10 | trimAll " " }}
+{{- $commands := list
+$hfpush_command
+}}
+{{- $jobType := "job" }}
+{{- include "gbstepbase.app" (dict
+    "commands" $commands
+    "job_type" $jobType
+    "Values" $parentContext.Values
+    "Release" $parentContext.Release
+    "Chart" $parentContext.Chart
+    "Template" $parentContext.Template
+) | trimAll " " }}

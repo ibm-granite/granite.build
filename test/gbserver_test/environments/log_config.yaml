@@ -1,0 +1,10 @@
+event_configs:
+- event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+  line_regex: "{.*}"
+  is_json: True
+  event_fields:
+    - field_name: binding_id
+      field_value_template: "{{ fields.data.binding_id }}"
+    - field_name: binding
+      field_value_template: "{{ fields.data.binding | json_dumps }}"
+      is_json: True

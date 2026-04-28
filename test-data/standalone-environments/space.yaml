@@ -1,0 +1,4 @@
+name: standalone-env-test
+secret_manager:
+  type: env
+  config: {}

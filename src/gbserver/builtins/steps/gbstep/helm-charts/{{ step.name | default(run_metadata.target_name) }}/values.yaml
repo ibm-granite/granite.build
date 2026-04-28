@@ -1,0 +1,30 @@
+
+k8s:
+  use_monitoring_sidecar: True
+  image: registry.access.redhat.com/ubi9/python-312:latest
+  env:
+    gb_build_id:
+      value: {{ run_metadata.build_id }}
+    gb_step_id:
+      value: {{ run_metadata.targetsteprun_id }}
+    gb_step_name:
+      value: {{ run_metadata.target_name }}
+    {%- if bindings.input_artifact_path is defined %}
+    INPUT_PATH:
+      value: {{ bindings.input_artifact_path.binding.path }}
+    {%- endif %}
+    OUTPUT_PATH:
+      value: /gb-read-write/custom_output_{{ run_metadata.targetsteprun_id }}/
+
+{% if config.custom_code_config is defined %}
+custom_code_config:
+  github_url: {{ config.custom_code_config.github_url | default('') }}
+  setup_command: '{{ config.custom_code_config.setup_command | default('') }}'
+  {%- if bindings.input_artifact_path is defined %}
+  input_path: {{ bindings.input_artifact_path.binding.path }}
+  {% else %}
+  input_path: ""
+  {% endif %}
+  start_command: '{{ config.custom_code_config.start_command | default('') }}'
+  dir_to_save: {{ config.custom_code_config.dir_to_save | default('/tmp') }}
+{%- endif %}

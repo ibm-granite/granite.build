@@ -1,0 +1,32 @@
+granite.build:
+  name: standalone-quickstart
+  targets:
+    helloworld:
+      # ── Compute backend ──────────────────────────────────────────
+      # Uncomment ONE of the environment_uri lines below.
+      # Each backend has different prerequisites — see README.md.
+
+      # Bash — local process, no extra deps (default)
+      environment_uri: space://environments/bash
+
+      # Docker — requires Docker or Podman running locally
+      # environment_uri: space://environments/docker
+
+      # RunPod — requires RUNPOD_API_KEY env var
+      # environment_uri: space://environments/runpod
+
+      # SkyPilot (AWS) — requires AWS credentials (~/.aws/credentials)
+      # SkyPilot (K8s) — requires kubeconfig (~/.kube/config)
+      # environment_uri: space://environments/skypilot
+
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/hello
+          config:
+            compute_config:
+              num_nodes: 1
+              # Uncomment for resource constraints (Docker/RunPod/SkyPilot):
+              # num_cpus_per_node: 2
+              # total_memory_per_node: "4Gi"
+              # num_gpus_per_node: 1

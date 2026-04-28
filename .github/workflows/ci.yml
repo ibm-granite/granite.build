@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [g4os-oss]
+  pull_request:
+    branches: [g4os-oss]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[standalone,dev]"
+
+      - name: Check formatting (isort)
+        run: isort --check .
+
+      - name: Check formatting (black)
+        run: black --check .
+
+      - name: Lint (pylint)
+        run: |
+          pylint src/gbserver/
+          pylint src/gbcli/
+          pylint src/gbcommon/
+
+      - name: Type check (mypy)
+        run: |
+          mypy --disable-error-code=import-untyped src/gbserver/
+          mypy --disable-error-code=import-untyped src/gbcli/
+          mypy --disable-error-code=import-untyped src/gbcommon/
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[standalone,dev]"
+
+      - name: Run standalone tests
+        run: >-
+          pytest -s test/
+          -m 'not secret_manager and not nats_server and not docker_required and not ibm and not nats'
+
+  demo-cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[standalone,docker,dev]"
+
+      - name: Build CPU test image
+        run: |
+          docker build -t gbserver-test-trl-unitxt:cpu \
+            -f test-data/standalone-environments/docker/Dockerfile.cpu.test \
+            test-data/standalone-environments/docker/
+
+      - name: Run standalone demo (CPU)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: bash scripts/demo-standalone.sh

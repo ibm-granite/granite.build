@@ -1,0 +1,26 @@
+granite.build:
+  name: docker-image-hf-test
+  targets:
+    image-run:
+      environment_uri: space://environments/docker
+      inputs:
+        input_model:
+          uri: hf:///datasets/ibm-research/vira-intents-live
+      outputs:
+        output_model1:
+          uri: hf://huggingface.co/datasets/ibm-research/test-output1_{{ binding.path | short_hash }}
+        output_model2:
+          uri: hf://huggingface.co/datasets/ibm-research/test-output2_{{ binding.path | short_hash }}
+      steps:
+        - step_uri: space://steps/image
+          config:
+            image_config:
+              image: us.icr.io/cil15-shared-registry/bash:latest  # Try "make publish-test-images-icr" to publish this
+              command: >-
+                mkdir /gb-workspace/outputs;
+                file=/gb-workspace/outputs/foo1a.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
+                file=/gb-workspace/outputs/foo1b.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
+                file=/gb-workspace/outputs/foo2.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model2 LLMB_ARTIFACT_PATH:$file"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

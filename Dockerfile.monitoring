@@ -1,0 +1,87 @@
+#   Copyright IBM Corporation 2025
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+
+# Builder image
+FROM registry.access.redhat.com/ubi9/python-312-minimal:9.6-1758216611 AS builder
+
+# Build arguments
+ARG USER=gbserver
+
+# User and Working directory
+USER root
+WORKDIR /gbserver
+
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --upgrade \
+        aio-pika \
+        asyncio \
+        dotenv \
+        jinja2 \
+        psutil \
+        pydantic \
+        pyyaml \
+        requests \
+        tenacity
+
+# Copy source code
+COPY . .
+
+# Remove unnecessary files and install app
+RUN rm src/gbserver/asset/lhstore.py \
+    src/gbserver/environment/k8s.py \
+    src/gbcommon/uri/git.py \
+    src/gbcommon/uri/hf.py \
+    src/gbserver/asset/gitstore.py \
+    src/gbserver/asset/hfstore.py \
+    src/gbserver/environment/lsf.py && \
+    pip install --no-cache-dir --no-deps .
+
+# Verify the app module is installed successfully
+RUN python3 -c "import gbserver.monitoring.sidecar; print('Module found successfully')"
+
+# Runtime image:
+FROM registry.access.redhat.com/ubi9/python-312-minimal:9.6-1758216611
+
+# Build arguments
+ARG USER=gbserver
+ARG GBSERVER_GIT_COMMIT=unset
+ARG GBSERVER_IMAGE_TAG=latest
+
+# Environment variables
+ENV GBSERVER_GIT_COMMIT=${GBSERVER_GIT_COMMIT} \
+    GBSERVER_IMAGE_TAG=${GBSERVER_IMAGE_TAG} \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Switch to root for setup
+USER root
+
+# Working directory
+WORKDIR /gbserver
+
+# Add the non-root user
+RUN useradd -ms /bin/bash ${USER} && \
+    chown ${USER}:root /gbserver && \
+    chmod 775 /gbserver
+
+# Copy installed package
+COPY --from=builder --chown=${USER}:root --chmod=775 /opt/app-root/lib/python3.12/site-packages /opt/app-root/lib/python3.12/site-packages
+# Copy the source code
+COPY --from=builder --chown=${USER}:root --chmod=775 /gbserver /gbserver
+
+USER ${USER}:root
+
+# Use explicit path to venv Python
+ENTRYPOINT ["python3"]
+CMD ["-m", "gbserver.monitoring.sidecar"]

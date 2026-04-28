@@ -1,0 +1,111 @@
+# SkyPilot Setup Configuration Schema
+#
+# This file maps each configuration value to its environment variable and default.
+# Users never edit this file — they set environment variables instead.
+# The setup script (setup-skypilot.sh) reads this schema to resolve values.
+
+namespace:
+  env: SKYPILOT_NAMESPACE
+  default: skypilot
+  description: Kubernetes namespace for SkyPilot pods
+
+service_account:
+  name:
+    env: SKYPILOT_SERVICE_ACCOUNT
+    default: skypilot
+    description: Kubernetes service account for SkyPilot pods
+
+image_pull_secret:
+  name:
+    env: IMAGE_PULL_SECRET_NAME
+    default: all-icr-io
+    description: Name of the docker-registry secret
+  registry:
+    env: IMAGE_PULL_SECRET_REGISTRY
+    default: us.icr.io
+    description: Container registry URL
+  username:
+    env: IMAGE_PULL_SECRET_USERNAME
+    default: iamapikey
+    description: Registry username
+  password:
+    env: IMAGE_PULL_SECRET_PASSWORD
+    description: Registry password (required if secret doesn't already exist)
+
+pvc:
+  enabled:
+    env: PVC_ENABLED
+    default: "false"
+    description: Whether to create a PVC for shared data between steps
+  name:
+    env: PVC_NAME
+    default: gb-data-pvc
+    description: PVC name
+  storage:
+    env: PVC_STORAGE
+    default: 50Gi
+    description: PVC storage size
+  storage_class:
+    env: PVC_STORAGE_CLASS
+    default: ""
+    description: Storage class (empty for cluster default)
+  mount_path:
+    env: PVC_MOUNT_PATH
+    default: /gb-data
+    description: Mount path inside pods
+
+secrets:
+  s3:
+    name:
+      env: S3_SECRET_NAME
+      default: s3-credentials
+      description: Name of the S3 credentials K8s secret
+    access_key_id:
+      env: S3_ACCESS_KEY_ID
+      description: S3/COS HMAC access key
+    secret_access_key:
+      env: S3_SECRET_ACCESS_KEY
+      description: S3/COS HMAC secret key
+    endpoint_url:
+      env: S3_ENDPOINT_URL
+      description: S3/COS endpoint URL
+  hf:
+    name:
+      env: HF_SECRET_NAME
+      default: hf-credentials
+      description: Name of the HuggingFace credentials K8s secret
+    token:
+      env: HF_TOKEN
+      description: HuggingFace access token (for model/dataset downloads)
+  ghe:
+    name:
+      env: GHE_SECRET_NAME
+      default: ghe-credentials
+      description: Name of the GitHub Enterprise credentials K8s secret
+    token:
+      env: GHE_TOKEN
+      description: GitHub Enterprise PAT for sage repo cloning
+  rits:
+    name:
+      env: RITS_SECRET_NAME
+      default: rits-credentials
+      description: Name of the RITS credentials K8s secret
+    key:
+      env: RITS_SECRET_KEY
+      default: api-key
+      description: Key name within the RITS secret (e.g. api-key, rits-key)
+    api_key:
+      env: RITS_API_KEY
+      description: RITS inference API key
+
+managed:
+  enabled:
+    env: SKYPILOT_MANAGED_ENABLED
+    default: "false"
+    description: Whether to deploy SkyPilot API server for managed mode (requires helm)
+
+openshift_scc:
+  enabled:
+    env: OPENSHIFT_SCC_ENABLED
+    default: "false"
+    description: Whether to grant the anyuid SCC to the SkyPilot service account (required on OpenShift for images that run as root)

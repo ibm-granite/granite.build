@@ -1,0 +1,41 @@
+# GB_ENVIRONMENT_LOWER=dev make update-deployment-vpc
+# Alternatively,
+# export LLMB_RELEASE_NAME=dev
+# export LLMB_NAMESPACE=llm-build-dev
+# helm install --namespace $LLMB_NAMESPACE --name-template=$LLMB_RELEASE_NAME --values values.yaml --values values-dev.yaml .
+# helm upgrade --namespace $LLMB_NAMESPACE --values values.yaml --values values-dev.yaml $LLMB_RELEASE_NAME .
+# helm delete --namespace $LLMB_NAMESPACE $LLMB_RELEASE_NAME
+generateResourcesForLLMBBackendCluster: true
+deployments:
+  enable: true
+  image: us.icr.io/cil15-shared-registry/gb-dev/gbserver:latest
+  buildWatcher:
+    enable: true
+    env:
+      GB_ENVIRONMENT: DEV
+      GBSERVER_BACKEND_SERVER_NAMESPACE_DEV: llm-build-dev
+  restServer:
+    enable: true
+    resources:
+      limits:
+        cpu: "2"
+      requests:
+        cpu: "2"
+    env:
+      GBSERVER_AUTH_MODE: multi
+ingresses:
+  enable: false
+pvcs:
+  enable: true
+  workloadReadWrite:
+    enable: false
+  workloadReadOnly:
+    enable: false
+routes:
+  enable: true
+  host: api.llm-build-dev.vpc-int.res.ibm.com
+services:
+  enable: true
+secrets:
+  enable: false
+  mainSecretName: vela-414-granite-dot-build-svc-acc-secret2

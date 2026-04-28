@@ -1,0 +1,132 @@
+
+GB_PR_MESSAGE: Aim dashboard: https://granite-dot-build-aim-dashboard-tuning.apps.dmf.dipc.res.ibm.com/runs?select=O-JTdCJTIyb3B0aW9ucyUyMjolNUIlNUQsJTIycXVlcnklMjI6JTIycnVuLmV4cGVyaW1lbnQlMjA9PSUyMCdnYmhjNW5rc3AwJyUyMiwlMjJhZHZhbmNlZE1vZGUlMjI6ZmFsc2UsJTIyYWR2YW5jZWRRdWVyeSUyMjolMjIlMjIlN0Q=
+Starting experiment gbhc5nksp0
+running command...
+creating the log file directory: "/gb-afm-read-write/outputs/tuning"
+The following values were not passed to `accelerate launch` and had defaults used instead:
+		More than one GPU was found, enabling multi-GPU training.
+		If this was unintended please pass in `--num_processes=1`.
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.43it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  9.46it/s]
+WARNING:tokenizer_utils.py:PAD token set to default, to make it different from eos token
+Loading checkpoint shards:  50%|█████     | 1/2 [00:02<00:02,  2.42s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:02<00:00,  1.22s/it]
+WARNING:tokenizer_utils.py:PAD token set to default, to make it different from eos token
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+Generating train split: 0 examples [00:00, ? examples/s]Generating train split: 129 examples [00:00, 11127.08 examples/s]
+Map (num_proc=80):   0%|          | 0/129 [00:00<?, ? examples/s]Map (num_proc=80):   2%|▏         | 2/129 [00:00<00:20,  6.21 examples/s]Map (num_proc=80):   5%|▍         | 6/129 [00:00<00:07, 15.84 examples/s]Map (num_proc=80):  12%|█▏        | 16/129 [00:00<00:03, 37.27 examples/s]Map (num_proc=80):  17%|█▋        | 22/129 [00:00<00:02, 42.51 examples/s]Map (num_proc=80):  22%|██▏       | 28/129 [00:00<00:02, 46.10 examples/s]Map (num_proc=80):  26%|██▋       | 34/129 [00:00<00:02, 46.37 examples/s]Map (num_proc=80):  31%|███       | 40/129 [00:01<00:01, 48.77 examples/s]Map (num_proc=80):  36%|███▌      | 46/129 [00:01<00:01, 48.98 examples/s]Map (num_proc=80):  40%|████      | 52/129 [00:01<00:01, 51.60 examples/s]Map (num_proc=80):  45%|████▍     | 58/129 [00:01<00:01, 51.23 examples/s]Map (num_proc=80):  50%|████▉     | 64/129 [00:01<00:01, 49.14 examples/s]Map (num_proc=80):  56%|█████▌    | 72/129 [00:01<00:01, 50.85 examples/s]Map (num_proc=80):  60%|██████    | 78/129 [00:01<00:01, 49.83 examples/s]Map (num_proc=80):  65%|██████▌   | 84/129 [00:01<00:00, 47.48 examples/s]Map (num_proc=80):  71%|███████▏  | 92/129 [00:02<00:00, 54.09 examples/s]Map (num_proc=80):  76%|███████▌  | 98/129 [00:02<00:00, 54.96 examples/s]Map (num_proc=80):  81%|████████  | 104/129 [00:02<00:00, 38.17 examples/s]Map (num_proc=80):  84%|████████▍ | 109/129 [00:02<00:00, 34.04 examples/s]Map (num_proc=80):  88%|████████▊ | 113/129 [00:02<00:00, 32.19 examples/s]Map (num_proc=80):  91%|█████████ | 117/129 [00:02<00:00, 30.02 examples/s]Map (num_proc=80):  94%|█████████▍| 121/129 [00:03<00:00, 27.35 examples/s]Map (num_proc=80):  96%|█████████▌| 124/129 [00:03<00:00, 27.50 examples/s]Map (num_proc=80):  98%|█████████▊| 127/129 [00:03<00:00, 27.29 examples/s]Map (num_proc=80): 100%|██████████| 129/129 [00:03<00:00, 37.30 examples/s]
+Converting train dataset to ChatML:   0%|          | 0/129 [00:00<?, ? examples/s]Converting train dataset to ChatML: 100%|██████████| 129/129 [00:00<00:00, 6700.42 examples/s]
+Adding EOS to train dataset:   0%|          | 0/129 [00:00<?, ? examples/s]Adding EOS to train dataset: 100%|██████████| 129/129 [00:00<00:00, 10611.62 examples/s]
+Tokenizing train dataset:   0%|          | 0/129 [00:00<?, ? examples/s]Tokenizing train dataset: 100%|██████████| 129/129 [00:00<00:00, 1359.45 examples/s]
+Truncating train dataset:   0%|          | 0/129 [00:00<?, ? examples/s]Truncating train dataset: 100%|██████████| 129/129 [00:00<00:00, 19193.52 examples/s]
+/home/tuning/.local/lib/python3.12/site-packages/accelerate/accelerator.py:1584: UserWarning: Upcasted low precision parameters in GraniteForCausalLM because mixed precision turned on in FSDP. Affects: model.embed_tokens.weight, model.norm.weight.
+  warnings.warn(
+/home/tuning/.local/lib/python3.12/site-packages/accelerate/accelerator.py:1584: UserWarning: Upcasted low precision parameters in GraniteDecoderLayer because mixed precision turned on in FSDP. Affects: self_attn.q_proj.weight, self_attn.k_proj.weight, self_attn.v_proj.weight, self_attn.o_proj.weight, mlp.gate_proj.weight, mlp.up_proj.weight, mlp.down_proj.weight, input_layernorm.weight, post_attention_layernorm.weight.
+  warnings.warn(
+/home/tuning/.local/lib/python3.12/site-packages/accelerate/accelerator.py:1590: UserWarning: FSDP upcast of low precision parameters may affect the precision of model checkpoints.
+  warnings.warn(
+  0%|          | 0/15 [00:00<?, ?it/s]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+  7%|▋         | 1/15 [00:01<00:16,  1.16s/it]                                              {'loss': 1.778, 'grad_norm': 47.702247619628906, 'learning_rate': 9.333333333333334e-06, 'num_tokens': 190.0, 'mean_token_accuracy': 0.5798319578170776, 'epoch': 0.02}
+  7%|▋         | 1/15 [00:01<00:16,  1.16s/it]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 13%|█▎        | 2/15 [00:01<00:10,  1.26it/s]                                              {'loss': 1.3145, 'grad_norm': 29.95185661315918, 'learning_rate': 8.666666666666668e-06, 'num_tokens': 500.0, 'mean_token_accuracy': 0.707207202911377, 'epoch': 0.03}
+ 13%|█▎        | 2/15 [00:01<00:10,  1.26it/s]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 20%|██        | 3/15 [00:02<00:07,  1.52it/s]                                              {'loss': 1.569, 'grad_norm': 33.227333068847656, 'learning_rate': 8.000000000000001e-06, 'num_tokens': 817.0, 'mean_token_accuracy': 0.6910569071769714, 'epoch': 0.05}
+ 20%|██        | 3/15 [00:02<00:07,  1.52it/s]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 27%|██▋       | 4/15 [00:02<00:06,  1.69it/s]                                              {'loss': 1.4064, 'grad_norm': 28.46188735961914, 'learning_rate': 7.333333333333333e-06, 'num_tokens': 1322.0, 'mean_token_accuracy': 0.6977887153625488, 'epoch': 0.06}
+ 27%|██▋       | 4/15 [00:02<00:06,  1.69it/s]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 33%|███▎      | 5/15 [00:03<00:05,  1.79it/s]                                              {'loss': 1.6027, 'grad_norm': 23.23789405822754, 'learning_rate': 6.666666666666667e-06, 'num_tokens': 1685.0, 'mean_token_accuracy': 0.5886287689208984, 'epoch': 0.08}
+ 33%|███▎      | 5/15 [00:03<00:05,  1.79it/s]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 40%|████      | 6/15 [00:03<00:04,  1.87it/s]                                              {'loss': 2.0438, 'grad_norm': 21.625276565551758, 'learning_rate': 6e-06, 'num_tokens': 2221.0, 'mean_token_accuracy': 0.6069868803024292, 'epoch': 0.09}
+ 40%|████      | 6/15 [00:03<00:04,  1.87it/s]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 47%|████▋     | 7/15 [00:04<00:04,  1.92it/s]                                              {'loss': 1.1691, 'grad_norm': 22.560924530029297, 'learning_rate': 5.333333333333334e-06, 'num_tokens': 2643.0, 'mean_token_accuracy': 0.6311239004135132, 'epoch': 0.11}
+ 47%|████▋     | 7/15 [00:04<00:04,  1.92it/s]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 53%|█████▎    | 8/15 [00:04<00:03,  1.95it/s]                                              {'loss': 0.9905, 'grad_norm': 72.99993133544922, 'learning_rate': 4.666666666666667e-06, 'num_tokens': 2893.0, 'mean_token_accuracy': 0.694656491279602, 'epoch': 0.12}
+ 53%|█████▎    | 8/15 [00:04<00:03,  1.95it/s]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 60%|██████    | 9/15 [00:05<00:03,  1.95it/s]                                              {'loss': 1.7922, 'grad_norm': 31.90984535217285, 'learning_rate': 4.000000000000001e-06, 'num_tokens': 3207.0, 'mean_token_accuracy': 0.6010638475418091, 'epoch': 0.14}
+ 60%|██████    | 9/15 [00:05<00:03,  1.95it/s]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 67%|██████▋   | 10/15 [00:05<00:02,  1.96it/s]                                               {'loss': 1.5397, 'grad_norm': 26.01032066345215, 'learning_rate': 3.3333333333333333e-06, 'num_tokens': 3527.0, 'mean_token_accuracy': 0.59375, 'epoch': 0.15}
+ 67%|██████▋   | 10/15 [00:05<00:02,  1.96it/s]/home/tuning/.local/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:689: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/home/tuning/.local/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:689: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/home/tuning/.local/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:689: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+WARNING:logcontrol.py:Model saved in /gb-afm-read-write/outputs/tuning/gbhc5nksp0/checkpoint-10
+
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 73%|███████▎  | 11/15 [01:20<01:33, 23.27s/it]                                               {'loss': 0.9969, 'grad_norm': 39.725215911865234, 'learning_rate': 2.666666666666667e-06, 'num_tokens': 3734.0, 'mean_token_accuracy': 0.753731369972229, 'epoch': 0.17}
+ 73%|███████▎  | 11/15 [01:20<01:33, 23.27s/it]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 80%|████████  | 12/15 [01:21<00:49, 16.35s/it]                                               {'loss': 1.0844, 'grad_norm': 23.39580726623535, 'learning_rate': 2.0000000000000003e-06, 'num_tokens': 4010.0, 'mean_token_accuracy': 0.7327188849449158, 'epoch': 0.18}
+ 80%|████████  | 12/15 [01:21<00:49, 16.35s/it]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 87%|████████▋ | 13/15 [01:21<00:23, 11.55s/it]                                               {'loss': 0.9671, 'grad_norm': 27.051532745361328, 'learning_rate': 1.3333333333333334e-06, 'num_tokens': 4249.0, 'mean_token_accuracy': 0.7558139562606812, 'epoch': 0.2}
+ 87%|████████▋ | 13/15 [01:21<00:23, 11.55s/it]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+ 93%|█████████▎| 14/15 [01:22<00:08,  8.21s/it]                                               {'loss': 1.5021, 'grad_norm': 27.33121681213379, 'learning_rate': 6.666666666666667e-07, 'num_tokens': 4454.0, 'mean_token_accuracy': 0.6375839114189148, 'epoch': 0.22}
+ 93%|█████████▎| 14/15 [01:22<00:08,  8.21s/it]/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+/home/tuning/.local/lib/python3.12/site-packages/torch/utils/checkpoint.py:295: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', args...)` instead.
+  with torch.enable_grad(), device_autocast_ctx, torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+100%|██████████| 15/15 [01:22<00:00,  5.89s/it]                                               {'loss': 1.1694, 'grad_norm': 26.583465576171875, 'learning_rate': 0.0, 'num_tokens': 4669.0, 'mean_token_accuracy': 0.6838235259056091, 'epoch': 0.23}
+100%|██████████| 15/15 [01:22<00:00,  5.89s/it]/home/tuning/.local/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:689: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/home/tuning/.local/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:689: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/home/tuning/.local/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:689: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+WARNING:logcontrol.py:Model saved in /gb-afm-read-write/outputs/tuning/gbhc5nksp0/checkpoint-15
+
+/home/tuning/.local/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:689: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+                                               {'train_runtime': 155.2311, 'train_samples_per_second': 0.193, 'train_steps_per_second': 0.097, 'train_tokens_per_second': 11.112, 'train_loss': 1.3950528065363565, 'epoch': 0.23}
+100%|██████████| 15/15 [02:35<00:00,  5.89s/it]100%|██████████| 15/15 [02:35<00:00, 10.36s/it]
+/home/tuning/.local/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:689: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+[rank1]:[W525 14:25:49.157316676 ProcessGroupNCCL.cpp:1168] Warning: WARNING: process group has NOT been destroyed before we destruct ProcessGroupNCCL. On normal program exit, the application should call destroy_process_group to ensure that any pending NCCL operations have finished in this process. In rare cases this process can exit before this point and block the progress of another member of the process group. This constraint has always been present,  but this warning has only been added since PyTorch 2.4 (function operator())
+[rank0]:[W525 14:26:05.181227492 ProcessGroupNCCL.cpp:1168] Warning: WARNING: process group has NOT been destroyed before we destruct ProcessGroupNCCL. On normal program exit, the application should call destroy_process_group to ensure that any pending NCCL operations have finished in this process. In rare cases this process can exit before this point and block the progress of another member of the process group. This constraint has always been present,  but this warning has only been added since PyTorch 2.4 (function operator())
+ACC_LAUNCH_EXIT_CODE: 0
+RANK=0
+WARNING:logcontrol.py:Model saved in /gb-afm-read-write/outputs/tuning/gbhc5nksp0/final
+COMMAND_SH_EXIT_CODE: 0

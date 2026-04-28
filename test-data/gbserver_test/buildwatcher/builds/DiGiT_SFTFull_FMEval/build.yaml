@@ -1,0 +1,233 @@
+#####
+# NOTE: For data generation using non-restricted teacher models. For models like Mistral Large 2 Use the MistralLarge2*CustomDGT templates.
+######
+granite.build:
+  name: datagen-tuning-eval
+  targets:
+    syntheticdatageneration:
+      environment_uri: space://environments/{{ space.variables.DEFAULT_ENVIRONMENT }}
+      inputs:
+        digit_input: # Upload your DiGiT data using `gb artifact push` as fileset, and place your uri below.
+          #uri: lh://prod/granite_dot_build.public/filesets/fileset_shared/gb_digit_data/20250319T171629
+          uri: hf:///datasets/ibm-research/gb_digit_data
+      outputs:
+        digit_output:
+             uri: hf:///datasets/ibm-research/synth_data_{{ run_metadata.targetsteprun_id | short_hash }}   
+      steps: 
+        - step_uri: space://steps/digit
+          config:
+            # https://pages.github.ibm.com/DGT/dgt-website/
+            digit_config:
+              databuilders:
+                knowledge_sdg:
+                  blocks:
+                    - name: generator
+                      type: rits
+                      base_url: https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/mixtral-8x22b-instruct-v01/v1
+                      model_id_or_path: mistralai/mixtral-8x22B-instruct-v0.1
+                      temperature: 0.5
+                      max_new_tokens: 1024
+                      min_new_tokens: 1
+                    - name: validator
+                      type: lm_judge
+                      filter: true
+                      lm_config:
+                        type: rits
+                        base_url: https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/mixtral-8x22b-instruct-v01/v1
+                        model_id_or_path: mistralai/mixtral-8x22B-instruct-v0.1
+                        temperature: 0.5
+                        max_new_tokens: 1024
+                        min_new_tokens: 1
+              tasks:
+                "tasks/watsonx/instructlab/knowledge/maximo":
+                  created_by: IBM Research
+                  data_builder: knowledge_sdg
+                  runner_config:
+                    num_outputs_to_generate: 1
+                    seed_batch_size: 1
+                    machine_batch_size: 1
+                  task_description: Answer all the FMEA related questions. Make sure to provide as specific details as possible.
+                  domain: IBM Maximo
+                  instruction_format:
+                    input: "{% raw %}SYSTEM: You are a reliability engineer having expertise in industrial asset management and can answer questions about failure modes and effect analysis (FMEA) for industrial assets. You are knowledgeable about the boundary conditions of an asset, asset components, failure mechanisms, their degradation influences, discovery or prevention opportunities and mitigation activities. You are a cautious assistant. You carefully follow instructions. You are helpful and harmless and you follow ethical guidelines and promote positive behavior.\n<|conversation|>\nUSER: {{question}}\nAGENT: {% endraw %}"
+                    output: "{% raw %}{{answer}}{% endraw %}"
+                  seed_datastore:
+                    type: default
+                    data_path: "{{ bindings.digit_input.binding.path }}/seeds.jsonl"
+                  include:
+                    documents:
+                      maximo_docs: "{{ bindings.digit_input.binding.path }}/documents/*.md"
+    tunedmodel:
+      environment_uri: space://environments/{{ space.variables.DEFAULT_ENVIRONMENT }}
+      inputs:
+        model_to_tune:
+          uri: hf:///models/ibm-research/granite-2b-base
+        tuning_data:
+          binding: syntheticdatageneration.digit_output
+      outputs:
+        intermediate_checkpoint_with_optimizer_state:
+          uri: hf:///models/ibm-research/gb_tuned_model_{{ run_metadata.targetsteprun_id | short_hash }}_{{ binding.path | path_basename }}
+        final_checkpoint:
+          uri: hf:///models/ibm-research/gb_tuned_model_{{ run_metadata.targetsteprun_id | short_hash }}_{{ binding.path | path_basename }}
+      steps:
+        - step_uri: space://steps/tuning
+          config:
+            compute_config:
+              num_gpus_per_node: 2
+              num_nodes: 1
+            tuning_data_config:
+              # -----------------------------------------
+              # Data config docs: https://github.com/foundation-model-stack/fms-hf-tuning/blob/main/docs/advanced-data-preprocessing.md
+              dataprocessor:
+                type: default
+                streaming: false
+              datasets:
+                # If multiple datasets are provided, omitting (or commenting out) the `sampling` ratio will result in all datasets being concatenated.
+                # Use the `split` field to define how each dataset is divided into training and validation sets.
+                #
+                # - Non-streaming datasets support both partial splits (e.g., 0.8/0.2) and full splits (e.g., 1.0/0.0 or 0.0/1.0).
+                # - Streaming datasets only support full splits and must include `streaming: true`.
+                #
+                # To use a dataset exclusively for validation, set the split to 0.0/1.0.
+                # Note: At least one dataset must contribute to the training split.
+                #
+                # Example:
+                #   dataset_1 → 1.0/0.0 (fully used for training)
+                #   dataset_2 → 0.8/0.2 (partially used for both training and validation)
+                #   dataset_3 → 0.0/1.0 (fully used for validation)
+                #
+                # In this configuration, dataset_1 and part of dataset_2 will be used for training,
+                # while dataset_3 and the remaining portion of dataset_2 will be used for validation.
+                #
+                # For more information on dataset splitting, refer to:
+                # https://github.com/foundation-model-stack/fms-hf-tuning/blob/main/docs/advanced-data-preprocessing.md#dataset-splitting
+                #
+                # To enable evaluation during training, explicitly set `eval_strategy` to either "steps" or "epoch" in the `tuning_config` section.
+                - name: dataset_1
+                  # sampling: 1.0
+                  # split:
+                  #   train: 1.0
+                  #   validation: 0.0
+                  data_paths:
+                    - "{{ bindings.tuning_data.binding.path }}"
+                  # If your data is already tokenized data, then comment out the data_handlers section.
+                  #
+                  # In this example, the dataset has two columns: "question" and "answer".
+                  # We only want to train the model on the answers, so:
+                  #   1. First, we use this data handler to format the dataset into a single text
+                  #      sequence with both the question and the answer, using a simple Q/A template.
+                  #   2. Then, we pass a "response_template" (defined in tuning_config) which tells
+                  #      the trainer where the answer begins in the formatted text. This ensures that
+                  #      only the answer portion is treated as the target for loss calculation (i.e.,
+                  #      not masked).
+                  #
+                  # The "dataset_text_field" in tuning_config is set to "formatted_chat_data" because this data handler
+                  # outputs the combined Q/A sequence into that column. The trainer then uses that
+                  # column as the actual training text.
+                  data_handlers:
+                    - name: apply_custom_jinja_template
+                      arguments:
+                        remove_columns: all
+                        batched: false
+                        fn_kwargs:
+                          formatted_text_column_name: "formatted_chat_data"
+                          template: "{% raw %}### Question: {{question}}\\\n### Answer: {{answer}}\\\n{% endraw %}"
+            tuning_config:
+              # Tuning Docs: https://github.com/foundation-model-stack/fms-hf-tuning/
+              # Tuning hyper parameters
+              learning_rate: 1e-06
+              logging_steps: "1"
+              max_steps: "15" # Remove/update "max_steps" or use "num_train_epochs"
+              # NOTE: if using 'save_strategy: steps', please set 'save_steps' appropriately to avoid too many checkpoints
+              save_steps: "10"
+              save_strategy: "steps"
+              dataset_text_field: "formatted_chat_data"
+              response_template: "\\\n### Answer:"
+              # Optimizer
+              optim: "adamw_torch"
+              adam_beta1: 0.9
+              adam_beta2: 0.98
+              weight_decay: 0.1
+              adam_epsilon: 1e-10
+              # optimizations
+              use_flash_attn: true
+              fast_kernels:  ["True", "True", "True"]
+              padding_free: "huggingface"
+              # For MoE models, set the "fast_moe" degree according to the "num_local_experts" value in the model’s config.json.
+              # Ensure that "num_local_experts" is divisible by the chosen "fast_moe" degree, and that the world size (total GPUs) is also divisible by this value.
+              # Example:
+              # fast_moe: 8
+              # -----------------------------------------
+              # If you want to perform LoRA fine-tuning then uncomment the LoRA Config parameters given below
+              # peft_method: lora
+              # lora_alpha: 8
+              # lora_dropout: 0.1
+              # r: 8
+              # target_modules: all-linear # Please update the target_modules (all-linear or from ["q_proj", "k_proj", "v_proj", "o_proj"]) as per your model architecture. Some guidance is available here: https://github.com/foundation-model-stack/fms-hf-tuning?tab=readme-ov-file#recommended-target-modules-per-model-architecture
+              # -----------------------------------------
+              # ⚠️ Important Notes:
+              #
+              # 1. Special Tokens
+              #    - If your model is a base model, you may need to add special tokens that appear in the chat template
+              #      (e.g., <|system|>, <|user|>, <|start_of_role|>, <|end_of_role|>, <|tool_call|>, etc.).
+              #    - Check your model’s `tokenizer_config.json` → see `additional_special_tokens` for existing special tokens.
+              #    - Add any missing special tokens using `add_special_tokens`.
+              #
+              #    Example (Granite 3.x models):
+              #    add_special_tokens: ["<|start_of_role|>", "<|end_of_role|>", "<|tool_call|>"]
+              #
+              # 2. Modules to Save
+              #    - If (and only if) you add special tokens, you must also include:
+              #        modules_to_save: ["lm_head", "embed_token"]
+              #      so that embeddings and tied layers are preserved correctly during LoRA fine-tuning.
+              #
+              # 3. Known Issue (Granite 4.0 Models)
+              #    - If you add add_special_tokens and modules_to_save and then try to merge the adapters for Granite 4.0,
+              #     there are some known issues. Please keep this in mind when attempting adapter merges.
+              #
+              # Recommendation:
+              #    - Leave this section commented out unless you need special tokens.
+              #    - If you uncomment and add tokens, also uncomment `modules_to_save`.
+              #
+              # add_special_tokens: ["<|start_of_role|>", "<|end_of_role|>", "<|tool_call|>"]
+              # modules_to_save: ["lm_head", "embed_token"]
+              # -----------------------------------------
+            # Important:
+            # For MoE models, you must uncomment and use the "fsdp_config" section below.
+            # Note: The default value of "fsdp_state_dict_type" is "FULL_STATE_DICT",
+            # which is not supported for MoE models. Use "SHARDED_STATE_DICT" instead.
+            #
+            # fsdp_config:
+            #   # FSDP flags
+            #   use_fsdp: "true"
+            #   fsdp_auto_wrap_policy: "TRANSFORMER_BASED_WRAP"
+            #   fsdp_forward_prefetch: "false"
+            #   fsdp_offload_params: "false"
+            #   fsdp_sharding_strategy: "HYBRID_SHARD"
+            #   fsdp_state_dict_type: "SHARDED_STATE_DICT"
+            #   fsdp_cpu_ram_efficient_loading: "true"
+            #   fsdp_sync_module_states: "true"
+    evalresults:
+      environment_uri: space://environments/{{ space.variables.DEFAULT_ENVIRONMENT }}
+      inputs:
+        tuned_model: 
+          binding: tunedmodel.final_checkpoint
+      outputs:
+        eval_results: 
+          # uri: lh://{{ space.variables.DEFAULT_LH_ENVIRONMENT }}/{{ space.variables.DEFAULT_LH_NAMESPACE }}/tables/eval_results_{{ run_metadata.targetsteprun_id | short_hash }}
+          uri: hf:///datasets/ibm-research/eval_results_{{ run_metadata.targetsteprun_id | short_hash }}
+      steps:
+        - step_uri: space://steps/fm-eval
+          config:
+            # https://github.ibm.com/IBM-Research-AI/fm-eval/tree/main
+            fm_eval_config:
+              model_path: "huggingface/{{ bindings.tuned_model.binding.path }}"
+              benchmark_name: "example_simple_inference"
+              run_env: huggingface
+              predictions_namespace: evaluation
+            k8s:
+              setupcommands:
+              # Change log level to INFO
+              - sed -i "s/logging.DEBUG/logging.INFO/" /app/app.py
+              # debug_limit_num_of_jobs below
+              #- sed -i -e '/multi_process/a\'$'\n''            self.config["debug_limit_num_of_jobs"] = 1' /app/examples/fm_eval_runner/fm_eval_runner.py

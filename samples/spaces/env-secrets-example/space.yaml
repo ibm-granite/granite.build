@@ -1,0 +1,22 @@
+# Environment Variable Secret Manager Example
+#
+# This space configuration demonstrates using the 'env' secret manager type,
+# which retrieves secrets from environment variables. This is ideal for:
+#   - CI/CD pipelines where secrets are injected as environment variables
+#   - Containerized deployments (Docker, Kubernetes)
+#   - Simple local development setups
+#
+# The env secret manager automatically transforms secret names to environment
+# variable names by converting to uppercase and replacing special characters
+# with underscores. For example:
+#   - api_key      → GBSERVER_SECRET_API_KEY
+#   - api-key      → GBSERVER_SECRET_API_KEY
+#   - api.key      → GBSERVER_SECRET_API_KEY
+#   - db/password  → GBSERVER_SECRET_DB_PASSWORD
+
+secret_manager:
+  type: env
+  config:
+    # Optional prefix for environment variables (default: "GBSERVER_SECRET_")
+    # All secret lookups will prepend this prefix to the transformed name
+    prefix: "GBSERVER_SECRET_"

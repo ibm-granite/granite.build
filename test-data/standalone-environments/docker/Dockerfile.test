@@ -1,0 +1,11 @@
+# Test image for TRL fine-tuning and unitxt evaluation
+# Built during test session; not published.
+FROM huggingface/transformers-pytorch-gpu:latest
+
+RUN pip install --no-cache-dir \
+    'transformers>=5.5,<6' \
+    trl \
+    peft \
+    unitxt \
+    datasets \
+    accelerate

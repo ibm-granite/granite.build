@@ -1,0 +1,50 @@
+--- connector.py	2026-02-18 14:09:38
++++ connector_fixed.py	2026-02-18 14:22:04
+@@ -9,6 +9,7 @@
+ from contextlib import suppress
+ from http import HTTPStatus
+ from itertools import chain, cycle, islice
++import time
+ from time import monotonic
+ from types import TracebackType
+ from typing import (
+@@ -1525,17 +1526,28 @@
+             host = host.rstrip(".") + "."
+         port = req.port
+         assert port is not None
+-        try:
+-            # Cancelling this lookup should not cancel the underlying lookup
+-            #  or else the cancel event will get broadcast to all the waiters
+-            #  across all connections.
+-            hosts = await self._resolve_host(host, port, traces=traces)
+-        except OSError as exc:
+-            if exc.errno is None and isinstance(exc, asyncio.TimeoutError):
+-                raise
+-            # in case of proxy it is not ClientProxyConnectionError
+-            # it is problem of resolving proxy ip itself
+-            raise ClientConnectorDNSError(req.connection_key, exc) from exc
++        retry_count, max_retries = 0, 100
++        while retry_count < max_retries:
++            try:
++                retry_count += 1
++                # Cancelling this lookup should not cancel the underlying lookup
++                #  or else the cancel event will get broadcast to all the waiters
++                #  across all connections.
++                hosts = await self._resolve_host(host, port, traces=traces)
++                break
++            except OSError as exc:
++                if exc.errno is None and isinstance(exc, asyncio.TimeoutError):
++                    raise
++                # in case of proxy it is not ClientProxyConnectionError
++                # it is problem of resolving proxy ip itself
++                if retry_count < max_retries:
++                    print(f"Retrying self._resolve_host {host}, {port} retry_count={retry_count}")
++                    time.sleep(1)
++                    continue
++                print(f"Raising ClientConnectorDNSError {host}, {port} retry_count={retry_count}")
++                raise ClientConnectorDNSError(req.connection_key, exc) from exc
++        if retry_count >= max_retries:
++            raise RuntimeError(f'_resolve_host failed, max retries exceeded: {host} {port}')
+ 
+         last_exc: Optional[Exception] = None
+         addr_infos = self._convert_hosts_to_addr_infos(hosts)

@@ -1,0 +1,5 @@
+lakehouse_environment: STAGING
+spaces:
+- name: "public"
+  git_repo_uri: "https://github.ibm.com/granite-dot-build/gbspace-public-dev"
+  lakehouse_namespace: "granite_dot_build.public_dev"

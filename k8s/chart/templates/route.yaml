@@ -1,0 +1,30 @@
+{{- if .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.routes.enable }}
+{{- $routeName := printf "llmbuild-route-%s" .Release.Name }}
+{{- $restServerName := printf "llmbuild-rest-server-%s" .Release.Name }}
+{{- $restServerPort := .Values.deployments.restServer.port }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: '{{ $routeName }}'
+  labels:
+    'llmbuild/internal': '{{ $routeName }}'
+  annotations:
+    # Set the timeout for server-side processing.
+    # This is required for long-running endpoints like validate (~ 1 min)
+    haproxy.router.openshift.io/timeout: '{{ .Values.routes.haproxy_timeout }}'
+    # Note: Both are often required and should be set to the same value or similar.
+    haproxy.router.openshift.io/server-timeout: '{{ .Values.routes.haproxy_timeout }}'
+spec:
+  host: '{{ .Values.routes.host }}'
+  to:
+    kind: Service
+    name: '{{ $restServerName }}'
+    weight: 100
+  port:
+    targetPort: {{ $restServerPort }}
+  tls:
+    termination: edge
+  wildcardPolicy: None
+{{- end }}
+{{- end }}

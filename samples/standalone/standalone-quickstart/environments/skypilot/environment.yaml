@@ -1,0 +1,20 @@
+name: skypilot-standalone
+type: Skypilot
+config:
+  # Uncomment ONE of the following cloud backends:
+
+  # AWS — provisions EC2 instances directly (requires ~/.aws/credentials)
+  default_cloud: aws
+
+  # Kubernetes — uses existing K8s cluster (requires ~/.kube/config)
+  # default_cloud: kubernetes
+
+  idle_minutes_to_autostop: 5
+assetstores:
+  - store_uri: space://assetstores/s3/
+    load:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}

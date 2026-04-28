@@ -1,0 +1,22 @@
+lhpush_config:
+  use_aspera: true
+k8s:
+  # See https://github.ibm.com/granite-dot-build/dmf-library-docker
+  # image: us.icr.io/cil15-shared-registry/gb-prod/dmf-library:latest
+  # image: us.icr.io/cil15-shared-registry/gb-prod/dmf-library:commit-47b07db1e61018206843fb66d7e918a52bf25134
+  # after 'summary' fix in DMF lib v1.10.2
+  image: us.icr.io/cil15-shared-registry/gb-prod/dmf-library:commit-bd7aa1b163349c7ceb14b4a1a02e062d810da74d
+  env:
+    HOME:
+      value: "/app"
+    DMF_DATASETS_CACHE:
+      value: "/tmp"
+    DMF_CACHE:
+      value: "/tmp"
+    LAKEHOUSE_ENVIRONMENT:
+      value: {{ config.lhpush_config.lh.env }}
+    LAKEHOUSE_TOKEN:
+      valueFrom:
+        secretKeyRef:
+          name: {{ setup_config.space.secret }}
+          key: {{ config.lhpush_config.lh.token_secretname }}

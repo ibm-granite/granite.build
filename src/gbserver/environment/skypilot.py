@@ -1,0 +1,408 @@
+"""SkyPilot environment backend (unmanaged mode).
+
+Manages build step execution on SkyPilot-provisioned pods/VMs using
+sky.launch(). Each step gets its own cluster; pods auto-stop after
+idle timeout. The sky SDK is lazy-imported so gbserver does not
+require it unless a Skypilot environment is actually configured.
+"""
+
+import asyncio
+import glob
+import os
+import urllib.parse
+from typing import Any, Dict, List, Optional, Self
+
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+from gbserver.environment.environment import Environment, EventLogLineParserConfig
+from gbserver.types.environmentconfig import EnvironmentConfig
+from gbserver.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+from gbserver.utils.optional_imports import HAS_SKYPILOT
+
+if HAS_SKYPILOT:
+    import sky
+else:
+    sky = None  # type: ignore[assignment]
+
+
+def _require_skypilot():
+    """Raise a clear error if the sky SDK is not installed."""
+    if not HAS_SKYPILOT:
+        raise ImportError(
+            "The 'skypilot' package is required for the Skypilot environment. "
+            "Install it with: pip install 'gbserver[skypilot]'"
+        )
+
+
+@retry(
+    stop=stop_after_attempt(8),
+    wait=wait_exponential(multiplier=1, max=128),
+    reraise=True,
+)
+def _download_logs_with_retry(cluster_name: str, job_id: int):
+    """Download SkyPilot job logs with retry for transient failures."""
+    # sky.download_logs() returns Dict[str, str] mapping job_id to local log path
+    # (it handles the API request/response internally, no sky.get() needed)
+    result = sky.download_logs(cluster_name, job_ids=[str(job_id)])
+    return result.get(str(job_id))
+
+
+class Skypilot(Environment):
+    """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
+
+    def __init__(
+        self: Self,
+        event_q: asyncio.Queue,
+        environment_config: Optional[EnvironmentConfig] = None,
+        secrets: Optional[Dict] = None,
+        **kwargs,
+    ) -> None:
+        self._cluster_names: Dict[str, str] = {}  # launch_id -> cluster_name
+        self._job_ids: Dict[str, int] = {}  # launch_id -> sky job_id
+        super().__init__(
+            event_q=event_q,
+            environment_config=environment_config,
+            secrets=secrets,
+            **kwargs,
+        )
+
+    def _get_cloud(self: Self) -> str:
+        """Get default cloud/infra from environment.yaml config."""
+        if self.config is None:
+            return "k8s"
+        return self.config.config.get("default_cloud", "k8s")
+
+    def _get_idle_minutes(self: Self) -> int:
+        """Get idle_minutes_to_autostop from environment.yaml config."""
+        if self.config is None:
+            return 10
+        return self.config.config.get("idle_minutes_to_autostop", 10)
+
+    @staticmethod
+    def _cluster_name_for(launch_id: str) -> str:
+        """Generate a unique cluster name from a launch_id."""
+        return f"gb-{launch_id[:12]}"
+
+    async def launch_skypilot(
+        self: Self,
+        launch_id: str,
+        targetsteprun_asset_dir=None,
+        environment_config: Optional[EnvironmentConfig] = None,
+        **kwargs,
+    ) -> None:
+        """Launch a step on a SkyPilot cluster (unmanaged).
+
+        Creates a sky.Task from step config, calls sky.launch() to provision
+        pods/VMs, waits until the job starts, then signals launch readiness via release_monitors().
+        """
+        try:
+            _require_skypilot()
+
+            launcher_config = kwargs.get("launcher_config", {}) or {}
+            config = kwargs.get("config", {}) or {}
+
+            cluster_name = self._cluster_name_for(launch_id)
+            cloud = (
+                launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
+            )
+            idle_minutes = launcher_config.get(
+                "idle_minutes_to_autostop", self._get_idle_minutes()
+            )
+
+            # Build sky.Resources
+            res_config = launcher_config.get("resources", {})
+            resources = sky.Resources(
+                infra=cloud,
+                accelerators=res_config.get("accelerators"),
+                cpus=res_config.get("cpus"),
+                memory=res_config.get("memory"),
+                disk_size=res_config.get("disk_size"),
+                image_id=launcher_config.get("image_id"),
+            )
+
+            # Build environment variables
+            env_vars: Dict[str, str] = {}
+            if self.secrets:
+                env_vars.update(self.secrets)
+            env_vars.update(launcher_config.get("envs", {}))
+            env_vars["GB_SKYPILOT_LAUNCH_ID"] = launch_id
+            env_vars["GB_SKYPILOT_CLUSTER_NAME"] = cluster_name
+            # Expose run metadata so steps in the same target can share state
+            run_metadata = kwargs.get("run_metadata", {})
+            if run_metadata.get("targetrun_id"):
+                env_vars["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
+            if run_metadata.get("build_id"):
+                env_vars["GB_BUILD_ID"] = run_metadata["build_id"]
+
+            # Build sky.Task
+            task = sky.Task(
+                name=cluster_name,
+                setup=launcher_config.get("setup") or None,
+                run=launcher_config.get("run", ""),
+                envs=env_vars if env_vars else None,
+                resources=resources,
+            )
+
+            # Handle file_mounts (may be in launcher config or step config)
+            # Dict values → sky.Storage (set_storage_mounts), strings → set_file_mounts
+            file_mounts_raw = launcher_config.get("file_mounts") or config.get(
+                "file_mounts"
+            )
+            if file_mounts_raw:
+                file_mounts = {}
+                storage_mounts = {}
+                for mount_path, mount_val in file_mounts_raw.items():
+                    if isinstance(mount_val, dict):
+                        mode_str = mount_val.get("mode", "MOUNT").upper()
+                        source = mount_val["source"]
+                        storage_kwargs: Dict[str, Any] = {
+                            "mode": sky.StorageMode[mode_str],
+                        }
+                        # MOUNT mode requires bucket-only source; extract
+                        # sub-path for URIs like s3://bucket/prefix
+                        parsed = urllib.parse.urlparse(source)
+                        sub_path = parsed.path.lstrip("/")
+                        if sub_path:
+                            storage_kwargs["source"] = (
+                                f"{parsed.scheme}://{parsed.netloc}"
+                            )
+                            storage_kwargs["_bucket_sub_path"] = sub_path
+                        else:
+                            storage_kwargs["source"] = source
+                        storage_mounts[mount_path] = sky.Storage(**storage_kwargs)
+                    else:
+                        file_mounts[mount_path] = mount_val
+                if file_mounts:
+                    task.set_file_mounts(file_mounts)
+                if storage_mounts:
+                    task.set_storage_mounts(storage_mounts)
+
+            logger.info(
+                "Launching SkyPilot cluster: name=%s cloud=%s resources=%s",
+                cluster_name,
+                cloud,
+                res_config,
+            )
+
+            # Launch and wait for provisioning
+            request_id = sky.launch(
+                task,
+                cluster_name=cluster_name,
+                idle_minutes_to_autostop=idle_minutes or None,
+            )
+            job_id, handle = sky.stream_and_get(request_id)
+
+            self._cluster_names[launch_id] = cluster_name
+            if job_id is not None:
+                self._job_ids[launch_id] = job_id
+
+            logger.info(
+                "SkyPilot cluster %s launched: job_id=%s launch_id=%s",
+                cluster_name,
+                job_id,
+                launch_id,
+            )
+
+        except Exception as e:
+            logger.error("Failed to launch SkyPilot cluster for %s: %s", launch_id, e)
+            raise
+        finally:
+            self._release_monitors(launch_id)
+
+    async def monitor_skypilot_monitor(
+        self: Self,
+        launch_id: str,
+        event_q: Optional[asyncio.Queue] = None,
+        entityrun_metadata=None,
+        build_id: str = "",
+        event_configs: Optional[List] = None,
+        **kwargs,
+    ) -> None:
+        """Monitor a SkyPilot job by polling sky.job_status().
+
+        Polls the job status at intervals, translates SkyPilot JobStatus
+        to BuildEvent objects, and puts them on event_q. Exits when the
+        job reaches a terminal state or when stop_event is set.
+        """
+        _require_skypilot()
+
+        event_log_parser_configs = []
+        if event_configs is not None:
+            event_log_parser_configs = [
+                EventLogLineParserConfig.model_validate(config)
+                for config in event_configs
+            ]
+
+        cluster_name = self._cluster_names.get(launch_id)
+        job_id = self._job_ids.get(launch_id)
+        if not cluster_name:
+            logger.error("No cluster_name for launch_id %s", launch_id)
+            return
+
+        stop_event = self._get_launch_stopped_event(launch_id)
+        poll_interval = kwargs.get("poll_interval", 15)
+        last_status = None
+
+        while not stop_event.is_set():
+            try:
+                request_id = sky.job_status(
+                    cluster_name,
+                    job_ids=[job_id] if job_id is not None else None,
+                )
+                statuses = sky.get(request_id)
+                status = statuses.get(job_id) if statuses else None
+
+                if status != last_status:
+                    logger.info(
+                        "SkyPilot job %s on %s status: %s -> %s (launch_id=%s)",
+                        job_id,
+                        cluster_name,
+                        last_status,
+                        status,
+                        launch_id,
+                    )
+                    if event_q and entityrun_metadata:
+                        from gbserver.types.buildevent import (
+                            BuildEvent,
+                            BuildEventMessagePayload,
+                            BuildEventType,
+                        )
+
+                        event = BuildEvent(
+                            run_metadata=entityrun_metadata,
+                            type=BuildEventType.MESSAGE_EVENT,
+                            payload=BuildEventMessagePayload(
+                                msg=f"SkyPilot job {job_id} on {cluster_name}: {status}"
+                            ),
+                        )
+                        await event_q.put(event)
+                    last_status = status
+
+                if status is not None and status.is_terminal():
+                    logger.info(
+                        "SkyPilot job %s reached terminal status: %s",
+                        job_id,
+                        status,
+                    )
+                    if (
+                        event_log_parser_configs
+                        and event_q
+                        and entityrun_metadata
+                        and job_id is not None
+                    ):
+                        await self._download_and_parse_logs(
+                            cluster_name=cluster_name,
+                            job_id=job_id,
+                            launch_id=launch_id,
+                            event_q=event_q,
+                            entityrun_metadata=entityrun_metadata,
+                            event_log_parser_configs=event_log_parser_configs,
+                        )
+                    return
+
+            except Exception as e:
+                logger.error(
+                    "Error polling SkyPilot job %s on %s: %s",
+                    job_id,
+                    cluster_name,
+                    e,
+                )
+
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
+                return  # stop_event was set
+            except asyncio.TimeoutError:
+                pass  # Normal timeout, continue polling
+
+    async def _download_and_parse_logs(
+        self: Self,
+        cluster_name: str,
+        job_id: int,
+        launch_id: str,
+        event_q: asyncio.Queue,
+        entityrun_metadata,
+        event_log_parser_configs: list,
+    ) -> None:
+        """Download job logs and parse for artifact events."""
+        try:
+            log_dir = _download_logs_with_retry(cluster_name, job_id)
+            if not log_dir:
+                logger.warning(
+                    "No log directory returned for cluster %s job %s",
+                    cluster_name,
+                    job_id,
+                )
+                return
+
+            log_dir = os.path.expanduser(log_dir)
+            log_files = sorted(glob.glob(f"{log_dir}/*.log"))
+            if not log_files:
+                logger.info(
+                    "No log files found in %s for cluster %s job %s",
+                    log_dir,
+                    cluster_name,
+                    job_id,
+                )
+                return
+
+            for log_file in log_files:
+                try:
+                    with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                        for line_num, line in enumerate(f, 1):
+                            line = line.rstrip("\n")
+                            if line:
+                                await self.get_events_from_log_line(
+                                    log_line=line,
+                                    event_configs=event_log_parser_configs,
+                                    event_q=event_q,
+                                    entityrun_metadata=entityrun_metadata,
+                                    line_num=line_num,
+                                )
+                except OSError as e:
+                    logger.warning("Failed to read log file %s: %s", log_file, e)
+                    continue
+
+        except Exception as e:
+            logger.error(
+                "Failed to download/parse logs for cluster %s job %s (launch_id=%s): %s",
+                cluster_name,
+                job_id,
+                launch_id,
+                e,
+            )
+
+    async def cleanup_skypilot(
+        self: Self,
+        launch_id: Optional[str] = None,
+        **kwargs,
+    ) -> None:
+        """Tear down a SkyPilot cluster."""
+        if launch_id is None:
+            logger.warning("cleanup_skypilot called with no launch_id")
+            return
+
+        self._monitoring_cleanup(launch_id=launch_id)
+
+        cluster_name = self._cluster_names.get(launch_id)
+        if not cluster_name:
+            logger.warning("No cluster to cleanup for launch_id %s", launch_id)
+            return
+
+        try:
+            _require_skypilot()
+            logger.info(
+                "Tearing down SkyPilot cluster %s (launch_id=%s)",
+                cluster_name,
+                launch_id,
+            )
+            request_id = sky.down(cluster_name, purge=True)
+            sky.get(request_id)
+            logger.info("Torn down SkyPilot cluster %s", cluster_name)
+        except Exception as e:
+            logger.error("Failed to tear down SkyPilot cluster %s: %s", cluster_name, e)
+        finally:
+            self._cluster_names.pop(launch_id, None)
+            self._job_ids.pop(launch_id, None)

@@ -1,0 +1,13 @@
+granite.build:
+  name: helloworld
+  targets:
+    hello-world:
+      environment_uri: file:environments/local
+      inputs:
+        text_file:
+          uri: file:data/file/helloworld.txt
+      steps:
+        - step_uri: file:steps/cat
+          config:
+            name: world
+    

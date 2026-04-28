@@ -1,0 +1,20 @@
+{{- if .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.pvcs.enable }}
+{{- if .Values.pvcs.prWorkspace.enable }}
+{{- $prWsPvcName := printf "gb-prws-pvc-%s" .Release.Name }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: '{{ $prWsPvcName }}'
+  labels:
+    'llmbuild/internal': '{{ $prWsPvcName }}'
+spec:
+  storageClassName: '{{ .Values.pvcs.prWorkspace.storageClassName }}'
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: '{{ .Values.pvcs.prWorkspace.storageSize }}'
+{{- end }}
+{{- end }}
+{{- end }}

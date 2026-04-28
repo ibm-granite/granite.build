@@ -1,0 +1,20 @@
+{{- if .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.pvcs.enable }}
+{{- if .Values.pvcs.buildWorkspace.enable }}
+{{- $buildWsPvcName := printf "gb-buildws-pvc-%s" .Release.Name }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: '{{ $buildWsPvcName }}'
+  labels:
+    'llmbuild/internal': '{{ $buildWsPvcName }}'
+spec:
+  storageClassName: '{{ .Values.pvcs.buildWorkspace.storageClassName }}'
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: '{{ .Values.pvcs.buildWorkspace.storageSize }}'
+{{- end }}
+{{- end }}
+{{- end }}

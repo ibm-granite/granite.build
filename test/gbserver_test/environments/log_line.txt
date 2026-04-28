@@ -1,0 +1,1 @@
+{"event_type": "newartifact_in_environment",  "binding_id": "model_prediction",  "binding": { "path":"/test/path"}}

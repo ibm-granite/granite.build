@@ -1,0 +1,25 @@
+{{- if not .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.pvcs.enable }}
+{{- if .Values.pvcs.workloadReadOnly.enable }}
+{{- $readOnlyPvcName := printf "gb-afm-read-only" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: '{{ $readOnlyPvcName }}'
+  labels:
+    'llmbuild/internal': '{{ $readOnlyPvcName }}'
+  # annotations:
+  #   volume.beta.kubernetes.io/storage-provisioner: spectrumscale.csi.ibm.com
+  #   volume.kubernetes.io/storage-provisioner: spectrumscale.csi.ibm.com
+spec:
+  volumeMode: Filesystem
+  # volumeName: pvc-07d048f3-33ac-497a-87ab-fca736420529
+  storageClassName: '{{ .Values.pvcs.workloadReadOnly.storageClassName }}'
+  accessModes:
+  - ReadOnlyMany
+  resources:
+    requests:
+      storage: '{{ .Values.pvcs.workloadReadOnly.storageSize }}'
+{{- end }}
+{{- end }}
+{{- end }}

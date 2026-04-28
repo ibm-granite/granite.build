@@ -1,0 +1,45 @@
+granite.build:
+  name: dg-tune-eval
+  targets:
+    syntheticdatageneration:
+      environment_uri: file:samples/environments/local
+      inputs:
+        text_file:
+          uri: file:samples/data/dg-tune-eval/dg.jsonl
+      outputs:
+        synthdata: 
+          uri: file:samples/workspace/temp-store/dgdata/dg.jsonl
+      steps:
+        - step_uri: file:samples/steps/copy
+          config:
+            path: "/Users/ashokponkumar/workspace/temp/"
+    tunedmodel:
+      environment_uri: file:samples/environments/local
+      inputs:
+        tuning-data:
+          binding: syntheticdatageneration.synthdata
+        base_model:
+          uri: file:samples/data/dg-tune-eval/tune.jsonl
+      outputs:
+        checkpoint:
+          base_uri: file:samples/workspace/temp-store/checkpoints/
+      steps:
+        - step_uri: file:samples/steps/cat
+          config:
+    evalresults:
+      environment_uri: file:samples/environments/local
+      inputs:
+        binding: 
+          binding: tunedmodel.checkpoint
+      steps:
+        - step_uri: file:samples/steps/cat
+          config:
+    summary:
+      environment_uri: file:samples/environments/local
+      inputs:
+        wait-for-eval:
+          event: evalresults.success
+      steps:
+        - step_uri: file:samples/steps/echo
+          config:
+            name: That's all folks!

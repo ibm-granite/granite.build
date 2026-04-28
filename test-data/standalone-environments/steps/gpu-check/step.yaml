@@ -1,0 +1,46 @@
+name: gpu-check
+version: v1
+type: custom
+config: {}
+
+environment_configs:
+  Bash:
+    launchers:
+      gpu-check:
+        type: nohup
+        monitors:
+          - log_monitor
+        config:
+          script_path: run.py
+    monitors:
+      log_monitor:
+        type: log_monitor
+        config:
+          event_configs:
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"
+
+  Docker:
+    launchers:
+      gpu-check:
+        type: docker
+        monitors:
+          - docker_log
+        config:
+          image: huggingface/transformers-pytorch-gpu:latest
+          command: python /gb-workspace/bash_scripts/gpu-check/run.py
+    monitors:
+      docker_log:
+        type: docker_log
+        config:
+          event_configs:
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"

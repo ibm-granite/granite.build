@@ -1,0 +1,13 @@
+granite.build:
+  name: docker-gpu-test
+  targets:
+    gpu-check:
+      environment_uri: space://environments/docker
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/gpu-check
+          config:
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1

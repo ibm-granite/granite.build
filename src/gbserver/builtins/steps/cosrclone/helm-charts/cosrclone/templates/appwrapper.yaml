@@ -1,0 +1,15 @@
+{{- $parentContext := . }}
+{{- $cosrclone_command := include "cosrclone_command" . | indent 10 | trimAll " " }}
+{{- $commands := list
+  $cosrclone_command
+}}
+{{- $jobType := "job" }}
+{{- include "gbstepbase.app" (dict 
+    "commands" $commands 
+    "job_type" $jobType 
+    "Values" $parentContext.Values 
+    "Release" $parentContext.Release 
+    "Chart" $parentContext.Chart 
+    "Template" $parentContext.Template
+) | trimAll " " }}
+

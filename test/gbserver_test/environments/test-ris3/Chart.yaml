@@ -1,0 +1,5 @@
+apiVersion: v2
+name: log-job
+description: Deploys a job that starts a test log generator in a single pod
+version: 0.1.0
+appVersion: "1.0"

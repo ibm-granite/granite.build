@@ -1,0 +1,179 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gbserver-rest-server
+  namespace: granite-build-prod
+  labels:
+    app: gbserver-rest-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gbserver-rest-server
+  template:
+    metadata:
+      labels:
+        app: gbserver-rest-server
+    spec:
+      containers:
+      - command:
+        - bash
+        - -c
+        - gbserver rest-server --port 8080
+        env:
+        - name: IBM_CLOUD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: IBM_CLOUD_API_KEY
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: IBM_CLOUD_LOGS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: IBM_CLOUD_LOGS_API_KEY
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: IBM_CLOUD_LOGS_API_URL
+          valueFrom:
+            secretKeyRef:
+              key: IBM_CLOUD_LOGS_API_URL
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: IBM_CLOUD_SERVER_LOGS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: IBM_CLOUD_LOGS_RIS3_API_KEY
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: IBM_CLOUD_SERVER_LOGS_API_URL
+          valueFrom:
+            secretKeyRef:
+              key: IBM_CLOUD_LOGS_RIS3_API_URL
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL
+          valueFrom:
+            secretKeyRef:
+              key: IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: GBSERVER_GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: github_token
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: LAKEHOUSE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: LAKEHOUSE_TOKEN
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: LAKEHOUSE_ENVIRONMENT
+          valueFrom:
+            secretKeyRef:
+              key: LAKEHOUSE_ENVIRONMENT
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: LAKEHOUSE_TOKEN_ARTIFACTS
+          valueFrom:
+            secretKeyRef:
+              key: LAKEHOUSE_TOKEN_ARTIFACTS
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: DMF_CACHE
+          value: /tmp/dmf_cache
+        - name: GB_ENVIRONMENT
+          valueFrom:
+            secretKeyRef:
+              key: GB_ENVIRONMENT
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: GBSERVER_SQL_USER
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_USER
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: GBSERVER_SQL_PASSWD
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_PASSWD
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: GBSERVER_SQL_HOST
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_HOST
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: GBSERVER_SQL_PORT
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_PORT
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: GBSERVER_SQL_DBNAME
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_DBNAME
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: GBSERVER_SQL_SCHEMA
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_SCHEMA
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: GBSERVER_SQL_SSLROOT_CERT
+          value: ibm-cloud-databases.cert
+        - name: GBSERVER_SQL_ECHO
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_ECHO
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: GBSERVER_METADATA_STORAGE
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_METADATA_STORAGE
+              name: vela-414-granite-dot-build-svc-acc-secret2
+        - name: GBSERVER_REST_SERVER_WORKERS
+          value: "4"
+        image: us.icr.io/cil15-shared-registry/gb-prod/gbserver:latest
+        imagePullPolicy: Always
+        name: gbserver-rest-server
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        resources:
+          limits:
+            cpu: "4"
+            memory: 6Gi
+          requests:
+            cpu: "4"
+            memory: 4Gi
+        securityContext:
+          runAsGroup: 0
+          capabilities:
+            drop:
+              - ALL
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          runAsNonRoot: true
+        volumeMounts:
+        - mountPath: /opt/app-root/src/.ssh/id_ed25519
+          name: secret-volume
+          readOnly: true
+          subPath: id_ed25519
+        - mountPath: /opt/app-root/src/.ssh/id_ed25519.pub
+          name: secret-volume
+          readOnly: true
+          subPath: id_ed25519.pub
+        - mountPath: /opt/app-root/src/.ssh/config
+          name: secret-volume
+          readOnly: true
+          subPath: ssh-config
+        - mountPath: /opt/app-root/src/.ssh/known_hosts
+          name: secret-volume
+          readOnly: true
+          subPath: known_hosts
+        - mountPath: /app/ibm-cloud-databases.cert
+          name: secret-volume
+          readOnly: true
+          subPath: ibm-cloud-databases.cert
+      dnsPolicy: Default
+      imagePullSecrets:
+      - name: all-icr-io-cil15-2
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 60
+      volumes:
+      - name: secret-volume
+        secret:
+          defaultMode: 416
+          secretName: vela-414-granite-dot-build-svc-acc-secret2

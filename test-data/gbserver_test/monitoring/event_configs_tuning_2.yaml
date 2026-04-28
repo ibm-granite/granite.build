@@ -1,0 +1,42 @@
+- event_type: MESSAGE_EVENT
+  line_regex: "^GB_MESSAGE.*"
+  is_json: False
+  event_fields:
+    - field_name: msg
+      field_regex: "Aim dashboard.*"
+- event_type: MESSAGE_EVENT
+  line_regex: "^ClearML\\sresults\\spage:\\s.*"
+  is_json: False
+  event_fields:
+    - field_name: msg
+      field_regex: ".*"
+- event_type: newartifact_in_environment_event
+  line_regex: "WARNING:logcontrol.py:Model\\ssaved\\sin\\s.*"
+  is_json: False
+  event_fields:
+    - field_name: binding_id
+      field_value_template: tuned_checkpoint
+    - field_name: path
+      field_regex: "/.*"
+      is_data: True
+    - field_name: binding
+      # No trailing slash in path
+      field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+      # Add trailing slash to path
+      #field_value_template: "{ \"path\": \"{{ fields.data.path }}/\" }"
+      is_json: True
+- event_type: newartifact_in_environment_event
+  line_regex: "Training logs saved in .*"
+  is_json: False
+  event_fields:
+    - field_name: binding_id
+      field_value_template: training_logs_jsonl
+    - field_name: path
+      field_regex: "/.*"
+      is_data: True
+    - field_name: binding
+      # No trailing slash in path
+      field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+      # Add trailing slash to path
+      #field_value_template: "{ \"path\": \"{{ fields.data.path }}/\" }"
+      is_json: True

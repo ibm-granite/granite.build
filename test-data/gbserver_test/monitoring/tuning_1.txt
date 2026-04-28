@@ -1,0 +1,5 @@
+WARNING:logcontrol.py:Model saved in /gb-read-write/outputs/tuning/gbckpenypw/checkpoint-1878
+50%|█████     | 1879/3756 [11:42:12<204:00:46, 391.29s/it]
+
+50%|█████     | 1880/3756 [11:42:34<146:04:42, 280.32s/it]WARNING:clearml_tracker.py:ClearMLtracker was requested but did not get initialized; Please check the config
+Training logs saved in /gb-read-write/outputs/tuning/gbckpenypw/training_logs.jsonl

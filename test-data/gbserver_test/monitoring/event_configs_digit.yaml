@@ -1,0 +1,12 @@
+- event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+  line_regex: "Generated\\sData:\\s.+"
+  is_json: False
+  event_fields:
+    - field_name: binding_id # must match name of one of the outputs.{name} in build.yaml
+      field_value_template: "digit_output"
+    - field_name: path
+      field_regex: "[^\\s]+[.]jsonl"
+      is_data: True
+    - field_name: binding # describes how to access element in this env, must be path in k8s
+      field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+      is_json: True

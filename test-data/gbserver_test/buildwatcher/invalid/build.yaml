@@ -1,0 +1,3 @@
+llm.build:
+  name: sdktest
+  targets: 1 

@@ -1,0 +1,191 @@
+# ----------------------------------------------
+# IMPORTANT:
+# - Set this to true when you want to setup a cluster where the build-watcher and rest-server are going to run
+# - Set this to false when you want to setup a cluster where the workloads are going to run
+generateResourcesForLLMBBackendCluster: true
+# generateResourcesForLLMBBackendCluster: false
+# ----------------------------------------------
+configmaps:
+  enable: false
+  mainConfigMap:
+    data:
+      'build-watcher-config.yaml': |
+        spaces:
+        - name: public
+deployments:
+  enable: true
+  # enable: false
+  # image: us.icr.io/cil15-shared-registry/gb-prod/gbserver:commit-d5132ca4ddd7d5ba07b6ea26c9f811f03420a482
+  image: us.icr.io/cil15-shared-registry/gb-prod/gbserver:latest
+  imagePullSecrets:
+  - all-icr-io-cil15-2
+  buildWatcher:
+    enable: true
+    # enable: false
+    replicas: 1
+    resources:
+      limits:
+        cpu: "4"
+        ephemeral-storage: 20Gi
+        memory: 40Gi
+      requests:
+        cpu: "1"
+        ephemeral-storage: 10Gi
+        memory: 4Gi
+    env:
+      GB_ENVIRONMENT: PROD
+      GBSERVER_DEFAULT_WORKSPACE_DIR: /tmp/build-watcher-workspace
+      GBSERVER_SQL_SSLROOT_CERT: ibm-cloud-databases.cert
+      DMF_CACHE: /tmp/dmf_cache
+      GBSERVER_LINEAGE_PROVIDER: wandb
+      GBSERVER_WANDB_BASE_URL: https://ibm.wandb.io
+      GBSERVER_WANDB_PROJECT: lineage-tracking
+    envFromMainSecret:
+    - GBSERVER_SQL_USER
+    - GBSERVER_SQL_PASSWD
+    - GBSERVER_SQL_HOST
+    - GBSERVER_SQL_PORT
+    - GBSERVER_SQL_DBNAME
+    - GBSERVER_SQL_SCHEMA
+    - GBSERVER_SQL_ECHO
+    - GBSERVER_METADATA_STORAGE
+    - GBSERVER_DEFAULT_BUILDWATCHER_COMMITTER_NAME
+    - GBSERVER_GITHUB_TOKEN
+    - IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL
+    - IBM_CLOUD_API_KEY
+    - LAKEHOUSE_TOKEN
+    # Metrics ----------------
+    - GBSERVER_METRICS_ENDPOINT
+    - GBSERVER_METRICS_AUTH_TOKEN
+    # Metrics ----------------
+    # Node Health Alerting ---
+    - GBSERVER_NODE_HEALTH_ALERT_WEBHOOK_URL
+    - GBSERVER_NODE_HEALTH_ALERT_SLACK_WEBHOOK_URL
+    - GBSERVER_NODE_HEALTH_ALERT_SLACK_CHANNEL
+    - GBSERVER_NODE_HEALTH_ALERT_SLACK_MENTION_USERS
+    # Node Health Alerting ---
+    # OpenLineage / WandB ---
+    - GBSERVER_WANDB_API_KEY
+    - GBSERVER_WANDB_ENTITY
+    # OpenLineage / WandB ---
+  restServer:
+    enable: true
+    # enable: false
+    replicas: 1
+    port: 8080
+    resources:
+      limits:
+        cpu: "4"
+        memory: 6Gi
+      requests:
+        cpu: "4"
+        memory: 4Gi
+    env:
+      DMF_CACHE: /tmp/dmf_cache
+      GBSERVER_SQL_SSLROOT_CERT: ibm-cloud-databases.cert
+      GBSERVER_REST_SERVER_WORKERS: "4"
+      GBSERVER_AUTH_MODE: github
+      GBSERVER_LINEAGE_PROVIDER: wandb
+      GBSERVER_WANDB_BASE_URL: https://ibm.wandb.io
+      GBSERVER_WANDB_PROJECT: lineage-tracking
+    envFromMainSecret:
+    - GB_ENVIRONMENT
+    - GBSERVER_SQL_USER
+    - GBSERVER_SQL_PASSWD
+    - GBSERVER_SQL_HOST
+    - GBSERVER_SQL_PORT
+    - GBSERVER_SQL_DBNAME
+    - GBSERVER_SQL_SCHEMA
+    - GBSERVER_SQL_ECHO
+    - GBSERVER_METADATA_STORAGE
+    - GBSERVER_GITHUB_TOKEN
+    - IBM_CLOUD_SERVER_LOGS_API_KEY
+    - IBM_CLOUD_SERVER_LOGS_API_URL
+    - IBM_CLOUD_API_KEY
+    - IBM_CLOUD_LOGS_API_KEY
+    - IBM_CLOUD_LOGS_API_URL
+    - IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL
+    - LAKEHOUSE_TOKEN
+    - LAKEHOUSE_ENVIRONMENT
+    - LAKEHOUSE_TOKEN_ARTIFACTS
+    - GBSERVER_IBMID_CLIENT_ID
+    - GBSERVER_IBMID_CLIENT_SECRET
+    - GBSERVER_IBMID_CALLBACK_URL
+    # OpenLineage / WandB ---
+    - GBSERVER_WANDB_API_KEY
+    - GBSERVER_WANDB_ENTITY
+    # OpenLineage / WandB ---
+ingresses:
+  enable: true
+  # enable: false
+  host: granite-build-prod.bx.cloud9.ibm.com
+pvcs:
+  enable: true
+  # enable: false
+  buildWorkspace:
+    enable: true
+    # enable: false
+    storageClassName: ibmc-vpc-file-500-iops
+    storageSize: 1000Gi
+  prWorkspace:
+    enable: true
+    # enable: false
+    storageClassName: ibmc-vpc-file-500-iops
+    storageSize: 1000Gi
+  workloadReadWrite:
+    enable: true
+    # enable: false
+    storageClassName: ibm-spectrum-scale-afm-sw
+    storageSize: 4Ti
+  workloadReadOnly:
+    enable: true
+    # enable: false
+    storageClassName: ibm-spectrum-scale-afm-ro
+    storageSize: 2Ti
+routes:
+  enable: true
+  # enable: false
+  host: granite-build-prod.ris3-int-dal12-ocp-9ca4d14d48413d18ce61b80811ba4308-0000.us-south.containers.appdomain.cloud
+  haproxy_timeout: '600s'
+services:
+  enable: true
+  # enable: false
+secrets:
+  enable: true
+  # enable: false
+  mainSecret:
+    stringData:
+      GB_ENVIRONMENT: PROD
+      GBSERVER_METADATA_STORAGE: sql
+      GBSERVER_DEFAULT_BUILDWATCHER_COMMITTER_NAME: Granitebuild
+      GBSERVER_GITHUB_TOKEN: xxxx
+      GBSERVER_SQL_SCHEMA: granite_dot_build_prod
+      GBSERVER_SQL_PORT: '31842'
+      GBSERVER_SQL_ECHO: ''
+      GBSERVER_SQL_HOST: 05ed7d0c-3027-412e-bc75-23351a34b8fa.blrrvkdw0thh68l98t20.databases.appdomain.cloud
+      GBSERVER_SQL_DBNAME: ibmclouddb
+      GBSERVER_SQL_USER: ibm_cloud_f4e6a63c_6fb8_4868_83c0_a2ebda977f0e
+      GBSERVER_SQL_PASSWD: xxxx
+      IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL: https://3a634e1e-2591-4a19-baa8-34cf8f12defb.us-east.secrets-manager.appdomain.cloud
+      IBM_CLOUD_API_KEY: xxxx
+      IBM_CLOUD_LOGS_API_URL: https://597e0cf2-90e2-47e8-8085-8d74afabeb14.api.us-east.logs.cloud.ibm.com
+      IBM_CLOUD_SERVER_LOGS_API_KEY: xxxx # previously IBM_CLOUD_LOGS_RIS3_API_KEY
+      IBM_CLOUD_SERVER_LOGS_API_URL: https://00b7b15b-c169-4b6e-b503-f0dde14c16ac.api.us-south.logs.cloud.ibm.com # previously IBM_CLOUD_LOGS_RIS3_API_URL
+      IBM_CLOUD_LOGS_API_KEY: xxxx
+      LAKEHOUSE_ENVIRONMENT: PROD
+      LAKEHOUSE_TOKEN: xxxx
+      LAKEHOUSE_TOKEN_ARTIFACTS: xxxx
+      id_ed25519: xxxx
+      id_ed25519.pub: xxxx
+      ibm-cloud-databases.cert: xxxx
+      known_hosts: xxxx
+      ssh-config: xxxx
+      ris3-kube-config: xxxx # this is poorly named- would prefer e.g. build-runner-kube-config. It's still need to launch build-runner
+      # Node Health Alerting (BuildWatcher only)
+      GBSERVER_ALERT_WEBHOOK_URL: ''
+      GBSERVER_ALERT_SLACK_WEBHOOK_URL: ''
+      GBSERVER_ALERT_SLACK_CHANNEL: ''
+      GBSERVER_ALERT_SLACK_MENTION_USERS: ''
+      # OpenLineage / WandB
+      GBSERVER_WANDB_API_KEY: xxxx
+      GBSERVER_WANDB_ENTITY: granite-lineage

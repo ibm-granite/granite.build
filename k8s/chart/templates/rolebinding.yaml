@@ -1,0 +1,18 @@
+{{- if not .Values.generateResourcesForLLMBBackendCluster }}
+{{- $roleBindingName := printf "granite-dot-build-role-binding-%s" .Release.Name }}
+{{- $roleName := printf "granite-dot-build-role-%s" .Release.Name }}
+{{- $svcAccName := printf "granite-dot-build-svc-acc-%s" .Release.Name }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: '{{ $roleBindingName }}'
+  labels:
+    'llmbuild/internal': '{{ $roleBindingName }}'
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: '{{ $roleName }}'
+subjects:
+- kind: ServiceAccount
+  name: '{{ $svcAccName }}'
+{{- end }}

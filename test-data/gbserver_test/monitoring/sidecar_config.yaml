@@ -1,0 +1,129 @@
+sidecar_monitor:
+  - name: log_monitor
+    config:
+      event_configs:
+        - event_type: MESSAGE_EVENT
+          line_regex: "^GB_PR_MESSAGE.*"
+          is_json: False
+          event_fields:
+            - field_name: msg
+              field_regex: ".*"
+        - event_type: MESSAGE_EVENT
+          line_regex: ".*INFO.*GB_PR_MESSAGE.*"
+          is_json: False
+          event_fields:
+            - field_name: msg
+              field_regex: ".*"
+        - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+          line_regex: "{.*gb_new_artifact.*path.*}"
+          is_json: True
+          event_fields:
+            - field_name: binding_id # must match name of one of the outputs.{name} in build.yaml
+              field_value_template: "{{ fields.data.gb_step_name }}"
+            - field_name: binding # describes how to access element in this env, must be path in k8s
+              field_value_template: "{ \"path\": \"{{ fields.data.gb_new_artifact.path }}\" }"
+              is_json: True
+        - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+          line_regex: "{.*gb_new_artifact.*dgt_meta_json.*}"
+          is_json: True
+          event_fields:
+            - field_name: binding_id # must match name of one of the outputs.{name} in build.yaml
+              field_value_template: "dgt_meta"
+            - field_name: binding # describes how to access element in this env, must be path in k8s
+              field_value_template: "{ \"path\": \"{{ fields.data.gb_new_artifact.dgt_meta_jsonl }}\" }"
+              is_json: True
+        - event_type: MESSAGE_EVENT
+          is_json: false
+          line_regex: "^GB_MESSAGE.*"
+          event_fields:
+            - field_name: msg
+              field_regex: "Aim dashboard.*"
+        - event_type: MESSAGE_EVENT
+          is_json: false
+          line_regex: "^ClearML\\sresults\\spage:\\s.*"
+          event_fields:
+            - field_name: msg
+              field_regex: ".*"
+        - event_type: newartifact_in_environment_event
+          is_json: false
+          line_regex: "Saved dataset .* to .*"
+          event_fields:
+            - field_name: binding_id
+              field_value_template: processed_dataset
+            - field_name: path
+              field_regex: "/.*"
+              is_data: true
+            - field_name: binding
+              field_value_template: '{ "path": "{{ fields.data.path }}" }'
+              is_json: true
+        - event_type: newartifact_in_environment_event
+          is_json: false
+          line_regex: "Intermediate\\scheckpoint\\ssaved\\sin\\s.*"
+          event_fields:
+            - field_name: binding_id
+              field_value_template: intermediate_checkpoint_with_optimizer_state
+            - field_name: path
+              field_regex: "/.*"
+              is_data: true
+            - field_name: binding
+              field_value_template: '{ "path": "{{ fields.data.path }}" }'
+              is_json: true
+        - event_type: newartifact_in_environment_event
+          is_json: false
+          line_regex: "Final\\scheckpoint\\ssaved\\sin\\s.*"
+          event_fields:
+            - field_name: binding_id
+              field_value_template: final_checkpoint
+            - field_name: path
+              field_regex: "/.*"
+              is_data: true
+            - field_name: binding
+              field_value_template: '{ "path": "{{ fields.data.path }}" }'
+              is_json: true
+        - event_type: newartifact_in_environment_event
+          is_json: false
+          line_regex: "Training logs saved in .*"
+          event_fields:
+            - field_name: binding_id
+              field_value_template: training_logs_jsonl
+            - field_name: path
+              field_regex: "/.*"
+              is_data: true
+            - field_name: binding
+              field_value_template: '{ "path": "{{ fields.data.path }}" }'
+              is_json: true
+        - event_type: ARTIFACT_PUSHED_EVENT
+          is_json: false
+          line_regex: "Pushed\\sURI:\\s.+"
+          event_fields: 
+            - field_name: uri
+              field_regex: "lh://[^\\s]+"
+            - field_name: binding_id
+              field_regex: "(?<=binding\\s)[^\\s]+"
+        - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+          line_regex: "Generated\\sData:\\s.+"
+          is_json: False
+          event_fields:
+            - field_name: binding_id # must match name of one of the outputs.{name} in build.yaml
+              field_value_template: "digit_output"
+            - field_name: path
+              field_regex: "[^\\s]+[.]jsonl"
+              is_data: True
+            - field_name: binding # describes how to access element in this env, must be path in k8s
+              field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+              is_json: True
+        - event_type: newartifact_in_environment_event
+          line_regex: "WARNING:logcontrol.py:Model\\ssaved\\sin\\s.*"
+          is_json: False
+          event_fields:
+            - field_name: binding_id
+              field_value_template: tuned_checkpoint
+            - field_name: path
+              field_regex: "/.*"
+              is_data: True
+            - field_name: binding
+              # No trailing slash in path
+              field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+              # Add trailing slash to path
+              #field_value_template: "{ \"path\": \"{{ fields.data.path }}/\" }"
+              is_json: True

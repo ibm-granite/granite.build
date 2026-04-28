@@ -1,0 +1,64 @@
+# Hybrid Secret Manager Example
+#
+# This space configuration demonstrates using the 'hybrid' secret manager type,
+# which chains multiple secret managers together with fallback priority. Secrets
+# are retrieved in order, stopping at the first manager that has the secret.
+#
+# Use cases for hybrid secret management:
+#   - Development with production-like setup (local files + env overrides)
+#   - Gradual migration from one secret backend to another
+#   - Defense-in-depth security (multiple secret sources)
+#   - Per-environment overrides (dev vs staging vs prod)
+#   - CI/CD with local development support
+#
+# How it works:
+#   get_secret():  Returns first found secret (stops at first match)
+#   get_secrets(): Merges all secrets (priority order, later managers fill gaps)
+#
+# In this example:
+#   1. Environment variables checked FIRST (highest priority)
+#      - Allows runtime overrides without changing files
+#      - Ideal for CI/CD secret injection
+#
+#   2. Local file-based secrets checked SECOND (fallback)
+#      - Provides defaults for development
+#      - Can be shared across team (with gitignore)
+
+secret_manager:
+  type: hybrid
+  config:
+    managers:
+      # Priority 1: Environment variables (for overrides and CI/CD)
+      # Use this to override any secret at runtime without changing files
+      - type: env
+        config:
+          prefix: "GBSERVER_SECRET_"
+
+      # Priority 2: Local file-based secrets (for development defaults)
+      # Store secrets in ~/.gbserver/secrets/ for local development
+      # Each secret is a separate file with the secret name as filename
+      - type: local
+        config:
+          secrets_dir: ~/.gbserver/secrets
+
+# Example priority resolution:
+#
+# Scenario 1: Secret exists in both env and local
+#   - GBSERVER_SECRET_API_KEY="env-override"
+#   - ~/.gbserver/secrets/api_key contains "local-default"
+#   - Result: "env-override" (env has higher priority)
+#
+# Scenario 2: Secret exists only in local
+#   - GBSERVER_SECRET_API_KEY is not set
+#   - ~/.gbserver/secrets/api_key contains "local-default"
+#   - Result: "local-default" (fallback to local)
+#
+# Scenario 3: Secret exists only in env
+#   - GBSERVER_SECRET_TEMP_TOKEN="temporary"
+#   - ~/.gbserver/secrets/temp_token does not exist
+#   - Result: "temporary" (env provides it)
+#
+# Scenario 4: get_secrets() merges all
+#   - GBSERVER_SECRET_API_KEY="from-env"
+#   - ~/.gbserver/secrets/db_password contains "from-local"
+#   - Result: {"api_key": "from-env", "db_password": "from-local"}

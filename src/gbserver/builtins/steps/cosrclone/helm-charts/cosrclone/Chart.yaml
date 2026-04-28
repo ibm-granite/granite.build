@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cosrclone
+description: A Helm chart for copying to/from COS bucket.
+type: application
+version: "0.1.4"
+appVersion: "0.1.4"

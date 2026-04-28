@@ -1,0 +1,21 @@
+hfpush_config:
+k8s:
+  image: {{ step_image }}
+  env:
+    HOME:
+      value: "/app"
+    HF_TOKEN:
+      valueFrom:
+        secretKeyRef:
+          name: {{ setup_config.space.secret }}
+          key: {{ config.hfpush_config.token_secretname | default("HF_TOKEN") }}
+    HF_ORGANIZATION:
+      valueFrom:
+        secretKeyRef:
+          name: {{ setup_config.space.secret }}
+          key: {{ config.hfpush_config.organization_secretname | default("HF_ORGANIZATION") }}
+    HF_RESOURCE_GROUP_ID:
+      valueFrom:
+        secretKeyRef:
+          name: {{ setup_config.space.secret }}
+          key: {{ config.hfpush_config.resource_group_secretname | default("HF_RESOURCE_GROUP_ID") }}

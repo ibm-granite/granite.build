@@ -1,0 +1,33 @@
+######
+# Sage LLM evaluation on SkyPilot with PVC-mounted output data.
+# Pipeline: sage (evaluate) -> s3push (upload results).
+# Results are staged on a PVC mounted at /gb-data via cluster-level pod_config.
+# To use Skypilot_managed, change environment_uri to space://environments/skypilot-managed
+######
+granite.build:
+  name: sage
+  targets:
+    evaluation:
+      environment_uri: space://environments/skypilot
+      steps:
+        - step_uri: space://steps/sage
+          config:
+            sage_config:
+              model: hf
+              model_args: "pretrained=ibm-granite/granite-4.0-350m"
+              tasks: piqa
+              batch_size: 1
+              device: cpu
+              limit: 10
+              num_fewshot: 0
+              cluster: local
+
+    upload_output:
+      environment_uri: space://environments/skypilot
+      steps:
+        - step_uri: space://steps/s3push
+          config:
+            s3push_config:
+              local_path: /gb-data/outputs/sage
+              s3_uri: "{{ space.variables.S3_SAGE_OUTPUT_URI }}"
+              endpoint_url: ""  # leave empty for default AWS endpoint; set for COS/MinIO

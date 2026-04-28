@@ -1,0 +1,13 @@
+# Test image for TRL fine-tuning and unitxt evaluation (CPU-only, multi-arch).
+# Built during test session; not published.
+FROM python:3.11-slim
+
+RUN pip install --no-cache-dir \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    torch \
+    transformers \
+    trl \
+    peft \
+    unitxt \
+    datasets \
+    accelerate

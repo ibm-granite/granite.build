@@ -1,0 +1,9 @@
+{{- if not .Values.generateResourcesForLLMBBackendCluster }}
+{{- $svcAccName := printf "granite-dot-build-svc-acc-%s" .Release.Name }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: '{{ $svcAccName }}'
+  labels:
+    'llmbuild/internal': '{{ $svcAccName }}'
+{{- end }}

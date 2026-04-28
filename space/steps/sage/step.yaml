@@ -1,0 +1,152 @@
+name: sage
+version: 1.0.0
+type: EVAL
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: False
+    step_contents_in_env: false
+  sage_config:
+    model: hf
+    model_args: "pretrained=ibm-granite/granite-4.0-350m"
+    tasks: piqa
+    batch_size: 1
+    device: cpu
+    limit: 10
+    num_fewshot: 0
+    cluster: local
+outputs:
+    optional:
+      sage_output:
+        type: dataset
+environment_configs:
+  Skypilot:
+    default_launcher: sage
+    launchers:
+      sage:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/sage:cpu-0.0.4"
+          resources:
+            cpus: "2+"
+            memory: "8+"
+          run: |
+            set -e
+            export SAGE_OUTPUT_DIR=${GB_OUTPUT_DIR:-/gb-read-write/outputs/sage/${GB_TARGETRUN_ID:-${GB_SKYPILOT_LAUNCH_ID}}}
+            mkdir -p ${SAGE_OUTPUT_DIR}
+
+            # Force CPU-only PyTorch (belt-and-suspenders with uv.toml in image)
+            export UV_TORCH_BACKEND=cpu
+
+            mkdir -p ~/.sage
+            cat > ~/.sage/vars.yaml << VARSEOF
+            GIT_TOKEN: "${GHE_TOKEN}"
+            HF_TOKEN: "${HF_TOKEN}"
+            SCRIPTS_DIR: /tmp/sage-scripts
+            SETUP_DIR: /tmp/sage-setup
+            LOGS_DIR: /tmp/sage-logs
+            VARSEOF
+            sage lm-eval \
+              --model "{{ config.sage_config.model }}" \
+              --model_args "{{ config.sage_config.model_args }}" \
+              --tasks "{{ config.sage_config.tasks }}" \
+              --batch_size "{{ config.sage_config.batch_size }}" \
+              --device "{{ config.sage_config.device }}" \
+              --limit "{{ config.sage_config.limit }}" \
+              --num_fewshot "{{ config.sage_config.num_fewshot }}" \
+              --output_path "${SAGE_OUTPUT_DIR}" \
+              --cluster "{{ config.sage_config.cluster }}" \
+              --run_id "sage-eval-${GB_SKYPILOT_LAUNCH_ID}"
+            RESULT_FILE=$(find "${SAGE_OUTPUT_DIR}" -type f -name 'results*.json' -print -quit)
+            if [ -n "${RESULT_FILE}" ]; then
+              echo "Sage Results: ${RESULT_FILE}"
+            else
+              echo "ERROR: No results file found in ${SAGE_OUTPUT_DIR}"
+              exit 1
+            fi
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 15
+          event_configs:
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "Sage\\sResults:\\s.+"
+            is_json: False
+            event_fields:
+              - field_name: binding_id
+                field_value_template: "sage_output"
+              - field_name: path
+                field_regex: "[^\\s]+[.]json"
+                is_data: True
+              - field_name: binding
+                field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+                is_json: True
+
+  Skypilot_managed:
+    default_launcher: sage
+    launchers:
+      sage:
+        type: skypilot_managed
+        monitors:
+        - skypilot_managed_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/sage:cpu-0.0.4"
+          resources:
+            cpus: "2+"
+            memory: "8+"
+          run: |
+            set -e
+            export SAGE_OUTPUT_DIR=${GB_OUTPUT_DIR:-/gb-read-write/outputs/sage/${GB_TARGETRUN_ID:-${GB_SKYPILOT_LAUNCH_ID}}}
+            mkdir -p ${SAGE_OUTPUT_DIR}
+
+            # Force CPU-only PyTorch (belt-and-suspenders with uv.toml in image)
+            export UV_TORCH_BACKEND=cpu
+
+            mkdir -p ~/.sage
+            cat > ~/.sage/vars.yaml << VARSEOF
+            GIT_TOKEN: "${GHE_TOKEN}"
+            HF_TOKEN: "${HF_TOKEN}"
+            SCRIPTS_DIR: /tmp/sage-scripts
+            SETUP_DIR: /tmp/sage-setup
+            LOGS_DIR: /tmp/sage-logs
+            VARSEOF
+            sage lm-eval \
+              --model "{{ config.sage_config.model }}" \
+              --model_args "{{ config.sage_config.model_args }}" \
+              --tasks "{{ config.sage_config.tasks }}" \
+              --batch_size "{{ config.sage_config.batch_size }}" \
+              --device "{{ config.sage_config.device }}" \
+              --limit "{{ config.sage_config.limit }}" \
+              --num_fewshot "{{ config.sage_config.num_fewshot }}" \
+              --output_path "${SAGE_OUTPUT_DIR}" \
+              --cluster "{{ config.sage_config.cluster }}" \
+              --run_id "sage-eval-${GB_SKYPILOT_LAUNCH_ID}"
+            RESULT_FILE=$(find "${SAGE_OUTPUT_DIR}" -type f -name 'results*.json' -print -quit)
+            if [ -n "${RESULT_FILE}" ]; then
+              echo "Sage Results: ${RESULT_FILE}"
+            else
+              echo "ERROR: No results file found in ${SAGE_OUTPUT_DIR}"
+              exit 1
+            fi
+    monitors:
+      skypilot_managed_monitor:
+        type: skypilot_managed_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "Sage\\sResults:\\s.+"
+            is_json: False
+            event_fields:
+              - field_name: binding_id
+                field_value_template: "sage_output"
+              - field_name: path
+                field_regex: "[^\\s]+[.]json"
+                is_data: True
+              - field_name: binding
+                field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+                is_json: True

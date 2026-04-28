@@ -1,0 +1,5 @@
+namespace: granite-build-staging
+
+image:
+  repository: quay.io/project-codeflare/busybox
+  tag: 1.36

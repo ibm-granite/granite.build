@@ -1,0 +1,34 @@
+# GB_ENVIRONMENT_LOWER=prod make update-deployment-vpc
+# Alternatively,
+# export LLMB_RELEASE_NAME=prod
+# export LLMB_NAMESPACE=llm-build-prod
+# helm install --namespace $LLMB_NAMESPACE --name-template=$LLMB_RELEASE_NAME --values values.yaml --values values-prod.yaml .
+# helm upgrade --namespace $LLMB_NAMESPACE --values values.yaml --values values-prod.yaml $LLMB_RELEASE_NAME .
+# helm delete --namespace $LLMB_NAMESPACE $LLMB_RELEASE_NAME
+generateResourcesForLLMBBackendCluster: true
+deployments:
+  enable: true
+  image: us.icr.io/cil15-shared-registry/gb-prod/gbserver:latest
+  buildWatcher:
+    enable: true
+    env:
+      GB_ENVIRONMENT: PROD
+      GBSERVER_BACKEND_SERVER_NAMESPACE_PROD: llm-build-prod
+  restServer:
+    enable: true
+ingresses:
+  enable: false
+pvcs:
+  enable: true
+  workloadReadWrite:
+    enable: false
+  workloadReadOnly:
+    enable: false
+routes:
+  enable: true
+  host: api.llm-build-prod.vpc-int.res.ibm.com
+services:
+  enable: true
+secrets:
+  enable: false
+  mainSecretName: vela-414-granite-dot-build-svc-acc-secret2

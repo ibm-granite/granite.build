@@ -1,0 +1,6 @@
+name: tuning
+deployments:
+  - environment_type: kubernetes
+    type: tuning
+    
+  - environment_type: bsub

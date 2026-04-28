@@ -1,0 +1,25 @@
+{{- if not .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.pvcs.enable }}
+{{- if .Values.pvcs.workloadReadWrite.enable }}
+{{- $readWritePvcName := printf "gb-afm-read-write" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: '{{ $readWritePvcName }}'
+  labels:
+    'llmbuild/internal': '{{ $readWritePvcName }}'
+  # annotations:
+  #   volume.beta.kubernetes.io/storage-provisioner: spectrumscale.csi.ibm.com
+  #   volume.kubernetes.io/storage-provisioner: spectrumscale.csi.ibm.com
+spec:
+  volumeMode: Filesystem
+  # volumeName: pvc-ad65118d-8594-4d4d-826b-e996a4f0a677
+  storageClassName: '{{ .Values.pvcs.workloadReadWrite.storageClassName }}'
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: '{{ .Values.pvcs.workloadReadWrite.storageSize }}'
+{{- end }}
+{{- end }}
+{{- end }}

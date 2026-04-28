@@ -1,0 +1,5 @@
+name: standalone-skypilot
+type: Skypilot
+config:
+  default_cloud: kubernetes
+  idle_minutes_to_autostop: 10

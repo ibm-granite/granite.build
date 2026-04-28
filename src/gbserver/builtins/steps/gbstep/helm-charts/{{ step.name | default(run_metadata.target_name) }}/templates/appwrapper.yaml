@@ -1,0 +1,46 @@
+{{- $parentContext := . }}
+{{- $command := "" }} #default 
+{{- $commands := list }}
+
+{{- if .Values.custom_code_config }}
+
+  {{- $config := .Values.custom_code_config }}
+  {{- $output_dir := printf "/gb-read-write/outputs/%s/" .Values.run_metadata.targetsteprun_id }}
+  {{- $_ := set $config "output_path" $output_dir }}
+  {{- $startup_config := toJson $config }}
+
+  {{- $commands := list
+    (printf "export GB_STEP_AUTO_START_CONFIG='%s'" $startup_config)
+    (printf "mkdir -vp %s" $output_dir)
+    "cd /app && ./bootstrap_sdk.sh examples.custom.custom.custom_code"
+  }}
+
+  
+  {{- if $config.start_command }}
+    {{- $command = $config.start_command }}
+  {{- end }}
+{{- end }}
+
+
+{{- if and (hasKey .Values "gb") (hasKey .Values.gb "mock") .Values.gb.mock }}
+{{- $commands = list "echo 'Welcome to GB Step'" }}
+{{ end }}
+{{- $jobType := "job" }}
+{{- if (eq $jobType "ray") }}
+{{- include "gbraystepbase.rayapp" (dict
+    "command" $command
+    "Values" $parentContext.Values 
+    "Release" $parentContext.Release 
+    "Chart" $parentContext.Chart 
+    "Template" $parentContext.Template
+) | trimAll " " }}
+{{- else }}
+{{- include "gbstepbase.app" (dict
+    "commands" $commands
+    "job_type" $jobType
+    "Values" $parentContext.Values 
+    "Release" $parentContext.Release 
+    "Chart" $parentContext.Chart 
+    "Template" $parentContext.Template
+) | trimAll " " }}
+{{- end }}

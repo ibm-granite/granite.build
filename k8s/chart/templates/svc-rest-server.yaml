@@ -1,0 +1,23 @@
+{{- if .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.services.enable }}
+{{- $restServerName := printf "llmbuild-rest-server-%s" .Release.Name }}
+{{- $restServerPort := .Values.deployments.restServer.port }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: '{{ $restServerName }}'
+  labels:
+    'llmbuild/internal': '{{ $restServerName }}'
+spec:
+  # https://kubernetes.io/docs/concepts/services-networking/service/#nodeport-custom-port
+  # type: NodePort
+  # https://kubernetes.io/docs/concepts/services-networking/service/#type-clusterip
+  type: ClusterIP
+  selector:
+    'llmbuild/internal': '{{ $restServerName }}'
+  ports:
+    - protocol: TCP
+      port: {{ $restServerPort }}
+      targetPort: {{ $restServerPort }}
+{{- end }}
+{{- end }}

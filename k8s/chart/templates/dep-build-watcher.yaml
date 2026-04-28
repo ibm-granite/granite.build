@@ -1,0 +1,130 @@
+{{- if .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.deployments.enable }}
+{{- if .Values.deployments.buildWatcher.enable }}
+{{- $buildWatcherName := printf "llmbuild-build-watcher-%s" .Release.Name }}
+{{- $mainSecretName := printf "llmbuild-secret-%s" .Release.Name }}
+{{- if .Values.secrets.mainSecretName }}
+{{- $mainSecretName = .Values.secrets.mainSecretName }}
+{{- end }}
+{{- $configmapName := printf "llmbuild-configmap-%s" .Release.Name }}
+{{- $buildWsPvcName := printf "gb-buildws-pvc-%s" .Release.Name }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: '{{ $buildWatcherName }}'
+  labels:
+    'llmbuild/internal': '{{ $buildWatcherName }}'
+spec:
+  replicas: {{ .Values.deployments.buildWatcher.replicas }}
+  selector:
+    matchLabels:
+      'llmbuild/internal': '{{ $buildWatcherName }}'
+  template:
+    metadata:
+      labels:
+        'llmbuild/internal': '{{ $buildWatcherName }}'
+    spec:
+      containers:
+      - name: build-watcher
+        image: '{{ .Values.deployments.image }}'
+        imagePullPolicy: Always
+        command:
+        - bash
+        - -c
+        {{- if .Values.configmaps.enable }}
+        - gbserver build-watch --config config/build-watcher-config.yaml
+        {{- end }}
+        {{- if not .Values.configmaps.enable }}
+        - gbserver build-watch
+        {{- end }}
+        env:
+        - name: GBSERVER_BUILDRUNNERJOB_SECRET_NAME
+          value: '{{ $mainSecretName }}'
+        {{- if .Values.configmaps.enable }}
+        - name: GBSERVER_BUILDRUNNERJOB_CONFIGMAP_NAME
+          value: '{{ $configmapName }}'
+        {{- end }}
+        - name: GBSERVER_BUILDRUNNERJOB_BUILD_WORKSPACE_PVC_NAME
+          value: '{{ $buildWsPvcName }}'
+        {{- range $key, $value := .Values.deployments.buildWatcher.env }}
+        - name: {{ $key | quote }}
+          value: {{ $value | quote }}
+        {{- end }}
+        {{- range $x := .Values.deployments.buildWatcher.envFromMainSecret }}
+        - name: {{ $x | quote }}
+          valueFrom:
+            secretKeyRef:
+              key: {{ $x | quote }}
+              name: '{{ $mainSecretName }}'
+        {{- end }}
+        resources:
+          {{- .Values.deployments.buildWatcher.resources | toYaml | nindent 10 }}
+        securityContext:
+          runAsGroup: 0
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /tmp
+          name: gb-buildws-volume
+          subPath: gbserver-build-watch-tmp
+        {{- if .Values.configmaps.enable }}
+        - mountPath: /app/config
+          name: configmap-volume
+          readOnly: true
+        {{- end }}
+        - mountPath: /opt/app-root/src/.ssh/id_ed25519
+          name: secret-volume
+          readOnly: true
+          subPath: id_ed25519
+        - mountPath: /opt/app-root/src/.ssh/id_ed25519.pub
+          name: secret-volume
+          readOnly: true
+          subPath: id_ed25519.pub
+        - mountPath: /opt/app-root/src/.ssh/config
+          name: secret-volume
+          readOnly: true
+          subPath: ssh-config
+        - mountPath: /opt/app-root/src/.ssh/known_hosts
+          name: secret-volume
+          readOnly: true
+          subPath: known_hosts
+        - mountPath: /app/ibm-cloud-databases.cert
+          name: secret-volume
+          readOnly: true
+          subPath: ibm-cloud-databases.cert
+        - mountPath: /opt/app-root/src/.kube/config
+          name: secret-volume
+          readOnly: true
+          subPath: ris3-kube-config
+      imagePullSecrets:
+      {{- range $v := .Values.deployments.imagePullSecrets }}
+      - name: "{{ $v }}"
+      {{- end }}
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      serviceAccountName: 'granite-dot-build-svc-acc-{{ .Release.Name }}'
+      volumes:
+      - name: gb-buildws-volume
+        persistentVolumeClaim:
+          claimName: '{{ $buildWsPvcName }}'
+      - name: secret-volume
+        secret:
+          secretName: '{{ $mainSecretName }}'
+          defaultMode: 416
+      {{- if .Values.configmaps.enable }}
+      - name: configmap-volume
+        configMap:
+          name: '{{ $configmapName }}'
+          defaultMode: 420
+          items:
+          - key: "build-watcher-config.yaml"
+            path: "build-watcher-config.yaml"
+      {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

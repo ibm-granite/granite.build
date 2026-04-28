@@ -1,0 +1,15 @@
+k8s:
+  image: icr.io/gb-prod/rclone:latest
+  env:
+    HOME:
+      value: "/app"
+    COS_SECRET_ACCESS_KEY:
+      valueFrom:
+        secretKeyRef:
+          name: {{ setup_config.space.secret }}
+          key: {{ config.cos_config.cos.config.cos_secret_access_key_secret_name }}
+    COS_ACCESS_KEY_ID:
+      valueFrom:
+        secretKeyRef:
+          name: {{ setup_config.space.secret }}
+          key: {{ config.cos_config.cos.config.cos_access_key_id_secret_name }}

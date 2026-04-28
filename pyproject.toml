@@ -1,0 +1,220 @@
+[project]
+name = "granite-build-tools"
+version = "0.3.0"
+authors = [
+    { name = "Akash Nayak", email = "akash.nayak1@ibm.com" },
+    { name = "Alexei Karve", email = "karve@us.ibm.com" },
+    { name = "Anubhav Jana", email = "Anubhav.Jana97@ibm.com" },
+    { name = "Ashok Pon Kumar", email = "ashokponkumar@in.ibm.com" },
+    { name = "Constantin Adam", email = "cmadam@us.ibm.com" },
+    { name = "David Wood", email = "dawood@us.ibm.com" },
+    { name = "Harikrishnan Balagopal", email = "harikrishnan.balagopal@ibm.com" },
+    { name = "Kimberly Lang", email = "kclang@us.ibm.com" },
+    { name = "Petros Zerfos", email = "pzerfos@us.ibm.com" },
+    { name = "Taiga Nakamura", email = "taiga@us.ibm.com" },
+    { name = "Yan Koyfman", email = "koyfman@us.ibm.com" },
+    { name = "Yuan Chi Chang", email = "yuanchi@us.ibm.com" },
+]
+description = "LLM.Build / Granite.Build orchestration server and CLI"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+# <3.14 otherwise cmake seems to be invoked (on mac) - 2/18/26
+requires-python = ">=3.11,<3.14"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+
+# Default install includes both server and CLI dependencies.
+dependencies = [
+    # CLI and web framework
+    "click",
+    "fastapi[standard]",
+    "uvicorn",
+    "python-multipart",
+    # Data and serialization
+    "pandas",
+    "pyarrow>=17",
+    "pydantic==2.11.10",
+    "PyYAML",
+    "Jinja2",
+    "jsonschema",
+    "jsonpatch",
+    "aiohttp>=3.8.0",
+    # Storage
+    "sqlalchemy",
+    "sqlite_database",
+    # Git and networking
+    "giturlparse",
+    "GitPython",
+    "huggingface-hub",
+    "requests",
+    # Utilities
+    "dateparser",
+    "filelock",
+    "humanize",
+    "openai",
+    "packaging",
+    "portalocker[redis]",
+    "pytz",
+    "rich",
+    "tabulate",
+    "toml",
+    "tqdm",
+    "tenacity",
+    "python-dotenv",
+    "xxhash",
+    # Authentication
+    "PyJWT[crypto]>=2.8.0",
+]
+
+[project.optional-dependencies]
+# Lakehouse (DMF) storage backend — requires IBM Artifactory access
+lakehouse = [
+    "dmf-lib==1.10.2",
+    "daft",
+    "aspera==v1.1.6",
+]
+# RabbitMQ messaging backend — for K8s sidecar monitoring
+rabbitmq = [
+    "aio-pika",
+    "aiormq",
+]
+# NATS messaging backend — lightweight pub/sub for standalone and multi-node
+nats = [
+    "nats-py",
+]
+# PostgreSQL storage backend
+postgres = [
+    "psycopg2-binary",
+]
+# SSH tunnel support (LSF environment)
+ssh = [
+    "asyncssh",
+]
+# IBM Cloud services — secret manager, Aspera file transfer
+ibmcloud = [
+    "ibm_cloud_sdk_core==3.24.1",
+    "ibm_secrets_manager_sdk",
+]
+# Kubernetes execution environment
+k8s = [
+    "kubernetes_asyncio",
+]
+# Standalone deployment (minimal cloud-free setup)
+standalone = [
+    "nats-py",
+]
+# Docker execution environment
+docker = [
+    "docker>=7.0.0",
+]
+# SkyPilot multi-cloud execution
+skypilot = [
+    "skypilot[kubernetes]>=0.11.2",
+]
+# OpenLineage tracking via Weights & Biases
+wandb = [
+    "wandb",
+]
+# All optional dependencies (reproduces previous full install).
+# NOTE: Keep in sync with individual groups above
+all = [
+    "dmf-lib==1.10.2",
+    "daft",
+    "aspera==v1.1.6",
+    "aio-pika",
+    "aiormq",
+    "nats-py",
+    "ibm_cloud_sdk_core==3.24.1",
+    "ibm_secrets_manager_sdk",
+    "kubernetes_asyncio",
+    "docker>=7.0.0",
+    "psycopg2-binary",
+    "asyncssh",
+    "skypilot[kubernetes]>=0.11.2",
+    "wandb",
+]
+# Development tools
+dev = [
+    "black",
+    "mypy",
+    "pre-commit",
+    "pylint",
+    "pytest",
+    "pytest-asyncio",
+    "pydantic-2-mermaid",
+    "twine",
+    "pytest-xdist",
+    "pytest-cov",
+    "coverage",
+]
+# IBM infrastructure dependencies — kept for existing install scripts
+ibm = [
+    "ibm_cloud_sdk_core==3.24.1",
+    "ibm_secrets_manager_sdk",
+    "dmf-lib==1.10.2",
+    "aspera==v1.1.6",
+    "psycopg2-binary",
+    "aio-pika",
+    "aiormq",
+    "asyncssh",
+]
+
+[project.scripts]
+# gbserver scripts
+gbserver = "gbserver.cli:gbserver"
+# gbcli scripts
+gbcli = "gbcli.cli:gbcli"
+gb = "gbcli.cli:gbcli"
+llmbuild = "gbcli.cli:gbcli"
+llmb = "gbcli.cli:gbcli"
+lamb = "gbcli.cli:gbcli"
+llmbsub = "llmbsub.llmbsub_cli:llmbsub"
+
+[project.urls]
+Homepage = "https://github.com/ibm-granite/granite.build"
+Issues = "https://github.com/ibm-granite/granite.build/issues"
+
+[build-system]
+requires = ["setuptools", "setuptools_scm", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src", "test"]
+
+[tool.setuptools.package-data]
+"*" = ["*", ".*"]
+
+[tool.isort]
+profile = "black"
+
+[tool.pytest.ini_options]
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format ="[%(asctime)s %(levelname)-5s][%(filename)20s:%(lineno)3s %(funcName)25s()] %(message)s"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+markers = [
+    "secret_manager: tests that make real connection to IBM Secret Manager",
+    "g4os: g4os-branch tests (no IBM infrastructure required)",
+    "unit: Unit tests (fast, mocked, no real infrastructure)",
+    "nats_server: tests requiring a real nats-server with JetStream (not run in CI by default)",
+    "docker_required: tests requiring a Docker/Podman daemon (not run in CI by default)",
+    "ibm: tests requiring IBM infrastructure (PostgreSQL, Lakehouse, RabbitMQ, IBM Cloud APIs)",
+    "nats: tests requiring the nats-py package (not in standalone deps)",
+    "staging: tests running in staging",
+    "prod: tests running in prod",
+    "slow: tests that run for longer",
+    "hf_integration: tests that perform real integration with HuggingFace Hub",
+]
+addopts = "-m 'not secret_manager and not nats_server and not docker_required' --strict"
+# Override pytest's default norecursedirs, which includes "build" — that would
+# silently skip test/gbserver_test/build/.
+norecursedirs = [".venv", ".git", "dist", "__pycache__", "*.egg-info"]
+pythonpath = [
+  ".", "src",
+]
+filterwarnings = [
+    "ignore:.*enablePackrat.*",
+]

@@ -1,0 +1,7 @@
+base_url: "s3://"
+config:
+  cos_secret_access_key_secret_name: COS_SECRET_ACCESS_KEY
+  cos_access_key_id_secret_name: COS_ACCESS_KEY_ID
+  cos_bucket_name: "my-bucket-name"
+  cos_endpoint: "my-cos-endpoint"
+  cos_region: "my-cos-region"

@@ -1,0 +1,10 @@
+{{- if .Values.interactive }}
+
+This is an interactive job. To go inside the pod
+- login to the cluster
+- use the following command:
+
+$ oc exec -it <pod name> -- bash
+
+- once you are done with the pod, don't forget to kill the job to release the resources.
+{{- end }}

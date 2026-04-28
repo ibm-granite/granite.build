@@ -1,0 +1,9 @@
+event_configs:
+- event_type: ARTIFACT_PUSHED_EVENT
+  line_regex: "Pushed\\sURI:\\s.+"
+  is_json: False
+  event_fields:
+    - field_name: uri
+      field_regex: "lh://[^\\s]+"
+    - field_name: binding_id
+      field_regex: "(?<=binding\\s)[^\\s]+"

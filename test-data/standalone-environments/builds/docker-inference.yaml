@@ -1,0 +1,20 @@
+granite.build:
+  name: docker-inference-test
+  targets:
+    inference:
+      environment_uri: space://environments/docker
+      inputs:
+        model:
+          uri: hf:///ibm-granite/granite-4.0-350m
+      outputs: {}
+      steps:
+        - step_uri: space://steps/inference
+          launcher: inference-cpu
+          config:
+            docker:
+              env:
+                LLMB_BASH_INPUT_MODEL:
+                  value: "{{ bindings.model.binding.path }}"
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 0

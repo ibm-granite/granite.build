@@ -1,0 +1,14 @@
+granite.build:
+  name: bash-inference-test
+  targets:
+    inference:
+      environment_uri: space://environments/bash
+      inputs:
+        model:
+          uri: hf:///ibm-granite/granite-4.0-350m
+      outputs: {}
+      steps:
+        - step_uri: space://steps/inference
+          config:
+            compute_config:
+              num_nodes: 1

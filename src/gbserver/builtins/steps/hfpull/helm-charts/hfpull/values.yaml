@@ -1,0 +1,15 @@
+hfpull_config:
+k8s:
+  image: {{ step_image }}
+  env:
+    HOME:
+      value: "/app"
+    DMF_DATASETS_CACHE:
+      value: "/tmp"
+    DMF_CACHE:
+      value: "/tmp"
+    HF_TOKEN:
+      valueFrom:
+        secretKeyRef:
+          name: {{ setup_config.space.secret }}
+          key: {{ config.hfpull_config.token_secretname | default("HF_TOKEN") }}

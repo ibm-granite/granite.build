@@ -1,0 +1,29 @@
+name: helloworld
+version: v1
+type: custom
+config:
+  string: "hello {{ name }}!"
+environment_configs:
+  Bash:
+    default_launcher: echo
+    setups:
+      env-setup:
+        type: env
+        config:
+          name: g.b
+    launchers:
+      echo:
+        type: nohup
+        setups:
+          - env-setup
+        monitors:
+          - logs_as_json
+        config: 
+          command: echo {{ string }} nice!
+    monitors:
+      logs_as_json:
+        type: logs_as_json
+        config: 
+          event_configs:
+            - event_type: ARTIFACT_EVENT
+              line_regex: "^{.*}$"

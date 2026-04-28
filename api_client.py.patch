@@ -1,0 +1,49 @@
+--- api_client.py	2026-02-18 14:05:24
++++ api_client_fixed.py	2026-02-18 14:05:50
+@@ -28,6 +28,8 @@
+ import kubernetes_asyncio.client.models
+ from kubernetes_asyncio.client import rest
+ from kubernetes_asyncio.client.exceptions import ApiValueError, ApiException
++from aiohttp.client_exceptions import ClientConnectorError
++import time
+ 
+ 
+ class ApiClient(object):
+@@ -180,16 +182,27 @@
+             # use server/host defined in path or operation instead
+             url = _host + resource_path
+ 
+-        try:
+-            # perform request and return response
+-            response_data = await self.request(
+-                method, url, query_params=query_params, headers=header_params,
+-                post_params=post_params, body=body,
+-                _preload_content=_preload_content,
+-                _request_timeout=_request_timeout)
+-        except ApiException as e:
+-            e.body = e.body.decode('utf-8') if six.PY3 else e.body
+-            raise e
++        count, max_retries = 0, 100
++        while count < max_retries:
++            try:
++                # print(f"Trying {count} {url}")
++                # perform request and return response
++                response_data = await self.request(
++                    method, url, query_params=query_params, headers=header_params,
++                    post_params=post_params, body=body,
++                    _preload_content=_preload_content,
++                    _request_timeout=_request_timeout)
++                break
++            except ClientConnectorError as ce:
++                print(f"Caught {count} {url} {ce}")
++                count+=1
++                time.sleep(1)
++                continue
++            except ApiException as e:
++                e.body = e.body.decode('utf-8') if six.PY3 else e.body
++                raise e
++        if count >= max_retries:
++            raise RuntimeError(f'self.request failed, max retries exceeded: {method} {url}')
+ 
+         self.last_response = response_data
+ 

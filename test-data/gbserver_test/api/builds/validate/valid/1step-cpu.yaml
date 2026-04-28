@@ -1,0 +1,21 @@
+llm.build:
+  name: sdktest
+  targets:
+    download_file:
+      environment_uri: space://environments/{{ space.variables.DEFAULT_CPU_ENVIRONMENT }}
+      inputs:
+        seed_data:
+          uri: lh://staging/granite_dot_build.public/tables/maximo_digit_input1
+      outputs:
+        download_file:
+          uri: lh://staging/granite_dot_build.public/tables/test_dl_step_data_{{ binding.path | short_hash }}
+      steps:
+        - step_uri: space://steps/download 
+          config:
+            download_config:
+              # Changed to permanent links to a smaller jsonl file example. It's okay for them to be the same,
+              # download handles this by renaming internally and providing the right output name.
+              url1: https://huggingface.co/datasets/datasets-examples/doc-formats-jsonl-1/resolve/main/data.jsonl
+              url2: https://huggingface.co/datasets/datasets-examples/doc-formats-jsonl-1/resolve/main/data.jsonl
+              url3: https://huggingface.co/datasets/datasets-examples/doc-formats-jsonl-1/resolve/main/data.jsonl
+              output_dir: /gb-read-write/downloads_{{ run_metadata.targetsteprun_id | short_hash }}

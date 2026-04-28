@@ -1,0 +1,9 @@
+name: local
+type: Bash
+config:
+assetstores:
+  - store_uri: file:../assetstores/file
+    load:
+      - mode: default
+    push:
+      - mode: default

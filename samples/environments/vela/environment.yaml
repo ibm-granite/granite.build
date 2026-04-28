@@ -1,0 +1,23 @@
+name: vela-tuning
+type: kubernetes
+config:
+  namespace: tuning
+  token: token
+artifact_stores:
+  - store_type: cos
+    modes:
+      - mode: copy_to_afm
+        default: True
+        config:
+          readonly:
+            pvc: gbro
+            secret: gbro_read
+          readwrite:
+            pvc: gbrw
+      - mode: mount
+  - store_type: lh
+  - store_type: hf
+deployment_models:
+  - deployment_type: helm
+    monitoring_modes:
+      - monitoring_type: logs

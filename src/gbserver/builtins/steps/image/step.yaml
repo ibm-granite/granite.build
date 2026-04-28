@@ -1,0 +1,47 @@
+name: image
+version: 1.0.0
+type: exec
+config:
+  image_config:
+    command: ""   # bash command to execute inside the Docker container
+    image: ""     # Docker image to use; falls back to environment defaults if empty
+  compute_config:
+    num_gpus_per_node: 0
+    total_memory_per_node: 4Gi
+
+environment_configs:
+  Docker:
+    launchers:
+      image:
+        type: docker
+        monitors:
+          - docker_log
+        config:
+          image: "{{ config.image_config.image }}"
+          command:
+            - bash
+            - -c
+            - "{{ config.image_config.command }}"
+    monitors:
+      docker_log:
+        type: docker_log
+        config:
+          event_configs:
+            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              is_json: false
+              event_fields:
+                - field_name: binding_id
+                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                - field_name: path
+                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  is_data: true
+                - field_name: binding
+                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                  is_json: true
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"

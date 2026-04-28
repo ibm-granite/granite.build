@@ -1,0 +1,6 @@
+apiVersion: v2
+name: hfpull
+description: A Helm chart for pulling models, datasets, or spaces from Hugging Face into the container cache.
+type: application
+version: "0.1.0"
+appVersion: "0.1.0"

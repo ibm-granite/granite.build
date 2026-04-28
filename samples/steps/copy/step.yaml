@@ -1,0 +1,19 @@
+name: copy
+version: v1
+type: custom
+environment_configs:
+  Bash:
+    launchers:
+      copy:
+        type: nohup
+        monitors:
+          - logs_as_json
+        config: 
+          command: cat {{ launcher_config.path }}/dg.jsonl
+    monitors:
+      logs_as_json:
+        type: logs_as_json
+        config: 
+          event_configs:
+            - event_type: artifact_event
+              line_regex: "^{.*}$"

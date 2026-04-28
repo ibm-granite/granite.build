@@ -1,0 +1,79 @@
+name: unitxt-eval
+version: v1
+type: custom
+config: {}
+
+environment_configs:
+  Bash:
+    launchers:
+      unitxt-eval:
+        type: nohup
+        monitors:
+          - log_monitor
+        config:
+          script_path: run.py
+    monitors:
+      log_monitor:
+        type: log_monitor
+        config:
+          event_configs:
+            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              is_json: false
+              event_fields:
+                - field_name: binding_id
+                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                - field_name: path
+                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  is_data: true
+                - field_name: binding
+                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                  is_json: true
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"
+
+  Docker:
+    launchers:
+      unitxt-eval:
+        type: docker
+        monitors:
+          - docker_log
+        config:
+          image: gbserver-test-trl-unitxt:gpu
+          command: >-
+            python3 /gb-workspace/bash_scripts/unitxt-eval/run.py
+      unitxt-eval-cpu:
+        type: docker
+        monitors:
+          - docker_log
+        config:
+          image: gbserver-test-trl-unitxt:cpu
+          command: >-
+            python3 /gb-workspace/bash_scripts/unitxt-eval/run.py
+    monitors:
+      docker_log:
+        type: docker_log
+        config:
+          event_configs:
+            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              is_json: false
+              event_fields:
+                - field_name: binding_id
+                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                - field_name: path
+                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  is_data: true
+                - field_name: binding
+                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                  is_json: true
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"

@@ -1,0 +1,33 @@
+name: data_preprocessor
+version: 1.0.0
+type: data_preprocessor
+config:
+environment_configs:
+  K8s:
+    launchers:
+      tuning:
+        type: helm
+        monitors:
+        - log_monitor
+        config:
+          chart: helm-charts/data_preprocessor
+    monitors:
+      log_monitor:
+        type: sidecar_monitor
+        config:
+          event_configs:
+          - event_type: newartifact_in_environment_event
+            line_regex: "Processed\\sData:\\s.*"
+            is_json: False
+            event_fields:
+              - field_name: binding_id
+                field_value_template: processed_dataset
+              - field_name: path
+                field_regex: "/.*"
+                is_data: True
+              - field_name: binding
+                # No trailing slash in path
+                field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+                # Add trailing slash to path
+                #field_value_template: "{ \"path\": \"{{ fields.data.path }}/\" }"
+                is_json: True

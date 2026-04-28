@@ -1,0 +1,52 @@
+{{- if .Values.generateResourcesForLLMBBackendCluster }}
+{{- $roleName := printf "llm-dot-build-role-%s" .Release.Name }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: '{{ $roleName }}'
+  labels:
+    'llmbuild/internal': '{{ $roleName }}'
+rules:
+- verbs:
+    - list
+    - get
+    - create
+    - delete
+  apiGroups:
+    - batch
+  resources:
+    - jobs
+- verbs:
+    - list
+    - get
+  apiGroups:
+    - ''
+  resources:
+    - pods
+- verbs:
+    - list
+    - get
+    - create
+    - delete
+    - get
+    - watch
+  apiGroups:
+    - ''
+  resources:
+    - pods
+- verbs:
+    - get
+    - list
+  apiGroups:
+    - ''
+  resources:
+    - pods/log
+- verbs:
+    - watch
+    - get
+    - list
+  apiGroups:
+    - ''
+  resources:
+    - events
+{{- end }}

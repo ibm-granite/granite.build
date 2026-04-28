@@ -1,0 +1,96 @@
+{{- if .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.deployments.enable }}
+{{- if .Values.deployments.restServer.enable }}
+{{- $restServerName := printf "llmbuild-rest-server-%s" .Release.Name }}
+{{- $restServerPort := .Values.deployments.restServer.port }}
+{{- $mainSecretName := printf "llmbuild-secret-%s" .Release.Name }}
+{{- if .Values.secrets.mainSecretName }}
+{{- $mainSecretName = .Values.secrets.mainSecretName }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: '{{ $restServerName }}'
+  labels:
+    'llmbuild/internal': '{{ $restServerName }}'
+spec:
+  replicas: {{ .Values.deployments.restServer.replicas }}
+  selector:
+    matchLabels:
+      'llmbuild/internal': '{{ $restServerName }}'
+  template:
+    metadata:
+      labels:
+        'llmbuild/internal': '{{ $restServerName }}'
+    spec:
+      containers:
+      - name: rest-server
+        image: '{{ .Values.deployments.image }}'
+        imagePullPolicy: Always
+        command:
+        - bash
+        - -c
+        - gbserver rest-server --port {{ $restServerPort }}
+        env:
+        {{- range $key, $value := .Values.deployments.restServer.env }}
+        - name: {{ $key | quote }}
+          value: {{ $value | quote }}
+        {{- end }}
+        {{- range $x := .Values.deployments.restServer.envFromMainSecret }}
+        - name: {{ $x | quote }}
+          valueFrom:
+            secretKeyRef:
+              key: {{ $x | quote }}
+              name: '{{ $mainSecretName }}'
+        {{- end }}
+        ports:
+        - containerPort: {{ $restServerPort }}
+          protocol: TCP
+        resources:
+          {{- .Values.deployments.restServer.resources | toYaml | nindent 10 }}
+        securityContext:
+          runAsGroup: 0
+          capabilities:
+            drop:
+              - ALL
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          runAsNonRoot: true
+        volumeMounts:
+        - mountPath: /opt/app-root/src/.ssh/id_ed25519
+          name: secret-volume
+          readOnly: true
+          subPath: id_ed25519
+        - mountPath: /opt/app-root/src/.ssh/id_ed25519.pub
+          name: secret-volume
+          readOnly: true
+          subPath: id_ed25519.pub
+        - mountPath: /opt/app-root/src/.ssh/config
+          name: secret-volume
+          readOnly: true
+          subPath: ssh-config
+        - mountPath: /opt/app-root/src/.ssh/known_hosts
+          name: secret-volume
+          readOnly: true
+          subPath: known_hosts
+        - mountPath: /app/ibm-cloud-databases.cert
+          name: secret-volume
+          readOnly: true
+          subPath: ibm-cloud-databases.cert
+      imagePullSecrets:
+      {{- range $v := .Values.deployments.imagePullSecrets }}
+      - name: "{{ $v }}"
+      {{- end }}
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 60
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: '{{ $mainSecretName }}'
+          defaultMode: 416
+{{- end }}
+{{- end }}
+{{- end }}

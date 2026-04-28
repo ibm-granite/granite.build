@@ -1,0 +1,26 @@
+granite.build:
+  name: docker-trl-test-cpu
+  targets:
+    finetune:
+      environment_uri: space://environments/docker
+      inputs:
+        model:
+          uri: hf:///ibm-granite/granite-4.0-350m
+      outputs:
+        finetuned_model:
+          uri: file:outputs/trl-finetune/
+      steps:
+        - step_uri: space://steps/trl-finetune
+          launcher: trl-finetune-cpu
+          config:
+            docker:
+              env:
+                LLMB_BASH_INPUT_MODEL:
+                  value: "{{ bindings.model.binding.path }}"
+                LLMB_BASH_OUTPUT_DIR:
+                  value: "/gb-workspace/outputs"
+                LLMB_ARTIFACT_OUTPUT_ID:
+                  value: "finetuned_model"
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 0

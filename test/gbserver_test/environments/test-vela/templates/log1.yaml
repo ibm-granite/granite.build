@@ -1,0 +1,31 @@
+apiVersion: workload.codeflare.dev/v1beta2
+kind: AppWrapper
+metadata:
+  name: gb-logging-1-10k
+  namespace: {{ .Values.namespace }}
+  labels:
+      kueue.x-k8s.io/queue-name: default-queue
+spec:
+  components:
+  - template:
+      # job specification
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: gb-logging-1-10k
+      spec:
+        template:
+          metadata:
+            labels:
+              granite-dot-build/build-id: 4b281701-ff56-4b14-a040-eccbcd0cf577
+              granite-dot-build/build-step-id: c95bf125-078f-47f9-a495-0fdafb4c9246
+              granite-dot-build/build-step-name: synthetic-data-generation
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: busybox
+              image: quay.io/project-codeflare/busybox:1.36
+              command: ["sh", "-c", "for i in $(seq 1 50); do echo \"{\"id\": $i, \"message\": \"Log from Vela\"}\"; echo \"Log from Vela $i\" >&2; sleep 4; done"]
+              resources:
+                requests:
+                  cpu: 1

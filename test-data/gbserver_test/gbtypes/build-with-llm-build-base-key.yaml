@@ -1,0 +1,8 @@
+llm.build:
+  targets:
+    foo:
+      environment_uri: 'space://environments/vela1-gb'
+      steps: []
+    bar:
+      environment_uri: 'space://environments/vela1-gb'
+      steps: []

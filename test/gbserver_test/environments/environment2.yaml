@@ -1,0 +1,26 @@
+name: vela2-gb
+type: K8s
+config:
+  namespace: vela2-tuning
+  volumes:
+    - name: gb-afm-read-only
+      persistentVolumeClaim:
+        claimName: gb-afm-read-only
+assetstores:
+  - store_uri: git+ssh://github.ibm.com/granite-dot-build/assets.git#subdirectory=assetstores/lh-staging
+    load:
+      - mode: afm_mount
+        config:
+          pvc: gb-afm-read-only
+    push:
+      - mode: dmf_push
+        step:
+          step_uri: git+ssh://github.ibm.com/granite-dot-build/gbserver.git#subdirectory=src/gbserver/builtins/steps/lhupload # file:steps/hello-helm 
+          config:
+            rel_path: "{{ asset.metadata.lhnamespace }}/{{ asset.metadata.lhtype }}/{{ asset.metadata.lhtype }}"
+            pvc: gb-afm-read-only
+# Not used yet
+launch_types:
+  - type: helm
+monitoring_types:
+  - type: logs

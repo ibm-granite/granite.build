@@ -1,0 +1,27 @@
+granite.build:
+  name: echo_in_bash
+  targets:
+    echo:
+      allow_unknown: true
+      environment_uri: space://environments/bash
+      inputs:
+      #   model_to_tune:
+      #     uri: lh://prod/granite_dot_build.public/models/model_shared/granite-2b-base/20250319T181102
+        # tuning_data:
+      #     uri: lh://prod/granite_dot_build.public/tables/all_data_large_dedup_regression_test
+      outputs:
+        # Uncomment "intermediate_checkpoint_with_optimizer_state" only when "save_strategy" in the tuning_config is set to "steps" or "epoch".
+        # This will push intermediate checkpoints (with optimizer state) to Lakehouse.
+        # Otherwise, only the "final_checkpoint" is pushed.
+        #
+        # intermediate_checkpoint_with_optimizer_state:
+        #   uri: lh://{{ space.variables.DEFAULT_LH_ENVIRONMENT }}/{{ space.variables.DEFAULT_LH_NAMESPACE }}/models/{{ space.variables.DEFAULT_LH_MODEL_TABLE }}/gb_tuned_model_{{ run_metadata.targetsteprun_id | short_hash }}_{{ binding.path | path_basename }}
+        # training_logs_jsonl:
+          # uri: lh://{{ space.variables.DEFAULT_LH_ENVIRONMENT }}/{{ space.variables.DEFAULT_LH_NAMESPACE }}/tables/gb_training_logs_jsonl_{{ run_metadata.targetsteprun_id | short_hash }}
+        # final_checkpoint:
+        #   uri: lh://{{ space.variables.DEFAULT_LH_ENVIRONMENT }}/{{ space.variables.DEFAULT_LH_NAMESPACE }}/models/{{ space.variables.DEFAULT_LH_MODEL_TABLE }}/gb_tuned_model_{{ run_metadata.targetsteprun_id | short_hash }}_{{ binding.path | path_basename }}
+      steps:
+        - step_uri: space://steps/echo
+          config:
+            compute_config:
+              num_nodes: 1

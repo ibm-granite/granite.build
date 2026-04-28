@@ -1,0 +1,13 @@
+granite.build:
+  name: minimal-hello
+  targets:
+    hello-world:
+      environment_uri: file:samples/environments/local
+      artifacts:
+        inputs:
+          text_file:
+            uri: file:samples/data/file/helloworld.txt
+      steps:
+        - step_uri: file:samples/steps/cat
+          config:
+            name: world

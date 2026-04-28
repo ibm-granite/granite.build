@@ -1,0 +1,225 @@
+---
+# Required:
+# - build_runner_name
+# - build_runner_namespace
+# - build_runner_image
+# - build_runner_command
+# - main_secret_name
+# - build_workspace_pvc_name
+# - configmap_name
+# - dev_staging_prod_env
+# - build_runner_labels
+# - build_runner_annotations
+apiVersion: batch/v1
+kind: Job 
+metadata:
+  name: '{{ build_runner_name }}'
+  namespace: '{{ build_runner_namespace }}'
+  labels:
+    'llmbuild/internal': '{{ build_runner_name }}'
+    {%- for k, v in build_runner_labels.items() %}
+    '{{ k }}': '{{ v }}'
+    {%- endfor %}
+  annotations:
+    {%- for k, v in build_runner_annotations.items() %}
+    '{{ k }}': '{{ v }}'
+    {%- endfor %}
+spec:
+  ttlSecondsAfterFinished: 1 
+  template:
+    metadata:
+      labels:
+        'llmbuild/internal': '{{ build_runner_name }}'
+        {%- for k, v in build_runner_labels.items() %}
+        '{{ k }}': '{{ v }}'
+        {%- endfor %}
+      annotations:
+        {%- for k, v in build_runner_annotations.items() %}
+        '{{ k }}': '{{ v }}'
+        {%- endfor %}
+    spec:
+      containers:
+      - name: gbserver-build-runner
+        image: '{{ build_runner_image }}'
+        imagePullPolicy: Always
+        command:
+        {%- for x in build_runner_command %}
+        - '{{ x }}'
+        {%- endfor %}
+        env:
+        {%- for k, v in build_runner_extra_env_vars.items() %}
+        - name: '{{ k }}'
+          value: '{{ v }}'
+        {%- endfor %}
+        - name: GB_ENVIRONMENT
+          value: '{{ dev_staging_prod_env }}'
+        - name: GBSERVER_BUILTIN_STEP_IMAGE
+          value: '{{ build_runner_image }}'
+        - name: DMF_CACHE
+          value: /tmp/dmf_cache
+        - name: GBSERVER_SQL_SSLROOT_CERT
+          value: ibm-cloud-databases.cert
+        - name: GBSERVER_LINEAGE_PROVIDER
+          value: wandb
+        - name: GBSERVER_WANDB_BASE_URL
+          value: https://ibm.wandb.io
+        - name: GBSERVER_WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_WANDB_API_KEY
+              name: '{{ main_secret_name }}'
+        - name: GBSERVER_WANDB_PROJECT
+          value: lineage-tracking
+        - name: GBSERVER_WANDB_ENTITY
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_WANDB_ENTITY
+              name: '{{ main_secret_name }}'
+        - name: IBM_CLOUD_LOGS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: '{{ main_secret_name }}'
+              key: IBM_CLOUD_LOGS_API_KEY
+        - name: IBM_CLOUD_LOGS_API_URL
+          valueFrom:
+            secretKeyRef:
+              name: '{{ main_secret_name }}'
+              key: IBM_CLOUD_LOGS_API_URL
+        - name: IBM_CLOUD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: IBM_CLOUD_API_KEY
+              name: '{{ main_secret_name }}'
+        - name: IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL
+          valueFrom:
+            secretKeyRef:
+              key: IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL
+              name: '{{ main_secret_name }}'
+        - name: LAKEHOUSE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: LAKEHOUSE_TOKEN
+              name: '{{ main_secret_name }}'
+        - name: LAKEHOUSE_ENVIRONMENT
+          valueFrom:
+            secretKeyRef:
+              key: LAKEHOUSE_ENVIRONMENT
+              name: '{{ main_secret_name }}'
+        - name: GBSERVER_GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_GITHUB_TOKEN
+              name: '{{ main_secret_name }}'
+        - name: GBSERVER_SQL_USER
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_USER
+              name: '{{ main_secret_name }}'
+        - name: GBSERVER_SQL_PASSWD
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_PASSWD
+              name: '{{ main_secret_name }}'
+        - name: GBSERVER_SQL_HOST
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_HOST
+              name: '{{ main_secret_name }}'
+        - name: GBSERVER_SQL_PORT
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_PORT
+              name: '{{ main_secret_name }}'
+        - name: GBSERVER_SQL_DBNAME
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_DBNAME
+              name: '{{ main_secret_name }}'
+        - name: GBSERVER_SQL_SCHEMA
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_SCHEMA
+              name: '{{ main_secret_name }}'
+        - name: GBSERVER_SQL_ECHO
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_SQL_ECHO
+              name: '{{ main_secret_name }}'
+        - name: GBSERVER_METADATA_STORAGE
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_METADATA_STORAGE
+              name: '{{ main_secret_name }}'
+        {%- if is_metrics_enabled %}
+        # Metrics ----------------
+        - name: GBSERVER_METRICS_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_METRICS_ENDPOINT
+              name: '{{ main_secret_name }}'
+        # Metrics ----------------
+        {%- endif %}
+        {%- if is_metrics_auth_enabled %}
+        # Metrics ----------------
+        - name: GBSERVER_METRICS_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: GBSERVER_METRICS_AUTH_TOKEN
+              name: '{{ main_secret_name }}'
+        # Metrics ----------------
+        {%- endif %}
+        resources:
+          limits:
+            cpu: "1"
+            ephemeral-storage: 4Gi
+            memory: 6Gi
+          requests:
+            cpu: 50m
+            ephemeral-storage: 1Gi
+            memory: 256Mi
+        securityContext:
+          runAsGroup: 0
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /opt/app-root/src/.ssh/id_ed25519
+          name: secret-volume
+          readOnly: true
+          subPath: id_ed25519
+        - mountPath: /opt/app-root/src/.ssh/id_ed25519.pub
+          name: secret-volume
+          readOnly: true
+          subPath: id_ed25519.pub
+        - mountPath: /opt/app-root/src/.ssh/config
+          name: secret-volume
+          readOnly: true
+          subPath: ssh-config
+        - mountPath: /opt/app-root/src/.ssh/known_hosts
+          name: secret-volume
+          readOnly: true
+          subPath: known_hosts
+        - mountPath: /app/ibm-cloud-databases.cert
+          name: secret-volume
+          readOnly: true
+          subPath: ibm-cloud-databases.cert
+      imagePullSecrets:
+      - name: all-icr-io-cil15-2
+      restartPolicy: Never
+      schedulerName: default-scheduler
+      volumes:
+      - name: gb-buildws-volume
+        persistentVolumeClaim:
+          claimName: '{{ build_workspace_pvc_name }}'
+      - name: secret-volume
+        secret:
+          defaultMode: 416
+          secretName: '{{ main_secret_name }}'
+      - name: configmap-volume
+        configMap:
+          defaultMode: 420
+          name: '{{ configmap_name }}'

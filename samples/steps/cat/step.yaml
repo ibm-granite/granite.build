@@ -1,0 +1,39 @@
+name: cat
+version: v1
+type: custom
+config:
+
+environment_configs:
+  Bash:
+    launchers:
+      cat:
+        type: nohup
+        monitors:
+          - logs_as_json
+        config: 
+          command: cat {{ bindings.text_file }}
+    monitors:
+      logs_as_json:
+        type: logs_as_json
+        config: 
+          event_configs:
+            - event_type: ARTIFACT_EVENT
+              line_regex: "^{.*}$"
+  kubernetes:
+    launchers:
+      cat:
+        type: nohup
+        monitors:
+          - log_regex
+        config: 
+          command: cat {{ bindings.text_file }}
+    monitors:
+      log_regex:
+        type: logs
+        config: 
+          event_configs:
+            - event_type: ARTIFACT_EVENT
+              line_regex: .*
+              event_fields:
+                - field_name: "text"
+                  field_regex: ".*"

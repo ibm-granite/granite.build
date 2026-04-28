@@ -1,0 +1,11 @@
+granite.build:
+  name: hello-gb-vela
+  targets:
+    hello-helm:
+      environment_uri: space://environments/vela-gb
+      inputs:
+        parquet_file:
+          uri: lh://lake-staging.17qyd1z8hik0.us-east.codeengine.appdomain.cloud/granite_dot_build.public/tables/digit_input
+      steps:
+        - step_uri:  space://steps/echo
+          config: {}

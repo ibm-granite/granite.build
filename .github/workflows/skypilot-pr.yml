@@ -1,0 +1,21 @@
+name: SkyPilot Mode PR Tests
+
+on:
+  pull_request:
+    branches: [g4os]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install standalone dependencies
+        run: pip install -e ".[standalone,dev]"
+
+      - name: Run skypilot tests
+        run: make cicd-skypilot-pr

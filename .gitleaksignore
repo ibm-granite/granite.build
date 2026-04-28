@@ -1,0 +1,28 @@
+# Placeholder tokens in documentation (YOUR_GITHUB_TOKEN, YOUR_ADMIN_TOKEN)
+docs/node_health_monitoring.md:curl-auth-header:296
+docs/node_health_monitoring.md:curl-auth-header:310
+docs/node_health_monitoring.md:curl-auth-header:339
+docs/node_health_monitoring.md:curl-auth-header:355
+docs/node_health_monitoring.md:curl-auth-header:388
+b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:129
+b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:143
+b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:170
+b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:186
+b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:217
+b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:234
+# Example API key in sample config documentation
+samples/spaces/hybrid-secrets-example/README.md:generic-api-key:92
+# Test fixture with base64-encoded dummy secret ("my-old-secret")
+test/gbserver_test/spacesecretmanager/test_localspacesecretmanager.py:generic-api-key:27
+# GitHub CLI public OAuth client secret (same value as official gh CLI)
+d97c7bcb8a2b52c5be0b126bf17dd6f5a9509ae4:src/gbcli/utils/gh_auth.py:generic-api-key:14
+# Example API key placeholder in CLAUDE.md (sk-1234567890)
+af29bc4e459904350e9653c57026fa8fd6a108f2:CLAUDE.md:generic-api-key:257
+# Helm template public key reference (id_ed25519.pub)
+341dabefe0688a06c4a021a532e632d852a7801d:src/gbserver/builtins/steps/gbstep/helm-charts/{{ step.name | default(run_metadata.target_name) }}/charts/gbstepbase/templates/_helpers.tpl:generic-api-key:355
+# Historical findings in deleted files (SSH key and secrets-manager YAMLs removed from tree)
+341dabefe0688a06c4a021a532e632d852a7801d:src/gbserver/builtins/steps/gbstep/helm-charts/{{ step.name | default(run_metadata.target_name) }}/templates/ssh-keys-secret.yaml:kubernetes-secret-yaml:16
+341dabefe0688a06c4a021a532e632d852a7801d:src/gbserver/builtins/steps/gbstep/helm-charts/{{ step.name | default(run_metadata.target_name) }}/templates/ssh-keys-secret.yaml:private-key:23
+40bd0d7d43cd6156bc402294ce5d0280ee92d6a8:src/gbserver/secretsmanager/openshift/secrets-manager-secret.yaml:kubernetes-secret-yaml:2
+164de16f8dc823cdec09faacbd64dbab7bcc32fa:src/gbserver/secretsmanager/openshift/secrets-manager-pod.yaml:generic-api-key:9
+164de16f8dc823cdec09faacbd64dbab7bcc32fa:src/gbserver/secretsmanager/openshift/secrets-manager-pod.yaml:kubernetes-secret-yaml:3

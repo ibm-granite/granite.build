@@ -1,0 +1,15 @@
+{{- $parentContext := . }}
+{{- $lhpush_command := include "lhpush_command" . | indent 10 | trimAll " " }}
+{{- $commands := list
+  $lhpush_command
+}}
+{{- $jobType := "job" }}
+{{- include "gbstepbase.app" (dict 
+    "commands" $commands 
+    "job_type" $jobType 
+    "Values" $parentContext.Values 
+    "Release" $parentContext.Release 
+    "Chart" $parentContext.Chart 
+    "Template" $parentContext.Template
+) | trimAll " " }}
+

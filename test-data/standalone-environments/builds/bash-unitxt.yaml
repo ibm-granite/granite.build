@@ -1,0 +1,16 @@
+granite.build:
+  name: bash-unitxt-test
+  targets:
+    evaluate:
+      environment_uri: space://environments/bash
+      inputs:
+        model:
+          uri: hf:///ibm-granite/granite-4.0-350m
+      outputs:
+        eval_results:
+          uri: file:outputs/unitxt-eval/
+      steps:
+        - step_uri: space://steps/unitxt-eval
+          config:
+            compute_config:
+              num_nodes: 1

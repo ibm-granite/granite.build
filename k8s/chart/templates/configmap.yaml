@@ -1,0 +1,14 @@
+{{- if .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.configmaps.enable }}
+{{- $configmapName := printf "llmbuild-configmap-%s" .Release.Name }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ $configmapName }}'
+  labels:
+    'llmbuild/internal': '{{ $configmapName }}'
+immutable: false
+data:
+{{- .Values.configmaps.mainConfigMap.data | toYaml | nindent 2 }}
+{{- end }}
+{{- end }}

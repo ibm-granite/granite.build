@@ -1,0 +1,8 @@
+namespace: granite-build
+
+appWrapper:
+  name: log-test-appwrapper
+
+image:
+  repository: quay.io/project-codeflare/busybox
+  tag: 1.36

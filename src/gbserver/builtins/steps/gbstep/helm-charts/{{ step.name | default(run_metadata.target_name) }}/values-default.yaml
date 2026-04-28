@@ -1,0 +1,108 @@
+
+gb:
+  mock: {% if config is defined and config.gb is defined and config.gb.mock is defined  %} {{ config.gb.mock | default(false) }} {% else %} false {% endif %}
+
+k8s:
+  use_app_wrapper: true
+  {%- if config.k8s is defined and config.k8s.nodeSelector is defined %}
+    {%- if config.k8s.nodeSelector | length > 0 %}
+  nodeSelector:
+  {{ config.k8s.nodeSelector | to_yaml | indent(2, true) }}
+    {%- endif %}
+  {%- elif environment_config.nodeSelector is defined %}
+    {%- if environment_config.nodeSelector | length > 0 %}
+  nodeSelector:
+  {{ environment_config.nodeSelector | to_yaml | indent(2, true) }}
+    {%- endif %}
+  {%- else %}
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
+  {%- endif %}
+
+  {% if environment_config.internode_networking is not defined %}
+  internode_networking:
+    add_nccl_env_vars: true
+    multi_nic_network_name: multi-nic-network
+    topology_file_config_map: topo-gdr-2vf-canary
+    env:
+      CUDA_DEVICE_MAX_CONNECTIONS: "1"
+      NCCL_ALGO: Ring
+      NCCL_CROSS_NIC: "0"
+      NCCL_DEBUG_SUBSYS: INIT,GRAPH,ENV,TUNING
+      NCCL_IB_DISABLE: "0"
+      NCCL_IB_GID_INDEX: "3"
+      NCCL_IB_HCA: mlx5_0,mlx5_3
+      NCCL_IB_PCI_RELAXED_ORDERING: "1"
+      NCCL_IB_QPS_PER_CONNECTION: "8"
+      NCCL_IB_SPLIT_DATA_ON_QPS: "0"
+      NCCL_IGNORE_CPU_AFFINITY: "1"
+      NCCL_SOCKET_IFNAME: net1-0,net1-1
+      NCCL_SOCKET_NTHREADS: "2"
+      OMP_NUM_THREADS: "16"
+
+  {% elif environment_config.internode_networking | length > 0 %}
+  internode_networking:
+    add_nccl_env_vars: {{ environment_config.internode_networking.add_nccl_env_vars | default(true) }}
+    multi_nic_network_name: {{ environment_config.internode_networking.multi_nic_network_name | default("multi-nic-network") }}
+    topology_file_config_map: {{ environment_config.internode_networking.topology_file_config_map | default("topo-gdr-2vf-canary") }}
+    env:
+{{ environment_config.internode_networking.env | to_yaml | indent(6, true) }}
+  {% endif %}
+  interactive: false
+  show_pip_freeze: false
+  use_monitoring_sidecar: true
+  sleep_on_end: false
+  old_pod_group_api_version: true
+  old_appwrapper_api_version: false
+  kueue_queue_name: default-queue
+  service_account_name: gdr
+  # https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/images/creating-images#use-uid_create-images
+  # For an image to support running as an arbitrary user,
+  # directories and files that are written to by processes in the image
+  # must be owned by the root group and be read/writable by that group.
+  # Files to be executed must also have group execute permissions.
+  run_as_root_group: true
+  automount_service_account_token: false
+  {%- if setup_config.space is defined and setup_config.space.secret is defined %}
+  space_secret: {{ setup_config.space.secret }}
+  {%- endif %}
+  monitoring_sidecar_image: us.icr.io/cil15-shared-registry/gb-{{ gb_environment.lower() }}/gb-sidecar-monitoring:{{ monitoring_image_tag | default('latest') }}
+  messaging:
+    {%- set env_config_messaging = environment_config.messaging if environment_config.messaging is defined else {} %}
+    {{ env_config_messaging | to_yaml | indent(4) }}
+  app_wrapper_config:
+    requeuing:
+      # timeInSeconds: 570
+      maxNumRequeuings: 1
+      # forceDeletionTimeInSeconds: -1 # don't delete resources
+      # pauseTimeInSeconds: 90
+  volumes:
+    {%- set env_config_volumes = environment_config.volumes if environment_config.volumes is defined else {} %}
+    {{ env_config_volumes | to_yaml | indent(4) }}
+  image: registry.access.redhat.com/ubi9/python-312:latest
+  
+  # Placeholder: Comes from user specified secret in build.yaml -> launch_helm() 
+  # via self.full_config in TargetStepRun.__init() using helm --set 
+  imagePullSecrets: []
+
+  # comes from environment.yaml
+  envImagePullSecrets:
+    {%- set env_config_image_pull_secrets = environment_config.imagePullSecrets if environment_config.imagePullSecrets is defined else [] %}
+    {{ env_config_image_pull_secrets | to_yaml | indent(4) }}
+  
+  # comes from environment.yaml (if not present, then set to /gb-read-write as default PVC path)
+  targetsteprun_assets_dir: {{ environment_config.targetsteprun_assets_dir | default("/gb-read-write") }}
+
+# Resource requests and limits.
+compute_config:
+  num_nodes: 1 # Total number of pods (i.e. master + worker pods) to be created
+  # num_cpus_per_node: 4 # Number of CPUs for each pod. If not given, then it is set to 8*GPUs.
+  # total_memory_per_node: 256Gi # Total memory for each pod. If not given, then it is set to 64*GPUs Gi.
+  num_gpus_per_node: 0 # Number of GPUs for each pod (all GPUs per node is currently recommended for distributed training)
+
+monitor_config:
+    {% if monitor_config is defined %}
+    {{ monitor_config | to_yaml | indent(4) }}
+    {% endif %}
+run_metadata: 
+  {{ run_metadata | to_yaml | indent(2) }}

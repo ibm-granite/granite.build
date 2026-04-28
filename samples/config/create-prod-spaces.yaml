@@ -1,0 +1,5 @@
+lakehouse_environment: PROD
+spaces:
+- name: "public"
+  git_repo_uri: "https://github.ibm.com/granite-dot-build/gbspace-public"
+  lakehouse_namespace: "granite_dot_build.public"
