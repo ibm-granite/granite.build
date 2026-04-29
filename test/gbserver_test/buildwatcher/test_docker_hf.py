@@ -30,7 +30,8 @@ from typing import Self
 
 import pytest
 
-# import pytest
+pytest.importorskip("kubernetes_asyncio")
+
 from gbserver_test.buildwatcher.buildtest import (
     AbstractBuildRunnerTest,
     BuildTestSpecification,
