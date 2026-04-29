@@ -2,7 +2,7 @@ name: SkyPilot Mode PR Tests
 
 on:
   pull_request:
-    branches: [g4os]
+    branches: [dev]
 
 jobs:
   test:
