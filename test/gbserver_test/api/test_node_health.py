@@ -39,6 +39,8 @@ from gbserver.api.node_health import (
 )
 from gbserver.storage.stored_node_failure import StoredNodeFailure
 
+pytestmark = pytest.mark.ibm
+
 
 class TestNodeHealthAPIEndpoints(AbstractSingletonStorageUsingTest):
     """Direct tests for node health API endpoint functions."""

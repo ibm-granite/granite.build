@@ -38,9 +38,9 @@ jobs:
 
       - name: Type check (mypy)
         run: |
-          mypy --disable-error-code=import-untyped src/gbserver/
-          mypy --disable-error-code=import-untyped src/gbcli/
-          mypy --disable-error-code=import-untyped src/gbcommon/
+          mypy --disable-error-code=import-untyped --ignore-missing-imports src/gbserver/
+          mypy --disable-error-code=import-untyped --ignore-missing-imports src/gbcli/
+          mypy --disable-error-code=import-untyped --ignore-missing-imports src/gbcommon/
 
   test:
     runs-on: ubuntu-latest

@@ -244,6 +244,7 @@ class TestNCCLErrorStrategy:
 # ── Layer 2: Tracker → Storage Tests ────────────────────────────────
 
 
+@pytest.mark.ibm
 @pytest.mark.skipif(
     os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
     reason="Requires SQL database access",
@@ -361,6 +362,7 @@ class TestTrackerStorage(AbstractSingletonStorageUsingTest):
 # ── Layer 3: RetryHandler → Storage Integration Tests ───────────────
 
 
+@pytest.mark.ibm
 @pytest.mark.skipif(
     os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
     reason="Requires SQL database access",

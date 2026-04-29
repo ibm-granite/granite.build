@@ -42,6 +42,8 @@ from gbserver.api.node_health import (
 from gbserver.resilience import NodeHealthTracker
 from gbserver.storage.stored_node_failure import StoredNodeFailure
 
+pytestmark = pytest.mark.ibm
+
 
 class TestNodeHealthCrossProcess(AbstractSingletonStorageUsingTest):
     """Test cross-process communication via persistent storage."""
