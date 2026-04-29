@@ -105,10 +105,10 @@ make staticcheck  # lint all files
 
 ## Pull Request Process
 
-1. Create a feature branch from `main`:
+1. Create a feature branch from `dev`:
 
    ```bash
-   git checkout -b my-feature main
+   git checkout -b my-feature dev
    ```
 
 2. Make your changes. Write tests for new functionality.
@@ -132,7 +132,7 @@ make staticcheck  # lint all files
    git commit -m "feat: add support for new environment backend"
    ```
 
-6. Push and open a pull request against `main`.
+6. Push and open a pull request against `dev`.
 
 ## Commit Messages
 
