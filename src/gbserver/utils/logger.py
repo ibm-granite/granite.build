@@ -17,8 +17,8 @@ from typing import Optional, Self
 
 from gbserver.types.constants import DEFAULT_LOG_FORMAT, DEFAULT_LOG_LEVEL
 
-
 __LOGGER_CONFIGURED = False
+
 
 # def get_log_level(x: str) -> logging._Level:
 def get_log_level(x: str) -> int:
@@ -99,7 +99,7 @@ class CustomFormatter(logging.Formatter):
 def configure_logging(
     level: str = DEFAULT_LOG_LEVEL,
     format: Optional[str] = None,
-    log_file: Optional[str] = os.getenv("GBSERVER_LOG_FILE",None),
+    log_file: Optional[str] = os.getenv("GBSERVER_LOG_FILE", None),
     skip_if_already_configured: bool = False,
 ):
     """Configure the basic logger."""
@@ -109,7 +109,7 @@ def configure_logging(
     if format is None:
         handler: logging.Handler = logging.StreamHandler()
         if log_file is not None:
-            handler = logging.FileHandler(filename=log_file, encoding="utf-8", mode='w')
+            handler = logging.FileHandler(filename=log_file, encoding="utf-8", mode="w")
         handler.setFormatter(CustomFormatter())
         logging.basicConfig(
             handlers=[handler],
@@ -123,7 +123,7 @@ def configure_logging(
             level=get_log_level(level),
             datefmt="%Y-%m-%d %H:%M:%S",
             filename=log_file,
-            filemode='w',
+            filemode="w",
         )
     __LOGGER_CONFIGURED = True
     logger = logging.getLogger(__name__)

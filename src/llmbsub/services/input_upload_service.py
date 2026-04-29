@@ -26,7 +26,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from gbcli.client.client import GBClient
-from llmbsub.utils.checksum_cache import ChecksumCache, DEFAULT_CACHE_BASE_PATH
+from llmbsub.utils.checksum_cache import DEFAULT_CACHE_BASE_PATH, ChecksumCache
 
 logger = logging.getLogger(__name__)
 

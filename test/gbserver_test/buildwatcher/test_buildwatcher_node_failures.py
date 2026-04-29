@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
+from gbserver_test.test_utils import AbstractSingletonStorageUsingTest
 
 from gbserver.resilience.node_health_tracker import NodeHealthTracker
 from gbserver.resilience.retry_handler import RetryHandler
@@ -32,8 +33,6 @@ from gbserver.types.buildevent import (
     BuildEventType,
     EntityRunMetadata,
 )
-from gbserver_test.test_utils import AbstractSingletonStorageUsingTest
-
 
 # ── BuildEvent factory helpers ──────────────────────────────────────
 
@@ -265,7 +264,6 @@ class TestTrackerStorage(AbstractSingletonStorageUsingTest):
             metrics_client=MagicMock(),
             alert_threshold=5,
             alert_window_minutes=30,
-
             node_failure_storage=storage,
         )
         await self._tracker_instance.start()
@@ -383,7 +381,6 @@ class TestRetryHandlerIntegration(AbstractSingletonStorageUsingTest):
             metrics_client=MagicMock(),
             alert_threshold=5,
             alert_window_minutes=30,
-
             node_failure_storage=storage,
         )
         await self._tracker_instance.start()

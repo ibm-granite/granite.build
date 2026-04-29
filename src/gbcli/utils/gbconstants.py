@@ -235,7 +235,7 @@ def gb_environment() -> str:
 
 def hf_token() -> str:
     HF_TOKEN = os.environ.get("HF_TOKEN")
-    
+
     return HF_TOKEN
 
 
@@ -251,13 +251,16 @@ def is_standalone() -> bool:
 
 # HuggingFace defaults
 HF_ORGANIZATION_DEFAULT = gb_environment_config().get("hf_organization", "ibm-research")
-HF_RESOURCE_GROUP_ID_DEFAULT = gb_environment_config().get("hf_resource_group_id", "699cae1275ab75b381de01b5")
+HF_RESOURCE_GROUP_ID_DEFAULT = gb_environment_config().get(
+    "hf_resource_group_id", "699cae1275ab75b381de01b5"
+)
 
 
 # gbcli
 GBCLI_REPO_URL = os.environ.get(
     # Change this to "https://github.com/granite-build/gbserver" once the repo exists. CLI version check fails if this points to an invalid repo
-    "GBCLI_REPO_URL", "https://github.ibm.com/granite-dot-build/gbcli"
+    "GBCLI_REPO_URL",
+    "https://github.ibm.com/granite-dot-build/gbcli",
 )
 
 # assets

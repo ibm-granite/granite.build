@@ -1,14 +1,15 @@
 import logging
 import os
 from pathlib import Path
-from requests import HTTPError
 from typing import Any, List, Optional
+
+from requests import HTTPError
 
 from gbcli.utils.gbconstants import (
     ASSETS_REPO_URL,
-    STEPS_REPO_FOLDER,
-    STEP_README_FILENAME,
     STEP_FILENAME,
+    STEP_README_FILENAME,
+    STEPS_REPO_FOLDER,
     gb_environment_config,
 )
 from gbcli.utils.gh_clone import download_repo_file, list_repo_tree

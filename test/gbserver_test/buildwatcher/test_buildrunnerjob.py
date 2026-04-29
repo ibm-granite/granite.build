@@ -9,6 +9,7 @@ from gbserver_test.constants import extended_testing_only
 
 pytestmark = pytest.mark.ibm
 
+
 @extended_testing_only
 class TestBuildRunnerJob(AbstractBuildTest):
 

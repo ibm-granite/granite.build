@@ -11,9 +11,7 @@ logger = get_logger(__name__)
 _SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 _SA_NAMESPACE_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 _SA_CA_CERT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-_DEFAULT_STEP_IMAGE = (
-    "us.icr.io/cil15-shared-registry/gb-prod/gbserver:latest"
-)
+_DEFAULT_STEP_IMAGE = "us.icr.io/cil15-shared-registry/gb-prod/gbserver:latest"
 
 
 def _get_image_from_k8s_pod() -> str:
@@ -31,9 +29,7 @@ def _get_image_from_k8s_pod() -> str:
         if not pod_name:
             return ""
 
-        api_host = os.environ.get(
-            "KUBERNETES_SERVICE_HOST", "kubernetes.default.svc"
-        )
+        api_host = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
         api_port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
         url = (
             f"https://{api_host}:{api_port}"
@@ -41,9 +37,7 @@ def _get_image_from_k8s_pod() -> str:
         )
 
         ctx = ssl.create_default_context(cafile=_SA_CA_CERT_PATH)
-        req = urllib.request.Request(
-            url, headers={"Authorization": f"Bearer {token}"}
-        )
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
             pod = json.loads(resp.read())
 

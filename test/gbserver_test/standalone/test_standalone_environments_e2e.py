@@ -36,7 +36,9 @@ import pytest
 
 pytestmark = pytest.mark.g4os
 
-TEST_DATA_DIR = Path(__file__).parent.parent.parent.parent / "test-data" / "standalone-environments"
+TEST_DATA_DIR = (
+    Path(__file__).parent.parent.parent.parent / "test-data" / "standalone-environments"
+)
 
 # Docker test image name
 _DOCKER_TEST_IMAGE = "gbserver-test-trl-unitxt:latest"

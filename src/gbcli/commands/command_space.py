@@ -1,15 +1,16 @@
-import click
 import json
 import sys
+from typing import Dict
+
+import click
 from tabulate import tabulate
 from tqdm import tqdm
-from typing import Dict
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.utils.gbcredentials import get_user_token
 from gbcli.commands.common_options import common_options
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME, SPACE_LIST_HEADERS
+from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.spaceutil import get_spaces
 from gbcli.utils.versionutil import check_current_and_latest_versions
 

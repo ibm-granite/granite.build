@@ -1,11 +1,12 @@
 import logging
-import requests
-from requests.exceptions import ConnectionError
 from typing import Optional
 
+import requests
+from requests.exceptions import ConnectionError
+
 from gbcli.utils.gbconstants import (
-    USER_NOT_LOGGED_IN_ERROR_MESSAGE,
     GBSERVER_LOGS_API,
+    USER_NOT_LOGGED_IN_ERROR_MESSAGE,
     VPN_CONNECTION_ERROR_MESSAGE,
 )
 from gbcli.utils.gbserver import gbserver_post

@@ -1,12 +1,10 @@
-from gbserver.storage.storage import BaseStoredItem
-from gbserver.types.status import Status
-
+from datetime import datetime
+from typing import Optional, Self
 
 from pydantic import Field
 
-
-from datetime import datetime
-from typing import Optional, Self
+from gbserver.storage.storage import BaseStoredItem
+from gbserver.types.status import Status
 
 
 class StoredTargetRun(BaseStoredItem):
@@ -18,10 +16,10 @@ class StoredTargetRun(BaseStoredItem):
     name: str = ""
     status: Status = Status.PENDING
     status_msg: str = ""
-    input_artifacts: dict[str,str] = Field(default_factory=dict)
-    """The name of the input targets mapped to a single artifact uuid""" 
+    input_artifacts: dict[str, str] = Field(default_factory=dict)
+    """The name of the input targets mapped to a single artifact uuid"""
 
-    output_artifacts: dict[str,list[str]] = Field(default_factory=dict)
+    output_artifacts: dict[str, list[str]] = Field(default_factory=dict)
     """The name of the output targets mapped to a list of artifact uuids (multiple for checkpoints)"""
 
     started_at: Optional[datetime] = None
@@ -33,6 +31,5 @@ class StoredTargetRun(BaseStoredItem):
     skipped_for_prerun_target_id: str = ""
     """UUID of the original StoredTargetRun whose target_hash caused this run to be skipped."""
 
-    def __init__(self:Self, **kwargs):
+    def __init__(self: Self, **kwargs):
         super().__init__(**kwargs)
-

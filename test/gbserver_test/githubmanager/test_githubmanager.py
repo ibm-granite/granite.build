@@ -58,7 +58,7 @@ class TestGithubManager(AbstractSingletonStorageUsingPreloadedSpaceTest):
     def __run_githubmanager(
         self, token: str, expected_start_builds: int, wait_for_new_builds: int
     ):
-        __tracebackhide__ = True    # Hide the token on stack traces.
+        __tracebackhide__ = True  # Hide the token on stack traces.
         assert expected_start_builds >= 0, "Mis-used test"
         assert wait_for_new_builds > 0, "Mis-used test"
 

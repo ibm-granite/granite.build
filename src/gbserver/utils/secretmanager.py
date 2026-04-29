@@ -6,9 +6,10 @@ A client for the IBM Cloud Secrets Manager API.
 
 import asyncio
 import functools
-import requests
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Self
+
+import requests
 
 from gbserver.types.secret import MySecret, TokenResponse
 from gbserver.utils.logger import get_logger

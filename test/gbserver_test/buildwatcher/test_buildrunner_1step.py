@@ -1,6 +1,5 @@
 import os
 from typing import Self
-from gbserver_test.constants import extended_testing_only
 
 import pytest
 from gbserver_test.buildwatcher.buildtest import (
@@ -10,6 +9,7 @@ from gbserver_test.buildwatcher.buildtest import (
     ClassTestedEnum,
     ExpectedTarget,
 )
+from gbserver_test.constants import extended_testing_only
 
 from gbserver.types.status import Status
 
@@ -33,6 +33,8 @@ OneStepGPUDownloadTestConfig = BuildTestSpecification(
         ),
     ],
 )
+
+
 @extended_testing_only
 @pytest.mark.xdist_group(name="buildtest_gpu")
 class TestBuildRunner1StepGPU(AbstractBuildRunnerTest):
@@ -49,6 +51,7 @@ class TestBuildRunner1StepGPU(AbstractBuildRunnerTest):
             test_cancel=True,
         )
 
+
 ################################################################################
 OneStepCPUDownloadTestConfig = BuildTestSpecification(
     build_yaml=os.path.join(_test_data_dir, "1step/cpu/build.yaml"),
@@ -64,6 +67,8 @@ OneStepCPUDownloadTestConfig = BuildTestSpecification(
         ),
     ],
 )
+
+
 @extended_testing_only
 @pytest.mark.xdist_group(name="buildtest_cpu")
 class TestBuildRunner1StepCPU(AbstractBuildRunnerTest):
@@ -79,7 +84,6 @@ class TestBuildRunner1StepCPU(AbstractBuildRunnerTest):
             test_spec=test_spec,
             test_cancel=True,
         )
-
 
 
 ################################################################################
@@ -98,12 +102,15 @@ InvalidBuildTestConfig = BuildTestSpecification(
         # ),
     ],
 )
+
+
 @extended_testing_only
 @pytest.mark.xdist_group(name="invalidbuildtest")
 class TestBuildRunnerInvalidBuild(AbstractBuildRunnerTest):
 
     def _get_test_specification(self: Self) -> BuildTestSpecification:
         return InvalidBuildTestConfig
+
 
 ################################################################################
 OneStepBlueVelaDownloadTestConfig = BuildTestSpecification(
@@ -121,6 +128,8 @@ OneStepBlueVelaDownloadTestConfig = BuildTestSpecification(
         ),
     ],
 )
+
+
 # @pytest.mark.skipif(
 #     os.environ.get("GBTEST_ENABLE_BLUEVELA_TESTS", "false").lower() == "false"
 #     and os.environ.get("GBTEST_ENABLE_EXTENDED_TESTS", "false").lower() != "true",
@@ -143,6 +152,7 @@ class TestBuildRunner1StepBlueVela(AbstractBuildRunnerTest):
             test_cancel=True,
         )
 
+
 ################################################################################
 OneStepHFTestConfig = BuildTestSpecification(
     build_yaml=os.path.join(_test_data_dir, "1step/hf/build.yaml"),
@@ -157,13 +167,14 @@ OneStepHFTestConfig = BuildTestSpecification(
         ),
     ],
 )
+
+
 @extended_testing_only
 @pytest.mark.xdist_group(name="buildtest_hf")
 class TestBuildRunner1StepHF(AbstractBuildRunnerTest):
 
     def _get_test_specification(self: Self) -> BuildTestSpecification:
         return OneStepHFTestConfig
-
 
 
 ################################################################################
@@ -251,6 +262,7 @@ OneStepLocalTestConfig = BuildTestSpecification(
         ),
     ],
 )
+
 
 @pytest.mark.skip(
     reason="Temporarily disable since we need a PR to main and this is failing due to space config issues (we think)."

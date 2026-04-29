@@ -31,6 +31,12 @@ import yaml
 from kubernetes_asyncio import client
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from gbcommon.types.testing import (
+    ENV_VAR_GBTEST_MOCK_HF_CALLS,
+    ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO,
+    GBTEST_MOCK_HF,
+    GBTEST_SIMULATE_FAILURE_SCENARIO,
+)
 from gbserver.buildwatcher.abstractbuildrunner import AbstractBuildRunner
 from gbserver.buildwatcher.build_utils import finalize_build_status
 from gbserver.environment.k8s import AtomicApiClient
@@ -54,12 +60,6 @@ from gbserver.types.constants import (
     GBSERVER_METRICS_ENDPOINT,
     K8S_USE_ASPERA,
     LSF_USE_ASPERA,
-)
-from gbcommon.types.testing import (
-    ENV_VAR_GBTEST_MOCK_HF_CALLS,
-    ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO,
-    GBTEST_MOCK_HF,
-    GBTEST_SIMULATE_FAILURE_SCENARIO,
 )
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
@@ -127,11 +127,13 @@ class BuildRunnerJob(AbstractBuildRunner):
 
         simulate_scenario = GBTEST_SIMULATE_FAILURE_SCENARIO
         if simulate_scenario:
-            build_runner_extra_env_vars[ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO] = GBTEST_SIMULATE_FAILURE_SCENARIO
+            build_runner_extra_env_vars[ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO] = (
+                GBTEST_SIMULATE_FAILURE_SCENARIO
+            )
 
-        mock_hf = GBTEST_MOCK_HF 
-        if mock_hf: 
-            build_runner_extra_env_vars[ENV_VAR_GBTEST_MOCK_HF_CALLS] = mock_hf 
+        mock_hf = GBTEST_MOCK_HF
+        if mock_hf:
+            build_runner_extra_env_vars[ENV_VAR_GBTEST_MOCK_HF_CALLS] = mock_hf
 
         self.build_runner_data = {
             "build_runner_name": "",

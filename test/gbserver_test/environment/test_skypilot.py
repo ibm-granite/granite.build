@@ -87,6 +87,7 @@ class TestSkypilotInit:
         env = Skypilot(event_q=event_q)
         assert "skypilot_monitor" in env.monitor_types
 
+
 @pytest.mark.g4os
 @pytest.mark.unit
 class TestSkypilotClusterNaming:

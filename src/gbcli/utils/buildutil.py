@@ -1,10 +1,10 @@
 import json
 import logging
 import os
+
 import yaml
 from jinja2 import StrictUndefined, Template
 from jsonpatch import apply_patch
-
 
 from gbcli.utils.gbconstants import BUILD_PARAMETERS_APPLIED_FILE
 

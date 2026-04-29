@@ -46,7 +46,9 @@ class LineageRecord:
     tags: dict[str, str] = field(default_factory=dict)
     input_artifacts: list[LineageNode] = field(default_factory=list)
     output_artifacts: list[LineageNode] = field(default_factory=list)
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization.

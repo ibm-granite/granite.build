@@ -624,16 +624,22 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
         try:
             registry.add(new_artifact)
             create_table = True
-        except Exception:   # Really looking for IntegrityError, but don't want to expose the storage implementation
+        except (
+            Exception
+        ):  # Really looking for IntegrityError, but don't want to expose the storage implementation
             # For aliasing Input URIs, we can get a race between builds that use the same input.
             # In this case we get an integrity error because they both try and register the same
             # aliasing lh:// uri in the same space which is not allowed per the registery.
             # So in this case, just find the previous registration and return it.
             # Seen with multi cpu buildwatcher test when using hf:// uris as inputs
-            new_artifact = registry.get_by_uri(uri=new_artifact.uri, space_name=new_artifact.space_name)
+            new_artifact = registry.get_by_uri(
+                uri=new_artifact.uri, space_name=new_artifact.space_name
+            )
             if not new_artifact:
-                raise RuntimeError(f"Got Exception storing alias, then couldn't find aliasing registration for {artifact.uri}") 
-            assert isinstance(new_artifact,ArtifactRegistration)
+                raise RuntimeError(
+                    f"Got Exception storing alias, then couldn't find aliasing registration for {artifact.uri}"
+                )
+            assert isinstance(new_artifact, ArtifactRegistration)
             create_table = False
 
         @retry(
@@ -650,7 +656,7 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
             return Table.from_dataframe(lh=self.lh, df=df, table_details=table_details)
 
         if create_table:
-            # If the artifact registration already existed, then this table was already created 
+            # If the artifact registration already existed, then this table was already created
             # so don't try again.
             logger.info(
                 "Creating alias/placeholder table named %s.%s for uri %s",

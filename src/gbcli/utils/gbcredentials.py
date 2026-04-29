@@ -1,12 +1,13 @@
 import logging
 import os
+import sys
+
 import portalocker
 import requests
-import sys
 import toml
-from toml import TomlDecodeError
 from requests import HTTPError
 from requests.exceptions import ConnectionError
+from toml import TomlDecodeError
 
 from gbcli.utils.cli_config import get_local_gb_config
 from gbcli.utils.gbconstants import USER_NOT_LOGGED_IN_ERROR_MESSAGE, is_standalone

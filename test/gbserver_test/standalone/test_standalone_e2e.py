@@ -81,9 +81,11 @@ class TestStandaloneE2E:
             build_run.status == Status.SUCCESS
         ), f"Build run did not succeed. Status: {build_run.status}"
 
-    @pytest.mark.skip(reason="This is failing in the DEV environment and SPS pipeline. "
-                      "It seems redundant if only to test sqlite.  "
-                      "We should be using git action matrix to use sqlite with the other mainline build integration tests.")
+    @pytest.mark.skip(
+        reason="This is failing in the DEV environment and SPS pipeline. "
+        "It seems redundant if only to test sqlite.  "
+        "We should be using git action matrix to use sqlite with the other mainline build integration tests."
+    )
     def test_hello_standalone_with_sqlite_storage(self):
         """The standalone-quickstart build runs via BuildRunner with SQLite storage.
 

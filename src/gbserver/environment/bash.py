@@ -26,12 +26,12 @@ from typing import Any, Dict, List, Optional, Self, Tuple, Union
 from urllib.parse import urlparse
 
 from gbcommon.uri.uri import URI
-from gbserver.environment.local_assets import get_hf_cache_dir, pull_asset_hfstore
 from gbserver.environment.environment import (
     BINDING_KEY,
     Environment,
     EventLogLineParserConfig,
 )
+from gbserver.environment.local_assets import get_hf_cache_dir, pull_asset_hfstore
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.environmentconfig import EnvironmentConfig

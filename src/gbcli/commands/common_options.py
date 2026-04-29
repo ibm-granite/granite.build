@@ -1,5 +1,6 @@
-import click
 from functools import wraps
+
+import click
 
 
 def common_options(f):

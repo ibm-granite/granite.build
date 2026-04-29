@@ -91,7 +91,9 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def list_matching_repos(api: HfApi, repo_type: str, org: str, pattern: str) -> list[str]:
+def list_matching_repos(
+    api: HfApi, repo_type: str, org: str, pattern: str
+) -> list[str]:
     """Return repo IDs in org of the given type whose name matches pattern.
 
     Args:
@@ -109,11 +111,7 @@ def list_matching_repos(api: HfApi, repo_type: str, org: str, pattern: str) -> l
         "space": lambda: api.list_spaces(author=org),
     }[repo_type]
     compiled = re.compile(pattern)
-    return [
-        r.id
-        for r in list_fn()
-        if compiled.search(r.id.split("/")[-1])
-    ]
+    return [r.id for r in list_fn() if compiled.search(r.id.split("/")[-1])]
 
 
 def delete_repos(api: HfApi, repo_ids: list[str], repo_type: str) -> None:
@@ -141,7 +139,9 @@ def main() -> None:
 
     api = HfApi(token=args.token)
 
-    print(f"Fetching {args.repo_type} repos in '{args.org}' matching '{args.pattern}' ...")
+    print(
+        f"Fetching {args.repo_type} repos in '{args.org}' matching '{args.pattern}' ..."
+    )
     matching = list_matching_repos(api, args.repo_type, args.org, args.pattern)
 
     if not matching:

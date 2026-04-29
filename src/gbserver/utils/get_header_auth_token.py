@@ -1,7 +1,6 @@
-
+from fastapi import Request, status
 from fastapi.responses import JSONResponse
-from fastapi import status, Request
-    
+
 
 def get_header_auth_token(auth_header: str):
     """Get GIT token from request header authorization"""
@@ -14,5 +13,3 @@ def get_header_auth_token(auth_header: str):
             },
         )
     return auth_header.removeprefix("Bearer ")
-
-    

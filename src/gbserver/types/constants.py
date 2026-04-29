@@ -353,14 +353,13 @@ GBSERVER_DEFAULT_BUILDRUNNER_TYPE = os.getenv(
 GB_ENVIRONMENT_FROM_ENV = os.getenv("GB_ENVIRONMENT", "").upper()
 GB_ENVIRONMENT_CONFIG = gb_environment_config(GB_ENVIRONMENT_FROM_ENV)
 GB_ENVIRONMENT = GB_ENVIRONMENT_CONFIG.env
-_default_gbserver_image_tag = GBSERVER_GBSERVER_IMAGE_TAG if GBSERVER_GBSERVER_IMAGE_TAG else "latest"
+_default_gbserver_image_tag = (
+    GBSERVER_GBSERVER_IMAGE_TAG if GBSERVER_GBSERVER_IMAGE_TAG else "latest"
+)
 GBSERVER_IMAGE = f"us.icr.io/cil15-shared-registry/gb-{GB_ENVIRONMENT.lower()}/gbserver:{_default_gbserver_image_tag}"
 # Override the image for the BuildRunnerProcess to use when running BuildRunner CLI.
 # If not set, then the image from the buildwatcher deployment yaml is used
-BUILDRUNNERJOB_IMAGE_OVERRIDE = os.getenv(
-    ENV_VAR_BUILDRUNNERJOB_IMAGE,
-    GBSERVER_IMAGE 
-)
+BUILDRUNNERJOB_IMAGE_OVERRIDE = os.getenv(ENV_VAR_BUILDRUNNERJOB_IMAGE, GBSERVER_IMAGE)
 GBSERVER_BUILTIN_STEP_IMAGE = os.getenv(ENV_VAR_BUILTIN_STEP_IMAGE, GBSERVER_IMAGE)
 
 BUILDRUNNERJOB_NAMESPACE = os.getenv(
@@ -404,7 +403,9 @@ GBSERVER_IBMID_CALLBACK_URL = os.getenv(ENV_VAR_IBMID_CALLBACK_URL, "")
 # OpenLineage / WandB lineage provider
 GBSERVER_LINEAGE_PROVIDER = os.getenv(ENV_VAR_PREFIX + "_LINEAGE_PROVIDER", "wandb")
 GBSERVER_WANDB_API_KEY = os.getenv(ENV_VAR_PREFIX + "_WANDB_API_KEY", "")
-GBSERVER_WANDB_PROJECT = os.getenv(ENV_VAR_PREFIX + "_WANDB_PROJECT", "lineage-tracking")
+GBSERVER_WANDB_PROJECT = os.getenv(
+    ENV_VAR_PREFIX + "_WANDB_PROJECT", "lineage-tracking"
+)
 GBSERVER_WANDB_ENTITY = os.getenv(ENV_VAR_PREFIX + "_WANDB_ENTITY", "dmf-testing")
 GBSERVER_WANDB_BASE_URL = os.getenv(
     ENV_VAR_PREFIX + "_WANDB_BASE_URL", "https://ibm.wandb.io"

@@ -1,7 +1,8 @@
 import logging
+from typing import Any, List, Optional
+
 import requests
 from openai import OpenAI
-from typing import Any, List, Optional
 
 from gbcli.utils.gbconstants import (
     RITS_BASE_URL,

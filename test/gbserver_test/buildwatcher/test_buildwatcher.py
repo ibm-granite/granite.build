@@ -12,7 +12,6 @@ from gbserver_test.buildwatcher.test_buildrunner_1step import (
     OneStepCPUDownloadTestConfig,
     OneStepGPUDownloadTestConfig,
 )
-
 from gbserver_test.constants import extended_testing_only
 
 pytestmark = pytest.mark.ibm
@@ -47,7 +46,6 @@ class AbstractTestBuildWatcher(AbstractBuildTest):
             test_cancel=True,
             build_count=self._get_build_count(),
         )
-
 
 
 @pytest.mark.xdist_group(name="buildwatcher_cpu")

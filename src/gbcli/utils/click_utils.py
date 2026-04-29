@@ -1,8 +1,9 @@
-import click
 import json
 import os
 import sys
 import typing as t
+
+import click
 
 from gbcli.utils.utils import custom_parse_markdown_str, parse_markdown_str
 

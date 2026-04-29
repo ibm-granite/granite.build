@@ -1,12 +1,13 @@
 import logging
-import requests
 import os
 import shutil
+from pathlib import Path
+from typing import Any, List, Optional
+
+import requests
 from fastapi import HTTPException
 from git import GitCommandError, Repo
-from pathlib import Path
 from requests.exceptions import ConnectionError
-from typing import Any, List, Optional
 
 from gbcli.utils.utils import CloneProgress, remove_prefix
 

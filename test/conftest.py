@@ -274,7 +274,10 @@ class BuildAggregation(BaseModel):
 
     @staticmethod
     def create(build_id: str, assert_message: str) -> "BuildAggregation":
-        from gbserver.storage.singleton_storage import get_admin_storage    # So conftest env var setting works on this
+        from gbserver.storage.singleton_storage import (
+            get_admin_storage,  # So conftest env var setting works on this
+        )
+
         storage = get_admin_storage()
         build = storage.build_storage.get_by_uuid(build_id)
         if build is not None:

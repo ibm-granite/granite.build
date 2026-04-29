@@ -1,8 +1,11 @@
+from gbserver_test.storage.storage import (
+    AbstractStorageTest,
+    AbstractStorageTestSupport,
+)
 
 from gbserver.storage import singleton_storage
 from gbserver.storage.storage import BaseItemStorage
 from gbserver.storage.stored_space_user import StoredSpaceUser
-from gbserver_test.storage.storage import AbstractStorageTest, AbstractStorageTestSupport
 
 
 class SpaceUserStorageTestSupport(AbstractStorageTestSupport):
@@ -34,7 +37,9 @@ class BaseSpaceUserStorageTest(AbstractStorageTest):
         storage = self._get_tested_storage()
         item1 = StoredSpaceUser(space_name="myspace", username="alice", role="admin")
         item2 = StoredSpaceUser(space_name="myspace", username="bob", role="member")
-        item3 = StoredSpaceUser(space_name="otherspace", username="alice", role="member")
+        item3 = StoredSpaceUser(
+            space_name="otherspace", username="alice", role="member"
+        )
         storage.add([item1, item2, item3])
 
         results = storage.get_by_space("myspace")

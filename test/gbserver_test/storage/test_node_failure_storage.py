@@ -1,15 +1,18 @@
-
 from datetime import timedelta
 from typing import Self
 
 import pytest
+from gbserver_test.storage.storage import (
+    AbstractExistingDataReadTest,
+    AbstractStorageTest,
+    AbstractStorageTestSupport,
+)
+from gbserver_test.test_utils import AbstractSingletonStorageUsingTest
 
 from gbserver.storage import singleton_storage
 from gbserver.storage.storage import BaseItemStorage
 from gbserver.storage.stored_node_failure import StoredNodeFailure
 from gbserver.utils.utils import get_utc_time
-from gbserver_test.storage.storage import AbstractExistingDataReadTest, AbstractStorageTest, AbstractStorageTestSupport
-from gbserver_test.test_utils import AbstractSingletonStorageUsingTest
 
 
 class NodeFailureStorageTestSupport(AbstractStorageTestSupport):
@@ -40,7 +43,9 @@ class BaseNodeFailureStorageTest(AbstractStorageTest):
 
 class BaseLegacyNodeFailureTest(AbstractExistingDataReadTest):
 
-    def _get_tested_readonly_storage(self, storage: singleton_storage.SingletonAdminStorage):
+    def _get_tested_readonly_storage(
+        self, storage: singleton_storage.SingletonAdminStorage
+    ):
         return storage.node_failure_storage
 
 
@@ -79,7 +84,9 @@ class TestNodeFailureQueryMethods(AbstractSingletonStorageUsingTest):
         old = self._add(node_name="node-a", build_id="b-old")
         # Backdate to 2 hours ago
         old_time = get_utc_time() - timedelta(hours=2)
-        nfs.update_fields(old.uuid, {"created_time": old_time}, update_updated_time=False)
+        nfs.update_fields(
+            old.uuid, {"created_time": old_time}, update_updated_time=False
+        )
 
         self._add(node_name="node-a", build_id="b-recent")
 
@@ -104,12 +111,24 @@ class TestNodeFailureQueryMethods(AbstractSingletonStorageUsingTest):
         """Test get_failure_summary groups by node with stats."""
         nfs = self.storage.node_failure_storage
 
-        self._add(node_name="node-a", build_id="b1", failure_type="FailedMount",
-                   metadata={"namespace": "ns1", "cluster": "c1"})
-        self._add(node_name="node-a", build_id="b2", failure_type="NCCLError",
-                   metadata={"namespace": "ns1", "cluster": "c1"})
-        self._add(node_name="node-b", build_id="b3", failure_type="FailedMount",
-                   metadata={"namespace": "ns2"})
+        self._add(
+            node_name="node-a",
+            build_id="b1",
+            failure_type="FailedMount",
+            metadata={"namespace": "ns1", "cluster": "c1"},
+        )
+        self._add(
+            node_name="node-a",
+            build_id="b2",
+            failure_type="NCCLError",
+            metadata={"namespace": "ns1", "cluster": "c1"},
+        )
+        self._add(
+            node_name="node-b",
+            build_id="b3",
+            failure_type="FailedMount",
+            metadata={"namespace": "ns2"},
+        )
 
         summary = nfs.get_failure_summary(alert_window_minutes=30)
 
@@ -197,7 +216,9 @@ class TestNodeFailureQueryMethods(AbstractSingletonStorageUsingTest):
 
         old = self._add(node_name="node-a", build_id="b-old")
         old_time = get_utc_time() - timedelta(hours=2)
-        nfs.update_fields(old.uuid, {"created_time": old_time}, update_updated_time=False)
+        nfs.update_fields(
+            old.uuid, {"created_time": old_time}, update_updated_time=False
+        )
 
         self._add(node_name="node-a", build_id="b-recent")
 

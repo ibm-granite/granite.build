@@ -275,6 +275,7 @@ class MergedPullRequestResponse(BaseModel):
     merged: bool
     message: str
 
+
 class CreatedPullRequestResponse(BaseModel):
     """The response after a PR is created."""
 

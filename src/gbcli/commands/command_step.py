@@ -1,10 +1,11 @@
-import click
 import json
 import sys
 import time
+from typing import Dict, List
+
+import click
 from tabulate import tabulate
 from tqdm import tqdm
-from typing import Dict, List
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain

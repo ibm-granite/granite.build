@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Validate model-task compatibility before running evaluation."""
 
-import sys
 import re
+import sys
 
 # Compatibility matrix
 MODEL_TASK_COMPATIBILITY = {
@@ -138,7 +138,9 @@ def validate_compatibility(model, model_revision, tasks, evaluation_regime):
 
 if __name__ == "__main__":
     if len(sys.argv) < 4:
-        print("Usage: validate_compatibility.py <model> <revision> <tasks_comma_separated> [regime]")
+        print(
+            "Usage: validate_compatibility.py <model> <revision> <tasks_comma_separated> [regime]"
+        )
         sys.exit(1)
 
     model = sys.argv[1]

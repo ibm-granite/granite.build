@@ -1,7 +1,8 @@
-from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import Dict, List, Optional
 import base64
 import logging
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from gbserver.types.validation import GBValidationErrors
 
@@ -24,7 +25,6 @@ class SecretConfig(BaseModel):
         description="Secret Group Name (e.g. gbspace-public, gbspace-wca4a)",
     )
 
-
     @field_validator("payload")
     def payload_must_be_base64(cls, v: str) -> str:
         errors = GBValidationErrors()
@@ -35,8 +35,10 @@ class SecretConfig(BaseModel):
             )
         else:
             try:
-                base64.b64decode(v, validate=True) # checks whether v is a valid base64-encoded string
-            except Exception: 
+                base64.b64decode(
+                    v, validate=True
+                )  # checks whether v is a valid base64-encoded string
+            except Exception:
                 errors.add(
                     err="Secret payload must be valid base64",
                 )
@@ -78,9 +80,7 @@ class SpaceSecretsConfig(BaseModel):
         errors = GBValidationErrors()
 
         if not self.secrets:
-            errors.add(
-                err="Each space must define at least one secret"
-            )
+            errors.add(err="Each space must define at least one secret")
 
         if not errors.is_valid():
             raise ValueError("\n".join(str(e) for e in errors))
@@ -98,9 +98,7 @@ class SpacesConfig(BaseModel):
         errors = GBValidationErrors()
 
         if not self.spaces:
-            errors.add(
-                err="At least one space must be defined"
-            )
+            errors.add(err="At least one space must be defined")
 
         if not errors.is_valid():
             raise ValueError("\n".join(str(e) for e in errors))

@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 
 from pydantic import Field
 
+from gbcommon.types.testing import ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
@@ -69,19 +70,18 @@ from gbserver.types.buildevent import (
     EntityRunMetadata,
     EventPayload,
 )
-from gbserver.types.status import Status
 from gbserver.types.config import Config
 from gbserver.types.constants import (
     FULL_CONFIG_RUN_METADATA_KEY,
     GBSERVER_ENABLE_STEP_RETRY,
 )
-from gbcommon.types.testing import ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO
 from gbserver.types.environment.environment import StepConfigSection
 from gbserver.types.environmentconfig import (
     ENVIRONMENT_FILENAME,
     AssetStoreEnvironmentConfig,
     EnvironmentConfig,
 )
+from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 from gbserver.utils.template import fill_template
 from gbserver.utils.utils import get_uuid
@@ -786,7 +786,9 @@ class Environment(ABC):
             teardown_event = self.__get_teardown_started_event(setup_id)
             try:
                 if not teardown_event.is_set():
-                    config = await self.setup_types[type](self, setup_id=setup_id, **kwargs)
+                    config = await self.setup_types[type](
+                        self, setup_id=setup_id, **kwargs
+                    )
                 else:
                     config = {}
                 return config

@@ -1,15 +1,15 @@
-import click
 import json
 import sys
 import time
 import webbrowser
+from typing import Dict
+
+import click
 from tabulate import tabulate
 from tqdm import tqdm
-from typing import Dict
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
-from gbcli.utils.gbcredentials import get_user_token
 from gbcli.commands.common_options import common_options
 from gbcli.services.service_auth import verify_rits_api_key
 from gbcli.utils.gbconstants import (
@@ -21,6 +21,7 @@ from gbcli.utils.gbconstants import (
     RITS_TOP_P,
     RITS_URL,
 )
+from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.utils import check_runnable_browser, get_standard_model_prompt
 from gbcli.utils.versionutil import check_current_and_latest_versions
 

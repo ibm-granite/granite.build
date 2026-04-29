@@ -1,7 +1,8 @@
 import logging
 import os
-from requests import HTTPError
 from typing import Any, List, Optional
+
+from requests import HTTPError
 
 from gbcli.services.service_build import describe_build_yaml
 from gbcli.utils.gbconstants import (

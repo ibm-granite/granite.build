@@ -1,13 +1,14 @@
-import click
 import sys
 import webbrowser
 from typing import Dict
 
+import click
+
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.utils.gbcredentials import get_user_token
 from gbcli.commands.common_options import common_options
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR
+from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.utils import check_runnable_browser
 from gbcli.utils.versionutil import check_current_and_latest_versions
 

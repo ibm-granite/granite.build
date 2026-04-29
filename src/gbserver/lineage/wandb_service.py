@@ -19,9 +19,9 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Literal, Optional, Tuple, cast
 
+import wandb
 from huggingface_hub import dataset_info, model_info
 
-import wandb
 from gbserver.lineage.openlineage_service import LineageService
 from gbserver.lineage.openlineage_utils import (
     get_hf_artifact_uri,

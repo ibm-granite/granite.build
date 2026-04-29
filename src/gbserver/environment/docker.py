@@ -16,9 +16,13 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Self, Tuple
 
-from gbserver.environment.local_assets import get_hf_cache_dir, pull_asset_hfstore, push_asset_hfstore
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
+from gbserver.environment.local_assets import (
+    get_hf_cache_dir,
+    pull_asset_hfstore,
+    push_asset_hfstore,
+)
 from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventMessagePayload,
@@ -59,7 +63,13 @@ def _find_podman_socket() -> Optional[str]:
 
     try:
         result = subprocess.run(
-            ["podman", "machine", "inspect", "--format", "{{.ConnectionInfo.PodmanSocket.Path}}"],
+            [
+                "podman",
+                "machine",
+                "inspect",
+                "--format",
+                "{{.ConnectionInfo.PodmanSocket.Path}}",
+            ],
             capture_output=True,
             text=True,
             timeout=5,
@@ -94,7 +104,9 @@ def _connect_docker_client(docker_module):
     except docker_module.errors.DockerException:
         pass
 
-    for socket_url in filter(None, [_find_podman_socket(), "unix:///var/run/docker.sock"]):
+    for socket_url in filter(
+        None, [_find_podman_socket(), "unix:///var/run/docker.sock"]
+    ):
         try:
             client = docker_module.DockerClient(base_url=socket_url)
             client.ping()
@@ -197,7 +209,7 @@ class Docker(Environment):
             if container_path == mount or container_path.startswith(mount + "/"):
                 if len(mount) > len(best_match):
                     best_match = mount
-                    suffix = container_path[len(mount):]
+                    suffix = container_path[len(mount) :]
                     result = host + suffix
         return result
 

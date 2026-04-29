@@ -6,7 +6,6 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-import psutil
 from filelock import FileLock
 from pydantic import BaseModel, Field
 
@@ -47,6 +46,8 @@ class ProcessLock:
 
     def _is_process_alive(self, pid: int) -> bool:
         """Check if a process with the given PID is still running."""
+        import psutil
+
         r = psutil.pid_exists(pid)
         return r
 

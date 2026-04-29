@@ -21,6 +21,7 @@ from enum import StrEnum, auto
 
 class ArtifactType(StrEnum):
     """Enumeration of supported artifact types."""
+
     # These are DEPREDCATED, but will be kept so we can deserialize old entries.
     SEED_DATA = auto()
     GENERATED_DATA = auto()

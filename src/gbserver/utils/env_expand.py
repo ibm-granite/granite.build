@@ -8,7 +8,9 @@ from utils.env_expand import expand_env
 expanded_text = expand_env(raw_yaml)               # strict mode (default)
 expanded_text = expand_env(raw_yaml, strict=False) # ignore missing vars
 """
-import os, re
+
+import os
+import re
 
 __all__ = ["expand_env"]
 
@@ -32,7 +34,7 @@ def expand_env(text: str, *, strict: bool = True) -> str:
     text   : str
         Original text containing placeholders.
     strict : bool, default True
-        • True  → raise KeyError if a variable is missing  
+        • True  → raise KeyError if a variable is missing
         • False → substitute an empty string instead.
 
     Returns

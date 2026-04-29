@@ -99,7 +99,9 @@ class BaseArtifactRegistry(BaseItemStorage[ArtifactRegistration], IArtifactRegis
         try:
             r = super().add(items)
             return r
-        except IntegrityError as e: # TODO should avoid using exception from underlying (sql alchemy) implementation.
+        except (
+            IntegrityError
+        ) as e:  # TODO should avoid using exception from underlying (sql alchemy) implementation.
             # Check if this is a checksum uniqueness violation
             for item in items_list:
                 if item.checksum != "":

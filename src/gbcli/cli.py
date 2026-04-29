@@ -1,8 +1,10 @@
-import click
 import os
 import sys
 from typing import Any
-from gbcli.utils.gbconstants import gb_environment, GB_ENVIRONMENT_DEFAULT
+
+import click
+
+from gbcli.utils.gbconstants import GB_ENVIRONMENT_DEFAULT, gb_environment
 from gbserver.utils.logger import configure_logging
 
 CONTEXT_SETTINGS = dict(auto_envvar_prefix="GBCLI")

@@ -40,9 +40,7 @@ async def test_pullasset_hfstore_returns_binding_with_path(bash_env, tmp_path):
     model_dir.mkdir(parents=True)
     uri = MagicMock()
 
-    with patch(
-        "gbserver.environment.bash.pull_asset_hfstore", return_value=model_dir
-    ):
+    with patch("gbserver.environment.bash.pull_asset_hfstore", return_value=model_dir):
         binding_config, extra_config = await bash_env.pullasset_hfstore(
             uri=uri,
             assetstore=None,

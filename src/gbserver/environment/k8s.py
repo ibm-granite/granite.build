@@ -59,6 +59,7 @@ import kubernetes_asyncio
 import yaml
 from kubernetes_asyncio import client, config, watch
 
+from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_HF_CALLS, GBTEST_MOCK_HF
 from gbcommon.uri.cos import CosURI
 from gbcommon.uri.hf import HfURI
 from gbcommon.uri.lh import LhURI
@@ -80,7 +81,6 @@ from gbserver.types.buildevent import (
 from gbserver.types.constants import (
     K8S_USE_ASPERA,
 )
-from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_HF_CALLS, GBTEST_MOCK_HF
 from gbserver.types.environment.k8s import StepK8sConfig
 from gbserver.types.environmentconfig import (
     ENVIRONMENT_FILENAME,
@@ -752,7 +752,7 @@ class K8s(Environment):
             )
 
         # Propagate test mock flag into every helm-step pod when set.
-        if GBTEST_MOCK_HF: 
+        if GBTEST_MOCK_HF:
             extra_runmetadata_values.append(
                 (f"k8s.env.{ENV_VAR_GBTEST_MOCK_HF_CALLS}.value", "true")
             )
@@ -2087,19 +2087,15 @@ class K8s(Environment):
         space_name = output_config.space_name if output_config else None
 
         # Resolve resource_group_name with explicit priority:
-        #   build.yaml store_push.config.hf 
+        #   build.yaml store_push.config.hf
         hf_resource_group_name = None
-        hf_private = True 
+        hf_private = True
         if output_config is not None and output_config.store_push is not None:
-            hf_resource_group_name = (
-                output_config.store_push.config.get("hf", {}).get(
-                    "resource_group_name", hf_resource_group_name
-                )
+            hf_resource_group_name = output_config.store_push.config.get("hf", {}).get(
+                "resource_group_name", hf_resource_group_name
             )
-            hf_private = (
-                output_config.store_push.config.get("hf", {}).get(
-                    "private", hf_private 
-                )
+            hf_private = output_config.store_push.config.get("hf", {}).get(
+                "private", hf_private
             )
 
         hfpush_config = {
@@ -2108,7 +2104,7 @@ class K8s(Environment):
             "space_name": space_name,
             "hf": {
                 "type": hf_type,
-                "private": hf_private, 
+                "private": hf_private,
                 "resource_group_name": hf_resource_group_name,
             },
         }

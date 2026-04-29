@@ -23,8 +23,8 @@ from unittest.mock import MagicMock, patch
 
 import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -45,6 +45,7 @@ pytestmark = pytest.mark.g4os
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_rsa_keypair():
     """Generate an RSA private/public key pair for test JWT signing."""
@@ -102,8 +103,16 @@ class TestTokenFormatDetection:
 
     def test_valid_jwt_structure_detected(self):
         # Create a minimal JWT-like structure
-        header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode()).rstrip(b"=").decode()
-        payload = base64.urlsafe_b64encode(json.dumps({"sub": "test"}).encode()).rstrip(b"=").decode()
+        header = (
+            base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode())
+            .rstrip(b"=")
+            .decode()
+        )
+        payload = (
+            base64.urlsafe_b64encode(json.dumps({"sub": "test"}).encode())
+            .rstrip(b"=")
+            .decode()
+        )
         sig = base64.urlsafe_b64encode(b"fakesig").rstrip(b"=").decode()
         token = f"{header}.{payload}.{sig}"
         assert _is_jwt_shaped(token) is True
@@ -112,10 +121,20 @@ class TestTokenFormatDetection:
         assert _is_jwt_shaped("not.valid!base64.token") is False
 
     def test_peek_issuer_from_jwt_payload(self):
-        header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode()).rstrip(b"=").decode()
-        payload = base64.urlsafe_b64encode(
-            json.dumps({"iss": "https://login.ibm.com/oidc/endpoint/default"}).encode()
-        ).rstrip(b"=").decode()
+        header = (
+            base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode())
+            .rstrip(b"=")
+            .decode()
+        )
+        payload = (
+            base64.urlsafe_b64encode(
+                json.dumps(
+                    {"iss": "https://login.ibm.com/oidc/endpoint/default"}
+                ).encode()
+            )
+            .rstrip(b"=")
+            .decode()
+        )
         sig = base64.urlsafe_b64encode(b"fakesig").rstrip(b"=").decode()
         token = f"{header}.{payload}.{sig}"
         assert _peek_jwt_issuer(token) == "https://login.ibm.com/oidc/endpoint/default"
@@ -135,8 +154,16 @@ class TestGitHubAuthProvider:
         assert provider.identify_token("ghp_abc123def456") is True
 
     def test_identify_rejects_jwt(self):
-        header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode()).rstrip(b"=").decode()
-        payload = base64.urlsafe_b64encode(json.dumps({"sub": "test"}).encode()).rstrip(b"=").decode()
+        header = (
+            base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode())
+            .rstrip(b"=")
+            .decode()
+        )
+        payload = (
+            base64.urlsafe_b64encode(json.dumps({"sub": "test"}).encode())
+            .rstrip(b"=")
+            .decode()
+        )
         sig = base64.urlsafe_b64encode(b"fakesig").rstrip(b"=").decode()
         token = f"{header}.{payload}.{sig}"
         provider = GitHubAuthProvider()
@@ -223,7 +250,11 @@ class TestIBMidAuthProvider:
         provider = self._make_provider(rsa_keypair, ibmid_issuer)
         token = _make_test_jwt(
             rsa_keypair,
-            {"iss": "https://other-issuer.com", "sub": "testuser", "exp": int(time.time()) + 3600},
+            {
+                "iss": "https://other-issuer.com",
+                "sub": "testuser",
+                "exp": int(time.time()) + 3600,
+            },
         )
         assert provider.identify_token(token) is False
 
@@ -254,7 +285,11 @@ class TestIBMidAuthProvider:
         mock_signing_key = MagicMock()
         mock_signing_key.key = public_key
 
-        with patch.object(provider._jwk_client, "get_signing_key_from_jwt", return_value=mock_signing_key):
+        with patch.object(
+            provider._jwk_client,
+            "get_signing_key_from_jwt",
+            return_value=mock_signing_key,
+        ):
             user, error = provider.validate_token(token)
 
         assert user is not None
@@ -283,7 +318,11 @@ class TestIBMidAuthProvider:
         mock_signing_key = MagicMock()
         mock_signing_key.key = public_key
 
-        with patch.object(provider._jwk_client, "get_signing_key_from_jwt", return_value=mock_signing_key):
+        with patch.object(
+            provider._jwk_client,
+            "get_signing_key_from_jwt",
+            return_value=mock_signing_key,
+        ):
             user, error = provider.validate_token(token)
 
         assert user is None
@@ -312,7 +351,11 @@ class TestIBMidAuthProvider:
         mock_signing_key = MagicMock()
         mock_signing_key.key = public_key
 
-        with patch.object(provider._jwk_client, "get_signing_key_from_jwt", return_value=mock_signing_key):
+        with patch.object(
+            provider._jwk_client,
+            "get_signing_key_from_jwt",
+            return_value=mock_signing_key,
+        ):
             user, error = provider.validate_token(token)
 
         assert user is None

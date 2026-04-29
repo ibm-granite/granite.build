@@ -56,12 +56,10 @@ def test_create_secret_env_file(tmp_path):
 def test_get_secrets_returns_decoded_values(tmp_path):
     yaml_file = tmp_path / "secrets.yaml"
 
-    yaml_file.write_text(
-        """
+    yaml_file.write_text("""
 SECRET1: c2VjcmV0MQ==
 SECRET2: dGVzdDI=
-"""
-    )
+""")
 
     manager = LocalSpaceSecretManager(uri="local", secrets_dir=yaml_file)
     secrets = manager.get_secrets()

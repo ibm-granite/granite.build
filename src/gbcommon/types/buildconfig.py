@@ -16,13 +16,14 @@
 
 import logging
 from pathlib import Path
-from pydantic import Field
 from typing import Any, Dict, List, Optional, Self, Type
 
-from gbcommon.types.validation import GBValidationErrorType, GBValidationErrors
+from pydantic import Field
+
+from gbcommon.types.validation import GBValidationErrors, GBValidationErrorType
 
 from .config import Config
-from .constants import CURRENT_BUILD_YAML_VERSION, BUILD_YAML_BASE_KEYS
+from .constants import BUILD_YAML_BASE_KEYS, CURRENT_BUILD_YAML_VERSION
 
 logger = logging.getLogger(__name__)
 

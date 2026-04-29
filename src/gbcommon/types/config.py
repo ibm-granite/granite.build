@@ -14,12 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+from typing import Dict, List, Optional, Self, Type
+
 import yaml
 from git import Optional
-from pathlib import Path
 from pydantic import BaseModel
-from typing import Self, Type
-from typing import Dict, List, Optional, Self, Type
 
 
 class Config(BaseModel):

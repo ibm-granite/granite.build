@@ -1,19 +1,20 @@
-import click
-import dateparser
 import json
 import logging
 import os
 import sys
 import webbrowser
+from typing import Any, Dict, List
+
+import click
+import dateparser
 from numpy import ceil
 from tabulate import tabulate
 from tqdm import tqdm
-from typing import Any, Dict, List
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
-from gbcli.utils.gbcredentials import get_user_token
 from gbcli.commands.common_options import common_options
+from gbcli.utils.click_utils import validation_formatting
 from gbcli.utils.gbconstants import (
     ASSETS_REPO_NAME,
     BUILD_DESCRIBE_ARTIFACTS_HEADERS,
@@ -22,9 +23,9 @@ from gbcli.utils.gbconstants import (
     BUILD_LINEAGE_FULL_HEADERS,
     BUILD_LIST_HEADERS,
     BUILD_LOG_DEFAULT_QUERY_RANGE,
-    BUILD_LOG_SECONDS_IN_A_DAY,
     BUILD_LOG_MAX_LOG_LIFESPAN,
     BUILD_LOG_MAX_QUERY_RANGE,
+    BUILD_LOG_SECONDS_IN_A_DAY,
     BUILD_STATUS_ARTIFACTS_HEADERS,
     BUILD_STATUS_HISTORY_HEADERS,
     BUILD_STATUS_STEPS_HEADERS,
@@ -33,6 +34,7 @@ from gbcli.utils.gbconstants import (
     PROJECT_NAME,
     is_standalone,
 )
+from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.lh_auth import AuthException
 from gbcli.utils.utils import (
     change_timestamp_by_days,
@@ -50,7 +52,6 @@ from gbcli.utils.utils import (
     validate_tags,
 )
 from gbcli.utils.versionutil import check_current_and_latest_versions
-from gbcli.utils.click_utils import validation_formatting
 
 logger = logging.getLogger(__name__)
 

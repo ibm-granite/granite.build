@@ -3,9 +3,9 @@ import time
 from typing import Optional
 
 from gbcli.utils.gbconstants import (
-    BUILD_LOGALL_PAGE_SIZE,
     BUILD_LOG_DEFAULT_QUERY_RANGE,
     BUILD_LOG_FOLLOW_SLEEP_TIME,
+    BUILD_LOGALL_PAGE_SIZE,
     GBSERVER_BUILD_API,
     PROJECT_NAME,
     gb_environment_config,

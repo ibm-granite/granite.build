@@ -69,6 +69,7 @@ class EmptyAsyncIterator:
     async def __anext__(self):
         raise StopAsyncIteration
 
+
 from gbserver.monitoring.logfile_monitor import LogFileMonitor
 from gbserver.monitoring.lsf_bsub_monitor import LSFBsubMonitor
 from gbserver.monitoring.streams.local_file_stream import LocalFileStream
@@ -124,8 +125,17 @@ async def test_local_file_stream_drains_remaining_lines(tmp_path):
     await monitor_task()
 
     # Verify all 6 lines were captured
-    assert len(collected_lines) == 6, f"Expected 6 lines, got {len(collected_lines)}: {collected_lines}"
-    assert collected_lines == ["line 1", "line 2", "line 3", "line 4", "line 5", "line 6"]
+    assert (
+        len(collected_lines) == 6
+    ), f"Expected 6 lines, got {len(collected_lines)}: {collected_lines}"
+    assert collected_lines == [
+        "line 1",
+        "line 2",
+        "line 3",
+        "line 4",
+        "line 5",
+        "line 6",
+    ]
 
 
 @pytest.mark.asyncio
@@ -212,15 +222,26 @@ async def test_ssh_file_stream_drains_with_tail_command(tmp_path):
 
     # Verify behavior
     assert len(collected_lines) == 6, f"Expected 6 lines, got {len(collected_lines)}"
-    assert collected_lines == ["line 1", "line 2", "line 3", "line 4", "line 5", "line 6"]
+    assert collected_lines == [
+        "line 1",
+        "line 2",
+        "line 3",
+        "line 4",
+        "line 5",
+        "line 6",
+    ]
 
     # Verify Phase 2 command was executed with correct line offset
-    assert len(executed_commands) == 2, f"Expected 2 commands, got {len(executed_commands)}"
+    assert (
+        len(executed_commands) == 2
+    ), f"Expected 2 commands, got {len(executed_commands)}"
 
     # Second command should be tail -n +4 (skip first 3 lines)
     phase2_cmd = executed_commands[1]
     phase2_cmd_str = " ".join(phase2_cmd)
-    assert "tail -n +4" in phase2_cmd_str, f"Expected 'tail -n +4' in command: {phase2_cmd_str}"
+    assert (
+        "tail -n +4" in phase2_cmd_str
+    ), f"Expected 'tail -n +4' in command: {phase2_cmd_str}"
 
 
 @pytest.mark.asyncio
@@ -289,7 +310,9 @@ async def test_logfile_monitor_processes_all_drained_lines(tmp_path):
     )
 
     # Verify all 4 lines were processed (including those written after stop_event)
-    assert len(lines_processed) == 4, f"Expected 4 lines processed, got {len(lines_processed)}: {lines_processed}"
+    assert (
+        len(lines_processed) == 4
+    ), f"Expected 4 lines processed, got {len(lines_processed)}: {lines_processed}"
     assert "LLMB_EVENT_WORKLOAD_STATUS:running" in lines_processed[0]
     assert "Processing checkpoint 10086" in lines_processed[1]
     assert "Pushed URI: lh://prod/models/checkpoint-10086" in lines_processed[2]
@@ -404,7 +427,9 @@ async def test_lsf_bsub_and_logfile_monitor_coordination(tmp_path):
         # The logfile monitor may lag behind reading these final lines
 
     # Run all tasks concurrently
-    with patch("gbserver.monitoring.lsf_bsub_monitor.GBSERVER_MONITORING_GRACE_PERIOD", 0.2):
+    with patch(
+        "gbserver.monitoring.lsf_bsub_monitor.GBSERVER_MONITORING_GRACE_PERIOD", 0.2
+    ):
         await asyncio.gather(
             bsub_monitor.monitor(),
             logfile_monitor.monitor(),
@@ -413,13 +438,17 @@ async def test_lsf_bsub_and_logfile_monitor_coordination(tmp_path):
         )
 
     # Verify all lines were captured, including those written after stop_event
-    assert len(collected_lines) == 7, f"Expected 7 lines, got {len(collected_lines)}: {collected_lines}"
+    assert (
+        len(collected_lines) == 7
+    ), f"Expected 7 lines, got {len(collected_lines)}: {collected_lines}"
     assert "Job starting..." in collected_lines[0]
     assert "Pushed URI: lh://prod/models/checkpoint-1000" in collected_lines[5]
     assert "Job complete" in collected_lines[6]
 
     # Verify the critical line at the end was captured (this would have been lost before the fix)
-    assert any("Pushed URI" in line for line in collected_lines), "Critical 'Pushed URI' line was lost!"
+    assert any(
+        "Pushed URI" in line for line in collected_lines
+    ), "Critical 'Pushed URI' line was lost!"
 
 
 @pytest.mark.asyncio
@@ -508,11 +537,19 @@ async def test_ssh_file_stream_phase2_executes_tail_command():
 
     # Verify all 6 lines captured
     assert len(collected_lines) == 6, f"Expected 6 lines, got {len(collected_lines)}"
-    assert collected_lines == ["line 1", "line 2", "line 3", "line 4", "line 5", "line 6"]
+    assert collected_lines == [
+        "line 1",
+        "line 2",
+        "line 3",
+        "line 4",
+        "line 5",
+        "line 6",
+    ]
 
     # Verify two commands were executed
-    assert len(executed_commands) == 2, f"Expected 2 commands, got {len(executed_commands)}"
-
+    assert (
+        len(executed_commands) == 2
+    ), f"Expected 2 commands, got {len(executed_commands)}"
 
 
 @pytest.mark.asyncio
@@ -568,7 +605,9 @@ async def test_logfile_monitor_does_not_exit_early_on_stop_event(tmp_path):
     await monitor.monitor()
 
     # Verify monitor processed ALL 4 lines, including those written after stop_event was set
-    assert len(lines_processed) == 4, f"Expected 4 lines, got {len(lines_processed)}: {lines_processed}"
+    assert (
+        len(lines_processed) == 4
+    ), f"Expected 4 lines, got {len(lines_processed)}: {lines_processed}"
     assert "initial line" in lines_processed[0]
     assert "line after stop_event 1" in lines_processed[1]
     assert "line after stop_event 2" in lines_processed[2]
@@ -698,7 +737,10 @@ async def test_ssh_file_stream_phase2_stderr_raises_connection_error():
                 collected_lines.append(line)
 
     # Phase 1 lines should still have been captured before the error
-    assert collected_lines == ["line 1", "line 2"], f"Expected Phase 1 lines, got: {collected_lines}"
+    assert collected_lines == [
+        "line 1",
+        "line 2",
+    ], f"Expected Phase 1 lines, got: {collected_lines}"
 
 
 @pytest.mark.asyncio

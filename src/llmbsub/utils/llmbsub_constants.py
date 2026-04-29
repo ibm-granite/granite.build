@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from gbcli.utils.gbconstants import getenv_boolean, GBSERVER_INSTANCE
+from gbcli.utils.gbconstants import GBSERVER_INSTANCE, getenv_boolean
 
 LLMBSUB_OUTPUT_HEADER = ["ARTIFACT_TYPE", "ARTIFACT_NAME", "ARTIFACT_PATH"]
 CONFIG_FILE_CONTENTS = "CONFIG_FILE_CONTENTS"

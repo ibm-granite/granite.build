@@ -1,9 +1,8 @@
-from gbserver.storage.storage import BaseStoredItem
-from gbserver.types.status import Status
-
-
 from datetime import datetime
 from typing import Optional, Self
+
+from gbserver.storage.storage import BaseStoredItem
+from gbserver.types.status import Status
 
 
 class StoredStepRun(BaseStoredItem):
@@ -20,6 +19,5 @@ class StoredStepRun(BaseStoredItem):
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
 
-
-    def __init__(self:Self, **kwargs):
+    def __init__(self: Self, **kwargs):
         super().__init__(**kwargs)

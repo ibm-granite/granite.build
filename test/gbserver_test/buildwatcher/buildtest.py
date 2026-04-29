@@ -48,6 +48,11 @@ from gbserver_test.test_utils import (
 )
 from pydantic import BaseModel
 
+from gbcommon.types.testing import (
+    ENV_VAR_GBTEST_MOCK_HF_CALLS,
+    ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO,
+    GBTEST_MOCK_HF,
+)
 from gbcommon.uri.hf import HfURI
 from gbcommon.uri.uri import URI
 from gbserver.buildwatcher.buildrunner import BuildRunner
@@ -69,13 +74,6 @@ from gbserver.types.artifact import ArtifactType
 from gbserver.types.constants import (
     ENV_VAR_GBSERVER_IMAGE_TAG,
     ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG,
-)
-from gbcommon.types.testing import (
-    ENV_VAR_GBTEST_MOCK_HF_CALLS,
-    GBTEST_MOCK_HF,
-    ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO,
-)
-from gbserver.types.constants import (
     GB_ENVIRONMENT,
     GBSERVER_DEFAULT_BUILDRUNNER_TYPE,
     GBSERVER_GBSERVER_IMAGE_TAG,
@@ -180,7 +178,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         self._hf_delete_patcher.stop()
         os.environ.pop(ENV_VAR_GBTEST_MOCK_HF_CALLS, None)
         global GBTEST_MOCK_HF
-        GBTEST_MOCK_HF = self._hf_was_mocked 
+        GBTEST_MOCK_HF = self._hf_was_mocked
         if GBTEST_SKIP_BUILD_TEARDOWN:
             logger.warning("skipping the teardown of the test build!")
             return

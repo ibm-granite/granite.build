@@ -20,7 +20,6 @@ from gbserver.types.constants import (
     PYICEBERG_LOG_LEVEL,
 )
 from gbserver.utils.logger import LoggingUtility
-
 from gbserver.utils.optional_imports import HAS_LAKEHOUSE
 
 if HAS_LAKEHOUSE:
@@ -381,7 +380,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         uuid: str,
         fields: dict[str, Any],
         should_update: Optional[Callable[[Any], bool]] = None,
-        update_updated_time: bool = True
+        update_updated_time: bool = True,
     ) -> Optional[Any]:
         """Update the given fields of the item stored under the given uuid.
 
@@ -407,10 +406,14 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         from gbserver.storage.storage import UPDATED_TIME_FIELD_NAME
         from gbserver.utils.utils import get_utc_time
 
-        self.logger.info(f"Begin updating fields {list(fields.keys())} for item with uuid {uuid}")
+        self.logger.info(
+            f"Begin updating fields {list(fields.keys())} for item with uuid {uuid}"
+        )
         item = self.get_by_uuid(uuid)
         if item is None:
-            raise ValueError(f"Item with uuid {uuid} not found in table {self.table_name}")
+            raise ValueError(
+                f"Item with uuid {uuid} not found in table {self.table_name}"
+            )
 
         # Check should_update condition
         if should_update is not None and not should_update(item):
@@ -419,7 +422,9 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         # Apply the field updates
         for field_name, field_value in fields.items():
             if not hasattr(item, field_name):
-                raise ValueError(f"Items of type {self.item_class.__name__} do not have an attribute named {field_name}")
+                raise ValueError(
+                    f"Items of type {self.item_class.__name__} do not have an attribute named {field_name}"
+                )
             setattr(item, field_name, field_value)
         if update_updated_time and hasattr(item, UPDATED_TIME_FIELD_NAME):
             setattr(item, UPDATED_TIME_FIELD_NAME, get_utc_time())

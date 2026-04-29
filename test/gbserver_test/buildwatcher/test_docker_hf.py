@@ -23,22 +23,24 @@ HF network calls are mocked so no real HuggingFace traffic is required.
 The Docker daemon must be available (gated by skipif_no_docker).
 """
 
-#import os
+# import os
 import os
 from pathlib import Path
 from typing import Self
 
 import pytest
-#from unittest.mock import patch
 
-#import pytest
+# import pytest
 from gbserver_test.buildwatcher.buildtest import (
     AbstractBuildRunnerTest,
     BuildTestSpecification,
     ExpectedTarget,
 )
 
-#from gbcommon.uri.hf import HfURI
+# from unittest.mock import patch
+
+
+# from gbcommon.uri.hf import HfURI
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -73,7 +75,7 @@ _TEST_DATA_DIR = (
 # skipif_no_docker = pytest.mark.skipif(
 #     not _docker_available(),
 #     reason="Docker/Podman daemon not available",
-#)
+# )
 
 # ---------------------------------------------------------------------------
 # Test specification

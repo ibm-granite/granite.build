@@ -1,12 +1,13 @@
-import click
 import json
+
+import click
 from tabulate import tabulate
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.utils.gbcredentials import get_user_token
 from gbcli.commands.common_options import common_options
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME
+from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.versionutil import check_current_and_latest_versions
 
 logger_name = __name__

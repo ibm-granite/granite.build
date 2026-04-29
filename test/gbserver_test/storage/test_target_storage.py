@@ -1,14 +1,19 @@
+from gbserver_test.storage.storage import (
+    AbstractExistingDataReadTest,
+    AbstractStorageTest,
+    AbstractStorageTestSupport,
+)
 
 from gbserver.storage import singleton_storage
 from gbserver.storage.storage import BaseItemStorage
 from gbserver.storage.stored_target_run import StoredTargetRun
-from gbserver_test.storage.storage  import AbstractExistingDataReadTest, AbstractStorageTest, AbstractStorageTestSupport
+
 
 class TargetStorageTestSupport(AbstractStorageTestSupport):
 
     def __init__(self):
-        super().__init__(sort_column="name")  
-    
+        super().__init__(sort_column="name")
+
     def _get_test_item(self, index):
         obj = StoredTargetRun(
             name=f"mytarget{index}",
@@ -19,6 +24,7 @@ class TargetStorageTestSupport(AbstractStorageTestSupport):
         )
         return obj
 
+
 class BaseTargetStorageTest(AbstractStorageTest):
 
     @classmethod
@@ -28,8 +34,10 @@ class BaseTargetStorageTest(AbstractStorageTest):
     def _get_tested_storage(self) -> BaseItemStorage:
         return self.storage.target_storage
 
+
 class BaseLegacyStoredTargetTest(AbstractExistingDataReadTest):
 
-
-    def _get_tested_readonly_storage(self,storage:singleton_storage.SingletonAdminStorage):
+    def _get_tested_readonly_storage(
+        self, storage: singleton_storage.SingletonAdminStorage
+    ):
         return storage.target_storage

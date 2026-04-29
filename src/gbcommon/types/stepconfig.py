@@ -15,9 +15,11 @@
 # limitations under the License.
 
 from enum import StrEnum, auto
-from gbcommon.types.config import Config
-from pydantic import Field
 from typing import Dict, List, Optional
+
+from pydantic import Field
+
+from gbcommon.types.config import Config
 
 
 class StepType(StrEnum):

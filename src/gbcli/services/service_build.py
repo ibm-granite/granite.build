@@ -2,25 +2,26 @@ import difflib
 import io
 import itertools
 import logging
-import numpy as np
 import os
 import re
 import shutil
 import tempfile
 import threading
 import time
-import yaml
 import zipfile
 from base64 import b64decode, b64encode
 from datetime import datetime
-from fastapi import HTTPException
 from glob import glob
 from pathlib import Path
+from typing import Any, List, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
+
+import numpy as np
+import yaml
+from fastapi import HTTPException
 from pydantic import BaseModel
 from requests import HTTPError
 from requests.exceptions import ConnectionError
-from typing import Any, List, Optional, Tuple
-from urllib.parse import urlsplit, urlunsplit
 
 from gbcli.utils.buildutil import (
     apply_parameters,
@@ -31,19 +32,19 @@ from gbcli.utils.cli_config import get_local_build_cache
 from gbcli.utils.gbconstants import (
     ASSETS_REPO_URL,
     BUILD_FILENAME,
-    BUILD_LOGALL_PAGE_SIZE,
     BUILD_LOG_DEFAULT_QUERY_RANGE,
     BUILD_LOG_FOLLOW_SLEEP_TIME,
+    BUILD_LOGALL_PAGE_SIZE,
     BUILD_PARAMETERS_FILE,
     BUILD_RUN_FILE,
     BUILD_RUN_YAML_KEY,
     CURRENT_BUILD_YAML_VERSION,
     CURRENT_BUILD_YAML_VERSION_KEY,
-    USER_NOT_LOGGED_IN_ERROR_MESSAGE,
     GBSERVER_BUILD_API,
     GBSERVER_LINEAGE_API,
     SPACE_REPO_BUILD_FOLDER,
     TEMPLATES_REPO_FOLDER,
+    USER_NOT_LOGGED_IN_ERROR_MESSAGE,
     VPN_CONNECTION_ERROR_MESSAGE,
     gb_environment,
     gb_environment_config,
@@ -64,11 +65,10 @@ from gbcli.utils.gbserver import (
     validate_build,
 )
 from gbcli.utils.gh_auth import get_user
-from gbcli.utils.gh_clone import (
+from gbcli.utils.gh_clone import (  # get_prs,
     clone_github_repo,
     delete_repo_subscription,
     get_pr_comments,
-    # get_prs,
     get_repo_subscription,
     ignore_repo_subscription,
 )
@@ -780,9 +780,7 @@ def build_lineage_gbserver(
                             for target in targets:
                                 jobs.append(
                                     {
-                                        "release_id": job_details.get(
-                                            "release_id", ""
-                                        ),
+                                        "release_id": job_details.get("release_id", ""),
                                         "category": job_details.get("category", ""),
                                         "job_name": record.get("job", {}).get(
                                             "name", ""
@@ -795,9 +793,7 @@ def build_lineage_gbserver(
                                         "job_completed_at": job_details.get(
                                             "job_completed_at", ""
                                         ),
-                                        "job_status": job_details.get(
-                                            "job_status", ""
-                                        ),
+                                        "job_status": job_details.get("job_status", ""),
                                         "owner": tags.get("username", ""),
                                         "source": format_obj_name(source),
                                         "source_type": infer_artifact_type(source),
@@ -2579,7 +2575,9 @@ def prepare_build_local_contents(
     if not os.path.exists(experiments_folder):
         os.mkdir(experiments_folder)
 
-    experiment_folder = tempfile.mkdtemp(prefix=f"{branch_name}_", dir=experiments_folder)
+    experiment_folder = tempfile.mkdtemp(
+        prefix=f"{branch_name}_", dir=experiments_folder
+    )
     experiment_build_file_path = os.path.join(experiment_folder, "build.yaml")
     # TODO: do not copy entire folder, lets copy only needed files
     if not filename or filename == "":

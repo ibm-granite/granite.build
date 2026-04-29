@@ -1,7 +1,8 @@
-import click
 import json
 import sys
 from typing import Dict
+
+import click
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
