@@ -21,6 +21,8 @@ import random
 from abc import abstractmethod
 from typing import Optional
 
+import pytest
+
 from gbserver.storage import singleton_storage
 from gbserver.storage.storage import BaseItemStorage, BaseStoredItem, IItemStorage
 from gbserver.storage.storage_factory import StorageFactory
