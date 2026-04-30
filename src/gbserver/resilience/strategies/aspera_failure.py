@@ -82,7 +82,7 @@ class AsperaRetryStrategy(RetryStrategy):
             if not hasattr(event.payload, "msg"):
                 return False
 
-            msg = event.payload.msg
+            msg = event.payload.msg  # type: ignore[union-attr]
 
             for pattern in self._patterns:
                 if pattern.search(msg):
@@ -104,5 +104,5 @@ class AsperaRetryStrategy(RetryStrategy):
         _event: BuildEvent,
     ) -> Set[str]:
         """ """
-        nodes = set()
+        nodes = set()  # type: ignore[var-annotated]
         return nodes

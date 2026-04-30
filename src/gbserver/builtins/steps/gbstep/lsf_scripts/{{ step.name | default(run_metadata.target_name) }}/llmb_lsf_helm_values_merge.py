@@ -77,11 +77,11 @@ def remove_nulls(x: Any) -> Any:
                 result[k] = vv
         return result
     if isinstance(x, list):
-        result = []
+        result = []  # type: ignore[assignment]
         for v in x:
             vv = remove_nulls(v)
             if vv is not None:
-                result.append(vv)
+                result.append(vv)  # type: ignore[attr-defined]
         return result
     return x
 

@@ -251,7 +251,7 @@ class BuildSetup:
         logger.info(
             f"Enter perform_build_prereqs({stored_build.uuid}, status={stored_build.status})"
         )
-        updates = {}
+        updates = {}  # type: ignore[var-annotated]
         if stored_build.source_uri:  # Just in case
             logger.info(f"Exit early perform_build_prereqs({stored_build.uuid})")
             return True, updates
@@ -271,7 +271,7 @@ class BuildSetup:
             build_message_logger.error(msg)
             success = False  # Should reattempt
             updates["status"] = Status.FAILED
-            updates["falure_reason"] = msg
+            updates["falure_reason"] = msg  # type: ignore[assignment]
             stored_build.status = Status.FAILED
             stored_build.failure_reason = msg
         elif not errors.is_valid() or (self.create_pr and not pr_uri):
@@ -289,7 +289,7 @@ class BuildSetup:
             success = True
 
         if pr_uri:
-            updates["source_uri"] = pr_uri
+            updates["source_uri"] = pr_uri  # type: ignore[assignment]
 
         logger.info(f"Exit perform_build_prereqs({stored_build.uuid} success={success})")
         return success, updates

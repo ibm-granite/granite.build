@@ -51,6 +51,7 @@ from gbserver.resilience.strategies.unhealthy_insufficient_pods import (
 )
 
 if TYPE_CHECKING:
+    from gbserver.monitoring.appwrapper_monitor import AppWrapperMonitor
     from gbserver.resilience.node_health_tracker import NodeHealthTracker
     from gbserver.resilience.retry_handler import RetryStrategy
 
@@ -188,7 +189,7 @@ class K8s(Environment):
         self.seen_pods: Set[str] = set()
         self.kube_config: Optional[str] = None
         self.kube_context: Optional[str] = None
-        self.ssl_verification: Optional[str] = True
+        self.ssl_verification: Optional[str] = True  # type: ignore[assignment]
         authentication = environment_config.config.get("authentication", {})
         assert isinstance(
             authentication, dict
@@ -289,7 +290,7 @@ class K8s(Environment):
         async with await AtomicApiClient.create_api_client(
             kube_config_string=self.kube_config,
             kube_context=self.kube_context,
-            ssl_verification=self.ssl_verification,
+            ssl_verification=self.ssl_verification,  # type: ignore[arg-type]
         ) as api:
             try:
                 async with aiohttp.ClientSession() as session:
@@ -353,7 +354,7 @@ class K8s(Environment):
         async with await AtomicApiClient.create_api_client(
             kube_config_string=self.kube_config,
             kube_context=self.kube_context,
-            ssl_verification=self.ssl_verification,
+            ssl_verification=self.ssl_verification,  # type: ignore[arg-type]
         ) as api:
             try:
                 v1 = client.CoreV1Api(api)
@@ -385,11 +386,11 @@ class K8s(Environment):
                     label_selector,
                     namespace,
                 )
-                return None
+                return None  # type: ignore[return-value]
             pod_names = [pod.metadata.name for pod in pod_list.items]
         except client.ApiException as e:
             logger.error("Error fetching pods: %s", str(e))
-            return None
+            return None  # type: ignore[return-value]
         logger.info("Found the pods %s for appwrapper %s", str(pod_names), appwrapper_name)
         return pod_names
 
@@ -681,7 +682,7 @@ class K8s(Environment):
         dockerconfig_files = []
 
         for idx, pull_secret_name in enumerate(pull_secrets):
-            pull_secret_value = self.secrets.get(pull_secret_name)
+            pull_secret_value = self.secrets.get(pull_secret_name)  # type: ignore[union-attr]
             if pull_secret_value:
                 # Name can still be set with --set
                 extra_runmetadata_values.append(
@@ -845,12 +846,12 @@ class K8s(Environment):
 
                 merged_step_folder_path = merged_dir_path
                 appwrapper_name = self.launched_releases[launch_id]
-                namespace = self.config.config["namespace"]
+                namespace = self.config.config["namespace"]  # type: ignore[union-attr]
 
                 async with await AtomicApiClient.create_api_client(
                     kube_config_string=self.kube_config,
                     kube_context=self.kube_context,
-                    ssl_verification=self.ssl_verification,
+                    ssl_verification=self.ssl_verification,  # type: ignore[arg-type]
                 ) as api:
                     v1 = client.CoreV1Api(api)
                     poll_interval = 5
@@ -884,8 +885,8 @@ class K8s(Environment):
                     )
                     for container_name in container_names:
                         await self.copy_merged_dir_to_pvc(
-                            kube_config=self.kube_config,
-                            kube_context=self.kube_context,
+                            kube_config=self.kube_config,  # type: ignore[arg-type]
+                            kube_context=self.kube_context,  # type: ignore[arg-type]
                             pod_name=str(pod_names[0]),
                             base_targetsteprun_assets_dir=targetsteprun_assets_dir,
                             container_name=container_name,
@@ -963,7 +964,7 @@ class K8s(Environment):
             max_wait:      Maximum seconds to wait before giving up.
             poll_interval: Seconds between polls.
         """
-        namespace = self.config.config["namespace"]
+        namespace = self.config.config["namespace"]  # type: ignore[union-attr]
         logger.info(
             "[K8s launch_id %s] Waiting for AppWrapper %s to be fully deleted (max %ds)...",
             launch_id,
@@ -974,7 +975,7 @@ class K8s(Environment):
         async with await AtomicApiClient.create_api_client(
             kube_config_string=self.kube_config,
             kube_context=self.kube_context,
-            ssl_verification=self.ssl_verification,
+            ssl_verification=self.ssl_verification,  # type: ignore[arg-type]
         ) as _api:
             _custom_api = client.CustomObjectsApi(api_client=_api)
             while asyncio.get_event_loop().time() < deadline:
@@ -1226,7 +1227,7 @@ class K8s(Environment):
                 poll=5.0,
                 kube_config=self.kube_config,
                 kube_context=self.kube_context,
-                ssl_verification=self.ssl_verification,
+                ssl_verification=self.ssl_verification,  # type: ignore[arg-type]
                 launch_id=launch_id,
                 entityrun_metadata=entityrun_metadata,
                 event_queue=monitor_event_queue,
@@ -1399,7 +1400,7 @@ class K8s(Environment):
         async with await AtomicApiClient.create_api_client(
             kube_config_string=self.kube_config,
             kube_context=self.kube_context,
-            ssl_verification=self.ssl_verification,
+            ssl_verification=self.ssl_verification,  # type: ignore[arg-type]
         ) as api:
             self._get_launch_stopped_event(launch_id).clear()
             try:
@@ -1882,11 +1883,11 @@ class K8s(Environment):
         mount_dst = None
         if use_mount:
             assert isinstance(assetstore, Cosstore), f"invalid assetstore: {assetstore}"
-            volume = storepush_config.config.get("volume")
+            volume = storepush_config.config.get("volume")  # type: ignore[assignment, union-attr]
             if not volume:
                 raise ValueError("Missing 'volume' in storepush configuration")
             assert isinstance(volume, str), f"invalid volume: {volume}"
-            mount_dst = os.path.join("/", volume, assetstore.get_relpath(uri))
+            mount_dst = os.path.join("/", volume, assetstore.get_relpath(uri))  # type: ignore[arg-type]
 
         cospush_config = {
             "path": binding_path,
@@ -1934,7 +1935,7 @@ class K8s(Environment):
             if cache_path is None:
                 raise ValueError("Did not find 'cache_path' in storeload configuration")
 
-            hf_uri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)
+            hf_uri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
             binding_path = Path(cache_path) / hf_uri.get_owner() / hf_uri.get_repo() / hf_uri.hash()
             # binding_path.mkdir(parents=True, exist_ok=True)
             hfpull_config = {
@@ -1995,7 +1996,7 @@ class K8s(Environment):
         """
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
-        hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)
+        hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
         logger.info("binding type %s value %s", type(binding), binding)
         assert isinstance(
             binding, dict
@@ -2173,7 +2174,7 @@ class K8s(Environment):
         async with await AtomicApiClient.create_api_client(
             kube_config_string=self.kube_config,
             kube_context=self.kube_context,
-            ssl_verification=self.ssl_verification,
+            ssl_verification=self.ssl_verification,  # type: ignore[arg-type]
         ) as api:
             try:
                 v1 = client.CoreV1Api(api)
@@ -2210,7 +2211,7 @@ async def log_main() -> None:
     # namespace: str = "granite-build"  #  input("Enter the namespace (default: default): ") or "default"
     # log_filter: str = "" # input("Enter a regex pattern to filter logs (leave empty for all logs): ")
 
-    queue = asyncio.Queue()
+    queue = asyncio.Queue()  # type: ignore[var-annotated]
     env_cfg_file = os.path.abspath(
         os.path.join(
             os.path.dirname(__file__),
@@ -2264,8 +2265,8 @@ async def log_main_multiple_instances() -> None:
         "granite-build-staging"  #  input("Enter the namespace (default: default): ") or "default"
     )
 
-    queue_1 = asyncio.Queue()
-    queue_2 = asyncio.Queue()
+    queue_1 = asyncio.Queue()  # type: ignore[var-annotated]
+    queue_2 = asyncio.Queue()  # type: ignore[var-annotated]
 
     env_cfg_file_1 = os.path.abspath(
         os.path.join(
@@ -2280,8 +2281,8 @@ async def log_main_multiple_instances() -> None:
         )
     )
 
-    kube_config_1 = os.path.join(os.getenv("HOME"), ".kube", "config")
-    kube_config_2 = os.path.join(os.getenv("HOME"), ".kube", "config")
+    kube_config_1 = os.path.join(os.getenv("HOME"), ".kube", "config")  # type: ignore[arg-type]
+    kube_config_2 = os.path.join(os.getenv("HOME"), ".kube", "config")  # type: ignore[arg-type]
     kube_context_1 = "granite-build/api-dmf-dipc-res-ibm-com:6443/cmadam@us.ibm.com"
     kube_context_2 = (
         "granite-build-staging/c100-e-us-south-containers-cloud-ibm-com:30049/IAM#cmadam@us.ibm.com"
@@ -2334,13 +2335,13 @@ async def log_watch_multiple_clusters() -> None:
     launch_id_2: str = "gb-logging-1-6k"
     namespace_1: str = "granite-build"
     namespace_2: str = "vela2-training"
-    kube_config_1 = os.path.join(os.getenv("HOME"), ".kube", "config")
-    kube_config_2 = os.path.join(os.getenv("HOME"), ".kube", "config")
+    kube_config_1 = os.path.join(os.getenv("HOME"), ".kube", "config")  # type: ignore[arg-type]
+    kube_config_2 = os.path.join(os.getenv("HOME"), ".kube", "config")  # type: ignore[arg-type]
     kube_context_1 = input("Enter kube context for the first cluster: ")
     kube_context_2 = input("Enter kube context for the second cluster: ")
 
-    queue_1 = asyncio.Queue()
-    queue_2 = asyncio.Queue()
+    queue_1 = asyncio.Queue()  # type: ignore[var-annotated]
+    queue_2 = asyncio.Queue()  # type: ignore[var-annotated]
 
     env_cfg_file_1 = os.path.abspath(
         os.path.join(
@@ -2418,16 +2419,16 @@ async def helm_multi_cluster() -> None:
         "granite-build-staging"  #  input("Enter the namespace (default: default): ") or "default"
     )
 
-    queue_1 = asyncio.Queue()
-    queue_2 = asyncio.Queue()
+    queue_1 = asyncio.Queue()  # type: ignore[var-annotated]
+    queue_2 = asyncio.Queue()  # type: ignore[var-annotated]
 
     test_path = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "../../../test/gbserver_test/environments")
     )
     env_cfg_file_1 = os.path.join(test_path, ENVIRONMENT_FILENAME)
     env_cfg_file_2 = os.path.join(test_path, "environment_staging.yaml")
-    kube_config_1 = os.path.join(os.getenv("HOME"), ".kube", "config")
-    kube_config_2 = os.path.join(os.getenv("HOME"), ".kube", "config")
+    kube_config_1 = os.path.join(os.getenv("HOME"), ".kube", "config")  # type: ignore[arg-type]
+    kube_config_2 = os.path.join(os.getenv("HOME"), ".kube", "config")  # type: ignore[arg-type]
     kube_context_1 = "granite-build/api-dmf-dipc-res-ibm-com:6443/cmadam@us.ibm.com"
     kube_context_2 = (
         "granite-build-staging/c100-e-us-south-containers-cloud-ibm-com:30049/IAM#cmadam@us.ibm.com"

@@ -98,11 +98,11 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
     _obfuscated_db_url: str
     _connect_args: Optional[dict]
 
-    _engine: Engine = None
+    _engine: Engine = None  # type: ignore[assignment]
     _inspector: Any = None
     _session_maker: Any = None
     _sql_alchemy_model: Any = None
-    _column_types: dict[str, Any] = None
+    _column_types: dict[str, Any] = None  # type: ignore[assignment]
 
     _db_addr_hash: str  # = Field(init=False)
     """Internal hash of database addressing components"""
@@ -135,10 +135,10 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
     get the quicker exact match feature w/o having to commit to Postgres and it support for array type columns.
     """
 
-    autoincr_column: str = None
+    autoincr_column: str = None  # type: ignore[assignment]
     """The name of the column used to autoincrement the primary key"""
 
-    default_pagination_sort_by_column: str = None
+    default_pagination_sort_by_column: str = None  # type: ignore[assignment]
     """The name of the column to sort by when pagination is specified in the where query, if none is specified."""
 
     # Some implementation pointers...
@@ -226,8 +226,8 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         return ()
 
     def __create_sqlalchemy_class_from_dict(
-        self, item: dict[str, Any], base: Type[declarative_base]
-    ) -> tuple[Type[declarative_base], dict[str, Type]]:
+        self, item: dict[str, Any], base: Any
+    ) -> tuple[Any, dict[str, Type]]:
         """
         Dynamically creates a SQLAlchemy declarative class from a python dictionary.
         Args:
@@ -288,13 +288,13 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             elif isinstance(value, str):
                 column = Column(String(256), nullable=True, index=indexed)
             elif isinstance(value, bool):
-                column = Column(Boolean, nullable=True, index=indexed)
+                column = Column(Boolean, nullable=True, index=indexed)  # type: ignore[arg-type]
             elif isinstance(value, int):
-                column = Column(Integer, nullable=True, index=indexed)
+                column = Column(Integer, nullable=True, index=indexed)  # type: ignore[arg-type]
             elif isinstance(value, float):
-                column = Column(Float, nullable=True, index=indexed)
+                column = Column(Float, nullable=True, index=indexed)  # type: ignore[arg-type]
             elif isinstance(value, datetime):
-                column = Column(DateTime(timezone=True), nullable=True, index=indexed)
+                column = Column(DateTime(timezone=True), nullable=True, index=indexed)  # type: ignore[arg-type]
             else:
                 column = Column(String(256), nullable=True, unique=unique, index=indexed)
             attributes[key] = column
@@ -492,7 +492,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         # Validate column name to prevent SQL injection
         _validate_sql_identifier(col_name, "column name")
 
-        column = Column(name=col_name, type_=col_type, nullable=True)
+        column = Column(name=col_name, type_=col_type, nullable=True)  # type: ignore[var-annotated]
         column_name = column.compile(dialect=self._engine.dialect)
         column_type = column.type.compile(self._engine.dialect)
         self._inspector.clear_cache()

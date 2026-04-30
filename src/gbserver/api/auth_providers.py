@@ -187,8 +187,8 @@ class IBMidAuthProvider(AuthProvider):
                 signing_key.key,
                 algorithms=["RS256"],
                 issuer=self._issuer,
-                options=decode_options,
-                **kwargs,
+                options=decode_options,  # type: ignore[arg-type]
+                **kwargs,  # type: ignore[arg-type]
             )
 
             sub = payload.get("sub", "")

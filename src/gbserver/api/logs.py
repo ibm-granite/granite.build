@@ -49,7 +49,7 @@ def logquery(query: Item) -> LogqueryResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Logquery not found!")
 
 
-@logs_api.post("/logquery/server/admin")
+@logs_api.post("/logquery/server/admin")  # type: ignore[no-redef]
 def logquery(request: Request, query: Item) -> LogqueryResponse:
     log_server_manager = None
     try:
@@ -81,7 +81,7 @@ def logquery(request: Request, query: Item) -> LogqueryResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Logquery not found!")
 
 
-@logs_api.post("/logquery/server/{build_id}")
+@logs_api.post("/logquery/server/{build_id}")  # type: ignore[no-redef]
 def logquery(request: Request, build_id: str, query: Item) -> LogqueryResponse:
     log_server_manager = None
     try:

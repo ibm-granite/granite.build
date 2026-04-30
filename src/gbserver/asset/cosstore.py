@@ -30,10 +30,11 @@ class Cosstore(Assetstore):
     """A class for storing and accessing cos asset"""
 
     def __init__(self: Self, uri: Union[URI, str], **kwargs) -> None:
-        super().__init__(uri, **kwargs)
+        super().__init__(uri, **kwargs)  # type: ignore[arg-type]
 
     @classmethod
-    def get_supported_uri_classes(self: Self):
+    def get_supported_uri_classes(cls):
+        """Get the supported URI classes."""
         return [CosURI]
 
     def _get_config_key(self: Self, key: str, default: str) -> str:

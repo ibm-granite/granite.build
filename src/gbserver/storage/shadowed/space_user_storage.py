@@ -28,9 +28,9 @@ from gbserver.utils.unwrap_errors import get_readable_error_message
 class BaseDualSpaceUserStorage(BaseDualItemStorage, ISpaceUserStorage):
 
     def get_by_space(self, space_name: str) -> List[StoredSpaceUser]:
-        r = self.primary.get_by_space(space_name)
+        r = self.primary.get_by_space(space_name)  # type: ignore[union-attr]
         try:
-            self.secondary.get_by_space(space_name)
+            self.secondary.get_by_space(space_name)  # type: ignore[union-attr]
         except Exception as e:
             err_stack = traceback.format_exc()
             body = get_readable_error_message(e=e, err_stack=err_stack)
@@ -40,9 +40,9 @@ class BaseDualSpaceUserStorage(BaseDualItemStorage, ISpaceUserStorage):
         return r
 
     def get_by_username(self, username: str) -> List[StoredSpaceUser]:
-        r = self.primary.get_by_username(username)
+        r = self.primary.get_by_username(username)  # type: ignore[union-attr]
         try:
-            self.secondary.get_by_username(username)
+            self.secondary.get_by_username(username)  # type: ignore[union-attr]
         except Exception as e:
             err_stack = traceback.format_exc()
             body = get_readable_error_message(e=e, err_stack=err_stack)
@@ -54,9 +54,9 @@ class BaseDualSpaceUserStorage(BaseDualItemStorage, ISpaceUserStorage):
     def get_by_space_and_username(
         self, space_name: str, username: str
     ) -> Optional[StoredSpaceUser]:
-        r = self.primary.get_by_space_and_username(space_name, username)
+        r = self.primary.get_by_space_and_username(space_name, username)  # type: ignore[union-attr]
         try:
-            self.secondary.get_by_space_and_username(space_name, username)
+            self.secondary.get_by_space_and_username(space_name, username)  # type: ignore[union-attr]
         except Exception as e:
             err_stack = traceback.format_exc()
             body = get_readable_error_message(e=e, err_stack=err_stack)

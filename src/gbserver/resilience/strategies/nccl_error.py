@@ -123,7 +123,7 @@ class NCCLErrorRetryStrategy(RetryStrategy):
             if not hasattr(event.payload, "msg"):
                 return False
 
-            msg = event.payload.msg
+            msg = event.payload.msg  # type: ignore[union-attr]
 
             # Check for NCCL errors
             for pattern in self._nccl_patterns:

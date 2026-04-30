@@ -35,7 +35,7 @@ class Gitstore(Assetstore):
     """Git-based Assetstore with https/ssh secret-based auth"""
 
     def __init__(self, uri: Union[URI, str], **kwargs):
-        super().__init__(uri, **kwargs)
+        super().__init__(uri, **kwargs)  # type: ignore[arg-type]
 
     @classmethod
     def get_supported_uri_classes(self):
@@ -46,7 +46,7 @@ class Gitstore(Assetstore):
         Return metadata describing which secret names are required,
         based on the scheme.
         """
-        if uri.scheme == "git+https":
+        if uri.scheme == "git+https":  # type: ignore[attr-defined]
             token_key = (
                 self.config.config["token_secretname"]
                 if self.config
@@ -56,7 +56,7 @@ class Gitstore(Assetstore):
             )
             return {"token_secretname": token_key}
 
-        if uri.scheme == "git+ssh":
+        if uri.scheme == "git+ssh":  # type: ignore[attr-defined]
             ssh_key_key = (
                 self.config.config["ssh_key_secretname"]
                 if self.config
@@ -86,12 +86,12 @@ class Gitstore(Assetstore):
 
         secret = self.secrets.get(secret_name) if self.secrets else None
         if secret is None:
-            secret = os.getenv(secret_name, None)
+            secret = os.getenv(secret_name, None)  # type: ignore[arg-type]
 
         if secret is not None and secret != "" and secret.strip() == "":
             secret = None
 
-        return secret
+        return secret  # type: ignore[return-value]
 
     # def pull(self, uri, dest: str, ref: Optional[str] = None):
     #     """

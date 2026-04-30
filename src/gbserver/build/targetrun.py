@@ -95,7 +95,7 @@ class TargetRun(Run):
                 pending = self_entity.pull_assets(list(self.inputs_status), tg)
                 targetstepruntasks = []
                 while pending:
-                    done, pending = await asyncio.wait(
+                    done, pending = await asyncio.wait(  # type: ignore[assignment]
                         pending, return_when=asyncio.FIRST_COMPLETED
                     )
                     exceptions = []
@@ -104,10 +104,10 @@ class TargetRun(Run):
                         if exception:
                             exceptions.append(exception)
                             continue
-                        binding, targetstep_config = task.result()
+                        binding, targetstep_config = task.result()  # type: ignore[assignment]
                         if isinstance(targetstep_config, BuildTargetStepConfig):
                             targetstep_run = self.get_targetsteprun_from_config(
-                                targetstep_config, additional_targetsteps_queue
+                                targetstep_config, additional_targetsteps_queue  # type: ignore[arg-type]
                             )
                             if targetstep_run:
                                 self.target_step_runs.add(targetstep_run)
@@ -119,8 +119,8 @@ class TargetRun(Run):
                                 logger.warning(
                                     "didn't get a targetstep_run, ignoring..."
                                 )
-                        self.bindings[task.binding_id] = binding
-                        input_uris[task.binding_id] = task.uri
+                        self.bindings[task.binding_id] = binding  # type: ignore[assignment, attr-defined]
+                        input_uris[task.binding_id] = task.uri  # type: ignore[attr-defined]
                     if len(exceptions) > 0:
                         raise RunFailed(status_updated=False, exceptions=exceptions)
                 results = await asyncio.gather(
@@ -136,10 +136,10 @@ class TargetRun(Run):
             all_targetstep_runs_done = Event()
             asyncio_runner = tg
             if not self.cancel_on_error:
-                asyncio_runner = asyncio
+                asyncio_runner = asyncio  # type: ignore[assignment]
             run_additional_targetsteps_task = asyncio_runner.create_task(
                 self.run_additional_targetsteps(
-                    additional_targetsteps_queue,
+                    additional_targetsteps_queue,  # type: ignore[arg-type]
                     all_targetstep_runs_done,
                     (tg if self.cancel_on_error else None),
                 )
@@ -235,11 +235,11 @@ class TargetRun(Run):
             self_entity.name,
             self_entity.environment,
             self_entity.build_workspace_dir,
-            self_entity.dir,
+            self_entity.dir,  # type: ignore[arg-type]
             username=self_entity.username,
             context=self_entity.context,
             force_fetch=self_entity.force_fetch,
-            parent_target_config=self_entity.config,
+            parent_target_config=self_entity.config,  # type: ignore[arg-type]
         )
         if self.dry_run and not targetstep.is_dry_run_compatible():
             logger.warning("dry_run: skip running the incompatible step %s", targetstep)

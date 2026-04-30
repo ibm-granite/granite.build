@@ -55,8 +55,8 @@ def get_space_uri_from_space_name(space_name: str) -> Optional[str]:
             logger.error(
                 "Could not find space %s in table %s.%s",
                 space_name,
-                storage.namespace,
-                storage.table_name,
+                storage.namespace,  # type: ignore[attr-defined]
+                storage.table_name,  # type: ignore[attr-defined]
             )
         else:
             logger.error(

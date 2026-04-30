@@ -198,13 +198,18 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         super().__init__(**kwargs)
         self.logger = LoggingUtility(logger, msg_prefix=f"{self.table_name}")
 
+    @classmethod
+    def _get_sample_item(cls):
+        """Not used by Lakehouse storage — schema managed externally."""
+        raise NotImplementedError("Lakehouse storage does not use _get_sample_item")
+
     def __get_identity_partitions(self) -> list[str]:
         """
         Get the column names for which you would like partitions created.
         This is likely a sub-set of the columns returned by get_column_values().
         Be aware that over-paritioning can cause fragementation and degraded performance.
         """
-        return None
+        return None  # type: ignore[return-value]
 
     def _create_or_adjust_schema_item_dict(self, item: dict[str, Any]):
         """
@@ -227,7 +232,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         # pd.set_option('display.max_columns', None)
         # print(f"df={df}")
         try:
-            table.append_dataframe(
+            table.append_dataframe(  # type: ignore[union-attr]
                 df=df,
                 retry_on_conflict=True,
                 max_retries=LAKEHOUSE_MAX_RETRIES,
@@ -235,7 +240,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
             )
         except Exception as e:
             # DEBUGGING intermittent Access Denied
-            msg = f"append_dtaframe upsert exception: '{table.namespace}'.'{table.name}'-'{table._catalog.cos.key}'"
+            msg = f"append_dtaframe upsert exception: '{table.namespace}'.'{table.name}'-'{table._catalog.cos.key}'"  # type: ignore[union-attr]
             logger.error(msg)
             raise ValueError(msg) from e
 
@@ -262,9 +267,9 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         """
         if paginate is not None:
             raise NotImplementedError("Pagination was requested, but is not supported")
-        table = self.__get_table(None)
+        table = self.__get_table(None)  # type: ignore[arg-type]
         if table is None:  # table not created yet, so there are no items to retrieve
-            return {}
+            return {}  # type: ignore[return-value]
         item_dict = self.__get_by_row_filter(table, where)
         return item_dict
 
@@ -441,7 +446,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         Args:
             uuids (list[str]): _description_
         """
-        table = self.__get_table(None)
+        table = self.__get_table(None)  # type: ignore[arg-type]
         if table is not None:
             entries = []
             for id in uuids:
@@ -539,7 +544,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         Used primarily for testing.
         """
         if table is None:
-            table = self.__get_table(None)
+            table = self.__get_table(None)  # type: ignore[arg-type]
         return table.iceberg_table.schema().column_names
 
     @retry(
@@ -579,7 +584,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         if isinstance(items, list):
             item: dict[str, Any] = items[0]
         else:
-            item: dict[str, Any] = items
+            item: dict[str, Any] = items  # type: ignore[no-redef]
         table_exists = self._does_table_exist()
         if not table_exists:
             if item is None:

@@ -69,7 +69,7 @@ class BaseStoredSpaceStorage(BaseItemStorage[StoredSpace], IStoredSpaceStorage):
         Returns:
             StoredSpace: named space or None if not found.
         """
-        return self._get_by_single_field(
+        return self._get_by_single_field(  # type: ignore[return-value]
             column_name="name", column_value=name, allow_multiple=False
         )
 

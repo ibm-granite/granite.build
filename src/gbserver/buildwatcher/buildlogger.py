@@ -264,7 +264,7 @@ def get_message_logger(stored_build: StoredBuild, event_source: str) -> Abstract
         logger = message_event_logger
     else:
         pr_logger = BuildPRLogger(stored_build=stored_build)
-        logger = BuildMultiMessageLogger(
+        logger = BuildMultiMessageLogger(  # type: ignore[assignment]
             stored_build=stored_build, loggers=[pr_logger, message_event_logger]
         )
     return logger

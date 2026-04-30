@@ -144,7 +144,7 @@ class StorageSpaceAccessManager(ISpaceAccessManager):
                     status_code=status.HTTP_404_NOT_FOUND,
                     content={"detail": "Build not found!"},
                 )
-            return self.has_space_access(username, build.space_name)
+            return self.has_space_access(username, build.space_name)  # type: ignore[union-attr]
         except Exception as e:
             logger.error("StorageSpaceAccessManager: error in has_build_access: %s", e)
             return False

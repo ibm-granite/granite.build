@@ -79,8 +79,8 @@ class NATSMessaging(MessagingBase):
 
         # Auto-detect JetStream
         try:
-            self._js = self._nc.jetstream()
-            await self._js.account_info()
+            self._js = self._nc.jetstream()  # type: ignore[assignment]
+            await self._js.account_info()  # type: ignore[attr-defined]
             self._jetstream_available = True
             logger.info("JetStream available, using persistent mode")
             await self._ensure_stream()
@@ -101,7 +101,7 @@ class NATSMessaging(MessagingBase):
             storage=StorageType.FILE,
             num_replicas=1,
         )
-        await self._js.add_stream(config=config)
+        await self._js.add_stream(config=config)  # type: ignore[attr-defined]
         logger.info(
             "JetStream stream '%s' ready (max_age=%ds)",
             stream_name,
@@ -118,7 +118,7 @@ class NATSMessaging(MessagingBase):
             subject = f"{subject}.{suffix}"
 
         if self._jetstream_available:
-            ack = await self._js.publish(subject, body)
+            ack = await self._js.publish(subject, body)  # type: ignore[attr-defined]
             logger.info(
                 "JetStream publish: subject='%s', stream='%s', seq=%d",
                 subject,
@@ -137,7 +137,7 @@ class NATSMessaging(MessagingBase):
 
         if self._jetstream_available:
             consumer_name = f"gbserver_{self.addr.queue}_consumer".replace(".", "_")
-            self._sub = await self._js.subscribe(
+            self._sub = await self._js.subscribe(  # type: ignore[attr-defined]
                 subject,
                 durable=consumer_name,
                 manual_ack=True,
@@ -153,7 +153,7 @@ class NATSMessaging(MessagingBase):
                 consumer_name,
             )
             try:
-                async for msg in self._sub.messages:
+                async for msg in self._sub.messages:  # type: ignore[attr-defined]
                     if self._closed:
                         break
                     routing_key = msg.subject.removeprefix(f"gbserver.{self.addr.queue}.")
@@ -171,10 +171,10 @@ class NATSMessaging(MessagingBase):
                 pass
         else:
             # Lightweight mode — plain NATS subscribe, no ack/nack
-            self._sub = await self._nc.subscribe(subject)
+            self._sub = await self._nc.subscribe(subject)  # type: ignore[assignment]
             logger.info("NATSMessaging consuming from subject '%s'", subject)
             try:
-                async for msg in self._sub.messages:
+                async for msg in self._sub.messages:  # type: ignore[attr-defined]
                     if self._closed:
                         break
                     routing_key = msg.subject.removeprefix(f"gbserver.{self.addr.queue}.")

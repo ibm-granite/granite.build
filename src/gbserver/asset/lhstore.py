@@ -52,7 +52,7 @@ class Lhstore(Assetstore):
 
     def __init__(self, uri: Union[URI, str], **kwargs):
         _import_lakehouse()  # fail fast with clear error
-        super().__init__(uri, **kwargs)
+        super().__init__(uri, **kwargs)  # type: ignore[arg-type]
 
     @classmethod
     def get_supported_uri_classes(self):

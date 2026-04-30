@@ -69,9 +69,9 @@ class LogFileMonitor(MonitorBase):
         self.monitoring_interval = 5
 
     async def monitor(self: Self) -> None:
-        buffer = deque(maxlen=10)
+        buffer = deque(maxlen=10)  # type: ignore[var-annotated]
         logger.info("[LogFileMon %s] started using stream %s", self.step_id, self.stream_source)
-        async for log_line in self.stream_source.stream_lines(stop_event=self.stop_event):
+        async for log_line in self.stream_source.stream_lines(stop_event=self.stop_event):  # type: ignore[attr-defined]
             buffer.append(log_line)
             # Note: We don't check stop_event here anymore!
             # The stream (ssh_file_stream.py) handles stop_event by entering Phase 2
@@ -112,7 +112,7 @@ class LogFileMonitor(MonitorBase):
         """Parse each log line; generate and publish a build event for the
         log lines that follow a pattern specified in the configuration
         """
-        return await Environment.get_events_from_log_line(
+        return await Environment.get_events_from_log_line(  # type: ignore[return-value]
             log_line=log_line,
             event_configs=self._event_configs,
             event_q=self.event_queue,

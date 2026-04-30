@@ -60,7 +60,7 @@ class LhArtifactRegistry(BaseLakehouseItemStorage, IArtifactRegistry):
             json["is_archived"] = artifact.is_archived
 
         json["type"] = str(artifact.type)
-        json["tags"] = ",".join(sorted(artifact.tags))
+        json["tags"] = ",".join(sorted(artifact.tags))  # type: ignore[arg-type]
 
         return json
 

@@ -44,7 +44,7 @@ def get_app() -> FastAPI:
 
 root_api = get_app()
 
-root_api.add_middleware(AuthMiddleware)
+root_api.add_middleware(AuthMiddleware)  # type: ignore[arg-type]
 
 
 @root_api.get(API_BASE_PATH)

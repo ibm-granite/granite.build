@@ -137,7 +137,7 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
         """Implemented per superclass requirements to return an item for use by BaseItemStorage"""
         build_event_type = BuildEventType.STATUS_EVENT
         run_metadata = EntityRunMetadata()
-        payload_data = {}
+        payload_data = {}  # type: ignore[var-annotated]
         build_event = BuildEvent(
             run_metadata=run_metadata,
             type=build_event_type,

@@ -331,7 +331,7 @@ class SSHFileStream(LogStreamSource, RetryMixin):
         async for line in self._read_phase_two(target, path_quoted, lines_read, abort_event):
             yield line
 
-    async def stream_lines(
+    async def stream_lines(  # type: ignore[override]
         self: Self,
         stop_event: Optional[asyncio.Event] = None,
         abort_event: Optional[asyncio.Event] = None,

@@ -354,7 +354,7 @@ class BuildRunner(AbstractBuildRunner):
                 workspace_dir = self.workspace_dir / WORKSPACE_BUILDS_DIR
                 workspace_dir.mkdir(mode=DEFAULT_DIR_PERMS, parents=True, exist_ok=True)
 
-                if not self.__setup(space):
+                if not self.__setup(space):  # type: ignore[arg-type]
                     return  # Log messages were issued.
 
                 build_dir = Path(tempfile.mkdtemp()) / build_id
@@ -499,7 +499,7 @@ class BuildRunner(AbstractBuildRunner):
             if self.stored_build.retry_of_build_id and self.stored_build.source_uri:
                 self.__comment_on_original_pr()
         else:
-            self.stored_build = self.storage.build_storage.get_by_uuid(self.stored_build.uuid)
+            self.stored_build = self.storage.build_storage.get_by_uuid(self.stored_build.uuid)  # type: ignore[assignment]
             success = False
             logger.warning(
                 "Build update failed.  Likely as the status was not %s (currently %s).",
@@ -863,13 +863,13 @@ Build ID    : {build_id}
             self.__update_target_with_artifact(event=event, artifact=artifact)
         else:
             art_store = self.storage.artifact_registry
-            artifact = art_store.get_by_uri(uri=normalized_uri, space_name=stored_build.space_name)
+            artifact = art_store.get_by_uri(uri=normalized_uri, space_name=stored_build.space_name)  # type: ignore[assignment]
             assert isinstance(
                 artifact, ArtifactRegistration
             ), f"failed to find an artifact registered for uri: {normalized_uri}"
             artifact.status = ArtifactRegistrationStatus.SUCCESS
             logger.info("updating the artifact as success: %s", artifact)
-            artifact = self.storage.artifact_registry.update_fields(
+            artifact = self.storage.artifact_registry.update_fields(  # type: ignore[assignment]
                 artifact.uuid, {"status": artifact.status}
             )
         icon = "📦" if pushed else "⬆️"
@@ -1320,7 +1320,7 @@ Download : {download_msg}
     def __get_stored_build_status(self: Self, build_id: str) -> Status:
         build = self.storage.build_storage.get_by_uuid(build_id)
         assert build, f"Did not find build with id {build_id}"
-        return build.status
+        return build.status  # type: ignore[union-attr]
 
     def __process_build_target_info_type_event(self: Self, event: BuildEvent) -> None:
         logger.info("run_info is a Target")
@@ -1419,17 +1419,17 @@ Download : {download_msg}
                 status_msg=payload.msg,
                 started_at=event.timestamp,
             )
-        if stored_step_run.status is Status.PENDING and payload.status is Status.RUNNING:
+        if stored_step_run.status is Status.PENDING and payload.status is Status.RUNNING:  # type: ignore[union-attr]
             logger.info("step started running at %s", event.timestamp)
-            stored_step_run.started_at = event.timestamp
-        elif stored_step_run.status is Status.RUNNING and payload.status is not Status.RUNNING:
+            stored_step_run.started_at = event.timestamp  # type: ignore[union-attr]
+        elif stored_step_run.status is Status.RUNNING and payload.status is not Status.RUNNING:  # type: ignore[union-attr]
             logger.info("step started finished running at %s", event.timestamp)
-            stored_step_run.finished_at = event.timestamp
-        stored_step_run.status = payload.status
-        stored_step_run.status_msg = payload.msg
+            stored_step_run.finished_at = event.timestamp  # type: ignore[union-attr]
+        stored_step_run.status = payload.status  # type: ignore[union-attr]
+        stored_step_run.status_msg = payload.msg  # type: ignore[union-attr]
         logger.info("stored_step_run %s", stored_step_run)
         assert (
-            stored_step_run.uuid == targetsteprun_id
-        ), f"expected {targetsteprun_id} actual {stored_step_run.uuid}"
+            stored_step_run.uuid == targetsteprun_id  # type: ignore[union-attr]
+        ), f"expected {targetsteprun_id} actual {stored_step_run.uuid}"  # type: ignore[union-attr]
         logger.info("creating/updating the step: %s", stored_step_run)
-        self.storage.step_storage.update(stored_step_run)
+        self.storage.step_storage.update(stored_step_run)  # type: ignore[arg-type]

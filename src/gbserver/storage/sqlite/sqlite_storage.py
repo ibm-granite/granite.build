@@ -77,7 +77,7 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
             self._db_file_lock = FileLock(lock_file)
         db_url = f"sqlite:///{str(self._db_path.absolute())}"
         db_obfuscated_url = db_url
-        connect_args = {}
+        connect_args = {}  # type: ignore[var-annotated]
         return db_schema, db_url, db_obfuscated_url, connect_args
 
     def _get_db_file_path(self) -> Path:
@@ -103,13 +103,13 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
 
     def add(self, item: Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]) -> Union[str, list[str]]:
         with self._db_file_lock:
-            return super().add(item)
+            return super().add(item)  # type: ignore[misc]
 
     def get_by_uuid(
         self, uuids: Optional[Union[str, list[str]]]
     ) -> Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]:
         with self._db_file_lock:
-            return super().get_by_uuid(uuids)
+            return super().get_by_uuid(uuids)  # type: ignore[misc]
 
     def get_by_where(
         self,
@@ -117,7 +117,7 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
         query_control: Optional[QueryControl] = None,
     ) -> list[BASE_ITEM_TYPE]:
         with self._db_file_lock:
-            return super().get_by_where(where, query_control)
+            return super().get_by_where(where, query_control)  # type: ignore[misc]
 
     def delete_table(self):
         with self._db_file_lock:
@@ -125,7 +125,7 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
 
     def delete(self, uuids: Union[str, list[str]]) -> None:
         with self._db_file_lock:
-            super().delete(uuids)
+            super().delete(uuids)  # type: ignore[misc]
 
     def update(
         self,
@@ -134,7 +134,7 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
         create_if_not_exist: bool = True,
     ) -> None:
         with self._db_file_lock:
-            super().update(item, update_updated_time, create_if_not_exist)
+            super().update(item, update_updated_time, create_if_not_exist)  # type: ignore[misc]
 
 
 class SqliteArtifactRegistry(SqliteStorageOverrides, SQLArtifactRegistry):

@@ -31,9 +31,9 @@ class BaseDualSpaceStorage(BaseDualItemStorage, IStoredSpaceStorage):
         super().__init__(**kwargs)
 
     def get_by_name(self, name: str) -> Optional[StoredSpace]:
-        r = self.primary.get_by_name(name)
+        r = self.primary.get_by_name(name)  # type: ignore[union-attr]
         try:
-            self.secondary.get_by_name(name)
+            self.secondary.get_by_name(name)  # type: ignore[union-attr]
         except Exception as e:
             err_stack = traceback.format_exc()
             body = get_readable_error_message(e=e, err_stack=err_stack)

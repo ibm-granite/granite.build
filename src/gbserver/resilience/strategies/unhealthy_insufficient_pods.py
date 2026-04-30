@@ -104,7 +104,7 @@ class UnhealthyInsufficientPodsRetryStrategy(RetryStrategy):
         # Extract the message payload from the BuildEvent
         # The monitor embeds K8s events and state info in this payload
         try:
-            msg = event.payload.msg
+            msg = event.payload.msg  # type: ignore[union-attr]
             # The message contains JSON with K8s object state info from the monitor
             # Try to extract it from markdown code block
             if "```json" in msg:
@@ -196,7 +196,7 @@ class UnhealthyInsufficientPodsRetryStrategy(RetryStrategy):
         failed_nodes = set()
 
         try:
-            msg = event.payload.msg
+            msg = event.payload.msg  # type: ignore[union-attr]
             if "```json" in msg:
                 json_start = msg.find("```json") + 7
                 json_end = msg.find("```", json_start)

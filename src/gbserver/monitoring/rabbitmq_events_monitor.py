@@ -77,8 +77,8 @@ class RabbitMQEventMonitor(MonitorBase):
             stream_name = entityrun_metadata.build_id
             routing_key = ".".join(
                 [
-                    entityrun_metadata.targetrun_id,
-                    entityrun_metadata.targetsteprun_id,
+                    entityrun_metadata.targetrun_id or "",
+                    entityrun_metadata.targetsteprun_id or "",
                     launch_id,
                 ]
             )
@@ -88,7 +88,7 @@ class RabbitMQEventMonitor(MonitorBase):
 
         self.msg = RabbitMQBase.from_env_and_args(
             exchange_name=exchange_name,
-            queue_name=stream_name,
+            queue_name=stream_name,  # type: ignore[arg-type]
             routing_key=routing_key,
             messaging_secret=messaging_secret,
             stop_evt=stop_event,

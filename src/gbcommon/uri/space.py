@@ -53,10 +53,10 @@ class SpaceURI(URI):
         elif uristr.startswith(SPACE_SCHEME):
             uri_suffix = uristr.removeprefix(SPACE_SCHEME + "://")
         for base_uri in SpaceURI._thread_local.base_uris:
-            uri = URI.get_uri(base_uri, "file", secrets=SpaceURI._thread_local.space_secrets)
-            uri.append_path(uri_suffix)
-            if uri.exists():
-                return uri
+            uri = URI.get_uri(base_uri, "file", secrets=SpaceURI._thread_local.space_secrets)  # type: ignore[assignment]
+            uri.append_path(uri_suffix)  # type: ignore[attr-defined]
+            if uri.exists():  # type: ignore[attr-defined]
+                return uri  # type: ignore[return-value]
         raise ValueError(f"Unresolvable space uri : {uristr}")
 
     @classmethod

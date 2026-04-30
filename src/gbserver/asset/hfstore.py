@@ -43,7 +43,7 @@ class Hfstore(Assetstore):
     DEFAULT_TOKEN_KEY = "HF_TOKEN"
 
     def __init__(self: Self, uri: Union[URI, str], **kwargs) -> None:
-        super().__init__(uri, **kwargs)
+        super().__init__(uri, **kwargs)  # type: ignore[arg-type]
 
     @classmethod
     def get_supported_uri_classes(self):
@@ -55,7 +55,7 @@ class Hfstore(Assetstore):
         Uses owner/repo/revision; buckets have empty revision so the
         trailing segment is naturally omitted.
         """
-        hf_uri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)
+        hf_uri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
         p = hf_uri._parts()
         rel_path = Path(p.owner) / p.repo / p.revision
         return str(rel_path)

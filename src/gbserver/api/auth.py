@@ -104,7 +104,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     def __init__(self: Self, *args: tuple, **kwargs: dict) -> None:
         self.user_cache = {}
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
 
     @staticmethod
     def _redact_headers(headers) -> dict:
@@ -234,7 +234,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 continue
 
             logger.info("token identified as %s, validating...", provider.provider_name)
-            user, error = provider.validate_token(token)
+            user, error = provider.validate_token(token)  # type: ignore[assignment]
             if user is None:
                 logger.error("auth middleware error (%s): %s", provider.provider_name, error)
                 return JSONResponse(

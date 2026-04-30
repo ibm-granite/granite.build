@@ -188,13 +188,13 @@ class LakehouseLoader(BaseLakehouseStorage):
         if namespace is None:
             namespace = self.default_namespace
         if isinstance(file_path, Path):
-            file_path = str(file_path.name)
+            file_path = str(file_path.name)  # type: ignore[assignment]
         self.logger.info(f"Begin download of from table {namespace}.{table_name} to {file_path}")
         table = self.__get_table(namespace, table_name)
         df = table.to_pandas()
-        if file_path.endswith(".parquet"):
+        if file_path.endswith(".parquet"):  # type: ignore[attr-defined]
             df.to_parquet(file_path)
-        elif file_path.endswith(".jsonl"):
+        elif file_path.endswith(".jsonl"):  # type: ignore[attr-defined]
             df.to_json(file_path, orient="records", lines=True)
         else:
             raise ValueError(f"File extension not supported: {file_path}")

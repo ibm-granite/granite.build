@@ -335,7 +335,7 @@ class HybridSpaceSecretManager(SpaceSecretManager):
                     exc_info=True,
                 )
                 all_readonly = False
-                last_exception = e
+                last_exception = e  # type: ignore[assignment]
                 continue
 
         # All managers failed or were read-only

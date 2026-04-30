@@ -72,7 +72,7 @@ class TargetStepRun(Run):
         event_q: Queue,
         additional_targetsteps_queue: Optional[Queue] = None,
         bindings: Optional[Dict] = None,
-        setup_config: dict = None,
+        setup_config: dict = None,  # type: ignore[assignment]
         dry_run: bool = False,
     ) -> None:
         try:
@@ -234,7 +234,7 @@ class TargetStepRun(Run):
                     "config": filled_monitor_config,
                 }
 
-            new_monitor_configs = {}
+            new_monitor_configs = {}  # type: ignore[var-annotated]
             for monitor_name, monitor_info in filled_monitor_configs.items():
                 monitor_type = monitor_info["type"] or "unknown"
                 new_monitor_configs.setdefault(monitor_type, []).append(
@@ -316,7 +316,7 @@ class TargetStepRun(Run):
                 setup_ids=list(self.target.setup_ids.keys()),
                 **self.full_config,
             )
-            launch_id = self.launch_task.launch_id
+            launch_id = self.launch_task.launch_id  # type: ignore[attr-defined]
             assert (
                 isinstance(launch_id, str) and launch_id != ""
             ), f"invalid launch_id: {launch_id}"

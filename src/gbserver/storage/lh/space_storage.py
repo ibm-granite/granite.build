@@ -51,13 +51,13 @@ class LhSpaceStorage(BaseLakehouseItemStorage, IStoredSpaceStorage):
         Returns:
             StoredSpace: named space or None if not found.
         """
-        return self._get_by_single_field(
+        return self._get_by_single_field(  # type: ignore[return-value]
             column_name="name", column_value=name, allow_multiple=False
         )
 
 
 if __name__ == "__main__":
-    obj = StoredSpace(name="foo", git_repo_uri="http://foo.bar", lakehouse_spacename="myspace")
+    obj = StoredSpace(name="foo", git_repo_uri="http://foo.bar", lakehouse_namespace="myspace")
     print(f"Space: {obj}")
     storage = LhSpaceStorage()
     print(f"Storage: {storage}")

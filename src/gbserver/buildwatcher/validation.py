@@ -268,7 +268,7 @@ class BuildValidation:
             )
             errors.raise_if_invalid()
             validation_end = get_utc_time()
-            validation_time = (validation_end - validation_start).total_seconds()
+            validation_time = (validation_end - validation_start).total_seconds()  # type: ignore[assignment]
             logger.info(
                 "the build '%s' is valid (validation took %s seconds)",
                 build_id,
@@ -276,7 +276,7 @@ class BuildValidation:
             )
         except Exception as e:
             validation_end = get_utc_time()
-            validation_time = (validation_end - validation_start).total_seconds()
+            validation_time = (validation_end - validation_start).total_seconds()  # type: ignore[assignment]
             logger.error(
                 "the build '%s' is invalid (validation took %s seconds), error: %s",
                 build_id,

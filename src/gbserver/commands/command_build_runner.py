@@ -215,7 +215,7 @@ def cli(
     # Get the StoredBuild.
     build_storage = singleton_storage.get_admin_storage().build_storage
     if build_id is not None:
-        stored_build: StoredBuild = build_storage.get_by_uuid(build_id)
+        stored_build: StoredBuild = build_storage.get_by_uuid(build_id)  # type: ignore[assignment]
         if stored_build is None:
             logger.error("Could not find build with id %s in build storage", build_id)
             return
@@ -228,7 +228,7 @@ def cli(
                 )
                 stored_build.status = Status.PENDING
                 # BuildRunner won't process events if the build "is_finished()" so make sure it is not.
-                stored_build = singleton_storage.get_admin_storage().build_storage.update_fields(
+                stored_build = singleton_storage.get_admin_storage().build_storage.update_fields(  # type: ignore[assignment]
                     stored_build.uuid,
                     {"status": stored_build.status},
                 )
@@ -273,7 +273,7 @@ def cli(
     build_runner.start_and_wait()  # Returns on completion, cancellation or failure.
 
     finished_build_id = stored_build.uuid
-    finished_stored_build: StoredBuild = build_storage.get_by_uuid(finished_build_id)
+    finished_stored_build: StoredBuild = build_storage.get_by_uuid(finished_build_id)  # type: ignore[assignment]
     if finished_stored_build is None:
         # This should NEVER be the case, but we are occasionally seeing this with LH.
         logger.error("Build with id %s could not be found after completion?!", finished_build_id)

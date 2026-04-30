@@ -110,10 +110,10 @@ def fix_zombie_steps(dry_run: bool):
     # Update steps per build.
     step_storage = singleton_storage.get_admin_storage().step_storage
     build_storage = singleton_storage.get_admin_storage().build_storage
-    updated = []
-    failed = []
+    updated = []  # type: ignore[var-annotated]
+    failed = []  # type: ignore[var-annotated]
     running = []
-    deleted = []
+    deleted = []  # type: ignore[var-annotated]
     index = 0
     for build_id, steps in steps_by_build_id.items():
         index += len(steps)
@@ -153,10 +153,10 @@ def fix_zombie_targets(dry_run: bool):
     # Update targets per build.
     target_storage = singleton_storage.get_admin_storage().target_storage
     build_storage = singleton_storage.get_admin_storage().build_storage
-    updated = []
-    failed = []
+    updated = []  # type: ignore[var-annotated]
+    failed = []  # type: ignore[var-annotated]
     running = []
-    deleted = []
+    deleted = []  # type: ignore[var-annotated]
     index = 0
     for build_id, targets in targets_by_build_id.items():
         index += len(targets)
@@ -187,7 +187,7 @@ def fix_zombie_targets(dry_run: bool):
 
 def group_by_build_id(targets_or_steps: list):
     """Group by build id."""
-    by_build_id = {}
+    by_build_id = {}  # type: ignore[var-annotated]
     for item in targets_or_steps:
         targets = by_build_id.get(item.build_id, None)
         if targets is None:
@@ -249,7 +249,7 @@ def fail_pending_without_pr(dry_run: bool):
     print(f"Found {len(pending_builds)} pending builds.")
     updated = []
     failed = []
-    running = []
+    running = []  # type: ignore[var-annotated]
 
     for build in pending_builds:
         if build.source_uri is not None and build.source_uri != "":
@@ -305,7 +305,7 @@ def fail_zombie_builds(dry_run: bool):
     """Fail zombie builds."""
     updated = []
     failed = []
-    running = []
+    running = []  # type: ignore[var-annotated]
 
     success, zombie_build_ids = get_zombie_build_ids()
     if not success:
@@ -362,7 +362,7 @@ def get_steps(status: Status) -> list[StoredBuild]:
     """Get the steps."""
     step_storage = singleton_storage.get_admin_storage().step_storage
     items = step_storage.get_by_where({"status": status.name})
-    return items
+    return items  # type: ignore[return-value]
 
 
 def oc_get(obj: str, check_presence: Optional[str]) -> tuple[bool, str]:

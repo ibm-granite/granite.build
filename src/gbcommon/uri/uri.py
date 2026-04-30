@@ -195,13 +195,13 @@ class URI(ABC):
 
     def append_path(self, path: str):
         """Add path."""
-        base_path = self.uri.path.rstrip("/")
+        base_path = self.uri.path.rstrip("/")  # type: ignore[union-attr]
         new_segment = path.lstrip("/")
         new_path = f"{base_path}/{new_segment}"
-        self.uri = self.uri._replace(path=new_path)
+        self.uri = self.uri._replace(path=new_path)  # type: ignore[union-attr]
 
     @classmethod
-    def set_space_config(cls, space_config: SpaceConfig = None):
+    def set_space_config(cls, space_config: SpaceConfig = None):  # type: ignore[assignment]
         """Set the space config."""
         cls._thread_local.space_config = {
             "space": {"variables": space_config.variables, "name": space_config.name}

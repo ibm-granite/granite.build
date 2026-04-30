@@ -149,11 +149,11 @@ class BaseArtifactRegistry(BaseItemStorage[ArtifactRegistration], IArtifactRegis
         if self._schema_version >= _BUILD_SCHEMA_VERSION2:
             fields_to_include.append("checksum")
 
-        json = artifact.model_dump(include=fields_to_include)
+        json = artifact.model_dump(include=fields_to_include)  # type: ignore[arg-type]
         json["is_archived"] = artifact.is_archived
 
         json["type"] = str(artifact.type)
-        json["tags"] = ",".join(sorted(artifact.tags))
+        json["tags"] = ",".join(sorted(artifact.tags))  # type: ignore[arg-type]
 
         return json
 

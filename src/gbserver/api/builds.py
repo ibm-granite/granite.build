@@ -290,9 +290,9 @@ def list_build_tags(
     builds_response = list_builds(
         name=name, space_name=space_name, source_uri=source_uri, username=username
     )
-    tags = set()
+    tags = set()  # type: ignore[var-annotated]
     for build in builds_response.builds:
-        tags.update(build.tags)
+        tags.update(build.tags)  # type: ignore[arg-type]
     unique_tags = list(tags)
     unique_tags.sort()
     return unique_tags
@@ -493,12 +493,12 @@ def update_build(
     if update.tags:
         is_super = is_super_admin(request)
         apply_tag_update(build, update.tags, is_super)
-        updates["tags"] = build.tags
+        updates["tags"] = build.tags  # type: ignore[assignment]
 
     # Store the update
     if len(updates) > 0:
         storage = get_admin_storage().build_storage
-        build = storage.update_fields(build.uuid, updates)
+        build = storage.update_fields(build.uuid, updates)  # type: ignore[assignment]
 
     build.build_archive = ""  # Don't send back the (large) archive.
     resp = BuildUpdateResponse(build=build)

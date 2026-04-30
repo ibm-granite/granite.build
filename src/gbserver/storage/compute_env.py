@@ -10,5 +10,5 @@ class StoredComputeEnv(BaseStoredItem):
 
 
 if __name__ == "__main__":
-    obj = StoredComputeEnv(name="foo", ignored=1)
+    obj = StoredComputeEnv(name="foo")
     print(obj)

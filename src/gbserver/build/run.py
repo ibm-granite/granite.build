@@ -74,7 +74,7 @@ class Run(ABC):
     event_q: Queue[Event]
     build_id: str
     task: Optional[Task]
-    metadata: Optional[dict]
+    metadata: dict
     status: Status
     base_dir: Path
     dry_run: bool = False
@@ -144,7 +144,7 @@ class Run(ABC):
                 err_stack = "".join(
                     traceback.format_exception(type(primary), primary, primary.__traceback__)
                 )
-                body = get_readable_error_message(e=primary, err_stack=err_stack)
+                body = get_readable_error_message(e=primary, err_stack=err_stack)  # type: ignore[arg-type]
                 self.update_status(Status.FAILED, extra_msg=body)
                 raise RunFailed(status_updated=True, exceptions=failures) from eg
             else:

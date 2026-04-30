@@ -44,11 +44,11 @@ class Assetstore(ABC):
     def __init__(
         self,
         store_config: Optional[AssetStoreConfig] = None,
-        secrets: dict = None,
+        secrets: dict = None,  # type: ignore[assignment]
         **kwargs,
     ):
         self.type = self.__class__.__name__
-        self.config: AssetStoreConfig = store_config
+        self.config: AssetStoreConfig = store_config  # type: ignore[assignment]
         self.secrets = secrets
 
     def can_handle(self, uri: URI):
@@ -97,7 +97,7 @@ class Assetstore(ABC):
         cls,
         dir: Optional[Path] = None,
         context: Optional[str] = None,
-        secrets: dict = None,
+        secrets: dict = None,  # type: ignore[assignment]
     ):
         """Parse assetstores from dir."""
         if dir is None:
@@ -111,9 +111,11 @@ class Assetstore(ABC):
         cls,
         path: Optional[Path] = None,
         context: Optional[str] = None,
-        secrets: dict = None,
+        secrets: dict = None,  # type: ignore[assignment]
     ) -> "Assetstore":
         """Parse asset store."""
+        if path is None:
+            raise ValueError("path must not be None")
         if path.is_dir():
             store_yamls = glob.glob(str(path / "**" / ASSETSTORE_YAML), recursive=True)
             store_yaml = Path(store_yamls[0])

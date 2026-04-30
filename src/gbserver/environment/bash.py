@@ -96,7 +96,7 @@ class Bash(Environment):
         """
         try:
             assert environment_config is not None, "environment_config is None"
-            config_env = environment_config.get("env", {}) or {}
+            config_env = environment_config.get("env", {}) or {}  # type: ignore[attr-defined]
             for key, value in config_env.items():
                 key_str = str(key).strip()
                 expanded_value = os.path.expandvars(str(value))
@@ -136,7 +136,7 @@ class Bash(Environment):
             logger.debug(f"env vars = {env}")
             env["LLMB_BASH_LAUNCH_ID"] = launch_id
             env["LLMB_BASH_ASSET_DIR"] = str(targetsteprun_asset_dir)
-            self.output_dir = (environment_config.get("workspace") or {}).get("output_dir", "")
+            self.output_dir = (environment_config.get("workspace") or {}).get("output_dir", "")  # type: ignore[attr-defined]
             if self.output_dir:
                 self.output_dir = Path(os.path.expandvars(os.path.expanduser(self.output_dir)))
             else:
@@ -145,7 +145,7 @@ class Bash(Environment):
             assert isinstance(run_metadata, dict), f"invalid run_metadata: {run_metadata}"
             final_asset_dir = await self._copy_assets(
                 launch_id=launch_id,
-                asset_dir=targetsteprun_asset_dir,
+                asset_dir=targetsteprun_asset_dir,  # type: ignore[arg-type]
                 **kwargs,
             )
             final_asset_output_dir = Path(final_asset_dir) / "outputs"
@@ -156,7 +156,7 @@ class Bash(Environment):
                 command_list=command_list,
                 launch_id=launch_id,
                 start_new_session=True,
-                cwd=cwd,
+                cwd=cwd,  # type: ignore[arg-type]
                 env=env,
             )
             self.launched_processes[launch_id] = process

@@ -150,7 +150,7 @@ class Step(Entity):
                 config=config,
                 dir=stepasset_dir,
                 force_fetch=force_fetch,
-                **kwargs,
+                **kwargs,  # type: ignore[arg-type]
             )
         except Exception as e:
             raise ValueError(f"file {step_yaml_path} is invalid") from e

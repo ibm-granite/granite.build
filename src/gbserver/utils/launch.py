@@ -44,7 +44,7 @@ async def launch_command_and_raise_errors(
     cwd: Optional[str] = None,
     raise_error: bool = True,
     redacted_command_str: str = "",
-) -> Tuple[Process, Union[bytes, str], Union[bytes, str]]:
+) -> Tuple[Process, str, str]:
     """
     Launchers a command and raise an error if the return code is non-zero.
 
@@ -62,15 +62,17 @@ async def launch_command_and_raise_errors(
         cwd=cwd if cwd else ".",
         env=env,
     )
-    stdout, stderr = await process.communicate()
+    raw_stdout, raw_stderr = await process.communicate()
     try:
-        stdout = stdout.decode("utf-8")
+        stdout = raw_stdout.decode("utf-8")
     except Exception as ee:
         logger.debug("failed to decode stdout: %s", ee)
+        stdout = raw_stdout.decode("utf-8", errors="replace")
     try:
-        stderr = stderr.decode("utf-8")
+        stderr = raw_stderr.decode("utf-8")
     except Exception as ee:
         logger.debug("failed to decode stderr: %s", ee)
+        stderr = raw_stderr.decode("utf-8", errors="replace")
     is_failed = process.returncode is None or process.returncode != 0
     command_str = redacted_command_str if redacted_command_str else cmd_safe_join(command_list)
     if len(stdout) > 0:
@@ -124,7 +126,7 @@ async def launch_command_and_retry_or_raise_errors(
     cwd: Optional[str] = None,
     raise_error: bool = True,
     redacted_command_str: str = "",
-) -> Tuple[Process, Union[bytes, str], Union[bytes, str]]:
+) -> Tuple[Process, str, str]:
     """Same as launch_command_and_raise_errors but with retries."""
     return await launch_command_and_raise_errors(
         command_list=command_list,

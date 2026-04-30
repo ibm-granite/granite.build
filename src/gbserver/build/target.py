@@ -97,7 +97,7 @@ class Target(BuildEntity):
         self.build_workspace_dir = build_workspace_dir
         self.target_workspace_dir = build_workspace_dir / TARGETS_KEY / self.name
         self.setup_ids: Dict[str, str] = {}  # setup_id : setup_type
-        self.setup_config = {}
+        self.setup_config = {}  # type: ignore[var-annotated]
         super().__init__(
             build_id=build_id,
             event_q=event_q,
@@ -237,9 +237,9 @@ class Target(BuildEntity):
                 artifact_config.input_binding_id is None
                 or artifact_config.input_binding_id == ""
             ):
-                task.binding_id = artifact_config.binding_id
+                task.binding_id = artifact_config.binding_id  # type: ignore[attr-defined]
             else:
-                task.binding_id = artifact_config.input_binding_id
+                task.binding_id = artifact_config.input_binding_id  # type: ignore[attr-defined]
             if len(artifact_config.other_locations) > 0:
                 logger.info(
                     "the input artifact has some 'other_locations' configured: %s",
@@ -260,8 +260,8 @@ class Target(BuildEntity):
                         "detected EnvURI '%s' but there are no 'other_locations' configured for lineage",
                         uri_to_handle,
                     )
-            task.uri = uri_to_handle
-            task.target = self
+            task.uri = uri_to_handle  # type: ignore[attr-defined]
+            task.target = self  # type: ignore[attr-defined]
             tasks.append(task)
         return tasks
 
@@ -276,16 +276,16 @@ class Target(BuildEntity):
                     setup_task = self.environment.setup(
                         launcher_in_use, tg, space_secrets=self.secrets, **kwargs
                     )
-                    self.setup_ids[setup_task.setup_id] = launcher_in_use
+                    self.setup_ids[setup_task.setup_id] = launcher_in_use  # type: ignore[attr-defined]
                     setup_tasks.add(setup_task)
             for setup in self.setups_to_run:
                 setup_task = self.environment.setup(
                     setup.type, tg, **setup.config, **kwargs
                 )
-                self.setup_ids[setup_task.setup_id] = setup.type
+                self.setup_ids[setup_task.setup_id] = setup.type  # type: ignore[attr-defined]
                 setup_tasks.add(setup_task)
             results = await asyncio.gather(*setup_tasks)
-            combined_setup_config = {}
+            combined_setup_config = {}  # type: ignore[var-annotated]
             for result in results:
                 combined_setup_config = merge_dicts(combined_setup_config, result)
             self.setup_config = combined_setup_config

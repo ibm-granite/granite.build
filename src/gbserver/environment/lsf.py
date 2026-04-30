@@ -201,7 +201,7 @@ class Lsf(Environment):
 
         self.ssh_timeout = int(authentication.get("ssh_timeout", "5"))
         self.node_search_lock = asyncio.Lock()
-        self.unreachable_ssh_nodes = []
+        self.unreachable_ssh_nodes = []  # type: ignore[var-annotated]
         if self.use_ssh:
             assert (
                 self.ssh_key_secret_name

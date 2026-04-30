@@ -172,7 +172,7 @@ class Space:
                 )
             )
             # returns secrets with payload, secret group and the labels in the required format
-            remote_secrets = remote_secrets_manager.get_secrets_with_groups(
+            remote_secrets = remote_secrets_manager.get_secrets_with_groups(  # type: ignore[attr-defined]
                 username=username
             )
             logger.info(

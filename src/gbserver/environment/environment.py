@@ -497,7 +497,7 @@ class Environment(ABC):
                 event_q=event_q, retry_transparently=retry_transparently
             )
         handler = self._create_retry_handler_for_launch(
-            launch_id, downstream, build_id, node_health_tracker, entityrun_metadata
+            launch_id, downstream, build_id, node_health_tracker, entityrun_metadata  # type: ignore[arg-type]
         )
         if handler is None:
             yield downstream
@@ -640,7 +640,7 @@ class Environment(ABC):
             launch_done_event.set()
 
         task = task_group.create_task(launch_helper())
-        task.launch_id = launch_id
+        task.launch_id = launch_id  # type: ignore[attr-defined]
         return task
 
     async def _inject_event_to_trigger_retry_when_testing(
@@ -776,7 +776,7 @@ class Environment(ABC):
                 setup_event.set()  # always unblock teardown, even if setup raised
 
         task = task_group.create_task(setup_helper())
-        task.setup_id = setup_id
+        task.setup_id = setup_id  # type: ignore[attr-defined]
         return task
 
     async def __wait_all_events(self, event_dict: dict[str, Event]) -> None:
@@ -962,7 +962,7 @@ class Environment(ABC):
                 pushed_event = BuildEvent(
                     run_metadata=run_metadata,
                     type=BuildEventType.ARTIFACT_PUSHED_EVENT,
-                    payload=ArtifactPushedEventPayload(uri=uristr, binding_id=binding_id),
+                    payload=ArtifactPushedEventPayload(uri=uristr, binding_id=binding_id),  # type: ignore[arg-type]
                 )
                 await self.event_q.put(pushed_event)
             return uri
@@ -1200,13 +1200,13 @@ class Environment(ABC):
                         "event_id": event_id,
                         "data": event_data,
                     }
-                    build_events.append(build_event)
+                    build_events.append(build_event)  # type: ignore[arg-type]
                     logger.info("Publishing build event : %s", json.dumps(build_event, indent=2))
                     await messenger.publish(payload=build_event, suffix=event_config.event_type)
                 else:
                     logger.info("JSON Log Event : %s", event_data)
                     build_event_type = BuildEventType(event_config.event_type.lower())
-                    build_event = BuildEvent(
+                    build_event = BuildEvent(  # type: ignore[assignment]
                         run_metadata=entityrun_metadata,
                         type=build_event_type,
                         payload=EventPayload.payload_parser(
@@ -1214,7 +1214,7 @@ class Environment(ABC):
                             data=event_data,
                         ),
                     )
-                    build_events.append(build_event)
+                    build_events.append(build_event)  # type: ignore[arg-type]
                     await event_q.put(build_event)
             except Exception as e:
                 logger.error("%s", traceback.format_exc())

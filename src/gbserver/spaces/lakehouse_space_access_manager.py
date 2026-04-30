@@ -165,7 +165,7 @@ class LakehouseSpaceAccessManager(ISpaceAccessManager):
                     },
                 )
 
-            return self.has_space_access(username, build.space_name)
+            return self.has_space_access(username, build.space_name)  # type: ignore[union-attr]
         except Exception as e:
             logger.error(f"Error get build space access check: {e}")
             return False

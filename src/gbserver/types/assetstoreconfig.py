@@ -26,7 +26,7 @@ from gbserver.types.config import Config
 class AssetStoreConfig(Config):
     """Asset Store Config implementation."""
 
-    base_uri: str = Field(default=None)
-    uri_regex: str = Field(default=None)
+    base_uri: str = Field(default=None)  # type: ignore[assignment]
+    uri_regex: str = Field(default=None)  # type: ignore[assignment]
     config: Any = Field(default=None)
     asset_config: Any = Field(default=None)

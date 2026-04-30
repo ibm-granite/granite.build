@@ -15,7 +15,7 @@
 # limitations under the License.
 
 import traceback
-from typing import Any, Optional, Type, Union
+from typing import Any, Callable, Optional, Type, Union
 
 from gbserver.storage.storage import (
     BASE_ITEM_TYPE,
@@ -92,7 +92,7 @@ class BaseDualItemStorage(IItemStorage):
             ValueError: if any of the items' uuids already exist in the database
 
         """
-        r = self.primary.add(items)
+        r = self.primary.add(items)  # type: ignore[union-attr]
         if self.secondary is not None:
             try:
                 self.secondary.add(items)
@@ -105,11 +105,11 @@ class BaseDualItemStorage(IItemStorage):
         return r
 
     def get_table_name(self) -> str:
-        return self.primary.get_table_name()
+        return self.primary.get_table_name()  # type: ignore[union-attr]
 
     def _get_column_values(self, item: BaseStoredItem) -> dict[str, Any]:
         """Needed for test on get_by_where()"""
-        p = self.primary._get_column_values(item)
+        p = self.primary._get_column_values(item)  # type: ignore[union-attr]
         if self.secondary is not None:
             s = self.secondary._get_column_values(item)
             if p != s:
@@ -137,7 +137,7 @@ class BaseDualItemStorage(IItemStorage):
         Returns:
             list[BaseStoredItem]: list of matching items if any found, otherwise and empty list.  Ordering of this list is undefined.
         """
-        r = self.primary.get_by_where(where=where, query_control=paginate)
+        r = self.primary.get_by_where(where=where, query_control=paginate)  # type: ignore[union-attr]
         if self.secondary is not None:
             try:
                 self.secondary.get_by_where(where=where, query_control=paginate)
@@ -163,7 +163,7 @@ class BaseDualItemStorage(IItemStorage):
             for the corresponding uuid in the input was not found.
             If uuids is None, then a list is always returned, even if empty.
         """
-        r = self.primary.get_by_uuid(uuids)
+        r = self.primary.get_by_uuid(uuids)  # type: ignore[union-attr]
         if self.secondary is not None:
             try:
                 self.secondary.get_by_uuid(uuids)
@@ -180,7 +180,7 @@ class BaseDualItemStorage(IItemStorage):
         Remove the table storing the items.
         A noop if the table does not exist.
         """
-        self.primary.delete_table()
+        self.primary.delete_table()  # type: ignore[union-attr]
         if self.secondary is not None:
             try:
                 self.secondary.delete_table()
@@ -213,7 +213,7 @@ class BaseDualItemStorage(IItemStorage):
             ValueError: if create_if_not_exist=False and the uuid used is NOT in the database already.
 
         """
-        self.primary.update(
+        self.primary.update(  # type: ignore[union-attr]
             item=item,
             update_updated_time=update_updated_time,
             create_if_not_exist=create_if_not_exist,
@@ -239,7 +239,7 @@ class BaseDualItemStorage(IItemStorage):
         Args:
             uuid (str): identifier under which an object is stored.  Returned by add().
         """
-        self.primary.delete(uuids)
+        self.primary.delete(uuids)  # type: ignore[union-attr]
         if self.secondary is not None:
             try:
                 self.secondary.delete(uuids)
@@ -252,7 +252,7 @@ class BaseDualItemStorage(IItemStorage):
 
     def get_column_names(self) -> list[str]:
         """Get the names of the searchable columns in the table"""
-        r = self.primary.get_column_names()
+        r = self.primary.get_column_names()  # type: ignore[union-attr]
         if self.secondary is not None:
             try:
                 self.secondary.get_column_names()
@@ -264,12 +264,36 @@ class BaseDualItemStorage(IItemStorage):
                 )
         return r
 
-    def _does_table_exist(self) -> bool:
-        """As required by the super class"""
-        r = self.primary._does_table_exist()
+    def count(self, where: Optional[Union[str, dict]] = None) -> int:
+        """Delegate count to primary storage."""
+        return self.primary.count(where)  # type: ignore[union-attr]
+
+    def update_fields(
+        self,
+        uuid: str,
+        fields: dict[str, Any],
+        should_update: Optional[Callable[[Any], bool]] = None,
+        update_updated_time: bool = True,
+    ) -> Optional[Any]:
+        """Delegate update_fields to both storages."""
+        r = self.primary.update_fields(uuid, fields, should_update, update_updated_time)  # type: ignore[union-attr]
         if self.secondary is not None:
             try:
-                self.secondary._does_table_exist()
+                self.secondary.update_fields(uuid, fields, should_update, update_updated_time)
+            except Exception as e:
+                err_stack = traceback.format_exc()
+                body = get_readable_error_message(e=e, err_stack=err_stack)
+                self.logger.error(
+                    f"Secondary storage got exception after success on the primary. {body}"
+                )
+        return r
+
+    def _does_table_exist(self) -> bool:
+        """As required by the super class"""
+        r = self.primary._does_table_exist()  # type: ignore[union-attr]
+        if self.secondary is not None:
+            try:
+                self.secondary._does_table_exist()  # type: ignore[attr-defined]
             except Exception as e:
                 err_stack = traceback.format_exc()
                 body = get_readable_error_message(e=e, err_stack=err_stack)

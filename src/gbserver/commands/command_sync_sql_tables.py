@@ -209,7 +209,7 @@ def get_dict_of_items(storage: IItemStorage):
     """Get the dict of items."""
     items = storage.get_by_uuid(None)  # Get all items
     item_dict = {}
-    for item in items:
+    for item in items:  # type: ignore[union-attr]
         item_dict[item.uuid] = item
     return item_dict
 
@@ -321,19 +321,19 @@ def sync_admin_storage(
     builds = sync_storage("build", dest_storage, src_storage)
 
     print(f"Syncing targets")
-    dest_storage, src_storage = get_target_storage_pair(dest_factory, src_factory)
+    dest_storage, src_storage = get_target_storage_pair(dest_factory, src_factory)  # type: ignore[assignment]
     targets = sync_storage("target", dest_storage, src_storage)
 
     print(f"Syncing steps")
-    dest_storage, src_storage = get_step_storage_pair(dest_factory, src_factory)
+    dest_storage, src_storage = get_step_storage_pair(dest_factory, src_factory)  # type: ignore[assignment]
     steps = sync_storage("step", dest_storage, src_storage)
 
     print(f"Syncing artifacts")
-    dest_storage, src_storage = get_artifact_registry_pair(dest_factory, src_factory)
+    dest_storage, src_storage = get_artifact_registry_pair(dest_factory, src_factory)  # type: ignore[assignment]
     artifacts = sync_storage("artifact", dest_storage, src_storage)
 
     print(f"Syncing spaces")
-    dest_storage, src_storage = get_space_storage_pair(dest_factory, src_factory)
+    dest_storage, src_storage = get_space_storage_pair(dest_factory, src_factory)  # type: ignore[assignment]
     spaces = sync_storage("space", dest_storage, src_storage)
 
     return {
@@ -357,16 +357,16 @@ def snapshot(dest_factory: SQLStorageFactory, src_factory: LhStorageFactory):
     dest, src = get_artifact_registry_pair(dest_factory, src_factory)
     snapshot_storage_pair(dest, src)
 
-    dest, src = get_build_storage_pair(dest_factory, src_factory)
+    dest, src = get_build_storage_pair(dest_factory, src_factory)  # type: ignore[assignment]
     snapshot_storage_pair(dest, src)
 
-    dest, src = get_target_storage_pair(dest_factory, src_factory)
+    dest, src = get_target_storage_pair(dest_factory, src_factory)  # type: ignore[assignment]
     snapshot_storage_pair(dest, src)
 
-    dest, src = get_step_storage_pair(dest_factory, src_factory)
+    dest, src = get_step_storage_pair(dest_factory, src_factory)  # type: ignore[assignment]
     snapshot_storage_pair(dest, src)
 
-    dest, src = get_space_storage_pair(dest_factory, src_factory)
+    dest, src = get_space_storage_pair(dest_factory, src_factory)  # type: ignore[assignment]
     snapshot_storage_pair(dest, src)
 
 
@@ -375,7 +375,7 @@ def snapshot_storage_pair(dest: IItemStorage, src: IItemStorage):
     print(
         f"\nSyncing {type(src).__name__} table={src.get_table_name()} into {type(dest).__name__} table={dest.get_table_name()}"
     )
-    items: list = src.get_by_uuid(None)
+    items: list = src.get_by_uuid(None)  # type: ignore[assignment]
     item_count = len(items)
     print(f"Found {item_count} items in {type(src).__name__} table={src.get_table_name()}")
     # return
@@ -408,7 +408,7 @@ def snapshot_storage_pair(dest: IItemStorage, src: IItemStorage):
 
     # Check results
     if enable_storage_modifications:
-        items: list = dest.get_by_uuid(None)
+        items: list = dest.get_by_uuid(None)  # type: ignore[no-redef]
         dest_item_count = len(items)
         if item_count != dest_item_count:
             print(

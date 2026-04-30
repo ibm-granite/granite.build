@@ -42,6 +42,7 @@ ERR_CONNECTION_RESET_BY_PEER = "Connection reset by peer"
 class ErrConnResetByPeer(Exception):
     """ssh connection failed with 'Connection reset by peer'"""
 
+    @staticmethod
     def matches_error_str(s: Union[str, bytes]) -> bool:
         """Matches error str."""
         return (isinstance(s, str) and ERR_CONNECTION_RESET_BY_PEER in s) or (
@@ -55,6 +56,7 @@ ERR_NETWORK_UNREACHABLE = "Network is unreachable"
 class ErrNetworkUnreachable(Exception):
     """ssh connection failed with 'Network is unreachable'"""
 
+    @staticmethod
     def matches_error_str(s: Union[str, bytes]) -> bool:
         """Matches error str."""
         return (isinstance(s, str) and ERR_NETWORK_UNREACHABLE in s) or (

@@ -48,7 +48,7 @@ class LocalFileStream(LogStreamSource):
         self.launch_id = launch_id
         assert timeout >= 0, "Negative timeout"
 
-    async def stream_lines(
+    async def stream_lines(  # type: ignore[override]
         self: Self,
         stop_event: Optional[asyncio.Event] = None,
         abort_event: Optional[asyncio.Event] = None,

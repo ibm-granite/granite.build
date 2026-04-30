@@ -369,7 +369,7 @@ class RabbitMQBase(MessagingBase):
         if self.settings.per_publish_channel:
             # fresh channel for this publish only
             await self._ensure_connection()
-            ch = await self._conn.channel(publisher_confirms=True)
+            ch = await self._conn.channel(publisher_confirms=True)  # type: ignore[union-attr]
             try:
                 exch = (
                     (
@@ -393,7 +393,7 @@ class RabbitMQBase(MessagingBase):
         else:
             # Use a lambda to resolve the *current* exchange each attempt, so retries don't call a
             # stale bound method from a dead channel.
-            publish_call = self._with_retries(lambda *a, **kw: self._exchange.publish(*a, **kw))
+            publish_call = self._with_retries(lambda *a, **kw: self._exchange.publish(*a, **kw))  # type: ignore[union-attr]
             await publish_call(message, routing_key=rk)
 
         logger.info(
@@ -401,7 +401,7 @@ class RabbitMQBase(MessagingBase):
         )
 
     # ------------------------- consume helper ---------------------------- #
-    async def consume_stream(
+    async def consume_stream(  # type: ignore[override]
         self,
         handler: Callable[[bytes, str, int], Awaitable[None]],
         *,

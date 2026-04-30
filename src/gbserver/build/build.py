@@ -249,7 +249,7 @@ class Build(BuildEntity):
             for i, step in enumerate(target.steps):
                 err_prefix = f"Target `{target_name}` Step `{i}`:"
                 try:
-                    target_step_uri = URI.get_uri(step.step_uri)
+                    target_step_uri = URI.get_uri(step.step_uri)  # type: ignore[arg-type]
                     if not target_step_uri.exists():
                         err = f"{err_prefix} the step URI {step.step_uri} doesn't exist"
                         errors.add(err=err, type=GBValidationErrorType.NOT_EXIST)

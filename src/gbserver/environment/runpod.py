@@ -234,7 +234,7 @@ class Runpod(Environment):
                 poll_interval,
             )
             await asyncio.sleep(poll_interval)
-            poll_interval = min(poll_interval * 1.5, 30)
+            poll_interval = min(poll_interval * 1.5, 30)  # type: ignore[assignment]
         raise TimeoutError(f"RunPod pod {pod_id} did not reach RUNNING within {timeout}s")
 
     async def monitor_pod_status_monitor(

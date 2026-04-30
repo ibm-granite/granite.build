@@ -331,7 +331,7 @@ class LhURI(URI):
         Returns:
             ArtifactType: The artifact type, or UNDEFINED if the LH type is unknown.
         """
-        return LhType.convert_to_artifact_type(self.get_lh_type())
+        return LhType.convert_to_artifact_type(self.get_lh_type())  # type: ignore[arg-type]
 
     def get_lh_table_name(self: Self) -> str:
         """Get the current Lakehouse table name."""

@@ -21,13 +21,12 @@ Monitor AppWrappers in K8s clusters.
 import asyncio
 import json
 import os
-from typing import Dict, List, Optional, Self, Set
+from typing import Any, Dict, List, Optional, Self, Set
 
 import aiohttp
 from kubernetes_asyncio import client
 
 from gbserver.environment.k8s import AtomicApiClient
-from gbserver.messaging.messaging_base import JSON
 from gbserver.monitoring.monitor_base import MonitorBase
 from gbserver.types.buildevent import (
     BuildEvent,
@@ -143,10 +142,10 @@ class AppWrapperMonitor(MonitorBase):
         self.ssl_verification = ssl_verification
         self.v1 = None
         self.custom_api = None
-        self.additional_appwrapper_state_info = {}
-        self.latest_events = []
-        self.failed_pods = {}
-        self.launched_pods = {}
+        self.additional_appwrapper_state_info = {}  # type: ignore[var-annotated]
+        self.latest_events = []  # type: ignore[var-annotated]
+        self.failed_pods = {}  # type: ignore[var-annotated]
+        self.launched_pods = {}  # type: ignore[var-annotated]
         self.consecutive_api_failures = 0
         self._run_event = asyncio.Event()
         self._run_event.set()  # running by default; cleared by pause()
@@ -334,7 +333,7 @@ class AppWrapperMonitor(MonitorBase):
         rstatus = "Unset"
         try:
             response = await asyncio.wait_for(
-                self.custom_api.get_namespaced_custom_object(
+                self.custom_api.get_namespaced_custom_object(  # type: ignore[attr-defined]
                     group="workload.codeflare.dev",
                     version=os.getenv("K8S_APPWRAPPER_VERSION", "v1beta2"),
                     namespace=self.ns,
@@ -446,7 +445,7 @@ class AppWrapperMonitor(MonitorBase):
         self: Self, aw_name: str, namespace: str = "default"
     ) -> List[str]:
         """Return Workload names whose ownerReference.name == aw_name."""
-        wl_list = await self.custom_api.list_namespaced_custom_object(
+        wl_list = await self.custom_api.list_namespaced_custom_object(  # type: ignore[attr-defined]
             group="kueue.x-k8s.io",
             version=os.getenv("K8S_WORKLOAD_VERSION", "v1beta1"),
             namespace=namespace,
@@ -473,7 +472,7 @@ class AppWrapperMonitor(MonitorBase):
             return []
         workload_status_list = []
         for workload in appwrapper_workload_list:
-            workload_status = await self.custom_api.get_namespaced_custom_object_status(
+            workload_status = await self.custom_api.get_namespaced_custom_object_status(  # type: ignore[attr-defined]
                 group="kueue.x-k8s.io",
                 version=os.getenv("K8S_WORKLOAD_VERSION", "v1beta1"),
                 namespace=self.ns,
@@ -494,10 +493,10 @@ class AppWrapperMonitor(MonitorBase):
         label_selector = f"workload.codeflare.dev/appwrapper={self.name}"
         try:
             pod_list = await asyncio.wait_for(
-                self.v1.list_namespaced_pod(namespace=self.ns, label_selector=label_selector),
+                self.v1.list_namespaced_pod(namespace=self.ns, label_selector=label_selector),  # type: ignore[attr-defined]
                 timeout=API_CALL_TIMEOUT,
             )
-            if not pod_list.items:
+            if not pod_list.items:  # type: ignore[attr-defined]
                 logger.warning(
                     "No pods found with the specified label %s in namespace %s",
                     label_selector,
@@ -505,7 +504,7 @@ class AppWrapperMonitor(MonitorBase):
                 )
                 return
 
-            for pod in pod_list.items:
+            for pod in pod_list.items:  # type: ignore[attr-defined]
                 pod_name = pod.metadata.name
                 # update the list of all the pods ever launched by this appwrapper
                 self.launched_pods[pod_name] = pod
@@ -587,7 +586,7 @@ class AppWrapperMonitor(MonitorBase):
         async def fetch_container_logs(container_name: str):
             try:
                 logs = await asyncio.wait_for(
-                    self.v1.read_namespaced_pod_log(
+                    self.v1.read_namespaced_pod_log(  # type: ignore[attr-defined]
                         name=pod_name,
                         namespace=self.ns,
                         container=container_name,
@@ -638,7 +637,7 @@ class AppWrapperMonitor(MonitorBase):
         # get events for appwrapper
         try:
             appwrapper_events = await asyncio.wait_for(
-                self.v1.list_namespaced_event(
+                self.v1.list_namespaced_event(  # type: ignore[attr-defined]
                     namespace=self.ns,
                     field_selector=(
                         f"involvedObject.kind=AppWrapper," f"involvedObject.name={self.name}"
@@ -660,7 +659,7 @@ class AppWrapperMonitor(MonitorBase):
         # not only the failed pods, so that we can catch significant events
         # (Evicted, ErrImagePull) that occur even if the pod is not necessarily
         # marked as failed
-        appwrapper_pod_list = self.launched_pods.keys()
+        appwrapper_pod_list = self.launched_pods.keys()  # type: ignore[assignment]
         abnormal_pod_events = []
         if appwrapper_pod_list is not None:
             for pod_name in appwrapper_pod_list:
@@ -668,7 +667,7 @@ class AppWrapperMonitor(MonitorBase):
                     field_selector = f"involvedObject.name={pod_name}"
                     # Retrieve events for the specific pod
                     pod_events = await asyncio.wait_for(
-                        self.v1.list_namespaced_event(
+                        self.v1.list_namespaced_event(  # type: ignore[attr-defined]
                             namespace=self.ns,
                             field_selector=field_selector,
                         ),
@@ -730,7 +729,7 @@ class AppWrapperMonitor(MonitorBase):
     async def _get_state_change(
         self: Self, new_state: str, get_state_for_exception: bool = False
     ) -> str:
-        payload: JSON = {
+        payload: dict[str, Any] = {
             "appwrapper": self.name,
             "state": new_state,
             "previous_state": self._last_state,
@@ -745,7 +744,7 @@ class AppWrapperMonitor(MonitorBase):
         await self._get_appwrapper_failed_pods()
         if get_state_for_exception:
             payload["failed_pods"] = self.failed_pods
-        payload["events"] = await self._get_new_events(self.failed_pods.keys())
+        payload["events"] = await self._get_new_events(self.failed_pods.keys())  # type: ignore[arg-type]
         return f"\n```json\n{json.dumps(payload, indent=4)}\n```\n"
 
     async def _publish_state_change(

@@ -131,7 +131,7 @@ class LocalSpaceSecretManager(SpaceSecretManager):
 
         # NEW FORMAT: spaces -> <space> -> secrets
         if "spaces" in secrets:
-            for space_name, space_cfg in secrets["spaces"].items():
+            for space_name, space_cfg in secrets["spaces"].items():  # type: ignore[union-attr]
                 space_secrets = space_cfg.get("secrets", {})
                 for name, secret in space_secrets.items():
                     try:
@@ -152,7 +152,7 @@ class LocalSpaceSecretManager(SpaceSecretManager):
 
         # BACKWARD COMPATIBILITY - OLD FORMAT: flat key -> base64 (old file format, if any)
         else:
-            for key, value in secrets.items():
+            for key, value in secrets.items():  # type: ignore[assignment]
                 try:
                     decoded_value = base64.b64decode(value).decode("utf-8")
                     decoded_secrets[key] = decoded_value

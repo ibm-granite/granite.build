@@ -183,7 +183,7 @@ class BuildRun(Run):
                     binding_info = BindingInfo(
                         target_name=binding_target_name,
                         binding_id=binding_target_output_name,
-                        wait_for_push=t_input.wait_for_push,
+                        wait_for_push=t_input.wait_for_push,  # type: ignore[arg-type]
                     )
                     if binding_info not in self.binding_to_target_mapping:
                         self.binding_to_target_mapping[binding_info] = []
@@ -429,7 +429,7 @@ class BuildRun(Run):
                 event = await asyncio.wait_for(self.targets_queue.get(), timeout=1.0)
                 asyncio_runner = tg if tg is not None else asyncio
                 self.tasks.add(
-                    asyncio_runner.create_task(self._process_event(event=event, tg=tg))
+                    asyncio_runner.create_task(self._process_event(event=event, tg=tg))  # type: ignore[arg-type]
                 )
             except TimeoutError:
                 if all(task.done() for task in self.tasks):
@@ -574,8 +574,8 @@ class BuildRun(Run):
                     update={"space_name": _space_name}
                 ),
             )
-            task.binding_id = art_bind_id
-            task.binding_id_glob = found_key
+            task.binding_id = art_bind_id  # type: ignore[attr-defined]
+            task.binding_id_glob = found_key  # type: ignore[attr-defined]
             push_tasks.append(task)
         uris = await asyncio.gather(*push_tasks, return_exceptions=True)
         if target_config.outputs is None:
@@ -591,9 +591,9 @@ class BuildRun(Run):
                 if isinstance(uri, BaseException):
                     exceptions.append(uri)
                     continue
-                task_binding_id = task.binding_id
+                task_binding_id = task.binding_id  # type: ignore[attr-defined]
                 assert isinstance(task_binding_id, str)
-                task_binding_id_glob = task.binding_id_glob
+                task_binding_id_glob = task.binding_id_glob  # type: ignore[attr-defined]
                 assert isinstance(
                     task_binding_id_glob, str
                 ), f"invalid task_binding_id_glob: {task_binding_id_glob}"

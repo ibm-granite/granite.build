@@ -224,13 +224,13 @@ class SidecarOrchestrator:
             data=cfg,
         )
 
-        assert len(event_configs_list) == len(self.log_path_list), (
+        assert len(event_configs_list) == len(self.log_path_list), (  # type: ignore[arg-type]
             f"length of event_configs_list ({len(event_configs_list)}) does not match "
-            f"length of log path list ({len(self.log_path_list)})"
+            f"length of log path list ({len(self.log_path_list)})"  # type: ignore[arg-type]
         )
 
         sidecar_configs: Dict[Path, List[EventLogLineParserConfig]] = {
-            logpath: evt_cfgs for logpath, evt_cfgs in zip(self.log_path_list, event_configs_list)
+            logpath: evt_cfgs for logpath, evt_cfgs in zip(self.log_path_list, event_configs_list)  # type: ignore[arg-type]
         }
 
         return sidecar_configs

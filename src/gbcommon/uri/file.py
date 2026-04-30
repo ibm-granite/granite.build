@@ -32,9 +32,9 @@ class FileURI(URI):
 
     def __init__(self: Self, uri: URI, context: Optional[str] = None, **kwargs: Dict) -> None:
         self.context = context
-        if not Path(uri.path).is_absolute() and self.context is not None and self.context != "":
-            uri = FileURI(uri=FILE_SCHEME + ":///" + self.context + "/" + uri.path)
-        super().__init__(uri=uri, context=context, **kwargs)
+        if not Path(uri.path).is_absolute() and self.context is not None and self.context != "":  # type: ignore[attr-defined]
+            uri = FileURI(uri=FILE_SCHEME + ":///" + self.context + "/" + uri.path)  # type: ignore[attr-defined]
+        super().__init__(uri=uri, context=context, **kwargs)  # type: ignore[arg-type]
 
     @staticmethod
     def get_supported_schemes() -> List[str]:

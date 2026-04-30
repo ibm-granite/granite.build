@@ -29,7 +29,7 @@ class Envstore(Assetstore):
     """A class for storing and accessing file/folders in a remote environment"""
 
     def __init__(self, uri: Union[URI, str], **kwargs):
-        super().__init__(uri, **kwargs)
+        super().__init__(uri, **kwargs)  # type: ignore[arg-type]
 
     @classmethod
     def get_supported_uri_classes(self):

@@ -76,7 +76,7 @@ def _get_base_class():
     return BaseModel
 
 
-class LakehouseLineageStore(ILineageStore, _get_base_class()):
+class LakehouseLineageStore(ILineageStore, _get_base_class()):  # type: ignore[misc]
     """Lakehouse-backed lineage storage using the job_stats table."""
 
     def count_release_ids(self: Self, release_id: str, target_id: Optional[str] = None) -> int:
@@ -122,7 +122,7 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
 
         job_details = self.__get_jobdetails_for_artifact(artifact)
         source_code_details = self.__get_source_code_details("")
-        job_input_params = {}
+        job_input_params = {}  # type: ignore[var-annotated]
         sources = self.__get_input_datasources_for_artifact(sources)
 
         target_name = "pseudo-target"
@@ -269,7 +269,7 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
         if targetrun.skipped_for_prerun_target_id:
             original = storage.target_storage.get_by_uuid(targetrun.skipped_for_prerun_target_id)
             if original is not None:
-                targetrun = original.model_copy(
+                targetrun = original.model_copy(  # type: ignore[union-attr]
                     update={
                         "uuid": targetrun.uuid,
                         "build_id": targetrun.build_id,
@@ -460,16 +460,16 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
         version = ""
         match lh_type:
             case LhType.DATASET:
-                lh_type = "dataset"
+                lh_type = "dataset"  # type: ignore[assignment]
                 name = lh.get_lh_dataset_name()
             case LhType.TABLE:
-                lh_type = "table"
+                lh_type = "table"  # type: ignore[assignment]
                 name = table_name
             case LhType.MODEL:
-                lh_type = "model"
+                lh_type = "model"  # type: ignore[assignment]
                 name = f"{lh.get_lh_model_label()}.{lh.get_lh_model_revision()}"
             case LhType.FILESET:
-                lh_type = "fileset"
+                lh_type = "fileset"  # type: ignore[assignment]
                 name = lh.get_lh_fileset_label()
                 version = lh.get_lh_fileset_version()
             case _:

@@ -59,7 +59,7 @@ def finalize_build_status(
             status,
             build_id,
         )
-        return
+        return  # type: ignore[return-value]
 
     storage = get_admin_storage()
 
@@ -134,7 +134,7 @@ def update_stored_build_status(
     updates = {}
     updates["status"] = status
     if failure_reason and status is Status.FAILED:
-        updates["failure_reason"] = failure_reason
+        updates["failure_reason"] = failure_reason  # type: ignore[assignment]
     build_storage = get_admin_storage().build_storage
     build = build_storage.update_fields(build_id, updates, should_update=should_update)
     return build

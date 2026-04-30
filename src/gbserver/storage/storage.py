@@ -422,7 +422,7 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
 
         uuids = [x.uuid for x in items]
         if len(uuids) == 1:
-            uuids = uuids[0]  # When only adding a single item, don't return a list.
+            uuids = uuids[0]  # type: ignore[assignment]  # When only adding a single item, don't return a list.
         self.logger.info(f"Done adding {len(items)} item(s)")
         return uuids
 
@@ -659,13 +659,12 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
             return [] if uuids_was_list else [] if uuids is None else None
 
         if uuids is None or isinstance(uuids, str) or isinstance(uuids, list):
+            row_filter: dict[str, Union[str, list[str]]] = {}
             if isinstance(uuids, str):
                 row_filter = {UUID_COLUMN_NAME: uuids}
                 uuids = [uuids]  # Below expects a list if not None
             elif isinstance(uuids, list):
                 row_filter = {UUID_COLUMN_NAME: uuids}
-            else:
-                row_filter = {}
             items = self.get_by_where(row_filter)
         else:
             where = f"{UUID_COLUMN_NAME} in {uuids}"
@@ -681,13 +680,13 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
                 items_by_uuid[item.uuid] = item
             new_items = []
             for uuid in uuids:
-                item = items_by_uuid.get(uuid)
+                item = items_by_uuid.get(uuid)  # type: ignore[assignment]
                 new_items.append(item)  # Puts None in place where a uuid/item was not found.
             if len(uuids) == 1 and not uuids_was_list:
-                new_items = new_items[0]
+                new_items = new_items[0]  # type: ignore[assignment]
 
         new_items_list = new_items if isinstance(new_items, list) else [new_items]
-        num_found = len(new_items_list) - new_items_list.count(None)
+        num_found = len(new_items_list) - new_items_list.count(None)  # type: ignore[arg-type]
         self.logger.debug(f"Done searching for items by uuid, found {num_found} matching items")
 
         return new_items

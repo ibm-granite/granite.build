@@ -59,7 +59,7 @@ class BaseStoredBuildStorage(BaseItemStorage[StoredBuild], IStoredBuildStorage):
         json[UPDATED_TIME_FIELD_NAME] = item.updated_time
 
         if self._schema_version > _BUILD_SCHEMA_VERSION1:
-            json["tags"] = ",".join(sorted(item.tags))
+            json["tags"] = ",".join(sorted(item.tags))  # type: ignore[arg-type]
 
         return json
 

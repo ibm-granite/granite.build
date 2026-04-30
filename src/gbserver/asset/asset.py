@@ -59,15 +59,15 @@ class Asset:
         if self.uri.pull(dest=dest, force=force):
             self.local = dest
             return dest
-        return None
+        return None  # type: ignore[return-value]
 
     def get_metadata(self: Self) -> Any:
         """Get the metadata."""
         uri_metadata = self.uri.get_metadata()
         assetstore = self.get_assetstore(asset=self)
-        uri_assetstore_metadata = assetstore.get_metadata(self.uri)
+        uri_assetstore_metadata = assetstore.get_metadata(self.uri)  # type: ignore[union-attr]
         config = fill_objtemplate(
-            assetstore.config.asset_config, {"uri_metadata": uri_metadata}, strict=True
+            assetstore.config.asset_config, {"uri_metadata": uri_metadata}, strict=True  # type: ignore[union-attr]
         )
         if config is None:
             config = {}
@@ -83,12 +83,12 @@ class Asset:
         elif isinstance(uri, URI):
             uristr = URI.get_uristr(uri)
         else:
-            uristr = uri
+            uristr = uri  # type: ignore[assignment]
         longest_match = 0
         t1 = None
         for assetstore in Assetstore._thread_local.assetstores.values():
             assert isinstance(assetstore, Assetstore)
-            curr_len = assetstore.can_handle_len(uristr)
+            curr_len = assetstore.can_handle_len(uristr)  # type: ignore[arg-type]
             if curr_len > longest_match:
                 longest_match = curr_len
                 t1 = assetstore
@@ -102,12 +102,12 @@ class Asset:
         uri = URI.get_uri(store_uri)
         store_asset = Asset(uri, context)
         store_asset_path = store_asset.sync(force=force)
-        return Assetstore.load_asset_store(store_asset_path, context, secrets=uri.get_secrets())
+        return Assetstore.load_asset_store(store_asset_path, context, secrets=uri.get_secrets())  # type: ignore[arg-type]
 
     def get_asset_type(self) -> ArtifactType:
         """Get the asset type."""
         assetstore = self.get_assetstore(asset=self)
-        atype = assetstore.get_asset_type(self.uri)
+        atype = assetstore.get_asset_type(self.uri)  # type: ignore[union-attr]
         if atype is None:
             return ArtifactType.UNDEFINED
         return atype

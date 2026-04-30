@@ -27,7 +27,7 @@ class Filestore(Assetstore):
     """A class for storing and accessing file asset"""
 
     def __init__(self: Self, uri: Union[URI, str], **kwargs) -> None:
-        super().__init__(uri, **kwargs)
+        super().__init__(uri, **kwargs)  # type: ignore[arg-type]
 
     @classmethod
     def get_supported_uri_classes(self):

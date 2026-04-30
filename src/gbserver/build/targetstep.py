@@ -117,22 +117,22 @@ class TargetStep(BuildEntity):
         self.monitors = {}
         self.parent_target_config = parent_target_config
         self.step = Step(
-            stepuri=targetstep.step_uri, context=context, force_fetch=force_fetch
+            stepuri=targetstep.step_uri, context=context, force_fetch=force_fetch  # type: ignore[arg-type]
         )
         self.step_uri = targetstep.step_uri
         self.target_name = target_name
         self.target_step_index = target_step_index
         self.environment = environment
-        targetstep_dir = target_dir / os.path.basename(self.step.dir) / random_string()
+        targetstep_dir = target_dir / os.path.basename(self.step.dir) / random_string()  # type: ignore[arg-type]
         self.context = context
         sync_or_copy(str(self.step.dir) + "/", targetstep_dir)
-        merge_config_dirs(self.step.dir, targetstep.config_dir, targetstep_dir)
+        merge_config_dirs(self.step.dir, targetstep.config_dir, targetstep_dir)  # type: ignore[arg-type]
         self.step = Step(str(targetstep_dir))
         super().__init__(
             build_id=build_id,
             event_q=event_q,
             build_workspace_dir=build_workspace_dir,
-            username=username,
+            username=username,  # type: ignore[arg-type]
             type="targetstep",
             config=targetstep,
             dir=targetstep_dir,
@@ -565,7 +565,7 @@ class TargetStep(BuildEntity):
             bt_outputs = self.parent_target_config.outputs
             if bt_outputs is not None:
                 step_outputs = {}
-                for k, v in bt_outputs.items():
+                for k, v in bt_outputs.items():  # type: ignore[assignment]
                     step_outputs[k] = v.model_dump()
                 context["step_outputs"] = step_outputs
         # ------------------

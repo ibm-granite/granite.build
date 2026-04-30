@@ -134,7 +134,7 @@ def build_retry_strategies_from_config(
 
         # Check if this strategy accepts object_types parameter
         # Use the class attribute instead of hardcoded set
-        if strategy_class.accepts_object_types:
+        if strategy_class.accepts_object_types:  # type: ignore[attr-defined]
             # Use default object types if not specified
             if "object_types" not in params:
                 params["object_types"] = default_object_types

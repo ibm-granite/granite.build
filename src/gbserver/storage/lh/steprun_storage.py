@@ -34,7 +34,7 @@ class LhStepRunStorage(BaseLakehouseItemStorage, IStoredStepRunStorage):
 
     def _get_column_values(self: Self, item: StoredStepRun) -> dict:
         fields_to_include = ["name", "build_id", "target_id", "status"]
-        json = item.model_dump(include=fields_to_include)
+        json = item.model_dump(include=fields_to_include)  # type: ignore[arg-type]
         json["status"] = item.status.name
         return json
 
