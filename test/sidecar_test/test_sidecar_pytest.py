@@ -21,7 +21,6 @@ from typing import Awaitable, Callable, Dict, Optional
 import pytest
 import pytest_asyncio
 
-pytestmark = pytest.mark.ibm
 
 # --------------------- project imports ---------------------
 from gbserver.messaging.messaging_base import JSON, MessagingBase

@@ -16,7 +16,6 @@ import sys
 import pytest
 import pytest_asyncio
 
-pytestmark = pytest.mark.ibm
 
 from test_multi_sidecar_cmdmon_pytest import child_scripts, temp_log_files
 

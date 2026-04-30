@@ -21,7 +21,6 @@ import pytest
 import pytest_asyncio
 import yaml
 
-pytestmark = pytest.mark.ibm
 
 from test_sidecar_cmdmon_pytest import child_script
 

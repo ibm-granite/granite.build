@@ -17,7 +17,6 @@ import textwrap
 import pytest
 import pytest_asyncio
 
-pytestmark = pytest.mark.ibm
 
 # ---------- reuse the fixtures from test_sidecar_pytest ----------
 from test_sidecar_pytest import fake_messaging
