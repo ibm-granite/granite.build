@@ -26,8 +26,6 @@ import pytest
 
 from gbserver.spacesecretmanager.envspacesecretmanager import EnvSpaceSecretManager
 
-pytestmark = pytest.mark.g4os
-
 
 def test_exact_match_lookup(monkeypatch):
     """Test that exact match lookup retrieves the correct secret value.

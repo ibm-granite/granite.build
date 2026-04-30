@@ -31,8 +31,6 @@ from gbserver.spacesecretmanager.hybridspacesecretmanager import (
 )
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
 
-pytestmark = pytest.mark.g4os
-
 
 def test_priority_order_first_manager_wins():
     """Test that the first manager in the chain takes precedence.

@@ -30,8 +30,6 @@ from gbserver.types.stepconfig import (
     StepMonitorConfig,
 )
 
-pytestmark = [pytest.mark.g4os, pytest.mark.unit]
-
 _GPU_IMAGE = "gbserver-test-trl-unitxt:gpu"
 _CPU_IMAGE = "gbserver-test-trl-unitxt:cpu"
 

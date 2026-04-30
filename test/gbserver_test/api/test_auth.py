@@ -24,8 +24,6 @@ from fastapi.testclient import TestClient
 
 from gbserver.api.auth import AuthMiddleware
 
-pytestmark = pytest.mark.g4os
-
 
 def _make_app() -> FastAPI:
     """Build a minimal FastAPI app with AuthMiddleware and a /test endpoint."""

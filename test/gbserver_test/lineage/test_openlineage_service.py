@@ -30,7 +30,7 @@ from gbserver.lineage.openlineage_models import (
 )
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
 
-pytestmark = [pytest.mark.g4os, pytest.mark.ibm]
+pytestmark = pytest.mark.ibm
 
 _TEST_API_KEY = "test-lineage-key-12345"
 _AUTH_ENV = {

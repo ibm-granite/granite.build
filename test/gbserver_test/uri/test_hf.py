@@ -31,7 +31,6 @@ from gbserver.types.artifact import ArtifactType
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
 class TestHfURIPullUnit:
     """Verify pull() arguments without hitting the network."""
 
@@ -161,7 +160,6 @@ class TestHfURIPullUnit:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
 class TestHfURIPushUnit:
     """Verify push() behaviour without hitting the network."""
 
@@ -314,7 +312,6 @@ class ExistsExpection(BaseModel):
     path_in_repo: Optional[str] = ""
 
 
-@pytest.mark.unit
 class TestHfURIPartsUnit:
     """Verify exists() behaviour without hitting the network."""
 
@@ -392,7 +389,6 @@ class TestHfURIPartsUnit:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.g4os
 def test_pull_downloads_tiny_public_model(tmp_path):
     """Download a tiny public model from huggingface.co and verify files land in dest.
 
@@ -425,7 +421,6 @@ def test_pull_downloads_tiny_public_model(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.g4os
 def test_push_uploads_file_to_huggingface(tmp_path):
     """Upload a small file to a temporary HF repo and verify it lands there.
 
@@ -479,7 +474,6 @@ def test_push_uploads_file_to_huggingface(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
 class TestHfURIBucketArtifactType:
     def test_bucket_maps_to_bucket(self):
         uri = HfURI.from_parts(owner="org", repo="my-bucket", hf_type=HfType.BUCKET)
@@ -499,7 +493,6 @@ class TestHfURIBucketArtifactType:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
 class TestHfURIBucketParts:
     def test_bucket_uri_parts(self):
         uri = HfURI.parse("hf://huggingface.co/buckets/org/my-bucket")
@@ -527,7 +520,6 @@ class TestHfURIBucketParts:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
 class TestHfURIBucketPullUnit:
     def test_calls_sync_bucket(self, tmp_path, monkeypatch):
         monkeypatch.delenv("HF_TOKEN", raising=False)
@@ -596,7 +588,6 @@ class TestHfURIBucketPullUnit:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
 class TestHfURIBucketPushUnit:
     def test_file_calls_batch_bucket_files(self, tmp_path):
         src = tmp_path / "data.bin"
@@ -707,7 +698,6 @@ class TestHfURIBucketPushUnit:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
 class TestHfURIBucketExistsUnit:
     def test_calls_bucket_info(self, monkeypatch):
         monkeypatch.delenv("HF_TOKEN", raising=False)
@@ -749,7 +739,6 @@ class TestHfURIBucketExistsUnit:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
 class TestHfURIBucketDeleteUnit:
     def test_deletes_entire_bucket(self, monkeypatch):
         monkeypatch.delenv("HF_TOKEN", raising=False)

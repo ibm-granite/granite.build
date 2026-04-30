@@ -5,8 +5,6 @@ import pytest
 
 from gbserver.types.buildevent import BuildEventType, EntityRunMetadata
 
-pytestmark = [pytest.mark.g4os, pytest.mark.unit]
-
 
 class TestStepDockerConfig:
     def test_default_values(self):

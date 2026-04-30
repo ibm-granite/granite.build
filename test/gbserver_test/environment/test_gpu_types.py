@@ -6,8 +6,6 @@ from gbserver.environment.runpod import (
     resolve_runpod_gpu_type,
 )
 
-pytestmark = pytest.mark.g4os
-
 
 class TestGPUTypeMapping:
     def test_resolve_known_type(self):

@@ -31,8 +31,6 @@ from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.status import Status
 
-pytestmark = pytest.mark.g4os
-
 
 # ---------------------------------------------------------------------------
 # Helpers for creating test data

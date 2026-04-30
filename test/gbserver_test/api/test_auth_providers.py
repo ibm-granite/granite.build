@@ -39,9 +39,6 @@ from gbserver.api.auth_providers import (
 )
 from gbserver.types.auth import User
 
-pytestmark = pytest.mark.g4os
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

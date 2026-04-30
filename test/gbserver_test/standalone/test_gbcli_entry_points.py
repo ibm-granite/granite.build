@@ -20,8 +20,6 @@ import subprocess
 
 import pytest
 
-pytestmark = pytest.mark.g4os
-
 GBCLI_ENTRY_POINTS = ["gb", "gbcli", "llmbuild", "llmb", "lamb"]
 
 

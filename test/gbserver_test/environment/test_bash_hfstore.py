@@ -23,8 +23,6 @@ import pytest
 from gbserver.environment.bash import Bash
 from gbserver.environment.environment import BINDING_KEY
 
-pytestmark = pytest.mark.g4os
-
 
 @pytest.fixture
 def bash_env():

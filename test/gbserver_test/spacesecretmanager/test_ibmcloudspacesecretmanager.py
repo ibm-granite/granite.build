@@ -18,7 +18,6 @@ class TestIbmcloudSpaceSecretManagerAdmin:
         pytest -s test/gbserver_test/spacesecretmanager/test_ibmcloudspacesecretmanager.py -m secret_manager
     """
 
-    @pytest.mark.secret_manager
     def test_secret_manager_admin_secret_groups(self):
         manager = IbmcloudSpaceSecretManagerAdmin()
 
@@ -66,7 +65,6 @@ class TestIbmcloudSpaceSecretManagerAdmin:
         )
         assert len(secret_groups_final) == 0
 
-    @pytest.mark.secret_manager
     def test_secret_manager_admin_secrets(self):
         manager = IbmcloudSpaceSecretManagerAdmin()
 

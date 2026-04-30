@@ -6,8 +6,6 @@ import unittest.mock as mock
 
 import pytest
 
-pytestmark = pytest.mark.g4os
-
 _RABBITMQ_MODULES = {
     "aio_pika": None,
     "aio_pika.abc": None,

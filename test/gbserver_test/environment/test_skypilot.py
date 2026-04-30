@@ -7,8 +7,6 @@ from gbserver.environment.environment import Environment
 from gbserver.types.buildevent import BuildEventType, EntityRunMetadata
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestStepSkypilotConfig:
     def test_default_values(self):
         from gbserver.types.environment.skypilot import StepSkypilotConfig
@@ -40,8 +38,6 @@ class TestStepSkypilotConfig:
         assert config.image_id == "docker:nvcr.io/nvidia/pytorch:24.01-py3"
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestSkypilotDiscovery:
     def test_skypilot_registered(self):
         """Skypilot class is auto-discovered and registered."""
@@ -54,8 +50,6 @@ class TestSkypilotDiscovery:
         assert issubclass(Skypilot, Environment)
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestSkypilotInit:
     def test_init_creates_instance(self):
         from gbserver.environment.skypilot import Skypilot
@@ -88,8 +82,6 @@ class TestSkypilotInit:
         assert "skypilot_monitor" in env.monitor_types
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestSkypilotClusterNaming:
     def test_cluster_name_format(self):
         from gbserver.environment.skypilot import Skypilot
@@ -104,8 +96,6 @@ class TestSkypilotClusterNaming:
         assert name == "gb-short"
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestLaunchSkypilot:
     @pytest.fixture
     def skypilot_env(self):
@@ -199,8 +189,6 @@ class TestLaunchSkypilot:
         assert call_kwargs.kwargs.get("infra") == "k8s"
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestMonitorSkypilotMonitor:
     @pytest.fixture
     def skypilot_env_with_job(self):
@@ -293,8 +281,6 @@ class TestMonitorSkypilotMonitor:
             )
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestCleanupSkypilot:
     @pytest.fixture
     def skypilot_env_with_cluster(self):
@@ -350,8 +336,6 @@ class TestCleanupSkypilot:
         await env.cleanup_skypilot(launch_id="nonexistent-launch")
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestSkypilotManagedDiscovery:
     def test_skypilot_managed_registered(self):
         assert "skypilot_managed" in Environment.environment_types
@@ -363,8 +347,6 @@ class TestSkypilotManagedDiscovery:
         assert issubclass(Skypilot_managed, Environment)
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestSkypilotManagedInit:
     def test_init_creates_instance(self):
         from gbserver.environment.skypilot_managed import Skypilot_managed
@@ -396,8 +378,6 @@ class TestSkypilotManagedInit:
         assert "skypilot_managed_monitor" in env.monitor_types
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestLaunchSkypilotManaged:
     @pytest.fixture
     def managed_env(self):
@@ -458,8 +438,6 @@ class TestLaunchSkypilotManaged:
         assert managed_env._get_launch_ready_event(launch_id).is_set()
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestCleanupSkypilotManaged:
     @pytest.mark.asyncio
     async def test_cleanup_calls_sky_jobs_cancel(self):
@@ -491,8 +469,6 @@ class TestCleanupSkypilotManaged:
         await env.cleanup_skypilot_managed(launch_id="nonexistent-launch")
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestImportGuard:
     def test_skypilot_import_guard(self):
         from gbserver.environment.skypilot import _require_skypilot
@@ -523,8 +499,6 @@ def _make_terminal_sky_mock():
     return mock_sky
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestSkypilotMonitorLogParsing:
     """Tests for log-based artifact detection in the unmanaged SkyPilot monitor."""
 
@@ -760,8 +734,6 @@ def _make_terminal_managed_sky_mock(
 
 
 # @pytest.mark.skip(reason="skipped because not using managed for now, TODO: unskip after using managed")
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestSkypilotManagedMonitorLogParsing:
     """Tests for log-based artifact detection in the managed SkyPilot monitor."""
 

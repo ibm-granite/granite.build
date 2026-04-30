@@ -4,8 +4,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-pytestmark = pytest.mark.g4os
-
 
 class TestEmbeddedNatsServer:
     """Tests for the embedded nats-server lifecycle management."""

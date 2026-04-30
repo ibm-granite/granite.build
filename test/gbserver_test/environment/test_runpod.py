@@ -6,8 +6,6 @@ import pytest
 
 from gbserver.environment.environment import Environment
 
-pytestmark = pytest.mark.g4os
-
 
 class TestRunpodDiscovery:
     def test_runpod_registered(self):

@@ -27,8 +27,6 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-pytestmark = pytest.mark.g4os
-
 SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "samples"
 STANDALONE_SPACE_DIR = SAMPLES_DIR / "standalone" / "standalone-quickstart"
 

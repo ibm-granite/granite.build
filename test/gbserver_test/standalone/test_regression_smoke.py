@@ -15,8 +15,6 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestModuleImports:
     """Verify key modules import without errors."""
 
@@ -77,8 +75,6 @@ class TestModuleImports:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestStorageFactories:
     """Verify each storage factory can be instantiated and create storage objects."""
 
@@ -113,8 +109,6 @@ class TestStorageFactories:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestCLIDiscovery:
     """Verify the CLI discovers all expected subcommands."""
 
@@ -153,8 +147,6 @@ class TestCLIDiscovery:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestEnvironmentDiscovery:
     """Verify the environment plugin system discovers built-in environment types."""
 
@@ -193,8 +185,6 @@ class TestEnvironmentDiscovery:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestAPIRoutes:
     """Verify all expected sub-APIs are mounted on the root API."""
 
@@ -232,8 +222,6 @@ class TestAPIRoutes:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestConstants:
     """Verify critical constants are accessible and have expected types."""
 
@@ -264,8 +252,6 @@ class TestConstants:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestEnvironmentConfig:
     """Verify all environment configs load without error."""
 
@@ -303,8 +289,6 @@ class TestEnvironmentConfig:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestStandaloneMode:
     """Verify GBSERVER_STANDALONE_MODE sets expected env-var defaults."""
 

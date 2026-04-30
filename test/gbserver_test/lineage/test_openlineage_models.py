@@ -28,8 +28,6 @@ from gbserver.lineage.openlineage_models import (
     TagSearchRequest,
 )
 
-pytestmark = pytest.mark.g4os
-
 
 class TestRunState:
     def test_enum_values(self):

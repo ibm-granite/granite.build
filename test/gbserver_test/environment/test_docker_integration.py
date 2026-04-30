@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.g4os, pytest.mark.docker_required]
+pytestmark = pytest.mark.thirdparty
 
 
 def _docker_available():

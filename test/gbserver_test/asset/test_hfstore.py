@@ -6,7 +6,6 @@ from gbcommon.uri.hf import HfType, HfURI
 from gbserver.asset.hfstore import Hfstore
 
 
-@pytest.mark.unit
 class TestHfstoreRelpath:
     def test_bucket_omits_revision(self):
         uri = HfURI.from_parts(owner="org", repo="my-bucket", hf_type=HfType.BUCKET)

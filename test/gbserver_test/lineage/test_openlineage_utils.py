@@ -26,8 +26,6 @@ from gbserver.lineage.openlineage_utils import (
     random_run_name,
 )
 
-pytestmark = pytest.mark.g4os
-
 
 class TestRandomRunName:
     def test_format(self):

@@ -9,7 +9,7 @@ import pytest
 
 from gbserver.messaging.messaging_base import Address
 
-pytestmark = [pytest.mark.g4os, pytest.mark.nats]
+pytestmark = pytest.mark.ibm
 
 
 class TestNATSMessagingDiscovery:

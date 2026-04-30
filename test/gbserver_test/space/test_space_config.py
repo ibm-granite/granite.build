@@ -9,8 +9,6 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 SPACE_DIR = REPO_ROOT / "space"
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestSpaceYaml:
     """Validate space/space.yaml."""
 
@@ -44,8 +42,6 @@ class TestSpaceYaml:
         assert data["variables"]["DEFAULT_ENVIRONMENT"] == "skypilot"
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestSkypilotEnvironmentYaml:
     """Validate space/environments/skypilot/environment.yaml."""
 
@@ -76,8 +72,6 @@ class TestSkypilotEnvironmentYaml:
         assert store["push"][0]["mode"] == "env_local"
 
 
-@pytest.mark.g4os
-@pytest.mark.unit
 class TestSkypilotManagedEnvironmentYaml:
     """Validate space/environments/skypilot-managed/environment.yaml."""
 

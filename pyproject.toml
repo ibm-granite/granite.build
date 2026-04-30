@@ -70,96 +70,48 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Lakehouse (DMF) storage backend — requires IBM Artifactory access
-lakehouse = [
-    "dmf-lib==1.10.2",
-    "daft",
-    "aspera==v1.1.6",
-]
-# RabbitMQ messaging backend — for K8s sidecar monitoring
-rabbitmq = [
-    "aio-pika",
-    "aiormq",
-]
-# NATS messaging backend — lightweight pub/sub for standalone and multi-node
-nats = [
-    "nats-py",
-]
-# PostgreSQL storage backend
-postgres = [
-    "psycopg2-binary",
-]
-# SSH tunnel support (LSF environment)
-ssh = [
-    "asyncssh",
-]
-# IBM Cloud services — secret manager, Aspera file transfer
-ibmcloud = [
-    "ibm_cloud_sdk_core==3.24.1",
-    "ibm_secrets_manager_sdk",
-]
-# Kubernetes execution environment
-k8s = [
-    "kubernetes_asyncio",
-]
-# Standalone deployment (minimal cloud-free setup)
+# Tier 1: Standalone — minimal, no external services needed
 standalone = [
     "nats-py",
 ]
-# Docker execution environment
-docker = [
+# Tier 2: Third-party open-source — installable from PyPI, testable in GH Actions
+thirdparty = [
     "docker>=7.0.0",
-]
-# SkyPilot multi-cloud execution
-skypilot = [
-    "skypilot[kubernetes]>=0.11.2",
-]
-# OpenLineage tracking via Weights & Biases
-wandb = [
     "wandb",
 ]
-# All optional dependencies (reproduces previous full install).
-# NOTE: Keep in sync with individual groups above
-all = [
-    "dmf-lib==1.10.2",
-    "daft",
-    "aspera==v1.1.6",
+# Tier 3: IBM-specific — requires IBM infrastructure (cloud, cluster, Artifactory)
+ibm = [
     "aio-pika",
     "aiormq",
-    "nats-py",
+    "aspera==v1.1.6",
+    "asyncssh",
+    "daft",
+    "dmf-lib==1.10.2",
     "ibm_cloud_sdk_core==3.24.1",
     "ibm_secrets_manager_sdk",
     "kubernetes_asyncio",
-    "docker>=7.0.0",
     "psycopg2-binary",
-    "asyncssh",
     "skypilot[kubernetes]>=0.11.2",
-    "wandb",
+]
+# All optional dependencies
+all = [
+    "granite-build-tools[standalone,thirdparty,ibm]",
 ]
 # Development tools
 dev = [
     "black",
+    "coverage",
+    "isort",
     "mypy",
     "pre-commit",
+    "psutil",
     "pylint",
     "pytest",
     "pytest-asyncio",
+    "pytest-cov",
+    "pytest-xdist",
     "pydantic-2-mermaid",
     "twine",
-    "pytest-xdist",
-    "pytest-cov",
-    "coverage",
-]
-# IBM infrastructure dependencies — kept for existing install scripts
-ibm = [
-    "ibm_cloud_sdk_core==3.24.1",
-    "ibm_secrets_manager_sdk",
-    "dmf-lib==1.10.2",
-    "aspera==v1.1.6",
-    "psycopg2-binary",
-    "aio-pika",
-    "aiormq",
-    "asyncssh",
 ]
 
 [project.scripts]
@@ -196,19 +148,14 @@ log_cli_level = "INFO"
 log_cli_format ="[%(asctime)s %(levelname)-5s][%(filename)20s:%(lineno)3s %(funcName)25s()] %(message)s"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 markers = [
-    "secret_manager: tests that make real connection to IBM Secret Manager",
-    "g4os: g4os-branch tests (no IBM infrastructure required)",
-    "unit: Unit tests (fast, mocked, no real infrastructure)",
-    "nats_server: tests requiring a real nats-server with JetStream (not run in CI by default)",
-    "docker_required: tests requiring a Docker/Podman daemon (not run in CI by default)",
-    "ibm: tests requiring IBM infrastructure (PostgreSQL, Lakehouse, RabbitMQ, IBM Cloud APIs)",
-    "nats: tests requiring the nats-py package (not in standalone deps)",
+    "standalone: tests requiring only standalone deps (no external services)",
+    "thirdparty: tests requiring third-party open-source deps (testable in GH Actions)",
+    "ibm: tests requiring IBM infrastructure (cloud, cluster, lakehouse, rabbitmq, etc.)",
     "staging: tests running in staging",
     "prod: tests running in prod",
     "slow: tests that run for longer",
-    "hf_integration: tests that perform real integration with HuggingFace Hub",
 ]
-addopts = "-m 'not secret_manager and not nats_server and not docker_required' --strict"
+addopts = "-m 'not ibm' --strict"
 # Override pytest's default norecursedirs, which includes "build" — that would
 # silently skip test/gbserver_test/build/.
 norecursedirs = [".venv", ".git", "dist", "__pycache__", "*.egg-info"]

@@ -1070,8 +1070,10 @@ class Environment(ABC):
                             environment_type_name,
                         )
                 except ImportError as e:
-                    logger.error(
-                        "Error importing module %s: %s", environment_type_name, e
+                    logger.debug(
+                        "Optional environment module %s not available: %s",
+                        environment_type_name,
+                        e,
                     )
                 except Exception as e:
                     logger.error(

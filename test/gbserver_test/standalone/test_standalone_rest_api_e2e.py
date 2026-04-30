@@ -36,8 +36,6 @@ from unittest.mock import patch
 import pytest
 import requests
 
-pytestmark = pytest.mark.g4os
-
 SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "samples"
 STANDALONE_BUILD_DIR = SAMPLES_DIR / "standalone" / "standalone-quickstart"
 

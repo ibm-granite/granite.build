@@ -28,8 +28,6 @@ from gbserver.environment.local_assets import (
     push_asset_hfstore,
 )
 
-pytestmark = pytest.mark.g4os
-
 
 @pytest.fixture
 def docker_env():

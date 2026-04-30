@@ -27,6 +27,9 @@ from typing import List, Optional, Self, Union
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+pytest.importorskip("kubernetes_asyncio")
+
 from gbserver_test.buildwatcher.utils import (
     ExceptionRaisingThread,
     cluster_logout,

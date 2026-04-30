@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[standalone,dev]"
+          pip install -e ".[standalone,thirdparty,dev]"
 
       - name: Check formatting (isort)
         run: isort --check .
@@ -58,12 +58,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[standalone,dev]"
+          pip install -e ".[standalone,thirdparty,dev]"
 
-      - name: Run standalone tests
-        run: >-
-          pytest -s test/
-          -m 'not secret_manager and not nats_server and not docker_required and not ibm and not nats'
+      - name: Run tests (standalone + thirdparty)
+        run: pytest -s test/ -m 'not ibm'
 
   demo-cpu:
     runs-on: ubuntu-latest

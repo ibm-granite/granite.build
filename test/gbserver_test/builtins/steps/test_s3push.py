@@ -3,8 +3,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-pytestmark = pytest.mark.g4os
-
 
 class TestS3PushStep:
     def test_step_yaml_exists(self):

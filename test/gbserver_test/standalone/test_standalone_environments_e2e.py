@@ -34,8 +34,6 @@ from unittest.mock import patch
 
 import pytest
 
-pytestmark = pytest.mark.g4os
-
 TEST_DATA_DIR = (
     Path(__file__).parent.parent.parent.parent / "test-data" / "standalone-environments"
 )

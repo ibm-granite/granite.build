@@ -8,7 +8,6 @@ and lazy-import patterns are properly set up.
 import pytest
 
 
-@pytest.mark.g4os
 class TestStandaloneImports:
     """Verify that key modules have proper import guards for optional dependencies."""
 

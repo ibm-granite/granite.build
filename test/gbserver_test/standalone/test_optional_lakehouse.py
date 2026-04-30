@@ -6,8 +6,6 @@ import unittest.mock as mock
 
 import pytest
 
-pytestmark = pytest.mark.g4os
-
 # All lakehouse submodules that might be imported
 _LH_MODULES = {
     "lakehouse": None,
