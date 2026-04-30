@@ -21,7 +21,6 @@ from typing import Awaitable, Callable, Dict, Optional
 import pytest
 import pytest_asyncio
 
-
 # --------------------- project imports ---------------------
 from gbserver.messaging.messaging_base import JSON, MessagingBase
 from gbserver.monitoring.dummy_monitor import DummyMonitor

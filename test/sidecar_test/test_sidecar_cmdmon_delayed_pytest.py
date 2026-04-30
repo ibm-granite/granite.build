@@ -20,8 +20,6 @@ import textwrap
 import pytest
 import pytest_asyncio
 import yaml
-
-
 from test_sidecar_cmdmon_pytest import child_script
 
 # -- reuse fixtures from test_sidecar_pytest and test_sidecar_cmdmon_pytest --

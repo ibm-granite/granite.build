@@ -15,8 +15,6 @@ import sys
 
 import pytest
 import pytest_asyncio
-
-
 from test_multi_sidecar_cmdmon_pytest import child_scripts, temp_log_files
 
 # ---------- reuse the fixtures from other tests ----------

@@ -10,7 +10,6 @@ import pytest
 from gbserver.messaging.messaging_base import Address
 
 
-
 class TestNATSMessagingDiscovery:
     """Tests that don't require a NATS server."""
 
