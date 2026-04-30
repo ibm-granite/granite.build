@@ -135,7 +135,7 @@ class URI(ABC):
         if isinstance(uri, URI):
             uri = URI.get_uristr(uri)
         uri = fill_template(uri, URI.get_space_config(), True)
-        parsed_uri = urlparse(uri, default_scheme)
+        parsed_uri = urlparse(uri, default_scheme)  # type: ignore[arg-type]
         if parsed_uri.scheme not in cls.uri_handler_classes:
             logger.error("Unknown URI scheme %s uri: %s", parsed_uri.scheme, uri)
             raise UnknownURIScheme(f"Unknown URI scheme {parsed_uri.scheme} uri: {uri}")

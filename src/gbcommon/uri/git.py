@@ -61,17 +61,17 @@ class GitURI(URI):
     @property
     def scheme(self: Self) -> str:
         """The scheme part of the URI or empty string if the URI is empty"""
-        return self.uri.scheme if self.uri else ""
+        return self.uri.scheme if self.uri else ""  # type: ignore[has-type]
 
     @property
     def hostname(self: Self) -> str:
         """The host part of the URI or empty string if the URI is empty"""
-        return (self.uri.hostname or "") if self.uri else ""
+        return (self.uri.hostname or "") if self.uri else ""  # type: ignore[has-type]
 
     @property
     def path(self: Self) -> str:
         """The path part of the URI or empty string if the URI is empty"""
-        return self.uri.path if self.uri else ""
+        return self.uri.path if self.uri else ""  # type: ignore[has-type]
 
     @staticmethod
     def get_supported_schemes() -> List[str]:
@@ -167,12 +167,12 @@ class GitURI(URI):
 
     def get_repo_url(self: Self) -> str:
         """Returns the actual URI that can clone the repo."""
-        assert self.uri is not None, "Git uri is None"
-        uri_parts = self.uri.path.split("/")
+        assert self.uri is not None, "Git uri is None"  # type: ignore[has-type]
+        uri_parts = self.uri.path.split("/")  # type: ignore[has-type]
         org = uri_parts[1]
         repo_name = uri_parts[2].split(".")[0]
-        if self.uri.scheme == "git+https":
-            base_url = f"https://{self.uri.hostname}/{org}/{repo_name}"
+        if self.uri.scheme == "git+https":  # type: ignore[has-type]
+            base_url = f"https://{self.uri.hostname}/{org}/{repo_name}"  # type: ignore[has-type]
             token_key = (
                 self.config.get("token_secretname")
                 if isinstance(self.config, dict)
@@ -183,10 +183,10 @@ class GitURI(URI):
             if self.secrets is not None:
                 token = self.secrets.get(token_key, "")
             if token:
-                return f"https://{token}:x-oauth-basic@{self.uri.hostname}/{org}/{repo_name}"
+                return f"https://{token}:x-oauth-basic@{self.uri.hostname}/{org}/{repo_name}"  # type: ignore[has-type]
             return base_url
-        if self.uri.scheme == "git+ssh":
-            return f"git@{self.uri.hostname}:{org}/{repo_name}"
+        if self.uri.scheme == "git+ssh":  # type: ignore[has-type]
+            return f"git@{self.uri.hostname}:{org}/{repo_name}"  # type: ignore[has-type]
         logger.error("Invalid protocol in Git URI.")
         return ""
 
@@ -200,11 +200,11 @@ class GitURI(URI):
             self._thread_local.repo_cache = Path(tempfile.mkdtemp())
         repo_url = self.get_repo_url()
         if repo_url == "":
-            logger.error("Invalid Git Repo URI (%s).", self.uri)
+            logger.error("Invalid Git Repo URI (%s).", self.uri)  # type: ignore[has-type]
             return None
         logger.info("repo_url: %s", repo_url)
-        assert self.uri is not None, "self.uri is None"
-        splits = self.uri.path.split("@")
+        assert self.uri is not None, "self.uri is None"  # type: ignore[has-type]
+        splits = self.uri.path.split("@")  # type: ignore[has-type]
         ref = None
         if len(splits) > 1:
             ref = splits[1]
@@ -247,10 +247,10 @@ class GitURI(URI):
         Otherwise we clone the repo and cache the location.
         If force is True then this always clones the repo.
         """
-        assert self.uri is not None, "self.uri is None"
+        assert self.uri is not None, "self.uri is None"  # type: ignore[has-type]
         subdirectory = (
-            urllib.parse.parse_qs(self.uri.fragment).get("subdirectory", [None])[0]
-            if self.uri.fragment
+            urllib.parse.parse_qs(self.uri.fragment).get("subdirectory", [None])[0]  # type: ignore[has-type]
+            if self.uri.fragment  # type: ignore[has-type]
             else None
         )
         repo_cache_path = self.get_repo_from_cache(force=force)
@@ -263,7 +263,7 @@ class GitURI(URI):
                 logger.debug(
                     "Subdirectory '%s' not found in repository '%s'",
                     subdirectory,
-                    self.uri.geturl(),
+                    self.uri.geturl(),  # type: ignore[has-type]
                 )
                 return None
         return final_path
@@ -278,15 +278,15 @@ class GitURI(URI):
             shutil.rmtree(cls._thread_local.repo_cache)
 
     def append_path(self: Self, path: str) -> None:
-        assert self.uri is not None, "self.uri is None"
-        fragment_dict = urllib.parse.parse_qs(self.uri.fragment)
-        subdirectory = fragment_dict.get("subdirectory", [None])[0] if self.uri.fragment else None
+        assert self.uri is not None, "self.uri is None"  # type: ignore[has-type]
+        fragment_dict = urllib.parse.parse_qs(self.uri.fragment)  # type: ignore[has-type]
+        subdirectory = fragment_dict.get("subdirectory", [None])[0] if self.uri.fragment else None  # type: ignore[has-type]
         if subdirectory:
             fragment_dict["subdirectory"] = [subdirectory + "/" + path.lstrip("/")]
         else:
             fragment_dict["subdirectory"] = [path]
         new_fragment = urllib.parse.urlencode(fragment_dict, doseq=True)
-        self.uri = self.uri._replace(fragment=new_fragment)
+        self.uri = self.uri._replace(fragment=new_fragment)  # type: ignore[has-type]
 
     def delete(self: Self) -> bool:
         raise NotImplementedError("GitURI delete is not implemented")

@@ -47,14 +47,14 @@ class StepLauncherConfig(Config):
     type: str
     setups: Optional[List[str]] = Field(default_factory=list)
     monitors: Optional[List[str]] = Field(default_factory=list)
-    config: Optional[Dict] = Field(default=dict)
+    config: Optional[Dict] = Field(default=dict)  # type: ignore[assignment]
 
 
 class StepMonitorConfig(Config):
     """Step Monitor Config implementation."""
 
     type: str
-    config: Optional[Dict] = Field(default=dict)
+    config: Optional[Dict] = Field(default=dict)  # type: ignore[assignment]
 
 
 class StepEnvironmentTypeConfig(Config):

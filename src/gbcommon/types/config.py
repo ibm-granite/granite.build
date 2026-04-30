@@ -44,7 +44,7 @@ class Config(BaseModel):
         assert path.is_file(), f"expected path '{path}' to be a file"
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        basekeys: List[str] = kwargs.get("basekeys", [])
+        basekeys: List[str] = kwargs.get("basekeys", [])  # type: ignore[assignment]
         assert isinstance(basekeys, list), f"invalid basekeys: {basekeys}"
         if basekey is not None:
             basekeys = basekeys.copy()
