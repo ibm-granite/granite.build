@@ -79,9 +79,7 @@ def _get_base_class():
 class LakehouseLineageStore(ILineageStore, _get_base_class()):
     """Lakehouse-backed lineage storage using the job_stats table."""
 
-    def count_release_ids(
-        self: Self, release_id: str, target_id: Optional[str] = None
-    ) -> int:
+    def count_release_ids(self: Self, release_id: str, target_id: Optional[str] = None) -> int:
         """Count the number of job_stats records for a release_id."""
         table = Table(lh=self.lh, namespace="dmf", table_name="job_stats")
         if target_id is None:
@@ -118,13 +116,9 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
         an undefined process
         """
         logger.info("Begin creating job stats from artifact %s", artifact.uuid)
-        assert isinstance(
-            artifact, ArtifactRegistration
-        ), f"invalid artifact: {artifact}"
+        assert isinstance(artifact, ArtifactRegistration), f"invalid artifact: {artifact}"
         assert len(sources) > 0, f"invalid sources: {sources}"
-        assert isinstance(
-            sources[0], ArtifactRegistration
-        ), f"invalid sources: {sources}"
+        assert isinstance(sources[0], ArtifactRegistration), f"invalid sources: {sources}"
 
         job_details = self.__get_jobdetails_for_artifact(artifact)
         source_code_details = self.__get_source_code_details("")
@@ -147,9 +141,7 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
             job_output_stats={},
         )
 
-        logger.info(
-            "Done creating jobs stats for artifact %s: %s", artifact.uuid, stats
-        )
+        logger.info("Done creating jobs stats for artifact %s: %s", artifact.uuid, stats)
         return stats
 
     def add_jobstats_for_build(
@@ -275,9 +267,7 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
             )
 
         if targetrun.skipped_for_prerun_target_id:
-            original = storage.target_storage.get_by_uuid(
-                targetrun.skipped_for_prerun_target_id
-            )
+            original = storage.target_storage.get_by_uuid(targetrun.skipped_for_prerun_target_id)
             if original is not None:
                 targetrun = original.model_copy(
                     update={
@@ -401,9 +391,7 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
         )
         return job_details
 
-    def __get_jobdetails_for_artifact(
-        self: Self, artifact: ArtifactRegistration
-    ) -> JobDetails:
+    def __get_jobdetails_for_artifact(self: Self, artifact: ArtifactRegistration) -> JobDetails:
         started_at = str(datetime.datetime.now().isoformat())
         started_at = str(datetime.datetime.now())
         started_at = "1972-01-02T00:00:00.000Z"
@@ -457,9 +445,7 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
             dlist.append(ds)
         return dlist
 
-    def _get_table_specs(
-        self: Self, artifact: ArtifactRegistration
-    ) -> Tuple[str, str, str, str]:
+    def _get_table_specs(self: Self, artifact: ArtifactRegistration) -> Tuple[str, str, str, str]:
         uri = artifact.uri
         parse = urlparse(uri)
 
@@ -539,9 +525,7 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
         index: int,
     ) -> Dict[str, str]:
         in_or_out = "inputs" if is_input else "outputs"
-        target_artifact_reference = (
-            target_name + "." + in_or_out + "." + target_artifact_name
-        )
+        target_artifact_reference = target_name + "." + in_or_out + "." + target_artifact_name
         if index >= 0:
             target_artifact_reference = f"{target_artifact_reference}[{index}]"
         extras = {
@@ -578,14 +562,10 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
                 "type": [artifact.type.name],
             }
         )
-        art_name = (
-            artifact.name if artifact.name and len(artifact.name) > 0 else "unnamed"
-        )
+        art_name = artifact.name if artifact.name and len(artifact.name) > 0 else "unnamed"
         table_name = f"alias_{art_name}_{artifact.uuid.replace('-','_')}".lower()
         namespace = PUBLIC_SPACE_LH_NAMESPACE
-        spaces = get_admin_storage().space_storage.get_by_where(
-            {"name": artifact.space_name}
-        )
+        spaces = get_admin_storage().space_storage.get_by_where({"name": artifact.space_name})
         if not spaces is None and len(spaces) == 1:
             namespace = spaces[0].lakehouse_namespace
         else:
@@ -603,9 +583,7 @@ class LakehouseLineageStore(ILineageStore, _get_base_class()):
             if isinstance(new_artifact, ArtifactRegistration):
                 return new_artifact
             if len(new_artifact) > 0:
-                assert (
-                    len(new_artifact) == 1
-                ), f"unexpected new_artifact: {new_artifact}"
+                assert len(new_artifact) == 1, f"unexpected new_artifact: {new_artifact}"
                 new_artifact = new_artifact[0]
                 return new_artifact
 

@@ -188,24 +188,18 @@ class TestPodEvictionStrategy:
     """Tests for PodEvictionRetryStrategy detection and node extraction."""
 
     def test_should_retry_on_eviction(self):
-        strategy = PodEvictionRetryStrategy(
-            object_types=["AppWrapper"], avoid_eviction_nodes=True
-        )
+        strategy = PodEvictionRetryStrategy(object_types=["AppWrapper"], avoid_eviction_nodes=True)
         event = make_pod_eviction_event()
         assert strategy.should_retry(event) is True
 
     def test_extract_nodes_when_avoid_enabled(self):
-        strategy = PodEvictionRetryStrategy(
-            object_types=["AppWrapper"], avoid_eviction_nodes=True
-        )
+        strategy = PodEvictionRetryStrategy(object_types=["AppWrapper"], avoid_eviction_nodes=True)
         event = make_pod_eviction_event(node_name="evict-node-1", pod_name="pod-xyz")
         nodes = strategy.extract_nodes_to_avoid(event)
         assert nodes == {"evict-node-1"}
 
     def test_extract_no_nodes_when_avoid_disabled(self):
-        strategy = PodEvictionRetryStrategy(
-            object_types=["AppWrapper"], avoid_eviction_nodes=False
-        )
+        strategy = PodEvictionRetryStrategy(object_types=["AppWrapper"], avoid_eviction_nodes=False)
         event = make_pod_eviction_event(node_name="evict-node-1")
         nodes = strategy.extract_nodes_to_avoid(event)
         assert nodes == set()
@@ -286,9 +280,7 @@ class TestTrackerStorage(AbstractSingletonStorageUsingTest):
             cluster="test-cluster",
         )
 
-        results = self.storage.node_failure_storage.get_by_where(
-            {"node_name": "worker-node-1"}
-        )
+        results = self.storage.node_failure_storage.get_by_where({"node_name": "worker-node-1"})
         assert len(results) == 1
         stored = results[0]
         assert stored.node_name == "worker-node-1"
@@ -314,9 +306,7 @@ class TestTrackerStorage(AbstractSingletonStorageUsingTest):
             },
         )
 
-        results = self.storage.node_failure_storage.get_by_where(
-            {"node_name": "worker-node-2"}
-        )
+        results = self.storage.node_failure_storage.get_by_where({"node_name": "worker-node-2"})
         assert len(results) == 1
         stored = results[0]
         assert stored.failure_type == "PodEvictionRetryStrategy"
@@ -335,9 +325,7 @@ class TestTrackerStorage(AbstractSingletonStorageUsingTest):
             },
         )
 
-        results = self.storage.node_failure_storage.get_by_where(
-            {"node_name": "gpu-node-1"}
-        )
+        results = self.storage.node_failure_storage.get_by_where({"node_name": "gpu-node-1"})
         assert len(results) == 1
         assert results[0].failure_type == "NCCLErrorRetryStrategy"
 
@@ -351,9 +339,7 @@ class TestTrackerStorage(AbstractSingletonStorageUsingTest):
                 retry_count=i,
             )
 
-        results = self.storage.node_failure_storage.get_by_where(
-            {"node_name": "flaky-node"}
-        )
+        results = self.storage.node_failure_storage.get_by_where({"node_name": "flaky-node"})
         assert len(results) == 3
         build_ids = {r.build_id for r in results}
         assert build_ids == {"build-400", "build-401", "build-402"}
@@ -403,9 +389,7 @@ class TestRetryHandlerIntegration(AbstractSingletonStorageUsingTest):
             downstream_queue=asyncio.Queue(),
             environment=mock_env,
             max_retries=3,
-            strategies=[
-                UnhealthyInsufficientPodsRetryStrategy(object_types=["AppWrapper"])
-            ],
+            strategies=[UnhealthyInsufficientPodsRetryStrategy(object_types=["AppWrapper"])],
             node_health_tracker=self._tracker_instance,
             build_id="build-rh-1",
         )
@@ -418,9 +402,7 @@ class TestRetryHandlerIntegration(AbstractSingletonStorageUsingTest):
         assert retry_triggered is True
         mock_env.retry_workload.assert_awaited_once()
 
-        results = self.storage.node_failure_storage.get_by_where(
-            {"node_name": "bad-mount-node"}
-        )
+        results = self.storage.node_failure_storage.get_by_where({"node_name": "bad-mount-node"})
         assert len(results) == 1
         stored = results[0]
         assert stored.build_id == "build-rh-1"
@@ -430,18 +412,14 @@ class TestRetryHandlerIntegration(AbstractSingletonStorageUsingTest):
         assert stored.metadata["cluster"] == "prod-cluster"
 
     async def test_pod_eviction_event_persisted(self):
-        mock_env = self._make_mock_env(
-            namespace="staging-ns", cluster="staging-cluster"
-        )
+        mock_env = self._make_mock_env(namespace="staging-ns", cluster="staging-cluster")
         handler = RetryHandler(
             launch_id="launch-rh-2",
             downstream_queue=asyncio.Queue(),
             environment=mock_env,
             max_retries=3,
             strategies=[
-                PodEvictionRetryStrategy(
-                    object_types=["AppWrapper"], avoid_eviction_nodes=True
-                )
+                PodEvictionRetryStrategy(object_types=["AppWrapper"], avoid_eviction_nodes=True)
             ],
             node_health_tracker=self._tracker_instance,
             build_id="build-rh-2",
@@ -454,9 +432,7 @@ class TestRetryHandlerIntegration(AbstractSingletonStorageUsingTest):
 
         assert retry_triggered is True
 
-        results = self.storage.node_failure_storage.get_by_where(
-            {"node_name": "evict-node"}
-        )
+        results = self.storage.node_failure_storage.get_by_where({"node_name": "evict-node"})
         assert len(results) == 1
         assert results[0].failure_type == "PodEvictionRetryStrategy"
 
@@ -477,9 +453,7 @@ class TestRetryHandlerIntegration(AbstractSingletonStorageUsingTest):
 
         assert retry_triggered is True
 
-        results = self.storage.node_failure_storage.get_by_where(
-            {"node_name": "gpu-bad-node"}
-        )
+        results = self.storage.node_failure_storage.get_by_where({"node_name": "gpu-bad-node"})
         assert len(results) == 1
         stored = results[0]
         assert stored.failure_type == "NCCLErrorRetryStrategy"

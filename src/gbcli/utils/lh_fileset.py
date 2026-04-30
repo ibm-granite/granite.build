@@ -1,3 +1,5 @@
+"""Lh fileset module."""
+
 from pathlib import Path
 
 from gbcli.utils.utils import retry_function
@@ -12,13 +14,12 @@ def createFileset(
     table_name: str,
     disable_aspera: bool,
 ):
+    """Create fileset."""
     try:
 
         from lakehouse.assets.fileset import Fileset
 
-        fileset = Fileset(
-            lh=lh, namespace=namespace, table=table_name, create_if_not_exists=True
-        )
+        fileset = Fileset(lh=lh, namespace=namespace, table=table_name, create_if_not_exists=True)
 
         local_path = Path(path_name)
         if local_path.is_file():
@@ -59,6 +60,7 @@ def pullFileset(
     version: str,
     disable_aspera: bool,
 ):
+    """Pull fileset."""
     try:
         from lakehouse.assets.fileset import Fileset
 
@@ -68,9 +70,7 @@ def pullFileset(
             table=table_name,
             create_if_not_exists=True,
         )
-        retry_function(
-            fileset.pull, 5, 1, file_label, version, path_name, True, not disable_aspera
-        )
+        retry_function(fileset.pull, 5, 1, file_label, version, path_name, True, not disable_aspera)
 
     except ModuleNotFoundError:
         raise Exception(
@@ -88,12 +88,11 @@ def checkFileset(
     table_name: str,
     version: str,
 ):
+    """Verify fileset."""
     try:
         from lakehouse.assets.fileset import Fileset
 
-        fileset = Fileset(
-            lh=lh, namespace=namespace, table=table_name, create_if_not_exists=True
-        )
+        fileset = Fileset(lh=lh, namespace=namespace, table=table_name, create_if_not_exists=True)
         flist = fileset.list(file_label, version, include_files=False)
 
         cur = {"label": file_label, "version": version}
@@ -113,4 +112,5 @@ def checkFileset(
 
 
 def get_fileset_subforlder(fileset_label, fileset_version):
+    """Get the fileset subforlder."""
     return f"{fileset_label}/{fileset_version}"

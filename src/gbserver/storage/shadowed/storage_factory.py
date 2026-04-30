@@ -41,9 +41,7 @@ class SQLLhStorageFactory(StorageFactory):
         assert False, "Message storage not yet implemented"
 
     def create_node_failure_storage(self, table_name: Optional[str] = None):
-        assert (
-            False
-        ), "Node failure storage not yet implemented for SQLLh shadowed storage"
+        assert False, "Node failure storage not yet implemented for SQLLh shadowed storage"
 
     def create_space_user_storage(self, table_name: Optional[str] = None):
         return SQLLhSpaceUserStorage(table_name=table_name)
@@ -69,9 +67,7 @@ class LhSQLStorageFactory(StorageFactory):
         assert False, "Message storage not yet implemented"
 
     def create_node_failure_storage(self, table_name: Optional[str] = None):
-        assert (
-            False
-        ), "Node failure storage not yet implemented for LhSQL shadowed storage"
+        assert False, "Node failure storage not yet implemented for LhSQL shadowed storage"
 
     def create_space_user_storage(self, table_name: Optional[str] = None):
         return LhSQLSpaceUserStorage(table_name=table_name)

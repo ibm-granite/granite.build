@@ -76,35 +76,25 @@ class TestSkypilotManagedEnvironmentYaml:
     """Validate space/environments/skypilot-managed/environment.yaml."""
 
     def test_file_exists(self):
-        assert (
-            SPACE_DIR / "environments" / "skypilot-managed" / "environment.yaml"
-        ).exists()
+        assert (SPACE_DIR / "environments" / "skypilot-managed" / "environment.yaml").exists()
 
     def test_yaml_loads(self):
-        with open(
-            SPACE_DIR / "environments" / "skypilot-managed" / "environment.yaml"
-        ) as f:
+        with open(SPACE_DIR / "environments" / "skypilot-managed" / "environment.yaml") as f:
             data = yaml.safe_load(f)
         assert isinstance(data, dict)
 
     def test_type_is_skypilot_managed(self):
-        with open(
-            SPACE_DIR / "environments" / "skypilot-managed" / "environment.yaml"
-        ) as f:
+        with open(SPACE_DIR / "environments" / "skypilot-managed" / "environment.yaml") as f:
             data = yaml.safe_load(f)
         assert data["type"] == "Skypilot_managed"
 
     def test_default_cloud(self):
-        with open(
-            SPACE_DIR / "environments" / "skypilot-managed" / "environment.yaml"
-        ) as f:
+        with open(SPACE_DIR / "environments" / "skypilot-managed" / "environment.yaml") as f:
             data = yaml.safe_load(f)
         assert data["config"]["default_cloud"] == "kubernetes"
 
     def test_assetstores_env_local(self):
-        with open(
-            SPACE_DIR / "environments" / "skypilot-managed" / "environment.yaml"
-        ) as f:
+        with open(SPACE_DIR / "environments" / "skypilot-managed" / "environment.yaml") as f:
             data = yaml.safe_load(f)
         store = data["assetstores"][0]
         assert store["store_uri"] == "space://assetstores/env-local"

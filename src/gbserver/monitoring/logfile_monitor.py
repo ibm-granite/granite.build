@@ -70,12 +70,8 @@ class LogFileMonitor(MonitorBase):
 
     async def monitor(self: Self) -> None:
         buffer = deque(maxlen=10)
-        logger.info(
-            "[LogFileMon %s] started using stream %s", self.step_id, self.stream_source
-        )
-        async for log_line in self.stream_source.stream_lines(
-            stop_event=self.stop_event
-        ):
+        logger.info("[LogFileMon %s] started using stream %s", self.step_id, self.stream_source)
+        async for log_line in self.stream_source.stream_lines(stop_event=self.stop_event):
             buffer.append(log_line)
             # Note: We don't check stop_event here anymore!
             # The stream (ssh_file_stream.py) handles stop_event by entering Phase 2

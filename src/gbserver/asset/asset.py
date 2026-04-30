@@ -49,6 +49,7 @@ class Asset:
         self.uristr = URI.get_uristr(self.uri)
 
     def urihash(self: Self) -> str:
+        """Urihash."""
         return self.uri.hash()
 
     def sync(self: Self, dest: Optional[Path] = None, force: bool = False) -> Path:
@@ -61,6 +62,7 @@ class Asset:
         return None
 
     def get_metadata(self: Self) -> Any:
+        """Get the metadata."""
         uri_metadata = self.uri.get_metadata()
         assetstore = self.get_assetstore(asset=self)
         uri_assetstore_metadata = assetstore.get_metadata(self.uri)
@@ -96,14 +98,14 @@ class Asset:
     def get_assetstore_from_store_uri(
         store_uri: str, context: Optional[str] = None, force: bool = False
     ) -> Assetstore:
+        """Get the assetstore from store uri."""
         uri = URI.get_uri(store_uri)
         store_asset = Asset(uri, context)
         store_asset_path = store_asset.sync(force=force)
-        return Assetstore.load_asset_store(
-            store_asset_path, context, secrets=uri.get_secrets()
-        )
+        return Assetstore.load_asset_store(store_asset_path, context, secrets=uri.get_secrets())
 
     def get_asset_type(self) -> ArtifactType:
+        """Get the asset type."""
         assetstore = self.get_assetstore(asset=self)
         atype = assetstore.get_asset_type(self.uri)
         if atype is None:

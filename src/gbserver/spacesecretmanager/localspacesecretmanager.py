@@ -63,9 +63,7 @@ class LocalSpaceSecretManager(SpaceSecretManager):
             else {}
         )
 
-    def get_secrets(
-        self: Self, username: Optional[str] = None
-    ) -> Optional[Dict[str, str]]:
+    def get_secrets(self: Self, username: Optional[str] = None) -> Optional[Dict[str, str]]:
         return self.secrets
 
     def _load_all_secrets(self: Self, secrets_dir: Path) -> Dict[str, str]:
@@ -140,9 +138,7 @@ class LocalSpaceSecretManager(SpaceSecretManager):
                         payload = secret["payload"]
                         labels = secret.get("labels")
                         if labels and "encode:base64" in labels:
-                            value = base64.b64decode(payload.encode("utf-8")).decode(
-                                "utf-8"
-                            )
+                            value = base64.b64decode(payload.encode("utf-8")).decode("utf-8")
                         else:
                             value = payload
                         decoded_secrets[name] = value
@@ -220,9 +216,7 @@ class LocalSpaceSecretManager(SpaceSecretManager):
         self._write_encoded_secrets_to_file(target_file, secrets)
         logger.info("Secret '%s' saved to %s", secret_name, target_file)
 
-    def _write_encoded_secrets_to_file(
-        self, target_file: Path, secrets: Dict[str, str]
-    ) -> None:
+    def _write_encoded_secrets_to_file(self, target_file: Path, secrets: Dict[str, str]) -> None:
         """
         Writes secrets to a file after base64-encoding all values.
 
@@ -230,8 +224,7 @@ class LocalSpaceSecretManager(SpaceSecretManager):
         """
         try:
             encoded_secrets = {
-                k: base64.b64encode(v.encode("utf-8")).decode("utf-8")
-                for k, v in secrets.items()
+                k: base64.b64encode(v.encode("utf-8")).decode("utf-8") for k, v in secrets.items()
             }
             if target_file.name == ".env":
                 suffix = ".env"

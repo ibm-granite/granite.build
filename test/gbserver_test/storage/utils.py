@@ -108,9 +108,7 @@ def _store_connected_build(
         allarts = target.input_artifacts + target.output_artifacts
         stored_uuids = []
         for art in allarts:
-            if (
-                not art.uuid in stored_uuids
-            ):  # In case artifacts are shared across steps
+            if not art.uuid in stored_uuids:  # In case artifacts are shared across steps
                 storage.artifact_registry.add(art)
                 stored_uuids.append(art.uuid)
         storage.step_storage.add(target.step)

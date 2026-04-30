@@ -64,9 +64,7 @@ def post_validated_build_message(
         body = LINEAGE_LINK_MESSAGE_FOR_BUILD.format(
             build_status_link=get_build_status_link(build_id)
         )
-        body += DASHBOARD_LINK_MESSAGE_FOR_BUILD.format(
-            dashboard_link=get_dashboard_link(build_id)
-        )
+        body += DASHBOARD_LINK_MESSAGE_FOR_BUILD.format(dashboard_link=get_dashboard_link(build_id))
         build_message_logger.info(body)
     if graph_str != "":
         body = f"## Build Graph\n\n```mermaid\n{graph_str}\n```\n"

@@ -38,9 +38,7 @@ logger = get_logger(__name__)
 
 # --------------------- test cases -------------------------------
 @pytest.mark.asyncio
-async def test_sidecar_with_cmdline_monitor(
-    fake_messaging, temp_log_file, child_script
-):
+async def test_sidecar_with_cmdline_monitor(fake_messaging, temp_log_file, child_script):
     """
     * Start SidecarOrchestrator first (with monitors waiting for process).
     * Then spawn a child bash process that uses tee to write to log file (delayed start).
@@ -100,10 +98,7 @@ async def test_sidecar_with_cmdline_monitor(
     new_artifact_events = []
     while not fake_messaging._q.empty():
         event = await fake_messaging._q.get()
-        if (
-            event.get("rk")
-            == f"{fake_messaging.addr.queue}.NEWARTIFACT_IN_ENVIRONMENT_EVENT"
-        ):
+        if event.get("rk") == f"{fake_messaging.addr.queue}.NEWARTIFACT_IN_ENVIRONMENT_EVENT":
             new_artifact_events.append(event)
         logger.info(f"Received event: {event}")
     assert len(new_artifact_events) > 0

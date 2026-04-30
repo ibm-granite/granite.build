@@ -120,9 +120,7 @@ def _artifact_to_lineage_entry(
 class WandBLineageStore(ILineageStore):
 
     def __init__(self) -> None:
-        self._service: LineageService = LineageServiceFactory.create(
-            GBSERVER_LINEAGE_PROVIDER
-        )
+        self._service: LineageService = LineageServiceFactory.create(GBSERVER_LINEAGE_PROVIDER)
 
     def _build_events_for_target(
         self,
@@ -145,9 +143,7 @@ class WandBLineageStore(ILineageStore):
         for target_artifact_name, uuid in targetrun.input_artifacts.items():
             artifact = storage.artifact_registry.get_by_uuid(uuid)
             if artifact and isinstance(artifact, ArtifactRegistration):
-                inputs.append(
-                    _artifact_to_lineage_entry(artifact, target_artifact_name)
-                )
+                inputs.append(_artifact_to_lineage_entry(artifact, target_artifact_name))
 
         step_configs = []
         steps = storage.step_storage.get_by_where({"target_id": targetrun.uuid})
@@ -160,12 +156,8 @@ class WandBLineageStore(ILineageStore):
                 }
             )
 
-        started_at = (
-            targetrun.started_at.isoformat() if targetrun.started_at else event_time
-        )
-        completed_at = (
-            targetrun.finished_at.isoformat() if targetrun.finished_at else ""
-        )
+        started_at = targetrun.started_at.isoformat() if targetrun.started_at else event_time
+        completed_at = targetrun.finished_at.isoformat() if targetrun.finished_at else ""
 
         base_event: Dict[str, Any] = {
             "eventType": event_type,
@@ -225,9 +217,7 @@ class WandBLineageStore(ILineageStore):
                 artifact = storage.artifact_registry.get_by_uuid(output_uuid)
                 outputs = []
                 if artifact and isinstance(artifact, ArtifactRegistration):
-                    outputs.append(
-                        _artifact_to_lineage_entry(artifact, target_artifact_name)
-                    )
+                    outputs.append(_artifact_to_lineage_entry(artifact, target_artifact_name))
                 event = {
                     **base_event,
                     "inputs": inputs,
@@ -248,9 +238,7 @@ class WandBLineageStore(ILineageStore):
 
         return events_list, events_dict
 
-    def add_jobstats_for_build(
-        self, storage: SingletonAdminStorage, build_id: str
-    ) -> None:
+    def add_jobstats_for_build(self, storage: SingletonAdminStorage, build_id: str) -> None:
         build = storage.build_storage.get_by_uuid(build_id)
         if build is None:
             raise ValueError(f"Build with id {build_id} was not found")
@@ -275,9 +263,7 @@ class WandBLineageStore(ILineageStore):
             raise ValueError(f"Build with id {build_id} was not found")
         assert isinstance(build, StoredBuild)
 
-        targets = storage.target_storage.get_by_where(
-            {"build_id": build_id, "uuid": target_id}
-        )
+        targets = storage.target_storage.get_by_where({"build_id": build_id, "uuid": target_id})
         count = 0
         for target in targets:
             assert isinstance(target, StoredTargetRun)
@@ -317,9 +303,7 @@ class WandBLineageStore(ILineageStore):
             )
 
         if targetrun.skipped_for_prerun_target_id:
-            original = storage.target_storage.get_by_uuid(
-                targetrun.skipped_for_prerun_target_id
-            )
+            original = storage.target_storage.get_by_uuid(targetrun.skipped_for_prerun_target_id)
             if original is not None and isinstance(original, StoredTargetRun):
                 targetrun = original.model_copy(
                     update={
@@ -343,9 +327,7 @@ class WandBLineageStore(ILineageStore):
     ) -> dict:
         return self._build_event_for_artifact(artifact, sources)
 
-    def count_release_ids(
-        self, release_id: str, target_id: Optional[str] = None
-    ) -> int:
+    def count_release_ids(self, release_id: str, target_id: Optional[str] = None) -> int:
         total, results = self._service.search_lineage_by_tags(
             [f"build_id={release_id}"], limit=10000, offset=0
         )

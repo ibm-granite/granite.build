@@ -58,9 +58,7 @@ class TestAuthMiddlewareApiKeyMode:
         with patch.dict(os.environ, env, clear=False):
             app = _make_app()
             client = TestClient(app)
-            response = client.get(
-                "/test", headers={"Authorization": "Bearer test-key-123"}
-            )
+            response = client.get("/test", headers={"Authorization": "Bearer test-key-123"})
         assert response.status_code == 200
         assert response.json()["login"] == "standalone"
 
@@ -73,9 +71,7 @@ class TestAuthMiddlewareApiKeyMode:
         with patch.dict(os.environ, env, clear=False):
             app = _make_app()
             client = TestClient(app)
-            response = client.get(
-                "/test", headers={"Authorization": "Bearer wrong-key"}
-            )
+            response = client.get("/test", headers={"Authorization": "Bearer wrong-key"})
         assert response.status_code == 401
 
     def test_custom_api_user(self):
@@ -88,9 +84,7 @@ class TestAuthMiddlewareApiKeyMode:
         with patch.dict(os.environ, env, clear=False):
             app = _make_app()
             client = TestClient(app)
-            response = client.get(
-                "/test", headers={"Authorization": "Bearer test-key-123"}
-            )
+            response = client.get("/test", headers={"Authorization": "Bearer test-key-123"})
         assert response.status_code == 200
         assert response.json()["login"] == "myuser"
 

@@ -15,16 +15,22 @@
 # limitations under the License.
 
 
+"""Errors module."""
+
 from typing import Union
 
 
 class LogMonitoringFailedException(Exception):
+    """Log Monitoring Failed Exception implementation."""
+
     def __init__(self, *args, build_id: str = ""):
         self.build_id = build_id
         super().__init__(*args)
 
 
 class WorkloadFailedException(Exception):
+    """Workload Failed Exception implementation."""
+
     def __init__(self, *args, build_id: str = ""):
         self.build_id = build_id
         super().__init__(*args)
@@ -37,6 +43,7 @@ class ErrConnResetByPeer(Exception):
     """ssh connection failed with 'Connection reset by peer'"""
 
     def matches_error_str(s: Union[str, bytes]) -> bool:
+        """Matches error str."""
         return (isinstance(s, str) and ERR_CONNECTION_RESET_BY_PEER in s) or (
             isinstance(s, bytes) and ERR_CONNECTION_RESET_BY_PEER.encode("utf-8") in s
         )
@@ -49,6 +56,7 @@ class ErrNetworkUnreachable(Exception):
     """ssh connection failed with 'Network is unreachable'"""
 
     def matches_error_str(s: Union[str, bytes]) -> bool:
+        """Matches error str."""
         return (isinstance(s, str) and ERR_NETWORK_UNREACHABLE in s) or (
             isinstance(s, bytes) and ERR_NETWORK_UNREACHABLE.encode("utf-8") in s
         )
@@ -62,6 +70,7 @@ class ErrSSHConnectionError(Exception):
 
     @staticmethod
     def matches_error_str(s: Union[str, bytes]) -> bool:
+        """Matches error str."""
         if isinstance(s, bytes):
             s = s.decode("utf-8", errors="replace")
         s_lower = s.lower()
@@ -81,6 +90,7 @@ class ErrLSFCannotOpenJobFile(Exception):
 
     @staticmethod
     def matches_error_str(s: Union[str, bytes]) -> bool:
+        """Matches error str."""
         return (isinstance(s, str) and ERR_LSF_CANNOT_OPEN_JOB_FILE in s) or (
             isinstance(s, bytes) and ERR_LSF_CANNOT_OPEN_JOB_FILE.encode("utf-8") in s
         )

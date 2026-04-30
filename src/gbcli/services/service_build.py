@@ -1,3 +1,5 @@
+"""Service build module."""
+
 import difflib
 import io
 import itertools
@@ -111,6 +113,7 @@ class BuildResponse(BaseModel):
 
 
 def ignore_git_global_config():
+    """Ignore git global config."""
     os.environ["GIT_CONFIG_GLOBAL"] = ""
     os.environ["GIT_CONFIG_SYSTEM"] = ""
 
@@ -128,6 +131,7 @@ def build_init(
 ) -> Tuple[bool, str]:
 
     # validate command options
+    """Create init."""
     if from_build and from_template:
         raise Exception(
             f"❌ Error: --from-build and --from-template were provided. Only one can be provided. "
@@ -185,9 +189,7 @@ def build_init(
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"Space default not found in available spaces."
-                    },
+                    callback_args={"reason": f"Space default not found in available spaces."},
                 )
             return None
 
@@ -256,15 +258,9 @@ def build_init(
                 shutil.copy(os.path.join(template_path, "build.yaml"), filename)
 
         else:
-            raise FileNotFoundError(
-                f"Template {from_template} not found in {template_repo}."
-            )
+            raise FileNotFoundError(f"Template {from_template} not found in {template_repo}.")
 
-    return True, (
-        from_build
-        if from_build
-        else f"{from_template} in {template_repo}@{branch_name}"
-    )
+    return True, (from_build if from_build else f"{from_template} in {template_repo}@{branch_name}")
 
 
 def build_start(
@@ -281,10 +277,8 @@ def build_start(
     callback=None,
     validation_type: str = "static",
 ) -> str:
-
-    gbserver_build_update = gb_environment_config()["feature_flags"][
-        "gbserver_build_update"
-    ]
+    """Create start."""
+    gbserver_build_update = gb_environment_config()["feature_flags"]["gbserver_build_update"]
     if gbserver_build_update == False:
         description = None
         if len(tags) > 0:
@@ -336,9 +330,7 @@ def build_start(
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": f"Space {space} not found in available spaces."
-                },
+                callback_args={"reason": f"Space {space} not found in available spaces."},
             )
         return
     space_repo = global_space.get("git_repo_uri")
@@ -346,9 +338,7 @@ def build_start(
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": f"Space {space} not found in available spaces."
-                },
+                callback_args={"reason": f"Space {space} not found in available spaces."},
             )
         return
 
@@ -363,9 +353,7 @@ def build_start(
         build_name = os.path.split(os.getcwd())[-1]
     branch_name = f"{build_name}-{generate_unique_id()}"
 
-    experiment_folder = prepare_build_local_contents(
-        build_file_path, branch_name, filename
-    )
+    experiment_folder = prepare_build_local_contents(build_file_path, branch_name, filename)
 
     if callback and not quiet:
         callback(callback_event="prepared_contents", callback_args={"steps": 100})
@@ -478,6 +466,7 @@ def build_validate(
     callback=None,
     validation_type: str = "static",
 ) -> Optional[Tuple]:
+    """Create validate."""
     try:
         ignore_git_global_config()
 
@@ -501,9 +490,7 @@ def build_validate(
                 )
             return
 
-        experiment_folder = prepare_build_local_contents(
-            build_file_path, branch_name, filename
-        )
+        experiment_folder = prepare_build_local_contents(build_file_path, branch_name, filename)
         return validate_helper(
             github_token,
             quiet,
@@ -533,6 +520,7 @@ def build_cancel(
     space: Optional[str] = None,
     callback=None,
 ) -> Any:
+    """Create cancel."""
     user_name = get_user(github_token).login
 
     if not space:
@@ -543,9 +531,7 @@ def build_cancel(
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": f"Space {space} not found in available spaces."
-                },
+                callback_args={"reason": f"Space {space} not found in available spaces."},
             )
         return
 
@@ -615,9 +601,8 @@ def build_cancel(
     return canceled_build
 
 
-def build_lineage_lh(
-    github_token: str, token: str, build_id: str, id_format: str, callback=None
-):
+def build_lineage_lh(github_token: str, token: str, build_id: str, id_format: str, callback=None):
+    """Create lineage lh."""
     from lakehouse import LakehouseLineage
 
     if not github_token:
@@ -626,9 +611,7 @@ def build_lineage_lh(
     resolved_space = resolve_space(github_token, "default", callback)
 
     if id_format == "url":
-        build_id_from_url = get_build_id_from_url(
-            github_token, build_id, callback, resolved_space
-        )
+        build_id_from_url = get_build_id_from_url(github_token, build_id, callback, resolved_space)
         build_id = build_id_from_url[0]["uuid"]
     else:
         try:
@@ -645,14 +628,10 @@ def build_lineage_lh(
             return None
 
         resolved_space_name = resolved_space.get("name")
-        available_spaces = [
-            space.get("name") for space in get_spaces(github_token, callback)
-        ]
+        available_spaces = [space.get("name") for space in get_spaces(github_token, callback)]
 
         id_check_space_name = id_check["build"]["space_name"]
-        build_space = (
-            id_check_space_name if id_check_space_name in available_spaces else None
-        )
+        build_space = id_check_space_name if id_check_space_name in available_spaces else None
 
         check_build_space_boundary(
             build_id,
@@ -688,26 +667,19 @@ def build_lineage_lh(
 
     return (
         build_obj["status"],
-        (
-            lineage_df.replace({np.nan: "None"})
-            .sort_values(by="job_started_at")
-            .to_dict("records")
-        ),
+        (lineage_df.replace({np.nan: "None"}).sort_values(by="job_started_at").to_dict("records")),
     )
 
 
-def build_lineage_gbserver(
-    github_token: str, build_id: str, id_format: str, callback=None
-):
+def build_lineage_gbserver(github_token: str, build_id: str, id_format: str, callback=None):
+    """Create lineage gbserver."""
     if not github_token:
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
 
     resolved_space = resolve_space(github_token, "default", callback)
 
     if id_format == "url":
-        build_id_from_url = get_build_id_from_url(
-            github_token, build_id, callback, resolved_space
-        )
+        build_id_from_url = get_build_id_from_url(github_token, build_id, callback, resolved_space)
         build_id = build_id_from_url[0]["uuid"]
 
     # Get build status
@@ -782,17 +754,11 @@ def build_lineage_gbserver(
                                     {
                                         "release_id": job_details.get("release_id", ""),
                                         "category": job_details.get("category", ""),
-                                        "job_name": record.get("job", {}).get(
-                                            "name", ""
-                                        ),
+                                        "job_name": record.get("job", {}).get("name", ""),
                                         "job_id": job_details.get("job_id", ""),
                                         "job_type": job_details.get("job_type", ""),
-                                        "job_started_at": job_details.get(
-                                            "job_started_at", ""
-                                        ),
-                                        "job_completed_at": job_details.get(
-                                            "job_completed_at", ""
-                                        ),
+                                        "job_started_at": job_details.get("job_started_at", ""),
+                                        "job_completed_at": job_details.get("job_completed_at", ""),
                                         "job_status": job_details.get("job_status", ""),
                                         "owner": tags.get("username", ""),
                                         "source": format_obj_name(source),
@@ -801,18 +767,10 @@ def build_lineage_gbserver(
                                         "target": format_obj_name(target),
                                         "target_type": infer_artifact_type(target),
                                         "target_object": target,
-                                        "source_code_details": run_facets.get(
-                                            "source_code", {}
-                                        ),
-                                        "job_input_params": run_facets.get(
-                                            "job_input_params", {}
-                                        ),
-                                        "execution_stats": run_facets.get(
-                                            "execution_stats", {}
-                                        ),
-                                        "job_output_stats": job_details.get(
-                                            "job_output_stats", {}
-                                        ),
+                                        "source_code_details": run_facets.get("source_code", {}),
+                                        "job_input_params": run_facets.get("job_input_params", {}),
+                                        "execution_stats": run_facets.get("execution_stats", {}),
+                                        "job_output_stats": job_details.get("job_output_stats", {}),
                                     }
                                 )
 
@@ -837,6 +795,7 @@ def build_list(
     page_size: Optional[int] = None,
     callback=None,
 ) -> Any | None:
+    """Create list."""
     username = get_user(github_token).login if username == None else username
     if all_spaces:
         used_all_spaces = True
@@ -857,9 +816,7 @@ def build_list(
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"Space {space} not found in available spaces."
-                    },
+                    callback_args={"reason": f"Space {space} not found in available spaces."},
                 )
             return None
 
@@ -882,9 +839,7 @@ def build_list(
 
     gbserver_username = None if list_all else username
 
-    gbserver_build_update = gb_environment_config()["feature_flags"][
-        "gbserver_build_update"
-    ]
+    gbserver_build_update = gb_environment_config()["feature_flags"]["gbserver_build_update"]
     if gbserver_build_update == False:
         if len(tags) > 0:
             if callback is not None:
@@ -1075,16 +1030,13 @@ def build_log(
     skip_id_check: Optional[bool] = False,
     callback=None,
 ):
+    """Create log."""
     if not github_token:
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
 
-    resolved_space = (
-        None if skip_id_check else resolve_space(github_token, "default", callback)
-    )
+    resolved_space = None if skip_id_check else resolve_space(github_token, "default", callback)
     if id_format == "url":
-        build_id_from_url = get_build_id_from_url(
-            github_token, build_id, callback, resolved_space
-        )
+        build_id_from_url = get_build_id_from_url(github_token, build_id, callback, resolved_space)
         build_id = build_id_from_url[0]["uuid"]
     elif not skip_id_check:
         try:
@@ -1120,14 +1072,10 @@ def build_log(
             return None
         elif id_check:
             resolved_space_name = resolved_space.get("name")
-            available_spaces = [
-                space.get("name") for space in get_spaces(github_token, callback)
-            ]
+            available_spaces = [space.get("name") for space in get_spaces(github_token, callback)]
 
             id_check_space_name = id_check["build"]["space_name"]
-            build_space = (
-                id_check_space_name if id_check_space_name in available_spaces else None
-            )
+            build_space = id_check_space_name if id_check_space_name in available_spaces else None
 
             check_build_space_boundary(
                 build_id,
@@ -1139,9 +1087,7 @@ def build_log(
 
     current_epoch = get_current_epoch()
     if start_epoch == None:
-        start_epoch = change_timestamp_by_days(
-            current_epoch, BUILD_LOG_DEFAULT_QUERY_RANGE
-        )
+        start_epoch = change_timestamp_by_days(current_epoch, BUILD_LOG_DEFAULT_QUERY_RANGE)
     if end_epoch == None:
         end_epoch = current_epoch
     if all:
@@ -1168,9 +1114,7 @@ def build_log(
             },
         )
 
-    application_name = (
-        gb_environment_config()["server_log_application_name"] if runner else None
-    )
+    application_name = gb_environment_config()["server_log_application_name"] if runner else None
 
     if not all or follow:
         if all:
@@ -1221,9 +1165,7 @@ def build_log(
                 time.sleep(BUILD_LOG_FOLLOW_SLEEP_TIME)
 
             end_epoch, is_current_timestamp = check_current_timestamp(
-                change_timestamp_by_days(
-                    next_timestamp, BUILD_LOG_DEFAULT_QUERY_RANGE, True
-                )
+                change_timestamp_by_days(next_timestamp, BUILD_LOG_DEFAULT_QUERY_RANGE, True)
             )
 
             response = run_logquery(
@@ -1257,9 +1199,7 @@ def build_log(
                         if timestamp not in timestamps:
                             timestamps.append(timestamp)
                     next_timestamp = timestamps[len(timestamps) - 2]
-                    displayed_logs_ids = displayed_logs_ids + [
-                        log["logId"] for log in logs
-                    ]
+                    displayed_logs_ids = displayed_logs_ids + [log["logId"] for log in logs]
                     if callback:
                         callback(
                             callback_event="display_logs",
@@ -1289,9 +1229,8 @@ def build_status(
     result_format: str,
     callback=None,
 ) -> List[Any]:
-    gbserver_build_events = gb_environment_config()["feature_flags"][
-        "gbserver_build_events"
-    ]
+    """Create status."""
+    gbserver_build_events = gb_environment_config()["feature_flags"]["gbserver_build_events"]
 
     global_space = resolve_space(github_token, "default", callback)
     space_default = global_space.get("git_repo_uri")
@@ -1299,23 +1238,17 @@ def build_status(
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": f"Space default not found in available spaces."
-                },
+                callback_args={"reason": f"Space default not found in available spaces."},
             )
         return None
 
     if id_format == "url":
-        build_id_from_url = get_build_id_from_url(
-            github_token, build_id, callback, global_space
-        )
+        build_id_from_url = get_build_id_from_url(github_token, build_id, callback, global_space)
         if not build_id_from_url:
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"No builds were found with URL {build_id}."
-                    },
+                    callback_args={"reason": f"No builds were found with URL {build_id}."},
                 )
             return None, None, None, f"No builds were found with URL {build_id}."
         build_id = build_id_from_url[0]["uuid"]
@@ -1333,23 +1266,19 @@ def build_status(
 
     # TODO: use global_space to properly scope the build ID
     build_status = make_gbserver_call(
-        lambda: get_build_status_with_targets_runs(
-            github_token, build_id, GBSERVER_BUILD_API
-        )["status"],
+        lambda: get_build_status_with_targets_runs(github_token, build_id, GBSERVER_BUILD_API)[
+            "status"
+        ],
         callback,
         stop_spinner,
     )
 
     if id_format != "url":
         resolved_space_name = global_space.get("name")
-        available_spaces = [
-            space.get("name") for space in get_spaces(github_token, callback)
-        ]
+        available_spaces = [space.get("name") for space in get_spaces(github_token, callback)]
 
         gbserver_space_name = build_status["build"]["space_name"]
-        build_space = (
-            gbserver_space_name if gbserver_space_name in available_spaces else None
-        )
+        build_space = gbserver_space_name if gbserver_space_name in available_spaces else None
 
         check_build_space_boundary(
             build_id,
@@ -1360,13 +1289,9 @@ def build_status(
         )
 
     if callback is not None:
-        callback(
-            callback_event="fetched_build_status", callback_args={"build_id": build_id}
-        )
+        callback(callback_event="fetched_build_status", callback_args={"build_id": build_id})
         if not quiet:
-            callback(
-                callback_event="processing_status_artifacts", callback_args={"steps": 1}
-            )
+            callback(callback_event="processing_status_artifacts", callback_args={"steps": 1})
 
     targets = (
         process_target_runs(build_status["target_runs"])
@@ -1376,9 +1301,7 @@ def build_status(
 
     if callback is not None:
         if not quiet:
-            callback(
-                callback_event="processed_status_artifacts", callback_args={"steps": 99}
-            )
+            callback(callback_event="processed_status_artifacts", callback_args={"steps": 99})
 
     pr_uri = build_status["build"]["source_uri"]
     if gbserver_build_events and not fetch_pr and show_events:
@@ -1433,6 +1356,7 @@ def build_describe(
     space: Optional[str] = None,
     callback=None,
 ) -> str:
+    """Create describe."""
     downloaded_build_file_path = False
     build = None
     # if build_id is supplied, fetch build.yaml from server
@@ -1457,9 +1381,7 @@ def build_describe(
                 if callback is not None:
                     callback(
                         callback_event="error",
-                        callback_args={
-                            "reason": f"Space default not found in available spaces."
-                        },
+                        callback_args={"reason": f"Space default not found in available spaces."},
                     )
                 return None
 
@@ -1500,9 +1422,7 @@ def build_describe(
         return None
 
     build_yaml_path = Path(build_file_path)
-    describe_build_yaml_path = os.path.join(
-        build_yaml_path.cwd(), f"describe_{BUILD_FILENAME}"
-    )
+    describe_build_yaml_path = os.path.join(build_yaml_path.cwd(), f"describe_{BUILD_FILENAME}")
 
     try:
         if raw:
@@ -1512,9 +1432,7 @@ def build_describe(
             # return yaml.dump(build_yaml_dict, indent=2)
             return file_str
         else:
-            targets = describe_build_yaml(
-                build_yaml_path, describe_build_yaml_path, format
-            )
+            targets = describe_build_yaml(build_yaml_path, describe_build_yaml_path, format)
             return targets, build
     except Exception as e:
         if callback is not None:
@@ -1541,6 +1459,7 @@ def build_diff(
     space: Optional[str] = None,
     callback=None,
 ) -> Tuple[str, str, List[Any]]:
+    """Create diff."""
     if not space:
         space = "default"
     global_space = resolve_space(github_token, space, callback)
@@ -1549,9 +1468,7 @@ def build_diff(
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": f"Space {space} not found in available spaces."
-                },
+                callback_args={"reason": f"Space {space} not found in available spaces."},
             )
         return
 
@@ -1561,9 +1478,7 @@ def build_diff(
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"Expected at least one {BUILD_FILENAME}."
-                    },
+                    callback_args={"reason": f"Expected at least one {BUILD_FILENAME}."},
                 )
             return None
 
@@ -1617,9 +1532,7 @@ def build_diff(
         )
         build_1_file_lines = io.StringIO(build_1_file_contents).readlines()
     else:
-        build_1_filename, build_1_file_lines = get_local_build_file_contents(
-            build_id_1, callback
-        )
+        build_1_filename, build_1_file_lines = get_local_build_file_contents(build_id_1, callback)
 
     diff_1_filename = build_1_filename if build_id_2 else local_build_filename
     diff_1_lines = build_1_file_lines if build_id_2 else local_build_file_lines
@@ -1645,16 +1558,13 @@ def build_monitor(
     id_format: Optional[str] = None,
     callback=None,
 ) -> Tuple[Any, List[Any], List[Any], List[Any]]:
-    gbserver_build_events = gb_environment_config()["feature_flags"][
-        "gbserver_build_events"
-    ]
+    """Create monitor."""
+    gbserver_build_events = gb_environment_config()["feature_flags"]["gbserver_build_events"]
 
     resolved_space = resolve_space(github_token, "default", callback)
 
     if id_format == "url":
-        build_id_from_url = get_build_id_from_url(
-            github_token, build_id, callback, resolved_space
-        )
+        build_id_from_url = get_build_id_from_url(github_token, build_id, callback, resolved_space)
         build_id = build_id_from_url[0]["uuid"]
     else:
         try:
@@ -1671,14 +1581,10 @@ def build_monitor(
             return None
 
         resolved_space_name = resolved_space.get("name")
-        available_spaces = [
-            space.get("name") for space in get_spaces(github_token, callback)
-        ]
+        available_spaces = [space.get("name") for space in get_spaces(github_token, callback)]
 
         id_check_space_name = id_check["build"]["space_name"]
-        build_space = (
-            id_check_space_name if id_check_space_name in available_spaces else None
-        )
+        build_space = id_check_space_name if id_check_space_name in available_spaces else None
 
         check_build_space_boundary(
             build_id,
@@ -1691,9 +1597,7 @@ def build_monitor(
     monitor_output = None
     next_timestamp = None
     previous_logs = []
-    start_epoch = change_timestamp_by_days(
-        get_current_epoch(), BUILD_LOG_DEFAULT_QUERY_RANGE
-    )
+    start_epoch = change_timestamp_by_days(get_current_epoch(), BUILD_LOG_DEFAULT_QUERY_RANGE)
     response = None
 
     while not monitor_output:
@@ -1710,9 +1614,9 @@ def build_monitor(
 
         # TODO: use global_space to properly scope the build ID
         status_obj = make_gbserver_call(
-            lambda: get_build_status_with_targets_runs(
-                github_token, build_id, GBSERVER_BUILD_API
-            )["status"],
+            lambda: get_build_status_with_targets_runs(github_token, build_id, GBSERVER_BUILD_API)[
+                "status"
+            ],
             callback,
             stop_spinner,
         )
@@ -1731,9 +1635,7 @@ def build_monitor(
                         callback_event="querying_log_range",
                         callback_args={
                             "start_epoch": (
-                                start_epoch
-                                if not next_timestamp
-                                else int(next_timestamp)
+                                start_epoch if not next_timestamp else int(next_timestamp)
                             ),
                             "end_epoch": end_epoch,
                         },
@@ -1772,9 +1674,7 @@ def build_monitor(
                 else:
                     callback(
                         callback_event="error",
-                        callback_args={
-                            "reason": f"Logs server returns '{response['Error']}'"
-                        },
+                        callback_args={"reason": f"Logs server returns '{response['Error']}'"},
                     )
                 return None
 
@@ -1790,17 +1690,14 @@ def build_monitor(
                     [
                         log
                         for log in response["logs"]
-                        if log["timestamp"]
-                        >= convert_seconds_to_milliseconds(next_timestamp)
+                        if log["timestamp"] >= convert_seconds_to_milliseconds(next_timestamp)
                     ]
                     if next_timestamp
                     else response["logs"]
                 )
                 # query is successful
                 if len(logs) > 0:
-                    next_timestamp = convert_milliseconds_to_seconds(
-                        logs[0]["timestamp"]
-                    )
+                    next_timestamp = convert_milliseconds_to_seconds(logs[0]["timestamp"])
                     logs.reverse()
                     if callback:
                         callback(
@@ -1874,6 +1771,7 @@ def build_notification(
     space: Optional[str] = None,
     callback=None,
 ) -> Tuple[str, str]:
+    """Create notification."""
     if not space:
         space = "default"
     global_space = resolve_space(github_token, space, callback)
@@ -1882,9 +1780,7 @@ def build_notification(
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": f"Space {space} not found in available spaces."
-                },
+                callback_args={"reason": f"Space {space} not found in available spaces."},
             )
         return
 
@@ -1911,9 +1807,7 @@ def build_notification(
                 delete_repo_subscription(github_token, space_org, space_name)
                 return True, space_output_message
             else:
-                notification = ignore_repo_subscription(
-                    github_token, space_org, space_name
-                )
+                notification = ignore_repo_subscription(github_token, space_org, space_name)
         except HTTPError as e:
             if callback is not None:
                 callback(
@@ -1926,6 +1820,7 @@ def build_notification(
 
 
 def process_target_runs(target_runs: List[Any]) -> Tuple[List[Any], List[Any]]:
+    """Handle target runs."""
     target_runs = sorted(
         target_runs,
         key=lambda x: datetime.fromisoformat(x["target"]["started_at"]),
@@ -1975,6 +1870,7 @@ def process_target_runs(target_runs: List[Any]) -> Tuple[List[Any], List[Any]]:
 
 
 def process_target_runs_to_json(target_runs: List[Any]) -> List[Any]:
+    """Handle target runs to json."""
     target_runs = sorted(
         target_runs,
         key=lambda x: datetime.fromisoformat(x["target"]["started_at"]),
@@ -2030,6 +1926,7 @@ def process_target_runs_to_json(target_runs: List[Any]) -> List[Any]:
 
 
 def get_local_build_file_contents(build_id: str, callback=None):
+    """Get the local build file contents."""
     if os.path.exists(build_id):
         with open(build_id, "r", encoding="utf-8") as build_file:
             build_file_lines = build_file.readlines()
@@ -2038,9 +1935,7 @@ def get_local_build_file_contents(build_id: str, callback=None):
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": f"Provided file path {build_id} doesn't exist."
-                },
+                callback_args={"reason": f"Provided file path {build_id} doesn't exist."},
             )
         return None
 
@@ -2054,6 +1949,7 @@ def get_remote_build_file_contents(
     callback=None,
     resolved_space=None,
 ) -> Tuple[str, str]:
+    """Get the remote build file contents."""
     stop_event = threading.Event()
     # Start spinner in a separate thread
     spinner_thread = threading.Thread(
@@ -2082,15 +1978,11 @@ def get_remote_build_file_contents(
 
     if resolved_space:
         resolved_space_name = resolved_space.get("name")
-        available_spaces = [
-            space.get("name") for space in get_spaces(github_token, callback)
-        ]
+        available_spaces = [space.get("name") for space in get_spaces(github_token, callback)]
 
         gbserver_build_space_name = build_details["build"]["space_name"]
         build_space = (
-            gbserver_build_space_name
-            if gbserver_build_space_name in available_spaces
-            else None
+            gbserver_build_space_name if gbserver_build_space_name in available_spaces else None
         )
 
         check_build_space_boundary(
@@ -2108,9 +2000,7 @@ def get_remote_build_file_contents(
     with zipfile.ZipFile(io.BytesIO(build_archive_bytes), "r") as zip_ref:
         for file in zip_ref.namelist():
             if file == BUILD_FILENAME:
-                remote_build_file_name = (
-                    f"{file} ({build_id if build_url == '' else build_url})"
-                )
+                remote_build_file_name = f"{file} ({build_id if build_url == '' else build_url})"
                 with zip_ref.open(file, "r") as build_file:
                     remote_build_file_contents = build_file.read().decode("utf-8")
 
@@ -2128,6 +2018,7 @@ def get_remote_build_file_contents(
 
 
 def merge_pr_info(gh_pulls: List[Any], gbserver_pulls: List[Any]) -> List[Any]:
+    """Merge pr info."""
     gbserver_builds = [b for b in gbserver_pulls if b["username"] != "gb-local-user"]
     for pr_gh in gh_pulls:
         pr_gh_gbserver = {
@@ -2147,6 +2038,7 @@ def merge_pr_info(gh_pulls: List[Any], gbserver_pulls: List[Any]) -> List[Any]:
 
 
 def get_params_from_file(file_path: str) -> dict:
+    """Get the params from file."""
     if os.path.exists(file_path) and os.stat(file_path).st_size > 0:
         with open(file_path, "r", encoding="utf-8") as f:
             params_from_file = yaml.safe_load(f)
@@ -2162,6 +2054,7 @@ def get_params_from_file(file_path: str) -> dict:
 def apply_build_parameters(
     build_folder_path: str, params, params_from_file, callback=None
 ) -> Tuple[Any, str]:
+    """Apply build parameters."""
     build_yaml_dict = None
     build_yaml_path = None
 
@@ -2182,9 +2075,7 @@ def apply_build_parameters(
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"Expected {build_yaml_path} to be a file."
-                    },
+                    callback_args={"reason": f"Expected {build_yaml_path} to be a file."},
                 )
             return None
     else:
@@ -2198,9 +2089,8 @@ def apply_build_parameters(
 
 
 def get_build_yaml_dict_inner(build_yaml_dict: dict) -> dict:
-    assert isinstance(
-        build_yaml_dict, dict
-    ), f"invalid build_yaml_dict: {build_yaml_dict}"
+    """Get the build yaml dict inner."""
+    assert isinstance(build_yaml_dict, dict), f"invalid build_yaml_dict: {build_yaml_dict}"
     build_yaml_dict_inner = None
     for k in BUILD_YAML_BASE_KEYS:
         if k in build_yaml_dict:
@@ -2217,6 +2107,7 @@ def get_build_yaml_dict_inner(build_yaml_dict: dict) -> dict:
 
 
 def validate_build_content(build_yaml_dict: Any, build_yaml_path: str) -> str:
+    """Verify build content."""
     try:
         assert isinstance(build_yaml_dict, dict)
         build_yaml_dict_inner = get_build_yaml_dict_inner(build_yaml_dict)
@@ -2234,13 +2125,12 @@ def validate_build_content(build_yaml_dict: Any, build_yaml_path: str) -> str:
         if "Invalid parameter" in str(e):
             error_message = e
         else:
-            error_message = (
-                f"The {BUILD_FILENAME} at {build_yaml_path} is invalid, error: {e}."
-            )
+            error_message = f"The {BUILD_FILENAME} at {build_yaml_path} is invalid, error: {e}."
         return error_message
 
 
 def get_build_yaml_paths(build_folder_path: str):
+    """Get the build yaml paths."""
     build_yaml_paths = []
     for file in glob(f"{build_folder_path}/*", recursive=True):
         if file.split("/")[-1] == BUILD_FILENAME:
@@ -2250,6 +2140,7 @@ def get_build_yaml_paths(build_folder_path: str):
 
 
 def process_targets(targets: tuple, build_folder_path: str):
+    """Handle targets."""
     build_yaml_paths = get_build_yaml_paths(build_folder_path)
     if len(build_yaml_paths) < 0:
         raise Exception(f"Expected at least one {BUILD_FILENAME}.")
@@ -2295,6 +2186,7 @@ def spinner_running(stop_event, callback=None, callback_event=None, build_id=Non
 def describe_build_yaml(
     build_yaml_path: str, describe_build_yaml_path: str, format: str
 ) -> List[Any]:
+    """Describe build yaml."""
     with open(build_yaml_path, "r", encoding="utf-8") as f:
         yaml_converted = re.sub(
             # fmt: off
@@ -2311,21 +2203,11 @@ def describe_build_yaml(
 
     targets = []
     for target in build_config.targets:
-        inputs = (
-            build_config.targets[target].inputs
-            if build_config.targets[target].inputs
-            else []
-        )
+        inputs = build_config.targets[target].inputs if build_config.targets[target].inputs else []
         outputs = (
-            build_config.targets[target].outputs
-            if build_config.targets[target].outputs
-            else []
+            build_config.targets[target].outputs if build_config.targets[target].outputs else []
         )
-        steps = (
-            build_config.targets[target].steps
-            if build_config.targets[target].steps
-            else []
-        )
+        steps = build_config.targets[target].steps if build_config.targets[target].steps else []
 
         target_obj = {
             "target_name": target,
@@ -2334,18 +2216,12 @@ def describe_build_yaml(
                 [
                     {
                         "name": input,
-                        "uri": (
-                            inputs[input].uri
-                            if inputs[input].uri
-                            else inputs[input].binding
-                        ),
+                        "uri": (inputs[input].uri if inputs[input].uri else inputs[input].binding),
                     }
                     for input in inputs
                 ]
             ),
-            "outputs": (
-                [{"name": output, "uri": outputs[output].uri} for output in outputs]
-            ),
+            "outputs": ([{"name": output, "uri": outputs[output].uri} for output in outputs]),
             "steps": (
                 [{"uri": step.step_uri, "config": step.config} for step in steps]
                 if format != "simple"
@@ -2357,21 +2233,17 @@ def describe_build_yaml(
 
 
 def ignore_build_files(directory, contents):
-    return [
-        item
-        for item in contents
-        if item != BUILD_FILENAME and item != BUILD_PARAMETERS_FILE
-    ]
+    """Ignore build files."""
+    return [item for item in contents if item != BUILD_FILENAME and item != BUILD_PARAMETERS_FILE]
 
 
 def get_build_id_from_url(
     github_token: str, build_url: str, callback=None, resolved_space=None
 ) -> list:
+    """Get the build id from url."""
     build_url_split = urlsplit(build_url)
     repo_path = "/".join(build_url_split[2].split("/")[:-2])
-    space_from_build_url = urlunsplit(
-        (build_url_split[0], build_url_split[1], repo_path, "", "")
-    )
+    space_from_build_url = urlunsplit((build_url_split[0], build_url_split[1], repo_path, "", ""))
 
     build_space = None
     spaces = get_spaces(github_token, callback)
@@ -2394,9 +2266,7 @@ def get_build_id_from_url(
             callback_args={"steps": 1, "source_uri": build_url},
         )
     build_from_url = make_gbserver_call(
-        lambda: get_builds(github_token, GBSERVER_BUILD_API, source_uri=build_url)[
-            "builds"
-        ],
+        lambda: get_builds(github_token, GBSERVER_BUILD_API, source_uri=build_url)["builds"],
         callback,
     )
 
@@ -2426,15 +2296,14 @@ def get_build_id_from_url(
 
 
 def get_build_url_from_build_id(user_token: str, build_id: str, callback=None) -> list:
+    """Get the build url from build id."""
     if callback is not None:
         callback(
             callback_event="fetching_build_url",
             callback_args={"steps": 1, "build_id": build_id},
         )
     build_url = make_gbserver_call(
-        lambda: get_build(build_id, user_token, GBSERVER_BUILD_API)["build"][
-            "source_uri"
-        ],
+        lambda: get_build(build_id, user_token, GBSERVER_BUILD_API)["build"]["source_uri"],
         callback,
     )
 
@@ -2456,6 +2325,7 @@ def get_build_url_from_build_id(user_token: str, build_id: str, callback=None) -
 
 
 def create_build_archive(build_path: Path, zip_buffer, build_filename: str) -> str:
+    """Create build archive."""
     with open(build_path, "r") as build_path_file:
         build_path_file_read = build_path_file.read()
 
@@ -2468,6 +2338,7 @@ def create_build_archive(build_path: Path, zip_buffer, build_filename: str) -> s
 
 
 def create_build_folder_archive(build_path: Path, zip_buffer) -> str:
+    """Create build folder archive."""
     build_files = os.listdir(build_path)
     build_files_contents = {}
     for build_file in build_files:
@@ -2484,9 +2355,8 @@ def create_build_folder_archive(build_path: Path, zip_buffer) -> str:
     return build_archive
 
 
-def get_gbserver_build_events(
-    build_id: str, github_token: str, callback=None
-) -> List[Any]:
+def get_gbserver_build_events(build_id: str, github_token: str, callback=None) -> List[Any]:
+    """Get the gbserver build events."""
     if callback is not None:
         callback(callback_event="fetching_additional_info", callback_args={"steps": 1})
 
@@ -2498,9 +2368,7 @@ def get_gbserver_build_events(
     build_history = [
         {
             "time": event["build_event"]["timestamp"],
-            "description": event["build_event"]["payload"]
-            .get("msg", "")
-            .replace("`", ""),
+            "description": event["build_event"]["payload"].get("msg", "").replace("`", ""),
         }
         for event in build_events
         if event["build_event"]["payload"].get("msg", "") != ""
@@ -2519,22 +2387,19 @@ def get_pr_events(
     pull_number: int,
     callback=None,
 ) -> List[Any]:
+    """Get the pr events."""
     if callback is not None:
         callback(callback_event="fetching_additional_info", callback_args={"steps": 1})
 
     comments = []
-    comments, next_page = get_pr_comments(
-        github_token, space_org, space_name, pull_number
-    )
+    comments, next_page = get_pr_comments(github_token, space_org, space_name, pull_number)
 
     comments_progress = 50
     progress = 0
     if callback is not None:
         progress = 20 if next_page else 50
         callback(
-            callback_event=(
-                "fetching_additional_info" if next_page else "fetched_additional_info"
-            ),
+            callback_event=("fetching_additional_info" if next_page else "fetched_additional_info"),
             callback_args={"steps": progress},
         )
         comments_progress = comments_progress + progress
@@ -2552,9 +2417,7 @@ def get_pr_events(
             progress = 10 if next_page else (100 - comments_progress)
             callback(
                 callback_event=(
-                    "fetching_additional_info"
-                    if next_page
-                    else "fetched_additional_info"
+                    "fetching_additional_info" if next_page else "fetched_additional_info"
                 ),
                 callback_args={"steps": progress},
             )
@@ -2569,15 +2432,14 @@ def prepare_build_local_contents(
     filename: Optional[str] = "",
 ) -> str:
     # check to see if cache exists, if not create
+    """Prepare build local contents."""
     cache_path = create_if_not_dir_local_build_cache()
 
     experiments_folder = os.path.join(cache_path, SPACE_REPO_BUILD_FOLDER)
     if not os.path.exists(experiments_folder):
         os.mkdir(experiments_folder)
 
-    experiment_folder = tempfile.mkdtemp(
-        prefix=f"{branch_name}_", dir=experiments_folder
-    )
+    experiment_folder = tempfile.mkdtemp(prefix=f"{branch_name}_", dir=experiments_folder)
     experiment_build_file_path = os.path.join(experiment_folder, "build.yaml")
     # TODO: do not copy entire folder, lets copy only needed files
     if not filename or filename == "":
@@ -2603,6 +2465,7 @@ def parameters_helper(
     callback=None,
     callback_event=None,
 ) -> Tuple[str, str]:
+    """Parameters helper."""
     if not parameters_path:
         build_path = "/".join(build_file_path.split("/")[:-1])
         parameters_path = os.path.join(build_path, BUILD_PARAMETERS_FILE)
@@ -2654,9 +2517,7 @@ def validate_helper(
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": f"Space {space} not found in available spaces."
-                },
+                callback_args={"reason": f"Space {space} not found in available spaces."},
             )
         return
 
@@ -2699,9 +2560,7 @@ def validate_helper(
             if 400 < e.status_code < 600:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"gbserver returned '{e.status_code} {e.detail}'."
-                    },
+                    callback_args={"reason": f"gbserver returned '{e.status_code} {e.detail}'."},
                 )
         return None
     except ConnectionError:
@@ -2775,9 +2634,7 @@ def get_build_from_remote(
     common function used by both init and describe to pull down build.yaml for an existing build
     """
     if id_format == "url":
-        build_id_from_url = get_build_id_from_url(
-            github_token, build_id, callback, resolved_space
-        )
+        build_id_from_url = get_build_id_from_url(github_token, build_id, callback, resolved_space)
         build_id = build_id_from_url[0]["uuid"]
     response = make_gbserver_call(
         lambda: get_build(build_id, github_token, GBSERVER_BUILD_API),
@@ -2788,9 +2645,7 @@ def get_build_from_remote(
     _gbserver_build = response["build"]
     if id_format != "url":
         # check current space vs incoming build space to make sure they are the same
-        available_spaces = [
-            space.get("name") for space in get_spaces(github_token, callback)
-        ]
+        available_spaces = [space.get("name") for space in get_spaces(github_token, callback)]
         build_space = (
             _gbserver_build.get("space_name")
             if _gbserver_build.get("space_name") in available_spaces
@@ -2830,6 +2685,7 @@ def get_build_from_remote(
 
 
 def extract_build_name(experiment_folder: str, filename: str):
+    """Extract build name."""
     build_yaml_path = os.path.join(experiment_folder, BUILD_FILENAME)
     try:
         with open(build_yaml_path, "r", encoding="utf-8") as f:
@@ -2858,19 +2714,16 @@ def update_build(
     callback=None,
 ):
     # Validate that append is not used with empty tags
+    """Update build."""
     if append and tags is not None and len(tags) == 0:
         raise ValueError("--append cannot be used with empty tags")
 
-    gbserver_build_update = gb_environment_config()["feature_flags"][
-        "gbserver_build_update"
-    ]
+    gbserver_build_update = gb_environment_config()["feature_flags"]["gbserver_build_update"]
     if gbserver_build_update == False:
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": "build update is not available in this environment yet"
-                },
+                callback_args={"reason": "build update is not available in this environment yet"},
             )
 
     username = get_user(github_token).login
@@ -2919,6 +2772,7 @@ def check_build_space_boundary(
     build_space: Optional[str],
     callback=None,
 ):
+    """Verify build space boundary."""
     space_not_available = (
         not build_space and user_is_space_admin(github_token, "public", callback)
     ) or (build_space and resolved_space_name and resolved_space_name != build_space)

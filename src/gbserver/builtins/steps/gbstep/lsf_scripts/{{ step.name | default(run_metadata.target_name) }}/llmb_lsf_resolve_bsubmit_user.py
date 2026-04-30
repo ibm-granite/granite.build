@@ -42,12 +42,8 @@ def process_user_mapping(args: Namespace) -> None:
     expected_user_mapping_file_owner: str = args.user_mapping_file_owner
     if expected_user_mapping_file_owner == "":
         expected_user_mapping_file_owner = input_default_username
-    assert (
-        user_mapping_file.is_file()
-    ), f"invalid user_mapping_file: {user_mapping_file}"
-    assert (
-        input_default_username
-    ), f"invalid input_default_username: {input_default_username}"
+    assert user_mapping_file.is_file(), f"invalid user_mapping_file: {user_mapping_file}"
+    assert input_default_username, f"invalid input_default_username: {input_default_username}"
     assert (
         expected_user_mapping_file_owner
     ), f"invalid expected_user_mapping_file_owner: {expected_user_mapping_file_owner}"

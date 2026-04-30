@@ -115,9 +115,7 @@ class TestFileNotFoundRetryStrategy:
         event = BuildEvent(
             run_metadata=EntityRunMetadata(build_id="test-build-id"),
             type=BuildEventType.STATUS_EVENT,
-            payload=BuildEventMessagePayload(
-                msg="FileNotFoundError: No such file or directory"
-            ),
+            payload=BuildEventMessagePayload(msg="FileNotFoundError: No such file or directory"),
         )
         assert not strategy.should_retry(event)
 
@@ -130,9 +128,7 @@ class TestFileNotFoundRetryStrategy:
             "node_name": "gpu-worker-3",
             "error": "FileNotFoundError: No such file or directory",
         }
-        event = _make_event(
-            f"FileNotFoundError: No such file or directory\n{_wrap_json(msg_data)}"
-        )
+        event = _make_event(f"FileNotFoundError: No such file or directory\n{_wrap_json(msg_data)}")
         nodes = strategy.extract_nodes_to_avoid(event)
         assert nodes == {"gpu-worker-3"}
 
@@ -153,9 +149,7 @@ class TestFileNotFoundRetryStrategy:
     def test_extract_no_nodes_when_no_json(self: Self) -> None:
         """Test that empty set returned when no node info available."""
         strategy = FileNotFoundRetryStrategy()
-        event = _make_event(
-            "FileNotFoundError: No such file or directory: '/path/to/file'"
-        )
+        event = _make_event("FileNotFoundError: No such file or directory: '/path/to/file'")
         nodes = strategy.extract_nodes_to_avoid(event)
         assert nodes == set()
 

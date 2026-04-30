@@ -15,6 +15,8 @@
 # limitations under the License.
 
 
+"""Command rest server module."""
+
 import os
 import sys
 
@@ -58,9 +60,7 @@ def cli(
             sys.exit(1)
 
     try:
-        logger.info(
-            "Starting GB REST server on port %d (auth_mode=%s)", port, auth_mode
-        )
+        logger.info("Starting GB REST server on port %d (auth_mode=%s)", port, auth_mode)
         # inherit the logging configuration
         # "host" is needed to make the server listen outside localhost
         uvicorn.run(

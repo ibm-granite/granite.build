@@ -1,3 +1,5 @@
+"""Lakehouse token generator module."""
+
 import os
 from enum import IntEnum
 
@@ -11,9 +13,7 @@ LAKEHOUSE_TOKEN_EXPIRATION_MINUTES = 720
 def generate_lakehouse_key_for_artifact(space):
     """Generate a temporary key for CLI to perform `artifact push`"""
     lakehouse_token = os.getenv("LAKEHOUSE_TOKEN_ARTIFACTS")
-    return generate_lakehouse_key_from_key(
-        lakehouse_token, LAKEHOUSE_TOKEN_EXPIRATION_MINUTES
-    )
+    return generate_lakehouse_key_from_key(lakehouse_token, LAKEHOUSE_TOKEN_EXPIRATION_MINUTES)
 
 
 def generate_lakehouse_key_from_key(source_token, duration):
@@ -31,6 +31,8 @@ def generate_lakehouse_key_from_key(source_token, duration):
     )
 
     class MyDuration(IntEnum):
+        """My Duration implementation."""
+
         time = duration
 
     new_token = lh.generate_new_token(MyDuration.time)

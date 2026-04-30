@@ -43,9 +43,7 @@ class EnvSpaceSecretManager(SpaceSecretManager):
     This is a read-only secret manager; create_secret() is not supported.
     """
 
-    def __init__(
-        self: Self, uri: str, prefix: str = "GBSERVER_SECRET_", **kwargs
-    ) -> None:
+    def __init__(self: Self, uri: str, prefix: str = "GBSERVER_SECRET_", **kwargs) -> None:
         """Initialize the environment variable secret manager.
 
         Args:
@@ -112,9 +110,7 @@ class EnvSpaceSecretManager(SpaceSecretManager):
             )
             return {}
 
-    def get_secrets(
-        self: Self, username: Optional[str] = None
-    ) -> Optional[Dict[str, str]]:
+    def get_secrets(self: Self, username: Optional[str] = None) -> Optional[Dict[str, str]]:
         """List all secrets with the configured prefix.
 
         Returns all environment variables that start with the configured prefix,

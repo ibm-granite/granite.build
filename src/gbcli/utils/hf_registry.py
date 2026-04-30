@@ -88,9 +88,7 @@ class HFRegistry:
             raise FileNotFoundError(f"Local path does not exist: {local_path}")
 
         if "/" not in repo_id:
-            raise ValueError(
-                f"repo_id must be in format 'organization/repo-name', got: {repo_id}"
-            )
+            raise ValueError(f"repo_id must be in format 'organization/repo-name', got: {repo_id}")
         try:
             logger.info(
                 "uploading_to_hf",
@@ -107,14 +105,10 @@ class HFRegistry:
                     resource_group_id=self.resource_group_id,
                     exist_ok=exist_ok,
                 )
-                logger.info(
-                    "bucket_created_or_exists", bucket_id=repo_id, exist_ok=exist_ok
-                )
+                logger.info("bucket_created_or_exists", bucket_id=repo_id, exist_ok=exist_ok)
 
                 if local.is_file():
-                    self.api.batch_bucket_files(
-                        bucket_id=repo_id, add=[(str(local), local.name)]
-                    )
+                    self.api.batch_bucket_files(bucket_id=repo_id, add=[(str(local), local.name)])
                     logger.info("bucket_file_uploaded", file=local.name)
                 else:
                     bucket_hf_path = f"hf://buckets/{repo_id}"
@@ -129,9 +123,7 @@ class HFRegistry:
                     exist_ok=exist_ok,
                     resource_group_id=self.resource_group_id,
                 )
-                logger.info(
-                    "repo_created_or_exists", repo_url=repo_url, exist_ok=exist_ok
-                )
+                logger.info("repo_created_or_exists", repo_url=repo_url, exist_ok=exist_ok)
 
                 # Ensure model card exists before uploading (for models only)
                 if artifact_type == "model" and local.is_dir():
@@ -192,9 +184,7 @@ class HFRegistry:
 
         except HfHubHTTPError as e:
             if e.response is not None and e.response.status_code == 403:
-                logger.error(
-                    "upload_failed_permission_denied", repo_id=repo_id, error=str(e)
-                )
+                logger.error("upload_failed_permission_denied", repo_id=repo_id, error=str(e))
                 raise RuntimeError(
                     f"Your HuggingFace token does not have write access to '{repo_id}'. "
                     "Please check your token permissions at https://huggingface.co/settings/tokens "
@@ -295,9 +285,7 @@ model_id: "{repo_id}"
         model_type = model_info.get("model_type", "transformer").upper()
         hidden_size = model_info.get("hidden_size", "N/A")
         num_layers = model_info.get("num_hidden_layers", "N/A")
-        vocab_size = model_info.get(
-            "vocab_size", model_info.get("vocabulary_size", "N/A")
-        )
+        vocab_size = model_info.get("vocab_size", model_info.get("vocabulary_size", "N/A"))
 
         model_card = f"""{yaml_header}
 
@@ -376,9 +364,7 @@ For information about this model, visit the [repository](https://huggingface.co/
         """
         local_dir = Path(download_dir)
         if "/" not in repo_id:
-            raise ValueError(
-                f"repo_id must be in format 'organization/repo-name', got: {repo_id}"
-            )
+            raise ValueError(f"repo_id must be in format 'organization/repo-name', got: {repo_id}")
 
         try:
             logger.info(
@@ -437,9 +423,7 @@ For information about this model, visit the [repository](https://huggingface.co/
                     "Please check the repository ID and ensure it exists on Hugging Face Hub."
                 ) from e
             elif e.response is not None and e.response.status_code == 403:
-                logger.error(
-                    "download_failed_permission_denied", repo_id=repo_id, error=str(e)
-                )
+                logger.error("download_failed_permission_denied", repo_id=repo_id, error=str(e))
                 raise RuntimeError(
                     f"Access denied to '{repo_id}'. "
                     "The repository may be private. "

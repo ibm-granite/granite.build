@@ -82,9 +82,7 @@ class StorageSpaceAccessManager(ISpaceAccessManager):
 
             return result
         except Exception as e:
-            logger.error(
-                "StorageSpaceAccessManager: error in get_user_spaces_with_access: %s", e
-            )
+            logger.error("StorageSpaceAccessManager: error in get_user_spaces_with_access: %s", e)
             return []
 
     def is_space_admin(self, username: str, space_name: str) -> bool:
@@ -99,9 +97,7 @@ class StorageSpaceAccessManager(ISpaceAccessManager):
         """
         try:
             storage = get_admin_storage()
-            membership = storage.space_user_storage.get_by_space_and_username(
-                space_name, username
-            )
+            membership = storage.space_user_storage.get_by_space_and_username(space_name, username)
             return membership is not None and membership.role == "admin"
         except Exception as e:
             logger.error("StorageSpaceAccessManager: error in is_space_admin: %s", e)
@@ -123,17 +119,13 @@ class StorageSpaceAccessManager(ISpaceAccessManager):
             return True
         try:
             storage = get_admin_storage()
-            membership = storage.space_user_storage.get_by_space_and_username(
-                space_name, username
-            )
+            membership = storage.space_user_storage.get_by_space_and_username(space_name, username)
             return membership is not None
         except Exception as e:
             logger.error("StorageSpaceAccessManager: error in has_space_access: %s", e)
             return False
 
-    def has_build_access(
-        self, username: str, build_id: str
-    ) -> Union[bool, JSONResponse]:
+    def has_build_access(self, username: str, build_id: str) -> Union[bool, JSONResponse]:
         """Check if the user has access to the specified build via its space.
 
         Args:

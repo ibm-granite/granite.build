@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Stepconfig module."""
+
 from enum import StrEnum, auto
 from typing import Dict, List, Optional
 
@@ -23,6 +25,8 @@ from gbcommon.types.config import Config
 
 
 class StepType(StrEnum):
+    """Step Type implementation."""
+
     DATA_PROCESSING = auto()
     DATA_GENERATION = auto()
     TRAINING = auto()
@@ -31,11 +35,15 @@ class StepType(StrEnum):
 
 
 class StepSetupConfig(Config):
+    """Step Setup Config implementation."""
+
     type: str
     config: Optional[Dict] = Field(default_factory=dict)
 
 
 class StepLauncherConfig(Config):
+    """Step Launcher Config implementation."""
+
     type: str
     setups: Optional[List[str]] = Field(default_factory=list)
     monitors: Optional[List[str]] = Field(default_factory=list)
@@ -43,11 +51,15 @@ class StepLauncherConfig(Config):
 
 
 class StepMonitorConfig(Config):
+    """Step Monitor Config implementation."""
+
     type: str
     config: Optional[Dict] = Field(default=dict)
 
 
 class StepEnvironmentTypeConfig(Config):
+    """Step Environment Type Config implementation."""
+
     default_launcher: Optional[str] = Field(default=None)
     setups: Optional[Dict[str, StepSetupConfig]] = Field(default_factory=dict)
     launchers: Dict[str, StepLauncherConfig]
@@ -55,6 +67,8 @@ class StepEnvironmentTypeConfig(Config):
 
 
 class StepConfig(Config):
+    """Step Config implementation."""
+
     name: str = ""
     type: str = "custom"
     config: Optional[Dict] = Field(default_factory=dict)

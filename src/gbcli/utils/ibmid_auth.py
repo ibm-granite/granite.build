@@ -44,6 +44,8 @@ GBSERVER_AUTH_BASE = f"{GBSERVER_INSTANCE}/api/v1/auth"
 
 
 class IBMidUserInfo(BaseModel):
+    """I B Mid User Info implementation."""
+
     sub: str = ""
     name: str = ""
     email: str = ""
@@ -51,6 +53,8 @@ class IBMidUserInfo(BaseModel):
 
 
 class AuthFlowResult(BaseModel):
+    """Auth Flow Result implementation."""
+
     access_token: str
     id_token: str = ""
     refresh_token: str = ""
@@ -112,9 +116,7 @@ class IBMidOIDCClient:
             "code_challenge_method": "S256",
             "state": state,
         }
-        authorize_url = (
-            f"{self.gbserver_auth_base}/authorize?{urllib.parse.urlencode(params)}"
-        )
+        authorize_url = f"{self.gbserver_auth_base}/authorize?{urllib.parse.urlencode(params)}"
 
         open_browser(authorize_url)
 
@@ -149,9 +151,7 @@ class IBMidOIDCClient:
             if data["status"] == "pending":
                 continue
             elif data["status"] == "error":
-                raise Exception(
-                    f"IBMid authentication error: {data.get('error', 'unknown')}"
-                )
+                raise Exception(f"IBMid authentication error: {data.get('error', 'unknown')}")
             elif data["status"] == "complete":
                 user_info = IBMidUserInfo.model_validate(data.get("user_info", {}))
                 return AuthFlowResult(
@@ -163,6 +163,5 @@ class IBMidOIDCClient:
                 )
 
         raise Exception(
-            "IBMid authentication timed out. "
-            "Please try again with 'auth login --sso ibm'."
+            "IBMid authentication timed out. " "Please try again with 'auth login --sso ibm'."
         )

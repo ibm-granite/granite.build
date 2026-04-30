@@ -1,4 +1,6 @@
 # process_monitors.py
+"""Dummy monitor module."""
+
 import asyncio
 from typing import Optional, Self
 

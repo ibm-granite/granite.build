@@ -1,3 +1,5 @@
+"""Main module."""
+
 from .cli import gbcli
 
 if __name__ == "__main__":

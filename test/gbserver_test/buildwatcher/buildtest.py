@@ -224,9 +224,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         """Format an assertion message with the build ID for easier debugging."""
         return failed_build_assert_message(build_id, message)
 
-    def _check_and_setup_space(
-        self: Self, test_spec: BuildTestSpecification
-    ) -> StoredSpace:
+    def _check_and_setup_space(self: Self, test_spec: BuildTestSpecification) -> StoredSpace:
         """Fetch the space for the test, upserting git_repo_uri when space_uri is set.
 
         When test_spec.space_uri is provided (a local file:// path), the stored space
@@ -261,9 +259,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             else:
                 space.git_repo_uri = test_spec.space_uri
                 self.storage.space_storage.update(space)
-        assert (
-            space is not None
-        ), f"failed to find a space with name {test_spec.space_name}"
+        assert space is not None, f"failed to find a space with name {test_spec.space_name}"
         return space
 
     def _delete_output_artifacts(self: Self, build_id: str):
@@ -275,24 +271,18 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         Args:
             build_id: UUID of the build whose output artifacts should be removed.
         """
-        artifacts = self.storage.artifact_registry.get_by_where(
-            {"created_by_build_id": build_id}
-        )
+        artifacts = self.storage.artifact_registry.get_by_where({"created_by_build_id": build_id})
         for artifact in artifacts:
             uri = URI.get_uri(artifact.uri)
             try:
                 if not uri.delete():
-                    logger.warning(
-                        f"Could not delete output artifact {URI.get_uristr(uri)}"
-                    )
+                    logger.warning(f"Could not delete output artifact {URI.get_uristr(uri)}")
             except NotImplementedError:
                 logger.warning(
                     f"Not deleting output artifact {URI.get_uristr(uri)}: delete not implemented for {type(uri).__name__}"
                 )
             except Exception as e:
-                logger.warning(
-                    f"Could not delete output artifact {URI.get_uristr(uri)}: {e}"
-                )
+                logger.warning(f"Could not delete output artifact {URI.get_uristr(uri)}: {e}")
 
     # def _get_test_config(self) -> BuildTestSpecification:
     #     raise ValueError(
@@ -387,9 +377,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                     space_uri=test_spec.space_uri,
                 )
             elif tested_class == ClassTestedEnum.TEST_BUILDWATCHER:
-                stored_build.status = (
-                    Status.SUBMITTED
-                )  #    Buildwatcher handles SUBMITTED builds.
+                stored_build.status = Status.SUBMITTED  #    Buildwatcher handles SUBMITTED builds.
                 build_ids = self.__run_buildwatcher_test_build(
                     stored_build,
                     build_count,
@@ -447,9 +435,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         # Verify each target and step for those targets
         targets = self.storage.target_storage.get_by_where({"build_id": build_id})
         for target in targets:
-            self._verify_target_status(
-                build_id, target, [Status.SUCCESS, Status.CANCELLED]
-            )
+            self._verify_target_status(build_id, target, [Status.SUCCESS, Status.CANCELLED])
 
         # Make sure the artifacts got cancelled or were finished
         self._verify_build_artifact_status(
@@ -595,17 +581,12 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         sleep_time = GBTEST_JOB_TERMINATION_TIMEOUT_SECONDS / 10
         while True:
             unfinished = []
-            logger.info(
-                "Waiting on the following jobs/pods to finish running: %s", build_ids
-            )
+            logger.info("Waiting on the following jobs/pods to finish running: %s", build_ids)
             for build_id in build_ids:
                 if not is_buildrunner_pod_finished(build_id):
                     unfinished.append(build_id)
             waited_time = time() - start_time
-            if (
-                len(unfinished) == 0
-                or waited_time > GBTEST_JOB_TERMINATION_TIMEOUT_SECONDS
-            ):
+            if len(unfinished) == 0 or waited_time > GBTEST_JOB_TERMINATION_TIMEOUT_SECONDS:
                 break
             logger.info("sleeping for %s seconds", sleep_time)
             sleep(sleep_time)
@@ -814,15 +795,11 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 timeout=timeout,
                 failed_statuses=[Status.SUCCESS],
             )
-            target_list = self.storage.target_storage.get_by_where(
-                {"build_id": build_id}
-            )
+            target_list = self.storage.target_storage.get_by_where({"build_id": build_id})
             for target in target_list:
                 self._wait_for_canceled_target_and_steps(target, timeout)
 
-    def _wait_for_canceled_target_and_steps(
-        self: Self, target: StoredTargetRun, timeout
-    ):
+    def _wait_for_canceled_target_and_steps(self: Self, target: StoredTargetRun, timeout):
         build_id = target.build_id
         self._wait_for_target_status(
             build_id, target.uuid, [Status.CANCELLED, Status.SUCCESS], timeout
@@ -845,9 +822,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
     def _verify_build_status(self: Self, build_id: str, status_list: list[Status]):
         build = self.storage.build_storage.get_by_uuid(build_id)
-        assert build, self._failed_build_msg(
-            build_id, f"Could not find build with id {build_id}"
-        )
+        assert build, self._failed_build_msg(build_id, f"Could not find build with id {build_id}")
         assert build.status in status_list, self._failed_build_msg(
             build_id,
             f"Build has status {build.status}, but expected one of {status_list}",
@@ -902,17 +877,13 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         )
 
         # Verify no artifacts created by this build have PENDING status
-        self._verify_build_artifact_status(
-            build_id, [ArtifactRegistrationStatus.SUCCESS]
-        )
+        self._verify_build_artifact_status(build_id, [ArtifactRegistrationStatus.SUCCESS])
 
     def _verify_build_artifact_status(
         self: Self, build_id: str, status_list: list[ArtifactRegistrationStatus]
     ) -> None:
         """Verify that no artifacts created by this build have PENDING status."""
-        artifacts = self.storage.artifact_registry.get_by_where(
-            {"created_by_build_id": build_id}
-        )
+        artifacts = self.storage.artifact_registry.get_by_where({"created_by_build_id": build_id})
         for artifact in artifacts:
             assert artifact.status in status_list, self._failed_build_msg(
                 build_id,
@@ -935,9 +906,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             build_id,
             f"Skipped target '{built_target.name}' should have 0 output artifacts but has {len(built_target.output_artifacts)}",
         )
-        step_list = self.storage.step_storage.get_by_where(
-            {"target_id": built_target.uuid}
-        )
+        step_list = self.storage.step_storage.get_by_where({"target_id": built_target.uuid})
         assert len(step_list) == 0, self._failed_build_msg(
             build_id,
             f"Skipped target '{built_target.name}' should have 0 steps but has {len(step_list)}",
@@ -993,9 +962,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 )
 
         # Verify the number of expected steps and their status values
-        step_list = self.storage.step_storage.get_by_where(
-            {"target_id": built_target.uuid}
-        )
+        step_list = self.storage.step_storage.get_by_where({"target_id": built_target.uuid})
         if expected.step_count <= 0:
             logger.warning(
                 f"Not verifying step count for target {built_target.name} because verified step count is <=0"
@@ -1026,9 +993,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         )
         self._verify_target_steps(build_id, target.uuid, status_list)
 
-    def _verify_target_steps(
-        self: Self, build_id: str, target_id, status_list: list[Status]
-    ):
+    def _verify_target_steps(self: Self, build_id: str, target_id, status_list: list[Status]):
         steps = self.storage.step_storage.get_by_where({"target_id": target_id})
         self._verify_steplist_status(build_id, steps, status_list)
 
@@ -1071,9 +1036,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             for build_id in to_check:
                 logger.info("checking PR for build %s", build_id)
                 stored_build = self.storage.build_storage.get_by_uuid(build_id)
-                assert (
-                    stored_build is not None
-                ), f"Did not find expected build under id {build_id}"
+                assert stored_build is not None, f"Did not find expected build under id {build_id}"
                 assert isinstance(stored_build, StoredBuild)
                 pr_url = stored_build.source_uri
                 if pr_url == "":
@@ -1089,9 +1052,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                         pr_num > 0
                     ), f"Could not get a valid PR number from PR URL provided by the stored build: '{pr_url}'"
                 except Exception as e:
-                    raise ValueError(
-                        f"build_id {build_id} invalid pr_url: {pr_url}"
-                    ) from e
+                    raise ValueError(f"build_id {build_id} invalid pr_url: {pr_url}") from e
                 pr_id = str(pr_num)
                 pr = myghapi.get_pr(pr_id=pr_id)
                 build_user = stored_build.username or "<unknown>"

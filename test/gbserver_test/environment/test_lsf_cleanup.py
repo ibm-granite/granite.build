@@ -54,10 +54,7 @@ class TestCleanupBsub:
         )
 
         lsf._send_message.assert_called_once()
-        msg = (
-            lsf._send_message.call_args[1].get("msg")
-            or lsf._send_message.call_args[0][0]
-        )
+        msg = lsf._send_message.call_args[1].get("msg") or lsf._send_message.call_args[0][0]
         assert "Killed LSF job 12345" in msg
 
     @pytest.mark.asyncio
@@ -65,9 +62,7 @@ class TestCleanupBsub:
         """When bkill fails (rc!=0), should report failure, not success."""
         lsf = _make_lsf(use_ssh=True)
         lsf.launched_jobs["launch-1"] = "12345"
-        lsf._ssh_tunnel.run_remote = AsyncMock(
-            return_value=(255, "", "Permission denied")
-        )
+        lsf._ssh_tunnel.run_remote = AsyncMock(return_value=(255, "", "Permission denied"))
 
         await lsf.cleanup_bsub(
             launch_id="launch-1",
@@ -75,10 +70,7 @@ class TestCleanupBsub:
         )
 
         lsf._send_message.assert_called_once()
-        msg = (
-            lsf._send_message.call_args[1].get("msg")
-            or lsf._send_message.call_args[0][0]
-        )
+        msg = lsf._send_message.call_args[1].get("msg") or lsf._send_message.call_args[0][0]
         assert "Failed to kill LSF job 12345" in msg
         assert "Killed LSF job" not in msg
 
@@ -117,10 +109,7 @@ class TestCleanupBsub:
 
         assert lsf._ssh_tunnel.run_remote.call_count == 2
         lsf._send_message.assert_called_once()
-        msg = (
-            lsf._send_message.call_args[1].get("msg")
-            or lsf._send_message.call_args[0][0]
-        )
+        msg = lsf._send_message.call_args[1].get("msg") or lsf._send_message.call_args[0][0]
         assert "Killed LSF job 12345" in msg
 
     @pytest.mark.asyncio
@@ -128,9 +117,7 @@ class TestCleanupBsub:
         """After 3 timeout failures, should raise TimeoutError."""
         lsf = _make_lsf(use_ssh=True)
         lsf.launched_jobs["launch-1"] = "12345"
-        lsf._ssh_tunnel.run_remote = AsyncMock(
-            side_effect=TimeoutError("ssh timed out")
-        )
+        lsf._ssh_tunnel.run_remote = AsyncMock(side_effect=TimeoutError("ssh timed out"))
 
         with pytest.raises(RuntimeError):
             await lsf.cleanup_bsub(

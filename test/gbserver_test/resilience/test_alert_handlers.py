@@ -443,9 +443,7 @@ class TestRetryableAlertHandler:
 
         # Check DLQ has entry with circuit_breaker_open reason
         dlq_entries = retryable.get_dlq_entries()
-        circuit_breaker_entries = [
-            e for e in dlq_entries if e["reason"] == "circuit_breaker_open"
-        ]
+        circuit_breaker_entries = [e for e in dlq_entries if e["reason"] == "circuit_breaker_open"]
         assert len(circuit_breaker_entries) >= 1
 
     @pytest.mark.asyncio
@@ -533,9 +531,7 @@ class TestCreateAlertHandlerFromEnv:
         ):
             with patch.dict(
                 os.environ,
-                {
-                    "GBSERVER_NODE_HEALTH_ALERT_WEBHOOK_URL": "https://example.com/webhook"
-                },
+                {"GBSERVER_NODE_HEALTH_ALERT_WEBHOOK_URL": "https://example.com/webhook"},
                 clear=True,
             ):
                 handler = create_alert_handler_from_env()

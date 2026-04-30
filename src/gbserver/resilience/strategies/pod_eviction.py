@@ -216,11 +216,7 @@ class PodEvictionRetryStrategy(RetryStrategy):
                                 pod_name,
                                 reason.lower(),
                                 node_name,
-                                (
-                                    " (will avoid this node)"
-                                    if self.avoid_eviction_nodes
-                                    else ""
-                                ),
+                                (" (will avoid this node)" if self.avoid_eviction_nodes else ""),
                             )
 
         except (json.JSONDecodeError, KeyError, AttributeError) as e:

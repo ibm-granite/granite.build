@@ -1,3 +1,5 @@
+"""Command space module."""
+
 import json
 import sys
 from typing import Dict
@@ -37,9 +39,7 @@ def cli(ctx):
     help=f"Refreshes local cache of spaces user has access to",
 )
 @common_options
-def list(
-    ctx, format: str, all: bool, refresh: bool, skip_version_check: bool, quiet: bool
-):
+def list(ctx, format: str, all: bool, refresh: bool, skip_version_check: bool, quiet: bool):
     """List the spaces set to the build or available for the current user"""
     if not skip_version_check:
         try:
@@ -55,9 +55,7 @@ def list(
         quiet = True
 
     if refresh and not all:
-        click.echo(
-            f"❌ Try running again with 'llmb space list --all --refresh", err=True
-        )
+        click.echo(f"❌ Try running again with 'llmb space list --all --refresh", err=True)
         ctx.exit(1)  # Exit with a non-zero status
 
     if not quiet:
@@ -93,9 +91,7 @@ def list(
                     match callback_event:
                         case "fetching_spaces":
                             progress_bar.reset(total=100)
-                            progress_bar.set_description(
-                                f"Fetching spaces from GBSERVER"
-                            )
+                            progress_bar.set_description(f"Fetching spaces from GBSERVER")
                             progress_bar.update(n=steps)
                         case "done_fetching_spaces":
                             progress_bar.set_description("📝 Listing available spaces")
@@ -129,9 +125,7 @@ def list(
                     ]
                     for s in spaces
                 ]
-                spaces_output = tabulate(
-                    spaces_table, SPACE_LIST_HEADERS, tablefmt="plain"
-                )
+                spaces_output = tabulate(spaces_table, SPACE_LIST_HEADERS, tablefmt="plain")
             else:
                 spaces_output = json.dumps(spaces)
             click.echo(spaces_output)
@@ -179,9 +173,7 @@ def set(ctx, space_name, default, name, format, skip_version_check, quiet):
     reserved_space_keys = ["domain", "local"]
     try:
         if name and default:
-            raise Exception(
-                f"Error: Please run --default and --name options separately"
-            )
+            raise Exception(f"Error: Please run --default and --name options separately")
 
         if default:
             click.echo(
@@ -239,9 +231,7 @@ def set(ctx, space_name, default, name, format, skip_version_check, quiet):
                     match callback_event:
                         case "fetching_spaces":
                             progress_bar.reset(total=100)
-                            progress_bar.set_description(
-                                f"fetching user spaces from GBSERVER"
-                            )
+                            progress_bar.set_description(f"fetching user spaces from GBSERVER")
                             progress_bar.update(n=steps)
                         case "done_fetching_spaces":
                             progress_bar.set_description("📝 Listing available spaces")

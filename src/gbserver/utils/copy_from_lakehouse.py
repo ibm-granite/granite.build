@@ -1,9 +1,12 @@
 # pip install getdaft
 # python gbserver/environment/copy_from_lakehouse.py general_english_sft_replay_small_1104 instruct_tune.replay tmp
+"""Copy from lakehouse module."""
+
 import sys
 
 
 def copy_from_lakehouse(datasetname, namespace, output_path):
+    """Copy from lakehouse."""
     import daft
     from lakehouse import Table
 
@@ -24,10 +27,6 @@ if __name__ == "__main__":
         namespace = sys.argv[2]
         output_path = sys.argv[3]
         copy_from_lakehouse(datasetname, namespace, output_path)
-        print(
-            f"datasetname={datasetname} namespace={namespace} output_path={output_path}"
-        )
+        print(f"datasetname={datasetname} namespace={namespace} output_path={output_path}")
     else:
-        print(
-            f"{sys.argv[0]}: Please provide three arguments: datasetname namespace output_path"
-        )
+        print(f"{sys.argv[0]}: Please provide three arguments: datasetname namespace output_path")

@@ -144,9 +144,7 @@ class NCCLErrorRetryStrategy(RetryStrategy):
                     return True
 
         except AttributeError as e:
-            logger.debug(
-                "[NCCLErrorRetryStrategy] Event missing expected attributes: %s", e
-            )
+            logger.debug("[NCCLErrorRetryStrategy] Event missing expected attributes: %s", e)
         except Exception as e:
             logger.debug("[NCCLErrorRetryStrategy] Could not parse event: %s", e)
 
@@ -183,11 +181,7 @@ class NCCLErrorRetryStrategy(RetryStrategy):
                     return nodes
 
             # Try to extract from JSON payload (K8s monitor format)
-            if (
-                hasattr(_event, "payload")
-                and _event.payload
-                and hasattr(_event.payload, "msg")
-            ):
+            if hasattr(_event, "payload") and _event.payload and hasattr(_event.payload, "msg"):
                 msg = _event.payload.msg
 
                 # Parse JSON if present
@@ -234,13 +228,9 @@ class NCCLErrorRetryStrategy(RetryStrategy):
                                 )
 
         except json.JSONDecodeError as e:
-            logger.debug(
-                "[NCCLErrorRetryStrategy] Could not parse JSON from payload: %s", e
-            )
+            logger.debug("[NCCLErrorRetryStrategy] Could not parse JSON from payload: %s", e)
         except Exception as e:
-            logger.warning(
-                "[NCCLErrorRetryStrategy] Could not extract node name: %s", e
-            )
+            logger.warning("[NCCLErrorRetryStrategy] Could not extract node name: %s", e)
 
         if not nodes:
             logger.warning(

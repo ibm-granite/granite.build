@@ -129,9 +129,7 @@ class MyGHApi:
             raise ValueError(f"the repo {self.owner}/{self.repo} doesn't exist")
 
     @github_api_retry
-    def update_issue_comment(
-        self: Self, body: str, pr_id: str = "", comment_id: str = ""
-    ) -> None:
+    def update_issue_comment(self: Self, body: str, pr_id: str = "", comment_id: str = "") -> None:
         """
         Update a comment in an issue/pull request.
         https://docs.github.com/en/rest/issues/comments?apiVersion=2022-11-28#update-an-issue-comment
@@ -191,9 +189,7 @@ class MyGHApi:
         https://docs.github.com/en/rest/pulls/pulls?apiVersion=2022-11-28#list-pull-requests-files
         """
         logger.debug("start pr_id: %s", pr_id)
-        api_url = (
-            f"{self.gh_api_endpoint}/repos/{self.owner}/{self.repo}/pulls/{pr_id}/files"
-        )
+        api_url = f"{self.gh_api_endpoint}/repos/{self.owner}/{self.repo}/pulls/{pr_id}/files"
         data = self.get_all_pages(api_url=api_url)
         pr_files = [PullRequestFile.model_validate(x) for x in data]
         logger.debug("end pr_id: %s pr_files: %d", pr_id, len(pr_files))
@@ -370,9 +366,7 @@ class MyGHApi:
             "maintainer_can_modify": True,
         }
         api_url = f"{self.gh_api_endpoint}/repos/{self.owner}/{self.repo}/pulls"
-        response = requests.post(
-            url=api_url, headers=headers, json=data, timeout=self.timeout
-        )
+        response = requests.post(url=api_url, headers=headers, json=data, timeout=self.timeout)
         response.raise_for_status()
         result = CreatedPullRequestResponse.model_validate(response.json())
         logger.debug("MyGHApi.create_pr end: %s", result)
@@ -405,9 +399,7 @@ class MyGHApi:
         So we will try multiple times sleeping a few seconds in between.
         """
         logger.debug("MyGHApi.merge_pr start pr_id: %s", pr_id)
-        api_url = (
-            f"{self.gh_api_endpoint}/repos/{self.owner}/{self.repo}/pulls/{pr_id}/merge"
-        )
+        api_url = f"{self.gh_api_endpoint}/repos/{self.owner}/{self.repo}/pulls/{pr_id}/merge"
         headers = {
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self.token}",
@@ -439,9 +431,7 @@ class MyGHApi:
         """
         Execute the issue update request. This method is decorated with retry logic.
         """
-        response = requests.patch(
-            url=api_url, headers=headers, json=data, timeout=self.timeout
-        )
+        response = requests.patch(url=api_url, headers=headers, json=data, timeout=self.timeout)
         response.raise_for_status()
         return response
 
@@ -466,9 +456,7 @@ class MyGHApi:
             "X-GitHub-Api-Version": "2022-11-28",
         }
         data = {"assignees": assignees}
-        api_url = (
-            f"{self.gh_api_endpoint}/repos/{self.owner}/{self.repo}/issues/{issue_id}"
-        )
+        api_url = f"{self.gh_api_endpoint}/repos/{self.owner}/{self.repo}/issues/{issue_id}"
         try:
             self._do_update_issue(api_url, headers, data)
         except requests.HTTPError as e:
@@ -532,13 +520,9 @@ class MyGHApi:
             elif e.response.status_code == 401:
                 raise ValueError("the token is invalid (401 Unauthorized)") from e
             else:
-                raise RuntimeError(
-                    f"failed to check if branch exists {branch_name}"
-                ) from e
+                raise RuntimeError(f"failed to check if branch exists {branch_name}") from e
         except Exception as e:
-            raise RuntimeError(
-                f"failed to check if the branch exists {branch_name}"
-            ) from e
+            raise RuntimeError(f"failed to check if the branch exists {branch_name}") from e
 
         logger.info(
             "MyGHApi.is_branch_present end branch_name: %s, exists=%s",
@@ -613,9 +597,7 @@ class MyGHApi:
                         f.write(content_bytes)
                     continue
                 if content.download_url is not None:
-                    logger.info(
-                        "downloading content from uri: %s", content.download_url
-                    )
+                    logger.info("downloading content from uri: %s", content.download_url)
                     download_file(
                         url=content.download_url,
                         output_path=output_path,

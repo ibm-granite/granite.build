@@ -106,11 +106,7 @@ def unwrap_errors(e: BaseException) -> str:
         if log_manager is not None and build_id != "":
             try:
                 logs_str = log_manager.get_build_logs(build_id=build_id)
-                return (
-                    "workload failed: fetched the step logs:\n\n```\n"
-                    + logs_str
-                    + "\n```\n\n"
-                )
+                return "workload failed: fetched the step logs:\n\n```\n" + logs_str + "\n```\n\n"
             except Exception as logfetche:
                 logger.error(
                     "failed to fetch the logs for the build %s : %s",

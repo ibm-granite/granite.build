@@ -98,9 +98,7 @@ class SSHFileStream(LogStreamSource, RetryMixin):
         async def log_stderr():
             if proc.stderr:
                 async for line in proc.stderr:
-                    logger.warning(
-                        "[SSHFileStream] stderr: %s", line.decode(errors="ignore")
-                    )
+                    logger.warning("[SSHFileStream] stderr: %s", line.decode(errors="ignore"))
 
         stderr_task = asyncio.create_task(log_stderr())
 
@@ -110,9 +108,7 @@ class SSHFileStream(LogStreamSource, RetryMixin):
                 try:
                     # TODO: this should be refactored to be a function to be used here and in the 2nd phase
                     raw = await asyncio.wait_for(proc.stdout.readline(), timeout=5.0)
-                    if (
-                        not raw
-                    ):  # EOF is permanent for a process stream (process ended), so we exit
+                    if not raw:  # EOF is permanent for a process stream (process ended), so we exit
                         if proc.returncode is not None:
                             logger.info(
                                 "[SSHFileStream] The tail process exited with returncode %d",
@@ -332,9 +328,7 @@ class SSHFileStream(LogStreamSource, RetryMixin):
         logger.info("Preparing for phase 2 by sleeping 5")
         await asyncio.sleep(5)
 
-        async for line in self._read_phase_two(
-            target, path_quoted, lines_read, abort_event
-        ):
+        async for line in self._read_phase_two(target, path_quoted, lines_read, abort_event):
             yield line
 
     async def stream_lines(

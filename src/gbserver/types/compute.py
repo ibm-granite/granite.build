@@ -39,9 +39,7 @@ class ComputeConfig(Config):
     numRoceGdrPerNode: int = Field(default=0, alias="num_roce_gdr_per_node")
     gpuModel: str = Field(default="", alias="gpu_model")
     totalMemoryPerNode: str = Field(default="", alias="total_memory_per_node")
-    totalEphemeralStoragePerNode: str = Field(
-        default="", alias="total_ephemeral_storage_per_node"
-    )
+    totalEphemeralStoragePerNode: str = Field(default="", alias="total_ephemeral_storage_per_node")
 
     def model_post_init(self: Self, context: Any, /) -> None:
         assert self.numNodes > 0

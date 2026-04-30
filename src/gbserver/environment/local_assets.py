@@ -140,8 +140,7 @@ def push_asset_hfstore(
     target_name = getattr(run_metadata, "target_name", "") or ""
     output_name = binding_id or ""
     commit_message = (
-        f"Upload via gbserver"
-        f" [build={build_id} target={target_name} output={output_name}]"
+        f"Upload via gbserver" f" [build={build_id} target={target_name} output={output_name}]"
     )
 
     # Resolve the space name from the thread-local space config so the repo is

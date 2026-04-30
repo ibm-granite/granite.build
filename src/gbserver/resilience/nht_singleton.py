@@ -71,8 +71,7 @@ def get_node_health_tracker() -> Optional[NodeHealthTracker]:
             )
 
             logger.info(
-                "[NodeHealthTracker] Lazy singleton initialized "
-                "(alert_handler=%s, storage=%s)",
+                "[NodeHealthTracker] Lazy singleton initialized " "(alert_handler=%s, storage=%s)",
                 type(alert_handler).__name__ if alert_handler else "None",
                 type(admin_storage.node_failure_storage).__name__,
             )

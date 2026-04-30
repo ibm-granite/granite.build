@@ -30,9 +30,7 @@ class TestSQLSpaceUserStorage(BaseSpaceUserStorageTest):
         item.role = "member" if index % 2 == 0 else "admin"
         return item
 
-    def _get_where_search_columns(
-        self, storage: BaseItemStorage, item: BaseStoredItem
-    ) -> dict:
+    def _get_where_search_columns(self, storage: BaseItemStorage, item: BaseStoredItem) -> dict:
         columns = super()._get_where_search_columns(storage, item)
         # (space_name, username) is a unique pair — exclude both so the multi-match
         # where test can insert two rows that differ only by those columns.

@@ -117,9 +117,7 @@ class TestNCCLErrorRetryStrategy:
         event = BuildEvent(
             run_metadata=EntityRunMetadata(build_id="test-build-id"),
             type=BuildEventType.MESSAGE_EVENT,
-            payload=BuildEventMessagePayload(
-                msg="CUDA out of memory. Tried to allocate 2.00 GiB"
-            ),
+            payload=BuildEventMessagePayload(msg="CUDA out of memory. Tried to allocate 2.00 GiB"),
         )
 
         # OOM should NOT trigger retry
@@ -336,9 +334,7 @@ class TestNCCLErrorRetryStrategy:
         event = BuildEvent(
             run_metadata=EntityRunMetadata(build_id="test-build-id"),
             type=BuildEventType.MESSAGE_EVENT,
-            payload=BuildEventMessagePayload(
-                msg="cudaErrorMisalignedAddress: misaligned address"
-            ),
+            payload=BuildEventMessagePayload(msg="cudaErrorMisalignedAddress: misaligned address"),
         )
 
         # Misaligned address is pointer bug, not hardware
@@ -351,9 +347,7 @@ class TestNCCLErrorRetryStrategy:
         event = BuildEvent(
             run_metadata=EntityRunMetadata(build_id="test-build-id"),
             type=BuildEventType.STATUS_EVENT,
-            payload=BuildEventMessagePayload(
-                msg="RuntimeError: NCCL Error 3: internal error"
-            ),
+            payload=BuildEventMessagePayload(msg="RuntimeError: NCCL Error 3: internal error"),
         )
 
         assert not strategy.should_retry(event)
@@ -475,9 +469,7 @@ class TestNCCLErrorRetryStrategy:
         event = BuildEvent(
             run_metadata=EntityRunMetadata(build_id="test-build-id"),
             type=BuildEventType.MESSAGE_EVENT,
-            payload=BuildEventMessagePayload(
-                msg="RuntimeError: NCCL Error 3: internal error"
-            ),
+            payload=BuildEventMessagePayload(msg="RuntimeError: NCCL Error 3: internal error"),
         )
 
         nodes = strategy.extract_nodes_to_avoid(event)

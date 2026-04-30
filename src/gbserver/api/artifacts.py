@@ -177,9 +177,7 @@ def _create_and_register_artifact(
         )
         if len(input_artifacts) > 0:
             jobstats_storage = get_lineage_store()
-            jobstats_storage.add_jobstats_for_original_artifact(
-                artifact, input_artifacts
-            )
+            jobstats_storage.add_jobstats_for_original_artifact(artifact, input_artifacts)
     elif len(reg_uris) == 0 and not artifact_request.certified_no_restrictions:
         # If no origins, then we don't know how the artifact was created and the user must certify that it has no restrictions.
         raise HTTPException(
@@ -219,9 +217,7 @@ def register_lakehouse_table(
         namespace=artifact_request.namespace,
         lh_env=lh_env,
     )
-    return _create_and_register_artifact(
-        request, artifact_request, uri, ArtifactType.TABLE
-    )
+    return _create_and_register_artifact(request, artifact_request, uri, ArtifactType.TABLE)
 
 
 class ArtifactDatasetRequest(BaseArtifactRequest):
@@ -240,9 +236,7 @@ def register_lakehouse_dataset(
         dataset_name=artifact_request.dataset_name,
         lh_env=lh_env,
     )
-    return _create_and_register_artifact(
-        request, artifact_request, uri, ArtifactType.DATASET
-    )
+    return _create_and_register_artifact(request, artifact_request, uri, ArtifactType.DATASET)
 
 
 class ArtifactModelRequest(BaseArtifactRequest):
@@ -263,9 +257,7 @@ def register_lakehouse_model(
         model_revision=artifact_request.model_revision,
         lh_env=lh_env,
     )
-    return _create_and_register_artifact(
-        request, artifact_request, uri, ArtifactType.MODEL
-    )
+    return _create_and_register_artifact(request, artifact_request, uri, ArtifactType.MODEL)
 
 
 class ArtifactFilesetlRequest(BaseArtifactRequest):
@@ -288,9 +280,7 @@ def register_lakehouse_fileset(
         fileset_version=artifact_request.fileset_version,
         lh_env=lh_env,
     )
-    return _create_and_register_artifact(
-        request, artifact_request, uri, ArtifactType.FILESET
-    )
+    return _create_and_register_artifact(request, artifact_request, uri, ArtifactType.FILESET)
 
 
 def register_artifact(
@@ -356,9 +346,7 @@ def set_archive_bit(artifact_id: str, is_archived: bool) -> ChangeArchiveRespons
     storage = get_admin_storage().artifact_registry
     item = storage.get_by_uuid(artifact_id)
     if item is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!")
     assert isinstance(item, ArtifactRegistration)
     was_archived = item.is_archived
     if was_archived != is_archived:
@@ -434,9 +422,7 @@ def decode_uri(
     elif id is not None:
         artifact_storage = get_admin_storage().artifact_registry
         artifact = artifact_storage.get_by_uuid(id)
-        assert isinstance(
-            artifact, ArtifactRegistration
-        ), f"invalid artifact: {artifact}"
+        assert isinstance(artifact, ArtifactRegistration), f"invalid artifact: {artifact}"
         if artifact is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -473,9 +459,7 @@ def list_artifacts(
     space_name: str = "",
     is_archived: Optional[bool] = None,
     checksum: Optional[str] = None,
-    tag: Annotated[
-        list[str] | None, Query()
-    ] = [],  # Specified as multiple tag=v1&tag=v2 in URI
+    tag: Annotated[list[str] | None, Query()] = [],  # Specified as multiple tag=v1&tag=v2 in URI
 ) -> ListArtifactsResponse:
 
     row_filter = get_row_filter(
@@ -488,9 +472,7 @@ def list_artifacts(
         tags=tag,
     )
     storage = get_admin_storage()
-    items = cast(
-        List[ArtifactRegistration], storage.artifact_registry.get_by_where(row_filter)
-    )
+    items = cast(List[ArtifactRegistration], storage.artifact_registry.get_by_where(row_filter))
     resp = ListArtifactsResponse(artifacts=items)
     return resp
 
@@ -522,9 +504,7 @@ def read_artifact(artifact_id: str) -> GetArtifactResponse:
     storage = get_admin_storage().artifact_registry
     item = storage.get_by_uuid(artifact_id)
     if item is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!")
     assert isinstance(item, ArtifactRegistration)
     resp = GetArtifactResponse(artifact=item)
     return resp
@@ -629,9 +609,7 @@ def register_hf_model(
     if artifact_request.name == "":
         artifact_request.name = artifact_request.model_id
 
-    return _create_and_register_artifact(
-        request, artifact_request, uri_str, ArtifactType.MODEL
-    )
+    return _create_and_register_artifact(request, artifact_request, uri_str, ArtifactType.MODEL)
 
 
 @artifacts_api.post("/hf/dataset")
@@ -651,9 +629,7 @@ def register_hf_dataset(
     if artifact_request.name == "":
         artifact_request.name = artifact_request.dataset_id
 
-    return _create_and_register_artifact(
-        request, artifact_request, uri_str, ArtifactType.DATASET
-    )
+    return _create_and_register_artifact(request, artifact_request, uri_str, ArtifactType.DATASET)
 
 
 class ArtifactBucketRequest(BaseArtifactRequest):
@@ -681,6 +657,4 @@ def register_hf_bucket(
     if artifact_request.name == "":
         artifact_request.name = artifact_request.bucket_id
 
-    return _create_and_register_artifact(
-        request, artifact_request, uri_str, ArtifactType.BUCKET
-    )
+    return _create_and_register_artifact(request, artifact_request, uri_str, ArtifactType.BUCKET)

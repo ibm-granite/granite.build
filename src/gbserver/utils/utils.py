@@ -79,11 +79,7 @@ def normalize_to_filename(value: str, allow_unicode: bool = False) -> str:
     if allow_unicode:
         value = unicodedata.normalize("NFKC", value)
     else:
-        value = (
-            unicodedata.normalize("NFKD", value)
-            .encode("ascii", "ignore")
-            .decode("ascii")
-        )
+        value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     value = re.sub(r"[^\w\s-]", "", value.lower())
     return re.sub(r"[-\s]+", "-", value).strip("-_")
 
@@ -164,9 +160,7 @@ def get_common_ancestor(ps: List[Path]) -> Path:
 
 def create_temp_file_name(suffix=""):
     """Create a temporary file name."""
-    with tempfile.NamedTemporaryFile(
-        delete=False, dir="/tmp", suffix=suffix
-    ) as temp_file:
+    with tempfile.NamedTemporaryFile(delete=False, dir="/tmp", suffix=suffix) as temp_file:
         temp_file_name = temp_file.name
     return temp_file_name
 

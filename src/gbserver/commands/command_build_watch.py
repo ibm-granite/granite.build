@@ -15,6 +15,8 @@
 # limitations under the License.
 
 
+"""Command build watch module."""
+
 import os
 import traceback
 from pathlib import Path

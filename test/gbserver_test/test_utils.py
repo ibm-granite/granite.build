@@ -61,9 +61,7 @@ _DATESTR = f"d{_NOW.month:02d}{_NOW.day:02d}"
 
 def check_env_var_set(varname: str, msg: Optional[str] = None):
     val = os.environ.get(varname)
-    assert val is not None, (
-        msg if msg else f"{varname} environment variable must be set."
-    )
+    assert val is not None, msg if msg else f"{varname} environment variable must be set."
 
 
 logger = get_logger(__name__)
@@ -78,9 +76,7 @@ def check_test_config():
         LAKEHOUSE_ENVIRONMENT != "PROD"
     ), f"LAKEHOUSE_ENVIRONMENT={LAKEHOUSE_ENVIRONMENT}, but should we one of STAGING or DEV"
     check_env_var_set("LAKEHOUSE_TOKEN")  # Needed for lakehouse
-    check_env_var_set(
-        "IBM_CLOUD_API_KEY"
-    )  # Needed for ibm cloud secrets and maybe others
+    check_env_var_set("IBM_CLOUD_API_KEY")  # Needed for ibm cloud secrets and maybe others
     assert GBSERVER_GITHUB_TOKEN != ""
 
 
@@ -100,14 +96,10 @@ class AbstractReadonlySingletonStorageUsingTest:
     def setup_class(cls):
         if cls._is_cloud_config_required():
             if GB_ENVIRONMENT not in ("DEV", "STAGING"):
-                pytest.skip(
-                    "Requires cloud configuration (GB_ENVIRONMENT=DEV or STAGING)"
-                )
+                pytest.skip("Requires cloud configuration (GB_ENVIRONMENT=DEV or STAGING)")
             check_test_config()
         f = cls._get_storage_factory()
-        assert isinstance(
-            f, StorageFactory
-        ), "A StorageFactory instance was not provided"
+        assert isinstance(f, StorageFactory), "A StorageFactory instance was not provided"
         singleton_storage.set_storage_factory(f)
         if cls._is_cloud_config_required():
             assert (
@@ -127,9 +119,7 @@ class AbstractReadonlySingletonStorageUsingTest:
 
     def _verify_get_results(self, expected_results, results, ordered=True):
         if expected_results is None:
-            assert (
-                results is None
-            ), f"Did not expect any results, but got {len(results)}"
+            assert results is None, f"Did not expect any results, but got {len(results)}"
         elif results is None:
             assert False, f"Expected {len(expected_results)}, but got none."
         elif isinstance(expected_results, BaseStoredItem):
@@ -186,9 +176,7 @@ class AbstractSingletonStorageUsingTest(AbstractReadonlySingletonStorageUsingTes
         # That leaves 63 - 20 - 14 = 29 chars for the (possibly truncated) method name.
         name_hash = hashlib.sha1(method.__name__.encode()).hexdigest()[:6]
         short_method_name = method.__name__[:29]
-        table_prefix = (
-            f"{_DATESTR}_{name_hash}_{random_number:05d}_{short_method_name}_"
-        )
+        table_prefix = f"{_DATESTR}_{name_hash}_{random_number:05d}_{short_method_name}_"
         storage = getattr(self, "storage", None)
         assert (
             storage is None
@@ -257,9 +245,7 @@ public_space = StoredSpace(
 )
 
 
-class AbstractSingletonStorageUsingPreloadedSpaceTest(
-    AbstractSingletonStorageUsingTest
-):
+class AbstractSingletonStorageUsingPreloadedSpaceTest(AbstractSingletonStorageUsingTest):
     """Extends the super class to preload the space admin table with public and testspace space definitions"""
 
     def setup_method(self, method):

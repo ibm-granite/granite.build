@@ -217,9 +217,7 @@ def _finalize_artifact_status(
         return
 
     logger.info("Build finished, updating status of PENDING artifacts as required.")
-    artifacts = storage.artifact_registry.get_by_where(
-        {"created_by_build_id": build_id}
-    )
+    artifacts = storage.artifact_registry.get_by_where({"created_by_build_id": build_id})
     for artifact in artifacts:
         if artifact.status == ArtifactRegistrationStatus.PENDING:
             if status is Status.SUCCESS:
@@ -238,12 +236,11 @@ def _finalize_artifact_status(
                 status,
                 artifact,
             )
-            storage.artifact_registry.update_fields(
-                artifact.uuid, {"status": artifact.status}
-            )
+            storage.artifact_registry.update_fields(artifact.uuid, {"status": artifact.status})
 
 
 def push_failed_status_update_metric(build_id: str, status_list: list[Status]):
+    """Push failed status update metric."""
     push_metrics(
         metrics=[
             Metric(

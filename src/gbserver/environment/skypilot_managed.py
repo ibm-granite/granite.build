@@ -102,9 +102,7 @@ class Skypilot_managed(Environment):
             config = kwargs.get("config", {}) or {}
 
             job_name = self._job_name_for(launch_id)
-            cloud = (
-                launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
-            )
+            cloud = launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
 
             # Build sky.Resources
             res_config = launcher_config.get("resources", {})
@@ -142,9 +140,7 @@ class Skypilot_managed(Environment):
 
             # Handle file_mounts (may be in launcher config or step config)
             # Dict values → sky.Storage (set_storage_mounts), strings → set_file_mounts
-            file_mounts_raw = launcher_config.get("file_mounts") or config.get(
-                "file_mounts"
-            )
+            file_mounts_raw = launcher_config.get("file_mounts") or config.get("file_mounts")
             if file_mounts_raw:
                 file_mounts = {}
                 storage_mounts = {}
@@ -160,9 +156,7 @@ class Skypilot_managed(Environment):
                         parsed = urllib.parse.urlparse(source)
                         sub_path = parsed.path.lstrip("/")
                         if sub_path:
-                            storage_kwargs["source"] = (
-                                f"{parsed.scheme}://{parsed.netloc}"
-                            )
+                            storage_kwargs["source"] = f"{parsed.scheme}://{parsed.netloc}"
                             storage_kwargs["_bucket_sub_path"] = sub_path
                         else:
                             storage_kwargs["source"] = source
@@ -192,9 +186,7 @@ class Skypilot_managed(Environment):
             )
 
         except Exception as e:
-            logger.error(
-                "Failed to launch SkyPilot managed job for %s: %s", launch_id, e
-            )
+            logger.error("Failed to launch SkyPilot managed job for %s: %s", launch_id, e)
             raise
         finally:
             self._release_monitors(launch_id)
@@ -219,8 +211,7 @@ class Skypilot_managed(Environment):
         event_log_parser_configs = []
         if event_configs is not None:
             event_log_parser_configs = [
-                EventLogLineParserConfig.model_validate(config)
-                for config in event_configs
+                EventLogLineParserConfig.model_validate(config) for config in event_configs
             ]
 
         job_name = self._job_names.get(launch_id)
@@ -271,11 +262,7 @@ class Skypilot_managed(Environment):
                         await event_q.put(event)
                     last_status = status
 
-                if (
-                    status is not None
-                    and hasattr(status, "is_terminal")
-                    and status.is_terminal()
-                ):
+                if status is not None and hasattr(status, "is_terminal") and status.is_terminal():
                     logger.info(
                         "SkyPilot managed job %s reached terminal status: %s",
                         job_name,
@@ -300,8 +287,7 @@ class Skypilot_managed(Environment):
                             )
                     if str(status) != "ManagedJobStatus.SUCCEEDED":
                         raise RuntimeError(
-                            f"SkyPilot managed job {job_name} ended with "
-                            f"status {status}"
+                            f"SkyPilot managed job {job_name} ended with " f"status {status}"
                         )
                     return
 

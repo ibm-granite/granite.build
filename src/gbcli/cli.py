@@ -1,3 +1,5 @@
+"""Cli module."""
+
 import os
 import sys
 from typing import Any
@@ -11,6 +13,8 @@ CONTEXT_SETTINGS = dict(auto_envvar_prefix="GBCLI")
 
 
 class Environment:
+    """Environment implementation."""
+
     def __init__(self):
         self.verbose = False
         self.home = os.getcwd()
@@ -30,12 +34,12 @@ class Environment:
 pass_environment = click.make_pass_decorator(Environment, ensure=True)
 command_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), "commands"))
 hidden_commands = ["command_dataset.py"]
-hidden_names = [
-    command.split("_")[1].removesuffix(".py") for command in hidden_commands
-]
+hidden_names = [command.split("_")[1].removesuffix(".py") for command in hidden_commands]
 
 
 class GraniteBuildCLI(click.Group):
+    """Granite Build C L I implementation."""
+
     def __init__(
         self,
         **attrs: Any,
@@ -70,9 +74,7 @@ class GraniteBuildCLI(click.Group):
                 return
             mod = __import__(f"gbcli.commands.command_{name}", None, None, ["cli"])
         except ImportError as e:
-            invalid_command = str(e).startswith(
-                "No module named 'gbcli.commands.command_"
-            )
+            invalid_command = str(e).startswith("No module named 'gbcli.commands.command_")
             if invalid_command:
                 return
             message = (

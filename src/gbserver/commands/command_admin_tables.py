@@ -15,6 +15,8 @@
 # limitations under the License.
 
 
+"""Command admin tables module."""
+
 import subprocess
 from typing import Optional
 
@@ -98,6 +100,7 @@ def cli(
 
 
 def fix_zombie_steps(dry_run: bool):
+    """Fix zombie steps."""
     running_steps = get_steps(status=Status.RUNNING)
     total_steps = len(running_steps)
     print(f"Examining build status of {total_steps} RUNNING steps")
@@ -127,9 +130,7 @@ def fix_zombie_steps(dry_run: bool):
         assert isinstance(build, StoredBuild)
         if build.status == Status.RUNNING:
             ids = [step.uuid for step in steps]
-            print(
-                f"Skipping running steps {ids} that are part of running build {build.uuid}"
-            )
+            print(f"Skipping running steps {ids} that are part of running build {build.uuid}")
             running.extend(ids)
             continue
         for step in steps:
@@ -142,6 +143,7 @@ def fix_zombie_steps(dry_run: bool):
 
 
 def fix_zombie_targets(dry_run: bool):
+    """Fix zombie targets."""
     running_targets = get_targets(status=Status.RUNNING)
     total_targets = len(running_targets)
     print(f"Examining build status of {total_targets} RUNNING targets")
@@ -166,16 +168,12 @@ def fix_zombie_targets(dry_run: bool):
         assert isinstance(build, StoredBuild)
         print(f" {build.source_uri}")
         if build is None:
-            delete_items_without_a_build(
-                targets, target_storage, deleted, failed, dry_run
-            )
+            delete_items_without_a_build(targets, target_storage, deleted, failed, dry_run)
             continue
         assert isinstance(build, StoredBuild)
         if build.status == Status.RUNNING:
             ids = [target.uuid for target in targets]
-            print(
-                f"Skipping running targets {ids} that are part of running build {build.uuid}"
-            )
+            print(f"Skipping running targets {ids} that are part of running build {build.uuid}")
             running.extend(ids)
             continue
         for target in targets:
@@ -188,6 +186,7 @@ def fix_zombie_targets(dry_run: bool):
 
 
 def group_by_build_id(targets_or_steps: list):
+    """Group by build id."""
     by_build_id = {}
     for item in targets_or_steps:
         targets = by_build_id.get(item.build_id, None)
@@ -198,9 +197,8 @@ def group_by_build_id(targets_or_steps: list):
     return by_build_id
 
 
-def delete_items_without_a_build(
-    targets_or_steps: list, storage, deleted, failed, dry_run
-):
+def delete_items_without_a_build(targets_or_steps: list, storage, deleted, failed, dry_run):
+    """Remove items without a build."""
     if len(targets_or_steps) == 0:  # Should not happend
         return
     is_target = isinstance(targets_or_steps[0], StoredTargetRun)
@@ -222,6 +220,7 @@ def delete_items_without_a_build(
 
 
 def copy_build_status(build, target_or_step, storage, updated, failed, dry_run):
+    """Copy build status."""
     is_target = isinstance(target_or_step, StoredTargetRun)
     assert is_target or isinstance(target_or_step, StoredStepRun)
     item_name = "target" if is_target else "step"
@@ -245,6 +244,7 @@ def copy_build_status(build, target_or_step, storage, updated, failed, dry_run):
 
 
 def fail_pending_without_pr(dry_run: bool):
+    """Fail pending without pr."""
     pending_builds = get_builds(status=Status.PENDING)
     print(f"Found {len(pending_builds)} pending builds.")
     updated = []
@@ -273,6 +273,7 @@ def fail_pending_without_pr(dry_run: bool):
 
 
 def get_zombie_build_ids() -> tuple[bool, list[str]]:
+    """Get the zombie build ids."""
     project = GB_ENVIRONMENT_CONFIG.default_pod_namespace
     if not oc_project(project):
         return False, []  # And error message was issued.
@@ -301,7 +302,7 @@ def get_zombie_build_ids() -> tuple[bool, list[str]]:
 
 
 def fail_zombie_builds(dry_run: bool):
-
+    """Fail zombie builds."""
     updated = []
     failed = []
     running = []
@@ -333,6 +334,7 @@ def fail_zombie_builds(dry_run: bool):
 
 
 def get_pods_and_jobs() -> tuple[bool, str]:
+    """Get the pods and jobs."""
     success, running_pods = oc_get(
         obj="pods", check_presence="gbserver-build-watch"
     )  # A sanity check on oc API
@@ -343,18 +345,21 @@ def get_pods_and_jobs() -> tuple[bool, str]:
 
 
 def get_builds(status: Status) -> list[StoredBuild]:
+    """Get the builds."""
     build_storage = singleton_storage.get_admin_storage().build_storage
     builds = build_storage.get_by_where({"status": status.name})
     return builds
 
 
 def get_targets(status: Status) -> list[StoredTargetRun]:
+    """Get the targets."""
     target_storage = singleton_storage.get_admin_storage().target_storage
     items = target_storage.get_by_where({"status": status.name})
     return items
 
 
 def get_steps(status: Status) -> list[StoredBuild]:
+    """Get the steps."""
     step_storage = singleton_storage.get_admin_storage().step_storage
     items = step_storage.get_by_where({"status": status.name})
     return items
@@ -378,14 +383,13 @@ def oc_get(obj: str, check_presence: Optional[str]) -> tuple[bool, str]:
         print(f"Could not 'oc get {obj}'.\nError: {result.stderr}.")
         return False, ""
     if check_presence is not None and not check_presence in output:
-        print(
-            f"Did not see {check_presence} when getting {obj}.  Assuming oc API failure."
-        )
+        print(f"Did not see {check_presence} when getting {obj}.  Assuming oc API failure.")
         return False, ""
     return True, result.stdout
 
 
 def oc_project(project: str) -> bool:
+    """Oc project."""
     print(f"Setting oc project to {project}")
     result = subprocess.run(["oc", "project", project], capture_output=True, text=True)
     if result.returncode != 0:

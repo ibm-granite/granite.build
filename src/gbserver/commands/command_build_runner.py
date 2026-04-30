@@ -47,9 +47,7 @@ def load_build(
     build_dir: Path, space_name: str, username: str, targets: Optional[list[str]]
 ) -> Optional[StoredBuild]:
     """Load a build from the build directory."""
-    space = singleton_storage.get_admin_storage().space_storage.get_by_name(
-        name=space_name
-    )
+    space = singleton_storage.get_admin_storage().space_storage.get_by_name(name=space_name)
     if space is None:
         logger.error("Could not find space with name %s in space storage", space_name)
         return None
@@ -230,11 +228,9 @@ def cli(
                 )
                 stored_build.status = Status.PENDING
                 # BuildRunner won't process events if the build "is_finished()" so make sure it is not.
-                stored_build = (
-                    singleton_storage.get_admin_storage().build_storage.update_fields(
-                        stored_build.uuid,
-                        {"status": stored_build.status},
-                    )
+                stored_build = singleton_storage.get_admin_storage().build_storage.update_fields(
+                    stored_build.uuid,
+                    {"status": stored_build.status},
                 )
             else:  # A non-pending build.  Something wrong here. CANCEL_REQUESTED, FAILED,
                 if stored_build.status in [Status.RUNNING, Status.CANCEL_REQUESTED]:
@@ -280,9 +276,7 @@ def cli(
     finished_stored_build: StoredBuild = build_storage.get_by_uuid(finished_build_id)
     if finished_stored_build is None:
         # This should NEVER be the case, but we are occasionally seeing this with LH.
-        logger.error(
-            "Build with id %s could not be found after completion?!", finished_build_id
-        )
+        logger.error("Build with id %s could not be found after completion?!", finished_build_id)
     else:
         logger.info(
             "Build with id %s completed with status=%s",

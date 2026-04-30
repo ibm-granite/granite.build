@@ -187,9 +187,7 @@ class BuildRunnerJob(AbstractBuildRunner):
                 self.stored_build.uuid,
                 e,
             )
-            finalize_build_status(
-                self.stored_build.uuid, Status.FAILED, failure_reason=str(e)
-            )
+            finalize_build_status(self.stored_build.uuid, Status.FAILED, failure_reason=str(e))
         self.is_running = False
 
     def __get_command_to_run(
@@ -199,9 +197,7 @@ class BuildRunnerJob(AbstractBuildRunner):
         command = ["gbserver"]
         if self.storage.table_name_prefix:
             # Needed to support testing which uses prefixes
-            command.extend(
-                ["--gb-admin-table-prefix", f"{self.storage.table_name_prefix}"]
-            )
+            command.extend(["--gb-admin-table-prefix", f"{self.storage.table_name_prefix}"])
         command.extend(
             [
                 "build-runner",
@@ -242,9 +238,7 @@ class BuildRunnerJob(AbstractBuildRunner):
         )
         logger.info("filled_deployment_yaml: %s", filled_deployment_yaml)
         deployment_yaml = yaml.safe_load(filled_deployment_yaml)
-        assert isinstance(
-            deployment_yaml, dict
-        ), f"invalid deployment_yaml: {deployment_yaml}"
+        assert isinstance(deployment_yaml, dict), f"invalid deployment_yaml: {deployment_yaml}"
         return deployment_yaml
 
     def __get_batchv1job_body(self: Self) -> Tuple[str, client.V1Job]:
@@ -309,9 +303,7 @@ class BuildRunnerJob(AbstractBuildRunner):
                 logger.info("Job created: %s", kube_job_name)
                 while not self.is_stop_requested:
                     try:
-                        job = await self.__read_namespaced_job_with_retry(
-                            batchv1, kube_job_name
-                        )
+                        job = await self.__read_namespaced_job_with_retry(batchv1, kube_job_name)
                         # logger.info("Job  %s", str(job))
                     except Exception as inner_exc:
                         job_had_exception = True
@@ -319,9 +311,7 @@ class BuildRunnerJob(AbstractBuildRunner):
                         break  # Assuming this means the job is no longer present, exception or success
                     delay = self.monitoring_interval * (0.95 + random.random() / 10.0)
                     await asyncio.sleep(delay)
-                logger.info(
-                    "Done waiting for job completion on pod with name %s", kube_job_name
-                )
+                logger.info("Done waiting for job completion on pod with name %s", kube_job_name)
             except Exception as e:
                 logger.error(
                     "Got exception creating/monitoring job %s: %s",
@@ -334,8 +324,7 @@ class BuildRunnerJob(AbstractBuildRunner):
                 # If stopped then make sure the build is marked CANCELLED, unless already finished
                 logger.info("Marking build %s as cancel requested.", build_id)
                 update_if = lambda item: (
-                    (not item.status.is_finished())
-                    and (item.status != Status.CANCEL_REQUESTED)
+                    (not item.status.is_finished()) and (item.status != Status.CANCEL_REQUESTED)
                 )
                 get_admin_storage().build_storage.update_fields(
                     build_id,
@@ -377,9 +366,7 @@ class BuildRunnerJob(AbstractBuildRunner):
         v1.delete_namespaced_pod(
             name=pod_name,
             namespace=self.namespace,
-            body=client.V1DeleteOptions(
-                propagation_policy="Foreground", grace_period_seconds=5
-            ),
+            body=client.V1DeleteOptions(propagation_policy="Foreground", grace_period_seconds=5),
             async_req=True,
         )
 

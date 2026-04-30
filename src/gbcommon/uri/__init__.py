@@ -15,6 +15,8 @@
 # limitations under the License.
 
 # Load the uri handlers
+"""Init module."""
+
 from gbcommon.uri.uri import URI
 
 URI._load_urihandlers()

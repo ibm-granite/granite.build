@@ -1,3 +1,5 @@
+"""Service template module."""
+
 import logging
 import os
 from typing import Any, List, Optional
@@ -24,6 +26,7 @@ def list_templates(
     template_repo: Optional[str] = None,
     callback=None,
 ) -> List[Any]:
+    """List templates."""
     if space:
         global_space = resolve_space(github_token, space, callback)
         if not global_space:
@@ -98,6 +101,7 @@ def describe_template(
     template_repo: Optional[str] = None,
     callback=None,
 ) -> List[Any]:
+    """Describe template."""
     if space:
         global_space = resolve_space(github_token, space, callback)
         if not global_space:
@@ -141,9 +145,7 @@ def describe_template(
         )
 
     try:
-        content = download_repo_file(
-            github_token, assets_org, assets_name, template_yaml_path
-        )
+        content = download_repo_file(github_token, assets_org, assets_name, template_yaml_path)
 
         if callback is not None:
             callback(
@@ -174,9 +176,7 @@ def describe_template(
             if e.response.status_code == 404:
                 error_message = f"{template_name} not found in {template_repo}"
             else:
-                error_message = (
-                    f"{e.response.status_code} {e.response.reason} for {template_repo}"
-                )
+                error_message = f"{e.response.status_code} {e.response.reason} for {template_repo}"
 
             callback(
                 callback_event="error",

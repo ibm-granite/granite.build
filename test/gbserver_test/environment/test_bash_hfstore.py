@@ -58,9 +58,7 @@ async def test_pullasset_hfstore_passes_cache_dir(bash_env, tmp_path):
     uri = MagicMock()
     assetstore = MagicMock()
 
-    with patch(
-        "gbserver.environment.bash.pull_asset_hfstore", return_value=tmp_path
-    ) as mock_load:
+    with patch("gbserver.environment.bash.pull_asset_hfstore", return_value=tmp_path) as mock_load:
         await bash_env.pullasset_hfstore(
             uri=uri,
             assetstore=assetstore,
@@ -76,9 +74,7 @@ async def test_pullasset_hfstore_uses_default_cache(bash_env, tmp_path):
     uri = MagicMock()
     assetstore = MagicMock()
 
-    with patch(
-        "gbserver.environment.bash.pull_asset_hfstore", return_value=tmp_path
-    ) as mock_load:
+    with patch("gbserver.environment.bash.pull_asset_hfstore", return_value=tmp_path) as mock_load:
         await bash_env.pullasset_hfstore(
             uri=uri,
             assetstore=assetstore,

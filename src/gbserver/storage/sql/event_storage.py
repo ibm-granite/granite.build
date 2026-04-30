@@ -20,9 +20,7 @@ from gbserver.storage.storage import CREATED_TIME_FIELD_NAME
 from gbserver.storage.stored_event import StoredEvent
 
 
-class SQLEventStorage(
-    BaseSQLItemStorage[StoredEvent], BaseStoredEventStorage, IStoredEventStorage
-):
+class SQLEventStorage(BaseSQLItemStorage[StoredEvent], BaseStoredEventStorage, IStoredEventStorage):
 
     def __init__(self, **kwargs) -> None:
         kwargs["indexed_columns"] = ["build_id"]

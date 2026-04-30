@@ -1,3 +1,5 @@
+"""Command step module."""
+
 import json
 import sys
 import time
@@ -39,9 +41,7 @@ def cli(ctx):
     help=f"Output format: plain (default), json",
 )
 @common_options
-def list(
-    ctx, space: str, step_repo: str, format: str, skip_version_check: bool, quiet: bool
-):
+def list(ctx, space: str, step_repo: str, format: str, skip_version_check: bool, quiet: bool):
     """List all available build definition steps"""
     if not skip_version_check:
         try:
@@ -87,9 +87,7 @@ def list(
                     steps = callback_args.get("steps", 0)
                     match callback_event:
                         case "fetching_spaces":
-                            progress_bar.set_description(
-                                f"📝 Fetching available spaces..."
-                            )
+                            progress_bar.set_description(f"📝 Fetching available spaces...")
                             progress_bar.update(n=steps)
                         case "done_fetching_spaces":
                             progress_bar.update(n=steps)
@@ -136,9 +134,7 @@ def list(
                     ]
                     for s in steps
                 ]
-                steps_output = tabulate(
-                    steps_table, STEP_LIST_HEADERS, tablefmt="plain"
-                )
+                steps_output = tabulate(steps_table, STEP_LIST_HEADERS, tablefmt="plain")
             else:
                 steps_output = json.dumps(steps)
 
@@ -201,9 +197,7 @@ def describe(
         for key in config.keys():
             if isinstance(config[key], dict):
                 for inner_key in config[key].keys():
-                    config_str = (
-                        config_str + f"{key}.{inner_key}: {config[key][inner_key]}\n"
-                    )
+                    config_str = config_str + f"{key}.{inner_key}: {config[key][inner_key]}\n"
             else:
                 config_str = config_str + f"{key}: {config[key]}\n"
             if "echo" in config_str:
@@ -216,21 +210,14 @@ def describe(
             if isinstance(event_config[key], List):
                 config_str = config_str + "\n"
                 for inner_property in event_config[key]:
-                    config_str = (
-                        config_str
-                        + f"{key}.{parse_step_config_output(inner_property)}\n"
-                    )
+                    config_str = config_str + f"{key}.{parse_step_config_output(inner_property)}\n"
             else:
-                config_str = config_str + parse_step_config_output(
-                    {key: event_config[key]}
-                )
+                config_str = config_str + parse_step_config_output({key: event_config[key]})
         return config_str
 
     try:
         if quiet:
-            step_content = step_client.describe_step(
-                step_name, step_repo, space, callback=None
-            )
+            step_content = step_client.describe_step(step_name, step_repo, space, callback=None)
         else:
             with tqdm(
                 total=100,
@@ -276,9 +263,7 @@ def describe(
                 for config in step_content["config"]:
                     for c in config:
                         if isinstance(config[c], dict):
-                            parsed_configs.append(
-                                [c, parse_step_config_output(config[c])]
-                            )
+                            parsed_configs.append([c, parse_step_config_output(config[c])])
                         else:
                             parsed_configs.append([c, config[c]])
 
@@ -314,8 +299,7 @@ def describe(
                             if monitor_config:
                                 event_configs = monitor_config.get("event_configs", [])
                                 parsed_event_configs = [
-                                    parse_event_config_output(ec)
-                                    for ec in event_configs
+                                    parse_event_config_output(ec) for ec in event_configs
                                 ]
                                 parsed_env_configs.append(
                                     [

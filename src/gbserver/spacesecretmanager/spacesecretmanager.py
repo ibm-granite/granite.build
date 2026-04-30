@@ -49,9 +49,7 @@ class SpaceSecretManager(ABC):
         """
 
     @abstractmethod
-    def get_secrets(
-        self: Self, username: Optional[str] = None
-    ) -> Optional[Dict[str, str]]:
+    def get_secrets(self: Self, username: Optional[str] = None) -> Optional[Dict[str, str]]:
         """
         List the secrets that belong to the space
         """
@@ -73,9 +71,7 @@ class SpaceSecretManager(ABC):
         secret_manager_type: str, uri: str, **kwargs
     ) -> "SpaceSecretManager":
         """Get a secret manager of the given type."""
-        return SpaceSecretManager.spacesecretmanagers[secret_manager_type](
-            uri=uri, **kwargs
-        )
+        return SpaceSecretManager.spacesecretmanagers[secret_manager_type](uri=uri, **kwargs)
 
     @staticmethod
     def load_spacesecretmanagers() -> None:
@@ -95,8 +91,7 @@ class SpaceSecretManager(ABC):
                     : -len(SpaceSecretManager.__name__)
                 ].lower()
                 spacesecretmanager_typename = (
-                    spacesecretmanager_key_name.capitalize()
-                    + SpaceSecretManager.__name__
+                    spacesecretmanager_key_name.capitalize() + SpaceSecretManager.__name__
                 )
                 try:
                     module = importlib.import_module(
@@ -108,9 +103,9 @@ class SpaceSecretManager(ABC):
                         if isinstance(handler_class, type) and issubclass(
                             handler_class, SpaceSecretManager
                         ):
-                            SpaceSecretManager.spacesecretmanagers[
-                                spacesecretmanager_key_name
-                            ] = handler_class
+                            SpaceSecretManager.spacesecretmanagers[spacesecretmanager_key_name] = (
+                                handler_class
+                            )
                         else:
                             logger.error(
                                 "Ignoring %s since it is not a subclass of SpaceSecretManager class",
@@ -123,9 +118,7 @@ class SpaceSecretManager(ABC):
                             spacesecretmanager_typename,
                         )
                 except ImportError as e:
-                    logger.error(
-                        "Error importing module %s: %s", spacesecretmanager_typename, e
-                    )
+                    logger.error("Error importing module %s: %s", spacesecretmanager_typename, e)
                 except Exception as e:
                     logger.error(
                         "Error loading space secret manager type from %s: %s",

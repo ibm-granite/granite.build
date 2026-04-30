@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Target run storage module."""
+
 from datetime import datetime
 from typing import Self
 
@@ -23,18 +25,17 @@ from gbserver.types.constants import GB_TARGET_RUNS_TABLE_NAME
 
 
 class IStoredTargetRunStorage(IItemStorage[StoredTargetRun]):
+    """I Stored Target Run Storage implementation."""
+
     pass
 
 
-class BaseStoredTargetRunStorage(
-    BaseItemStorage[StoredTargetRun], IStoredTargetRunStorage
-):
+class BaseStoredTargetRunStorage(BaseItemStorage[StoredTargetRun], IStoredTargetRunStorage):
+    """Base Stored Target Run Storage implementation."""
 
     def __init__(self: Self, **kwargs):
         kwargs["item_class"] = StoredTargetRun
-        if (
-            kwargs.get("table_name") is None
-        ):  # Allow for testing using alternate table names.
+        if kwargs.get("table_name") is None:  # Allow for testing using alternate table names.
             kwargs["table_name"] = GB_TARGET_RUNS_TABLE_NAME
         super().__init__(**kwargs)
 

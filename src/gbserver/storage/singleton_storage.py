@@ -115,9 +115,7 @@ def get_storage_factory() -> StorageFactory:
 
             __STORAGE_FACTORY = LhSQLStorageFactory()
         else:
-            raise ValueError(
-                f"Unrecognized storage factory config {GB_METADATA_STORAGE}"
-            )
+            raise ValueError(f"Unrecognized storage factory config {GB_METADATA_STORAGE}")
         logger.info(
             "Using storage factory %s based on %s setting.",
             type(__STORAGE_FACTORY).__name__,
@@ -154,24 +152,16 @@ def set_storage_prefix(table_prefix: Optional[str] = None) -> SingletonAdminStor
     if table_prefix is None:
         table_prefix = ""
     factory = get_storage_factory()
-    build_storage = factory.create_build_storage(
-        table_name=table_prefix + GB_BUILDS_TABLE_NAME
-    )
+    build_storage = factory.create_build_storage(table_name=table_prefix + GB_BUILDS_TABLE_NAME)
     target_storage = factory.create_target_storage(
         table_name=table_prefix + GB_TARGET_RUNS_TABLE_NAME
     )
-    step_storage = factory.create_step_storage(
-        table_name=table_prefix + GB_STEP_RUNS_TABLE_NAME
-    )
-    space_storage = factory.create_space_storage(
-        table_name=table_prefix + GB_SPACES_TABLE_NAME
-    )
+    step_storage = factory.create_step_storage(table_name=table_prefix + GB_STEP_RUNS_TABLE_NAME)
+    space_storage = factory.create_space_storage(table_name=table_prefix + GB_SPACES_TABLE_NAME)
     artifact_storage = factory.create_artifact_registry(
         table_name=table_prefix + GB_ARTIFACT_REGISTRY_TABLE_NAME
     )
-    event_storage = factory.create_event_storage(
-        table_name=table_prefix + GB_EVENTS_TABLE_NAME
-    )
+    event_storage = factory.create_event_storage(table_name=table_prefix + GB_EVENTS_TABLE_NAME)
     node_failure_storage = factory.create_node_failure_storage(
         table_name=table_prefix + GB_NODE_FAILURES_TABLE_NAME
     )

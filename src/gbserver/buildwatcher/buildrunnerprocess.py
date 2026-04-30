@@ -16,6 +16,8 @@
 
 # from .artifact import ArtifactStoreType, ArtifactType
 # from .resources import ResourceSpec, ResourceTypeimport os
+"""Buildrunnerprocess module."""
+
 import os
 import queue
 import subprocess
@@ -38,6 +40,8 @@ logger = get_logger(__name__)
 
 
 class QueuedOutput:
+    """Queued Output implementation."""
+
     def __init__(self, std):
         self.q = queue.Queue()
         self.std = std
@@ -52,11 +56,13 @@ class QueuedOutput:
         self.std.close()
 
     def start(self):
+        """Execute ."""
         self.thread = threading.Thread(target=self._enqueue_line, args=())
         self.thread.daemon = True
         self.thread.start()
 
     def stop(self):
+        """Stop."""
         if self.thread is None:
             return
         self.stop_requested = True
@@ -64,12 +70,14 @@ class QueuedOutput:
         self.thread = None
 
     def show_lines(self, file=sys.stdout) -> None:
+        """Show lines."""
         lines = self.get_lines()
         for line in lines:
             # print(line, file=file, flush=True)
             logger.log(level=0, msg=line)
 
     def get_lines(self) -> list[str]:
+        """Get the lines."""
         lines = []
         while True:
             try:

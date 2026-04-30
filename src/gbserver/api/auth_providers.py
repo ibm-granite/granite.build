@@ -134,8 +134,7 @@ class GitHubAuthProvider(AuthProvider):
             user.auth_provider = "github"
             if not user.email:
                 logger.warning(
-                    "GitHub /user returned no email for user %s; "
-                    "space-access checks may fail",
+                    "GitHub /user returned no email for user %s; " "space-access checks may fail",
                     user.login,
                 )
             return (user, "")

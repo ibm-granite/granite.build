@@ -14,14 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Constants module."""
+
 import os
 
 API_VERSION = "v1"
 API_BASE_PATH = f"/api/{API_VERSION}"
 DEFAULT_GH_DOMAIN = "github.ibm.com"
-DEFAULT_WORKSPACE_DIR = os.environ.get(
-    "GBSERVER_DEFAULT_WORKSPACE_DIR", "gbserverworkspace"
-)
+DEFAULT_WORKSPACE_DIR = os.environ.get("GBSERVER_DEFAULT_WORKSPACE_DIR", "gbserverworkspace")
 DEFAULT_TEST_SPACE_NAME = "default-test-space"  #
 PUBLIC_SPACE_NAME = "default-space"
 DEFAULT_REPO_DIR_TO_WATCH = "experiments"
@@ -44,8 +44,7 @@ CONTEXT_SETTINGS = dict(auto_envvar_prefix=ENV_VAR_PREFIX)
 DEFAULT_DIR_PERMS = 0o775
 DEFAULT_LOG_LEVEL = os.environ.get(ENV_VAR_DEFAULT_LOG_LEVEL, "INFO")
 DEFAULT_LOG_FORMAT = (
-    "[%(asctime)s %(levelname)-5s]"
-    + "[%(filename)20s:%(lineno)3s %(funcName)25s()] %(message)s"
+    "[%(asctime)s %(levelname)-5s]" + "[%(filename)20s:%(lineno)3s %(funcName)25s()] %(message)s"
 )
 # Admin storage-related constants
 GRANITE_DOT_BUILD_ADMIN_NAMESPACE = "granite_dot_build.admin"
@@ -58,9 +57,7 @@ GB_JOB_STATS_DETAIL_CATEGORY = "granite-dot-build"
 GB_JOB_STATS_DETAIL_TYPE = "granite-dot-build"
 
 # Artifact storage-related constants
-GB_DEFAULT_LH_ARTIFACT_HOST = (
-    "lake-staging.17qyd1z8hik0.us-east.codeengine.appdomain.cloud"
-)
+GB_DEFAULT_LH_ARTIFACT_HOST = "lake-staging.17qyd1z8hik0.us-east.codeengine.appdomain.cloud"
 
 
 # gbserver

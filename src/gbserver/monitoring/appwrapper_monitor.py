@@ -214,9 +214,7 @@ class AppWrapperMonitor(MonitorBase):
                     break
 
                 counter += 1
-                logger.debug(
-                    "[AWMonitor launch_id %s] stop_event is not set", self.launch_id
-                )
+                logger.debug("[AWMonitor launch_id %s] stop_event is not set", self.launch_id)
                 try:
                     state = await self._get_appwrapper_status()
                     logger.info(f"launch_id={self.launch_id} state={state}")
@@ -496,9 +494,7 @@ class AppWrapperMonitor(MonitorBase):
         label_selector = f"workload.codeflare.dev/appwrapper={self.name}"
         try:
             pod_list = await asyncio.wait_for(
-                self.v1.list_namespaced_pod(
-                    namespace=self.ns, label_selector=label_selector
-                ),
+                self.v1.list_namespaced_pod(namespace=self.ns, label_selector=label_selector),
                 timeout=API_CALL_TIMEOUT,
             )
             if not pod_list.items:
@@ -611,9 +607,7 @@ class AppWrapperMonitor(MonitorBase):
                 return container_name, []
             except client.ApiException as e:
                 # Return error info if logs can't be fetched
-                logger.warning(
-                    "Failed to get logs for container %s: %s", container_name, e.reason
-                )
+                logger.warning("Failed to get logs for container %s: %s", container_name, e.reason)
                 return container_name, []
 
         # Collect logs from pod containers
@@ -647,8 +641,7 @@ class AppWrapperMonitor(MonitorBase):
                 self.v1.list_namespaced_event(
                     namespace=self.ns,
                     field_selector=(
-                        f"involvedObject.kind=AppWrapper,"
-                        f"involvedObject.name={self.name}"
+                        f"involvedObject.kind=AppWrapper," f"involvedObject.name={self.name}"
                     ),
                 ),
                 timeout=API_CALL_TIMEOUT,
@@ -705,9 +698,7 @@ class AppWrapperMonitor(MonitorBase):
                         API_CALL_TIMEOUT,
                     )
                 except client.ApiException as e:
-                    logger.error(
-                        "Error fetching events for pod %s: %s", pod_name, str(e)
-                    )
+                    logger.error("Error fetching events for pod %s: %s", pod_name, str(e))
         events.extend(abnormal_pod_events)
 
         fresh_events = []
@@ -743,12 +734,8 @@ class AppWrapperMonitor(MonitorBase):
             "appwrapper": self.name,
             "state": new_state,
             "previous_state": self._last_state,
-            "current_resets": self.additional_appwrapper_state_info.get(
-                "current_resets", 0
-            ),
-            "max_retries": self.additional_appwrapper_state_info.get(
-                "max_resets", "unlimited"
-            ),
+            "current_resets": self.additional_appwrapper_state_info.get("current_resets", 0),
+            "max_retries": self.additional_appwrapper_state_info.get("max_resets", "unlimited"),
             "workload_status": await self._get_workload_status(),
         }
         pods_placement = {

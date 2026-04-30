@@ -107,9 +107,7 @@ class TestAuthorizeEndpoint:
         qs = parse_qs(parsed.query)
         assert qs["response_type"] == ["code"]
         assert qs["client_id"] == ["test-client-id"]
-        assert qs["redirect_uri"] == [
-            "https://gbserver.example.com/api/v1/auth/callback"
-        ]
+        assert qs["redirect_uri"] == ["https://gbserver.example.com/api/v1/auth/callback"]
         assert qs["scope"] == ["openid profile email"]
         assert qs["state"] == ["test-state-1"]
 
@@ -244,12 +242,8 @@ class TestCallbackEndpoint:
         userinfo_resp.raise_for_status = MagicMock()
 
         with patch.dict(os.environ, ENV_DEFAULTS, clear=False):
-            with patch(
-                "gbserver.api.auth_routes.requests.post", return_value=token_resp
-            ):
-                with patch(
-                    "gbserver.api.auth_routes.requests.get", return_value=userinfo_resp
-                ):
+            with patch("gbserver.api.auth_routes.requests.post", return_value=token_resp):
+                with patch("gbserver.api.auth_routes.requests.get", return_value=userinfo_resp):
                     resp = client.get(
                         "/callback",
                         params={"state": "cb-state-1", "code": "auth-code-123"},
@@ -306,9 +300,7 @@ class TestCallbackEndpoint:
         token_resp.text = "Code expired"
 
         with patch.dict(os.environ, ENV_DEFAULTS, clear=False):
-            with patch(
-                "gbserver.api.auth_routes.requests.post", return_value=token_resp
-            ):
+            with patch("gbserver.api.auth_routes.requests.post", return_value=token_resp):
                 resp = client.get(
                     "/callback",
                     params={"state": "cb-state-fail", "code": "expired-code"},
@@ -472,9 +464,7 @@ class TestAuthMiddlewareExclusion:
         client = TestClient(app, follow_redirects=False)
         _, challenge = _make_verifier_and_challenge()
 
-        with patch.dict(
-            os.environ, {**ENV_DEFAULTS, "GBSERVER_AUTH_MODE": "ibmid"}, clear=False
-        ):
+        with patch.dict(os.environ, {**ENV_DEFAULTS, "GBSERVER_AUTH_MODE": "ibmid"}, clear=False):
             resp = client.get(
                 "/api/v1/auth/authorize",
                 params={

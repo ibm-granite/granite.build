@@ -161,9 +161,7 @@ class Lsf(Environment):
         lsf_workspace: Dict = env_config.get("workspace", {})
         self.lsf_workspace_local_dir: str = lsf_workspace.get("local_dir", "")
         if not self.lsf_workspace_local_dir:
-            self.lsf_workspace_local_dir = str(
-                Path(DEFAULT_ROOT_WORKSPACE_DIR) / "env_lsf"
-            )
+            self.lsf_workspace_local_dir = str(Path(DEFAULT_ROOT_WORKSPACE_DIR) / "env_lsf")
         self.lsf_workspace_remote_dir: str = lsf_workspace.get("remote_dir", "")
         # Authentication
         authentication: Dict = env_config.get("authentication", {})
@@ -181,13 +179,9 @@ class Lsf(Environment):
         ), f"invalid login_nodes type: {type(self.login_nodes).__name__} (expected 'list' type)"
         login_node_count = len(self.login_nodes)
         if login_node_count == 0:
-            assert (
-                not self.use_ssh
-            ), "At least one login node must be provided when using ssh"
+            assert not self.use_ssh, "At least one login node must be provided when using ssh"
         else:
-            self.login_node_idx = random.randrange(
-                0, login_node_count
-            )  # Randomly load balance
+            self.login_node_idx = random.randrange(0, login_node_count)  # Randomly load balance
             for v in self.login_nodes:
                 assert isinstance(v, str), f"invalid login node: {v}"
         self.username: str = authentication.get("login_node_username", "")
@@ -196,9 +190,7 @@ class Lsf(Environment):
         # -------------------------
         self.ssh_host_key_verification = (
             str(
-                authentication.get(
-                    "ssh_host_key_verification", ENABLE_SSH_HOST_KEY_VERIFICATION
-                )
+                authentication.get("ssh_host_key_verification", ENABLE_SSH_HOST_KEY_VERIFICATION)
             ).lower()
             == "true"
         )
@@ -226,9 +218,7 @@ class Lsf(Environment):
         # Raises exception if no reachable nodes are found
         for _ in range(0, len(self.login_nodes)):
             await self._get_reachable_ssh_node()
-        reachable = [
-            item for item in self.login_nodes if item not in self.unreachable_ssh_nodes
-        ]
+        reachable = [item for item in self.login_nodes if item not in self.unreachable_ssh_nodes]
         logger.info(
             f"Reachable ssh nodes: {reachable}, unreachable ssh nodes: {self.unreachable_ssh_nodes}"
         )
@@ -283,9 +273,7 @@ class Lsf(Environment):
             assert task
             await task
         except Exception as launch_error:
-            logger.error(
-                "Could not retry launch launch_id=%s: %s", launch_id, launch_error
-            )
+            logger.error("Could not retry launch launch_id=%s: %s", launch_id, launch_error)
             raise launch_error
 
         # Signal monitor_bsub_monitor to loop for the next iteration
@@ -300,9 +288,7 @@ class Lsf(Environment):
         on the use of self.unreachable_ssh_nodes.
         """
         l = len(self.login_nodes)
-        assert (
-            l > 0
-        ), "Should only be using ssh when at least one ssh login node is provided"
+        assert l > 0, "Should only be using ssh when at least one ssh login node is provided"
         login_node = None
         if len(self.login_nodes) == len(self.unreachable_ssh_nodes):
             # We should not get here since get_reachable_ssh_node() clear this, but just in case.
@@ -335,16 +321,12 @@ class Lsf(Environment):
                     break  # and raise exception
                 launch_id = get_uuid()
                 if node not in self.unreachable_ssh_nodes:
-                    if await self.__is_ssh_node_reachable(
-                        node=node, launch_id=launch_id
-                    ):
+                    if await self.__is_ssh_node_reachable(node=node, launch_id=launch_id):
                         logger.info("Found reachable ssh node %s", node)
                         return node
                     self.unreachable_ssh_nodes.append(node)
                 tried_nodes.append(node)
-                if reset_enabled and len(self.unreachable_ssh_nodes) == len(
-                    self.login_nodes
-                ):
+                if reset_enabled and len(self.unreachable_ssh_nodes) == len(self.login_nodes):
                     # IF there are no reachable nodes, retry them all again only once though.
                     self.unreachable_ssh_nodes.clear()
                     tried_nodes.clear()
@@ -361,9 +343,7 @@ class Lsf(Environment):
         cmds.append("echo")
         cmds.append("testing node availability")
         try:
-            await launch_command_and_raise_errors(
-                command_list=cmds, launch_id=launch_id
-            )
+            await launch_command_and_raise_errors(command_list=cmds, launch_id=launch_id)
             return True
         except:
             return False
@@ -470,10 +450,7 @@ class Lsf(Environment):
         if self.use_ssh:
             # For SSH: write replaced script to a launch-specific local file so the
             # template stays untouched. rsync will transfer it to the remote host.
-            output_path = (
-                jobsub_path.parent
-                / f"{jobsub_path.stem}_{launch_id}{jobsub_path.suffix}"
-            )
+            output_path = jobsub_path.parent / f"{jobsub_path.stem}_{launch_id}{jobsub_path.suffix}"
             final_jobsub_path = final_asset_dir / output_path.relative_to(asset_dir)
         else:
             # For non-SSH: the copy to final_asset_dir has already happened, so write
@@ -528,9 +505,7 @@ class Lsf(Environment):
             logger.info("copying %s to %s", asset_dir, final_asset_dir)
             # Create remote destination directory via tunnel
             logger.info("creating remote directory %s via tunnel", final_asset_dir)
-            await ssh_tunnel.run_remote_with_retries(
-                f"mkdir -p {final_asset_dir} || true"
-            )
+            await ssh_tunnel.run_remote_with_retries(f"mkdir -p {final_asset_dir} || true")
             # Copy assets using rsync (local-to-remote transfer)
             rsync_cmd = await self._create_rsync_cmd(
                 launch_id=launch_id,
@@ -589,9 +564,7 @@ class Lsf(Environment):
             logger.warning("there is an existing LSF job: %s", config_lsf_bsub)
             self.existing_jobids[launch_id] = ExistingBsubJobs(job_id=existing_jobid)
             log_path = config_lsf_bsub.log_path
-            assert (
-                log_path != ""
-            ), f"invalid config_lsf_bsub.log_path: {step_config_section}"
+            assert log_path != "", f"invalid config_lsf_bsub.log_path: {step_config_section}"
             self._set_log_path(launch_id=launch_id, log_path=log_path)
             self.launched_jobs[launch_id] = existing_jobid
             self._release_monitors(launch_id)
@@ -599,12 +572,10 @@ class Lsf(Environment):
             self._send_message(msg=msg, **kwargs)
             return
         assert targetsteprun_asset_dir is not None, "targetsteprun_asset_dir is None"
-        final_asset_dir, jobsub_path, final_jobsub_path, jobsub_data = (
-            await self._copy_assets(
-                launch_id=launch_id,
-                asset_dir=targetsteprun_asset_dir,
-                **kwargs,
-            )
+        final_asset_dir, jobsub_path, final_jobsub_path, jobsub_data = await self._copy_assets(
+            launch_id=launch_id,
+            asset_dir=targetsteprun_asset_dir,
+            **kwargs,
         )
         # Get useful env vars to inject for LhPull and LhPush
         env_vars = {}
@@ -634,9 +605,7 @@ class Lsf(Environment):
                 ), f"invalid secret_to_inject class: {type(secret_to_inject).__name__} (expected 'dict')"
                 env_var_name = secret_to_inject["env_name"]
                 secret_name = secret_to_inject["secret_name"]
-                logger.info(
-                    "looking up secret %s for env var %s", secret_name, env_var_name
-                )
+                logger.info("looking up secret %s for env var %s", secret_name, env_var_name)
                 assert (
                     secret_name in space_secrets
                 ), f"failed to find the secret {secret_name} in {all_keys}"
@@ -684,9 +653,7 @@ class Lsf(Environment):
                 msg = f"⚡ LSF job submitted with JobID={job_id}"
                 self._send_message(msg=msg, **kwargs)
             else:
-                raise RuntimeError(
-                    f"failed to parse JobID from the submission output:\n{output}"
-                )
+                raise RuntimeError(f"failed to parse JobID from the submission output:\n{output}")
         except Exception as e:
             raise RuntimeError("LSF job launch failed") from e
 
@@ -765,9 +732,7 @@ class Lsf(Environment):
             if self.use_ssh:
                 if ssh_tunnel is not None:
                     logger.info("removing remote asset dir %s", dir_path)
-                    await ssh_tunnel.run_remote_with_retries(
-                        f"rm -rf {dir_path} || true"
-                    )
+                    await ssh_tunnel.run_remote_with_retries(f"rm -rf {dir_path} || true")
             else:
                 logger.info("removing local asset dir %s", dir_path)
                 shutil.rmtree(dir_path, ignore_errors=True)
@@ -795,9 +760,7 @@ class Lsf(Environment):
                 os.rmdir(temp_dir)
                 logger.info("SSH key file %s deleted", key_file_path)
             except Exception as e:
-                logger.warning(
-                    "failed to delete the SSH key at %s , error: %s", key_file_path, e
-                )
+                logger.warning("failed to delete the SSH key at %s , error: %s", key_file_path, e)
 
     def monitor(self, type: str, launch_id: str, task_group, **kwargs):  # type: ignore[override]
         """Pre-populate _logfile_event_configs for the deprecated logfile_monitor.
@@ -830,9 +793,7 @@ class Lsf(Environment):
         build_id = entityrun_metadata.build_id if entityrun_metadata else launch_id
         retry_complete_event = asyncio.Event()
         self._lsf_retry_complete_events[launch_id] = retry_complete_event
-        step_id = (
-            (entityrun_metadata.targetsteprun_id or "") if entityrun_metadata else ""
-        )
+        step_id = (entityrun_metadata.targetsteprun_id or "") if entityrun_metadata else ""
 
         enabled, retry_transparently = self._get_step_retry_config(
             self.launch_kwargs.get(launch_id, {}),
@@ -853,15 +814,12 @@ class Lsf(Environment):
             event_log_parser_configs = []
             if resolved_event_configs is not None:
                 event_log_parser_configs = [
-                    EventLogLineParserConfig.model_validate(ec)
-                    for ec in resolved_event_configs
+                    EventLogLineParserConfig.model_validate(ec) for ec in resolved_event_configs
                 ]
             current_launch_id = launch_id
             try:
                 while True:
-                    stop_event = self._get_launch_stopped_event(
-                        launch_id=current_launch_id
-                    )
+                    stop_event = self._get_launch_stopped_event(launch_id=current_launch_id)
                     job_id = self.launched_jobs[current_launch_id]
                     log_file_path = self._get_log_path(launch_id=current_launch_id)
 
@@ -1002,9 +960,7 @@ class Lsf(Environment):
         assert step_path.is_file(), f"step yaml is missing: {step_path}"
         step_config = StepConfig.from_yaml(path=step_path)
         lhpc = step_config.config
-        assert isinstance(
-            lhpc, dict
-        ), f"invalid step config type: {type(lhpc).__name__}"
+        assert isinstance(lhpc, dict), f"invalid step config type: {type(lhpc).__name__}"
         step_config_section = StepConfigSection.model_validate(lhpc)
         logger.info("step_config_section: %s", step_config_section)
         lsf_dict = step_config_section.lsf.model_dump(exclude_unset=True)
@@ -1012,9 +968,7 @@ class Lsf(Environment):
         assert isinstance(
             lh_metadata, dict
         ), f"invalid lh_metadata type: {type(lh_metadata).__name__}"
-        assert (
-            "token_secretname" in lh_metadata
-        ), "token_secretname is missing in lh_metadata"
+        assert "token_secretname" in lh_metadata, "token_secretname is missing in lh_metadata"
         lsf_dict["secrets"] = {
             "secret_names_to_use_as_env_variable": [
                 {
@@ -1069,9 +1023,7 @@ class Lsf(Environment):
             and "step_uri" in storeload_config.config
         ):
             lhpull_stepuri = storeload_config.config["step_uri"]
-            assert isinstance(
-                lhpull_stepuri, str
-            ), f"invalid lhpull_stepuri: {lhpull_stepuri}"
+            assert isinstance(lhpull_stepuri, str), f"invalid lhpull_stepuri: {lhpull_stepuri}"
         final_binding_path = binding_path / assetstore.get_subdir(uri)
         binding_config = {BINDING_KEY: {"path": str(final_binding_path)}}
         lsf_dict, workload_dict = self._load_builtin_lh_lsf_section(
@@ -1106,9 +1058,7 @@ class Lsf(Environment):
         assert isinstance(
             binding, dict
         ), f"expected binding to be a dict, actual: {type(binding).__name__} {binding}"
-        assert (
-            "path" in binding
-        ), f"expected 'path' to be in the binding, actual: {binding}"
+        assert "path" in binding, f"expected 'path' to be in the binding, actual: {binding}"
         binding_path = binding["path"]
         logger.info("binding_path: %s", binding_path)
         binding_path_path = Path(binding_path)
@@ -1138,9 +1088,7 @@ class Lsf(Environment):
             and "step_uri" in storepush_config.config
         ):
             lhpush_stepuri = storepush_config.config["step_uri"]
-            assert isinstance(
-                lhpush_stepuri, str
-            ), f"invalid lhpush_stepuri: {lhpush_stepuri}"
+            assert isinstance(lhpush_stepuri, str), f"invalid lhpush_stepuri: {lhpush_stepuri}"
         lsf_dict, workload_dict = self._load_builtin_lh_lsf_section(
             CODE_GBSERVER_BUILTINS_STEPS_LHPUSH_DIR, lh_metadata
         )
@@ -1166,9 +1114,7 @@ class Lsf(Environment):
             AssertionError: if the cosrclone step YAML is missing or required
                 secret name keys are absent from cos_metadata.
         """
-        cosrclone_step_path = (
-            CODE_GBSERVER_BUILTINS_STEPS_COSRCLONE_DIR / STEP_FILE_NAME
-        )
+        cosrclone_step_path = CODE_GBSERVER_BUILTINS_STEPS_COSRCLONE_DIR / STEP_FILE_NAME
         assert cosrclone_step_path.is_file(), "cosrclone step is missing"
         step_section = StepConfigSection.model_validate(
             StepConfig.from_yaml(path=cosrclone_step_path).config
@@ -1207,9 +1153,7 @@ class Lsf(Environment):
         """
         Load data from COS bucket into the cluster filesystem.
         """
-        assert isinstance(
-            assetstore, Cosstore
-        ), f"invalid type assetstore: {assetstore}"
+        assert isinstance(assetstore, Cosstore), f"invalid type assetstore: {assetstore}"
         assert storeload_config is not None, "storeload_config is None"
         assert (
             storeload_config.mode == "cos_pull"
@@ -1219,9 +1163,7 @@ class Lsf(Environment):
         assert isinstance(cosuri, CosURI), f"invalid cosuri: {cosuri}"
 
         cache_path = storeload_config.config.get("cache_path", None)
-        assert (
-            isinstance(cache_path, str) and cache_path != ""
-        ), f"invalid cache_path: {cache_path}"
+        assert isinstance(cache_path, str) and cache_path != "", f"invalid cache_path: {cache_path}"
 
         binding_path = Path(cache_path) / cosuri.hash()
         bucket_path = cosuri.get_metadata()["bucket_path"]
@@ -1235,10 +1177,7 @@ class Lsf(Environment):
             "cos": cos_metadata,
         }
         cosrclone_stepuri = CODE_GBSERVER_BUILTINS_STEPS_COSRCLONE_URI
-        if (
-            storeload_config.config is not None
-            and "step_uri" in storeload_config.config
-        ):
+        if storeload_config.config is not None and "step_uri" in storeload_config.config:
             cosrclone_stepuri = storeload_config.config["step_uri"]
 
         lsf_dict = self._load_builtin_cos_lsf_section(cos_metadata)
@@ -1269,16 +1208,12 @@ class Lsf(Environment):
         cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
         assert isinstance(cosuri, CosURI), f"invalid cosuri: {cosuri}"
 
-        assert isinstance(
-            binding, dict
-        ), f"expected binding to be a dict, got {type(binding)}"
+        assert isinstance(binding, dict), f"expected binding to be a dict, got {type(binding)}"
         assert "path" in binding, f"missing 'path' in binding: {binding}"
 
         binding_path = binding["path"]
         binding_path_path = Path(binding_path)
-        assert (
-            len(binding_path_path.parts) >= 2
-        ), f"invalid binding path: {binding_path_path}"
+        assert len(binding_path_path.parts) >= 2, f"invalid binding path: {binding_path_path}"
 
         volume = str(binding_path_path.parts[1])
         logger.info("volume: %s", volume)
@@ -1288,9 +1223,7 @@ class Lsf(Environment):
         assert isinstance(cos_metadata, dict), f"invalid cos_metadata: {cos_metadata}"
         bucket_name = cos_metadata.get("cos_bucket_name") or uri_bucket_name
         if not uri_bucket_path.startswith(f"{bucket_name}/"):
-            uri_bucket_path = (
-                f"{bucket_name}/{uri_bucket_path}" if uri_bucket_path else bucket_name
-            )
+            uri_bucket_path = f"{bucket_name}/{uri_bucket_path}" if uri_bucket_path else bucket_name
 
         cospush_config = {
             "path": binding_path,
@@ -1394,9 +1327,7 @@ class Lsf(Environment):
                 node="localhost"
             )  # localhost because of the port forwarding
             local_port = ssh_tunnel.get_local_port(ssh_tunnel.host, self.ssh_port)
-            assert (
-                local_port is not None
-            ), "SSH tunnel has no local port forward for SSH"
+            assert local_port is not None, "SSH tunnel has no local port forward for SSH"
             rsync_ssh = f"{rsync_ssh} -p {local_port}"
         else:
             ssh_dest = await self._get_reachable_ssh_destination()
@@ -1481,9 +1412,7 @@ class Lsf(Environment):
             targetsteprun_id=targetsteprun_id,
             launch_id=launch_id,
         )
-        logger.info(
-            "asset_dir: %s sub_dir: %s use_ssh: %s", asset_dir, sub_dir, use_ssh
-        )
+        logger.info("asset_dir: %s sub_dir: %s use_ssh: %s", asset_dir, sub_dir, use_ssh)
         final_asset_dir = sub_dir
         if self.lsf_workspace_remote_dir:
             final_asset_dir = Path(self.lsf_workspace_remote_dir) / sub_dir
@@ -1510,14 +1439,10 @@ class Lsf(Environment):
             step_config_section,
             final_asset_dir,
         )
-        workspace_dir = step_config_section.workload.workspace_dir or str(
-            final_asset_dir
-        )
+        workspace_dir = step_config_section.workload.workspace_dir or str(final_asset_dir)
         assert isinstance(workspace_dir, str), f"invalid workspace_dir: {workspace_dir}"
         assert workspace_dir != "", f"invalid workspace_dir: {workspace_dir}"
-        output_dir = (
-            step_config_section.workload.output_dir or f"{workspace_dir}/outputs"
-        )
+        output_dir = step_config_section.workload.output_dir or f"{workspace_dir}/outputs"
         assert isinstance(output_dir, str), f"invalid output_dir: {output_dir}"
         assert output_dir != "", f"invalid output_dir: {output_dir}"
         log_path = str(Path(output_dir) / "job.log")
@@ -1579,31 +1504,23 @@ class Lsf(Environment):
             else:
                 command = ["bkill", job_id]
                 logger.info("running cleanup command: %s", cmd_safe_join(command))
-                process, stdout, stderr = (
-                    await launch_command_and_retry_or_raise_errors(
-                        command_list=command,
-                        launch_id=launch_id,
-                        raise_error=False,
-                    )
+                process, stdout, stderr = await launch_command_and_retry_or_raise_errors(
+                    command_list=command,
+                    launch_id=launch_id,
+                    raise_error=False,
                 )
                 rc = process.returncode if process.returncode is not None else -1
             stderr_str = (
-                stderr
-                if isinstance(stderr, str)
-                else stderr.decode("utf-8", errors="replace")
+                stderr if isinstance(stderr, str) else stderr.decode("utf-8", errors="replace")
             )
             if "Job has already finished" in stderr_str:
                 logger.info("Job %s is already finished, skipping kill.", job_id)
             elif rc != 0:
                 msg = f"⚠️ Failed to kill LSF job {job_id}.\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                logger.error(
-                    "bkill failed for job %s with rc=%s: %s", job_id, rc, stderr_str
-                )
+                logger.error("bkill failed for job %s with rc=%s: %s", job_id, rc, stderr_str)
                 self._send_message(msg=msg, **kwargs)
             else:
-                msg = (
-                    f"⚡ Killed LSF job {job_id}.\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                )
+                msg = f"⚡ Killed LSF job {job_id}.\nstdout:\n{stdout}\nstderr:\n{stderr}"
                 self._send_message(msg=msg, **kwargs)
         except Exception as e:
             raise RuntimeError("LSF job cleanup failed") from e
@@ -1621,9 +1538,7 @@ class Lsf(Environment):
         with open(key_file_path, "w", encoding="utf-8") as f:
             f.write(ssh_key.rstrip("\n") + "\n")
         os.chmod(key_file_path, 0o600)
-        logger.info(
-            "SSH key file created at %s for launch_id %s", key_file_path, launch_id
-        )
+        logger.info("SSH key file created at %s for launch_id %s", key_file_path, launch_id)
         return key_file_path
 
     def get_ssh_tunnel(self: Self) -> Optional[SshTunnel]:

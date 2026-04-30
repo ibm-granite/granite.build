@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Utils module."""
+
 import base64
 import hashlib
 import random
@@ -78,6 +80,7 @@ from uuid import uuid4
 
 
 def short_alphanumeric_lower_hash(input_string):
+    """Short alphanumeric lower hash."""
     hash_object = hashlib.sha256(input_string.encode("utf-8"))
     base64_encoded = base64.b64encode(hash_object.digest()).decode("utf-8")
     base64_encoded = "".join(c for c in base64_encoded if c.isalnum())

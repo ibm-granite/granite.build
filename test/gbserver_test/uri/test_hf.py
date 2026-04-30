@@ -56,9 +56,7 @@ class TestHfURIPullUnit:
 
     def test_dataset_sets_repo_type(self, tmp_path):
         """HfType.DATASET maps to repo_type='dataset'."""
-        uri = HfURI.from_parts(
-            owner="wikitext", repo="wikitext-103-v1", hf_type=HfType.DATASET
-        )
+        uri = HfURI.from_parts(owner="wikitext", repo="wikitext-103-v1", hf_type=HfType.DATASET)
         with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
             uri.pull(tmp_path)
 
@@ -133,9 +131,7 @@ class TestHfURIPullUnit:
 
     def test_default_host_sends_none_endpoint(self, tmp_path):
         """The default huggingface.co host results in endpoint=None."""
-        uri = HfURI.from_parts(
-            owner="owner", repo="repo", hf_type=HfType.MODEL, host=HF_HOST
-        )
+        uri = HfURI.from_parts(owner="owner", repo="repo", hf_type=HfType.MODEL, host=HF_HOST)
 
         with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
             uri.pull(tmp_path)
@@ -147,9 +143,7 @@ class TestHfURIPullUnit:
         """pull() catches any exception and returns False."""
         uri = HfURI.from_parts(owner="owner", repo="repo", hf_type=HfType.MODEL)
 
-        with patch(
-            "gbcommon.uri.hf.snapshot_download", side_effect=RuntimeError("boom")
-        ):
+        with patch("gbcommon.uri.hf.snapshot_download", side_effect=RuntimeError("boom")):
             result = uri.pull(tmp_path)
 
         assert result is False
@@ -707,9 +701,7 @@ class TestHfURIBucketExistsUnit:
             result = uri.exists()
 
         assert result is True
-        MockApi.return_value.bucket_info.assert_called_once_with(
-            bucket_id="org/my-bucket"
-        )
+        MockApi.return_value.bucket_info.assert_called_once_with(bucket_id="org/my-bucket")
 
     def test_returns_false_when_missing(self, monkeypatch):
         monkeypatch.delenv("HF_TOKEN", raising=False)
@@ -748,9 +740,7 @@ class TestHfURIBucketDeleteUnit:
             result = uri.delete()
 
         assert result is True
-        MockApi.return_value.delete_bucket.assert_called_once_with(
-            bucket_id="org/my-bucket"
-        )
+        MockApi.return_value.delete_bucket.assert_called_once_with(bucket_id="org/my-bucket")
 
     def test_deletes_file_from_bucket(self, monkeypatch):
         monkeypatch.delenv("HF_TOKEN", raising=False)

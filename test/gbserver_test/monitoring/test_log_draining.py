@@ -232,16 +232,12 @@ async def test_ssh_file_stream_drains_with_tail_command(tmp_path):
     ]
 
     # Verify Phase 2 command was executed with correct line offset
-    assert (
-        len(executed_commands) == 2
-    ), f"Expected 2 commands, got {len(executed_commands)}"
+    assert len(executed_commands) == 2, f"Expected 2 commands, got {len(executed_commands)}"
 
     # Second command should be tail -n +4 (skip first 3 lines)
     phase2_cmd = executed_commands[1]
     phase2_cmd_str = " ".join(phase2_cmd)
-    assert (
-        "tail -n +4" in phase2_cmd_str
-    ), f"Expected 'tail -n +4' in command: {phase2_cmd_str}"
+    assert "tail -n +4" in phase2_cmd_str, f"Expected 'tail -n +4' in command: {phase2_cmd_str}"
 
 
 @pytest.mark.asyncio
@@ -427,9 +423,7 @@ async def test_lsf_bsub_and_logfile_monitor_coordination(tmp_path):
         # The logfile monitor may lag behind reading these final lines
 
     # Run all tasks concurrently
-    with patch(
-        "gbserver.monitoring.lsf_bsub_monitor.GBSERVER_MONITORING_GRACE_PERIOD", 0.2
-    ):
+    with patch("gbserver.monitoring.lsf_bsub_monitor.GBSERVER_MONITORING_GRACE_PERIOD", 0.2):
         await asyncio.gather(
             bsub_monitor.monitor(),
             logfile_monitor.monitor(),
@@ -547,9 +541,7 @@ async def test_ssh_file_stream_phase2_executes_tail_command():
     ]
 
     # Verify two commands were executed
-    assert (
-        len(executed_commands) == 2
-    ), f"Expected 2 commands, got {len(executed_commands)}"
+    assert len(executed_commands) == 2, f"Expected 2 commands, got {len(executed_commands)}"
 
 
 @pytest.mark.asyncio

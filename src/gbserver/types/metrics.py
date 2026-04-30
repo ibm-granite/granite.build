@@ -29,9 +29,7 @@ from pydantic import BaseModel, Field
 class MetricUnits(StrEnum):
     """The units to use to interpret the metric's value."""
 
-    TIMESTAMP = (
-        auto()
-    )  # a ISO 8601 format timestamp (e.g. time when the status changed)
+    TIMESTAMP = auto()  # a ISO 8601 format timestamp (e.g. time when the status changed)
     SECONDS = auto()  # a time duration in seconds (e.g. processing delay)
     COUNT = auto()  # a count of something (e.g. retries)
 

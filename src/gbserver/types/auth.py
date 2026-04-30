@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Auth module."""
+
 from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator

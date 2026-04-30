@@ -42,9 +42,7 @@ class ISpaceUserStorage(IItemStorage[StoredSpaceUser]):
         Returns:
             List of StoredSpaceUser records for that space.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} did not implement this method"
-        )
+        raise NotImplementedError(f"{self.__class__.__name__} did not implement this method")
 
     def get_by_username(self, username: str) -> List[StoredSpaceUser]:
         """Get all space memberships for a given user.
@@ -55,9 +53,7 @@ class ISpaceUserStorage(IItemStorage[StoredSpaceUser]):
         Returns:
             List of StoredSpaceUser records for that user.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} did not implement this method"
-        )
+        raise NotImplementedError(f"{self.__class__.__name__} did not implement this method")
 
     def get_by_space_and_username(
         self, space_name: str, username: str
@@ -74,12 +70,11 @@ class ISpaceUserStorage(IItemStorage[StoredSpaceUser]):
         Returns:
             StoredSpaceUser if found, None otherwise.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} did not implement this method"
-        )
+        raise NotImplementedError(f"{self.__class__.__name__} did not implement this method")
 
 
 class BaseSpaceUserStorage(BaseItemStorage[StoredSpaceUser], ISpaceUserStorage):
+    """Base Space User Storage implementation."""
 
     def __init__(self, **kwargs) -> None:
         kwargs["item_class"] = StoredSpaceUser

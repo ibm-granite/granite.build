@@ -45,6 +45,7 @@ logger = get_logger(__name__)
 
 
 class AbstractBuildLogger:
+    """Abstract Build Logger implementation."""
 
     stored_build: StoredBuild
 
@@ -60,9 +61,7 @@ class AbstractBuildLogger:
     ) -> None:
         raise NotImplementedError("_AbstractBuildLogger._log is not implemented")
 
-    def info(
-        self: Self, markdown: str, triggering_event: Optional[BuildEvent] = None
-    ) -> None:
+    def info(self: Self, markdown: str, triggering_event: Optional[BuildEvent] = None) -> None:
         """Print with info log level"""
         self._log(
             level=BuildLogLevel.INFO,
@@ -70,9 +69,7 @@ class AbstractBuildLogger:
             triggering_event=triggering_event,
         )
 
-    def warning(
-        self: Self, markdown: str, triggering_event: Optional[BuildEvent] = None
-    ) -> None:
+    def warning(self: Self, markdown: str, triggering_event: Optional[BuildEvent] = None) -> None:
         """Print with warning log level"""
         self._log(
             level=BuildLogLevel.WARNING,
@@ -80,9 +77,7 @@ class AbstractBuildLogger:
             triggering_event=triggering_event,
         )
 
-    def error(
-        self: Self, markdown: str, triggering_event: Optional[BuildEvent] = None
-    ) -> None:
+    def error(self: Self, markdown: str, triggering_event: Optional[BuildEvent] = None) -> None:
         """Print with error log level"""
         self._log(
             level=BuildLogLevel.ERROR,
@@ -237,15 +232,11 @@ class BuildEventMessageLogger(AbstractBuildLogger):
 class BuildMultiMessageLogger(AbstractBuildLogger):
     """Simply aggregates 1 or more loggers and call _log() on all of them."""
 
-    def __init__(
-        self: Self, stored_build: StoredBuild, loggers: List[AbstractBuildLogger]
-    ) -> None:
+    def __init__(self: Self, stored_build: StoredBuild, loggers: List[AbstractBuildLogger]) -> None:
         super().__init__(stored_build=stored_build)
         assert len(loggers) > 0, "No loggers provided"
         for curr_logger in loggers:
-            assert isinstance(
-                curr_logger, AbstractBuildLogger
-            ), f"invalid logger: {curr_logger}"
+            assert isinstance(curr_logger, AbstractBuildLogger), f"invalid logger: {curr_logger}"
         self._loggers = loggers
 
     def _log(
@@ -255,19 +246,13 @@ class BuildMultiMessageLogger(AbstractBuildLogger):
         triggering_event: Optional[BuildEvent] = None,
     ) -> None:
         for curr_logger in self._loggers:
-            assert isinstance(
-                curr_logger, AbstractBuildLogger
-            ), f"invalid logger: {curr_logger}"
-            curr_logger._log(
-                level=level, markdown=markdown, triggering_event=triggering_event
-            )
+            assert isinstance(curr_logger, AbstractBuildLogger), f"invalid logger: {curr_logger}"
+            curr_logger._log(level=level, markdown=markdown, triggering_event=triggering_event)
 
 
 # A cache may not be necessary since we only log 1 message per build, but that may change. So use a small cache for now?
 @functools.lru_cache(maxsize=4)
-def get_message_logger(
-    stored_build: StoredBuild, event_source: str
-) -> AbstractBuildLogger:
+def get_message_logger(stored_build: StoredBuild, event_source: str) -> AbstractBuildLogger:
     """Create the message logger for this build.  This will always logs as
     events, but if the give build has a PR associated, it will also log to the PR.
     """

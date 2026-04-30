@@ -21,9 +21,7 @@ from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
 from gbserver.storage.stored_space import StoredSpace
 
 
-class SQLSpaceStorage(
-    BaseSQLItemStorage[StoredSpace], BaseStoredSpaceStorage, IStoredSpaceStorage
-):
+class SQLSpaceStorage(BaseSQLItemStorage[StoredSpace], BaseStoredSpaceStorage, IStoredSpaceStorage):
 
     def __init__(self: Self, **kwargs):
         # kwargs['item_class'] = StoredSpace

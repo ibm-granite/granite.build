@@ -25,9 +25,7 @@ from typing import AsyncIterator, Callable, Optional, Protocol, Self, TypeVar
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
-T = TypeVar(
-    "T"
-)  # generic type for items yielded by an iterator (e.g. str for log lines)
+T = TypeVar("T")  # generic type for items yielded by an iterator (e.g. str for log lines)
 
 
 class LogStreamSource(Protocol):
@@ -99,9 +97,7 @@ class RetryMixin:
                         e,
                     )
                     return
-                delay = min(
-                    self.reconnect_delay * (2 ** (attempt - 1)), self.max_backoff
-                )
+                delay = min(self.reconnect_delay * (2 ** (attempt - 1)), self.max_backoff)
                 delay += random.uniform(0, delay * 0.1)
                 logger.warning(
                     "[RetryMixin] reconnect attempt %d/%d after %.1fs (%s)",

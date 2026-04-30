@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Event storage module."""
+
 import json
 from abc import abstractmethod
 from typing import Optional
@@ -35,6 +37,7 @@ from gbserver.types.constants import GB_EVENTS_TABLE_NAME
 
 
 class IStoredEventStorage(IItemStorage[StoredEvent]):
+    """Interface for event storage operations."""
 
     @abstractmethod
     def get_sorted_build_events(
@@ -56,12 +59,11 @@ class IStoredEventStorage(IItemStorage[StoredEvent]):
 
 
 class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
+    """Base Stored Event Storage implementation."""
 
     def __init__(self, **kwargs) -> None:
         kwargs["item_class"] = StoredEvent
-        if (
-            kwargs.get("table_name") is None
-        ):  # Allow for testing using alternate table names.
+        if kwargs.get("table_name") is None:  # Allow for testing using alternate table names.
             kwargs["table_name"] = GB_EVENTS_TABLE_NAME
         super().__init__(**kwargs)
 

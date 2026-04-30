@@ -213,9 +213,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         else:
             self.logger.info(f"SQL cert file set to {sslrootcert_file}")
 
-        connect_args = (
-            {"sslrootcert": sslrootcert_file} if sslrootcert_file is not None else {}
-        )
+        connect_args = {"sslrootcert": sslrootcert_file} if sslrootcert_file is not None else {}
         db_url = f"{sql_scheme}://{user}:{password}@{host}:{port}/{dbname}"
         obfuscated_db_url = f"{sql_scheme}://{user}:**********@{host}:{port}/{dbname}"
         if sslrootcert_file is not None:
@@ -298,9 +296,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             elif isinstance(value, datetime):
                 column = Column(DateTime(timezone=True), nullable=True, index=indexed)
             else:
-                column = Column(
-                    String(256), nullable=True, unique=unique, index=indexed
-                )
+                column = Column(String(256), nullable=True, unique=unique, index=indexed)
             attributes[key] = column
             column_types[key] = column.type
             hash_source = hash_source + key
@@ -317,12 +313,10 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         sqlalchemy_model = type(type_name, (base,), attributes)
         return sqlalchemy_model, column_types
 
-    def __initialize_model_and_table(
-        self, item_dict: dict[str, Any], re_init: bool = False
-    ):
+    def __initialize_model_and_table(self, item_dict: dict[str, Any], re_init: bool = False):
         if self._sql_alchemy_model is None or re_init:
-            self._sql_alchemy_model, self._column_types = (
-                self.__create_sqlalchemy_class_from_dict(item_dict, Base)
+            self._sql_alchemy_model, self._column_types = self.__create_sqlalchemy_class_from_dict(
+                item_dict, Base
             )
 
         # Always make sure the table exists since delete_table() could be followed by add() (mostly from tests though).
@@ -349,9 +343,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         try:
             with self._engine.connect() as connection:
                 for column_key, exception_value in self.unique_columns.items():
-                    statement = self.__get_unique_index_statement(
-                        column_key, exception_value
-                    )
+                    statement = self.__get_unique_index_statement(column_key, exception_value)
                     connection.execute(text(statement))
                 connection.commit()
         except Exception as e:
@@ -444,9 +436,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         # return self._session_maker()
         return self._scoped_session()
 
-    def _create_or_adjust_schema_item_dict(
-        self, item: dict[str, Any], re_init: bool = False
-    ):
+    def _create_or_adjust_schema_item_dict(self, item: dict[str, Any], re_init: bool = False):
         """
         Create the table to match the given item and schema as defined by the columns/values defined in the given dictionary.
         column types should be derived from the types of the item fields.
@@ -461,9 +451,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             raise e
 
         new_columns = []
-        existing_columns = self.__get_column_names_with_exceptions(
-            raise_exception=False
-        )
+        existing_columns = self.__get_column_names_with_exceptions(raise_exception=False)
         self.logger.info(f"Columns found in the table: {existing_columns}")
         for column_name in list(item.keys()):
             if column_name not in existing_columns:
@@ -478,14 +466,10 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 col_type = self._column_types[col_name]
                 is_indexed = col_name in self.indexed_columns
                 uniqueness_exception = (
-                    self.unique_columns.get(col_name)
-                    if col_name in self.unique_columns
-                    else None
+                    self.unique_columns.get(col_name) if col_name in self.unique_columns else None
                 )
                 is_unique = col_name in self.unique_columns
-                self.__add_column(
-                    col_name, col_type, is_indexed, is_unique, uniqueness_exception
-                )
+                self.__add_column(col_name, col_type, is_indexed, is_unique, uniqueness_exception)
 
     def __get_sql_table_name_reference(self) -> str:
         """Get the name of the schema, if any, concatenated with the table name for using in SQL statements.
@@ -601,9 +585,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
 
         session = self.__get_session_without_retry()
         try:
-            r = self.__get_by_where_row_dicts_with_session(
-                session, where, query_control
-            )
+            r = self.__get_by_where_row_dicts_with_session(session, where, query_control)
             return r
         finally:
             session.close()
@@ -617,9 +599,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         # return selected rows from the where dictionary
         try:
             results = []
-            query = self.__get_where_query(
-                session, where=where, query_control=query_control
-            )
+            query = self.__get_where_query(session, where=where, query_control=query_control)
             query_results = query.all()
             for query_result in query_results:
                 package_dict = {}
@@ -663,9 +643,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 column = getattr(self._sql_alchemy_model, key)
 
                 # Check if column is string-like
-                is_string_column = isinstance(
-                    column.type, (String, Unicode, UnicodeText)
-                )
+                is_string_column = isinstance(column.type, (String, Unicode, UnicodeText))
 
                 # If value is a list/tuple and column is string → use IN
                 if is_string_column and isinstance(value, (list, tuple, set)):
@@ -680,18 +658,12 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 elif isinstance(like_value, list):
                     pass
                 else:
-                    raise Exception(
-                        'Invalid type "like_value".  Must be one of str or list[str].'
-                    )
+                    raise Exception('Invalid type "like_value".  Must be one of str or list[str].')
                 for value in like_value:
-                    query = query.filter(
-                        getattr(self._sql_alchemy_model, col).like(f"%{value}%")
-                    )
+                    query = query.filter(getattr(self._sql_alchemy_model, col).like(f"%{value}%"))
         else:
             assert isinstance(where, str)
-            raise NotImplementedError(
-                "WHERE claused based queries not supported (yet)."
-            )
+            raise NotImplementedError("WHERE claused based queries not supported (yet).")
         if query_control is not None:
             query = self.__control_query(query, query_control)
         return query
@@ -702,9 +674,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             sort_orders = []
             if self.default_pagination_sort_by_column:
                 sort_orders.append(
-                    SortOrder(
-                        column=self.default_pagination_sort_by_column, ascending=True
-                    )
+                    SortOrder(column=self.default_pagination_sort_by_column, ascending=True)
                 )
         for sort_order in sort_orders:
             order_by = sort_order.column
@@ -743,20 +713,14 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                         f"Table {self.__get_sql_table_name_reference()} deleted successfully."
                     )
                 except SQLAlchemyError as e:
-                    self.logger.error(
-                        f"Error deleting table: {e}"
-                    )  # When table does not exist.
+                    self.logger.error(f"Error deleting table: {e}")  # When table does not exist.
                     raise e
         try:
             self.__connect_without_retry()  # Ensure engine is initialized
             self._sql_alchemy_model.__table__.drop(self._engine)
-            self.logger.info(
-                f"Table {self.__get_sql_table_name_reference()} deleted successfully."
-            )
+            self.logger.info(f"Table {self.__get_sql_table_name_reference()} deleted successfully.")
         except SQLAlchemyError as e:
-            self.logger.error(
-                f"Error deleting table: {e}"
-            )  # When table does not exist.
+            self.logger.error(f"Error deleting table: {e}")  # When table does not exist.
             raise e
 
     @retry(
@@ -770,9 +734,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         )  # returns [] if tables is not present
         return len(columns) > 0
 
-    def __get_db_item_by_uuid(
-        self, session: Any, uuid: str
-    ) -> Optional[BASE_ITEM_TYPE]:
+    def __get_db_item_by_uuid(self, session: Any, uuid: str) -> Optional[BASE_ITEM_TYPE]:
         """Get the SQLAlchemy database item corresponding to the item with the given UUID.
         Since UUID is not always the primary key, we use filter_by() instead of get().
 
@@ -812,9 +774,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             # Commit all deletes in a single transaction
             if deleted_uuids:
                 session.commit()
-                self.logger.info(
-                    f"Deleted {len(deleted_uuids)} row(s) with UUIDs: {deleted_uuids}"
-                )
+                self.logger.info(f"Deleted {len(deleted_uuids)} row(s) with UUIDs: {deleted_uuids}")
         except SQLAlchemyError as e:
             session.rollback()
             self.logger.error(f"Error deleting rows: {e}")
@@ -841,9 +801,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         try:
             self.__connect_with_retry()  # To create inspector
             self._inspector.clear_cache()
-            for column in self._inspector.get_columns(
-                self.table_name, schema=self._db_schema
-            ):
+            for column in self._inspector.get_columns(self.table_name, schema=self._db_schema):
                 existing_columns.append(column["name"])
         except NoSuchTableError as e:
             if raise_exception:
@@ -867,14 +825,10 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             # Yes, this would be better to do directly in SQL, but we didn't want to commit to SQL or Mongo to enable this feature.
             # We sacrifices performance for flexibility in SQL provider.
             for column_name, attr_name in self.exact_liked_list_columns.items():
-                list_values_to_match = where.get(
-                    column_name, None
-                )  # column of interest is queried
+                list_values_to_match = where.get(column_name, None)  # column of interest is queried
                 if list_values_to_match is not None:
                     # Get the items from the where query that are all found in the list value under the named attribute on the item.
-                    items = self.__filter_by_list_values(
-                        items, attr_name, list_values_to_match
-                    )
+                    items = self.__filter_by_list_values(items, attr_name, list_values_to_match)
         return items
 
     def __filter_by_list_values(

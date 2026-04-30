@@ -149,9 +149,7 @@ class TestWandBLineageStore:
     @pytest.fixture(autouse=True)
     def _setup(self):
         self.mock_service = MagicMock(spec=LineageService)
-        with patch(
-            "gbserver.lineage.wandb_jobstats.LineageServiceFactory"
-        ) as mock_factory:
+        with patch("gbserver.lineage.wandb_jobstats.LineageServiceFactory") as mock_factory:
             mock_factory.create.return_value = self.mock_service
             from gbserver.lineage.wandb_jobstats import WandBLineageStore
 
@@ -171,9 +169,7 @@ class TestWandBLineageStore:
             build, [target], {"in-1": input_art, "out-1": output_art}, [step]
         )
 
-        self.storage_impl.add_jobstats_for_build_target(
-            storage, "build-001", "target-001"
-        )
+        self.storage_impl.add_jobstats_for_build_target(storage, "build-001", "target-001")
 
         self.mock_service.emit_event.assert_called_once()
         event = self.mock_service.emit_event.call_args[0][0]
@@ -188,22 +184,15 @@ class TestWandBLineageStore:
         assert event["outputs"][0]["name"] == "output-model"
         assert event["outputs"][0]["facets"]["artifact_id"] == "out-1"
         assert event["run"]["facets"]["tags"]["build_id"] == "build-001"
-        assert (
-            event["run"]["facets"]["job_input_params"]["steps"][0]["uri"]
-            == "gbstep://train"
-        )
+        assert event["run"]["facets"]["job_input_params"]["steps"][0]["uri"] == "gbstep://train"
 
     def test_add_jobstats_for_build(self):
         build = _make_build()
         target1 = _make_target(uuid="t1", output_artifacts={"model": ["art-1"]})
-        target2 = _make_target(
-            uuid="t2", name="eval", output_artifacts={"report": ["art-2"]}
-        )
+        target2 = _make_target(uuid="t2", name="eval", output_artifacts={"report": ["art-2"]})
         art1 = _make_artifact("art-1", "m1", "s3://b/m1")
         art2 = _make_artifact("art-2", "m2", "s3://b/m2")
-        storage = _make_mock_storage(
-            build, [target1, target2], {"art-1": art1, "art-2": art2}
-        )
+        storage = _make_mock_storage(build, [target1, target2], {"art-1": art1, "art-2": art2})
 
         self.storage_impl.add_jobstats_for_build(storage, "build-001")
 
@@ -221,18 +210,12 @@ class TestWandBLineageStore:
         storage = _make_mock_storage(build, [], {})
 
         with pytest.raises(ValueError, match="Zero targets found"):
-            self.storage_impl.add_jobstats_for_build_target(
-                storage, "build-001", "nonexistent"
-            )
+            self.storage_impl.add_jobstats_for_build_target(storage, "build-001", "nonexistent")
 
     def test_add_jobstats_for_original_artifact(self):
         output = _make_artifact("out-1", "registered-model", "s3://b/model")
-        src1 = _make_artifact(
-            "src-1", "dataset-a", "s3://b/data-a", ArtifactType.FILESET
-        )
-        src2 = _make_artifact(
-            "src-2", "dataset-b", "s3://b/data-b", ArtifactType.FILESET
-        )
+        src1 = _make_artifact("src-1", "dataset-a", "s3://b/data-a", ArtifactType.FILESET)
+        src2 = _make_artifact("src-2", "dataset-b", "s3://b/data-b", ArtifactType.FILESET)
 
         self.storage_impl.add_jobstats_for_original_artifact(output, [src1, src2])
 
@@ -253,9 +236,7 @@ class TestWandBLineageStore:
             input_artifacts={"data": "in-1"},
             output_artifacts={"model": ["out-1"]},
         )
-        storage = _make_mock_storage(
-            build, [target], {"in-1": input_art, "out-1": output_art}
-        )
+        storage = _make_mock_storage(build, [target], {"in-1": input_art, "out-1": output_art})
 
         events_list, events_dict = self.storage_impl.create_jobstats_for_target(
             storage, target, build
@@ -357,9 +338,7 @@ class TestWandBLineageStore:
             target.status = gb_status
             storage = _make_mock_storage(build, [target], {"out-1": output_art})
 
-            events_list, _ = self.storage_impl.create_jobstats_for_target(
-                storage, target, build
-            )
+            events_list, _ = self.storage_impl.create_jobstats_for_target(storage, target, build)
             assert events_list[0]["eventType"] == expected_event_type
 
     def test_hf_bucket_artifact(self):
@@ -380,13 +359,9 @@ class TestWandBLineageStore:
             input_artifacts={"data": "in-1"},
             output_artifacts={"model": ["out-1"]},
         )
-        storage = _make_mock_storage(
-            build, [target], {"in-1": input_art, "out-1": output_art}
-        )
+        storage = _make_mock_storage(build, [target], {"in-1": input_art, "out-1": output_art})
 
-        events_list, _ = self.storage_impl.create_jobstats_for_target(
-            storage, target, build
-        )
+        events_list, _ = self.storage_impl.create_jobstats_for_target(storage, target, build)
 
         assert len(events_list) == 1
         event = events_list[0]
@@ -410,13 +385,9 @@ class TestWandBLineageStore:
             input_artifacts={"data": "in-1"},
             output_artifacts={"model": ["out-1"]},
         )
-        storage = _make_mock_storage(
-            build, [target], {"in-1": input_art, "out-1": output_art}
-        )
+        storage = _make_mock_storage(build, [target], {"in-1": input_art, "out-1": output_art})
 
-        events_list, _ = self.storage_impl.create_jobstats_for_target(
-            storage, target, build
-        )
+        events_list, _ = self.storage_impl.create_jobstats_for_target(storage, target, build)
 
         assert len(events_list) == 1
         event = events_list[0]
@@ -436,13 +407,9 @@ class TestWandBLineageStore:
             input_artifacts={"data": "in-1"},
             output_artifacts={"model": ["out-1"]},
         )
-        storage = _make_mock_storage(
-            build, [target], {"in-1": input_art, "out-1": output_art}
-        )
+        storage = _make_mock_storage(build, [target], {"in-1": input_art, "out-1": output_art})
 
-        events_list, _ = self.storage_impl.create_jobstats_for_target(
-            storage, target, build
-        )
+        events_list, _ = self.storage_impl.create_jobstats_for_target(storage, target, build)
 
         assert len(events_list) == 1
         event = events_list[0]
@@ -462,13 +429,9 @@ class TestWandBLineageStore:
             input_artifacts={"model": "in-1"},
             output_artifacts={"result": ["out-1"]},
         )
-        storage = _make_mock_storage(
-            build, [target], {"in-1": input_art, "out-1": output_art}
-        )
+        storage = _make_mock_storage(build, [target], {"in-1": input_art, "out-1": output_art})
 
-        events_list, _ = self.storage_impl.create_jobstats_for_target(
-            storage, target, build
-        )
+        events_list, _ = self.storage_impl.create_jobstats_for_target(storage, target, build)
 
         assert len(events_list) == 1
         event = events_list[0]
@@ -482,9 +445,7 @@ class TestWandBLineageStore:
         target = _make_target(output_artifacts={"model": ["out-1"]})
         storage = _make_mock_storage(build, [target], {"out-1": output_art})
 
-        events_list, _ = self.storage_impl.create_jobstats_for_target(
-            storage, target, build
-        )
+        events_list, _ = self.storage_impl.create_jobstats_for_target(storage, target, build)
 
         assert (
             events_list[0]["job"]["facets"]["documentation"]["description"]
@@ -567,9 +528,7 @@ class TestFeatureFlagSelection:
 
         with (
             patch("gbserver.types.constants.GB_ENVIRONMENT_CONFIG", mock_config),
-            patch(
-                "gbserver.lineage.wandb_jobstats.LineageServiceFactory"
-            ) as mock_factory,
+            patch("gbserver.lineage.wandb_jobstats.LineageServiceFactory") as mock_factory,
         ):
             mock_factory.create.return_value = MagicMock(spec=LineageService)
             result = jobstats_mod.get_lineage_store()

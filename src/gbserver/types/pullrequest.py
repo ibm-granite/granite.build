@@ -43,13 +43,9 @@ class PullRequestRobotCommentDataBuilder(BaseModel):
     name: Optional[str] = None  # deprecated in favor of repo_name
     repo_name: str = ""
     # commit hash -> validation data
-    validation: dict[str, PullRequestRobotCommentDataBuilderVal] = Field(
-        default_factory=dict
-    )
+    validation: dict[str, PullRequestRobotCommentDataBuilderVal] = Field(default_factory=dict)
     # commit hash -> execution data
-    execution: dict[str, PullRequestRobotCommentDataBuilderVal] = Field(
-        default_factory=dict
-    )
+    execution: dict[str, PullRequestRobotCommentDataBuilderVal] = Field(default_factory=dict)
 
     def model_post_init(self: Self, __context: Any) -> None:
         if self.repo_name == "" and self.name is not None:

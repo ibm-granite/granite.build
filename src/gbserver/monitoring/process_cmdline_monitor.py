@@ -1,4 +1,6 @@
 # process_monitors.py
+"""Process cmdline monitor module."""
+
 import asyncio
 import os
 import time
@@ -147,9 +149,7 @@ class CmdlineMonitor(MonitorBase):
                     )  # give time to the tailer and publisher to finish processing the log before exiting
                     self.stop_event.set()
                     break
-                elif (
-                    time.monotonic() - start_time >= self.max_wait_for_active_processes
-                ):
+                elif time.monotonic() - start_time >= self.max_wait_for_active_processes:
                     logger.info(
                         "[CmdlineMon %s] no process detected within max wait, stopping.",
                         self.targetsteprun_id,

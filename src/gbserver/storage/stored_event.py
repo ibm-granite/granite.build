@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Stored event module."""
+
 from typing import Any, Self
 
 from gbserver.storage.storage import BaseStoredItem
@@ -22,6 +24,7 @@ from gbserver.types.buildevent import BuildEvent
 
 class StoredEvent(BaseStoredItem):
     # Required initializations
+    """Stored Event implementation."""
     build_event: Any
 
     def __init__(self: Self, **kwargs):

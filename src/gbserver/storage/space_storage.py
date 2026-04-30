@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Space storage module."""
+
 from typing import Optional, Self
 
 from gbserver.storage.storage import BaseItemStorage, IItemStorage
@@ -22,6 +24,7 @@ from gbserver.types.constants import GB_SPACES_TABLE_NAME
 
 
 class IStoredSpaceStorage(IItemStorage[StoredSpace]):
+    """I Stored Space Storage implementation."""
 
     def get_by_name(self, name: str) -> Optional[StoredSpace]:
         """Look up the unique space by name.
@@ -41,12 +44,11 @@ class IStoredSpaceStorage(IItemStorage[StoredSpace]):
 
 
 class BaseStoredSpaceStorage(BaseItemStorage[StoredSpace], IStoredSpaceStorage):
+    """Base Stored Space Storage implementation."""
 
     def __init__(self: Self, **kwargs):
         kwargs["item_class"] = StoredSpace
-        if (
-            kwargs.get("table_name") is None
-        ):  # Allow for testing using alternate table names.
+        if kwargs.get("table_name") is None:  # Allow for testing using alternate table names.
             kwargs["table_name"] = GB_SPACES_TABLE_NAME
         super().__init__(**kwargs)
 

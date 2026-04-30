@@ -91,9 +91,7 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def list_matching_repos(
-    api: HfApi, repo_type: str, org: str, pattern: str
-) -> list[str]:
+def list_matching_repos(api: HfApi, repo_type: str, org: str, pattern: str) -> list[str]:
     """Return repo IDs in org of the given type whose name matches pattern.
 
     Args:
@@ -139,9 +137,7 @@ def main() -> None:
 
     api = HfApi(token=args.token)
 
-    print(
-        f"Fetching {args.repo_type} repos in '{args.org}' matching '{args.pattern}' ..."
-    )
+    print(f"Fetching {args.repo_type} repos in '{args.org}' matching '{args.pattern}' ...")
     matching = list_matching_repos(api, args.repo_type, args.org, args.pattern)
 
     if not matching:

@@ -1,3 +1,5 @@
+"""Service tag module."""
+
 import logging
 from typing import Literal, Optional
 
@@ -35,9 +37,7 @@ def get_tags(
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": f"Space {space} not found in available spaces."
-                },
+                callback_args={"reason": f"Space {space} not found in available spaces."},
             )
         raise Exception(f"Space {space} not found in available spaces.")
     space_name = s.get("name")
@@ -48,9 +48,7 @@ def get_tags(
     elif resource_type == "builds":
         api_url = f"{GBSERVER_BUILD_API}tags"
     else:
-        raise ValueError(
-            f"Invalid resource_type: {resource_type}. Must be 'artifacts' or 'builds'"
-        )
+        raise ValueError(f"Invalid resource_type: {resource_type}. Must be 'artifacts' or 'builds'")
 
     # Build parameters, filtering out None values
     params = {}

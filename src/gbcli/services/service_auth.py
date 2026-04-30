@@ -1,3 +1,5 @@
+"""Service auth module."""
+
 import os
 
 from requests.exceptions import ConnectionError
@@ -14,10 +16,12 @@ from gbcli.utils.spaceutil import resolve_space
 
 
 def gh_token():
+    """Gh token."""
     return get_token()
 
 
 def gh_token_verify(device_code: str) -> TokenURLResponse:
+    """Gh token verify."""
     interval = 5
     while True:
         time.sleep(interval)
@@ -34,6 +38,7 @@ def gh_token_verify(device_code: str) -> TokenURLResponse:
 
 
 def gh_login(gh_access_token: str):
+    """Gh login."""
     user_obj = get_user(token=gh_access_token)
     credentials = GBCredentials()
     credentials.set("token", gh_access_token, section="user.github")
@@ -46,40 +51,33 @@ def gh_login(gh_access_token: str):
 
 
 def lh_artifact_token(github_token: str, callback=None) -> str:
+    """Lh artifact token."""
     url = f"{GBSERVER_SECRETS_API}lakehouse/artifact_token"
     token = make_gbserver_call(
         lambda: gbserver_get(github_token, url),
         callback,
     )
 
-    if (
-        not token
-        or not token["lakehouse_token"]
-        or not token["lakehouse_token"]["token"]
-    ):
+    if not token or not token["lakehouse_token"] or not token["lakehouse_token"]["token"]:
         raise Exception("Error getting Lakehouse Token.")
     return token["lakehouse_token"]["token"]
 
 
 def lh_user_token(github_token: str, callback=None) -> str:
+    """Lh user token."""
     url = f"{GBSERVER_SECRETS_API}lakehouse/user_token"
     token = make_gbserver_call(
         lambda: gbserver_get(github_token, url),
         callback,
     )
 
-    if (
-        not token
-        or not token["lakehouse_token"]
-        or not token["lakehouse_token"]["token"]
-    ):
+    if not token or not token["lakehouse_token"] or not token["lakehouse_token"]["token"]:
         raise Exception("Error getting Lakehouse Token.")
     return token["lakehouse_token"]["token"]
 
 
-def lakehouse_token_for_space(
-    github_token: str, space: str = None, callback=None
-) -> str:
+def lakehouse_token_for_space(github_token: str, space: str = None, callback=None) -> str:
+    """Lakehouse token for space."""
     global_space = resolve_space(github_token, space, callback=callback)
     namespace = global_space.get("lakehouse_namespace")
     public = global_space.get("name") == "public"
@@ -115,13 +113,9 @@ def ibmid_login(open_browser=None) -> str:
     if result.expires_in:
         import time as _time
 
-        credentials.set(
-            "expires_at", int(_time.time()) + result.expires_in, section="user.ibmid"
-        )
+        credentials.set("expires_at", int(_time.time()) + result.expires_in, section="user.ibmid")
     login_name = (
-        result.user_info.preferred_username
-        or result.user_info.email
-        or result.user_info.sub
+        result.user_info.preferred_username or result.user_info.email or result.user_info.sub
     )
     credentials.set("login", login_name, section="user.ibmid")
     credentials.set("email", result.user_info.email, section="user.ibmid")
@@ -133,10 +127,12 @@ def ibmid_login(open_browser=None) -> str:
 
 
 def rits_user_api_key():
+    """Rits user api key."""
     return os.environ.get("RITS_API_KEY", None)
 
 
 def verify_rits_api_key(rits_api_key, callback=None):
+    """Verify rits api key."""
     try:
         response = requests.get(
             RITS_LIST_URL,

@@ -1,8 +1,12 @@
+"""Atomic module."""
+
 import abc
 import threading
 
 
 class AtomicInteger(abc.ABC):
+    """Atomic Integer implementation."""
+
     _counter: int
     _lock: threading.Lock
 

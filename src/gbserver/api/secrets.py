@@ -70,9 +70,7 @@ class SecretUpdateRequest(BaseModel):
     encoding: str
 
 
-def _get_space_for_admin(
-    username: str, space_name: str, lh_token: Optional[str] = None
-):
+def _get_space_for_admin(username: str, space_name: str, lh_token: Optional[str] = None):
     spaces = user_spaces_list(username, lh_token=lh_token)
     # logger.info(spaces)
     space = list(filter(lambda x: x["name"] == space_name, spaces))
@@ -133,9 +131,7 @@ def get_space_secret(request: Request, space_name: str, secret_name: str):
 
 
 @secrets_api.post("/space_secrets/{space_name}")
-def create_space_secret(
-    request: Request, space_name: str, secret_request: SecretCreateRequest
-):
+def create_space_secret(request: Request, space_name: str, secret_request: SecretCreateRequest):
     """Create a new secret."""
     try:
         username = request.state.data["user"].email
@@ -159,9 +155,7 @@ def create_space_secret(
         if secret_group_name is None:
             raise Exception(f"Secret group is unavailable")
         secret_value = (
-            base64.b64decode(secret_request.secret_value.encode("ascii")).decode(
-                "utf-8"
-            )
+            base64.b64decode(secret_request.secret_value.encode("ascii")).decode("utf-8")
             if secret_request.encoding == "base64"
             else secret_request.secret_value
         )
@@ -206,9 +200,7 @@ def update_space_secret(
         if secret_group_name is None:
             raise Exception(f"Secret group is unavailable")
         secret_value = (
-            base64.b64decode(secret_request.secret_value.encode("ascii")).decode(
-                "utf-8"
-            )
+            base64.b64decode(secret_request.secret_value.encode("ascii")).decode("utf-8")
             if secret_request.encoding == "base64"
             else secret_request.secret_value
         )
@@ -279,9 +271,7 @@ def get_user_secret(request: Request, secret_name: str):
         if secret_group_name is None:
             raise Exception(f"Secret group is unavailable")
         secret_name_for_user = manager.get_secret_name_for_user(user_id, secret_name)
-        secret_value = manager.get_secret_value(
-            secret_group_name, secret_name_for_user, True
-        )
+        secret_value = manager.get_secret_value(secret_group_name, secret_name_for_user, True)
         if secret_value is None:
             raise Exception("secret not found")
         return {
@@ -320,13 +310,9 @@ def create_user_secret(request: Request, secret_request: SecretCreateRequest):
         secret_group_name = manager.get_secret_group_for_users()
         if secret_group_name is None:
             raise Exception(f"Secret group is unavailable")
-        secret_name_for_user = manager.get_secret_name_for_user(
-            user_id, secret_request.secret_name
-        )
+        secret_name_for_user = manager.get_secret_name_for_user(user_id, secret_request.secret_name)
         secret_value = (
-            base64.b64decode(secret_request.secret_value.encode("ascii")).decode(
-                "utf-8"
-            )
+            base64.b64decode(secret_request.secret_value.encode("ascii")).decode("utf-8")
             if secret_request.encoding == "base64"
             else secret_request.secret_value
         )
@@ -372,15 +358,11 @@ def update_user_secret(
             raise Exception(f"Secret group is unavailable")
         secret_name_for_user = manager.get_secret_name_for_user(user_id, secret_name)
         secret_value = (
-            base64.b64decode(secret_request.secret_value.encode("ascii")).decode(
-                "utf-8"
-            )
+            base64.b64decode(secret_request.secret_value.encode("ascii")).decode("utf-8")
             if secret_request.encoding == "base64"
             else secret_request.secret_value
         )
-        manager.update_secret_value(
-            secret_group_name, secret_name_for_user, secret_value
-        )
+        manager.update_secret_value(secret_group_name, secret_name_for_user, secret_value)
         return {"result": "success"}
     except Exception as e:
         logger.error("Failed to update a user secret: %s", e)

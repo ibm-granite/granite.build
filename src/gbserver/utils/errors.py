@@ -21,9 +21,7 @@ from typing import List, Type
 
 def simple_unwrap_errors(e: BaseException) -> str:
     """Flatten nested exceptions."""
-    assert isinstance(
-        e, BaseException
-    ), f"called with non-exception type: {type(e)} {e}"
+    assert isinstance(e, BaseException), f"called with non-exception type: {type(e)} {e}"
     prefix = e.__class__.__name__
     if isinstance(e, ExceptionGroup):
         err_strs = []
@@ -49,9 +47,7 @@ def gather_specific_exception_type(
 
     Returns: List[cls]
     """
-    assert isinstance(
-        e, BaseException
-    ), f"called with non-exception type: {type(e)} {e}"
+    assert isinstance(e, BaseException), f"called with non-exception type: {type(e)} {e}"
     all_excs: List[BaseException] = []
     if isinstance(e, cls):
         all_excs.append(e)

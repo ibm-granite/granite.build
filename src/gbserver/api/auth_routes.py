@@ -89,9 +89,7 @@ _sessions: dict[str, _AuthSession] = {}
 
 def _cleanup_expired() -> None:
     now = time.time()
-    expired = [
-        k for k, v in _sessions.items() if now - v.created_at > SESSION_TTL_SECONDS
-    ]
+    expired = [k for k, v in _sessions.items() if now - v.created_at > SESSION_TTL_SECONDS]
     for k in expired:
         del _sessions[k]
 
@@ -257,9 +255,7 @@ def callback(
             desc = body.get("error_description", body.get("error", token_resp.text))
             session.status = "error"
             session.error_detail = f"Token exchange failed: {desc}"
-            logger.error(
-                "IBMid token exchange failed (%s): %s", token_resp.status_code, desc
-            )
+            logger.error("IBMid token exchange failed (%s): %s", token_resp.status_code, desc)
             return HTMLResponse(
                 content=_AUTH_ERROR_HTML_TEMPLATE.format(
                     detail="Token exchange with IBMid failed. Please try again."
@@ -333,9 +329,7 @@ def status(
     if not code_verifier:
         return JSONResponse(
             status_code=400,
-            content={
-                "detail": "code_verifier is required to retrieve completed auth result."
-            },
+            content={"detail": "code_verifier is required to retrieve completed auth result."},
         )
 
     if not _verify_pkce_s256(code_verifier, session.code_challenge):

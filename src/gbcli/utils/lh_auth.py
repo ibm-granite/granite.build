@@ -1,3 +1,5 @@
+"""Lh auth module."""
+
 import logging
 import os
 
@@ -12,6 +14,7 @@ class AuthException(Exception):
 
 def getLH(token):
     # remove user set environment variable
+    """Get the l h."""
     if "LAKEHOUSE_ENVIRONMENT" in os.environ:
         os.environ.pop("LAKEHOUSE_ENVIRONMENT")
     try:

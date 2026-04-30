@@ -1,3 +1,5 @@
+"""Service cleanup module."""
+
 import logging
 import os
 import shutil
@@ -30,9 +32,7 @@ def remove_credentials():
     """
     locate credential - remove if it exists
     """
-    credentials_path = os.path.abspath(
-        os.path.join(get_local_gb_config(), "credentials")
-    )
+    credentials_path = os.path.abspath(os.path.join(get_local_gb_config(), "credentials"))
     if os.path.exists(credentials_path):
         os.remove(credentials_path)
         return str(credentials_path)

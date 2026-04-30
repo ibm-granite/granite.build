@@ -1,9 +1,13 @@
+"""Resources module."""
+
 from enum import Enum, StrEnum, auto
 
 from pydantic import BaseModel
 
 
 class ResourceType(StrEnum):
+    """Resource Type implementation."""
+
     gpu = auto()
     cpu = auto()
     memory = auto()

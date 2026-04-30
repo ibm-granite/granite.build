@@ -33,9 +33,7 @@ class LhBuildStorage(BaseLakehouseItemStorage, IStoredBuildStorage):
 
     def __init__(self, **kwargs) -> None:
         kwargs["item_class"] = StoredBuild
-        if (
-            kwargs.get("table_name") is None
-        ):  # Allow for testing using alternate table names.
+        if kwargs.get("table_name") is None:  # Allow for testing using alternate table names.
             kwargs["table_name"] = GB_BUILDS_TABLE_NAME
         kwargs["unique_fields"] = ["uuid"]
         super().__init__(**kwargs)

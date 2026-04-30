@@ -101,14 +101,10 @@ class TestTokenFormatDetection:
     def test_valid_jwt_structure_detected(self):
         # Create a minimal JWT-like structure
         header = (
-            base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode())
-            .rstrip(b"=")
-            .decode()
+            base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode()).rstrip(b"=").decode()
         )
         payload = (
-            base64.urlsafe_b64encode(json.dumps({"sub": "test"}).encode())
-            .rstrip(b"=")
-            .decode()
+            base64.urlsafe_b64encode(json.dumps({"sub": "test"}).encode()).rstrip(b"=").decode()
         )
         sig = base64.urlsafe_b64encode(b"fakesig").rstrip(b"=").decode()
         token = f"{header}.{payload}.{sig}"
@@ -119,15 +115,11 @@ class TestTokenFormatDetection:
 
     def test_peek_issuer_from_jwt_payload(self):
         header = (
-            base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode())
-            .rstrip(b"=")
-            .decode()
+            base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode()).rstrip(b"=").decode()
         )
         payload = (
             base64.urlsafe_b64encode(
-                json.dumps(
-                    {"iss": "https://login.ibm.com/oidc/endpoint/default"}
-                ).encode()
+                json.dumps({"iss": "https://login.ibm.com/oidc/endpoint/default"}).encode()
             )
             .rstrip(b"=")
             .decode()
@@ -152,14 +144,10 @@ class TestGitHubAuthProvider:
 
     def test_identify_rejects_jwt(self):
         header = (
-            base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode())
-            .rstrip(b"=")
-            .decode()
+            base64.urlsafe_b64encode(json.dumps({"alg": "RS256"}).encode()).rstrip(b"=").decode()
         )
         payload = (
-            base64.urlsafe_b64encode(json.dumps({"sub": "test"}).encode())
-            .rstrip(b"=")
-            .decode()
+            base64.urlsafe_b64encode(json.dumps({"sub": "test"}).encode()).rstrip(b"=").decode()
         )
         sig = base64.urlsafe_b64encode(b"fakesig").rstrip(b"=").decode()
         token = f"{header}.{payload}.{sig}"
@@ -397,9 +385,7 @@ class TestBuildProviderList:
 
 class TestUserAuthProvider:
     def test_default_auth_provider_is_github(self):
-        user = User(
-            login="test", id=1, url="", html_url="", name="Test", email="t@t.com"
-        )
+        user = User(login="test", id=1, url="", html_url="", name="Test", email="t@t.com")
         assert user.auth_provider == "github"
 
     def test_auth_provider_can_be_set(self):

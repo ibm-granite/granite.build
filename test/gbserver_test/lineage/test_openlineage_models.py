@@ -111,9 +111,7 @@ class TestArtifactLineageRequest:
 
 class TestPaginatedResponse:
     def test_construction(self):
-        resp = PaginatedResponse(
-            count=3, total=10, limit=5, offset=0, runs=["a", "b", "c"]
-        )
+        resp = PaginatedResponse(count=3, total=10, limit=5, offset=0, runs=["a", "b", "c"])
         assert resp.count == 3
         assert resp.total == 10
         assert resp.limit == 5

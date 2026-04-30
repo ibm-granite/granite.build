@@ -75,9 +75,7 @@ class BaseDualItemStorage(IItemStorage):
         else:
             assert self.primary.get_table_name() == self.secondary.get_table_name()
 
-    def add(
-        self, items: Union[BaseStoredItem, list[BaseStoredItem]]
-    ) -> Union[str, list[str]]:
+    def add(self, items: Union[BaseStoredItem, list[BaseStoredItem]]) -> Union[str, list[str]]:
         """
         Add the given object(s) to the underlying storage instance.
         Checks for item field uniquess, if  configured in the initializer.

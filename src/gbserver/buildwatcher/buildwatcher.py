@@ -179,9 +179,7 @@ class BuildWatcher:
         logger.info("loading config from %s", self.config_path)
         prev_config = self.config
         self.config = BuildWatcherConfig.from_yaml(self.config_path)
-        self.config.initialize(
-            spaces_storage=self.storage.space_storage, prev_config=prev_config
-        )
+        self.config.initialize(spaces_storage=self.storage.space_storage, prev_config=prev_config)
 
     def start_and_wait(self: Self) -> None:
         """Start and wait for the build watcher to stop.
@@ -285,9 +283,7 @@ class BuildWatcher:
             logger.error("%s", traceback.format_exc())
             logger.error("failed to fetch the new cancelled builds error: %s", e)
         to_show_cancelled = [b.source_uri for b in cancelled_builds]
-        logger.debug(
-            "all cancelled builds: %d %s", len(to_show_cancelled), to_show_cancelled
-        )
+        logger.debug("all cancelled builds: %d %s", len(to_show_cancelled), to_show_cancelled)
         for b in cancelled_builds:
             self.__process_cancel_requested_build(b)
 
@@ -365,9 +361,7 @@ class BuildWatcher:
         """
         try:
             repo = Repo(path=clone_path)
-            logger.info(
-                "repo already cloned at path %s , pulling latest changes...", clone_path
-            )
+            logger.info("repo already cloned at path %s , pulling latest changes...", clone_path)
             repo.git.reset("--hard")
             repo.git.clean("-xdf")
             repo.git.checkout(branch)
@@ -408,9 +402,7 @@ class BuildWatcher:
         repo_url_no_prefix = repo_url.removeprefix("https://")
         clone_url_with_creds = "https://" + self.gh_token + "@" + repo_url_no_prefix
         clone_url_redacted = "https://****@" + repo_url_no_prefix
-        logger.info(
-            "pr_clone_path: %s clone url: %s", pr_clone_path, clone_url_redacted
-        )
+        logger.info("pr_clone_path: %s clone url: %s", pr_clone_path, clone_url_redacted)
         if pr_clone_path.is_dir():
             logger.info("the repo directory already exists at path: %s", pr_clone_path)
             if force:
@@ -477,9 +469,7 @@ class BuildWatcher:
             pending_builds = (
                 self.__get_newly_pending_builds()
             )  # only those from the assigned space(s)
-            logger.info(
-                f"Found {len(pending_builds)} pending builds in our managed spaces"
-            )
+            logger.info(f"Found {len(pending_builds)} pending builds in our managed spaces")
         except Exception as e:
             logger.error("%s", traceback.format_exc())
             logger.error("failed to fetch the new pending builds error: %s", e)
@@ -536,9 +526,7 @@ class BuildWatcher:
 
     def __get_newly_pending_builds(self: Self) -> List[StoredBuild]:
         """Get a list of builds that are new and in pending state."""
-        return self.__get_unseen_builds_matching_status(
-            Status.PENDING, self.active_pending_builds
-        )
+        return self.__get_unseen_builds_matching_status(Status.PENDING, self.active_pending_builds)
 
     def __get_unseen_builds_matching_status(
         self: Self, status: Status, active_build_ids: list[str]
@@ -546,9 +534,7 @@ class BuildWatcher:
         """Get a list of builds that are not yet currently active and have the given status.
         Also remove any builds that no longer have the given status from the active_build_ids list.
         """
-        logger.debug(
-            "BuildWatcher.__get_unseen_builds_matching_status status={status} start"
-        )
+        logger.debug("BuildWatcher.__get_unseen_builds_matching_status status={status} start")
         builds = self.__get_builds_matching_status(status)
         new_builds = []
         for b in builds:
@@ -575,9 +561,7 @@ class BuildWatcher:
         for build_id in to_remove:
             active_build_ids.remove(build_id)
 
-        logger.debug(
-            "BuildWatcher.__get_unseen_builds_matching_status status={status} end"
-        )
+        logger.debug("BuildWatcher.__get_unseen_builds_matching_status status={status} end")
         return new_builds
 
     def __get_builds_matching_status(self: Self, status: Status) -> List[StoredBuild]:
@@ -589,9 +573,7 @@ class BuildWatcher:
         query_control = QueryControl(pagination=None, sort_orders=[sort_order])
         pending_builds = cast(
             List[StoredBuild],
-            self.storage.build_storage.get_by_where(
-                where=where, query_control=query_control
-            ),
+            self.storage.build_storage.get_by_where(where=where, query_control=query_control),
         )
         our_pending_builds = []
         for b in pending_builds:  # TODO: should really do this in the query above
@@ -650,9 +632,7 @@ class BuildWatcher:
             )
         # Default to job runner
         if runner_type != "job":
-            logger.warning(
-                "Build runner type %s not recognized. Using job type", runner_type
-            )
+            logger.warning("Build runner type %s not recognized. Using job type", runner_type)
         self.__warn_space_uri_not_supported(runner_type)
         from gbserver.buildwatcher.buildrunnerjob import BuildRunnerJob
 

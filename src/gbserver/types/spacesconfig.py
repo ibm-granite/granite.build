@@ -74,9 +74,7 @@ class CLISpacesConfig(Config):
                 logger.error("failed to find a space for name: %s", config_space.name)
                 continue
             if len(items) > 1:
-                logger.warning(
-                    "more than one space found: %s %s", config_space.name, items
-                )
+                logger.warning("more than one space found: %s %s", config_space.name, items)
             space = items[0]
             assert isinstance(space, StoredSpace)
             cache[space.name] = space

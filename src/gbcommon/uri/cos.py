@@ -54,9 +54,7 @@ class CosURI(URI):
             bucket_name = self.get_uri_netloc()
             scheme = self.uri.scheme if self.uri else "<unknown>"
             if bucket_name == "":
-                raise ValueError(
-                    f"The bucket name cannot be empty in a '{scheme}://' URI"
-                )
+                raise ValueError(f"The bucket name cannot be empty in a '{scheme}://' URI")
         except Exception as e:
             raise ValueError(f"failed to create from uri: {uri}") from e
 

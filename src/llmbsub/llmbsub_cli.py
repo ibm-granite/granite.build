@@ -125,9 +125,7 @@ def submit_upload_job(
                 logger.info(f"Upload job submitted: {upload_job_id}")
                 return upload_job_id
             else:
-                logger.warning(
-                    f"Could not extract job ID from bsub output: {result.stdout}"
-                )
+                logger.warning(f"Could not extract job ID from bsub output: {result.stdout}")
         else:
             logger.warning(f"Upload job submission failed: {result.stderr}")
     except Exception as e:
@@ -186,9 +184,7 @@ def run_upload_script(
 
     # Build command - calls input_upload_service.py directly as a module
     # Use sys.executable to ensure we use the same Python interpreter
-    upload_service_module = (
-        Path(__file__).parent / "services" / "input_upload_service.py"
-    )
+    upload_service_module = Path(__file__).parent / "services" / "input_upload_service.py"
     command_str = [
         sys.executable,
         str(upload_service_module),
@@ -287,18 +283,14 @@ def submit_bsub(
         for input in llmbin_from_yaml:
             inputs_yaml_file = parse_inputs_yaml_file(input, llmbconfig)
             if len(inputs_yaml_file) == 0:
-                sys.exit(
-                    f"Error: no inputs found in {llmbconfig} using expression {input}."
-                )
+                sys.exit(f"Error: no inputs found in {llmbconfig} using expression {input}.")
 
             for i in inputs_yaml_file:
                 file_path = i.split(":")[-1]
                 if not any(file_path in l for l in llmbin):
                     llmbin += (i,)
                 else:
-                    click.echo(
-                        f"⚠️  Warning: skipping duplicate input {i} from YAML file."
-                    )
+                    click.echo(f"⚠️  Warning: skipping duplicate input {i} from YAML file.")
 
     if llmbin_from_file:
         inputs_text_file = parse_text_file(llmbin_from_file)
@@ -310,18 +302,14 @@ def submit_bsub(
             if not any(file_path in l for l in llmbin):
                 llmbin += (i,)
             else:
-                click.echo(
-                    f"⚠️  Warning: skipping duplicate input {i} from {llmbin_from_file}.\n"
-                )
+                click.echo(f"⚠️  Warning: skipping duplicate input {i} from {llmbin_from_file}.\n")
 
     if llmb_output_dir_from_yaml:
         if not llmbconfig:
             sys.exit(
                 "Error: Please specify the YAML file path with --llmbconfig to enable --llmb-output-dir-from-yaml."
             )
-        output_yaml_file = parse_outputs_yaml_file(
-            llmb_output_dir_from_yaml, llmbconfig
-        )
+        output_yaml_file = parse_outputs_yaml_file(llmb_output_dir_from_yaml, llmbconfig)
         if len(output_yaml_file) > 1:
             sys.exit(
                 "Error: Only one output directory should be specified using --llmb-output-dir-from-yaml."
@@ -352,23 +340,17 @@ def submit_bsub(
             llmb_output_dir_path = Path(llmb_output_dir).resolve()
             llmb_output_directory = str(llmb_output_dir_path).split("/")
             proj_llmb_output_directory = (
-                llmb_output_directory[
-                    llmb_output_directory.index(proj_root_directory) + 1
-                ]
+                llmb_output_directory[llmb_output_directory.index(proj_root_directory) + 1]
                 if proj_root_directory in llmb_output_directory
                 else None
             )
 
             if proj_current_directory:
                 llmb_project = proj_current_directory
-                click.echo(
-                    f"Obtaining project name '{llmb_project}' from current directory..."
-                )
+                click.echo(f"Obtaining project name '{llmb_project}' from current directory...")
             elif proj_llmb_output_directory:
                 llmb_project = proj_llmb_output_directory
-                click.echo(
-                    f"Obtaining project name '{llmb_project}' from llmb-output-dir..."
-                )
+                click.echo(f"Obtaining project name '{llmb_project}' from llmb-output-dir...")
             else:
                 click.echo(f"⚠️  Warning: Setting 'data-eng' as project name.")
                 llmb_project = "data-eng"
@@ -380,9 +362,7 @@ def submit_bsub(
                 f"Error: You're running LLM.build Lite for the project {llmb_project}, but it doesn't appear to be configured yet."
             )
 
-        llmb_log_dir_base = Path(
-            f"/{proj_root_directory}/{llmb_project}/llmb-read-write/logs"
-        )
+        llmb_log_dir_base = Path(f"/{proj_root_directory}/{llmb_project}/llmb-read-write/logs")
     log_path = llmb_log_dir_base / f"{run_identifier}/job.log"
 
     output_is_subfolder = False
@@ -695,9 +675,7 @@ def submit_bsub(
                     print(f"\n⚠️ Warning: {reason}\n")
                 case "error":
                     reason = callback_args.get("reason", "")
-                    print(
-                        f"\n❌ Build can't be submitted at this moment... Reason: {reason}"
-                    )
+                    print(f"\n❌ Build can't be submitted at this moment... Reason: {reason}")
                     sys.exit(1)  # Exit with a non-zero status
                 case "validation_error":
                     progress_bar.clear()
@@ -738,9 +716,7 @@ def submit_bsub(
                 validation_type=validation_type,
             )
 
-            symlink_llmb_log_folder = Path(
-                f"{llmb_log_dir_base}/log-llmb/{requested_build_id}"
-            )
+            symlink_llmb_log_folder = Path(f"{llmb_log_dir_base}/log-llmb/{requested_build_id}")
             symlink_llmb_result = create_symlink(symlink_llmb_log_folder, log_path_dir)
             if not symlink_llmb_result:
                 click.echo(
@@ -748,9 +724,7 @@ def submit_bsub(
                 )
 
             log_metadata_path = llmb_log_dir_base / f"{run_identifier}/job.log.metadata"
-            saved_metadata_path = generate_metadata_log(
-                log_metadata_path, requested_build_id
-            )
+            saved_metadata_path = generate_metadata_log(log_metadata_path, requested_build_id)
 
             logger.debug(f"log_metadata_path: {saved_metadata_path}")
 
@@ -807,9 +781,7 @@ class MyHelpFormatter(click.HelpFormatter):
         self.indent_increment = 2
 
     def write_usage(self, prog: str, args: str = "", prefix: str | None = None) -> None:
-        self.write(
-            f"Usage: {prog} [BSUB OPTIONS] [OPTIONS] --llmbcommand [BSUB ARGS]...\n"
-        )
+        self.write(f"Usage: {prog} [BSUB OPTIONS] [OPTIONS] --llmbcommand [BSUB ARGS]...\n")
 
 
 click.Context.formatter_class = MyHelpFormatter
@@ -926,9 +898,7 @@ def llmbsub(
 
     click.echo("📋 llmbsub")
 
-    if not os.path.exists(
-        os.path.abspath(os.path.join(get_local_gb_config(), "credentials"))
-    ):
+    if not os.path.exists(os.path.abspath(os.path.join(get_local_gb_config(), "credentials"))):
         click.echo(
             r"Error: User not logged in. Obtain a new token with 'source /u/granitebuild/llmb/setup && llmb auth login'.",
             err=True,

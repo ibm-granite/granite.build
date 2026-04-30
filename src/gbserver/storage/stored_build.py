@@ -69,9 +69,7 @@ class StoredBuild(BaseStoredItem, TaggedItem):
     retry_build_id: Optional[str] = (
         None  # UUID of the build that is retrying this build (None if not retried)
     )
-    retry_count: int = (
-        0  # Number of automatic retries that have been submitted for this build
-    )
+    retry_count: int = 0  # Number of automatic retries that have been submitted for this build
 
     @classmethod
     def create(
@@ -100,9 +98,7 @@ class StoredBuild(BaseStoredItem, TaggedItem):
         status = kwargs.get("status", Status.PENDING)
         assert isinstance(status, Status), f"invalid status: {status}"
         targets = kwargs.get("targets", None)
-        assert targets is None or isinstance(
-            targets, list
-        ), f"invalid targets: {targets}"
+        assert targets is None or isinstance(targets, list), f"invalid targets: {targets}"
         tags = kwargs.get("tags", None)
         assert tags is None or isinstance(tags, list), f"invalid tags: {tags}"
         description = kwargs.get("description", "")
@@ -126,9 +122,7 @@ class StoredBuild(BaseStoredItem, TaggedItem):
             if isinstance(build_yaml_path, str):
                 build_yaml_path = Path(build_yaml_path)
             assert isinstance(build_yaml_path, Path)
-            assert (
-                build_yaml_path.is_file()
-            ), f"Build yaml does not exist: {build_yaml_path}"
+            assert build_yaml_path.is_file(), f"Build yaml does not exist: {build_yaml_path}"
             build_dir = build_yaml_path.parent
             # logger.debug(f"build_dir={build_dir}")
             assert build_dir.is_dir(), f"{build_dir} is not a valid directory"

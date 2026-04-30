@@ -118,9 +118,7 @@ def get_default_lh() -> LakehouseIceberg:
                 log_lh_token_details(lh)
                 return lh
             except Exception as e:
-                error_str = (
-                    f"failed to create a Lakehouse client from the config=map: {e}"
-                )
+                error_str = f"failed to create a Lakehouse client from the config=map: {e}"
         if lh is None:
             try:
                 lh = create_lakehouse_iceberg(
@@ -131,9 +129,7 @@ def get_default_lh() -> LakehouseIceberg:
                 log_lh_token_details(lh)
                 return lh
             except Exception as e:
-                error_str += (
-                    f"\nfailed to create a Lakehouse client from the config=env: {e}"
-                )
+                error_str += f"\nfailed to create a Lakehouse client from the config=env: {e}"
     raise ValueError(error_str)
 
 
@@ -162,9 +158,7 @@ class BaseLakehouseStorage(BaseModel):
         if table is not None:
             table.delete()
 
-    def get_table_in_namespace(
-        self: Self, namespace: str, table_name: str
-    ) -> Table | None:
+    def get_table_in_namespace(self: Self, namespace: str, table_name: str) -> Table | None:
         """Get the named table in the given namespace, if it exists.
 
         Args:
@@ -274,9 +268,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         item_dict = self.__get_by_row_filter(table, where)
         return item_dict
 
-    def __get_row_filter_expression(
-        self, where: Optional[dict]
-    ) -> Optional[BooleanExpression]:
+    def __get_row_filter_expression(self, where: Optional[dict]) -> Optional[BooleanExpression]:
         from datetime import datetime
 
         where_expr = None
@@ -321,9 +313,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         if row_filter is None:
             df = table.to_pandas()
         else:
-            assert isinstance(row_filter, str) or isinstance(
-                row_filter, BooleanExpression
-            )
+            assert isinstance(row_filter, str) or isinstance(row_filter, BooleanExpression)
             df = table.to_pandas(row_filter=row_filter)
 
         items = self.__dataframe_to_dicts(df)
@@ -406,14 +396,10 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         from gbserver.storage.storage import UPDATED_TIME_FIELD_NAME
         from gbserver.utils.utils import get_utc_time
 
-        self.logger.info(
-            f"Begin updating fields {list(fields.keys())} for item with uuid {uuid}"
-        )
+        self.logger.info(f"Begin updating fields {list(fields.keys())} for item with uuid {uuid}")
         item = self.get_by_uuid(uuid)
         if item is None:
-            raise ValueError(
-                f"Item with uuid {uuid} not found in table {self.table_name}"
-            )
+            raise ValueError(f"Item with uuid {uuid} not found in table {self.table_name}")
 
         # Check should_update condition
         if should_update is not None and not should_update(item):
@@ -463,9 +449,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
                 entries.append(ident)
             table.delete_entries(entries=entries)
 
-    def __to_dataframe(
-        self, items: Union[dict[str, Any], list[dict[str, Any]]]
-    ) -> DataFrame:
+    def __to_dataframe(self, items: Union[dict[str, Any], list[dict[str, Any]]]) -> DataFrame:
         if not isinstance(items, list):
             items = [items]
         # rows = []
@@ -491,9 +475,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
             bool: true if the schema has changed, in which case a new Table should be created.
         """
         row = item  # self._get_column_values(item)
-        assert (
-            row is not None
-        ), "Sub-class did not return a dictionary of column values for an item"
+        assert row is not None, "Sub-class did not return a dictionary of column values for an item"
         item_columns = list(row.keys())
         # df = table.to_pandas(rows=1)
         # existing_columns = list(df.columns)
@@ -567,9 +549,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
     )
     def __create_Table(self) -> Table:
         try:
-            table = Table(
-                lh=self.lh, namespace=self.namespace, table_name=self.table_name
-            )
+            table = Table(lh=self.lh, namespace=self.namespace, table_name=self.table_name)
         except Exception as e:
             self.logger.warning(f"Got exception trying to create Table: {e}")
             raise e
@@ -583,9 +563,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
     def _does_table_exist(self) -> bool:
         return self.lh._catalog.table_exists(self.namespace + "." + self.table_name)
 
-    def __get_table(
-        self, items: Union[dict[str, Any], list[dict[str, Any]]]
-    ) -> Optional[Table]:
+    def __get_table(self, items: Union[dict[str, Any], list[dict[str, Any]]]) -> Optional[Table]:
         """
         get the Table object and create if necessary.
         if item is None, then
@@ -637,9 +615,7 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
         """
         if item is None:
             raise ValueError("Could not create table without item to define schema")
-        self.logger.info(
-            f"Begin creating table {self.table_name} in namespace {self.namespace}"
-        )
+        self.logger.info(f"Begin creating table {self.table_name} in namespace {self.namespace}")
         row = item
         for key, value in row.items():
             if value is None:
@@ -675,24 +651,16 @@ class BaseLakehouseItemStorage(BaseItemStorage, BaseLakehouseStorage):
                 lh=self.lh, schema=pa_table.schema, table_details=table_details
             )
         except Exception as e:
-            logger.error(
-                f"Could not create table {self.namespace}.{self.table_name}: {e}"
-            )
+            logger.error(f"Could not create table {self.namespace}.{self.table_name}: {e}")
             raise e
-        self.logger.info(
-            f"Done creating table {self.table_name} in namespace {self.namespace}"
-        )
+        self.logger.info(f"Done creating table {self.table_name} in namespace {self.namespace}")
         return table
 
 
 if __name__ == "__main__":
     from gbserver.storage.stored_space import StoredSpace
 
-    storage1 = BaseLakehouseItemStorage(
-        table_name="gb-testing1", item_class=StoredSpace
-    )
-    storage2 = BaseLakehouseItemStorage(
-        table_name="gb-testing2", item_class=StoredSpace
-    )
+    storage1 = BaseLakehouseItemStorage(table_name="gb-testing1", item_class=StoredSpace)
+    storage2 = BaseLakehouseItemStorage(table_name="gb-testing2", item_class=StoredSpace)
     logger.info(f"Storage: {storage1}")
     logger.info(f"Storage: {storage2}")

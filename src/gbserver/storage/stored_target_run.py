@@ -1,3 +1,5 @@
+"""Stored target run module."""
+
 from datetime import datetime
 from typing import Optional, Self
 
@@ -9,6 +11,7 @@ from gbserver.types.status import Status
 
 class StoredTargetRun(BaseStoredItem):
     # Required initializations
+    """Stored Target Run implementation."""
     build_id: str
     environment_uri: str
 

@@ -1,3 +1,5 @@
+"""Command tag module."""
+
 import json
 
 import click

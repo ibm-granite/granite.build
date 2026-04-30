@@ -147,9 +147,7 @@ def _run_standalone(
 
     importlib.reload(gbserver.types.constants)
 
-    logger.info(
-        "Starting gbserver standalone on %s:%d with space-dir %s", host, port, space_dir
-    )
+    logger.info("Starting gbserver standalone on %s:%d with space-dir %s", host, port, space_dir)
 
     # 2. Force SQLite storage — standalone always uses SQLite.
     from gbserver.storage import singleton_storage

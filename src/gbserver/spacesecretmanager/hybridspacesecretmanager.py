@@ -52,9 +52,7 @@ class HybridSpaceSecretManager(SpaceSecretManager):
         - Robust error handling: logs exceptions but continues to next manager
     """
 
-    def __init__(
-        self: Self, uri: str, managers: List[Dict[str, Any]], **kwargs
-    ) -> None:
+    def __init__(self: Self, uri: str, managers: List[Dict[str, Any]], **kwargs) -> None:
         """Initialize the hybrid secret manager with a chain of managers.
 
         Args:
@@ -73,14 +71,10 @@ class HybridSpaceSecretManager(SpaceSecretManager):
         self.manager_types: List[str] = []  # Track types for logging
 
         if not managers:
-            logger.warning(
-                "HybridSpaceSecretManager initialized with empty manager list"
-            )
+            logger.warning("HybridSpaceSecretManager initialized with empty manager list")
             return
 
-        logger.info(
-            "Initializing HybridSpaceSecretManager with %d manager(s)", len(managers)
-        )
+        logger.info("Initializing HybridSpaceSecretManager with %d manager(s)", len(managers))
 
         for idx, manager_config in enumerate(managers):
             manager_type = manager_config.get("type")
@@ -165,9 +159,7 @@ class HybridSpaceSecretManager(SpaceSecretManager):
             logger.debug("No managers available to fetch secret '%s'", secret_name)
             return {}
 
-        for idx, (manager, manager_type) in enumerate(
-            zip(self.managers, self.manager_types)
-        ):
+        for idx, (manager, manager_type) in enumerate(zip(self.managers, self.manager_types)):
             try:
                 logger.debug(
                     "Trying manager %d (%s) for secret '%s'",
@@ -215,9 +207,7 @@ class HybridSpaceSecretManager(SpaceSecretManager):
         )
         return {}
 
-    def get_secrets(
-        self: Self, username: Optional[str] = None
-    ) -> Optional[Dict[str, str]]:
+    def get_secrets(self: Self, username: Optional[str] = None) -> Optional[Dict[str, str]]:
         """List all secrets by merging results from all managers.
 
         Uses first-wins precedence: if multiple managers have the same secret key,
@@ -241,9 +231,7 @@ class HybridSpaceSecretManager(SpaceSecretManager):
             list(enumerate(zip(self.managers, self.manager_types)))
         ):
             try:
-                logger.debug(
-                    "Fetching secrets from manager %d (%s)", idx + 1, manager_type
-                )
+                logger.debug("Fetching secrets from manager %d (%s)", idx + 1, manager_type)
                 secrets = manager.get_secrets(username=username)
 
                 if secrets:
@@ -258,9 +246,7 @@ class HybridSpaceSecretManager(SpaceSecretManager):
                         len(secrets),
                     )
                 else:
-                    logger.debug(
-                        "Manager %d (%s) returned no secrets", idx + 1, manager_type
-                    )
+                    logger.debug("Manager %d (%s) returned no secrets", idx + 1, manager_type)
             except Exception as e:
                 logger.warning(
                     "Manager %d (%s) raised exception while listing secrets: %s. Continuing with other managers.",
@@ -309,9 +295,7 @@ class HybridSpaceSecretManager(SpaceSecretManager):
         last_exception = None
         all_readonly = True
 
-        for idx, (manager, manager_type) in enumerate(
-            zip(self.managers, self.manager_types)
-        ):
+        for idx, (manager, manager_type) in enumerate(zip(self.managers, self.manager_types)):
             try:
                 logger.debug(
                     "Attempting to create secret '%s' in manager %d (%s)",
@@ -366,6 +350,4 @@ class HybridSpaceSecretManager(SpaceSecretManager):
                 f"Manager types: {', '.join(self.manager_types)}"
             )
             logger.error("%s. Last error: %s", error_msg, last_exception)
-            raise RuntimeError(
-                f"{error_msg}. Last error: {last_exception}"
-            ) from last_exception
+            raise RuntimeError(f"{error_msg}. Last error: {last_exception}") from last_exception

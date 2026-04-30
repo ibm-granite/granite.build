@@ -1,3 +1,5 @@
+"""Command model module."""
+
 import json
 import sys
 import time
@@ -155,9 +157,7 @@ def list(ctx, byom, uri, format, skip_version_check, quiet):
 
         if format == "json":
             click.echo(
-                json.dumps(
-                    [{"name": key.split(":")[1], "url": url} for key, url in m.items()]
-                )
+                json.dumps([{"name": key.split(":")[1], "url": url} for key, url in m.items()])
             )
         else:
             model_table = tabulate(
@@ -175,15 +175,15 @@ def list(ctx, byom, uri, format, skip_version_check, quiet):
 
 
 class MultipleMatchException(Exception):
+    """Multiple Match Exception implementation."""
+
     pass
 
 
 @cli.command()
 @click.pass_context
 @click.argument("msg", required=True)
-@click.option(
-    "--model", "-m", help="Model name or full model id in RITS", required=True
-)
+@click.option("--model", "-m", help="Model name or full model id in RITS", required=True)
 @click.option("--temp", help="Temperature", type=float, required=False)
 @click.option("--max", help="Max output tokens", type=int, required=False)
 @click.option("--top_p", help="top_p", type=float, required=False)
@@ -250,9 +250,7 @@ def prompt(
 
     verified = verify_rits_api_key(rits_api_key, callback=echo_callback)
     if not verified:
-        click.echo(
-            f"Your API Key is not valid. Please go to {RITS_URL} and obtain a new key."
-        )
+        click.echo(f"Your API Key is not valid. Please go to {RITS_URL} and obtain a new key.")
         ctx.exit(1)
     if not quiet:
         click.echo("RITS_API_KEY verified successfully!")
@@ -307,14 +305,10 @@ def prompt(
                 )
             )
         else:
-            click.echo(
-                click.style("\n\n" + response.choices[0].text.strip(), fg="blue")
-            )
+            click.echo(click.style("\n\n" + response.choices[0].text.strip(), fg="blue"))
 
     except MultipleMatchException as e:
-        matches = [
-            [match.split(":")[0], match.split(":")[1]] for match in matching_model
-        ]
+        matches = [[match.split(":")[0], match.split(":")[1]] for match in matching_model]
         match_table = tabulate(
             matches,
             ["MODEL NAME", "MODEL ID"],
@@ -331,9 +325,7 @@ def prompt(
 
 @cli.command()
 @click.pass_context
-@click.option(
-    "--model", "-m", help="Model name or full model id in RITS", required=True
-)
+@click.option("--model", "-m", help="Model name or full model id in RITS", required=True)
 @click.option("--system", help="System prompt override", required=False)
 @click.option("--temp", help="Temperature", type=float, required=False)
 @click.option("--max", help="Max output tokens", type=int, required=False)
@@ -391,9 +383,7 @@ def chat(
 
     verified = verify_rits_api_key(rits_api_key, callback=echo_callback)
     if not verified:
-        click.echo(
-            f"Your API Key is not valid. Please go to {RITS_URL} and obtain a new key."
-        )
+        click.echo(f"Your API Key is not valid. Please go to {RITS_URL} and obtain a new key.")
         ctx.exit(1)
     click.echo("RITS_API_KEY verified successfully!")
 
@@ -412,9 +402,7 @@ def chat(
         model_id = full_model_id.split(":")[1]
 
         messages = (
-            [{"role": "system", "content": system}]
-            if system
-            else get_standard_model_prompt()
+            [{"role": "system", "content": system}] if system else get_standard_model_prompt()
         )
 
         click.echo("(3/3) Starting model chat")
@@ -434,9 +422,7 @@ def chat(
             )  # User input in bold and in color
             click.echo(f"\033[0m")  # Reset textstyle
 
-            if user_input is None or (
-                user_input and user_input.lower() in ["quit", "exit", "bye"]
-            ):
+            if user_input is None or (user_input and user_input.lower() in ["quit", "exit", "bye"]):
                 break
 
             if not user_input or not user_input.strip():
@@ -461,16 +447,12 @@ def chat(
             messages.append({"role": "assistant", "content": response})
 
             click.echo(
-                click.style(
-                    "\r\r" + f"{elapsed_secs:.2f}secs - Model:", fg="blue", bold=True
-                )
+                click.style("\r\r" + f"{elapsed_secs:.2f}secs - Model:", fg="blue", bold=True)
                 + f" {response}"
             )
 
     except MultipleMatchException as e:
-        matches = [
-            [match.split(":")[0], match.split(":")[1]] for match in matching_model
-        ]
+        matches = [[match.split(":")[0], match.split(":")[1]] for match in matching_model]
         match_table = tabulate(
             matches,
             ["MODEL NAME", "MODEL ID"],

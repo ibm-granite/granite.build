@@ -95,8 +95,7 @@ class SidecarOrchestrator:
                 self.log_path_list = [Path("/logs/output.log")]
             else:
                 self.log_path_list = [
-                    Path(f"/logs/output-{idx}.log")
-                    for idx in range(self.num_user_processes)
+                    Path(f"/logs/output-{idx}.log") for idx in range(self.num_user_processes)
                 ]
 
         # setup the RabbitMQ instance that will be used by all launched sidecars
@@ -126,9 +125,7 @@ class SidecarOrchestrator:
         # list of sidecars that will be launched by this orchestrator
         self.sidecars: List[Sidecar] = []
 
-    def _extract_event_configs(
-        self: Self, data: Any
-    ) -> List[List[EventLogLineParserConfig]]:
+    def _extract_event_configs(self: Self, data: Any) -> List[List[EventLogLineParserConfig]]:
         """Extract log parsing event configurations from YAML data.
 
         Handles two configuration patterns:
@@ -168,9 +165,7 @@ class SidecarOrchestrator:
         monitor_config = sidecar_monitor_cfgs + event_monitor_cfgs
 
         if not monitor_config:
-            raise ValueError(
-                "Missing 'sidecar_monitor' or 'event_monitor' key in YAML."
-            )
+            raise ValueError("Missing 'sidecar_monitor' or 'event_monitor' key in YAML.")
 
         # Assume only one monitor config for simplicity
         config = monitor_config[0].get("config", {})
@@ -179,8 +174,7 @@ class SidecarOrchestrator:
         if "multi_process_event_configs" in config:
             for mp_config in config["multi_process_event_configs"]:
                 event_configs = [
-                    EventLogLineParserConfig(**ec)
-                    for ec in mp_config.get("event_configs", [])
+                    EventLogLineParserConfig(**ec) for ec in mp_config.get("event_configs", [])
                 ]
                 event_configs_list.append(event_configs)
             logger.info(
@@ -226,10 +220,8 @@ class SidecarOrchestrator:
         with self.config_file_path.open("r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
 
-        event_configs_list: List[List[EventLogLineParserConfig]] = (
-            self._extract_event_configs(
-                data=cfg,
-            )
+        event_configs_list: List[List[EventLogLineParserConfig]] = self._extract_event_configs(
+            data=cfg,
         )
 
         assert len(event_configs_list) == len(self.log_path_list), (
@@ -238,8 +230,7 @@ class SidecarOrchestrator:
         )
 
         sidecar_configs: Dict[Path, List[EventLogLineParserConfig]] = {
-            logpath: evt_cfgs
-            for logpath, evt_cfgs in zip(self.log_path_list, event_configs_list)
+            logpath: evt_cfgs for logpath, evt_cfgs in zip(self.log_path_list, event_configs_list)
         }
 
         return sidecar_configs
@@ -297,9 +288,7 @@ class SidecarOrchestrator:
 
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.error(
-                    "[SidecarOrchestrator] Sidecar %s exited with error: %s", i, result
-                )
+                logger.error("[SidecarOrchestrator] Sidecar %s exited with error: %s", i, result)
             else:
                 logger.info("[SidecarOrchestrator] Sidecar %s exited cleanly.", i)
 
@@ -351,9 +340,7 @@ class Sidecar:
         self.log_path: Path = log_path
         self.idx = idx
 
-        logger.info(
-            "[Sidecar %s/%d]: __init__() completed", self.targetsteprun_id, self.idx
-        )
+        logger.info("[Sidecar %s/%d]: __init__() completed", self.targetsteprun_id, self.idx)
 
     # -------------- public entry ---------------------
     async def run(self: Self):
@@ -381,9 +368,7 @@ class Sidecar:
         )
 
         # Start log monitor task
-        log_task = asyncio.create_task(
-            log_monitor.monitor(), name=f"log_monitor_{self.idx}"
-        )
+        log_task = asyncio.create_task(log_monitor.monitor(), name=f"log_monitor_{self.idx}")
 
         termination_monitor = CmdlineMonitor(
             cmd_substring=f"tee {self.log_path}",
@@ -397,9 +382,7 @@ class Sidecar:
         await self.stop_event.wait()
 
         # wait for both monitors to exit gracefully
-        results = await asyncio.gather(
-            log_task, termination_monitor_task, return_exceptions=True
-        )
+        results = await asyncio.gather(log_task, termination_monitor_task, return_exceptions=True)
 
         for result in results:
             if isinstance(result, Exception):

@@ -18,6 +18,8 @@
 # export INGESTION_API_KEY=`ibmcloud iam api-key-create logs-ingestion --output json | jq -r '.apikey'`
 # export IAM_TOKEN=`ibmcloud iam oauth-tokens --output json | jq -r '.iam_token'`
 
+"""Cloud logquery module."""
+
 import os
 import time
 from typing import Optional, Self
@@ -71,9 +73,7 @@ class IBMCloudLogQueryAPI:
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
         }
-        data = (
-            f"grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey={self.api_key}"
-        )
+        data = f"grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey={self.api_key}"
         response = requests.post(
             "https://iam.cloud.ibm.com/identity/token",
             headers=headers,
@@ -88,6 +88,7 @@ class IBMCloudLogQueryAPI:
         logger.debug("get_new_token end")
 
     def query_cloud_logquery(self: Self, query: Item) -> LogqueryResponse:
+        """Query cloud logquery."""
         logger.debug("query_cloud_logquery start")
         if self.token == "":
             self.get_new_token()
@@ -165,6 +166,7 @@ _LOG_MANAGER = None
 
 
 def get_log_manager():
+    """Get the log manager."""
     global _LOG_MANAGER
     if _LOG_MANAGER is not None:
         return _LOG_MANAGER

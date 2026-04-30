@@ -43,15 +43,11 @@ class INodeFailureStorage(IItemStorage[StoredNodeFailure]):
     node failure analysis and monitoring.
     """
 
-    def get_recent_failures(
-        self, node_name: str, minutes: int = 30
-    ) -> List[StoredNodeFailure]:
+    def get_recent_failures(self, node_name: str, minutes: int = 30) -> List[StoredNodeFailure]:
         """Get recent unresolved failures for a specific node."""
         raise NotImplementedError
 
-    def get_failure_summary(
-        self, alert_window_minutes: int = 30
-    ) -> Dict[str, Dict[str, Any]]:
+    def get_failure_summary(self, alert_window_minutes: int = 30) -> Dict[str, Dict[str, Any]]:
         """Get summary of unresolved failures across all nodes."""
         raise NotImplementedError
 
@@ -132,9 +128,7 @@ class BaseNodeFailureStorage(BaseItemStorage[StoredNodeFailure], INodeFailureSto
 
     # ── Query methods ────────────────────────────────────────────────
 
-    def get_recent_failures(
-        self, node_name: str, minutes: int = 30
-    ) -> List[StoredNodeFailure]:
+    def get_recent_failures(self, node_name: str, minutes: int = 30) -> List[StoredNodeFailure]:
         """Get recent unresolved failures for a specific node.
 
         Args:
@@ -152,9 +146,7 @@ class BaseNodeFailureStorage(BaseItemStorage[StoredNodeFailure], INodeFailureSto
             result.extend(item for item in page if item.created_time > cutoff)
         return result
 
-    def get_failure_summary(
-        self, alert_window_minutes: int = 30
-    ) -> Dict[str, Dict[str, Any]]:
+    def get_failure_summary(self, alert_window_minutes: int = 30) -> Dict[str, Dict[str, Any]]:
         """Get summary of unresolved failures across all nodes.
 
         Args:
@@ -180,9 +172,7 @@ class BaseNodeFailureStorage(BaseItemStorage[StoredNodeFailure], INodeFailureSto
             # Count failure types
             failure_types: Dict[str, int] = {}
             for item in items:
-                failure_types[item.failure_type] = (
-                    failure_types.get(item.failure_type, 0) + 1
-                )
+                failure_types[item.failure_type] = failure_types.get(item.failure_type, 0) + 1
 
             unique_builds = len(set(item.build_id for item in items))
 

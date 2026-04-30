@@ -63,9 +63,7 @@ async def test_open_connects_with_correct_kwargs():
     """open() should call asyncssh.connect with the right parameters."""
     mock_conn, _ = _make_mock_conn()
 
-    with patch(
-        "asyncssh.connect", new=AsyncMock(return_value=mock_conn)
-    ) as mock_connect:
+    with patch("asyncssh.connect", new=AsyncMock(return_value=mock_conn)) as mock_connect:
         tunnel = SshTunnel(host="myhost", username="alice", key_file="/tmp/id_rsa")
         await tunnel.open()
 
@@ -81,9 +79,7 @@ async def test_open_disables_host_key_verification():
     """host_key_verification=False should pass known_hosts=None."""
     mock_conn, _ = _make_mock_conn()
 
-    with patch(
-        "asyncssh.connect", new=AsyncMock(return_value=mock_conn)
-    ) as mock_connect:
+    with patch("asyncssh.connect", new=AsyncMock(return_value=mock_conn)) as mock_connect:
         tunnel = SshTunnel(host="myhost", host_key_verification=False)
         await tunnel.open()
 
@@ -94,9 +90,7 @@ async def test_open_disables_host_key_verification():
 @pytest.mark.asyncio
 async def test_open_raises_ssh_tunnel_error_on_connection_failure():
     """open() should raise SshTunnelError if asyncssh.connect raises."""
-    with patch(
-        "asyncssh.connect", new=AsyncMock(side_effect=OSError("Connection refused"))
-    ):
+    with patch("asyncssh.connect", new=AsyncMock(side_effect=OSError("Connection refused"))):
         tunnel = SshTunnel(host="myhost")
         with pytest.raises(SshTunnelError, match="Failed to connect"):
             await tunnel.open()
@@ -125,9 +119,7 @@ async def test_open_sets_up_port_forwards():
 @pytest.mark.asyncio
 async def test_run_returns_stdout_stderr_on_success():
     """run() should return (rc, stdout, stderr) from the connection."""
-    mock_conn, _ = _make_mock_conn(
-        run_exit_status=0, run_stdout="hello\n", run_stderr=""
-    )
+    mock_conn, _ = _make_mock_conn(run_exit_status=0, run_stdout="hello\n", run_stderr="")
 
     with patch("asyncssh.connect", new=AsyncMock(return_value=mock_conn)):
         tunnel = SshTunnel(host="myhost")
@@ -160,9 +152,7 @@ async def test_run_returns_nonzero_without_raising_when_raise_on_error_false():
     with patch("asyncssh.connect", new=AsyncMock(return_value=mock_conn)):
         tunnel = SshTunnel(host="myhost")
         await tunnel.open()
-        rc, stdout, stderr = await tunnel.run_remote(
-            "bad-command", raise_on_error=False
-        )
+        rc, stdout, stderr = await tunnel.run_remote("bad-command", raise_on_error=False)
 
     assert rc == 2
     assert stderr == "oops"

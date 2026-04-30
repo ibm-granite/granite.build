@@ -72,12 +72,8 @@ class TestStorageSpaceAccessManager(AbstractSingletonStorageUsingTest):
         manager = self._setup_spaces_and_manager()
         self.storage.space_user_storage.add(
             [
-                StoredSpaceUser(
-                    space_name="space_a", username=_FAKE_EMAIL, role="admin"
-                ),
-                StoredSpaceUser(
-                    space_name="space_b", username=_FAKE_EMAIL, role="member"
-                ),
+                StoredSpaceUser(space_name="space_a", username=_FAKE_EMAIL, role="admin"),
+                StoredSpaceUser(space_name="space_b", username=_FAKE_EMAIL, role="member"),
             ]
         )
 

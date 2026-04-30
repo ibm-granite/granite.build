@@ -15,6 +15,8 @@
 # limitations under the License.
 
 
+"""Command sync sql tables module."""
+
 import json
 import traceback
 from typing import Any
@@ -55,17 +57,20 @@ src_prefix: str = ""
 
 
 def get_dest_prefix():
+    """Get the dest prefix."""
     dest_prefix = singleton_storage.get_admin_storage().table_name_prefix
     return dest_prefix
 
 
 def get_src_prefix():
+    """Get the src prefix."""
     return src_prefix
 
 
 def get_artifact_registry_pair(
     dest_factory, src_factory
 ) -> tuple[IArtifactRegistry, IArtifactRegistry]:
+    """Get the artifact registry pair."""
     dest_prefix = get_dest_prefix()
     src_prefix = get_src_prefix()
 
@@ -79,6 +84,7 @@ def get_artifact_registry_pair(
 def get_build_storage_pair(
     dest_factory, src_factory
 ) -> tuple[IStoredBuildStorage, IStoredBuildStorage]:
+    """Get the build storage pair."""
     dest_prefix = get_dest_prefix()
     src_prefix = get_src_prefix()
 
@@ -92,6 +98,7 @@ def get_build_storage_pair(
 def get_target_storage_pair(
     dest_factory, src_factory
 ) -> tuple[IStoredTargetRunStorage, IStoredTargetRunStorage]:
+    """Get the target storage pair."""
     dest_prefix = get_dest_prefix()
     src_prefix = get_src_prefix()
     dest_table_name = dest_prefix + GB_TARGET_RUNS_TABLE_NAME
@@ -104,6 +111,7 @@ def get_target_storage_pair(
 def get_step_storage_pair(
     dest_factory, src_factory
 ) -> tuple[IStoredStepRunStorage, IStoredStepRunStorage]:
+    """Get the step storage pair."""
     dest_prefix = get_dest_prefix()
     src_prefix = get_src_prefix()
     dest_table_name = dest_prefix + GB_STEP_RUNS_TABLE_NAME
@@ -116,6 +124,7 @@ def get_step_storage_pair(
 def get_space_storage_pair(
     dest_factory, src_factory
 ) -> tuple[IStoredSpaceStorage, IStoredSpaceStorage]:
+    """Get the space storage pair."""
     dest_prefix = get_dest_prefix()
     src_prefix = get_src_prefix()
     dest_table_name = dest_prefix + GB_SPACES_TABLE_NAME
@@ -197,6 +206,7 @@ def cli(
 
 
 def get_dict_of_items(storage: IItemStorage):
+    """Get the dict of items."""
     items = storage.get_by_uuid(None)  # Get all items
     item_dict = {}
     for item in items:
@@ -225,7 +235,7 @@ def allow_item_overwrite(src_item: BaseStoredItem, dest_item: BaseStoredItem) ->
 def get_deltas(
     item_name: str, dest_item_dict, src_item_dict
 ) -> tuple[list[BaseStoredItem], list[BaseStoredItem], list[BaseStoredItem]]:
-
+    """Get the deltas."""
     missing: list[BaseStoredItem] = []
     modified: list[BaseStoredItem] = []
     ignored: list[BaseStoredItem] = []
@@ -246,6 +256,7 @@ def get_deltas(
 def sync_storage(
     item_name: str, sql_storage: IItemStorage, lh_storage: IItemStorage
 ) -> dict[str, list[str]]:
+    """Sync storage."""
     assert isinstance(sql_storage, BaseSQLItemStorage) and isinstance(
         lh_storage, BaseLakehouseItemStorage
     )
@@ -298,6 +309,7 @@ def sync_storage(
 def sync_admin_storage(
     dest_factory: SQLStorageFactory, src_factory: LhStorageFactory
 ) -> dict[str, Any]:
+    """Sync admin storage."""
     assert isinstance(dest_factory, SQLStorageFactory)
     assert isinstance(src_factory, LhStorageFactory)
     print(
@@ -334,6 +346,7 @@ def sync_admin_storage(
 
 
 def snapshot(dest_factory: SQLStorageFactory, src_factory: LhStorageFactory):
+    """Snapshot."""
     assert isinstance(dest_factory, SQLStorageFactory)
     assert isinstance(src_factory, LhStorageFactory)
 
@@ -358,14 +371,13 @@ def snapshot(dest_factory: SQLStorageFactory, src_factory: LhStorageFactory):
 
 
 def snapshot_storage_pair(dest: IItemStorage, src: IItemStorage):
+    """Snapshot storage pair."""
     print(
         f"\nSyncing {type(src).__name__} table={src.get_table_name()} into {type(dest).__name__} table={dest.get_table_name()}"
     )
     items: list = src.get_by_uuid(None)
     item_count = len(items)
-    print(
-        f"Found {item_count} items in {type(src).__name__} table={src.get_table_name()}"
-    )
+    print(f"Found {item_count} items in {type(src).__name__} table={src.get_table_name()}")
     # return
     msg = f"Deleting table {type(dest).__name__} table={dest.get_table_name()}"
     if enable_storage_modifications:

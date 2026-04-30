@@ -82,9 +82,7 @@ async def temp_log_files(tmp_path_factory):
 
 # --------------------- test cases -------------------------------
 @pytest.mark.asyncio
-async def test_multi_sidecar_with_cmdline_monitor(
-    fake_messaging, temp_log_files, child_scripts
-):
+async def test_multi_sidecar_with_cmdline_monitor(fake_messaging, temp_log_files, child_scripts):
     """
     Test SidecarOrchestrator with two user processes and CmdlineMonitor.
     - Spawn two child bash processes that use tee to write to separate log files

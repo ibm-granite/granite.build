@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Archive module."""
+
 import io
 import shutil
 import tarfile
@@ -28,9 +30,7 @@ from gbserver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def extract_archive(
-    archive_binary: bytes, output_dir: Path, archive_format: str = ""
-) -> bool:
+def extract_archive(archive_binary: bytes, output_dir: Path, archive_format: str = "") -> bool:
     """Extracts an archive to the filesystem, attempting auto-detection.
 
     Args:
@@ -71,9 +71,7 @@ def extract_archive(
     return False
 
 
-def create_archive(
-    dir: Path, output_path: Optional[Path] = None, format: str = "zip"
-) -> Path:
+def create_archive(dir: Path, output_path: Optional[Path] = None, format: str = "zip") -> Path:
     """Create a archive from the given directory.
     The return path will be different because the archive file
     extension with be added to the output path.
@@ -119,4 +117,5 @@ def create_archive_bytes(
 
 def cleanup_archive_dir(dir: Path) -> None:
     # If necessary, add additional operations (e.g. clear the readonly bit) to ensure that the directory is removed
+    """Cleanup archive dir."""
     shutil.rmtree(dir)

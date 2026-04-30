@@ -1,5 +1,7 @@
 #  messaging_base.py  (generic abstractions)
 
+"""Messaging base module."""
+
 import abc
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +36,7 @@ class Address:
 
     # helpers
     def rk(self, suffix: str | None = None) -> str:
+        """Rk."""
         if suffix:
             return (
                 f"{self.queue}.{self.routing_key}.{suffix}"
@@ -50,25 +53,33 @@ class MessagingBase(abc.ABC):
         self.addr: Address = addr
 
     @abc.abstractmethod
-    async def setup(self) -> None: ...
+    async def setup(self) -> None:
+        """Initialize the messaging connection."""
+        ...
 
     @abc.abstractmethod
-    async def publish(self, payload: JSON, suffix: str) -> None: ...
+    async def publish(self, payload: JSON, suffix: str) -> None:
+        """Publish a message payload."""
+        ...
 
     @abc.abstractmethod
-    async def consume_stream(
-        self, handler: Callable[[bytes, str], Awaitable[None]]
-    ) -> None: ...
+    async def consume_stream(self, handler: Callable[[bytes, str], Awaitable[None]]) -> None:
+        """Consume messages from the stream."""
+        ...
 
     @abc.abstractmethod
-    async def run(self) -> None: ...
+    async def run(self) -> None:
+        """Run the messaging event loop."""
+        ...
 
     @abc.abstractmethod
-    async def close(self) -> None: ...
+    async def close(self) -> None:
+        """Close the messaging connection."""
+        ...
 
     @staticmethod
     def from_yaml(src: Union[str, Path], *, strict_env: bool = True) -> "MessagingBase":
-
+        """From yaml."""
         from gbserver.utils.env_expand import expand_env
 
         raw = Path(src).read_text() if Path(src).exists() else str(src)

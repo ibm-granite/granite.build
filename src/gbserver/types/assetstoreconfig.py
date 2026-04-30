@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Assetstoreconfig module."""
+
 from typing import Any
 
 from pydantic import Field
@@ -22,6 +24,8 @@ from gbserver.types.config import Config
 
 
 class AssetStoreConfig(Config):
+    """Asset Store Config implementation."""
+
     base_uri: str = Field(default=None)
     uri_regex: str = Field(default=None)
     config: Any = Field(default=None)

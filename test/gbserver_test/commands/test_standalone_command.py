@@ -110,6 +110,4 @@ class TestStandaloneCommand:
                     last_err = e
                     time.sleep(0.25)
             if last_err is not None:
-                pytest.fail(
-                    f"Could not connect to standalone server on port {port}: {last_err}"
-                )
+                pytest.fail(f"Could not connect to standalone server on port {port}: {last_err}")

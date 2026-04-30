@@ -182,9 +182,7 @@ class TestLocalLogQueryAPI:
         mock_get_storage.return_value = mock_storage
 
         api = LocalLogQueryAPI()
-        logs_str = api.get_build_logs(
-            build_id="build-1", max_retries=5, retry_interval=1
-        )
+        logs_str = api.get_build_logs(build_id="build-1", max_retries=5, retry_interval=1)
 
         assert "appeared" in logs_str
         assert mock_storage.event_storage.get_by_where.call_count == 3
@@ -217,9 +215,7 @@ class TestLocalLogQueryAPI:
         mock_get_storage.return_value = mock_storage
 
         api = LocalLogQueryAPI()
-        logs_str = api.get_build_logs(
-            build_id="build-1", max_retries=3, retry_interval=1
-        )
+        logs_str = api.get_build_logs(build_id="build-1", max_retries=3, retry_interval=1)
 
         assert logs_str.strip() == ""
         assert mock_storage.event_storage.get_by_where.call_count == 3

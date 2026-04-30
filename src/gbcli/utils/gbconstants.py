@@ -38,15 +38,9 @@ ENVIRONMENT_CONFIGS = {
         "hf_resource_group_id": "69d649051d3e7b3cce6503fe",
         "hf_organization": "ibm-granite",
         "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean(
-                "GBSERVER_BUILD_UPDATE", True
-            ),  # Default false
+            "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),  # Default false
+            "gbserver_artifact_filter": getenv_boolean("GBSERVER_ARTIFACT_FILTER", True),
+            "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),  # Default false
         },
     },
     "PROD_INTERNAL_OLD": {
@@ -63,15 +57,9 @@ ENVIRONMENT_CONFIGS = {
         "hf_resource_group_id": "69d649051d3e7b3cce6503fe",
         "hf_organization": "ibm-granite",
         "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean(
-                "GBSERVER_BUILD_UPDATE", True
-            ),  # Default false
+            "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),  # Default false
+            "gbserver_artifact_filter": getenv_boolean("GBSERVER_ARTIFACT_FILTER", True),
+            "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),  # Default false
         },
     },
     "PROD": {
@@ -88,15 +76,9 @@ ENVIRONMENT_CONFIGS = {
         "hf_resource_group_id": "69d649051d3e7b3cce6503fe",
         "hf_organization": "ibm-granite",
         "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean(
-                "GBSERVER_BUILD_UPDATE", True
-            ),  # Default false
+            "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),  # Default false
+            "gbserver_artifact_filter": getenv_boolean("GBSERVER_ARTIFACT_FILTER", True),
+            "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),  # Default false
         },
     },
     "PROD_INTERNAL": {
@@ -113,15 +95,9 @@ ENVIRONMENT_CONFIGS = {
         "hf_resource_group_id": "69d649051d3e7b3cce6503fe",
         "hf_organization": "ibm-granite",
         "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean(
-                "GBSERVER_BUILD_UPDATE", True
-            ),  # Default false
+            "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),  # Default false
+            "gbserver_artifact_filter": getenv_boolean("GBSERVER_ARTIFACT_FILTER", True),
+            "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),  # Default false
         },
     },
     "STAGING": {
@@ -138,12 +114,8 @@ ENVIRONMENT_CONFIGS = {
         "hf_resource_group_id": "699cae1275ab75b381de01b5",
         "hf_organization": "ibm-research",
         "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
+            "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),  # Default false
+            "gbserver_artifact_filter": getenv_boolean("GBSERVER_ARTIFACT_FILTER", True),
             "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),
         },
     },
@@ -161,15 +133,11 @@ ENVIRONMENT_CONFIGS = {
         "hf_resource_group_id": "699cae1275ab75b381de01b5",
         "hf_organization": "ibm-research",
         "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
+            "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),  # Default false
             "gbserver_artifact_filter": getenv_boolean(
                 "GBSERVER_ARTIFACT_FILTER", False
             ),  # Default false
-            "gbserver_build_update": getenv_boolean(
-                "GBSERVER_BUILD_UPDATE", True
-            ),  # Default false
+            "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),  # Default false
         },
     },
     "STANDALONE": {
@@ -197,6 +165,7 @@ ENVIRONMENT_CONFIGS = {
 
 
 def gb_env_formating(value: str, type: str) -> str:
+    """Gb env formating."""
     if value:
         if value.lower() == "prod" or value.lower() == "production":
             return "PROD"
@@ -208,10 +177,7 @@ def gb_env_formating(value: str, type: str) -> str:
             return "DEV"
         elif value.lower() == "prod_old" or value.lower() == "production_old":
             return "PROD_OLD"
-        elif (
-            value.lower() == "prod_internal_old"
-            or value.lower() == "production_internal_old"
-        ):
+        elif value.lower() == "prod_internal_old" or value.lower() == "production_internal_old":
             return "PROD_INTERNAL_OLD"
         elif value.lower() == "standalone" or value.lower() == "local":
             return "STANDALONE"
@@ -223,6 +189,7 @@ def gb_env_formating(value: str, type: str) -> str:
 
 
 def gb_environment() -> str:
+    """Gb environment."""
     GB_ENVIRONMENT = gb_env_formating(
         os.environ.get("GB_ENVIRONMENT"), "Environment variable GB_ENVIRONMENT"
     )
@@ -234,18 +201,21 @@ def gb_environment() -> str:
 
 
 def hf_token() -> str:
+    """Hf token."""
     HF_TOKEN = os.environ.get("HF_TOKEN")
 
     return HF_TOKEN
 
 
 def gb_environment_config(gb_env=None):
+    """Gb environment config."""
     if gb_env is None:
         gb_env = gb_environment()
     return ENVIRONMENT_CONFIGS[gb_env]
 
 
 def is_standalone() -> bool:
+    """Check if standalone."""
     return gb_environment() == "STANDALONE"
 
 
@@ -311,9 +281,7 @@ SPACE_DEFAULT_NAME = "public"
 
 # Models/RITS
 RITS_URL = "https://rits.fmaas.res.ibm.com/"
-RITS_BASE_URL = (
-    "https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/"
-)
+RITS_BASE_URL = "https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/"
 RITS_LIST_URL = "https://rits.fmaas.res.ibm.com/ritsapi/inferenceinfo"
 RITS_MAX_TOKENS = 512
 RITS_TEMP = 1.0
@@ -336,9 +304,7 @@ GB_DMF_LOADER_BATCH_SIZE = 50000000
 GB_DMF_LOADER_SIZE_LIMIT = 1073741824  # 1GB limit
 
 # GBServer
-GBSERVER_INSTANCE = os.environ.get(
-    "GBSERVER_HOST", gb_environment_config()["gbserver_host"]
-)
+GBSERVER_INSTANCE = os.environ.get("GBSERVER_HOST", gb_environment_config()["gbserver_host"])
 GBSERVER_BUILD_API = f"{GBSERVER_INSTANCE}/api/v1/builds/"
 GBSERVER_ARTIFACT_API = f"{GBSERVER_INSTANCE}/api/v1/artifacts/"
 GBSERVER_SECRETS_API = f"{GBSERVER_INSTANCE}/api/v1/secrets/"
@@ -352,9 +318,7 @@ DEFAULT_CHECKSUM_CONCURRENCY = 8
 
 
 # Error message
-USER_NOT_LOGGED_IN_ERROR_MESSAGE = (
-    "Error: User not logged in. Obtain a new token with 'auth login'"
-)
+USER_NOT_LOGGED_IN_ERROR_MESSAGE = "Error: User not logged in. Obtain a new token with 'auth login'"
 
 VPN_CONNECTION_ERROR_MESSAGE = "Make sure you are connected to the VPN and try again."
 VPN_TUNNELALL_CONNECTION_ERROR_MESSAGE = (
@@ -497,6 +461,7 @@ HF_RESOURCE_GROUP_ID_DEFAULT = gb_environment_config().get("hf_resource_group_id
 
 
 def to_int(value: str, type: str) -> str:
+    """Convert int."""
     if value:
         try:
             return int(value)

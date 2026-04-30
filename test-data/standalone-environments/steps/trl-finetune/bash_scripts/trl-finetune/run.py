@@ -44,9 +44,7 @@ def main():
         torch_dtype=torch.bfloat16,
     )
     model.to(device)
-    print(
-        f"Model loaded: {model.config.model_type}, {model.num_parameters():,} parameters"
-    )
+    print(f"Model loaded: {model.config.model_type}, {model.num_parameters():,} parameters")
 
     # --- Inline training data (3 samples) ---
     from datasets import Dataset

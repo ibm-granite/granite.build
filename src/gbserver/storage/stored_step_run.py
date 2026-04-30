@@ -1,3 +1,5 @@
+"""Stored step run module."""
+
 from datetime import datetime
 from typing import Optional, Self
 
@@ -7,6 +9,7 @@ from gbserver.types.status import Status
 
 class StoredStepRun(BaseStoredItem):
     # Required initializations
+    """Stored Step Run implementation."""
     build_id: str
     target_id: str
     definition_uri: str

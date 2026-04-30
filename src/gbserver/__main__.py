@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Main module."""
+
 from .cli import gbserver
 
 if __name__ == "__main__":

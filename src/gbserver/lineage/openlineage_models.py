@@ -60,9 +60,7 @@ class LineageDatasetEvent(BaseModel):
 class LineageJobEvent(BaseModel):
     eventTime: str
     producer: str
-    schemaURL: Optional[str] = (
-        "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/JobEvent"
-    )
+    schemaURL: Optional[str] = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/JobEvent"
     job: Job
     inputs: Optional[list[Dataset]] = []
     outputs: Optional[list[Dataset]] = []
@@ -76,9 +74,7 @@ class LineageEvent(BaseModel):
     inputs: Optional[list[Dataset]] = []
     outputs: Optional[list[Dataset]] = []
     producer: str
-    schemaURL: Optional[str] = (
-        "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent"
-    )
+    schemaURL: Optional[str] = "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent"
 
 
 class TagSearchRequest(BaseModel):

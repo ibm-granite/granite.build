@@ -153,6 +153,4 @@ class StepConfig(Config):
     # These validators will be run before the build starts.
     validators: Dict[str, StepValidatorConfig] = Field(default_factory=dict)
     # to avoid failure when step.yaml does not have environment_configs defined before merge
-    environment_configs: Dict[str, StepEnvironmentTypeConfig] = Field(
-        default_factory=dict
-    )
+    environment_configs: Dict[str, StepEnvironmentTypeConfig] = Field(default_factory=dict)

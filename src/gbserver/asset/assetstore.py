@@ -52,6 +52,7 @@ class Assetstore(ABC):
         self.secrets = secrets
 
     def can_handle(self, uri: URI):
+        """Check if handle."""
         if (
             self.config.base_uri is not None
             and self.config.base_uri != ""
@@ -84,9 +85,11 @@ class Assetstore(ABC):
         return 0
 
     def get_secrets(self) -> dict:
+        """Get the secrets."""
         return self.secrets
 
     def get_metadata(self, uri: URI) -> Dict:
+        """Get the metadata."""
         return {}
 
     @classmethod
@@ -96,6 +99,7 @@ class Assetstore(ABC):
         context: Optional[str] = None,
         secrets: dict = None,
     ):
+        """Parse assetstores from dir."""
         if dir is None:
             return
         store_yamls = glob.glob(str(dir / "**" / ASSETSTORE_YAML), recursive=True)
@@ -109,6 +113,7 @@ class Assetstore(ABC):
         context: Optional[str] = None,
         secrets: dict = None,
     ) -> "Assetstore":
+        """Parse asset store."""
         if path.is_dir():
             store_yamls = glob.glob(str(path / "**" / ASSETSTORE_YAML), recursive=True)
             store_yaml = Path(store_yamls[0])
@@ -151,9 +156,7 @@ class Assetstore(ABC):
                     )
                     if hasattr(module, assetstore_classname):
                         handler_class = getattr(module, assetstore_classname)
-                        if isinstance(handler_class, type) and issubclass(
-                            handler_class, cls
-                        ):
+                        if isinstance(handler_class, type) and issubclass(handler_class, cls):
                             for uriclass in handler_class.get_supported_uri_classes():
                                 cls.assetstore_types[uriclass] = handler_class
                         else:
@@ -165,18 +168,16 @@ class Assetstore(ABC):
                             f"Module {assetstore_module_name} does not contain expected AssetStore type class {assetstore_classname}."
                         )
                 except ImportError as e:
-                    logger.error(
-                        f"Error importing module {assetstore_module_name}: {e}"
-                    )
+                    logger.error(f"Error importing module {assetstore_module_name}: {e}")
                 except Exception as e:
-                    logger.error(
-                        f"Error loading AssetStore type from {assetstore_classname}: {e}"
-                    )
+                    logger.error(f"Error loading AssetStore type from {assetstore_classname}: {e}")
 
     @classmethod
     @abstractmethod
     def get_supported_uri_classes(cls: Type[Self]) -> Type[URI]:
+        """Get the supported uri classes."""
         raise NotImplementedError("get_supported_uri_classes is not implemented")
 
     def get_asset_type(self: Self, uri: URI) -> ArtifactType:
+        """Get the asset type."""
         return ArtifactType.UNDEFINED

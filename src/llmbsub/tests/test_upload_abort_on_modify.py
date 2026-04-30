@@ -77,9 +77,7 @@ class UploadResult:
 NEW_DATA_SCRIPT = Path(__file__).parent / "new_data.py"
 
 
-def generate_test_dataset(
-    num_files: int, total_size_mb: float, output_path: str, depth: int = 0
-):
+def generate_test_dataset(num_files: int, total_size_mb: float, output_path: str, depth: int = 0):
     """Generate fake JSONL dataset files by calling new_data.py."""
     cmd = [
         sys.executable,
@@ -164,9 +162,7 @@ def calculate_checksum(path: str) -> Tuple[Optional[str], float]:
 
         all_file_size = os.path.getsize(all_file)
         if all_file_size == 0:
-            print(
-                f"  [Checksum] ERROR: Intermediate file is empty (parallel likely failed)"
-            )
+            print(f"  [Checksum] ERROR: Intermediate file is empty (parallel likely failed)")
             if result.stderr:
                 print(f"  [Checksum] stderr: {result.stderr.strip()}")
             return None, elapsed
@@ -253,9 +249,7 @@ class SimpleUploadService:
         checksum, elapsed = calculate_checksum(path)
 
         if checksum is None:
-            return UploadResult(
-                path, UploadStatus.FAILED, "Checksum calculation failed"
-            )
+            return UploadResult(path, UploadStatus.FAILED, "Checksum calculation failed")
 
         print(f"  Checksum: {checksum} (calculated in {elapsed:.2f}s)")
 
@@ -304,9 +298,7 @@ class SimpleUploadService:
                 path, UploadStatus.ABORTED, "Source modified during upload", checksum
             )
         elif upload_success[0]:
-            return UploadResult(
-                path, UploadStatus.SUCCESS, f"Uploaded to {target_uri}", checksum
-            )
+            return UploadResult(path, UploadStatus.SUCCESS, f"Uploaded to {target_uri}", checksum)
         else:
             return UploadResult(path, UploadStatus.FAILED, "Upload failed", checksum)
 
@@ -316,9 +308,7 @@ class SimpleUploadService:
 # =============================================================================
 
 
-def test_upload_with_modification(
-    target_dir: str, upload_time: float, modify_after: float = None
-):
+def test_upload_with_modification(target_dir: str, upload_time: float, modify_after: float = None):
     """Test upload with file modification during the process."""
     print("=" * 70)
     print("TEST: Upload with file modification detection")
@@ -343,9 +333,7 @@ def test_upload_with_modification(
 
     print(f"Will modify after {modify_after}s: {target_file}")
 
-    service = SimpleUploadService(
-        upload_delay=upload_time, integrity_check_interval=0.2
-    )
+    service = SimpleUploadService(upload_delay=upload_time, integrity_check_interval=0.2)
 
     def modify_file():
         time.sleep(modify_after)
@@ -370,9 +358,7 @@ def test_upload_with_modification(
         return False
 
 
-def test_upload_with_file_added(
-    target_dir: str, upload_time: float, add_after: float = None
-):
+def test_upload_with_file_added(target_dir: str, upload_time: float, add_after: float = None):
     """Test upload aborts when a new file is added during upload."""
     print("=" * 70)
     print("TEST: Upload with file addition detection")
@@ -390,9 +376,7 @@ def test_upload_with_file_added(
     new_file = Path(target_dir) / "new_file_during_upload.txt"
     print(f"Will add file after {add_after}s: {new_file}")
 
-    service = SimpleUploadService(
-        upload_delay=upload_time, integrity_check_interval=0.2
-    )
+    service = SimpleUploadService(upload_delay=upload_time, integrity_check_interval=0.2)
 
     def add_file():
         time.sleep(add_after)
@@ -421,9 +405,7 @@ def test_upload_with_file_added(
         return False
 
 
-def test_upload_with_file_deleted(
-    target_dir: str, upload_time: float, delete_after: float = None
-):
+def test_upload_with_file_deleted(target_dir: str, upload_time: float, delete_after: float = None):
     """Test upload aborts when a file is deleted during upload."""
     print("=" * 70)
     print("TEST: Upload with file deletion detection")
@@ -451,9 +433,7 @@ def test_upload_with_file_deleted(
 
     print(f"Will delete file after {delete_after}s: {temp_file}")
 
-    service = SimpleUploadService(
-        upload_delay=upload_time, integrity_check_interval=0.2
-    )
+    service = SimpleUploadService(upload_delay=upload_time, integrity_check_interval=0.2)
 
     def delete_file():
         time.sleep(delete_after)
@@ -494,9 +474,7 @@ def test_upload_without_modification(target_dir: str, upload_time: float):
         print(f"ERROR: Directory does not exist: {target_dir}")
         return False
 
-    service = SimpleUploadService(
-        upload_delay=upload_time, integrity_check_interval=0.2
-    )
+    service = SimpleUploadService(upload_delay=upload_time, integrity_check_interval=0.2)
     result = service.process_input(target_dir)
 
     print("\n" + "=" * 70)
@@ -606,9 +584,7 @@ Examples:
 
     # Default: --generate 10 1000 10 --all -gd /tmp if no args provided
     # Also use defaults if only -gd is provided (use default generation params)
-    use_defaults = (
-        not args.generate and not args.target_directory and args.upload_time is None
-    )
+    use_defaults = not args.generate and not args.target_directory and args.upload_time is None
     if use_defaults:
         args.all = True  # Run all tests by default
 
@@ -647,9 +623,7 @@ Examples:
     else:
         # Mode 1: Use existing directory
         if not args.target_directory or args.upload_time is None:
-            parser.error(
-                "Either provide target_directory and upload_time, or use --generate"
-            )
+            parser.error("Either provide target_directory and upload_time, or use --generate")
 
         target_directory = args.target_directory
         upload_time = args.upload_time
@@ -679,9 +653,7 @@ Examples:
             )
 
             print("\n[4/4] Testing no modification (success case)...")
-            results["no_modify"] = test_upload_without_modification(
-                target_directory, upload_time
-            )
+            results["no_modify"] = test_upload_without_modification(target_directory, upload_time)
 
             # Summary
             print("\n" + "=" * 70)
@@ -692,9 +664,7 @@ Examples:
                 print(f"  {test_name}: {status}")
 
             success = all(results.values())
-            print(
-                f"\nOverall: {'ALL TESTS PASSED' if success else 'SOME TESTS FAILED'}"
-            )
+            print(f"\nOverall: {'ALL TESTS PASSED' if success else 'SOME TESTS FAILED'}")
 
         elif args.no_modify:
             success = test_upload_without_modification(target_directory, upload_time)

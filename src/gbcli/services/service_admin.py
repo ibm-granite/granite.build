@@ -1,3 +1,5 @@
+"""Service admin module."""
+
 import logging
 import time
 from typing import Optional
@@ -41,11 +43,10 @@ def server_log(
     all: Optional[bool] = False,
     callback=None,
 ):
+    """Server log."""
     global_space = resolve_space(github_token, "public", callback=callback)
     if global_space is None or not global_space["is_admin"]:
-        raise Exception(
-            f"Error: Server logs are available to {PROJECT_NAME} admin users only."
-        )
+        raise Exception(f"Error: Server logs are available to {PROJECT_NAME} admin users only.")
 
     if build_id:
         if id_format == "url":
@@ -54,9 +55,7 @@ def server_log(
 
     current_epoch = get_current_epoch()
     if start_epoch == None:
-        start_epoch = change_timestamp_by_days(
-            current_epoch, BUILD_LOG_DEFAULT_QUERY_RANGE
-        )
+        start_epoch = change_timestamp_by_days(current_epoch, BUILD_LOG_DEFAULT_QUERY_RANGE)
     if end_epoch == None:
         end_epoch = current_epoch
     if callback:
@@ -144,9 +143,7 @@ def server_log(
                 time.sleep(BUILD_LOG_FOLLOW_SLEEP_TIME)
 
             end_epoch, is_current_timestamp = check_current_timestamp(
-                change_timestamp_by_days(
-                    next_timestamp, BUILD_LOG_DEFAULT_QUERY_RANGE, True
-                )
+                change_timestamp_by_days(next_timestamp, BUILD_LOG_DEFAULT_QUERY_RANGE, True)
             )
 
             response = run_logquery(
@@ -182,9 +179,7 @@ def server_log(
                         if timestamp not in timestamps:
                             timestamps.append(timestamp)
                     next_timestamp = timestamps[len(timestamps) - 2]
-                    displayed_logs_ids = displayed_logs_ids + [
-                        log["logId"] for log in logs
-                    ]
+                    displayed_logs_ids = displayed_logs_ids + [log["logId"] for log in logs]
                     if callback:
                         callback(
                             callback_event="display_logs",
@@ -206,6 +201,7 @@ def server_log(
 
 # TODO remove duplicate from service_build.py
 def get_build_id_from_url(user_token: str, build_url: str, callback=None) -> list:
+    """Get the build id from url."""
     if callback is not None:
         callback(
             callback_event="fetching_build_id",
@@ -213,9 +209,7 @@ def get_build_id_from_url(user_token: str, build_url: str, callback=None) -> lis
         )
 
     build_from_url = make_gbserver_call(
-        lambda: get_builds(user_token, GBSERVER_BUILD_API, source_uri=build_url)[
-            "builds"
-        ],
+        lambda: get_builds(user_token, GBSERVER_BUILD_API, source_uri=build_url)["builds"],
         callback,
     )
 

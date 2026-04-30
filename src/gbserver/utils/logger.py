@@ -10,6 +10,8 @@
 # limitations under the License.
 ################################################################################
 #
+"""Logger module."""
+
 import logging
 import os
 from pathlib import Path
@@ -138,6 +140,7 @@ def configure_logging(
 
 
 def get_logger(name: str) -> logging.Logger:
+    """Get the logger."""
     configure_logging(skip_if_already_configured=True)
     logger = logging.getLogger(name)
     return logger
@@ -153,18 +156,23 @@ class LoggingUtility:
         self.msg_prefix = msg_prefix
 
     def info(self: Self, msg: str):
+        """Info."""
         self._log(logging.INFO, msg, 2)
 
     def warn(self: Self, msg: str):
+        """Warn."""
         self._log(logging.WARNING, msg, 2)
 
     def warning(self: Self, msg: str):
+        """Warning."""
         self._log(logging.WARNING, msg, 2)
 
     def error(self: Self, msg: str):
+        """Error."""
         self._log(logging.ERROR, msg, 2)
 
     def debug(self: Self, msg: str):
+        """Debug."""
         self._log(logging.DEBUG, msg, 2)
 
     def _log(self: Self, level: int, msg: str, stacklevel=2):

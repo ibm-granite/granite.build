@@ -78,9 +78,7 @@ class EventPayload:
     data: Optional[dict] = field(default_factory=dict, repr=False)
 
     @classmethod
-    def payload_parser(
-        cls: Type[Self], event_type: BuildEventType, data: Any
-    ) -> "EventPayload":
+    def payload_parser(cls: Type[Self], event_type: BuildEventType, data: Any) -> "EventPayload":
         """Factory method given event type and data."""
         match event_type:
             case BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT:
@@ -104,8 +102,7 @@ class EventPayload:
                 metrics_data = data.copy()
                 if "metrics" in metrics_data and metrics_data["metrics"]:
                     metrics_data["metrics"] = [
-                        Metric(**m) if isinstance(m, dict) else m
-                        for m in metrics_data["metrics"]
+                        Metric(**m) if isinstance(m, dict) else m for m in metrics_data["metrics"]
                     ]
                 return BuildEventMetricsPayload(**metrics_data)
             case BuildEventType.VALIDATION_DATA_EVENT:
@@ -193,9 +190,7 @@ class BuildEvent(Event):
     def to_json_dict(self: Self) -> dict:
         """Create a dictionary that can be passed to json.dumps() without giving a TypeError."""
         build_event_dict = self.to_dict()
-        build_event_dict["timestamp"] = (
-            self.timestamp.isoformat()
-        )  # Make json.dumps() work.
+        build_event_dict["timestamp"] = self.timestamp.isoformat()  # Make json.dumps() work.
         build_event_dict["type"] = self.type.name
         # Handle metrics payload - Metric is a Pydantic model that needs explicit serialization
         if isinstance(self.payload, BuildEventMetricsPayload):
@@ -348,6 +343,4 @@ def create_message_event(
     event_type = BuildEventType.MESSAGE_EVENT
     _payload = {"level": level.name, "msg": message}
     payload = EventPayload.payload_parser(event_type=event_type, data=_payload)
-    return BuildEvent(
-        run_metadata=run_metadata, type=event_type, payload=payload, source=source
-    )
+    return BuildEvent(run_metadata=run_metadata, type=event_type, payload=payload, source=source)

@@ -1,3 +1,5 @@
+"""Gh clone module."""
+
 import logging
 import os
 import shutil
@@ -56,9 +58,7 @@ def clone_github_repo(
         if clone_folder:
             # just clone specific asset if provided
             checkout_path = (
-                f"{clone_folder}/{from_template}"
-                if from_template
-                else f"{clone_folder}"
+                f"{clone_folder}/{from_template}" if from_template else f"{clone_folder}"
             )
             repo.git.checkout(repo_branch, "--", checkout_path)
         else:
@@ -83,10 +83,11 @@ def clone_github_repo(
             raise Exception(exception_message)
 
 
-def list_repo_tree(
-    token: str, assets_org: str, assets_name: str, branch_name: str
-) -> bool:
-    tree_url = f"https://github.ibm.com/api/v3/repos/{assets_org}/{assets_name}/git/trees/{branch_name}"
+def list_repo_tree(token: str, assets_org: str, assets_name: str, branch_name: str) -> bool:
+    """List repo tree."""
+    tree_url = (
+        f"https://github.ibm.com/api/v3/repos/{assets_org}/{assets_name}/git/trees/{branch_name}"
+    )
 
     params = {"recursive": 1}
 
@@ -149,6 +150,7 @@ def get_pr_comments(
     pull_number: int,
     next_page_url: Optional[str] = None,
 ) -> List[Any] | str:
+    """Get the pr comments."""
     if next_page_url:
         comments_url = next_page_url
     else:
@@ -174,13 +176,11 @@ def get_forks(
     sort: str = "newest",
     next_page_url: Optional[str] = None,
 ) -> Any:
-
+    """Get the forks."""
     if next_page_url:
         forks_url = next_page_url
     else:
-        forks_url = (
-            f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/forks"
-        )
+        forks_url = f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/forks"
 
     params = {
         "sort": sort,
@@ -200,6 +200,7 @@ def get_forks(
 
 
 def define_pr_status(state: str, merged_at: str) -> str:
+    """Define pr status."""
     if state == "open":
         return "Under review"
     elif merged_at != None:
@@ -215,12 +216,15 @@ def generate_exception_message(
     repo_branch: str,
     progress_error_lines: List[str] = [],
 ) -> str:
+    """Create exception message."""
     folder = ""
     if clone_folder:
         checkout_folder = f"/{clone_folder}" if clone_folder else ""
         checkout_template = f"/{from_template}" if from_template else ""
         folder = f" in folder: {checkout_folder + checkout_template}"
-    exception_message = f"Error: Can't access repository: {clone_url_no_prefix}{folder} in branch: {repo_branch}."
+    exception_message = (
+        f"Error: Can't access repository: {clone_url_no_prefix}{folder} in branch: {repo_branch}."
+    )
 
     for error in progress_error_lines:
         error = error.split(":", 1)[1].strip()
@@ -229,9 +233,8 @@ def generate_exception_message(
 
 
 def download_repo_file(token: str, space_org: str, space_name: str, path: str):
-    file_url = (
-        f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/contents/{path}"
-    )
+    """Download repo file."""
+    file_url = f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/contents/{path}"
 
     headers = {
         "Accept": "application/vnd.github.raw+json",
@@ -246,9 +249,8 @@ def download_repo_file(token: str, space_org: str, space_name: str, path: str):
 
 
 def get_repo_tags(token: str, space_org: str, space_name: str) -> Any:
-    tags_url = (
-        f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/git/refs/tags"
-    )
+    """Get the repo tags."""
+    tags_url = f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/git/refs/tags"
 
     headers = {
         "Accept": "application/vnd.github.raw+json",
@@ -264,14 +266,13 @@ def get_repo_tags(token: str, space_org: str, space_name: str) -> Any:
 
 
 def run_github_command(command, callback=None, final_command=None):
+    """Execute github command."""
     try:
         result = command()
     except HTTPException as e:
         raise Exception(f"github returned '{e.status_code} {e.detail}'")
     except ConnectionError:
-        raise Exception(
-            f"Error: Unable to connect to network. Please check network connection"
-        )
+        raise Exception(f"Error: Unable to connect to network. Please check network connection")
     finally:
         if final_command is not None:
             final_command()
@@ -279,9 +280,8 @@ def run_github_command(command, callback=None, final_command=None):
 
 
 def get_repo_subscription(token: str, space_org: str, space_name: str) -> Any:
-    subscription_url = (
-        f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/subscription"
-    )
+    """Get the repo subscription."""
+    subscription_url = f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/subscription"
 
     headers = {
         "Accept": "application/vnd.github.raw+json",
@@ -297,9 +297,8 @@ def get_repo_subscription(token: str, space_org: str, space_name: str) -> Any:
 
 
 def ignore_repo_subscription(token: str, space_org: str, space_name: str) -> Any:
-    subscription_url = (
-        f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/subscription"
-    )
+    """Ignore repo subscription."""
+    subscription_url = f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/subscription"
 
     data = {
         "ignored": True,
@@ -317,9 +316,8 @@ def ignore_repo_subscription(token: str, space_org: str, space_name: str) -> Any
 
 
 def delete_repo_subscription(token: str, space_org: str, space_name: str) -> Any:
-    subscription_url = (
-        f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/subscription"
-    )
+    """Remove repo subscription."""
+    subscription_url = f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/subscription"
 
     headers = {
         "Accept": "application/vnd.github+json",

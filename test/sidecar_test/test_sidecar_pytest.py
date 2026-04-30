@@ -131,9 +131,7 @@ async def test_sidecar_happy_path(fake_messaging, temp_log_file):
     # Extract event configs from yaml
     monitor_config = cfg.get("sidecar_monitor", []) + cfg.get("event_monitor", [])
     config = monitor_config[0].get("config", {})
-    event_configs = [
-        EventLogLineParserConfig(**ec) for ec in config.get("event_configs", [])
-    ]
+    event_configs = [EventLogLineParserConfig(**ec) for ec in config.get("event_configs", [])]
 
     # 4) sidecar using fake messaging
     # Note: Sidecar now creates its own termination monitor internally
@@ -162,10 +160,7 @@ async def test_sidecar_happy_path(fake_messaging, temp_log_file):
     # 9) ensure at least 1 new artifact event arrived
     while not fake_messaging._q.empty():
         event = await fake_messaging._q.get()
-        if (
-            event.get("rk")
-            == f"{fake_messaging.addr.queue}.NEWARTIFACT_IN_ENVIRONMENT_EVENT"
-        ):
+        if event.get("rk") == f"{fake_messaging.addr.queue}.NEWARTIFACT_IN_ENVIRONMENT_EVENT":
             new_artifact_events.append(event)
         logger.info(f"Received event: {event}")
     assert len(new_artifact_events) > 0

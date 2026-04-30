@@ -94,9 +94,7 @@ class ArtifactRegistrationService:
         )
 
         if self.verbose:
-            self._log_verbose(
-                f"Initialized ArtifactRegistrationService for space: {space}"
-            )
+            self._log_verbose(f"Initialized ArtifactRegistrationService for space: {space}")
             self._log_verbose(f"Namespace: {self.namespace}")
             self._log_verbose(f"Table: {self.table_name}, LH env: {self.lh_env}")
             self._log_verbose(f"Cache base path: {cache_base_path}")
@@ -186,9 +184,7 @@ class ArtifactRegistrationService:
                     if lh_uri:
                         logger.info(f"Artifact already exists: {lh_uri}")
                         if self.verbose:
-                            self._log_verbose(
-                                f"Found existing artifact (409 conflict): {detail}"
-                            )
+                            self._log_verbose(f"Found existing artifact (409 conflict): {detail}")
                         return RegistrationResult(
                             artifact_id=artifact_id,
                             checksum=checksum,

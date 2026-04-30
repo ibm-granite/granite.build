@@ -263,8 +263,7 @@ class SlackAlertHandler(AlertHandler):
                     "text": {
                         "type": "mrkdwn",
                         "text": (
-                            "*Recommended Action:*\n"
-                            f"```kubectl cordon {alert.node_name}```"
+                            "*Recommended Action:*\n" f"```kubectl cordon {alert.node_name}```"
                         ),
                     },
                 },
@@ -366,9 +365,7 @@ class RetryableAlertHandler(AlertHandler):
         # Check circuit breaker
         if self._circuit_open and self._circuit_open_until is not None:
             if datetime.now(timezone.utc) < self._circuit_open_until:
-                logger.warning(
-                    "[RetryableAlertHandler] Circuit breaker open, moving alert to DLQ"
-                )
+                logger.warning("[RetryableAlertHandler] Circuit breaker open, moving alert to DLQ")
                 self._add_to_dlq(alert, "circuit_breaker_open")
                 return False
 
@@ -567,9 +564,7 @@ def create_alert_handler_from_env() -> AlertHandler:
             mention_users_str = os.getenv(
                 ENV_VAR_GBSERVER_NODE_HEALTH_ALERT_SLACK_MENTION_USERS, ""
             )
-            mention_users = [
-                u.strip() for u in mention_users_str.split(",") if u.strip()
-            ]
+            mention_users = [u.strip() for u in mention_users_str.split(",") if u.strip()]
 
             handlers.append(
                 SlackAlertHandler(
@@ -588,9 +583,7 @@ def create_alert_handler_from_env() -> AlertHandler:
 
     if len(handlers) == 1:
         # Only logging handler, return it directly
-        logger.info(
-            "[AlertHandler] No external alert handlers configured. Using logging only."
-        )
+        logger.info("[AlertHandler] No external alert handlers configured. Using logging only.")
         return handlers[0]
 
     return CompositeAlertHandler(handlers=handlers)

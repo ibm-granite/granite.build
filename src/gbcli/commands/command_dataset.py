@@ -1,3 +1,5 @@
+"""Command dataset module."""
+
 import click
 
 

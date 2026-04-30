@@ -1,9 +1,13 @@
+"""Common options module."""
+
 from functools import wraps
 
 import click
 
 
 def common_options(f):
+    """Apply common CLI options to a Click command."""
+
     @wraps(f)
     @click.option(
         "--skip-version-check",

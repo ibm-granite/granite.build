@@ -1,3 +1,5 @@
+"""Command version module."""
+
 import json
 import sys
 from typing import Dict

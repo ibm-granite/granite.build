@@ -54,12 +54,8 @@ class TestUserSpacesList(AbstractSingletonStorageUsingTest):
         # Add memberships: testuser is admin of item2's space, member of item3's space
         space_user_storage.add(
             [
-                StoredSpaceUser(
-                    space_name=item2.name, username=_FAKE_EMAIL, role="admin"
-                ),
-                StoredSpaceUser(
-                    space_name=item3.name, username=_FAKE_EMAIL, role="member"
-                ),
+                StoredSpaceUser(space_name=item2.name, username=_FAKE_EMAIL, role="admin"),
+                StoredSpaceUser(space_name=item3.name, username=_FAKE_EMAIL, role="member"),
             ]
         )
 

@@ -1,3 +1,5 @@
+"""Step image module."""
+
 import json
 import os
 import ssl
@@ -31,10 +33,7 @@ def _get_image_from_k8s_pod() -> str:
 
         api_host = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
         api_port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
-        url = (
-            f"https://{api_host}:{api_port}"
-            f"/api/v1/namespaces/{namespace}/pods/{pod_name}"
-        )
+        url = f"https://{api_host}:{api_port}" f"/api/v1/namespaces/{namespace}/pods/{pod_name}"
 
         ctx = ssl.create_default_context(cafile=_SA_CA_CERT_PATH)
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})

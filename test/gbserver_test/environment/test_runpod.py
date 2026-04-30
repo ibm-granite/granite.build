@@ -88,9 +88,7 @@ class TestLaunchRunpod:
             "runtime": {"uptimeInSeconds": 10},
         }
 
-        with patch(
-            "gbserver.environment.runpod._import_runpod", return_value=mock_runpod
-        ):
+        with patch("gbserver.environment.runpod._import_runpod", return_value=mock_runpod):
             launch_id = "test-launch-001"
             runpod_env._get_launch_ready_event(launch_id)
 
@@ -100,9 +98,7 @@ class TestLaunchRunpod:
                     "image": "pytorch/pytorch:2.0.0-cuda11.8-cudnn8-runtime",
                     "command": "python train.py",
                 },
-                config={
-                    "compute_config": {"gpu_type": "A100-80GB", "num_gpus_per_node": 1}
-                },
+                config={"compute_config": {"gpu_type": "A100-80GB", "num_gpus_per_node": 1}},
                 run_metadata={"target_name": "training"},
                 step={"name": "train"},
             )
@@ -122,9 +118,7 @@ class TestLaunchRunpod:
             "runtime": {"uptimeInSeconds": 10},
         }
 
-        with patch(
-            "gbserver.environment.runpod._import_runpod", return_value=mock_runpod
-        ):
+        with patch("gbserver.environment.runpod._import_runpod", return_value=mock_runpod):
             launch_id = "test-launch-002"
             runpod_env._get_launch_ready_event(launch_id)
 
@@ -150,9 +144,7 @@ class TestLaunchRunpod:
         mock_runpod = MagicMock()
         mock_runpod.create_pod.side_effect = Exception("API error")
 
-        with patch(
-            "gbserver.environment.runpod._import_runpod", return_value=mock_runpod
-        ):
+        with patch("gbserver.environment.runpod._import_runpod", return_value=mock_runpod):
             launch_id = "test-launch-err"
             runpod_env._get_launch_ready_event(launch_id)
 
@@ -209,9 +201,7 @@ class TestMonitorPodStatus:
             {"id": "pod-mon-123", "desiredStatus": "EXITED", "runtime": None},
         ]
 
-        with patch(
-            "gbserver.environment.runpod._import_runpod", return_value=mock_runpod
-        ):
+        with patch("gbserver.environment.runpod._import_runpod", return_value=mock_runpod):
             await env.monitor_pod_status_monitor(
                 launch_id=launch_id,
                 event_q=event_q,
@@ -237,9 +227,7 @@ class TestMonitorPodStatus:
             await asyncio.sleep(0.05)
             stop_event.set()
 
-        with patch(
-            "gbserver.environment.runpod._import_runpod", return_value=mock_runpod
-        ):
+        with patch("gbserver.environment.runpod._import_runpod", return_value=mock_runpod):
             await asyncio.gather(
                 env.monitor_pod_status_monitor(
                     launch_id=launch_id,
@@ -280,9 +268,7 @@ class TestCleanupRunpod:
         env, launch_id = runpod_env_with_pod
         mock_runpod = MagicMock()
 
-        with patch(
-            "gbserver.environment.runpod._import_runpod", return_value=mock_runpod
-        ):
+        with patch("gbserver.environment.runpod._import_runpod", return_value=mock_runpod):
             await env.cleanup_runpod(launch_id=launch_id)
 
         mock_runpod.terminate_pod.assert_called_once_with("pod-clean-456")
@@ -294,9 +280,7 @@ class TestCleanupRunpod:
         mock_runpod = MagicMock()
         stop_event = env._get_launch_stopped_event(launch_id)
 
-        with patch(
-            "gbserver.environment.runpod._import_runpod", return_value=mock_runpod
-        ):
+        with patch("gbserver.environment.runpod._import_runpod", return_value=mock_runpod):
             await env.cleanup_runpod(launch_id=launch_id)
 
         assert stop_event.is_set()

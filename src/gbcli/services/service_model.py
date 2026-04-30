@@ -1,3 +1,5 @@
+"""Service model module."""
+
 import logging
 from typing import Any, List, Optional
 
@@ -14,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def lookup_model_url(rits_api_key: str, model: str, callback=None):
+    """Find model url."""
     all_models = get_rits_models(rits_api_key)
 
     # Allow the user to specify part of a model name, if unique.
@@ -37,6 +40,7 @@ def lookup_model_url(rits_api_key: str, model: str, callback=None):
 
 
 def get_rits_models(rits_api_key: str, callback=None):
+    """Get the rits models."""
     try:
         if callback:
             callback(
@@ -61,13 +65,11 @@ def get_rits_models(rits_api_key: str, callback=None):
             results = {}
 
             for m in response.json():
-                results[
-                    f'{m["endpoint"].removeprefix(RITS_BASE_URL)}:{m["model_name"]}'
-                ] = m["endpoint"]
+                results[f'{m["endpoint"].removeprefix(RITS_BASE_URL)}:{m["model_name"]}'] = m[
+                    "endpoint"
+                ]
                 if callback:
-                    callback(
-                        callback_event="listing_models", callback_args={"steps": 1}
-                    )
+                    callback(callback_event="listing_models", callback_args={"steps": 1})
             if callback:
                 callback(callback_event="listed_models", callback_args={})
 
@@ -92,6 +94,7 @@ def prompt_model(
     top_p: float,
     callback=None,
 ):
+    """Prompt model."""
     client = OpenAI(
         api_key=rits_api_key,
         base_url=f"{url}/v1",
@@ -130,6 +133,7 @@ def model_chat(
     chat_template: Optional[Any] = None,
     callback=None,
 ):
+    """Model chat."""
     client = OpenAI(
         api_key=rits_api_key,
         base_url=f"{url}/v1",

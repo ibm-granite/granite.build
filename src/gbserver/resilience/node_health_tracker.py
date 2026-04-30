@@ -111,9 +111,7 @@ class NodeHealthTracker:
         if alert_threshold < 1:
             raise ValueError(f"alert_threshold must be >= 1, got {alert_threshold}")
         if alert_window_minutes <= 0:
-            raise ValueError(
-                f"alert_window_minutes must be > 0, got {alert_window_minutes}"
-            )
+            raise ValueError(f"alert_window_minutes must be > 0, got {alert_window_minutes}")
 
         self.node_failure_storage = node_failure_storage
         self.metrics_client = metrics_client
@@ -300,21 +298,15 @@ class NodeHealthTracker:
         # Persist to storage
         try:
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None, self.node_failure_storage.add, stored_failure
-            )
+            await loop.run_in_executor(None, self.node_failure_storage.add, stored_failure)
         except Exception as e:
-            logger.error(
-                "[NodeHealthTracker] Failed to persist failure to storage: %s", e
-            )
+            logger.error("[NodeHealthTracker] Failed to persist failure to storage: %s", e)
             return False
 
         self._failures_recorded_count.fetch_and_add()
 
         # Query storage for threshold evaluation
-        since = datetime.now(timezone.utc) - timedelta(
-            minutes=self.alert_window_minutes
-        )
+        since = datetime.now(timezone.utc) - timedelta(minutes=self.alert_window_minutes)
         try:
             recent_failures = await loop.run_in_executor(
                 None,
@@ -323,15 +315,12 @@ class NodeHealthTracker:
                 since,
             )
         except Exception as e:
-            logger.error(
-                "[NodeHealthTracker] Failed to query failures for threshold: %s", e
-            )
+            logger.error("[NodeHealthTracker] Failed to query failures for threshold: %s", e)
             return False
 
         failure_count = len(recent_failures)
         should_alert = (
-            failure_count >= self.alert_threshold
-            and node_name not in self._alerted_nodes
+            failure_count >= self.alert_threshold and node_name not in self._alerted_nodes
         )
 
         if should_alert:
@@ -365,9 +354,7 @@ class NodeHealthTracker:
                     failure_count=failure_count,
                     threshold=self.alert_threshold,
                     window_minutes=self.alert_window_minutes,
-                    failures=[
-                        self._stored_failure_to_dict(f) for f in recent_failures[-5:]
-                    ],
+                    failures=[self._stored_failure_to_dict(f) for f in recent_failures[-5:]],
                     namespace=namespace,
                     cluster=cluster,
                 )

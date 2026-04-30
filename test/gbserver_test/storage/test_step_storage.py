@@ -35,7 +35,5 @@ class BaseStepStorageTest(AbstractStorageTest):
 
 class BaseLegacyStoredStepTest(AbstractExistingDataReadTest):
 
-    def _get_tested_readonly_storage(
-        self, storage: singleton_storage.SingletonAdminStorage
-    ):
+    def _get_tested_readonly_storage(self, storage: singleton_storage.SingletonAdminStorage):
         return storage.step_storage

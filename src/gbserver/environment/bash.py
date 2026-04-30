@@ -60,6 +60,7 @@ class Bash(Environment):
         super().__init__(event_q=event_q, **kwargs)
 
     async def setup_nohup(self: Self, **kwargs):
+        """Initialize nohup."""
         space_secrets = kwargs.get("space_secrets", {})
         for key, value in space_secrets.items():
             key_str = str(key).strip()
@@ -111,9 +112,7 @@ class Bash(Environment):
                 targetsteprun_asset_dir_path = Path(parsed_url.path)
                 if targetsteprun_asset_dir_path.exists():
                     cwd = targetsteprun_asset_dir_path
-                    logger.info(
-                        "Inferred working_dir from targetsteprun_asset_dir: %s", cwd
-                    )
+                    logger.info("Inferred working_dir from targetsteprun_asset_dir: %s", cwd)
                 else:
                     logger.warning(
                         "The targetsteprun_asset_dir path does not exist: %s",
@@ -137,19 +136,13 @@ class Bash(Environment):
             logger.debug(f"env vars = {env}")
             env["LLMB_BASH_LAUNCH_ID"] = launch_id
             env["LLMB_BASH_ASSET_DIR"] = str(targetsteprun_asset_dir)
-            self.output_dir = (environment_config.get("workspace") or {}).get(
-                "output_dir", ""
-            )
+            self.output_dir = (environment_config.get("workspace") or {}).get("output_dir", "")
             if self.output_dir:
-                self.output_dir = Path(
-                    os.path.expandvars(os.path.expanduser(self.output_dir))
-                )
+                self.output_dir = Path(os.path.expandvars(os.path.expanduser(self.output_dir)))
             else:
                 self.output_dir = Path(DEFAULT_OUTPUT_DIR).expanduser()
             run_metadata = kwargs.get("run_metadata")
-            assert isinstance(
-                run_metadata, dict
-            ), f"invalid run_metadata: {run_metadata}"
+            assert isinstance(run_metadata, dict), f"invalid run_metadata: {run_metadata}"
             final_asset_dir = await self._copy_assets(
                 launch_id=launch_id,
                 asset_dir=targetsteprun_asset_dir,
@@ -184,11 +177,11 @@ class Bash(Environment):
         build_id: str = "",
         **kwargs,
     ) -> None:
+        """Monitor log monitor."""
         event_log_parser_configs = []
         if event_configs is not None:
             event_log_parser_configs = [
-                EventLogLineParserConfig.model_validate(config)
-                for config in event_configs
+                EventLogLineParserConfig.model_validate(config) for config in event_configs
             ]
         assert event_q is not None, "the event_q is None"
         assert entityrun_metadata is not None, "the entityrun_metadata is None"
@@ -208,6 +201,7 @@ class Bash(Environment):
         # secrets: Optional[dict] = None,
         **kwargs,
     ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
+        """Pullasset filestore."""
         if isinstance(uri, str):
             uri = URI.get_uri(uri)
         assert uri.uri is not None, "the URI is None"
@@ -244,6 +238,7 @@ class Bash(Environment):
         base_uri: Optional[URI] = None,
         **kwargs,
     ) -> Any:
+        """Pushasset filestore."""
         if uri is None and base_uri is None:
             return None
         if uri is not None:

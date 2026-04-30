@@ -154,9 +154,7 @@ class InputUploadService:
                 # xxh64sum output format: "checksum  filename"
                 return checksum_line.split()[0]
 
-    def upload_to_uri(
-        self, artifact_id: str, input_path: str, target_uri: str
-    ) -> UploadResult:
+    def upload_to_uri(self, artifact_id: str, input_path: str, target_uri: str) -> UploadResult:
         """
         Upload a file/directory to an already-registered Lakehouse URI.
 
@@ -300,18 +298,14 @@ class InputUploadService:
                 return False
 
             try:
-                self._run_dmf_push(
-                    artifact_id, path, input_type, namespace, table, label, version
-                )
+                self._run_dmf_push(artifact_id, path, input_type, namespace, table, label, version)
                 return True
 
             except TransientError as e:
                 if delay is None:
                     logger.error(f"Upload failed after {attempt} attempts: {e}")
                     break
-                logger.warning(
-                    f"Upload attempt {attempt} failed: {e}. Retrying in {delay}s"
-                )
+                logger.warning(f"Upload attempt {attempt} failed: {e}. Retrying in {delay}s")
                 time.sleep(delay)
 
             except PermanentError as e:
@@ -387,9 +381,7 @@ class InputUploadService:
             if not result_queue.empty():
                 result = result_queue.get()
                 if result["success"]:
-                    logger.info(
-                        f"dmf push succeeded: {result.get('artifact_entry', '')}"
-                    )
+                    logger.info(f"dmf push succeeded: {result.get('artifact_entry', '')}")
 
                     artifact_client.update_artifact(
                         artifact_id=artifact_id,
@@ -521,9 +513,7 @@ class InputUploadService:
                     error_type = "permanent"
                     break
 
-            result_queue.put(
-                {"success": False, "error": str(e), "error_type": error_type}
-            )
+            result_queue.put({"success": False, "error": str(e), "error_type": error_type})
 
     def _parse_lakehouse_uri(self, uri: str) -> Optional[Dict]:
         """

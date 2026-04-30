@@ -45,9 +45,7 @@ class GraniteBuildServerCLI(click.Group):
 
     def list_commands(self: Self, ctx: click.Context) -> List[str]:
         rv = []
-        command_folder = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "commands")
-        )
+        command_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), "commands"))
         for filename in os.listdir(command_folder):
             if filename.endswith(".py") and filename.startswith("command_"):
                 cmd = filename[8:-3]
@@ -56,9 +54,7 @@ class GraniteBuildServerCLI(click.Group):
         rv.sort()
         return rv
 
-    def get_command(
-        self: Self, ctx: click.Context, cmd_name: str
-    ) -> Optional[click.Command]:
+    def get_command(self: Self, ctx: click.Context, cmd_name: str) -> Optional[click.Command]:
         try:
             cmd_name = cmd_name.replace("-", "_")
             mod = importlib.import_module(f"gbserver.commands.command_{cmd_name}")
@@ -113,9 +109,7 @@ def gbserver(
         log_file=str(ctx.log_path) if ctx.log_path is not None else None,
     )
     if gb_admin_table_prefix is not None:
-        logger.warning(
-            "Global admin table name prefix set to '%s'!!!", gb_admin_table_prefix
-        )
+        logger.warning("Global admin table name prefix set to '%s'!!!", gb_admin_table_prefix)
         # The environment variable is passed to a child process
         os.environ[ENV_VAR_GBSERVER_ADMIN_TABLE_PREFIX] = gb_admin_table_prefix
         singleton_storage.set_storage_prefix(gb_admin_table_prefix)

@@ -80,7 +80,9 @@ ENV_VAR_SPS_IBMCLOUD_API_KEY = "GBTEST_SPS_IBMCLOUD_API_KEY"
 ENV_VAR_SPS_ENABLE_ENV_VAR_OVERRIDE = "GBTEST_SPS_ENABLE_ENV_VAR_OVERRIDE"
 ENABLE_ENV_VAR_OVERRIDE_DEFAULT = "False"
 
-SECRET_MANAGER_ENDPOINT = "https://c78b6ab2-edd0-407e-afac-5892d6017045.us-south.secrets-manager.appdomain.cloud"
+SECRET_MANAGER_ENDPOINT = (
+    "https://c78b6ab2-edd0-407e-afac-5892d6017045.us-south.secrets-manager.appdomain.cloud"
+)
 
 TEST_REQUIRED_ENV_VARS = [
     # GB Server Configuration
@@ -122,9 +124,7 @@ TEST_ENV_VAR_SPS_NAMES["GBTEST_NON_ADMIN_GITHUB_TOKEN"] = "github-token"
 # GHE token for Granite.Dot.Build.Test.Admin
 TEST_ENV_VAR_SPS_NAMES["GBTEST_ADMIN_GITHUB_TOKEN"] = "github-admin-token"
 TEST_ENV_VAR_SPS_NAMES["GBSERVER_SQL_PASSWD"] = "gbserver-sql-passwd"
-TEST_ENV_VAR_SPS_NAMES["GBSERVER_SQL_SSLROOT_CERT_BASE64"] = (
-    "gbserver-sql-sslroot-cert-base64"
-)
+TEST_ENV_VAR_SPS_NAMES["GBSERVER_SQL_SSLROOT_CERT_BASE64"] = "gbserver-sql-sslroot-cert-base64"
 TEST_ENV_VAR_SPS_NAMES["LAKEHOUSE_TOKEN"] = "lakehouse-token"
 # RIS3
 TEST_ENV_VAR_SPS_NAMES["IBM_CLOUD_API_KEY"] = "ris3-api-key"
@@ -182,15 +182,11 @@ def set_test_env(sps_api_key: str, enable_env_var_override: bool):
         if value is None:
             logger.warning(f"Potential missing Environment Variable: {env_var}")
         elif env_var in TEST_ENV_VAR_SPS_NAMES:
-            logger.info(
-                f"Setting Environment Variable from {value_source}: {env_var}=<secret>"
-            )
+            logger.info(f"Setting Environment Variable from {value_source}: {env_var}=<secret>")
             # logger.info(f"Setting Environment Variable from {value_source}: {env_var}={value}")
             os.environ[env_var] = value
         else:
-            logger.info(
-                f"Setting Environment Variable from {value_source}: {env_var}={value}"
-            )
+            logger.info(f"Setting Environment Variable from {value_source}: {env_var}={value}")
             os.environ[env_var] = value
 
 
@@ -232,23 +228,17 @@ def pytest_sessionstart(session):
         if gbtest_cluster_project:
             gb_env = os.getenv("GB_ENVIRONMENT", "STAGING").upper()
             if gb_env == "STAGING":
-                os.environ["GBSERVER_BACKEND_SERVER_NAMESPACE_STAGING"] = (
-                    gbtest_cluster_project
-                )
+                os.environ["GBSERVER_BACKEND_SERVER_NAMESPACE_STAGING"] = gbtest_cluster_project
                 logger.info(
                     f"Setting GBSERVER_BACKEND_SERVER_NAMESPACE_STAGING={gbtest_cluster_project} based on GBTEST_GB_CLUSTER_PROJECT"
                 )
             elif gb_env == "DEV":
-                os.environ["GBSERVER_BACKEND_SERVER_NAMESPACE_DEV"] = (
-                    gbtest_cluster_project
-                )
+                os.environ["GBSERVER_BACKEND_SERVER_NAMESPACE_DEV"] = gbtest_cluster_project
                 logger.info(
                     f"Setting GBSERVER_BACKEND_SERVER_NAMESPACE_DEV={gbtest_cluster_project} based on GBTEST_GB_CLUSTER_PROJECT"
                 )
             elif gb_env == "PROD":
-                os.environ["GBSERVER_BACKEND_SERVER_NAMESPACE_PROD"] = (
-                    gbtest_cluster_project
-                )
+                os.environ["GBSERVER_BACKEND_SERVER_NAMESPACE_PROD"] = gbtest_cluster_project
                 logger.info(
                     f"Setting GBSERVER_BACKEND_SERVER_NAMESPACE_PROD={gbtest_cluster_project} based on GBTEST_GB_CLUSTER_PROJECT"
                 )
@@ -284,9 +274,7 @@ class BuildAggregation(BaseModel):
             assert isinstance(build, StoredBuild)
             targets = storage.target_storage.get_by_where({"build_id": build_id})
             steps = storage.step_storage.get_by_where({"build_id": build_id})
-            artifacts = storage.artifact_registry.get_by_where(
-                {"created_by_build_id": build_id}
-            )
+            artifacts = storage.artifact_registry.get_by_where({"created_by_build_id": build_id})
             ba = BuildAggregation(
                 build=build,
                 targets=targets,

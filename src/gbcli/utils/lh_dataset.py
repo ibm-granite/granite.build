@@ -1,4 +1,8 @@
+"""Lh dataset module."""
+
+
 def dataset_info_lh(lh, dataset_name: str, namespace: str):
+    """Dataset info lh."""
     try:
 
         from lakehouse.assets.dataset import Dataset  # type: ignore

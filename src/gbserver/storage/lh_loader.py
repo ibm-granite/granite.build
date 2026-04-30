@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Lh loader module."""
+
 from pathlib import Path
 from typing import Any, Optional, Self, Union
 
@@ -40,6 +42,7 @@ DEFAULT_LH_HOST = "ui.dmf.vpc-int.res.ibm.com"
 
 
 class LakehouseLoader(BaseLakehouseStorage):
+    """Lakehouse Loader implementation."""
 
     default_namespace: str = GB_PUBLIC_ARTIFACT_NAMESPACE
     logger: Any = None  # Set in the initializer
@@ -142,9 +145,7 @@ class LakehouseLoader(BaseLakehouseStorage):
         """
         if namespace is None:
             namespace = self.default_namespace
-        self.logger.info(
-            f"Begin upload of {file_path} to table {namespace}.{table_name}"
-        )
+        self.logger.info(f"Begin upload of {file_path} to table {namespace}.{table_name}")
         if isinstance(file_path, Path):
             file_path = str(file_path.name)
         if file_path.endswith(".parquet"):
@@ -166,9 +167,7 @@ class LakehouseLoader(BaseLakehouseStorage):
         # table.append_dataframe(df=df)
         Table.from_dataframe(lh=self.lh, df=df, table_details=table_details)
 
-        self.logger.info(
-            f"Done upload of {file_path} to table {namespace}.{table_name}"
-        )
+        self.logger.info(f"Done upload of {file_path} to table {namespace}.{table_name}")
 
     def download(
         self: Self, table_name: str, file_path: Path, namespace: Optional[str] = None
@@ -190,9 +189,7 @@ class LakehouseLoader(BaseLakehouseStorage):
             namespace = self.default_namespace
         if isinstance(file_path, Path):
             file_path = str(file_path.name)
-        self.logger.info(
-            f"Begin download of from table {namespace}.{table_name} to {file_path}"
-        )
+        self.logger.info(f"Begin download of from table {namespace}.{table_name} to {file_path}")
         table = self.__get_table(namespace, table_name)
         df = table.to_pandas()
         if file_path.endswith(".parquet"):
@@ -201,9 +198,7 @@ class LakehouseLoader(BaseLakehouseStorage):
             df.to_json(file_path, orient="records", lines=True)
         else:
             raise ValueError(f"File extension not supported: {file_path}")
-        self.logger.info(
-            f"End  download of table {namespace}.{table_name} to {file_path}"
-        )
+        self.logger.info(f"End  download of table {namespace}.{table_name} to {file_path}")
 
 
 if __name__ == "__main__":

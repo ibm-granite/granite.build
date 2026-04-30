@@ -222,9 +222,7 @@ class LSFBsubMonitor(MonitorBase):
                     returncode = -1 if proc.returncode is None else proc.returncode
                 is_error = returncode != 0
                 if is_error:
-                    logger.error(
-                        "proc: %s returncode: %s", self.monitor_command, returncode
-                    )
+                    logger.error("proc: %s returncode: %s", self.monitor_command, returncode)
                     logger.error("stdout: %s", stdout)
                     logger.error("stderr: %s", stderr)
                     continue

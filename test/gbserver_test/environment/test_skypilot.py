@@ -547,9 +547,7 @@ class TestSkypilotMonitorLogParsing:
 
     # @pytest.mark.skip(reason="TODO: fix the mock so that it matches the changes in the code")
     @pytest.mark.asyncio
-    async def test_log_parsing_emits_artifact_event(
-        self, skypilot_env_with_terminal_job, tmp_path
-    ):
+    async def test_log_parsing_emits_artifact_event(self, skypilot_env_with_terminal_job, tmp_path):
         """Matching log lines produce NEWARTIFACT_IN_ENVIRONMENT_EVENT on event_q."""
         env, launch_id, event_q = skypilot_env_with_terminal_job
 
@@ -589,9 +587,7 @@ class TestSkypilotMonitorLogParsing:
 
         # There should be at least one NEWARTIFACT_IN_ENVIRONMENT_EVENT
         artifact_events = [
-            e
-            for e in events
-            if e.type == BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            e for e in events if e.type == BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
         ]
         assert len(artifact_events) == 1, (
             f"Expected exactly 1 NEWARTIFACT_IN_ENVIRONMENT_EVENT, "
@@ -616,10 +612,7 @@ class TestSkypilotMonitorLogParsing:
         log_dir.mkdir()
         log_file = log_dir / "job-42.log"
         log_file.write_text(
-            "Starting job...\n"
-            "Training epoch 1\n"
-            "Training epoch 2\n"
-            "Job complete.\n"
+            "Starting job...\n" "Training epoch 1\n" "Training epoch 2\n" "Job complete.\n"
         )
 
         mock_sky = _make_terminal_sky_mock()
@@ -647,9 +640,7 @@ class TestSkypilotMonitorLogParsing:
 
         # There should be NO NEWARTIFACT_IN_ENVIRONMENT_EVENT events
         artifact_events = [
-            e
-            for e in events
-            if e.type == BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            e for e in events if e.type == BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
         ]
         assert len(artifact_events) == 0, (
             f"Expected 0 NEWARTIFACT_IN_ENVIRONMENT_EVENT, "
@@ -657,9 +648,7 @@ class TestSkypilotMonitorLogParsing:
         )
 
     @pytest.mark.asyncio
-    async def test_no_event_configs_skips_log_parsing(
-        self, skypilot_env_with_terminal_job
-    ):
+    async def test_no_event_configs_skips_log_parsing(self, skypilot_env_with_terminal_job):
         """When event_configs is not provided, no log download occurs."""
         env, launch_id, event_q = skypilot_env_with_terminal_job
 
@@ -780,9 +769,7 @@ class TestSkypilotManagedMonitorLogParsing:
         return env, launch_id, event_q
 
     @pytest.mark.asyncio
-    async def test_log_parsing_emits_artifact_event(
-        self, managed_env_with_terminal_job, tmp_path
-    ):
+    async def test_log_parsing_emits_artifact_event(self, managed_env_with_terminal_job, tmp_path):
         """Matching log lines produce NEWARTIFACT_IN_ENVIRONMENT_EVENT on event_q."""
         env, launch_id, event_q = managed_env_with_terminal_job
 
@@ -822,9 +809,7 @@ class TestSkypilotManagedMonitorLogParsing:
 
         # There should be at least one NEWARTIFACT_IN_ENVIRONMENT_EVENT
         artifact_events = [
-            e
-            for e in events
-            if e.type == BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            e for e in events if e.type == BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
         ]
         assert len(artifact_events) == 1, (
             f"Expected exactly 1 NEWARTIFACT_IN_ENVIRONMENT_EVENT, "
@@ -848,10 +833,7 @@ class TestSkypilotManagedMonitorLogParsing:
         log_dir.mkdir()
         log_file = log_dir / "job-managed.log"
         log_file.write_text(
-            "Starting job...\n"
-            "Training epoch 1\n"
-            "Training epoch 2\n"
-            "Job complete.\n"
+            "Starting job...\n" "Training epoch 1\n" "Training epoch 2\n" "Job complete.\n"
         )
 
         mock_sky = _make_terminal_managed_sky_mock()
@@ -879,9 +861,7 @@ class TestSkypilotManagedMonitorLogParsing:
 
         # There should be NO NEWARTIFACT_IN_ENVIRONMENT_EVENT events
         artifact_events = [
-            e
-            for e in events
-            if e.type == BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            e for e in events if e.type == BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
         ]
         assert len(artifact_events) == 0, (
             f"Expected 0 NEWARTIFACT_IN_ENVIRONMENT_EVENT, "
@@ -889,9 +869,7 @@ class TestSkypilotManagedMonitorLogParsing:
         )
 
     @pytest.mark.asyncio
-    async def test_no_event_configs_skips_log_parsing(
-        self, managed_env_with_terminal_job
-    ):
+    async def test_no_event_configs_skips_log_parsing(self, managed_env_with_terminal_job):
         """When event_configs is not provided, no log download occurs."""
         env, launch_id, event_q = managed_env_with_terminal_job
 
@@ -914,9 +892,7 @@ class TestSkypilotManagedMonitorLogParsing:
         mock_sky.download_logs.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_log_download_failure_does_not_crash_monitor(
-        self, managed_env_with_terminal_job
-    ):
+    async def test_log_download_failure_does_not_crash_monitor(self, managed_env_with_terminal_job):
         """If log download fails after all retries, monitor returns normally."""
         env, launch_id, event_q = managed_env_with_terminal_job
 

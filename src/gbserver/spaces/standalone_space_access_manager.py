@@ -47,9 +47,7 @@ class StandaloneSpaceAccessManager(ISpaceAccessManager):
     def has_space_access(self, username: str, space_name: str) -> bool:
         return True
 
-    def has_build_access(
-        self, username: str, build_id: str
-    ) -> Union[bool, JSONResponse]:
+    def has_build_access(self, username: str, build_id: str) -> Union[bool, JSONResponse]:
         storage: SingletonAdminStorage = get_admin_storage()
         build = storage.build_storage.get_by_uuid(build_id)
         if build is None:

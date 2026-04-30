@@ -30,9 +30,7 @@ if UPLOAD_FEATURE_FLAG and not REGISTRATION_FEATURE_FLAG:
     REGISTRATION_FEATURE_FLAG = True
 
 FEATURE_FLAGS = {
-    "use_project_log_folder": getenv_boolean(
-        "USE_PROJECT_LOG_FOLDER", True
-    ),  # Default true
+    "use_project_log_folder": getenv_boolean("USE_PROJECT_LOG_FOLDER", True),  # Default true
     "enable_input_registration": REGISTRATION_FEATURE_FLAG,
     "enable_input_upload": UPLOAD_FEATURE_FLAG,
     "build_yaml_to_stdout": BUILD_YAML_TO_STDOUT,

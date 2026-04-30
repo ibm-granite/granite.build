@@ -1,3 +1,5 @@
+"""Service secret module."""
+
 import base64
 import itertools
 import threading
@@ -26,6 +28,7 @@ def list_secrets(
     space: Optional[str] = None,
     callback=None,
 ) -> Any:
+    """List secrets."""
     username = get_user(github_token).login
 
     space_default_name = None
@@ -38,9 +41,7 @@ def list_secrets(
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"Space {space} not found in available spaces."
-                    },
+                    callback_args={"reason": f"Space {space} not found in available spaces."},
                 )
             return None
 
@@ -76,9 +77,7 @@ def list_secrets(
         spinner_thread.join()  # Ensure spinner stops
 
     secrets = make_gbserver_call(
-        lambda: get_secrets(
-            github_token, GBSERVER_SECRETS_API, personal, space_default_name
-        ),
+        lambda: get_secrets(github_token, GBSERVER_SECRETS_API, personal, space_default_name),
         callback,
         stop_spinner,
     )
@@ -105,6 +104,7 @@ def get_secret(
     space: Optional[str] = None,
     callback=None,
 ) -> Any:
+    """Get the secret."""
     username = get_user(github_token).login
 
     space_default_name = None
@@ -117,9 +117,7 @@ def get_secret(
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"Space {space} not found in available spaces."
-                    },
+                    callback_args={"reason": f"Space {space} not found in available spaces."},
                 )
             return None
 
@@ -189,6 +187,7 @@ def create_secret(
     from_file: Optional[str] = None,
     callback=None,
 ) -> Tuple[Any, str, str]:
+    """Create secret."""
     username = get_user(github_token).login
 
     space_default_name = None
@@ -201,9 +200,7 @@ def create_secret(
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"Space {space} not found in available spaces."
-                    },
+                    callback_args={"reason": f"Space {space} not found in available spaces."},
                 )
             return None
 
@@ -280,6 +277,7 @@ def update_secret(
     from_file: Optional[str] = None,
     callback=None,
 ) -> Tuple[Any, str, str]:
+    """Update secret."""
     username = get_user(github_token).login
 
     space_default_name = None
@@ -292,9 +290,7 @@ def update_secret(
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"Space {space} not found in available spaces."
-                    },
+                    callback_args={"reason": f"Space {space} not found in available spaces."},
                 )
             return None
 
@@ -369,6 +365,7 @@ def delete_secret(
     space: Optional[str] = None,
     callback=None,
 ) -> Tuple[Any, str, str]:
+    """Remove secret."""
     username = get_user(github_token).login
 
     space_default_name = None
@@ -381,9 +378,7 @@ def delete_secret(
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"Space {space} not found in available spaces."
-                    },
+                    callback_args={"reason": f"Space {space} not found in available spaces."},
                 )
             return None
 

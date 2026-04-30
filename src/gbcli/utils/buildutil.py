@@ -1,3 +1,5 @@
+"""Buildutil module."""
+
 import json
 import logging
 import os
@@ -25,9 +27,7 @@ def apply_parameters(contents, params, params_from_file, build_folder_path):
     try:
         params_replacement = template.render(params_dict)
         if len(params_dict) > 0:
-            params_applied_path = os.path.join(
-                build_folder_path, BUILD_PARAMETERS_APPLIED_FILE
-            )
+            params_applied_path = os.path.join(build_folder_path, BUILD_PARAMETERS_APPLIED_FILE)
             with open(params_applied_path, "w", encoding="utf-8") as f:
                 f.write(yaml.safe_dump(params_dict))
         return params_replacement
@@ -36,6 +36,7 @@ def apply_parameters(contents, params, params_from_file, build_folder_path):
 
 
 def parse_params(params, params_from_file):
+    """Parse params."""
     data = params_from_file
     for param in params:
         data = add_parameter(data, param)
@@ -67,9 +68,7 @@ def process_build_validation_response(validate_response):
         return validation
 
     errs = [adapt_response(x, "error") for x in validate_response.get("errors", [])]
-    warnings = [
-        adapt_response(x, "warning") for x in validate_response.get("warnings", [])
-    ]
+    warnings = [adapt_response(x, "warning") for x in validate_response.get("warnings", [])]
     return errs + warnings
 
 
@@ -150,14 +149,13 @@ def safely_load_yaml_file(yaml_path: str, callback):
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": f"Error occurred while loading yaml file: {e}"
-                },
+                callback_args={"reason": f"Error occurred while loading yaml file: {e}"},
             )
             return None
 
 
 def get_yaml_diff(build_yaml_dict: dict, validation: dict):
+    """Get the yaml diff."""
     json_patch = validation.get("json_patch")
     if not json_patch:
         return None

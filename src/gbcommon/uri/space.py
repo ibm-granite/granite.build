@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Space module."""
+
 import threading
 from pathlib import Path
 from typing import List, Self
@@ -29,6 +31,7 @@ logger = get_logger(__name__)
 
 
 class SpaceURI(URI):
+    """Space U R I implementation."""
 
     _thread_local = threading.local()
 
@@ -50,9 +53,7 @@ class SpaceURI(URI):
         elif uristr.startswith(SPACE_SCHEME):
             uri_suffix = uristr.removeprefix(SPACE_SCHEME + "://")
         for base_uri in SpaceURI._thread_local.base_uris:
-            uri = URI.get_uri(
-                base_uri, "file", secrets=SpaceURI._thread_local.space_secrets
-            )
+            uri = URI.get_uri(base_uri, "file", secrets=SpaceURI._thread_local.space_secrets)
             uri.append_path(uri_suffix)
             if uri.exists():
                 return uri
@@ -60,6 +61,7 @@ class SpaceURI(URI):
 
     @classmethod
     def set_baseuris(cls, base_uris: List[str], space_secrets: dict):
+        """Set the baseuris."""
         cls._thread_local.space_secrets = space_secrets
         cls._thread_local.base_uris = base_uris
 

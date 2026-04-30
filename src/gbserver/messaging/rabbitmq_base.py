@@ -36,30 +36,36 @@ if HAS_RABBITMQ:
     from aio_pika.exceptions import (
         AMQPConnectionError,
     )
-    from aio_pika.exceptions import (
-        ChannelInvalidStateError as AioPikaChannelInvalidStateError,
-    )
+    from aio_pika.exceptions import ChannelInvalidStateError as AioPikaChannelInvalidStateError
     from aio_pika.exceptions import ConnectionClosed as AioPikaConnectionClosed
-    from aiormq.exceptions import (
-        ChannelInvalidStateError as AiormqChannelInvalidStateError,
-    )
+    from aiormq.exceptions import ChannelInvalidStateError as AiormqChannelInvalidStateError
     from aiormq.exceptions import ConnectionClosed as AiormqConnectionClosed
 else:
     # Provide stand-in exception classes so retry decorators and except
     # clauses can reference them at class-definition time without crashing.
     class AMQPConnectionError(Exception):  # type: ignore[no-redef]
+        """A M Q P Connection Error implementation."""
+
         pass
 
     class AioPikaChannelInvalidStateError(Exception):  # type: ignore[no-redef]
+        """Aio Pika Channel Invalid State Error implementation."""
+
         pass
 
     class AioPikaConnectionClosed(Exception):  # type: ignore[no-redef]
+        """Aio Pika Connection Closed implementation."""
+
         pass
 
     class AiormqChannelInvalidStateError(Exception):  # type: ignore[no-redef]
+        """Aiormq Channel Invalid State Error implementation."""
+
         pass
 
     class AiormqConnectionClosed(Exception):  # type: ignore[no-redef]
+        """Aiormq Connection Closed implementation."""
+
         pass
 
 
@@ -95,6 +101,7 @@ class RabbitSettings:
 
     @property
     def url(self) -> str:
+        """Url."""
         return f"{self.uri}://{self.user}:{self.password}@{self.host}:{self.port}{self.vhost}"
 
     # This property returns the SSL context for the following two RabbitMQ servers:
@@ -102,6 +109,7 @@ class RabbitSettings:
     #   (2) a Docker container running locally that has no SSL
     @property
     def ssl_context(self) -> Optional[ssl.SSLContext]:
+        """Ssl context."""
         ctx: ssl.SSLContext | None = None
         if self.uri == "amqps":
             # --- build an "insecure" SSLContext -------------
@@ -163,9 +171,8 @@ class RabbitMQBase(MessagingBase):
         messaging_secret: Optional[Any] = None,
         stop_evt: Optional[asyncio.Event] = None,
     ):
-        addr = Address(
-            exchange=exchange_name, queue=queue_name, routing_key=routing_key
-        )
+        """From env and args."""
+        addr = Address(exchange=exchange_name, queue=queue_name, routing_key=routing_key)
         if messaging_secret:
             rabbit_settings = RabbitSettings(
                 host=messaging_secret.get("host"),
@@ -210,6 +217,7 @@ class RabbitMQBase(MessagingBase):
 
     # ------------------------- async setup -------------------------------- #
     async def setup(self):
+        """Initialize the RabbitMQ connection and channel."""
         if self._setup_done.is_set():  # already initialized
             return
         # only the TCP/TLS + auth handshake is retried here
@@ -319,6 +327,7 @@ class RabbitMQBase(MessagingBase):
         return wrapper
 
     async def declare_event_queue(self):
+        """Declare event queue."""
         await self._setup_done.wait()
         await self._ensure_channel()
         queue = await self._chan.declare_queue(
@@ -340,9 +349,8 @@ class RabbitMQBase(MessagingBase):
         suffix: str = "event",
         persistent: bool = True,
     ) -> None:
-        await asyncio.wait_for(
-            self._setup_done.wait(), timeout=30
-        )  # wait for setup to complete
+        """Publish a message to the RabbitMQ exchange."""
+        await asyncio.wait_for(self._setup_done.wait(), timeout=30)  # wait for setup to complete
 
         body = json.dumps(payload).encode()
         rk = self.addr.rk(suffix)
@@ -385,9 +393,7 @@ class RabbitMQBase(MessagingBase):
         else:
             # Use a lambda to resolve the *current* exchange each attempt, so retries don't call a
             # stale bound method from a dead channel.
-            publish_call = self._with_retries(
-                lambda *a, **kw: self._exchange.publish(*a, **kw)
-            )
+            publish_call = self._with_retries(lambda *a, **kw: self._exchange.publish(*a, **kw))
             await publish_call(message, routing_key=rk)
 
         logger.info(
@@ -409,9 +415,7 @@ class RabbitMQBase(MessagingBase):
           - pass a stable `consumer_name` (e.g., sidecar/monitor identity)
           - use `stream_offset="next"` to continue after the last committed record
         """
-        await asyncio.wait_for(
-            self._setup_done.wait(), timeout=30
-        )  # wait for setup to complete
+        await asyncio.wait_for(self._setup_done.wait(), timeout=30)  # wait for setup to complete
         queue_holder = {"queue": None}
         tag_holder = {"tag": None}
 
@@ -526,10 +530,12 @@ class RabbitMQBase(MessagingBase):
 
     # ------------------------- run / close ------------------------------- #
     async def run(self):
+        """Run the messaging loop until stop is signaled."""
         await self._setup_done.wait()
         await self.stop_event.wait()
 
     async def close(self):
+        """Close the RabbitMQ connection."""
         if self._conn and not self._conn.is_closed:
             await self._conn.close()
             logger.info("[RabbitMQ launch_id %s] connection closed", self.launch_id)

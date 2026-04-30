@@ -1,3 +1,5 @@
+"""Utils module."""
+
 import json
 import os
 import random
@@ -65,11 +67,7 @@ def normalize_to_filename(value: str, allow_unicode: bool = False) -> str:
     if allow_unicode:
         value = unicodedata.normalize("NFKC", value)
     else:
-        value = (
-            unicodedata.normalize("NFKD", value)
-            .encode("ascii", "ignore")
-            .decode("ascii")
-        )
+        value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     value = re.sub(r"[^\w\s-]", "", value.lower())
     return re.sub(r"[-\s]*", "-", value).strip("-_")
 
@@ -80,9 +78,7 @@ class CustomHeading(Heading):
     def __init__(self, tag: str) -> None:
         super().__init__(tag)
 
-    def __rich_console__(
-        self, console: Console, options: ConsoleOptions
-    ) -> RenderResult:
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         text = self.text
         text.justify = "center"
         if self.tag == "h1":
@@ -109,9 +105,7 @@ class CustomTable(TableElement):
     def __init__(self) -> None:
         super().__init__()
 
-    def __rich_console__(
-        self, console: Console, options: ConsoleOptions
-    ) -> RenderResult:
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         table = Table(box=None, header_style=Style(bold=False), padding=(0, 1, 1, 0))
 
         if self.header is not None and self.header.row is not None:
@@ -149,23 +143,21 @@ class CustomListItem(ListItem):
 class CustomHorizontalRule(HorizontalRule):
     """A horizontal rule to divide sections."""
 
-    def __rich_console__(
-        self, console: Console, options: ConsoleOptions
-    ) -> RenderResult:
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         yield Rule(style=Style(color="cyan"))
 
 
 class CustomParagraph(Paragraph):
     """use rich text to replace paragraph"""
 
-    def __rich_console__(
-        self, console: Console, options: ConsoleOptions
-    ) -> RenderResult:
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         text = self.text
         yield Text(text.plain, style=Style(bold=True))
 
 
 class CloneProgress(RemoteProgress):
+    """Clone Progress implementation."""
+
     def __init__(self, update_bar):
         super().__init__()
         self.update_bar = update_bar
@@ -176,9 +168,7 @@ class CloneProgress(RemoteProgress):
         if self.update_bar:
             # convert to step size for specified total
             step_size = 100 / max_count
-            self.update_bar(
-                callback_event="preparing_contents", callback_args={"steps": step_size}
-            )
+            self.update_bar(callback_event="preparing_contents", callback_args={"steps": step_size})
         else:
             self.pbar.total = max_count
             self.pbar.n = cur_count
@@ -186,21 +176,23 @@ class CloneProgress(RemoteProgress):
 
 
 def remove_prefix(prefix: str, full_text: str) -> str:
+    """Remove prefix."""
     return full_text.removeprefix(prefix)
 
 
 def remove_suffix(full_text: str, suffix: str) -> str:
+    """Remove suffix."""
     return full_text.removesuffix(suffix)
 
 
 def generate_unique_id():
-    random_string = "".join(
-        random.choice(string.ascii_lowercase + string.digits) for _ in range(8)
-    )
+    """Create unique id."""
+    random_string = "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(8))
     return random_string
 
 
 def humanize_iso_date(date: str) -> str:
+    """Humanize iso date."""
     format = "%Y-%m-%dT%H:%M:%S.%f%z" if "." in date else "%Y-%m-%dT%H:%M:%SZ"
     time_interval = datetime.now(timezone.utc).replace(tzinfo=None) - datetime.strptime(
         date, format
@@ -212,18 +204,19 @@ def humanize_iso_date(date: str) -> str:
 
 
 def datetime_to_string(date: str) -> str:
+    """Datetime to string."""
     original_format = "%Y-%m-%dT%H:%M:%S.%f%z" if "." in date else "%Y-%m-%dT%H:%M:%S%z"
     parsed_format = "%Y-%m-%d %H:%M:%S%z"
-    return datetime.strptime(date.replace("Z", "+0000"), original_format).strftime(
-        parsed_format
-    )
+    return datetime.strptime(date.replace("Z", "+0000"), original_format).strftime(parsed_format)
 
 
 def epoch_to_iso_date(epoch):
+    """Epoch to iso date."""
     return datetime.fromtimestamp(epoch).astimezone().replace(microsecond=0).isoformat()
 
 
 def parse_build_parameters(params: List[str]) -> str:
+    """Parse build parameters."""
     dict_params = {}
     for param in params:
         param_key, param_value = param.split("=")
@@ -287,6 +280,7 @@ def resolve_url_to_canonical_expression(url: str, removeSuffix=True):
 
 
 def resolve_to_space_key(expression: str):
+    """Resolve to space key."""
     canonical_expression = resolve_url_to_canonical_expression(expression, True)
     repo = None
     if "/" in canonical_expression:
@@ -296,6 +290,8 @@ def resolve_to_space_key(expression: str):
 
 
 class DecodedURIResponse(BaseModel):
+    """Decoded U R I Response implementation."""
+
     uri: str
     namespace: str
     table_name: str
@@ -316,6 +312,7 @@ def __get_lh_decoded_uri_response(uri: LhURI) -> DecodedURIResponse:
 def decode_uri(
     uri_input: str,
 ) -> DecodedURIResponse:
+    """Decode uri."""
     uri = URI.get_uri(uri_input)
 
     if not isinstance(uri, LhURI):
@@ -327,6 +324,7 @@ def decode_uri(
 
 
 def compare_env_uri(uri: str):
+    """Compare env uri."""
     return (
         uri.split("/")[2],
         str(gb_environment_config()["lakehouse_environment"]).lower(),
@@ -334,13 +332,12 @@ def compare_env_uri(uri: str):
 
 
 def format_artifact_tags(artifacts: list):
+    """Format artifact tags."""
     formatted_artifacts = []
 
     for artifact in artifacts:
         if artifact["tags"]:
-            artifact["tags"] = [
-                json.loads(a) if a[0] == "{" else a for a in artifact["tags"]
-            ]
+            artifact["tags"] = [json.loads(a) if a[0] == "{" else a for a in artifact["tags"]]
         else:
             artifact["tags"] = []
 
@@ -351,6 +348,7 @@ def format_artifact_tags(artifacts: list):
 
 def is_official_artifact(artifact):
     # if any tag objects exists
+    """Check if official artifact."""
     if len(artifact["tags"]) > 0:
         # check each item in 'tags' list
         for tag_obj in artifact["tags"]:
@@ -367,6 +365,7 @@ def get_artifact_formatted_name(decoded_artifact: DecodedURIResponse):
     # model : <model_label>.<revision>|<namespace_name>.<table_name>
     # fileset: <label>.<version>|<table_name>
 
+    """Get the artifact formatted name."""
     type = decoded_artifact.type
     namespace = decoded_artifact.namespace
     table = decoded_artifact.table_name
@@ -390,6 +389,7 @@ def get_artifact_formatted_name(decoded_artifact: DecodedURIResponse):
 
 
 def get_artifact_lineage_url(decoded_artifact, artifact_id):
+    """Get the artifact lineage url."""
     type = decoded_artifact.type
     namespace = decoded_artifact.namespace
     table = decoded_artifact.table_name
@@ -411,6 +411,7 @@ def get_artifact_lineage_url(decoded_artifact, artifact_id):
 
 
 def parse_artifact_identifier(identifier: str):
+    """Parse artifact identifier."""
     uuid_format = re.compile(
         r"^[a-z0-9]*-[a-z0-9]*-[a-z0-9]*-[a-z0-9]*-[a-z0-9]*$",
         re.IGNORECASE,
@@ -447,17 +448,20 @@ def parse_artifact_identifier(identifier: str):
 
 
 def parse_table(s):
+    """Parse table."""
     namespace_name, table_name = s.rsplit(".", 1)
     return namespace_name, table_name
 
 
 def parse_dataset(s):
+    """Parse dataset."""
     dataset_part, table_part = s.split("|")
     namespace_name, table_name = table_part.rsplit(".", 1)
     return dataset_part, namespace_name, table_name
 
 
 def parse_model(s):
+    """Parse model."""
     model_part, table_part = s.split("|")
     model_label, revision = model_part.split(".")
     namespace_name, table_name = table_part.rsplit(".", 1)
@@ -466,12 +470,14 @@ def parse_model(s):
 
 
 def parse_fileset(s):
+    """Parse fileset."""
     label_version, table_name = s.split("|")
     fileset_label, fileset_version = label_version.split(".")
     return fileset_label, fileset_version, table_name
 
 
 def parse_build_identifier(identifier: str):
+    """Parse build identifier."""
     if identifier:
         uuid_format = re.compile(
             r"^[a-z0-9]*-[a-z0-9]*-[a-z0-9]*-[a-z0-9]*-[a-z0-9]*$",
@@ -490,6 +496,7 @@ def parse_build_identifier(identifier: str):
 
 
 def find_space_by_name(space_list: List, name: str):
+    """Find space by name."""
     for space in space_list:
         if space["name"] == name:
             return space
@@ -577,12 +584,13 @@ def retry_function(func, retries=3, delay=2, *args, **kwargs):
 
 
 def get_artifact_uuid(github_token: str, uri: str, callback=None):
+    """Get the artifact uuid."""
     username = get_user(github_token).login
 
     gbserver_artifacts = make_gbserver_call(
-        lambda: get_artifacts(
-            github_token, GBSERVER_ARTIFACT_API, username, None, None
-        )["artifacts"],
+        lambda: get_artifacts(github_token, GBSERVER_ARTIFACT_API, username, None, None)[
+            "artifacts"
+        ],
         callback,
     )
 
@@ -603,14 +611,13 @@ def get_artifact_uuid(github_token: str, uri: str, callback=None):
         if callback is not None:
             callback(
                 callback_event="error",
-                callback_args={
-                    "reason": f"Matching artifact with specified uri not found."
-                },
+                callback_args={"reason": f"Matching artifact with specified uri not found."},
             )
         return None
 
 
 def get_build_lineage_url(build_id: str):
+    """Get the build lineage url."""
     url = f"{DMF_URL}/gb/builds/{build_id}"
 
     if gb_environment_config()["env"] == "DEV":
@@ -620,6 +627,7 @@ def get_build_lineage_url(build_id: str):
 
 
 def custom_parse_markdown_str(markdown_str: str) -> str:
+    """Custom parse markdown str."""
     console = Console()
     Markdown.elements["heading_open"] = CustomHeading
     Markdown.elements["table_open"] = CustomTable
@@ -635,6 +643,7 @@ def custom_parse_markdown_str(markdown_str: str) -> str:
 
 
 def parse_markdown_str(markdown_str: str) -> str:
+    """Parse markdown str."""
     console = Console()
 
     markdown = Markdown(markdown_str)
@@ -645,6 +654,7 @@ def parse_markdown_str(markdown_str: str) -> str:
 
 
 def parse_markdown_file(path: str) -> str:
+    """Parse markdown file."""
     console = Console()
 
     with open(path, "r", encoding="utf-8") as f:
@@ -657,12 +667,14 @@ def parse_markdown_file(path: str) -> str:
 
 
 def read_lines(filepath):
+    """Parse lines."""
     with open(filepath, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip()]
     return lines
 
 
 def find_duplicates(values):
+    """Find duplicates."""
     seen = set()
     duplicates = set()
     for s in values:
@@ -676,6 +688,7 @@ def find_duplicates(values):
 
 def origins_from_local(from_local: str) -> list:
     # Convert to Path and get the directory if it's a file
+    """Origins from local."""
     start_path = Path(from_local)
     # If it's a file, it is dataset or fileset, only search in the same folder (non-recursive)
     if start_path.is_file():
@@ -683,11 +696,7 @@ def origins_from_local(from_local: str) -> list:
         origins = [custom_origin_path] if custom_origin_path.exists() else None
     else:
         # If it's a directory, it means, it is fileset or model, so search recursively
-        origins = [
-            p
-            for p in start_path.rglob("artifact.origin")
-            if p.name == "artifact.origin"
-        ]
+        origins = [p for p in start_path.rglob("artifact.origin") if p.name == "artifact.origin"]
 
     if origins and len(origins) > 0:
         path = origins[0]  # Take the first match
@@ -721,6 +730,7 @@ def origins_from_local(from_local: str) -> list:
 
 def get_standard_model_prompt() -> list:
     # It's useful to include the date in the system prompt. System prompt can be overridden in chat subcommand.
+    """Get the standard model prompt."""
     today = datetime.now().strftime("%A, %Y-%m-%d")
     return [
         {
@@ -736,6 +746,7 @@ def is_valid_name(name_string: str, validation_type=None):
     # table_name: only alphanumeric and underscores
     # artifact_name and label_name: alphanumeric, underscores, dashes, and periods
 
+    """Check if valid name."""
     standard_chars = "abcdefghijklmnopqrstuvwxyz0123456789_"
 
     if validation_type == "table_name":
@@ -757,6 +768,7 @@ def is_valid_checksum(checksum: str, expected_length):
     # checksum: alphanumeric, 0-9, a-f
     # for 128bit checksum, length should be 32
 
+    """Check if valid checksum."""
     standard_chars = "abcdef0123456789"
 
     invalid_chars = []
@@ -774,18 +786,18 @@ def is_valid_checksum(checksum: str, expected_length):
 
 
 def step_uri_notation(step_name: str) -> str:
+    """Step uri notation."""
     return f"space://steps/{step_name}"
 
 
 def check_current_timestamp(date, is_start_date: bool = False):
+    """Verify current timestamp."""
     is_current_timestamp = False
     current_time = round(time.time())
     if date < current_time:
         timestamp = date
     elif is_start_date:
-        timestamp = change_timestamp_by_days(
-            current_time, BUILD_LOG_DEFAULT_QUERY_RANGE
-        )
+        timestamp = change_timestamp_by_days(current_time, BUILD_LOG_DEFAULT_QUERY_RANGE)
     else:
         timestamp = current_time
         is_current_timestamp = True
@@ -793,24 +805,29 @@ def check_current_timestamp(date, is_start_date: bool = False):
 
 
 def convert_seconds_to_milliseconds(timestamp):
+    """Convert seconds to milliseconds."""
     return timestamp * 1000
 
 
 def convert_milliseconds_to_seconds(timestamp):
+    """Convert milliseconds to seconds."""
     return int(timestamp / 1000)
 
 
 def get_current_epoch(nDaysAgo: int = None):
+    """Get the current epoch."""
     return round(time.time())
 
 
 def change_timestamp_by_days(timestamp, days: int, add: bool = False):
+    """Update timestamp by days."""
     if add:
         return timestamp + (86400 * days)
     return timestamp - (86400 * days)
 
 
 def create_if_not_dir_local_build_cache() -> str:
+    """Create if not dir local build cache."""
     cache_path = get_local_build_cache()
     if not os.path.isdir(cache_path):
         cache_path.mkdir(mode=0o777, parents=True, exist_ok=False)
@@ -838,9 +855,7 @@ def validate_tag_name(value: str, is_admin: bool, callback=None):
                 "Tag names starting with 'sys-' are not allowed unless you are a system admin."
             )
     value = value.strip() if value is not None else value
-    if value is not None and not all(
-        c.isalnum() or c == "_" or c == "-" for c in value.strip()
-    ):
+    if value is not None and not all(c.isalnum() or c == "_" or c == "-" for c in value.strip()):
         if callback is not None:
             callback(
                 callback_event="error",
@@ -858,6 +873,7 @@ def validate_tag_name(value: str, is_admin: bool, callback=None):
 
 
 def combine_tags(tags_str: str, tags_tuple: tuple):
+    """Combine tags."""
     list_from_string = [s.strip() for s in tags_str.split(",")] if tags_str else []
     tuple_as_list = list(tags_tuple) if tags_tuple else []
 
@@ -868,6 +884,7 @@ def combine_tags(tags_str: str, tags_tuple: tuple):
 
 
 def check_runnable_browser():
+    """Verify runnable browser."""
     runnable_browser = True
     try:
         webbrowser.get()
@@ -892,14 +909,13 @@ def validate_tags(
     is_admin = global_space.get("is_admin") == True
 
     all_tags = combine_tags(tags_str=tags_str, tags_tuple=tags_as_tuple)
-    all_validated_tags = [
-        validate_tag_name(tag, is_admin, callback) for tag in all_tags
-    ]
+    all_validated_tags = [validate_tag_name(tag, is_admin, callback) for tag in all_tags]
 
     return list(all_validated_tags)
 
 
 def pagination_range(total_items: int, page_index: int, page_size: int):
+    """Pagination range."""
     if total_items == 0:
         return 0, 0
     page_index = max(page_index, 0)

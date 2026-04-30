@@ -57,43 +57,31 @@ class JsonSchemaGBValidator(GBValidator):
     config: JsonSchemaGBValidatorConfig
     validator: Draft202012Validator
 
-    def __init__(
-        self: Self, validator_config: GBValidatorConfig, **kwargs: dict
-    ) -> None:
+    def __init__(self: Self, validator_config: GBValidatorConfig, **kwargs: dict) -> None:
         assert (
             validator_config.type == "json_schema"
         ), f"invalid type, validator_config: {validator_config}"
-        self.config = JsonSchemaGBValidatorConfig.model_validate(
-            validator_config.config
-        )
+        self.config = JsonSchemaGBValidatorConfig.model_validate(validator_config.config)
         rel_schema_path = self.config.schema_path
         if rel_schema_path is not None:
             assert (
                 "context" in kwargs
             ), f"context is required to load the schema file {rel_schema_path}"
             context = kwargs["context"]
-            assert isinstance(
-                context, dict
-            ), f"expected context dict, actual: {context}"
+            assert isinstance(context, dict), f"expected context dict, actual: {context}"
             assert (
                 "dir" in context
             ), f"context.dir is required to load the schema file {rel_schema_path}"
             my_dir = context["dir"]
             assert isinstance(my_dir, Path), f"expected dir Path, actual: {my_dir}"
             assert my_dir.is_dir(), f"expected '{my_dir}' to be a directory"
-            logger.info(
-                "loading schema %s from the directory: %s", rel_schema_path, my_dir
-            )
+            logger.info("loading schema %s from the directory: %s", rel_schema_path, my_dir)
             schema_path = my_dir / rel_schema_path
-            assert (
-                schema_path.is_file()
-            ), f"expected '{schema_path}' to be a schema file"
+            assert schema_path.is_file(), f"expected '{schema_path}' to be a schema file"
             with open(schema_path, "r", encoding="utf-8") as f:
                 self.config.json_schema = json.load(f)
         schema = self.config.json_schema
-        assert isinstance(
-            schema, dict
-        ), f"expected schema to be a dict, actual: {schema}"
+        assert isinstance(schema, dict), f"expected schema to be a dict, actual: {schema}"
         Draft202012Validator.check_schema(schema=schema)
         self.validator = Draft202012Validator(schema=schema)
         super().__init__(validator_config=validator_config, **kwargs)

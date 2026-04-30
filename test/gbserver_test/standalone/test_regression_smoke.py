@@ -49,9 +49,7 @@ class TestModuleImports:
         try:
             from gbserver.api.root_api import root_api  # noqa: F401
         except ImportError:
-            pytest.skip(
-                "root_api requires kubernetes_asyncio (transitively via buildwatcher)"
-            )
+            pytest.skip("root_api requires kubernetes_asyncio (transitively via buildwatcher)")
 
     def test_import_auth_middleware(self):
         from gbserver.api.auth import AuthMiddleware
@@ -202,9 +200,7 @@ class TestAPIRoutes:
         try:
             from gbserver.api.root_api import root_api
         except ImportError:
-            pytest.skip(
-                "root_api requires kubernetes_asyncio (transitively via buildwatcher)"
-            )
+            pytest.skip("root_api requires kubernetes_asyncio (transitively via buildwatcher)")
 
         route_paths = set()
         for route in root_api.routes:

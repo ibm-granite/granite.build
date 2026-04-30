@@ -86,9 +86,7 @@ class TestNodeHealthCrossProcess(AbstractSingletonStorageUsingTest):
             failure_type="FailedAttachVolume",
         )
 
-        result = await get_node_failures(
-            mock_request, "worker-node-cross-1", minutes=30
-        )
+        result = await get_node_failures(mock_request, "worker-node-cross-1", minutes=30)
 
         assert result["node_name"] == "worker-node-cross-1"
         assert result["failure_count"] == 2
@@ -156,23 +154,17 @@ class TestNodeHealthCrossProcess(AbstractSingletonStorageUsingTest):
             )
 
         # Verify failures exist
-        result_before = await get_node_failures(
-            mock_request, "worker-node-resolve", minutes=30
-        )
+        result_before = await get_node_failures(mock_request, "worker-node-resolve", minutes=30)
         assert result_before["failure_count"] == 3
 
         # Resolve via API
         with patch("gbserver.api.node_health.is_super_admin", return_value=True):
-            resolve_result = await resolve_node_failures(
-                mock_request, "worker-node-resolve"
-            )
+            resolve_result = await resolve_node_failures(mock_request, "worker-node-resolve")
             assert resolve_result["status"] == "success"
             assert resolve_result["resolved_count"] == 3
 
         # Unresolved query should show zero
-        result_after = await get_node_failures(
-            mock_request, "worker-node-resolve", minutes=30
-        )
+        result_after = await get_node_failures(mock_request, "worker-node-resolve", minutes=30)
         assert result_after["failure_count"] == 0
 
     @pytest.mark.asyncio
@@ -196,9 +188,7 @@ class TestNodeHealthCrossProcess(AbstractSingletonStorageUsingTest):
         )
         self.storage.node_failure_storage.add(failure)
 
-        result = await get_node_failures(
-            mock_request, "worker-node-direct-write", minutes=30
-        )
+        result = await get_node_failures(mock_request, "worker-node-direct-write", minutes=30)
 
         assert result["failure_count"] == 1
         assert result["failures"][0]["failure_type"] == "FailedMount"
@@ -234,14 +224,10 @@ class TestNodeHealthCrossProcess(AbstractSingletonStorageUsingTest):
         )
 
         # 30-minute window should only get recent
-        result = await get_node_failures(
-            mock_request, "worker-node-time-test", minutes=30
-        )
+        result = await get_node_failures(mock_request, "worker-node-time-test", minutes=30)
         assert result["failure_count"] == 1
         assert result["failures"][0]["build_id"] == "build-recent"
 
         # 3-hour window should get both
-        result_all = await get_node_failures(
-            mock_request, "worker-node-time-test", minutes=180
-        )
+        result_all = await get_node_failures(mock_request, "worker-node-time-test", minutes=180)
         assert result_all["failure_count"] == 2

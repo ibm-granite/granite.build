@@ -147,9 +147,7 @@ class GBValidationErrors(BaseModel):
                 ), f"invalid type: {builtins.type(curr_err)} {curr_err}"
                 self.add(err=curr_err, prefix=prefix)
             return
-        assert isinstance(
-            err, self.__class__
-        ), f"invalid type: {builtins.type(err)} {err}"
+        assert isinstance(err, self.__class__), f"invalid type: {builtins.type(err)} {err}"
         for error in err.errors:
             self.add(err=error, prefix=prefix)
         for warning in err.warnings:

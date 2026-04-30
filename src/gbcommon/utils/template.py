@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Template module."""
+
 import dataclasses
 import json
 import logging
@@ -33,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 
 class PreserveUndefined(Undefined):
+    """Preserve Undefined implementation."""
+
     def __str__(self):
         return f"{{{{ {self._undefined_name} }}}}"
 
@@ -44,6 +48,7 @@ class PreserveUndefined(Undefined):
 
 
 def json_to_yaml(value: Union[dict, str]):
+    """Json to yaml."""
     if isinstance(value, str):
         try:
             value = json.loads(value)
@@ -56,6 +61,7 @@ def json_to_yaml(value: Union[dict, str]):
 
 
 def indent(s, width=4, indent_first_line=False):
+    """Indent."""
     indentation = " " * width
     lines = s.splitlines()
     if not indent_first_line:
@@ -73,6 +79,7 @@ strict_env.filters["indent"] = indent
 
 
 def fill_template(templ: str, data: dict, strict: bool = False) -> str:
+    """Fill template."""
     template = None
     curr_env = strict_env if strict else env
     try:
@@ -83,9 +90,7 @@ def fill_template(templ: str, data: dict, strict: bool = False) -> str:
         return template.render(data)
     except Exception as e:
         logger.error("failed to use the data %s to fill the template:\n%s", data, templ)
-        raise RuntimeError(
-            f"failed to use the data to fill the template:\n{templ}"
-        ) from e
+        raise RuntimeError(f"failed to use the data to fill the template:\n{templ}") from e
 
 
 # def traverse_obj(obj: Any, f: Callable[[str], str]) -> Any:

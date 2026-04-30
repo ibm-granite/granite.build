@@ -1,3 +1,5 @@
+"""Log query module."""
+
 import logging
 from typing import Optional
 
@@ -34,6 +36,7 @@ def build_query_def(
     module: str = None,
 ):
     ## queryDef
+    """Create query def."""
     queryDef = {}
 
     ## queryDef -> date, page, etc
@@ -65,13 +68,9 @@ def build_query_def(
     if build_id != None:
         jsonObject["kubernetes.labels.granite-dot-build/build-id"] = [f"{build_id}"]
     if build_step_id != None:
-        jsonObject["kubernetes.labels.granite-dot-build/build-step-id"] = [
-            f"{build_step_id}"
-        ]
+        jsonObject["kubernetes.labels.granite-dot-build/build-step-id"] = [f"{build_step_id}"]
     if build_step_name != None:
-        jsonObject["kubernetes.labels.granite-dot-build/build-step-name"] = [
-            f"{build_step_name}"
-        ]
+        jsonObject["kubernetes.labels.granite-dot-build/build-step-name"] = [f"{build_step_name}"]
     if stream != None:
         jsonObject["stream"] = [f"{stream}"]
     queryParams["jsonObject"] = jsonObject
@@ -114,6 +113,7 @@ def run_logquery(
     module: str = None,
     is_admin: Optional[bool] = None,
 ):
+    """Execute logquery."""
     username = get_user(github_token).login
     if not username or not github_token:
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)

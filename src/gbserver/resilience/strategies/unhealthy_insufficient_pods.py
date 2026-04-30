@@ -144,9 +144,7 @@ class UnhealthyInsufficientPodsRetryStrategy(RetryStrategy):
                 # Check for FailedScheduling with quota exhaustion (Pod events)
                 if object_type == "Pod" and ev.get("reason") == "FailedScheduling":
                     message = ev.get("message", "")
-                    if any(
-                        pattern in message for pattern in self.QUOTA_EXHAUSTION_PATTERNS
-                    ):
+                    if any(pattern in message for pattern in self.QUOTA_EXHAUSTION_PATTERNS):
                         self._is_quota_exhaustion = True
                         logger.warning(
                             "Detected FailedScheduling with quota exhaustion: %s",

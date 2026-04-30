@@ -1,3 +1,5 @@
+"""Command admin module."""
+
 import json
 import sys
 from typing import Dict
@@ -160,9 +162,7 @@ def log(
         except ValueError:
             start_epoch = round(dateparser.parse(start_date).timestamp())
     else:
-        start_epoch = change_timestamp_by_days(
-            current_epoch, BUILD_LOG_DEFAULT_QUERY_RANGE
-        )
+        start_epoch = change_timestamp_by_days(current_epoch, BUILD_LOG_DEFAULT_QUERY_RANGE)
 
     if end_date:
         try:
@@ -358,9 +358,7 @@ def log(
 @cli.command("space-membership")
 @click.pass_context
 @click.option("--add", "add_user", default=None, help="Username to add to the space.")
-@click.option(
-    "--delete", "delete_user", default=None, help="Username to remove from the space."
-)
+@click.option("--delete", "delete_user", default=None, help="Username to remove from the space.")
 @click.option(
     "--update",
     "update_user",
@@ -372,9 +370,7 @@ def log(
     type=click.Choice(["admin", "member"], case_sensitive=True),
     help="Role for --add or --update.",
 )
-@click.option(
-    "--space", default=None, help="Space name. Uses default space if not specified."
-)
+@click.option("--space", default=None, help="Space name. Uses default space if not specified.")
 @click.option(
     "--format",
     default="plain",
@@ -474,9 +470,7 @@ def space_membership(
         elif update_user:
             if not quiet:
                 click.echo(f"{CLIPBOARD_CHAR}{PROJECT_NAME} updating member role")
-            result = admin_client.update_space_member(
-                space, update_user, role, callback
-            )
+            result = admin_client.update_space_member(space, update_user, role, callback)
             if result:
                 if format == "json":
                     click.echo(json.dumps(result))
@@ -496,9 +490,7 @@ def space_membership(
                     click.echo(json.dumps(result))
                 else:
                     if members:
-                        members_table = [
-                            [m.get("username"), m.get("role")] for m in members
-                        ]
+                        members_table = [[m.get("username"), m.get("role")] for m in members]
                         click.echo(
                             tabulate(
                                 members_table,

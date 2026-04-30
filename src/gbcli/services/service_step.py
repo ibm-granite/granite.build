@@ -1,3 +1,5 @@
+"""Service step module."""
+
 import logging
 import os
 from pathlib import Path
@@ -31,7 +33,7 @@ def list_steps(
     space: Optional[str] = None,
     callback=None,
 ) -> List[Any]:
-
+    """List steps."""
     branch_name = gb_environment_config()["branch_space"]
     if space:
         s = resolve_space(github_token, space, callback)
@@ -87,9 +89,7 @@ def list_steps(
             if e.response.status_code == 404:
                 error_message = f"{step_repo} not found"
             else:
-                error_message = (
-                    f"{e.response.status_code} {e.response.reason} for {step_repo}"
-                )
+                error_message = f"{e.response.status_code} {e.response.reason} for {step_repo}"
 
             callback(
                 callback_event="error",
@@ -145,6 +145,7 @@ def describe_step(
     space: Optional[str] = None,
     callback=None,
 ) -> Any:
+    """Describe step."""
     branch_name = gb_environment_config()["branch_space"]
     if space:
         s = resolve_space(github_token, space, callback)
@@ -172,14 +173,10 @@ def describe_step(
     steps_org, steps_name = step_repo.split("/")[3:]
     steps_name = remove_suffix(steps_name, ".git")
 
-    step_yaml_path = (
-        f"{STEPS_REPO_FOLDER}/{step_name}/{STEP_FILENAME}?ref={branch_name}"
-    )
+    step_yaml_path = f"{STEPS_REPO_FOLDER}/{step_name}/{STEP_FILENAME}?ref={branch_name}"
     step_yaml_cache = f"describe_{step_name}_{STEP_FILENAME}"
 
-    step_readme_path = (
-        f"{STEPS_REPO_FOLDER}/{step_name}/{STEP_README_FILENAME}?ref={branch_name}"
-    )
+    step_readme_path = f"{STEPS_REPO_FOLDER}/{step_name}/{STEP_README_FILENAME}?ref={branch_name}"
 
     if callback is not None:
         callback(
@@ -191,16 +188,12 @@ def describe_step(
         )
 
     try:
-        readme_content = download_repo_file(
-            github_token, steps_org, steps_name, step_readme_path
-        )
+        readme_content = download_repo_file(github_token, steps_org, steps_name, step_readme_path)
     except HTTPError:
         readme_content = ""
 
     try:
-        yaml_content = download_repo_file(
-            github_token, steps_org, steps_name, step_yaml_path
-        )
+        yaml_content = download_repo_file(github_token, steps_org, steps_name, step_yaml_path)
 
         if callback is not None:
             callback(
@@ -228,16 +221,10 @@ def describe_step(
         step_obj = {
             "name": step_config.name,
             "type": step_config.type,
-            "config": [
-                {config: step_config.config[config]} for config in step_config.config
-            ],
+            "config": [{config: step_config.config[config]} for config in step_config.config],
             "environment_configs": (
                 [
-                    {
-                        env_config: parse_env_config(
-                            step_config.environment_configs[env_config]
-                        )
-                    }
+                    {env_config: parse_env_config(step_config.environment_configs[env_config])}
                     for env_config in step_config.environment_configs
                 ]
             ),
@@ -259,9 +246,7 @@ def describe_step(
             if e.response.status_code == 404:
                 error_message = f"{step_name} not found in {step_repo}"
             else:
-                error_message = (
-                    f"{e.response.status_code} {e.response.reason} for {step_repo}"
-                )
+                error_message = f"{e.response.status_code} {e.response.reason} for {step_repo}"
 
             callback(
                 callback_event="error",
@@ -287,6 +272,7 @@ def describe_step(
 
 
 def parse_env_config(env_config: StepEnvironmentTypeConfig) -> dict:
+    """Parse env config."""
     env_config_obj = {
         "launchers": [
             {launcher: parse_launcher(env_config.launchers[launcher])}
@@ -301,6 +287,7 @@ def parse_env_config(env_config: StepEnvironmentTypeConfig) -> dict:
 
 
 def parse_launcher(launcher: StepLauncherConfig) -> dict:
+    """Parse launcher."""
     launcher_obj = {
         "type": launcher.type,
         "monitors": launcher.monitors,
@@ -311,6 +298,7 @@ def parse_launcher(launcher: StepLauncherConfig) -> dict:
 
 
 def parse_monitor(monitor: StepMonitorConfig) -> dict:
+    """Parse monitor."""
     monitor_obj = {
         "type": monitor.type,
         "config": monitor.config,

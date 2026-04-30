@@ -77,9 +77,7 @@ class ISpaceAccessManager(ABC):
         Returns:
             True if user is an admin of the space, False otherwise
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement is_space_admin()"
-        )
+        raise NotImplementedError(f"{self.__class__.__name__} must implement is_space_admin()")
 
     @abstractmethod
     def has_space_access(self, username: str, space_name: str) -> bool:
@@ -92,14 +90,10 @@ class ISpaceAccessManager(ABC):
         Returns:
             True if user has write access to the space, False otherwise
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement has_space_access()"
-        )
+        raise NotImplementedError(f"{self.__class__.__name__} must implement has_space_access()")
 
     @abstractmethod
-    def has_build_access(
-        self, username: str, build_id: str
-    ) -> Union[bool, JSONResponse]:
+    def has_build_access(self, username: str, build_id: str) -> Union[bool, JSONResponse]:
         """Check if user has access to the specified build.
 
         This checks access based on the space that the build belongs to.
@@ -112,9 +106,7 @@ class ISpaceAccessManager(ABC):
             True if user has access, False if no access,
             or JSONResponse with 404 error if build not found
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement has_build_access()"
-        )
+        raise NotImplementedError(f"{self.__class__.__name__} must implement has_build_access()")
 
 
 # Instance management: _override_manager is set by set_space_access_manager()

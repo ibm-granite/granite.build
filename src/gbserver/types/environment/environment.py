@@ -61,9 +61,7 @@ class StepConfigWorkloadSection(BaseModel):
     args: str = ""
     workspace_dir: str = ""
     output_dir: str = ""
-    python_env: StepConfigWorkloadPythonEnvSection = (
-        StepConfigWorkloadPythonEnvSection()
-    )
+    python_env: StepConfigWorkloadPythonEnvSection = StepConfigWorkloadPythonEnvSection()
 
 
 class StepConfigSection(BaseModel):

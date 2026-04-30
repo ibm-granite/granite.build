@@ -159,10 +159,10 @@ class TestUnwrapErrors:
         def f13_step__50___init__():
             files = []
             STEP_FILE_NAME = "step.yaml"
-            stepasset_dir = "/tmp/tmpewfzm5ry/c45bec7625f674a8248e51c9bcb151ae3e44ce911108fe83839b526df4575e96"
-            assert (
-                len(files) > 0
-            ), f"failed to find a {STEP_FILE_NAME} in {stepasset_dir}"
+            stepasset_dir = (
+                "/tmp/tmpewfzm5ry/c45bec7625f674a8248e51c9bcb151ae3e44ce911108fe83839b526df4575e96"
+            )
+            assert len(files) > 0, f"failed to find a {STEP_FILE_NAME} in {stepasset_dir}"
 
         def f12_targetstep__40___init__():
             # self.step = Step(stepuri=targetstep.step_uri, context=context)

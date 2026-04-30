@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Prwatcherconfig module."""
+
 from pathlib import Path
 from typing import Optional, Self, Tuple
 from urllib.parse import urlparse
@@ -52,11 +54,7 @@ def get_uri_parts(uri: str) -> Tuple[str, str, str, str, str]:
     if repo.endswith(".git"):
         repo = repo.removesuffix(".git")
     subdirprefix = "subdirectory="
-    subdir = (
-        u.fragment.removeprefix(subdirprefix)
-        if u.fragment.startswith(subdirprefix)
-        else ""
-    )
+    subdir = u.fragment.removeprefix(subdirprefix) if u.fragment.startswith(subdirprefix) else ""
     return (scheme, domain, owner, repo, subdir)
 
 
@@ -68,6 +66,7 @@ class PrWatcherConfig(CLISpacesConfig):
     validate_inputs_are_registered: bool = True
 
     def get_space_from_pr_url(self: Self, pr_html_url: str) -> Optional[StoredSpace]:
+        """Get the space from pr url."""
         _, domain, owner, repo_name, _ = get_uri_parts(pr_html_url)
         for space in self._spaces.values():
             repo_uri = space.git_repo_uri
@@ -75,11 +74,7 @@ class PrWatcherConfig(CLISpacesConfig):
                 logger.error("the git repo URI is empty for the space: %s", space)
                 continue
             _, repo_domain, repo_owner, repo_repo_name, _ = get_uri_parts(repo_uri)
-            if (
-                domain == repo_domain
-                and owner == repo_owner
-                and repo_name == repo_repo_name
-            ):
+            if domain == repo_domain and owner == repo_owner and repo_name == repo_repo_name:
                 return space
         return None
 

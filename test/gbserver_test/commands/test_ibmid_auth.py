@@ -39,9 +39,7 @@ class TestPKCEHelpers:
 
         verifier = _generate_code_verifier()
         # URL-safe characters only
-        allowed = set(
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-        )
+        allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
         assert all(c in allowed for c in verifier)
 
     def test_code_challenge_s256(self):
@@ -78,17 +76,13 @@ class TestIBMidOIDCClient:
     def test_client_uses_gbserver_auth_base(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
-        )
+        client = IBMidOIDCClient(gbserver_auth_base="https://gbserver.example.com/api/v1/auth")
         assert client.gbserver_auth_base == "https://gbserver.example.com/api/v1/auth"
 
     def test_start_auth_code_flow_polls_and_returns_result(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
-        )
+        client = IBMidOIDCClient(gbserver_auth_base="https://gbserver.example.com/api/v1/auth")
 
         # First poll: pending, second poll: complete
         pending_resp = MagicMock()
@@ -128,9 +122,7 @@ class TestIBMidOIDCClient:
     def test_start_auth_code_flow_timeout(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
-        )
+        client = IBMidOIDCClient(gbserver_auth_base="https://gbserver.example.com/api/v1/auth")
 
         pending_resp = MagicMock()
         pending_resp.status_code = 200
@@ -138,22 +130,16 @@ class TestIBMidOIDCClient:
         pending_resp.raise_for_status = MagicMock()
 
         with patch("gbcli.utils.ibmid_auth.webbrowser.open"):
-            with patch(
-                "gbcli.utils.ibmid_auth.requests.get", return_value=pending_resp
-            ):
+            with patch("gbcli.utils.ibmid_auth.requests.get", return_value=pending_resp):
                 with patch("gbcli.utils.ibmid_auth.time.sleep"):
-                    with patch(
-                        "gbcli.utils.ibmid_auth.time.time", side_effect=[0, 0, 200]
-                    ):
+                    with patch("gbcli.utils.ibmid_auth.time.time", side_effect=[0, 0, 200]):
                         with pytest.raises(Exception, match="timed out"):
                             client.start_auth_code_flow(timeout=10, poll_interval=0)
 
     def test_start_auth_code_flow_error_status(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
-        )
+        client = IBMidOIDCClient(gbserver_auth_base="https://gbserver.example.com/api/v1/auth")
 
         error_resp = MagicMock()
         error_resp.status_code = 200
@@ -174,42 +160,30 @@ class TestIBMidOIDCClient:
         /authorize); the client should keep polling until timeout."""
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
-        )
+        client = IBMidOIDCClient(gbserver_auth_base="https://gbserver.example.com/api/v1/auth")
 
         not_found_resp = MagicMock()
         not_found_resp.status_code = 404
-        not_found_resp.json.return_value = {
-            "detail": "Auth session not found or expired."
-        }
+        not_found_resp.json.return_value = {"detail": "Auth session not found or expired."}
 
         with patch("gbcli.utils.ibmid_auth.webbrowser.open"):
-            with patch(
-                "gbcli.utils.ibmid_auth.requests.get", return_value=not_found_resp
-            ):
+            with patch("gbcli.utils.ibmid_auth.requests.get", return_value=not_found_resp):
                 with patch("gbcli.utils.ibmid_auth.time.sleep"):
-                    with patch(
-                        "gbcli.utils.ibmid_auth.time.time", side_effect=[0, 0, 200]
-                    ):
+                    with patch("gbcli.utils.ibmid_auth.time.time", side_effect=[0, 0, 200]):
                         with pytest.raises(Exception, match="timed out"):
                             client.start_auth_code_flow(timeout=10, poll_interval=0)
 
     def test_start_auth_code_flow_pkce_failure(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
-        )
+        client = IBMidOIDCClient(gbserver_auth_base="https://gbserver.example.com/api/v1/auth")
 
         pkce_fail_resp = MagicMock()
         pkce_fail_resp.status_code = 401
         pkce_fail_resp.json.return_value = {"detail": "PKCE verification failed."}
 
         with patch("gbcli.utils.ibmid_auth.webbrowser.open"):
-            with patch(
-                "gbcli.utils.ibmid_auth.requests.get", return_value=pkce_fail_resp
-            ):
+            with patch("gbcli.utils.ibmid_auth.requests.get", return_value=pkce_fail_resp):
                 with patch("gbcli.utils.ibmid_auth.time.sleep"):
                     with pytest.raises(Exception, match="PKCE"):
                         client.start_auth_code_flow(timeout=10, poll_interval=0)
@@ -231,9 +205,7 @@ class TestCredentialStorage:
             'login = "user@ibm.com"\nemail = "user@ibm.com"\nexpires_at = 9999999999\n'
         )
 
-        with patch(
-            "gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)
-        ):
+        with patch("gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)):
             with patch("gbcli.utils.gbcredentials.is_standalone", return_value=False):
                 from gbcli.utils.gbcredentials import get_user_token
 
@@ -251,9 +223,7 @@ class TestCredentialStorage:
             'login = "user@ibm.com"\nemail = "user@ibm.com"\nexpires_at = 1000000000\n'
         )
 
-        with patch(
-            "gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)
-        ):
+        with patch("gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)):
             with patch("gbcli.utils.gbcredentials.is_standalone", return_value=False):
                 from gbcli.utils.gbcredentials import get_user_token
 
@@ -274,13 +244,9 @@ class TestCredentialStorage:
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
 
-        with patch(
-            "gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)
-        ):
+        with patch("gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)):
             with patch("gbcli.utils.gbcredentials.is_standalone", return_value=False):
-                with patch(
-                    "gbcli.utils.gbcredentials.requests.get", return_value=mock_response
-                ):
+                with patch("gbcli.utils.gbcredentials.requests.get", return_value=mock_response):
                     from gbcli.utils.gbcredentials import get_user_token
 
                     token = get_user_token()
@@ -293,9 +259,7 @@ class TestCredentialStorage:
             '[user.ibmid]\naccess_token = "at"\nid_token = "idt"\nlogin = "user"\nemail = "u@ibm.com"\n'
         )
 
-        with patch(
-            "gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)
-        ):
+        with patch("gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)):
             from gbcli.utils.gbcredentials import GBCredentials
 
             creds = GBCredentials()
@@ -305,9 +269,7 @@ class TestCredentialStorage:
         creds_path = tmp_path / "credentials"
         creds_path.write_text("[user.github]\ntoken = 'x'\n")
 
-        with patch(
-            "gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)
-        ):
+        with patch("gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)):
             from gbcli.utils.gbcredentials import GBCredentials
 
             creds = GBCredentials()
@@ -321,9 +283,7 @@ class TestCredentialStorage:
             '[user.gbserver]\napi_key = "gbserver_test_key"\nlogin = "admin"\n'
         )
 
-        with patch(
-            "gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)
-        ):
+        with patch("gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)):
             with patch("gbcli.utils.gbcredentials.is_standalone", return_value=False):
                 from gbcli.utils.gbcredentials import get_user_token
 

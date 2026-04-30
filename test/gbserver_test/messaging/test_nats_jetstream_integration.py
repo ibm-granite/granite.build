@@ -39,9 +39,7 @@ class TestNATSJetStreamIntegration:
         await publisher.setup()
         await consumer.setup()
 
-        assert (
-            publisher._jetstream_available
-        ), "JetStream must be enabled on nats-server"
+        assert publisher._jetstream_available, "JetStream must be enabled on nats-server"
 
         # Publish a message
         payload = {"build_id": "test-123", "status": "started"}

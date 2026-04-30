@@ -72,9 +72,7 @@ class ProcessLock:
             # Process that held the lock has terminated abnormally
             self._cleanup_stale_lock()
             # Recreate the FileLock since we removed the lock file
-            self._file_lock = FileLock(
-                self._lock_file, timeout=self._timeout, is_singleton=True
-            )
+            self._file_lock = FileLock(self._lock_file, timeout=self._timeout, is_singleton=True)
 
         self._file_lock.acquire()
         self._write_pid()
@@ -235,9 +233,7 @@ def _get_buildrunner_job_name(build_id: str) -> Optional[str]:
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         error_msg = result.stderr
-        logger.error(
-            f"Could not get pod name for build {build_id}. {cmd} produced '{error_msg}'"
-        )
+        logger.error(f"Could not get pod name for build {build_id}. {cmd} produced '{error_msg}'")
         return None
     else:
         return result.stdout.replace("\n", "")
@@ -247,14 +243,14 @@ def delete_buildrunner_pod(build_id: str) -> bool:
     job_name = _get_buildrunner_job_name(build_id)
     if not job_name:
         return False  # job_name was None or "", job not found
-    cmd = f"oc delete job {job_name}"  # buildrunners are run as job so kill that instead of the pod.
+    cmd = (
+        f"oc delete job {job_name}"  # buildrunners are run as job so kill that instead of the pod.
+    )
     cmd = ["bash", "-c", cmd]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         error_msg = result.stderr
-        logger.error(
-            f"Could not delete buildrunner job {job_name}. {cmd} produced '{error_msg}'"
-        )
+        logger.error(f"Could not delete buildrunner job {job_name}. {cmd} produced '{error_msg}'")
         return False
     else:
         return True

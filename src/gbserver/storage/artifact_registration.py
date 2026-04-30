@@ -1,3 +1,5 @@
+"""Artifact registration module."""
+
 from datetime import datetime
 from enum import StrEnum, auto
 from typing import Optional, Self
@@ -20,6 +22,7 @@ class ArtifactRegistrationStatus(StrEnum):
 
 class ArtifactRegistration(BaseStoredItem, TaggedItem):
     # Required initializations
+    """Artifact Registration implementation."""
     type: ArtifactType
     uri: str  # s3://cosbucket/path/to/filename data URI
     space_name: str

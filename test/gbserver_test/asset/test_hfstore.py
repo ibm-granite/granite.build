@@ -13,9 +13,7 @@ class TestHfstoreRelpath:
         assert store.get_relpath(uri) == "org/my-bucket"
 
     def test_model_includes_revision(self):
-        uri = HfURI.from_parts(
-            owner="org", repo="my-model", hf_type=HfType.MODEL, revision="v1.0"
-        )
+        uri = HfURI.from_parts(owner="org", repo="my-model", hf_type=HfType.MODEL, revision="v1.0")
         store = Hfstore(uri)
         assert store.get_relpath(uri) == "org/my-model/v1.0"
 

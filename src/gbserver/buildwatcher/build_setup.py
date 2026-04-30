@@ -149,17 +149,13 @@ class BuildSetup:
                 build_dir = repo_exp_dir / f"build-{build_id}-try-{try_count}"
             build_archive_bytes = stored_build.load_from_build_archive()
             if not extract_archive(build_archive_bytes, build_dir):
-                raise ValueError(
-                    f"failed to extract archive for the build: {stored_build}"
-                )
+                raise ValueError(f"failed to extract archive for the build: {stored_build}")
             branch_name = f"run/build-{build_id}"
             if try_count > 0:
                 branch_name += f"-try-{try_count}"
             logger.info("create a new branch named: %s", branch_name)
             repo.git.checkout("-b", branch_name)
-            logger.info(
-                "adding the following files to commit: %s", repo.untracked_files
-            )
+            logger.info("adding the following files to commit: %s", repo.untracked_files)
             repo.index.add(repo.untracked_files)
             repo.config_writer().set_value(
                 "user", "name", DEFAULT_BUILDWATCHER_COMMITTER_NAME
@@ -184,12 +180,8 @@ class BuildSetup:
             )
             # repo.git.commit("-m", commit_msg, "-c", "commit.gpgsign=false")
             repo.git.push("origin", branch_name)
-            create_result = myapi.create_pr(
-                src_branch=branch_name, title=pr_title, body=pr_body
-            )
-            logger.info(
-                "build_id %s: created a pull request: %s", build_id, create_result
-            )
+            create_result = myapi.create_pr(src_branch=branch_name, title=pr_title, body=pr_body)
+            logger.info("build_id %s: created a pull request: %s", build_id, create_result)
             pr_id = str(create_result.number)
             # Update the build storage immediately after the build PR was created.
             # The merge GitHub API may fail due to transient error
@@ -265,18 +257,14 @@ class BuildSetup:
             return True, updates
 
         # 1. Validate build and get new status
-        errors = BuildValidation.validate_stored_build(
-            stored_build=stored_build, space=self.space
-        )
+        errors = BuildValidation.validate_stored_build(stored_build=stored_build, space=self.space)
         # 2. Create a PR/Issue to inform the user (if configured)
         pr_uri = None
         if self.create_pr:
             pr_uri = self.__create_pr_for_build(stored_build=stored_build)
         # 3. Inform the user of the build status
         build_message_logger = get_message_logger(stored_build, self.event_source)
-        if (
-            self.create_pr and not stored_build.source_uri
-        ):  # Failed to create the PR, retry later
+        if self.create_pr and not stored_build.source_uri:  # Failed to create the PR, retry later
             # We don't change the build status in case the caller wants to retry.
             build_id = stored_build.uuid
             msg = f"PR creation failed on build {build_id}"
@@ -303,9 +291,7 @@ class BuildSetup:
         if pr_uri:
             updates["source_uri"] = pr_uri
 
-        logger.info(
-            f"Exit perform_build_prereqs({stored_build.uuid} success={success})"
-        )
+        logger.info(f"Exit perform_build_prereqs({stored_build.uuid} success={success})")
         return success, updates
 
     def __clone_repo_for_pr(

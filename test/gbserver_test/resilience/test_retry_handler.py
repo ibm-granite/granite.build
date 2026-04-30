@@ -271,8 +271,7 @@ class TestRetryHandler:
         # Default includes UnhealthyInsufficientPodsRetryStrategy and NCCLErrorRetryStrategy
         assert len(handler.strategies) == 2
         assert any(
-            isinstance(s, UnhealthyInsufficientPodsRetryStrategy)
-            for s in handler.strategies
+            isinstance(s, UnhealthyInsufficientPodsRetryStrategy) for s in handler.strategies
         )
         assert any(isinstance(s, NCCLErrorRetryStrategy) for s in handler.strategies)
 
@@ -295,8 +294,7 @@ class TestRetryHandler:
         # Default includes UnhealthyInsufficientPodsRetryStrategy and NCCLErrorRetryStrategy
         assert len(handler.strategies) == 2
         assert any(
-            isinstance(s, UnhealthyInsufficientPodsRetryStrategy)
-            for s in handler.strategies
+            isinstance(s, UnhealthyInsufficientPodsRetryStrategy) for s in handler.strategies
         )
         assert any(isinstance(s, NCCLErrorRetryStrategy) for s in handler.strategies)
 
@@ -371,9 +369,7 @@ class TestRetryHandler:
         # Get the normal event (third)
         normal_forwarded_event = await downstream_queue.get()
         # Verify normal event was forwarded without retry metadata
-        if normal_forwarded_event.payload and hasattr(
-            normal_forwarded_event.payload, "data"
-        ):
+        if normal_forwarded_event.payload and hasattr(normal_forwarded_event.payload, "data"):
             assert (
                 normal_forwarded_event.payload.data is None
                 or "retry_triggered" not in normal_forwarded_event.payload.data

@@ -1,3 +1,5 @@
+"""Lh model module."""
+
 from pathlib import Path
 
 from gbcli.utils.gbconstants import LAKEHOUSE_MODEL_SHARED_TABLE
@@ -15,6 +17,7 @@ def createModel(
     revision: str,
     disable_aspera: bool,
 ):
+    """Create model."""
     try:
         from lakehouse.assets import Model
 
@@ -75,6 +78,7 @@ def pullModel(
     revision: str,
     disable_aspera: str,
 ):
+    """Pull model."""
     try:
         from lakehouse.assets import Model
 
@@ -104,6 +108,7 @@ def getModel(
     model_label: str,
     revision: str,
 ):
+    """Get the model."""
     try:
         from lakehouse.assets import Model
 
@@ -121,6 +126,7 @@ def getModel(
 
 
 def get_model_subforlder(model, revision):
+    """Get the model subforlder."""
     return f"{model}/{revision}" if revision != "-1" else model
 
 
@@ -134,6 +140,7 @@ def copyModel(
     revision: str,
     open: bool,
 ):
+    """Copy model."""
     try:
         from lakehouse.assets import Model
         from lakehouse.core import CopyAssetStatus

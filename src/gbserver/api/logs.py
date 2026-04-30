@@ -46,9 +46,7 @@ def logquery(query: Item) -> LogqueryResponse:
         return logs
     except Exception as e:
         logger.error("failed to query the cloud logs API: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Logquery not found!"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Logquery not found!")
 
 
 @logs_api.post("/logquery/server/admin")
@@ -80,9 +78,7 @@ def logquery(request: Request, query: Item) -> LogqueryResponse:
         return logs
     except Exception as e:
         logger.error("failed to query the cloud logs API: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Logquery not found!"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Logquery not found!")
 
 
 @logs_api.post("/logquery/server/{build_id}")
@@ -120,6 +116,4 @@ def logquery(request: Request, build_id: str, query: Item) -> LogqueryResponse:
         return logs
     except Exception as e:
         logger.error("failed to query the cloud logs API: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Logquery not found!"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Logquery not found!")

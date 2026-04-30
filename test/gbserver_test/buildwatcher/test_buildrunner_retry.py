@@ -129,9 +129,7 @@ class TestShouldRetry:
             assert not runner._should_retry(build), f"Expected no retry for status {st}"
 
     def test_failed_no_max_retries(self):
-        build = _make_stored_build_with_config(
-            _BUILD_YAML_NO_RETRY, status=Status.FAILED
-        )
+        build = _make_stored_build_with_config(_BUILD_YAML_NO_RETRY, status=Status.FAILED)
         assert not self._runner()._should_retry(build)
 
     def test_failed_with_max_retries_first_attempt(self):
@@ -188,9 +186,7 @@ class TestBuildRunnerRetry(AbstractBuildTest):
     def _has_retried_build(self, original_build_id) -> bool:
         return self._get_retried_build_id(original_build_id) != None
 
-    def _wait_for(
-        self, fn, args: tuple, wait_condition: str, failure_msg: str, timeout_seconds
-    ):
+    def _wait_for(self, fn, args: tuple, wait_condition: str, failure_msg: str, timeout_seconds):
         sleep_time = 5
         if timeout_seconds < sleep_time:
             sleep_time = timeout_seconds / 10
@@ -282,9 +278,7 @@ class TestBuildRunnerRetry(AbstractBuildTest):
 
         # --- gb_builds, gb_targets, gb_steps, gb_artifacts ---
         # Targets should be skipped because they already succeeded in Phase 1.
-        self._verify_finished_build_expectations(
-            retry_id, _RETRY_CPU_SKIPPED_TARGET_SPEC
-        )
+        self._verify_finished_build_expectations(retry_id, _RETRY_CPU_SKIPPED_TARGET_SPEC)
 
         # --- gb_builds: verify retry linkage ---
         original = self.storage.build_storage.get_by_uuid(original_id)
@@ -319,9 +313,7 @@ class TestBuildRunnerRetry(AbstractBuildTest):
 
         # Verify that every target from Phase 1 was skipped in the retry by checking that
         # each retry target's skipped_for_prerun_target_id points to the original target.
-        original_targets = self.storage.target_storage.get_by_where(
-            {"build_id": original_id}
-        )
+        original_targets = self.storage.target_storage.get_by_where({"build_id": original_id})
         assert len(original_targets) > 0, self._failed_build_msg(
             original_id, "Expected targets in original build"
         )
@@ -346,9 +338,7 @@ class TestBuildRunnerRetry(AbstractBuildTest):
             )
 
         # --- gb_events ---
-        retry_events = self.storage.event_storage.get_sorted_build_events(
-            build_id=retry_id
-        )
+        retry_events = self.storage.event_storage.get_sorted_build_events(build_id=retry_id)
         assert len(retry_events) > 0, self._failed_build_msg(
             retry_id, "Expected events for retry build"
         )

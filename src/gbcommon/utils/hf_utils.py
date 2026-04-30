@@ -14,6 +14,7 @@ def get_hf_artifact_uri(
     repo_id: str,
     artifact_type: Literal["model", "dataset", "bucket"],
 ) -> str:
+    """Get the hf artifact uri."""
     segment = _ARTIFACT_TYPE_TO_SEGMENT[artifact_type]
     return f"hf:///{segment}/{repo_id}"
 

@@ -15,6 +15,8 @@
 # limitations under the License.
 
 
+"""Check build artifacts module."""
+
 from gbserver.storage.artifact_registry import IArtifactRegistry
 from gbserver.types.buildconfig import BuildConfig
 from gbserver.types.validation import GBValidationErrors, GBValidationErrorType

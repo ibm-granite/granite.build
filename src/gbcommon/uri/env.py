@@ -29,15 +29,9 @@ from gbserver.types.constants import ENV_URI_SCHEME
 class EnvURI(URI):
     """Reference a file/folder in the remote filesystem."""
 
-    def __init__(
-        self: Self, uri: URI, context: Optional[str] = None, **kwargs: Dict
-    ) -> None:
+    def __init__(self: Self, uri: URI, context: Optional[str] = None, **kwargs: Dict) -> None:
         self.context = context
-        if (
-            not Path(uri.path).is_absolute()
-            and self.context is not None
-            and self.context != ""
-        ):
+        if not Path(uri.path).is_absolute() and self.context is not None and self.context != "":
             uri = EnvURI(uri=ENV_URI_SCHEME + ":///" + self.context + "/" + uri.path)
         super().__init__(uri=uri, context=context, **kwargs)
 

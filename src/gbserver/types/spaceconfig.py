@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Spaceconfig module."""
+
 from typing import Dict, List, Optional
 
 from pydantic import Field
@@ -22,11 +24,15 @@ from gbserver.types.config import Config
 
 
 class SpaceSecretManagerConfig(Config):
+    """Space Secret Manager Config implementation."""
+
     type: str
     config: dict
 
 
 class SpaceConfig(Config):
+    """Space Config implementation."""
+
     name: str = ""
     secret_manager: SpaceSecretManagerConfig
     base_uris: Optional[List[str]] = Field(default=None)

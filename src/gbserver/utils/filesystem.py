@@ -69,9 +69,7 @@ def sync_or_copy_helper(
         return True
     except Exception as e:
         if raise_errors:
-            raise ValueError(
-                f"failed to copy asset from '{src}' to '{dest}' cwd: '{cwd}'"
-            ) from e
+            raise ValueError(f"failed to copy asset from '{src}' to '{dest}' cwd: '{cwd}'") from e
         logger.error("shutil.copy failed, error: %s", e)
         logger.error("%s", traceback.format_exc())
     return False
@@ -101,16 +99,12 @@ def sync_or_copy(
         logger.error("stdout: %s", result.stdout)
         logger.error("stderr: %s", result.stderr)
         if raise_errors:
-            raise ValueError(
-                f"failed to rsync asset from '{src}' to '{dest}' cwd: '{cwd}'"
-            )
+            raise ValueError(f"failed to rsync asset from '{src}' to '{dest}' cwd: '{cwd}'")
         logger.error("%s", traceback.format_exc())
         return False
     except FileNotFoundError as nfe:
         logger.error("rsync may not available, error: %s", nfe)
-        return sync_or_copy_helper(
-            src=src, dest=dest, delete=delete, raise_errors=raise_errors
-        )
+        return sync_or_copy_helper(src=src, dest=dest, delete=delete, raise_errors=raise_errors)
 
 
 def merge_config_dirs(base_dir: Path, overlay_dir: Path, merged_dir: Path):
@@ -293,9 +287,7 @@ def fill_templates_in_dir(
         # --- path filling ---
         if fill_paths:
             filepath_str = str(filepath)
-            newfilepath_str = fill_template(
-                templ=str(filepath), data=data, strict=strict
-            )
+            newfilepath_str = fill_template(templ=str(filepath), data=data, strict=strict)
             newfilepath = Path(newfilepath_str)
             if not newfilepath.exists() or not os.path.samefile(filepath, newfilepath):
                 if filepath.is_dir():

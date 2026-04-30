@@ -37,15 +37,12 @@ class Cosstore(Assetstore):
         return [CosURI]
 
     def _get_config_key(self: Self, key: str, default: str) -> str:
-        if (
-            self.config
-            and isinstance(self.config.config, dict)
-            and key in self.config.config
-        ):
+        if self.config and isinstance(self.config.config, dict) and key in self.config.config:
             return self.config.config[key]
         return default
 
     def get_relpath(self: Self, uri: URI) -> str:
+        """Get the relpath."""
         if not isinstance(uri, CosURI):
             raise ValueError(f"Expected a CosURI, got {type(uri)}")
         cos_md = self.get_metadata(uri)["config"]

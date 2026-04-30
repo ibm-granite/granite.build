@@ -109,9 +109,7 @@ class BuildValidation:
                 event = await event_q.get()
                 assert isinstance(event, BuildEvent), f"invalid event: {event}"
                 event_str = truncate(str(event))
-                logger.info(
-                    "\x1b[0;35mGot a new event: %s : %s\x1b[0m", event.type, event_str
-                )
+                logger.info("\x1b[0;35mGot a new event: %s : %s\x1b[0m", event.type, event_str)
                 if event.type is not BuildEventType.VALIDATION_DATA_EVENT:
                     continue
                 event_payload = event.payload
@@ -203,21 +201,13 @@ class BuildValidation:
             if isinstance(space_or_name, Space):
                 space = space_or_name
             else:
-                if (
-                    space_or_name
-                ):  # A space name at this point, so get the space URI from the db.
-                    space_storage: IStoredSpaceStorage = (
-                        get_admin_storage().space_storage
-                    )
+                if space_or_name:  # A space name at this point, so get the space URI from the db.
+                    space_storage: IStoredSpaceStorage = get_admin_storage().space_storage
 
                     stored_space = space_storage.get_by_name(space_or_name)
                     if stored_space is None:
-                        raise ValueError(
-                            f"Space '{space_or_name}' not found in space storage"
-                        )
-                    space_uri = GitURI.get_gb_space_config_uri(
-                        uri=stored_space.git_repo_uri
-                    )
+                        raise ValueError(f"Space '{space_or_name}' not found in space storage")
+                    space_uri = GitURI.get_gb_space_config_uri(uri=stored_space.git_repo_uri)
                 space = Space(uri=space_uri, username=username)
             logger.info("using Space with uri: %s", space.uristr)
             BuildValidation.__create_space_and_build(
@@ -262,9 +252,7 @@ class BuildValidation:
             # Make sure the space matches the build's space
             space_storage: IStoredSpaceStorage = get_admin_storage().space_storage
             stored_space = space_storage.get_by_name(stored_build.space_name)
-            assert (
-                stored_space
-            ), f"Could not find space {stored_build.space_name} of build."
+            assert stored_space, f"Could not find space {stored_build.space_name} of build."
             space_uri = GitURI.get_gb_space_config_uri(uri=stored_space.git_repo_uri)
             assert (
                 space_uri == space.uristr

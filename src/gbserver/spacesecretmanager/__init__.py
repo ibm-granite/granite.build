@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Init module."""
+
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
 
 SpaceSecretManager.load_spacesecretmanagers()

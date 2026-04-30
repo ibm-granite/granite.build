@@ -37,7 +37,5 @@ class BaseTargetStorageTest(AbstractStorageTest):
 
 class BaseLegacyStoredTargetTest(AbstractExistingDataReadTest):
 
-    def _get_tested_readonly_storage(
-        self, storage: singleton_storage.SingletonAdminStorage
-    ):
+    def _get_tested_readonly_storage(self, storage: singleton_storage.SingletonAdminStorage):
         return storage.target_storage

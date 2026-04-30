@@ -15,9 +15,7 @@ def test_model_uri():
     table_name = "mytable"
     name = "mymodel"
     revision = "123"
-    uri = LhURI.get_model_uri(
-        table_name=table_name, model_label=name, model_revision=revision
-    )
+    uri = LhURI.get_model_uri(table_name=table_name, model_label=name, model_revision=revision)
     assert uri.endswith(f"models/{table_name}/{name}/{revision}")
     assert table_name in uri, "Table name did not get included"
     assert name in uri, "Name did not get included"
@@ -122,9 +120,7 @@ def test_fileset_uri():
     table_name = "mytable"
     name = "myfileset"
     revision = "123"
-    uri = LhURI.get_fileset_uri(
-        table_name=table_name, fileset_label=name, fileset_version=revision
-    )
+    uri = LhURI.get_fileset_uri(table_name=table_name, fileset_label=name, fileset_version=revision)
     assert uri.endswith(f"filesets/{table_name}/{name}/{revision}")
     assert table_name in uri, "Table name did not get included"
     assert name in uri, "Name did not get included"

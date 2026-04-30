@@ -91,9 +91,7 @@ def is_space_admin(request: Request, space_name: str) -> bool:
     """
     username = request.state.data["user"].email
     lh_token = get_lh_token_if_needed(request)
-    return space_admin_check(
-        username=username, space_name=space_name, lh_token=lh_token
-    )
+    return space_admin_check(username=username, space_name=space_name, lh_token=lh_token)
 
 
 def is_super_admin(request: Request) -> bool:
@@ -131,9 +129,7 @@ def has_space_write_access(
     return has_access, user_id
 
 
-def confirm_space_write_access(
-    request: Request, username_on_target: str, space_name: str
-) -> None:
+def confirm_space_write_access(request: Request, username_on_target: str, space_name: str) -> None:
     """See if the requesting user has write access to an asset owned/created by the given username in the given space and raise
     and HTTP exception if not.
 
@@ -223,9 +219,7 @@ class ListAppendOrSet(BaseModel):
     set: Optional[list[str]] = None
 
 
-def apply_tag_update(
-    tagged_item: TaggedItem, tag_update: ListAppendOrSet, is_super_user: bool
-):
+def apply_tag_update(tagged_item: TaggedItem, tag_update: ListAppendOrSet, is_super_user: bool):
     """Apply tags set or append request to the given tagged item, with protections for system tags.
 
     Args:
@@ -243,13 +237,9 @@ def apply_tag_update(
             detail="Can not both append to and set the tags!",
         )
     if tag_update.append:
-        tagged_item.tags = get_tags_to_set(
-            is_super_user, tagged_item, tag_update.append, True
-        )
+        tagged_item.tags = get_tags_to_set(is_super_user, tagged_item, tag_update.append, True)
     elif tag_update.set or tag_update.set == []:
-        tagged_item.tags = get_tags_to_set(
-            is_super_user, tagged_item, tag_update.set, False
-        )
+        tagged_item.tags = get_tags_to_set(is_super_user, tagged_item, tag_update.set, False)
 
 
 def get_query_control(
@@ -285,9 +275,7 @@ def get_query_control(
         sort_orders = None
 
     pagination = (
-        None
-        if page_index < 0 or page_size <= 0
-        else Pagination(index=page_index, size=page_size)
+        None if page_index < 0 or page_size <= 0 else Pagination(index=page_index, size=page_size)
     )
 
     query_control = (

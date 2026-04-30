@@ -54,9 +54,7 @@ class LsfTransientErrorRetryStrategy(RetryStrategy):
         should = ERR_LSF_CANNOT_OPEN_JOB_FILE in msg
 
         if should:
-            logger.warning(
-                "LsfTransientErrorRetryStrategy: detected transient LSF error (%s)", msg
-            )
+            logger.warning("LsfTransientErrorRetryStrategy: detected transient LSF error (%s)", msg)
 
         return should
 

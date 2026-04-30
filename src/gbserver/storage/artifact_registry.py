@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Artifact registry module."""
+
 from abc import abstractmethod
 from typing import List, Optional, Self, Union
 
@@ -35,7 +37,7 @@ _BUILD_SCHEMA_VERSION_LATEST = _BUILD_SCHEMA_VERSION2
 
 
 class IArtifactRegistry(IItemStorage[ArtifactRegistration]):
-    # Some notes:
+    """Interface for artifact registry storage operations."""
 
     @abstractmethod
     def get_by_uri(
@@ -61,18 +63,18 @@ class IArtifactRegistry(IItemStorage[ArtifactRegistration]):
 
 
 class ChecksumConflictException(Exception):
+    """Checksum Conflict Exception implementation."""
 
     def __init__(self, existing: ArtifactRegistration):
         self.existing_artifact = existing
 
 
 class BaseArtifactRegistry(BaseItemStorage[ArtifactRegistration], IArtifactRegistry):
+    """Base Artifact Registry implementation."""
 
     def __init__(self: Self, **kwargs) -> None:
         kwargs["item_class"] = ArtifactRegistration
-        if (
-            kwargs.get("table_name") is None
-        ):  # Allow for testing using alternate table names.
+        if kwargs.get("table_name") is None:  # Allow for testing using alternate table names.
             kwargs["table_name"] = GB_ARTIFACT_REGISTRY_TABLE_NAME
         super().__init__(**kwargs)
         self._schema_version = _BUILD_SCHEMA_VERSION_LATEST
@@ -173,9 +175,7 @@ class BaseArtifactRegistry(BaseItemStorage[ArtifactRegistration], IArtifactRegis
             Optional[ArtifactRegistration]: If space name is given, None if not found, otherwise the single ArtifactRegistration with the given URI.
         """
         if space_name == "":
-            self.logger.warning(
-                f"space name is empty, fetching artifact uri {uri} from all spaces"
-            )
+            self.logger.warning(f"space name is empty, fetching artifact uri {uri} from all spaces")
             return self._get_by_single_field(
                 column_name="uri", column_value=uri, allow_multiple=True
             )

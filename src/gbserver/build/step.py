@@ -168,6 +168,7 @@ class Step(Entity):
                     shutil.rmtree(dir)
 
     def urihash(self: Self) -> str:
+        """Urihash."""
         return self.stepasset.urihash()
 
     def assimilate(self: Self) -> None:

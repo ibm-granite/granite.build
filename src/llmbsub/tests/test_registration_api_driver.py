@@ -83,9 +83,7 @@ class MockRegistrationAPI:
     """
 
     def __init__(self):
-        self.registered_artifacts: Dict[str, ArtifactInfo] = (
-            {}
-        )  # checksum -> artifact_info
+        self.registered_artifacts: Dict[str, ArtifactInfo] = {}  # checksum -> artifact_info
         self.call_history = []
 
     def check_artifact(self, checksum: str, space_name: str) -> dict:
@@ -174,9 +172,7 @@ class MockRegistrationAPI:
 # =============================================================================
 
 
-def generate_test_dataset(
-    num_files: int, total_size_mb: float, output_path: str, depth: int = 0
-):
+def generate_test_dataset(num_files: int, total_size_mb: float, output_path: str, depth: int = 0):
     """Generate fake JSONL dataset files by calling new_data.py."""
     cmd = [
         sys.executable,

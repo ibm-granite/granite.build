@@ -48,15 +48,11 @@ class CustomCodeGBValidator(GBValidator):
     # instance attributes
     config: CustomCodeGBValidatorConfig
 
-    def __init__(
-        self: Self, validator_config: GBValidatorConfig, **kwargs: dict
-    ) -> None:
+    def __init__(self: Self, validator_config: GBValidatorConfig, **kwargs: dict) -> None:
         assert (
             validator_config.type == "custom_code"
         ), f"invalid type, validator_config: {validator_config}"
-        self.config = CustomCodeGBValidatorConfig.model_validate(
-            validator_config.config
-        )
+        self.config = CustomCodeGBValidatorConfig.model_validate(validator_config.config)
         validator_uri = self.config.validator_uri
         logger.info("validator_uri: %s", validator_uri)
         # self.validator_asset = Asset(uri=validator_uri, context=context)
@@ -67,9 +63,7 @@ class CustomCodeGBValidator(GBValidator):
         logger.info("validator_asset_dir: %s", self.validator_asset_dir)
         self.validator_asset.sync(dest=self.validator_asset_dir, force=True)
         logger.info("validator_asset copied into: %s", self.validator_asset_dir)
-        self.validator_entrypoint = (
-            self.validator_asset_dir / self.config.entrypoint_path
-        )
+        self.validator_entrypoint = self.validator_asset_dir / self.config.entrypoint_path
         if not self.validator_entrypoint.is_file():
             error = ValueError(f"expected '{self.validator_entrypoint}' to be a file")
             if self.validator_asset_dir.is_dir():
@@ -81,9 +75,7 @@ class CustomCodeGBValidator(GBValidator):
                         self.validator_asset_dir / self.config.entrypoint_path
                     )
                     if not self.validator_entrypoint.is_file():
-                        raise ValueError(
-                            f"expected '{self.validator_entrypoint}' to be a file"
-                        )
+                        raise ValueError(f"expected '{self.validator_entrypoint}' to be a file")
                 else:
                     raise error
             else:

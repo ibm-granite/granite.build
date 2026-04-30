@@ -43,9 +43,7 @@ class BaseNodeFailureStorageTest(AbstractStorageTest):
 
 class BaseLegacyNodeFailureTest(AbstractExistingDataReadTest):
 
-    def _get_tested_readonly_storage(
-        self, storage: singleton_storage.SingletonAdminStorage
-    ):
+    def _get_tested_readonly_storage(self, storage: singleton_storage.SingletonAdminStorage):
         return storage.node_failure_storage
 
 
@@ -84,9 +82,7 @@ class TestNodeFailureQueryMethods(AbstractSingletonStorageUsingTest):
         old = self._add(node_name="node-a", build_id="b-old")
         # Backdate to 2 hours ago
         old_time = get_utc_time() - timedelta(hours=2)
-        nfs.update_fields(
-            old.uuid, {"created_time": old_time}, update_updated_time=False
-        )
+        nfs.update_fields(old.uuid, {"created_time": old_time}, update_updated_time=False)
 
         self._add(node_name="node-a", build_id="b-recent")
 
@@ -216,9 +212,7 @@ class TestNodeFailureQueryMethods(AbstractSingletonStorageUsingTest):
 
         old = self._add(node_name="node-a", build_id="b-old")
         old_time = get_utc_time() - timedelta(hours=2)
-        nfs.update_fields(
-            old.uuid, {"created_time": old_time}, update_updated_time=False
-        )
+        nfs.update_fields(old.uuid, {"created_time": old_time}, update_updated_time=False)
 
         self._add(node_name="node-a", build_id="b-recent")
 

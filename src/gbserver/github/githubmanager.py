@@ -141,9 +141,7 @@ class GitHubManager:
         logger.info("loading config from %s", self.config_path)
         prev_config = self.config
         self.config = PrWatcherConfig.from_yaml(self.config_path)
-        self.config.initialize(
-            spaces_storage=self.storage.space_storage, prev_config=prev_config
-        )
+        self.config.initialize(spaces_storage=self.storage.space_storage, prev_config=prev_config)
 
     def start_and_wait(self: Self) -> None:
         """Starts monitoring Github for pull requests."""
@@ -197,9 +195,7 @@ class GitHubManager:
                     logger.info("fetching pull requests from repo %s", repo_uri)
                     new_merged_prs = self.__get_new_merged_prs(repo_uri=repo_uri)
                 except Exception as e:
-                    logger.error(
-                        "failed to fetch newly merged pull requests, error: %s", e
-                    )
+                    logger.error("failed to fetch newly merged pull requests, error: %s", e)
                     logger.debug("%s", traceback.format_exc())
 
                 # to_print = [(x.my_pr_id, x.title) for x in new_merged_prs]
@@ -220,15 +216,11 @@ class GitHubManager:
                                 te,
                             )
                             if try_count >= self.config.lh_max_retries:
-                                logger.error(
-                                    "max retries exceeded, try_count: %s", try_count
-                                )
+                                logger.error("max retries exceeded, try_count: %s", try_count)
                                 break
                             logger.warning("trying again, try_count: %s", try_count)
                         except Exception as e:
-                            logger.error(
-                                "failed to store the PR %s, error: %s", pr.my_pr_id, e
-                            )
+                            logger.error("failed to store the PR %s, error: %s", pr.my_pr_id, e)
                             logger.error("%s", traceback.format_exc())
                             break
             logger.info("sleeping...")
@@ -243,9 +235,7 @@ class GitHubManager:
             # Include already seen open PRs to workaround GitHub API issues (HTTP 405 on merge)
             open_prs = self.__get_new_open_prs(repo_uri=repo_uri, include_old=True)
         except Exception as e:
-            logger.error(
-                "failed to fetch open PRs for the repo %s error: %s", repo_uri, e
-            )
+            logger.error("failed to fetch open PRs for the repo %s error: %s", repo_uri, e)
             return
         myapi = self.__get_my_gh_api(uri=repo_uri)
         merged_prs = []
@@ -276,9 +266,7 @@ class GitHubManager:
             except Exception as e:
                 logger.error("failed to merge the PR %s , error: %s", pr.url, e)
                 logger.debug("%s", traceback.format_exc())
-        logger.info(
-            "merged the following open PRs %d : %s", len(merged_prs), merged_prs
-        )
+        logger.info("merged the following open PRs %d : %s", len(merged_prs), merged_prs)
         logger.debug("GitHubManager.process_open_prs end")
 
     def __get_new_merged_prs(self: Self, repo_uri: str) -> List[PullRequest]:
@@ -408,9 +396,7 @@ class GitHubManager:
         rel_build_yamls = [x for x in pr_rel_paths if x.name == BUILD_FILENAME]
         logger.info("rel_build_yamls: %s", rel_build_yamls)
         if len(rel_build_yamls) == 0:
-            logger.info(
-                "no %s were added in the relevant directory, skipping", BUILD_FILENAME
-            )
+            logger.info("no %s were added in the relevant directory, skipping", BUILD_FILENAME)
             self.__record_pr_as_processed(pr.html_url)
             return
         download_root_path, pr_downloaded_paths = self.__fetch_pr_files(pr=pr)
@@ -460,9 +446,7 @@ class GitHubManager:
                 if not curr_errors.is_valid():
                     logger.error("artifacts are registered: %s", curr_errors)
         except Exception as e:
-            build_err = (
-                f"the {BUILD_FILENAME} at {build_yaml_path} is invalid, error:\n{e}"
-            )
+            build_err = f"the {BUILD_FILENAME} at {build_yaml_path} is invalid, error:\n{e}"
             logger.error("%s", build_err)
             self.__record_pr_as_processed(pr.html_url)
         is_valid_build = build_err == ""
@@ -478,9 +462,7 @@ class GitHubManager:
             stored_build = result[0]
             assert isinstance(stored_build, StoredBuild)
             self.__record_pr_as_processed(stored_build.source_uri)
-            shutil.rmtree(
-                download_root_path, ignore_errors=True
-            )  # Clean up the filesystem.
+            shutil.rmtree(download_root_path, ignore_errors=True)  # Clean up the filesystem.
             return
         logger.debug("PR does NOT exist in Lakehouse, store it")
         stored_build = self.__compress_and_store_pr(
@@ -518,9 +500,7 @@ class GitHubManager:
         stored_build_name = f"build-for-pr-{pr_id}"
         username = pr.user.login
         stored_space = self.config.get_space_from_pr_url(pr.html_url)
-        assert (
-            stored_space is not None
-        ), f"failed to find a space for the PR {pr.html_url}"
+        assert stored_space is not None, f"failed to find a space for the PR {pr.html_url}"
         status = Status.PENDING if is_valid else Status.INVALID
         stored_build = StoredBuild.create(
             name=stored_build_name,
@@ -570,9 +550,7 @@ class GitHubManager:
         if _repo_dir_to_watch == "":
             _repo_dir_to_watch = DEFAULT_REPO_DIR_TO_WATCH
         repo_dir_to_watch = Path(_repo_dir_to_watch)
-        logger.info(
-            "pr_html_url %s repo_dir_to_watch: %s", pr_html_url, repo_dir_to_watch
-        )
+        logger.info("pr_html_url %s repo_dir_to_watch: %s", pr_html_url, repo_dir_to_watch)
         if pr.files is None:
             pr.files = self.__get_files_added_in_pr(pr=pr)
         pr.files = [f for f in pr.files if repo_dir_to_watch in f.parents]
@@ -598,9 +576,7 @@ class GitHubManager:
             logger.info("0 build.yamls")
             common_parent = get_common_ancestor(files)
             if common_parent == Path("."):
-                logger.warning(
-                    "PR %s failed to find the common parent: %s", pr.my_pr_id, files
-                )
+                logger.warning("PR %s failed to find the common parent: %s", pr.my_pr_id, files)
             else:
                 repo_path = common_parent
         else:

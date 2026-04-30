@@ -33,8 +33,8 @@ class TestSpacesAPI(AbstractAPITest):
         response = client.get(f"{base_url}")
         assert response.status_code == 200
         resp_json = response.json()
-        resp: spaces_api.ListSpacesResponse = (
-            spaces_api.ListSpacesResponse.model_validate(resp_json)
+        resp: spaces_api.ListSpacesResponse = spaces_api.ListSpacesResponse.model_validate(
+            resp_json
         )
         spaces = resp.spaces
         assert len(spaces) == 1
@@ -47,8 +47,8 @@ class TestSpacesAPI(AbstractAPITest):
         response = client.get(f"{base_url}")
         assert response.status_code == 200
         resp_json = response.json()
-        resp: spaces_api.ListSpacesResponse = (
-            spaces_api.ListSpacesResponse.model_validate(resp_json)
+        resp: spaces_api.ListSpacesResponse = spaces_api.ListSpacesResponse.model_validate(
+            resp_json
         )
         spaces = resp.spaces
         assert len(spaces) == 3
@@ -57,8 +57,8 @@ class TestSpacesAPI(AbstractAPITest):
         response = client.get(f"{base_url}?name={item0.name}")
         assert response.status_code == 200
         resp_json = response.json()
-        resp: spaces_api.ListSpacesResponse = (
-            spaces_api.ListSpacesResponse.model_validate(resp_json)
+        resp: spaces_api.ListSpacesResponse = spaces_api.ListSpacesResponse.model_validate(
+            resp_json
         )
         spaces = resp.spaces
         assert len(spaces) == 1
@@ -83,9 +83,7 @@ class TestSpaceMembersAPI(AbstractAPITest):
     def _get_test_user_email(self) -> str:
         """Get the email of the user associated with the default test token."""
         user, _ = get_gh_user(GBSERVER_GITHUB_TOKEN)
-        assert (
-            user is not None
-        ), "Could not resolve test user from GBSERVER_GITHUB_TOKEN"
+        assert user is not None, "Could not resolve test user from GBSERVER_GITHUB_TOKEN"
         return user.email
 
     def _setup_storage_mode(self):
@@ -208,9 +206,7 @@ class TestSpaceMembersAPI(AbstractAPITest):
                 )
             )
             client = self.get_test_client()
-            response = client.delete(
-                f"{base_url}/{_TEST_SPACE.name}/members/toremove@example.com"
-            )
+            response = client.delete(f"{base_url}/{_TEST_SPACE.name}/members/toremove@example.com")
             assert response.status_code == 200
             assert response.json() == {"result": "success"}
             # Verify the member is gone

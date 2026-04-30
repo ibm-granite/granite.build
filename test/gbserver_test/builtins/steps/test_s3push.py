@@ -24,14 +24,10 @@ class TestS3PushStep:
         assert "Runpod" in env_configs
 
     def test_bash_command_script_exists(self):
-        script = Path(
-            "src/gbserver/builtins/steps/s3push/bash_scripts/s3push/command.sh"
-        )
+        script = Path("src/gbserver/builtins/steps/s3push/bash_scripts/s3push/command.sh")
         assert script.exists()
 
     def test_bash_command_script_uses_aws_s3(self):
-        script = Path(
-            "src/gbserver/builtins/steps/s3push/bash_scripts/s3push/command.sh"
-        )
+        script = Path("src/gbserver/builtins/steps/s3push/bash_scripts/s3push/command.sh")
         content = script.read_text()
         assert "aws s3" in content

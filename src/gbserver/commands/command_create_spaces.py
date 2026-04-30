@@ -15,6 +15,8 @@
 # limitations under the License.
 
 
+"""Command create spaces module."""
+
 from pathlib import Path
 from typing import List, Optional, cast
 
@@ -50,6 +52,8 @@ predefined_spaces = [
 
 
 class CLICreateSpacesConfig(BaseModel):
+    """C L I Create Spaces Config implementation."""
+
     lakehouse_environment: str
     spaces: List[StoredSpace]
 
@@ -115,9 +119,7 @@ def cli(
             logger.info("Deleting the space table")
             storage.delete_table()
         else:
-            logger.info(
-                "Skipped clearing of PROD Lakehouse space table.  Use --force to override"
-            )
+            logger.info("Skipped clearing of PROD Lakehouse space table.  Use --force to override")
 
     logger.info("Check for existing spaces")
     for space in spaces_to_create:

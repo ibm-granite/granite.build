@@ -14,11 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Artifact module."""
+
 from enum import StrEnum, auto
 
 
 class ArtifactType(StrEnum):
     # These are DEPREDCATED, but will be kept so we can deserialize old entries.
+    """Artifact Type implementation."""
     SEED_DATA = auto()
     GENERATED_DATA = auto()
     TUNING_DATA = auto()
@@ -35,6 +38,8 @@ class ArtifactType(StrEnum):
 
 
 class ArtifactStoreType(StrEnum):
+    """Artifact Store Type implementation."""
+
     LAKEHOUSE = auto()
     COS = auto()
     LOCAL = auto()

@@ -1,4 +1,6 @@
 # import time is required here, even the it is not referenced in the code explicitly
+"""Gh auth module."""
+
 import time
 from typing import List, Optional, Tuple
 from urllib.parse import parse_qs
@@ -22,6 +24,8 @@ UserReposURL = "https://api.github.ibm.com/users/{username}/repos"
 
 
 class DeviceCodeURLResponse(BaseModel):
+    """Device Code U R L Response implementation."""
+
     device_code: List[str]
     expires_in: List[int]
     interval: List[int]
@@ -35,6 +39,8 @@ class DeviceCodeURLResponse(BaseModel):
 
 
 class TokenURLResponse(BaseModel):
+    """Token U R L Response implementation."""
+
     access_token: List[str]
     token_type: List[str]
     scope: Optional[List[str]] = None
@@ -45,6 +51,8 @@ class TokenURLResponse(BaseModel):
 
 
 class TokenCodeObject(BaseModel):
+    """Token Code Object implementation."""
+
     device_code: str
     verification_uri: str
     user_code: str
@@ -62,6 +70,7 @@ class UserInfoResponse(BaseModel):
 
 
 def get_device_code() -> DeviceCodeURLResponse:
+    """Get the device code."""
     minimumScopes = ["repo", "read:org", "notifications"]
     data = {"client_id": oauthClientID, "scope": " ".join(minimumScopes)}
     headers = {"Content-Type": ContentTypeAppFormUrlEncoded}
@@ -76,6 +85,7 @@ def get_device_code() -> DeviceCodeURLResponse:
 def get_token_using_device_code(
     device_code: str,
 ) -> Tuple[Optional[TokenURLResponse], bool]:
+    """Get the token using device code."""
     data = {
         "client_id": oauthClientID,
         "client_secret": oauthClientSecret,
@@ -109,6 +119,7 @@ def get_token_using_device_code(
 
 
 def get_user(token: str) -> UserInfoResponse:
+    """Get the user."""
     import os
 
     from gbcli.utils.gbconstants import is_standalone
@@ -119,9 +130,7 @@ def get_user(token: str) -> UserInfoResponse:
         login = creds.get("login", section="user.gbserver") or os.environ.get(
             "GBSERVER_API_USER", "standalone"
         )
-        return UserInfoResponse(
-            login=login, id=0, url="", html_url="", name=login, email=""
-        )
+        return UserInfoResponse(login=login, id=0, url="", html_url="", name=login, email="")
 
     creds = GBCredentials()
     default_provider = creds.get("default_provider", section="user")
@@ -130,17 +139,13 @@ def get_user(token: str) -> UserInfoResponse:
         login = creds.get("login", section="user.ibmid") or ""
         name = creds.get("name", section="user.ibmid") or login
         email = creds.get("email", section="user.ibmid") or ""
-        return UserInfoResponse(
-            login=login, id=0, url="", html_url="", name=name, email=email
-        )
+        return UserInfoResponse(login=login, id=0, url="", html_url="", name=name, email=email)
 
     if default_provider == "apikey":
         login = creds.get("login", section="user.gbserver") or os.environ.get(
             "GBSERVER_API_USER", ""
         )
-        return UserInfoResponse(
-            login=login, id=0, url="", html_url="", name=login, email=""
-        )
+        return UserInfoResponse(login=login, id=0, url="", html_url="", name=login, email="")
 
     headers = {
         "Accept": "application/vnd.github+json",
@@ -155,6 +160,7 @@ def get_user(token: str) -> UserInfoResponse:
 
 
 def get_token() -> TokenCodeObject:
+    """Get the token."""
     device_code_obj = get_device_code()
     verification_uri = device_code_obj.verification_uri[0]
     user_code = device_code_obj.user_code[0]

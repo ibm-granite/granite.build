@@ -140,15 +140,11 @@ class LhURI(URI):
         try:
             table_name = self.get_lh_table_name()
             if table_name == "":
-                raise ValueError(
-                    f"The table name cannot be empty in a {LH_URI_SCHEME}:// URI"
-                )
+                raise ValueError(f"The table name cannot be empty in a {LH_URI_SCHEME}:// URI")
             lh_type = self.get_lh_type()
             if lh_type is None:
                 supported_types = self.get_supported_lh_types()
-                raise ValueError(
-                    f"unsupported lh_type, supported ones are {supported_types}"
-                )
+                raise ValueError(f"unsupported lh_type, supported ones are {supported_types}")
         except Exception as e:
             raise ValueError(f"failed to create from uri: {original_uri}") from e
 
@@ -170,11 +166,7 @@ class LhURI(URI):
             (
                 LH_URI_SCHEME,
                 lh_env,
-                namespace
-                + "/"
-                + LhURI._get_urisegment_for_type(lh_type)
-                + "/"
-                + uri_suffix,
+                namespace + "/" + LhURI._get_urisegment_for_type(lh_type) + "/" + uri_suffix,
                 None,
                 None,
                 None,
@@ -284,9 +276,7 @@ class LhURI(URI):
             except Exception as e:
                 logger.warning("Could not delete LH artifact %s: %s", self, e)
                 return False
-        raise NotImplementedError(
-            f"LhURI delete is not implemented for LH type {lh_type}"
-        )
+        raise NotImplementedError(f"LhURI delete is not implemented for LH type {lh_type}")
 
     def get_lh_namespace(self: Self) -> str:
         """Get the lakehouse namespace."""
@@ -350,14 +340,10 @@ class LhURI(URI):
 
     def get_lh_dataset_name(self: Self) -> str:
         """Get the current Lakehouse dataset name."""
-        assert (
-            self.get_lh_type() == LhType.DATASET
-        ), f"URI is not a dataset uri {self.uri}"
+        assert self.get_lh_type() == LhType.DATASET, f"URI is not a dataset uri {self.uri}"
         assert self.uri is not None, "self.uri is None"
         parts = self.uri.path.split("/")
-        assert (
-            len(parts) >= DATASET_INDEX + 1
-        ), f"URI did not include a dataset name: {self.uri}"
+        assert len(parts) >= DATASET_INDEX + 1, f"URI did not include a dataset name: {self.uri}"
         return parts[DATASET_INDEX]
 
     def get_lh_model_label(self: Self) -> str:
@@ -365,18 +351,13 @@ class LhURI(URI):
         assert self.get_lh_type() == LhType.MODEL, f"URI is not a model uri {self.uri}"
         assert self.uri is not None, "self.uri is None"
         parts = self.uri.path.split("/")
-        assert (
-            len(parts) >= MODEL_LABEL_INDEX + 1
-        ), f"URI did not include a model label: {self.uri}"
+        assert len(parts) >= MODEL_LABEL_INDEX + 1, f"URI did not include a model label: {self.uri}"
         return parts[MODEL_LABEL_INDEX]
 
     @staticmethod
     def __get_lh_model_revision(uri_path: str) -> str:
         parts = uri_path.split("/")
-        if (
-            len(parts) >= MODEL_REVISION_INDEX + 1
-            and len(parts[MODEL_REVISION_INDEX]) > 0
-        ):
+        if len(parts) >= MODEL_REVISION_INDEX + 1 and len(parts[MODEL_REVISION_INDEX]) > 0:
             return parts[MODEL_REVISION_INDEX]
         return DEFAULT_MODEL_REVISION
 
@@ -393,9 +374,7 @@ class LhURI(URI):
 
     def get_lh_fileset_label(self: Self) -> str:
         """Get the current Lakehouse fileset label."""
-        assert (
-            self.get_lh_type() == LhType.FILESET
-        ), f"URI is not a fileset uri {self.uri}"
+        assert self.get_lh_type() == LhType.FILESET, f"URI is not a fileset uri {self.uri}"
         assert self.uri is not None, "self.uri is None"
         parts = self.uri.path.split("/")
         assert (
@@ -406,18 +385,13 @@ class LhURI(URI):
     @staticmethod
     def __get_lh_fileset_version(uri_path: str) -> str:
         parts = uri_path.split("/")
-        if (
-            len(parts) >= FILESET_REVISION_INDEX + 1
-            and len(parts[FILESET_REVISION_INDEX]) > 0
-        ):
+        if len(parts) >= FILESET_REVISION_INDEX + 1 and len(parts[FILESET_REVISION_INDEX]) > 0:
             return parts[FILESET_REVISION_INDEX]
         return DEFAULT_FILESET_VERSION
 
     def get_lh_fileset_version(self: Self) -> str:
         """Get the current Lakehouse fileset version."""
-        assert (
-            self.get_lh_type() == LhType.FILESET
-        ), f"URI is not a fileset uri {self.uri}"
+        assert self.get_lh_type() == LhType.FILESET, f"URI is not a fileset uri {self.uri}"
         assert self.uri is not None, "self.uri is None"
         return LhURI.__get_lh_fileset_version(self.uri.path)
         # parts = self.uri.path.split("/")

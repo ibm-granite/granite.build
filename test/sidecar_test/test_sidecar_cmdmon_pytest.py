@@ -62,9 +62,7 @@ async def child_script(tmp_path_factory):
 
 # --------------------- test cases -------------------------------
 @pytest.mark.asyncio
-async def test_sidecar_with_cmdline_monitor(
-    fake_messaging, temp_log_file, child_script
-):
+async def test_sidecar_with_cmdline_monitor(fake_messaging, temp_log_file, child_script):
     """
     * Spawn a child bash process that uses tee to write to log file.
     * SidecarOrchestrator creates a Sidecar that tails that log file.
@@ -122,10 +120,7 @@ async def test_sidecar_with_cmdline_monitor(
     new_artifact_events = []
     while not fake_messaging._q.empty():
         event = await fake_messaging._q.get()
-        if (
-            event.get("rk")
-            == f"{fake_messaging.addr.queue}.NEWARTIFACT_IN_ENVIRONMENT_EVENT"
-        ):
+        if event.get("rk") == f"{fake_messaging.addr.queue}.NEWARTIFACT_IN_ENVIRONMENT_EVENT":
             new_artifact_events.append(event)
         logger.info(f"Received event: {event}")
     assert len(new_artifact_events) > 0

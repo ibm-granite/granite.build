@@ -108,9 +108,7 @@ def spaces_for_user(request: Request):
 
     except Exception as e:
         logger.error("Failed to get a users spaces list error: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="secret not found!"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="secret not found!")
 
 
 @spaces_api.get("/{space_name}/members")
@@ -122,23 +120,17 @@ def list_members(request: Request, space_name: str) -> ListMembersResponse:
 
 
 @spaces_api.post("/{space_name}/members", status_code=status.HTTP_201_CREATED)
-def add_member(
-    request: Request, space_name: str, body: AddMemberRequest
-) -> AddMemberResponse:
+def add_member(request: Request, space_name: str, body: AddMemberRequest) -> AddMemberResponse:
     """Add a member to a space. Requires space admin or super-admin."""
     _require_member_management_access(request, space_name)
     storage = get_admin_storage()
-    existing = storage.space_user_storage.get_by_space_and_username(
-        space_name, body.username
-    )
+    existing = storage.space_user_storage.get_by_space_and_username(space_name, body.username)
     if existing is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"User '{body.username}' is already a member of space '{space_name}'",
         )
-    new_member = StoredSpaceUser(
-        space_name=space_name, username=body.username, role=body.role
-    )
+    new_member = StoredSpaceUser(space_name=space_name, username=body.username, role=body.role)
     storage.space_user_storage.add(new_member)
     return AddMemberResponse(member=new_member)
 

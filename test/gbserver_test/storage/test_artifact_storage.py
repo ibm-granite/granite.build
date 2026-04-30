@@ -242,7 +242,5 @@ class BaseArtifactStorageTest(AbstractStorageTest):
 
 class BaseLegacyArtifactStorageTest(AbstractExistingDataReadTest):
 
-    def _get_tested_readonly_storage(
-        self, storage: singleton_storage.SingletonAdminStorage
-    ):
+    def _get_tested_readonly_storage(self, storage: singleton_storage.SingletonAdminStorage):
         return storage.artifact_registry

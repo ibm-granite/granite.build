@@ -55,9 +55,7 @@ class MySecretsManagerAPI:
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
         }
-        data = (
-            f"grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey={self.api_key}"
-        )
+        data = f"grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey={self.api_key}"
         response = requests.post(
             "https://iam.cloud.ibm.com/identity/token",
             headers=headers,

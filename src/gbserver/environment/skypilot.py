@@ -105,12 +105,8 @@ class Skypilot(Environment):
             config = kwargs.get("config", {}) or {}
 
             cluster_name = self._cluster_name_for(launch_id)
-            cloud = (
-                launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
-            )
-            idle_minutes = launcher_config.get(
-                "idle_minutes_to_autostop", self._get_idle_minutes()
-            )
+            cloud = launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
+            idle_minutes = launcher_config.get("idle_minutes_to_autostop", self._get_idle_minutes())
 
             # Build sky.Resources
             res_config = launcher_config.get("resources", {})
@@ -148,9 +144,7 @@ class Skypilot(Environment):
 
             # Handle file_mounts (may be in launcher config or step config)
             # Dict values → sky.Storage (set_storage_mounts), strings → set_file_mounts
-            file_mounts_raw = launcher_config.get("file_mounts") or config.get(
-                "file_mounts"
-            )
+            file_mounts_raw = launcher_config.get("file_mounts") or config.get("file_mounts")
             if file_mounts_raw:
                 file_mounts = {}
                 storage_mounts = {}
@@ -166,9 +160,7 @@ class Skypilot(Environment):
                         parsed = urllib.parse.urlparse(source)
                         sub_path = parsed.path.lstrip("/")
                         if sub_path:
-                            storage_kwargs["source"] = (
-                                f"{parsed.scheme}://{parsed.netloc}"
-                            )
+                            storage_kwargs["source"] = f"{parsed.scheme}://{parsed.netloc}"
                             storage_kwargs["_bucket_sub_path"] = sub_path
                         else:
                             storage_kwargs["source"] = source
@@ -232,8 +224,7 @@ class Skypilot(Environment):
         event_log_parser_configs = []
         if event_configs is not None:
             event_log_parser_configs = [
-                EventLogLineParserConfig.model_validate(config)
-                for config in event_configs
+                EventLogLineParserConfig.model_validate(config) for config in event_configs
             ]
 
         cluster_name = self._cluster_names.get(launch_id)

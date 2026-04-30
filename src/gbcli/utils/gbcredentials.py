@@ -1,3 +1,5 @@
+"""Gbcredentials module."""
+
 import logging
 import os
 import sys
@@ -34,10 +36,12 @@ class GBTomlConfig:
         self.load()
 
     def load(self):
+        """Parse ."""
         if os.path.isfile(self._config_path):
             self._config = toml.load(self._config_path)
 
     def save(self):
+        """Save ."""
         os.makedirs(self._config_dir, exist_ok=True)
         try:
             with portalocker.Lock(self._config_path, "w", timeout=3) as configfile:
@@ -55,6 +59,7 @@ class GBTomlConfig:
 
     def get(self, key, section="default"):
         # TODO: replace with more advanced toml parser to handle nested section names
+        """Get the ."""
         s = self._config
         try:
             for x in section.split("."):
@@ -78,6 +83,7 @@ class GBTomlConfig:
 
     def set(self, key, value, section="default"):
         # TODO: replace with more advanced toml parser to handle nested section names
+        """Set the ."""
         s = self._config
         for x in section.split("."):
             if not x in s.keys():
@@ -92,9 +98,7 @@ class GBCredentials(GBTomlConfig):
     """
 
     def __init__(self):
-        credential_path = os.path.abspath(
-            os.path.join(get_local_gb_config(), "credentials")
-        )
+        credential_path = os.path.abspath(os.path.join(get_local_gb_config(), "credentials"))
         try:
             super().__init__(credential_path)
         except TomlDecodeError as e:
@@ -103,6 +107,7 @@ class GBCredentials(GBTomlConfig):
             )
 
     def check_permissions(self):
+        """Verify permissions."""
         if sys.platform.startswith("linux"):
             st = os.stat(self._config_path)
             oct_perm = oct(st.st_mode)[-3:]
@@ -113,6 +118,7 @@ class GBCredentials(GBTomlConfig):
                 )
 
     def check_gbserver_values(self):
+        """Verify gbserver values."""
         credentials = [
             self.get("api_key", section="user.gbserver"),
             self.get("login", section="user.gbserver"),
@@ -130,6 +136,7 @@ class GBCredentials(GBTomlConfig):
         return all(val is not None for val in credentials)
 
     def check_values(self):
+        """Verify values."""
         credentials = [
             self.get("token", section="user.github"),
             self.get("login", section="user.github"),
@@ -140,14 +147,10 @@ class GBCredentials(GBTomlConfig):
             return False
         else:
             # Validate token
-            headers = {
-                "Authorization": f'token {self.get("token", section="user.github")}'
-            }
+            headers = {"Authorization": f'token {self.get("token", section="user.github")}'}
 
             try:
-                response = requests.get(
-                    "https://api.github.ibm.com/user", headers=headers
-                )
+                response = requests.get("https://api.github.ibm.com/user", headers=headers)
                 response.raise_for_status()
                 return True
 

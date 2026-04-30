@@ -153,12 +153,8 @@ class TestBuildAPI(AbstractAPITest):
         self.run_status_test(bsts, tsts, ssts, asts, stc, tested_status=Status.PENDING)
         self.run_status_test(bsts, tsts, ssts, asts, stc, tested_status=Status.RUNNING)
         self.run_status_test(bsts, tsts, ssts, asts, stc, tested_status=Status.INVALID)
-        self.run_status_test(
-            bsts, tsts, ssts, asts, stc, tested_status=Status.CANCELLED
-        )
-        self.run_status_test(
-            bsts, tsts, ssts, asts, stc, tested_status=Status.CANCEL_REQUESTED
-        )
+        self.run_status_test(bsts, tsts, ssts, asts, stc, tested_status=Status.CANCELLED)
+        self.run_status_test(bsts, tsts, ssts, asts, stc, tested_status=Status.CANCEL_REQUESTED)
 
     def run_status_test(
         self,
@@ -208,9 +204,7 @@ class TestBuildAPI(AbstractAPITest):
             assert len(target_run.output_artifacts) == len(targetspec.output_artifacts)
             self._verify_artifacts(target_run.output_artifacts, build, targetspec)
             # Validate the step within the target
-            assert (
-                len(target_run.steps) == 1
-            )  # Only 1 step allowed in TargetSpec for now
+            assert len(target_run.steps) == 1  # Only 1 step allowed in TargetSpec for now
             stored_step = target_run.steps[0]
             assert isinstance(stored_step, StoredStepRun)
             assert stored_step.build_id == build.uuid
@@ -323,9 +317,7 @@ class TestBuildAPI(AbstractAPITest):
         return resp
 
     def _get_update_build_response(self, response: Response) -> StoredBuild:
-        assert (
-            response.status_code == 200
-        ), f"Failed response content={str(response.content)}"
+        assert response.status_code == 200, f"Failed response content={str(response.content)}"
         resp_json = response.json()
         resp: BuildUpdateResponse = BuildUpdateResponse.model_validate(resp_json)  # type: ignore
         build = resp.build
@@ -382,9 +374,7 @@ class TestBuildAPI(AbstractAPITest):
             token = admin_token
         else:
             if non_admin_token is None:
-                pytest.skip(
-                    reason="No github non-admin token available in the environment"
-                )
+                pytest.skip(reason="No github non-admin token available in the environment")
             token = non_admin_token
 
         client = self.get_test_client(token=token)
@@ -410,16 +400,12 @@ class TestBuildAPI(AbstractAPITest):
                 description=current_description,
                 tags=current_tags,
             )
-            response = client.post(
-                f"{base_url}", data=req.model_dump_json(), headers=headers
-            )
+            response = client.post(f"{base_url}", data=req.model_dump_json(), headers=headers)
             if as_admin or not using_sys_tags:
                 build0 = self._validate_build_submit_response(response, req)
                 break  # don't need to retry when running as admin
             else:
-                assert (
-                    not as_admin and using_sys_tags
-                ), "Should only get here on this condition"
+                assert not as_admin and using_sys_tags, "Should only get here on this condition"
                 assert (
                     response.status_code == status.HTTP_401_UNAUTHORIZED
                 ), "Non-Admin should not be able to submit with system tags"
@@ -464,9 +450,7 @@ class TestBuildAPI(AbstractAPITest):
 
         # Try deleting a system tag as a non-admin
         if as_admin:
-            client = self.get_test_client(
-                token=non_admin_token
-            )  # switch to the non-admin client
+            client = self.get_test_client(token=non_admin_token)  # switch to the non-admin client
             set_tags = []
             tags_req = ListAppendOrSet(set=set_tags)
             req = BuildUpdateRequest(tags=tags_req)
@@ -655,9 +639,7 @@ class TestBuildAPI(AbstractAPITest):
                 space_name=GBTEST_SPACE_NAME,
                 username=username,
             )
-            response = client.post(
-                f"{base_url}/validate", json=req.model_dump(), headers=headers
-            )
+            response = client.post(f"{base_url}/validate", json=req.model_dump(), headers=headers)
 
             if expect_valid:
                 assert (
@@ -668,9 +650,7 @@ class TestBuildAPI(AbstractAPITest):
                     response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
                 ), f"Expected {yaml_file.name} to be invalid, but got {response.status_code}"
                 resp_json = response.json()
-                assert (
-                    "errors" in resp_json
-                ), f"Expected 'errors' in response for {yaml_file.name}"
+                assert "errors" in resp_json, f"Expected 'errors' in response for {yaml_file.name}"
 
     def test_build_validation_valid(self):
         """Test that all build.yaml files in the valid directory pass validation."""

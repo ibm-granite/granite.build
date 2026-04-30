@@ -22,9 +22,7 @@ logger = get_logger(__name__)
 
 
 @pytest.mark.skip(reason="pr-watcher being deprecated")
-class TestGithubManagerSubSelectTargets(
-    AbstractSingletonStorageUsingPreloadedSpaceTest
-):
+class TestGithubManagerSubSelectTargets(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
     def test_build_subselect_targets(self):
         """
@@ -51,17 +49,11 @@ class TestGithubManagerSubSelectTargets(
 
         stored_builds = self.storage.build_storage.get_by_uuid(None)
         assert isinstance(stored_builds, list)
-        assert (
-            len(stored_builds) == 0
-        ), "What?!  There should be no builds to start with!"
+        assert len(stored_builds) == 0, "What?!  There should be no builds to start with!"
 
         # We use PRs https://github.ibm.com/granite-dot-build/gb-test/pull/1238 (STAGING) and
         # https://github.ibm.com/granite-dot-build/gbspace-public-dev/pull/379 (DEV) for this test.
-        pr = (
-            "1238"
-            if GB_ENVIRONMENT == "STAGING"
-            else "381" if GB_ENVIRONMENT == "DEV" else None
-        )
+        pr = "1238" if GB_ENVIRONMENT == "STAGING" else "381" if GB_ENVIRONMENT == "DEV" else None
         assert pr is not None, "Tests are not running with expected environment"
         source_uri = PUBLIC_SPACE_GIT_URI + "/pull/" + pr
         # The test requires the following inputs to be registered ahead of time in order to pass build.yaml validation.
@@ -69,9 +61,7 @@ class TestGithubManagerSubSelectTargets(
             "lh://prod/granite_dot_build.public/models/model_shared/granite-2b-base/20250319T181102",
             "lh://prod/granite_dot_build.public/tables/all_data_large_dedup_regression_test",
         ]
-        pre_register_input_artifacts(
-            self.storage.artifact_registry, PUBLIC_SPACE_NAME, inputs
-        )
+        pre_register_input_artifacts(self.storage.artifact_registry, PUBLIC_SPACE_NAME, inputs)
 
         # Watch for the PR and copy to StoredBuildStorage
         ghm = GitHubManager(token=token)
@@ -88,24 +78,16 @@ class TestGithubManagerSubSelectTargets(
         found_build = False
         try:
             while elapsed_seconds < max_seconds:
-                stored_builds = self.storage.build_storage.get_by_where(
-                    {"source_uri": source_uri}
-                )
+                stored_builds = self.storage.build_storage.get_by_where({"source_uri": source_uri})
                 if len(stored_builds) > 0:
                     assert len(stored_builds) == 1, "Got more than 1 build"
                     stored_build = stored_builds[0]
                     assert isinstance(stored_build, StoredBuild)
                     assert stored_build.status == Status.PENDING
                     assert stored_build.source_uri == source_uri
-                    assert (
-                        stored_build.targets is not None
-                    ), "the list of targets is None"
-                    assert (
-                        len(stored_build.targets) == 1
-                    ), "the number of targets is wrong"
-                    assert (
-                        stored_build.targets[0] == "tunedmodel"
-                    ), "the target name is wrong"
+                    assert stored_build.targets is not None, "the list of targets is None"
+                    assert len(stored_build.targets) == 1, "the number of targets is wrong"
+                    assert stored_build.targets[0] == "tunedmodel", "the target name is wrong"
                     stored_build.source_uri
                     found_build = True
                     break
@@ -116,6 +98,4 @@ class TestGithubManagerSubSelectTargets(
             ghm.stop()
             ghm_thread.join()
 
-        assert (
-            found_build
-        ), f"Did not see the build in build storage after {max_seconds} seconds."
+        assert found_build, f"Did not see the build in build storage after {max_seconds} seconds."

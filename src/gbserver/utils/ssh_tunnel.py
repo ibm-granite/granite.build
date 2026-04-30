@@ -114,9 +114,7 @@ class SshTunnel:
         try:
             self._conn = await asyncssh.connect(self.host, **connect_kwargs)
         except (asyncssh.Error, OSError) as e:
-            raise SshTunnelError(
-                f"[SshTunnel] Failed to connect to {self.host}: {e}"
-            ) from e
+            raise SshTunnelError(f"[SshTunnel] Failed to connect to {self.host}: {e}") from e
 
         for local_port, remote_host, remote_port in self.port_forwards:
             logger.info(
@@ -286,11 +284,7 @@ class SshTunnel:
     def get_local_port(self, remote_host: str, remote_port: int) -> Optional[int]:
         """Return the actual local port forwarding to remote_host:remote_port, or None."""
         for i, (_, rh, rp) in enumerate(self.port_forwards):
-            if (
-                rh == remote_host
-                and rp == remote_port
-                and i < len(self._actual_local_ports)
-            ):
+            if rh == remote_host and rp == remote_port and i < len(self._actual_local_ports):
                 return self._actual_local_ports[i]
         return None
 

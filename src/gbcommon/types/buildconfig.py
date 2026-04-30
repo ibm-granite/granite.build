@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Buildconfig module."""
+
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Self, Type
@@ -150,9 +152,7 @@ class BuildConfig(Config):
                         errors.add(f"{err_prefix} the target input URI is empty")
                     continue
                 if target_input.binding is not None:
-                    logger.info(
-                        "checking if input binding is valid: %s", target_input.binding
-                    )
+                    logger.info("checking if input binding is valid: %s", target_input.binding)
                     binding_target_name, binding_target_output_name = (
                         target_input.get_binding_parts()
                     )

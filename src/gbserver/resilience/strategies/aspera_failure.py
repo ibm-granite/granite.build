@@ -93,9 +93,7 @@ class AsperaRetryStrategy(RetryStrategy):
                     return True
 
         except AttributeError as e:
-            logger.debug(
-                "[AsperaRetryStrategy] Event missing expected attributes: %s", e
-            )
+            logger.debug("[AsperaRetryStrategy] Event missing expected attributes: %s", e)
         except Exception as e:
             logger.debug("[AsperaRetryStrategy] Could not parse event: %s", e)
 

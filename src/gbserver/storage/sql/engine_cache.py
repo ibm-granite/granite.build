@@ -31,9 +31,7 @@ class EngineCache(object):
             if engine is None:
                 if GBSERVER_SQL_ECHO:
                     logger.info("Enable SQL engine echo mode")
-                engine = create_engine(
-                    db_uri, **kwargs, echo=GBSERVER_SQL_ECHO, echo_pool=True
-                )
+                engine = create_engine(db_uri, **kwargs, echo=GBSERVER_SQL_ECHO, echo_pool=True)
                 self.engines[key] = engine
             return engine
 

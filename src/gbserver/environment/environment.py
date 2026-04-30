@@ -106,9 +106,7 @@ class EventFieldRegexLogParserConfig(Config):
 class EventLogLineParserConfig(Config):
     """Details on constructing the event payload from the log line."""
 
-    event_type: str = Field(
-        ..., description="Event type generated after parsing log line"
-    )
+    event_type: str = Field(..., description="Event type generated after parsing log line")
     line_regex: str = Field(
         ..., description="Primary regex pattern for extracting text of interest"
     )
@@ -310,9 +308,7 @@ class Environment(ABC):
             self.__class__.__name__,
             launch_id,
         )
-        raise NotImplementedError(
-            f"retry_workload not implemented for {self.__class__.__name__}"
-        )
+        raise NotImplementedError(f"retry_workload not implemented for {self.__class__.__name__}")
 
     def _is_retry_enabled_at_environment_level(self: Self) -> bool:
         """Return True when the environment config has not explicitly disabled retry.
@@ -584,18 +580,14 @@ class Environment(ABC):
         assert isinstance(th_env_dir, Path)
         environmentasset_dir = th_env_dir / environment_asset.urihash()
         environment_asset.sync(dest=environmentasset_dir, force=force_fetch)
-        files = glob.glob(
-            str(environmentasset_dir / "**" / ENVIRONMENT_FILENAME), recursive=True
-        )
+        files = glob.glob(str(environmentasset_dir / "**" / ENVIRONMENT_FILENAME), recursive=True)
         if len(files) == 0:
             raise UnknownEnvironmentType(
                 f"{ENVIRONMENT_FILENAME} not found in {environmentasset_dir}"
             )
         env_yaml_path = Path(files[0])
         if len(files) > 1:
-            logger.warning(
-                "more than one %s found, using %s", ENVIRONMENT_FILENAME, env_yaml_path
-            )
+            logger.warning("more than one %s found, using %s", ENVIRONMENT_FILENAME, env_yaml_path)
         environment_config = EnvironmentConfig.from_yaml(env_yaml_path, context=context)
         if (
             environment_config.type is None
@@ -637,9 +629,7 @@ class Environment(ABC):
         async def launch_helper():
             # Let the monitor know it can proceed.
             launch_done_event = self.__get_launch_done_event(launch_id)
-            if not self.__any_events_set_from_dict(
-                setup_ids, self.__teardown_started_events
-            ):
+            if not self.__any_events_set_from_dict(setup_ids, self.__teardown_started_events):
                 try:
                     await self.launch_types[launcher_type](self, launch_id, **kwargs)
                 except Exception as e:
@@ -711,13 +701,9 @@ class Environment(ABC):
             await launch_event.wait()
             logger.debug("Sync got launch done")
             cleanup_event = self.__get_cleanup_done_event(launch_id)
-            if not self.__any_events_set_from_dict(
-                setup_ids, self.__teardown_started_events
-            ):
+            if not self.__any_events_set_from_dict(setup_ids, self.__teardown_started_events):
                 try:
-                    await self.cleanup_types[launch_type](
-                        self, launch_id=launch_id, **kwargs
-                    )
+                    await self.cleanup_types[launch_type](self, launch_id=launch_id, **kwargs)
                 except Exception as e:
                     raise e
                 finally:
@@ -733,9 +719,7 @@ class Environment(ABC):
         NOTE: this seems deprecated as it is never called from anywhere.
         Make sure the monitoring task is cleaned up.
         """
-        logger.info(
-            "Setting the stop_event to cleanup monitoring for launch_id %s", launch_id
-        )
+        logger.info("Setting the stop_event to cleanup monitoring for launch_id %s", launch_id)
         stop_event = self._get_launch_stopped_event(launch_id=launch_id)
         stop_event.set()
 
@@ -762,9 +746,7 @@ class Environment(ABC):
             await self.__wait_any_events([launch_ready_event, launch_failed_event])
             logger.debug("Sync got on launch ready or failed event")
             if launch_failed_event.is_set():
-                logger.warning(
-                    "Launch failed, aborting monitor for launch_id %s", launch_id
-                )
+                logger.warning("Launch failed, aborting monitor for launch_id %s", launch_id)
                 return  # No need to monitor it.
             await self.monitor_types[type](
                 self,
@@ -786,9 +768,7 @@ class Environment(ABC):
             teardown_event = self.__get_teardown_started_event(setup_id)
             try:
                 if not teardown_event.is_set():
-                    config = await self.setup_types[type](
-                        self, setup_id=setup_id, **kwargs
-                    )
+                    config = await self.setup_types[type](self, setup_id=setup_id, **kwargs)
                 else:
                     config = {}
                 return config
@@ -818,9 +798,7 @@ class Environment(ABC):
                 return True
         return False
 
-    def __any_events_set_from_dict(
-        self, ids: list[str], event_dict: dict[str, Event]
-    ) -> bool:
+    def __any_events_set_from_dict(self, ids: list[str], event_dict: dict[str, Event]) -> bool:
         event_list = [event_dict[id] for id in ids if id in event_dict]
         return self.__any_events_set_from_list(event_list)
 
@@ -849,9 +827,7 @@ class Environment(ABC):
             logger.debug("Sync waiting on cleanup done")
             await self.__wait_all_events(self.__cleanup_done_events)
             logger.debug("Sync got cleanup done")
-            await asyncio.create_task(
-                self.teardown_types[type](self, setup_id=setup_id, **kwargs)
-            )
+            await asyncio.create_task(self.teardown_types[type](self, setup_id=setup_id, **kwargs))
             # self.__teardown_gc(setup_id)
 
         return asyncio.create_task(teardown_helper())
@@ -883,16 +859,12 @@ class Environment(ABC):
     ) -> Task[Tuple[Dict, Optional[BuildTargetStepConfig]]]:
         """Pull an asset and make it available in the environment for the workload."""
 
-        async def pullasset_as_binding() -> (
-            Tuple[Dict, Optional[BuildTargetStepConfig]]
-        ):
+        async def pullasset_as_binding() -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
             uristr = URI.get_uristr(uri)
             if uristr in self.asset_bindings:
                 return self.asset_bindings[uristr], None
             await Environment._thread_local.asset_events[uristr].wait()
-            assetstore, assetstoreenv_config = self._get_storeconfig(
-                uri, raise_exceptions=True
-            )
+            assetstore, assetstoreenv_config = self._get_storeconfig(uri, raise_exceptions=True)
             assert assetstore is not None
             assert assetstoreenv_config is not None
             assetstore_type = assetstore.type.lower()
@@ -900,8 +872,7 @@ class Environment(ABC):
                 storeload_config = (
                     assetstoreenv_config.load[0]
                     if (
-                        assetstoreenv_config.load is not None
-                        and len(assetstoreenv_config.load) > 0
+                        assetstoreenv_config.load is not None and len(assetstoreenv_config.load) > 0
                     )
                     else None
                 )
@@ -911,9 +882,7 @@ class Environment(ABC):
                         f"the assetstore type '{assetstore_type}' is not supported"
                         + f", supported ones are '{la_types}'"
                     )
-                local_binding, targetrun_config = await self.pullasset_types[
-                    assetstore_type
-                ](
+                local_binding, targetrun_config = await self.pullasset_types[assetstore_type](
                     self,
                     uri=uri,
                     binding=binding,
@@ -948,9 +917,7 @@ class Environment(ABC):
         if space_variables is not None:
             config = config | space_variables
         uri = URI.get_uri(fill_template(uristr, config, strict=True))
-        assetstore, assetstoreenv_config = self._get_storeconfig(
-            uri=uri, raise_exceptions=True
-        )
+        assetstore, assetstoreenv_config = self._get_storeconfig(uri=uri, raise_exceptions=True)
         assert assetstore is not None
         assert assetstoreenv_config is not None
         assetstore_type = assetstore.type.lower()
@@ -966,10 +933,7 @@ class Environment(ABC):
         async def pushasset_as_uri() -> URI:
             storepush_config = (
                 assetstoreenv_config.push[0]
-                if (
-                    assetstoreenv_config.push is not None
-                    and len(assetstoreenv_config.push) > 0
-                )
+                if (assetstoreenv_config.push is not None and len(assetstoreenv_config.push) > 0)
                 else None
             )
             result = await self.pushasset_types[assetstore_type](
@@ -998,9 +962,7 @@ class Environment(ABC):
                 pushed_event = BuildEvent(
                     run_metadata=run_metadata,
                     type=BuildEventType.ARTIFACT_PUSHED_EVENT,
-                    payload=ArtifactPushedEventPayload(
-                        uri=uristr, binding_id=binding_id
-                    ),
+                    payload=ArtifactPushedEventPayload(uri=uristr, binding_id=binding_id),
                 )
                 await self.event_q.put(pushed_event)
             return uri
@@ -1051,12 +1013,8 @@ class Environment(ABC):
                     )
                     if hasattr(module, environment_type_name):
                         handler_class = getattr(module, environment_type_name)
-                        if isinstance(handler_class, type) and issubclass(
-                            handler_class, cls
-                        ):
-                            cls.environment_types[environment_type_name.lower()] = (
-                                handler_class
-                            )
+                        if isinstance(handler_class, type) and issubclass(handler_class, cls):
+                            cls.environment_types[environment_type_name.lower()] = handler_class
                             cls.environment_types[environment_type_name] = handler_class
                         else:
                             logger.warning(
@@ -1159,9 +1117,7 @@ class Environment(ABC):
         build_events: Union[List[BuildEvent], List[Dict]] = []
         for event_config in event_configs:
             try:
-                assert (
-                    event_config._line_pattern is not None
-                ), "event_config._line_pattern is None"
+                assert event_config._line_pattern is not None, "event_config._line_pattern is None"
                 match = event_config._line_pattern.search(log_line)
                 if match is None:
                     continue
@@ -1238,21 +1194,15 @@ class Environment(ABC):
                         seed = f"{event_type}|{canonical_data}|{line_num}"
                         return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
-                    event_id = _make_event_id(
-                        event_config.event_type, event_data, line_num
-                    )
+                    event_id = _make_event_id(event_config.event_type, event_data, line_num)
                     build_event = {
                         "type": event_config.event_type,
                         "event_id": event_id,
                         "data": event_data,
                     }
                     build_events.append(build_event)
-                    logger.info(
-                        "Publishing build event : %s", json.dumps(build_event, indent=2)
-                    )
-                    await messenger.publish(
-                        payload=build_event, suffix=event_config.event_type
-                    )
+                    logger.info("Publishing build event : %s", json.dumps(build_event, indent=2))
+                    await messenger.publish(payload=build_event, suffix=event_config.event_type)
                 else:
                     logger.info("JSON Log Event : %s", event_data)
                     build_event_type = BuildEventType(event_config.event_type.lower())

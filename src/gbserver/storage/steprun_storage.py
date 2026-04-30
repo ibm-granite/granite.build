@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Steprun storage module."""
+
 from datetime import datetime
 from typing import Self
 
@@ -23,16 +25,17 @@ from gbserver.types.constants import GB_STEP_RUNS_TABLE_NAME
 
 
 class IStoredStepRunStorage(IItemStorage[StoredStepRun]):
+    """I Stored Step Run Storage implementation."""
+
     pass
 
 
 class BaseStoredStepRunStorage(BaseItemStorage[StoredStepRun], IStoredStepRunStorage):
+    """Base Stored Step Run Storage implementation."""
 
     def __init__(self: Self, **kwargs):
         kwargs["item_class"] = StoredStepRun
-        if (
-            kwargs.get("table_name") is None
-        ):  # Allow for testing using alternate table names.
+        if kwargs.get("table_name") is None:  # Allow for testing using alternate table names.
             kwargs["table_name"] = GB_STEP_RUNS_TABLE_NAME
         super().__init__(**kwargs)
 

@@ -170,9 +170,7 @@ class TestPodEvictionRetryStrategy:
 
     def test_should_retry_with_multiple_object_types(self: Self) -> None:
         """Test that strategy works when configured for multiple object types."""
-        strategy = PodEvictionRetryStrategy(
-            object_types=["AppWrapper", "Job", "Deployment"]
-        )
+        strategy = PodEvictionRetryStrategy(object_types=["AppWrapper", "Job", "Deployment"])
 
         # Test with Job
         event_job = create_eviction_event(

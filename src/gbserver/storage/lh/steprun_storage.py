@@ -27,9 +27,7 @@ class LhStepRunStorage(BaseLakehouseItemStorage, IStoredStepRunStorage):
 
     def __init__(self: Self, **kwargs):
         kwargs["item_class"] = StoredStepRun
-        if (
-            kwargs.get("table_name") is None
-        ):  # Allow for testing using alternate table names.
+        if kwargs.get("table_name") is None:  # Allow for testing using alternate table names.
             kwargs["table_name"] = GB_STEP_RUNS_TABLE_NAME
         kwargs["unique_fields"] = ["uuid"]
         super().__init__(**kwargs)

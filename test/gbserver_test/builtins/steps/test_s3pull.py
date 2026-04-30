@@ -33,14 +33,10 @@ class TestS3PullStep:
         assert "Bash" in env_configs
 
     def test_bash_command_script_exists(self):
-        script = Path(
-            "src/gbserver/builtins/steps/s3pull/bash_scripts/s3pull/command.sh"
-        )
+        script = Path("src/gbserver/builtins/steps/s3pull/bash_scripts/s3pull/command.sh")
         assert script.exists(), f"{script} does not exist"
 
     def test_bash_command_script_uses_aws_s3(self):
-        script = Path(
-            "src/gbserver/builtins/steps/s3pull/bash_scripts/s3pull/command.sh"
-        )
+        script = Path("src/gbserver/builtins/steps/s3pull/bash_scripts/s3pull/command.sh")
         content = script.read_text()
         assert "aws s3" in content or "rclone" in content

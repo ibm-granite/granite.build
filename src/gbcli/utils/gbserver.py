@@ -1,3 +1,5 @@
+"""Gbserver module."""
+
 import logging
 from typing import Any, List, Optional
 
@@ -37,17 +39,13 @@ def gb_server_request(
 
     match http_method:
         case "get":
-            response = requests.get(
-                url, headers=headers, json=body, params=params, timeout=timeout
-            )
+            response = requests.get(url, headers=headers, json=body, params=params, timeout=timeout)
         case "post":
             response = requests.post(
                 url, headers=headers, json=body, params=params, timeout=timeout
             )
         case "put":
-            response = requests.put(
-                url, headers=headers, json=body, params=params, timeout=timeout
-            )
+            response = requests.put(url, headers=headers, json=body, params=params, timeout=timeout)
         case "delete":
             response = requests.delete(
                 url, headers=headers, json=body, params=params, timeout=timeout
@@ -57,9 +55,7 @@ def gb_server_request(
                 url, headers=headers, json=body, params=params, timeout=timeout
             )
         case _:
-            response = requests.get(
-                url, headers=headers, json=body, params=params, timeout=timeout
-            )
+            response = requests.get(url, headers=headers, json=body, params=params, timeout=timeout)
 
     if 400 <= response.status_code < 600:
         detail = (
@@ -75,6 +71,7 @@ def gb_server_request(
 
 
 def get_server_version(user_token: str, gbserver_instance: str) -> Any:
+    """Get the server version."""
     gbserver_root_api = f"{gbserver_instance}/api/v1"
 
     return gb_server_request(
@@ -88,6 +85,7 @@ def get_server_version(user_token: str, gbserver_instance: str) -> Any:
 
 
 def get_build_status(user_token: str, build_id: str, gbserver_api: str) -> Any:
+    """Get the build status."""
     build_url = f"{gbserver_api}{build_id}/status"
 
     return gb_server_request(
@@ -118,6 +116,7 @@ def get_artifact_body(
     origin_uris: Optional[list[str]] = None,
     certified_no_restrictions: bool = False,
 ):
+    """Get the artifact body."""
     if type == "table":
         body = {
             "space_name": space_name,
@@ -188,9 +187,8 @@ def get_artifact_body(
     return body
 
 
-def get_build_status_with_targets_runs(
-    user_token: str, build_id: str, gbserver_api: str
-) -> Any:
+def get_build_status_with_targets_runs(user_token: str, build_id: str, gbserver_api: str) -> Any:
+    """Get the build status with targets runs."""
     build_url = f"{gbserver_api}{build_id}/status2"
 
     return gb_server_request(
@@ -223,6 +221,7 @@ def register_artifact(
     origin_uris: Optional[list[str]] = None,
     certified_no_restrictions: bool = False,
 ):
+    """Register artifact."""
     if server_api and user_token:
         push_url = f"{server_api}lh/{type}"
 
@@ -260,9 +259,7 @@ def register_artifact(
                 raise ValueError(f"{e.detail}")
             else:
                 if "UniqueViolation" in e.detail:
-                    raise ValueError(
-                        f"Artifact may already exist; registration was not completed."
-                    )
+                    raise ValueError(f"Artifact may already exist; registration was not completed.")
                 raise ValueError(
                     f"gbserver returned '{e.status_code} {e.detail}' for url: {push_url}."
                 )
@@ -271,9 +268,7 @@ def register_artifact(
             obj = response.get("registered")
             return {"uuid": obj.get("uuid"), "uri": obj.get("uri")}
         else:
-            raise Exception(
-                f"There was a problem registering the artifact type: {type}."
-            )
+            raise Exception(f"There was a problem registering the artifact type: {type}.")
 
 
 def get_builds(
@@ -288,6 +283,7 @@ def get_builds(
     page_index: Optional[int] = None,
     page_size: Optional[int] = None,
 ) -> Any:
+    """Get the builds."""
     params = {}
     if username:
         params["username"] = username
@@ -315,6 +311,7 @@ def get_builds(
 
 
 def get_build(build_id: str, token: str, gbserver_api: str) -> Any:
+    """Get the build."""
     build_details_url = f"{gbserver_api}{build_id}"
 
     return gb_server_request(
@@ -327,6 +324,7 @@ def get_build(build_id: str, token: str, gbserver_api: str) -> Any:
 
 
 def get_build_lineage(build_id: str, token: str, gbserver_api: str) -> Any:
+    """Get the build lineage."""
     build_lineage_url = f"{gbserver_api}build/{build_id}"
 
     return gb_server_request(
@@ -339,6 +337,7 @@ def get_build_lineage(build_id: str, token: str, gbserver_api: str) -> Any:
 
 
 def get_build_events(build_id: str, token: str, gbserver_api: str) -> Any:
+    """Get the build events."""
     build_events_url = f"{gbserver_api}{build_id}/events"
 
     return gb_server_request(
@@ -351,6 +350,7 @@ def get_build_events(build_id: str, token: str, gbserver_api: str) -> Any:
 
 
 def cancel_build(build_id: str, token: str, gbserver_api: str) -> Any:
+    """Cancel build."""
     delete_build_url = f"{gbserver_api}{build_id}"
 
     return gb_server_request(
@@ -371,6 +371,7 @@ def get_artifacts(
     checksum: str = None,
     tag: list[str] = None,
 ):
+    """Get the artifacts."""
     params = {
         "username": username,
         "build_id": build_id,
@@ -405,6 +406,7 @@ def get_remote_spaces(token: str, callback=None):
 
 
 def get_space_members(token: str, space_name: str) -> Any:
+    """Get the space members."""
     url = f"{GBSERVER_SPACES_API}{space_name}/members"
     return gb_server_request(
         user_token=token,
@@ -416,6 +418,7 @@ def get_space_members(token: str, space_name: str) -> Any:
 
 
 def add_space_member(token: str, space_name: str, username: str, role: str) -> Any:
+    """Add space member."""
     url = f"{GBSERVER_SPACES_API}{space_name}/members"
     return gb_server_request(
         user_token=token,
@@ -427,6 +430,7 @@ def add_space_member(token: str, space_name: str, username: str, role: str) -> A
 
 
 def update_space_member(token: str, space_name: str, username: str, role: str) -> Any:
+    """Update space member."""
     url = f"{GBSERVER_SPACES_API}{space_name}/members/{username}"
     return gb_server_request(
         user_token=token,
@@ -438,6 +442,7 @@ def update_space_member(token: str, space_name: str, username: str, role: str) -
 
 
 def delete_space_member(token: str, space_name: str, username: str) -> Any:
+    """Remove space member."""
     url = f"{GBSERVER_SPACES_API}{space_name}/members/{username}"
     return gb_server_request(
         user_token=token,
@@ -455,6 +460,7 @@ def get_secrets(
     space_name: str,
     secret_name: Optional[str] = None,
 ) -> Any:
+    """Get the secrets."""
     secret_scope = "user_secrets" if personal else f"space_secrets/{space_name}"
     if secret_name:
         secrets_url = f"{server_build_url}{secret_scope}/{secret_name}"
@@ -478,6 +484,7 @@ def create_space_secret(
     secret_name: str,
     secret_value: str,
 ) -> Any:
+    """Create space secret."""
     secret_scope = "user_secrets" if personal else f"space_secrets/{space_name}"
     secrets_url = f"{server_build_url}{secret_scope}"
 
@@ -504,6 +511,7 @@ def update_space_secret(
     secret_name: str,
     secret_value: str,
 ) -> Any:
+    """Update space secret."""
     secret_scope = "user_secrets" if personal else f"space_secrets/{space_name}"
     secrets_url = f"{server_build_url}{secret_scope}/{secret_name}"
 
@@ -528,6 +536,7 @@ def delete_space_secret(
     space_name: str,
     secret_name: Optional[str] = None,
 ) -> Any:
+    """Remove space secret."""
     secret_scope = "user_secrets" if personal else f"space_secrets/{space_name}"
     secrets_url = f"{server_build_url}{secret_scope}/{secret_name}"
 
@@ -541,6 +550,7 @@ def delete_space_secret(
 
 
 def gbserver_put(token: str, url: str, payload: Any):
+    """Gbserver put."""
     headers = {
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
@@ -557,6 +567,7 @@ def gbserver_put(token: str, url: str, payload: Any):
 
 
 def gbserver_post(token: str, url: str, payload: Any):
+    """Gbserver post."""
     headers = {
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
@@ -573,6 +584,7 @@ def gbserver_post(token: str, url: str, payload: Any):
 
 
 def gbserver_get(token: str, url: str):
+    """Gbserver get."""
     headers = {
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
@@ -590,6 +602,7 @@ def gbserver_get(token: str, url: str):
 
 
 def archive_artifact(token: str, artifact_uuid: str, server_api: str):
+    """Archive artifact."""
     url = f"{server_api}{artifact_uuid}/archive"
 
     return gb_server_request(
@@ -602,7 +615,7 @@ def archive_artifact(token: str, artifact_uuid: str, server_api: str):
 
 
 def unarchive_artifact(token: str, artifact_uuid: str, server_api: str):
-
+    """Unarchive artifact."""
     url = f"{server_api}{artifact_uuid}/unarchive"
 
     return gb_server_request(
@@ -666,7 +679,7 @@ def submit_build(
     tags: Optional[list[str]] = [],
     description: Optional[str] = None,
 ) -> Any:
-
+    """Submit build."""
     body = {
         "name": build_name,
         "build_archive": build_archive,
@@ -687,6 +700,7 @@ def submit_build(
 
 
 def make_gbserver_call(gbserver_call, callback=None, final_command=None):
+    """Create gbserver call."""
     try:
         result = gbserver_call()
     except HTTPException as e:
@@ -724,6 +738,7 @@ def update_artifact_gserver(
     status: str = None,
     append: bool = False,
 ):
+    """Update artifact gserver."""
     if server_api and user_token:
         put_url = f"{server_api}{artifact_id}/update"
         try:
@@ -764,6 +779,7 @@ def update_build_gserver(
     tags: Optional[list[str]] = None,
     append: bool = False,
 ):
+    """Update build gserver."""
     if server_api and user_token:
         put_url = f"{server_api}{build_id}/update"
         try:
@@ -802,6 +818,7 @@ def get_builds_count(
     tag: Optional[list[str]] = None,
     status: Optional[list[str]] = None,
 ) -> Any:
+    """Get the builds count."""
     count_url = f"{server_build_url}count"
     params = {}
     if username:

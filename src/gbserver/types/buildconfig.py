@@ -120,9 +120,7 @@ class BuildTargetOutputConfig(Config):
     """
 
     uri: Optional[str] = None
-    event_selectors: List[BuildTargetOutputEventSelectorsConfig] = Field(
-        default_factory=list
-    )
+    event_selectors: List[BuildTargetOutputEventSelectorsConfig] = Field(default_factory=list)
     store_push: Optional[BuildTargetOutputPushConfig] = None
     # Populated at runtime from Build.space — not a build.yaml field.
     space_name: Optional[str] = None
@@ -145,10 +143,9 @@ class BuildTargetStepConfig(Config):
     @field_validator("step_uri", mode="before")
     def apply_default_for_empty_value(cls, v):
         # If value is missing, empty string, or just whitespace -> use base step
+        """Apply default for empty value."""
         if v is None or (isinstance(v, str) and v.strip() == ""):
-            default_path = (
-                Path(os.path.abspath(__file__)).parent.parent / "builtins/steps/gbstep"
-            )
+            default_path = Path(os.path.abspath(__file__)).parent.parent / "builtins/steps/gbstep"
             default_step_uri = f"file://{default_path}"
             logger.info(
                 f"[FIELD VALIDATOR - BuildTargetStepConfig] EMPTY STEP URI PROVIDED. DEFAULTING TO: {default_step_uri} ======="
@@ -160,10 +157,9 @@ class BuildTargetStepConfig(Config):
     # Runs ALWAYS — even when step_uri field is missing entirely from build.yaml
     @model_validator(mode="after")
     def fill_missing_step_uri(self):
+        """Fill missing step uri."""
         if not self.step_uri:
-            default_path = (
-                Path(os.path.abspath(__file__)).parent.parent / "builtins/steps/gbstep"
-            )
+            default_path = Path(os.path.abspath(__file__)).parent.parent / "builtins/steps/gbstep"
             self.step_uri = f"file://{default_path}"
             logger.info(
                 f"[MODEL VALIDATOR - BuildTargetStepConfig] STEP URI OMITTED IN BUILD.YAML, DEFAULTING TO {self.step_uri}"
@@ -319,9 +315,7 @@ class BuildConfig(Config):
                         errors.add(f"{err_prefix} the target input URI is empty")
                     continue
                 if target_input.binding is not None:
-                    logger.info(
-                        "checking if input binding is valid: %s", target_input.binding
-                    )
+                    logger.info("checking if input binding is valid: %s", target_input.binding)
                     binding_target_name, binding_target_output_name = (
                         target_input.get_binding_parts()
                     )

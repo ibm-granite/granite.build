@@ -1,3 +1,5 @@
+"""Command cleanup module."""
+
 import sys
 import webbrowser
 from typing import Dict
@@ -67,13 +69,7 @@ def cli(
     try:
         cleanup_client = GBClient.Cleanup(get_user_token())
 
-        if (
-            not all
-            and not config
-            and not credentials
-            and not local_cache
-            and not space_repo_fork
-        ):
+        if not all and not config and not credentials and not local_cache and not space_repo_fork:
             click.echo("❌ Please select an option.", err=True)
             click.echo(ctx.get_help(), err=True)
             return
@@ -82,9 +78,7 @@ def cli(
             click.echo(f"{CLIPBOARD_CHAR}Cleanup config")
             config_output = cleanup_client.remove_config()
             if "Error" not in config_output:
-                click.echo(
-                    f"✅ Config at '{config_output}' has been successfully removed"
-                )
+                click.echo(f"✅ Config at '{config_output}' has been successfully removed")
             else:
                 click.echo(config_output)
 
@@ -119,16 +113,10 @@ def cli(
                     click.echo(outdated_version, err=True)
                     ctx.exit(1)  # Exit with a non-zero status
 
-            click.echo(
-                f"{CLIPBOARD_CHAR}Find user's forked repository from default space"
-            )
-            remove_fork_output = cleanup_client.remove_default_fork(
-                callback=echo_callback
-            )
+            click.echo(f"{CLIPBOARD_CHAR}Find user's forked repository from default space")
+            remove_fork_output = cleanup_client.remove_default_fork(callback=echo_callback)
             if "Error" not in remove_fork_output:
-                settings_url = (
-                    f"https://github.ibm.com/{remove_fork_output}/settings#danger-zone"
-                )
+                settings_url = f"https://github.ibm.com/{remove_fork_output}/settings#danger-zone"
                 click.echo(
                     f"Navigate to {settings_url}, scroll to the bottom 'Danger Zone' section, and select 'Delete this repository'"
                 )

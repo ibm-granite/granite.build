@@ -73,9 +73,7 @@ class IbmcloudSpaceSecretManager(SpaceSecretManager):
             if service_url is None or service_url == ""
             else service_url
         )
-        assert (
-            self.service_url != ""
-        ), "IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL env required"
+        assert self.service_url != "", "IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL env required"
         self.secrets_manager_service = SecretsManagerV2(
             authenticator=IAMAuthenticator(apikey=apikey)
         )
@@ -209,9 +207,7 @@ class IbmcloudSpaceSecretManager(SpaceSecretManager):
         secret = response.get_result()
         payload = secret.get("payload")
         if payload is None:
-            logger.error(
-                "Unable to access payload for secret %s . Ignoring.", secret_name
-            )
+            logger.error("Unable to access payload for secret %s . Ignoring.", secret_name)
             return None
         labels = secret.get("labels")
         if labels is not None and "encode:base64" in labels:
@@ -220,9 +216,7 @@ class IbmcloudSpaceSecretManager(SpaceSecretManager):
             value = payload
         return value
 
-    def get_secrets(
-        self: Self, username: Optional[str] = None
-    ) -> Optional[Dict[str, str]]:
+    def get_secrets(self: Self, username: Optional[str] = None) -> Optional[Dict[str, str]]:
         secrets = self.get_space_secrets() or {}
         if username is not None:
             # Apply per-user secrets. User secrets have priority over space secrets
@@ -289,14 +283,10 @@ class IbmcloudSpaceSecretManager(SpaceSecretManager):
                 return space_secrets
 
             public_group = [
-                g
-                for g, gvalue in self.secret_groups.items()
-                if gvalue == PUBLIC_SECRET_GROUP
+                g for g, gvalue in self.secret_groups.items() if gvalue == PUBLIC_SECRET_GROUP
             ]
             other_groups = [
-                g
-                for g, gvalue in self.secret_groups.items()
-                if gvalue != PUBLIC_SECRET_GROUP
+                g for g, gvalue in self.secret_groups.items() if gvalue != PUBLIC_SECRET_GROUP
             ]
             # Evaluate PUBLIC_SECRET_GROUP first so that it's least prioritized (the secrets loaded later will override the early ones)
             if len(public_group) > 0:
@@ -346,9 +336,7 @@ class IbmcloudSpaceSecretManagerAdmin:
             if service_url is None or service_url == ""
             else service_url
         )
-        assert (
-            self.service_url != ""
-        ), "IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL env required"
+        assert self.service_url != "", "IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL env required"
         self.secrets_manager_service = SecretsManagerV2(
             authenticator=IAMAuthenticator(apikey=apikey)
         )
@@ -362,15 +350,11 @@ class IbmcloudSpaceSecretManagerAdmin:
             self.secret_groups_cache = response.get_result()["secret_groups"]
         return self.secret_groups_cache
 
-    def get_secret_group_by_name(
-        self: Self, secret_group_name: str, refresh: bool = False
-    ):
+    def get_secret_group_by_name(self: Self, secret_group_name: str, refresh: bool = False):
         """Find a secret group entry by secret name. It throws an exception if the name isn't unique"""
         secret_groups = self.get_all_secret_groups()
         if secret_groups is not None:
-            my_secret_groups = list(
-                filter(lambda g: g["name"] == secret_group_name, secret_groups)
-            )
+            my_secret_groups = list(filter(lambda g: g["name"] == secret_group_name, secret_groups))
             if len(my_secret_groups) > 1:
                 raise ValueError(f"len(my_secret_groups) > 1: {len(my_secret_groups)}")
             if len(my_secret_groups) == 1:
@@ -378,9 +362,7 @@ class IbmcloudSpaceSecretManagerAdmin:
             return None
         return None
 
-    def create_secret_group(
-        self: Self, secret_group_name: str, description: Optional[str] = None
-    ):
+    def create_secret_group(self: Self, secret_group_name: str, description: Optional[str] = None):
         """Create a secret group."""
         if self.get_secret_group_by_name(secret_group_name=secret_group_name):
             raise ValueError(f"the secret group already exists: {secret_group_name}")
@@ -393,13 +375,9 @@ class IbmcloudSpaceSecretManagerAdmin:
         self: Self, secret_group_name: str, description: Optional[str] = None
     ):
         """Update a secret group description. Because we refer to the group by name, only description can be updated"""
-        secret_group = self.get_secret_group_by_name(
-            secret_group_name=secret_group_name
-        )
+        secret_group = self.get_secret_group_by_name(secret_group_name=secret_group_name)
         if not secret_group:
-            raise ValueError(
-                f"there is no secret group with the name: {secret_group_name}"
-            )
+            raise ValueError(f"there is no secret group with the name: {secret_group_name}")
         secret_group_id = secret_group["id"]
         if description != secret_group["description"]:
             update_patch = {"description": description}
@@ -410,13 +388,9 @@ class IbmcloudSpaceSecretManagerAdmin:
 
     def delete_secret_group(self: Self, secret_group_name: str):
         """Delete a secret group. It cannot be deleted if there'a any secret under the group."""
-        secret_group = self.get_secret_group_by_name(
-            secret_group_name=secret_group_name
-        )
+        secret_group = self.get_secret_group_by_name(secret_group_name=secret_group_name)
         if not secret_group:
-            raise ValueError(
-                f"there is no secret group with the name: {secret_group_name}"
-            )
+            raise ValueError(f"there is no secret group with the name: {secret_group_name}")
         self.secrets_manager_service.delete_secret_group(id=secret_group["id"])
         self.get_all_secret_groups(refresh=True)
 
@@ -440,9 +414,9 @@ class IbmcloudSpaceSecretManagerAdmin:
     def list_secrets(self: Self, secret_group_name: str):
         """List secrets under a security group"""
         secret_group = self.get_secret_group_by_name(secret_group_name)
-        return self.secrets_manager_service.list_secrets(
-            groups=[secret_group["id"]]
-        ).get_result()["secrets"]
+        return self.secrets_manager_service.list_secrets(groups=[secret_group["id"]]).get_result()[
+            "secrets"
+        ]
 
     def list_secret_names(self: Self, secret_group_name: str):
         """List the name of secrets under a security group"""
@@ -471,9 +445,7 @@ class IbmcloudSpaceSecretManagerAdmin:
             )["payload"]
             if secret_value:
                 if encode:
-                    return base64.b64encode(secret_value.encode("utf-8")).decode(
-                        "utf-8"
-                    )
+                    return base64.b64encode(secret_value.encode("utf-8")).decode("utf-8")
                 return secret_value
             return None
         except Exception:
@@ -483,13 +455,9 @@ class IbmcloudSpaceSecretManagerAdmin:
         self: Self, secret_group_name: str, secret_name: str, secret_value: str
     ):
         """Get a value of the a secret value under a security group"""
-        secret = self.get_secret(
-            secret_group_name=secret_group_name, secret_name=secret_name
-        )
+        secret = self.get_secret(secret_group_name=secret_group_name, secret_name=secret_name)
         if not secret:
-            raise ValueError(
-                f"failed to get the secret {secret_name} in group {secret_group_name}"
-            )
+            raise ValueError(f"failed to get the secret {secret_name} in group {secret_group_name}")
         secret_prototype = {
             "payload": secret_value,
         }
@@ -499,13 +467,9 @@ class IbmcloudSpaceSecretManagerAdmin:
 
     def delete_secret(self: Self, secret_group_name: str, secret_name: str):
         """Delete a secret value under a security group"""
-        secret = self.get_secret(
-            secret_group_name=secret_group_name, secret_name=secret_name
-        )
+        secret = self.get_secret(secret_group_name=secret_group_name, secret_name=secret_name)
         if not secret:
-            raise ValueError(
-                f"failed to get the secret {secret_name} in group {secret_group_name}"
-            )
+            raise ValueError(f"failed to get the secret {secret_name} in group {secret_group_name}")
         self.secrets_manager_service.delete_secret(id=secret["id"])
 
     def get_secret_group_for_space(self: Self, space):
@@ -545,8 +509,6 @@ class IbmcloudSpaceSecretManagerAdmin:
         secrets = {}
         for secret_name in user_secret_names:
             secret_name_for_user = self.get_secret_name_for_user(user_id, secret_name)
-            secret_value = self.get_secret_value(
-                secret_group_name, secret_name_for_user, False
-            )
+            secret_value = self.get_secret_value(secret_group_name, secret_name_for_user, False)
             secrets[secret_name] = secret_value
         return secrets

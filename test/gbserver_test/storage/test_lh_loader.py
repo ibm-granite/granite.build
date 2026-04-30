@@ -29,15 +29,11 @@ class TestLakehouseLoader:
         )  # So we have very low probablity of colliding with other test runs.
         self.table_name = "test_lhloader_" + str(random_number)
         logger.info(f"Deleting table {namespace}.{self.table_name}")
-        self.ll.delete_table_in_namespace(
-            namespace=namespace, table_name=self.table_name
-        )
+        self.ll.delete_table_in_namespace(namespace=namespace, table_name=self.table_name)
 
     def teardown_method(self, method):
         logger.info(f"Deleting table {namespace}.{self.table_name}")
-        self.ll.delete_table_in_namespace(
-            namespace=namespace, table_name=self.table_name
-        )
+        self.ll.delete_table_in_namespace(namespace=namespace, table_name=self.table_name)
 
     def get_loader(self, namespace: str):
         ll = LakehouseLoader(default_namespace=namespace)

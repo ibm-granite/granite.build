@@ -112,9 +112,7 @@ class MockGBServerAPI:
         self._pending_countdown[checksum] = pending_polls
         self._final_response[checksum] = {"status": "exists", "uri": uri}
 
-    def set_pending_then_not_found(
-        self, checksum: str, pending_polls: int, target_uri: str
-    ):
+    def set_pending_then_not_found(self, checksum: str, pending_polls: int, target_uri: str):
         """Return pending N times, then not_found (other job failed)."""
         self._pending_countdown[checksum] = pending_polls
         self._final_response[checksum] = {
@@ -455,9 +453,7 @@ class _InputUploadServiceForTesting:
             checksum = self._get_checksum(input_path)
 
             # Step 2: Query API for artifact status (with polling for pending)
-            api_response = self._check_artifact_status_with_polling(
-                input_path, checksum
-            )
+            api_response = self._check_artifact_status_with_polling(input_path, checksum)
 
             if api_response.get("status") == "exists":
                 return UploadResult(
@@ -525,9 +521,7 @@ class _InputUploadServiceForTesting:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_file = os.path.join(tmpdir, "checksum")
 
-            result = self.checksum_script.calculate(
-                input_path, self.concurrency, output_file
-            )
+            result = self.checksum_script.calculate(input_path, self.concurrency, output_file)
 
             if result.returncode != 0:
                 raise RuntimeError(f"Checksum calculation failed: {result.stderr}")
@@ -568,9 +562,7 @@ class _InputUploadServiceForTesting:
             # Unknown status - treat as not_found
             return response
 
-    def _upload_to_lakehouse(
-        self, input_path: str, target_uri: str, checksum: str
-    ) -> UploadResult:
+    def _upload_to_lakehouse(self, input_path: str, target_uri: str, checksum: str) -> UploadResult:
         """Upload fileset to Lakehouse with integrity monitoring."""
         # Record initial mtimes
         initial_mtimes = self.checksum_cache.get_all_mtimes(input_path)
@@ -601,9 +593,7 @@ class _InputUploadServiceForTesting:
         integrity_thread.start()
 
         try:
-            success = self._upload_with_retry(
-                input_path, namespace, table, label, version
-            )
+            success = self._upload_with_retry(input_path, namespace, table, label, version)
 
             if self._abort_upload:
                 raise SourceModifiedError("Source data was modified during upload")
@@ -944,10 +934,7 @@ class TestInputUploadService:
         results = upload_service.process_inputs([str(test_directory)])
 
         assert results[0].status == UploadStatus.ERROR
-        assert (
-            "timed out" in results[0].message.lower()
-            or "timeout" in results[0].message.lower()
-        )
+        assert "timed out" in results[0].message.lower() or "timeout" in results[0].message.lower()
 
     def test_pending_status_polls_then_not_found(
         self, upload_service, test_directory, mock_api, mock_dmf, mock_checksum
@@ -1060,9 +1047,7 @@ class TestRetryLogic:
             checksum,
             {"status": "not_found", "target_uri": "lh://prod/ns/filesets/tbl/label/v1"},
         )
-        mock_dmf.set_transient_failure(
-            str(test_directory), fail_count=10
-        )  # More than max retries
+        mock_dmf.set_transient_failure(str(test_directory), fail_count=10)  # More than max retries
 
         results = upload_service.process_inputs([str(test_directory)])
 
@@ -1269,9 +1254,7 @@ class TestDataModification:
 class TestErrorRecovery:
     """Tests for error handling and recovery."""
 
-    def test_api_connection_failure(
-        self, upload_service, test_directory, mock_api, mock_checksum
-    ):
+    def test_api_connection_failure(self, upload_service, test_directory, mock_api, mock_checksum):
         """API connection errors handled gracefully."""
         checksum = "api_error_test"
         mock_checksum.set_checksum(str(test_directory), checksum)
@@ -1280,10 +1263,7 @@ class TestErrorRecovery:
         results = upload_service.process_inputs([str(test_directory)])
 
         assert results[0].status == UploadStatus.ERROR
-        assert (
-            "network" in results[0].message.lower()
-            or "connection" in results[0].message.lower()
-        )
+        assert "network" in results[0].message.lower() or "connection" in results[0].message.lower()
 
     def test_dmf_push_timeout(
         self, upload_service, test_directory, mock_api, mock_dmf, mock_checksum
@@ -1301,9 +1281,7 @@ class TestErrorRecovery:
 
         assert results[0].status == UploadStatus.ERROR
 
-    def test_checksum_script_failure(
-        self, upload_service, test_directory, mock_api, mock_checksum
-    ):
+    def test_checksum_script_failure(self, upload_service, test_directory, mock_api, mock_checksum):
         """Checksum script failure handled gracefully."""
         mock_checksum.set_failure(True)
 
@@ -1312,9 +1290,7 @@ class TestErrorRecovery:
         assert results[0].status == UploadStatus.ERROR
         assert "checksum" in results[0].message.lower()
 
-    def test_invalid_target_uri(
-        self, upload_service, test_directory, mock_api, mock_checksum
-    ):
+    def test_invalid_target_uri(self, upload_service, test_directory, mock_api, mock_checksum):
         """Invalid target URI handled gracefully."""
         checksum = "invalid_uri_test"
         mock_checksum.set_checksum(str(test_directory), checksum)
@@ -1374,9 +1350,7 @@ class TestPerformanceBenchmarks:
             times.append(time.time() - start)
 
         avg_time = sum(times) / len(times)
-        print(
-            f"\nMtime collection (100 files): avg {avg_time*1000:.1f}ms over {iterations} runs"
-        )
+        print(f"\nMtime collection (100 files): avg {avg_time*1000:.1f}ms over {iterations} runs")
 
         assert avg_time < 1.0, "Mtime collection should complete in < 1s"
 
@@ -1455,9 +1429,7 @@ class TestRealChecksumBenchmarks:
         if checksum is None:
             pytest.skip("llmbsum.sh not available or failed")
 
-        print(
-            f"\n[REAL] Small directory (3 files): {elapsed:.3f}s, checksum={checksum}"
-        )
+        print(f"\n[REAL] Small directory (3 files): {elapsed:.3f}s, checksum={checksum}")
         assert elapsed < 10.0, "Small directory checksum should complete in < 10s"
 
     def test_real_checksum_100_files(self, large_test_directory):
@@ -1492,9 +1464,7 @@ class TestRealChecksumBenchmarks:
 
         results = {}
         for concurrency in [1, 2, 4, 8]:
-            checksum, elapsed = _run_real_checksum(
-                str(tmp_path), concurrency=concurrency
-            )
+            checksum, elapsed = _run_real_checksum(str(tmp_path), concurrency=concurrency)
             if checksum is None:
                 pytest.skip("llmbsum.sh not available or failed")
             results[concurrency] = elapsed
@@ -1506,9 +1476,7 @@ class TestRealChecksumBenchmarks:
 
         # Verify some speedup with parallelism
         if results.get(1) and results.get(8):
-            assert (
-                results[8] < results[1]
-            ), "Parallel checksum should be faster than serial"
+            assert results[8] < results[1], "Parallel checksum should be faster than serial"
 
     def test_real_checksum_large_files(self, tmp_path):
         """Benchmark real checksum on fewer but larger files."""
@@ -1546,9 +1514,7 @@ class TestRealChecksumBenchmarks:
         if checksum is None:
             pytest.skip("llmbsum.sh not available or failed")
 
-        print(
-            f"\n[REAL] Deep hierarchy (5 levels, 50 files): {elapsed:.3f}s, checksum={checksum}"
-        )
+        print(f"\n[REAL] Deep hierarchy (5 levels, 50 files): {elapsed:.3f}s, checksum={checksum}")
 
     def test_real_checksum_cached_vs_uncached(self, tmp_path, mock_cache):
         """Compare cached vs uncached checksum retrieval time."""

@@ -94,9 +94,7 @@ def merge_values(args: Namespace) -> None:
     assert (
         input_values_default_path.is_file()
     ), f"invalid input_values_default_path: {input_values_default_path}"
-    assert (
-        input_values_path.is_file()
-    ), f"invalid input_values_path: {input_values_path}"
+    assert input_values_path.is_file(), f"invalid input_values_path: {input_values_path}"
     assert (
         input_values_config_path.is_file()
     ), f"invalid input_values_config_path: {input_values_config_path}"

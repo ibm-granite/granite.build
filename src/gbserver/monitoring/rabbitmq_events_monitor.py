@@ -1,3 +1,5 @@
+"""Rabbitmq events monitor module."""
+
 import argparse
 import asyncio
 import json
@@ -46,6 +48,8 @@ class EventDeduplicator:
 
 
 class RabbitMQEventMonitor(MonitorBase):
+    """Rabbit M Q Event Monitor implementation."""
+
     def __init__(
         self: Self,
         messaging_config: Dict[str, Any],
@@ -152,9 +156,7 @@ class RabbitMQEventMonitor(MonitorBase):
             build_event_id = payload.get("event_id")
             is_new = await self._dedup.add_if_new(build_event_id)
             if not is_new:
-                logger.warning(
-                    "[Monitor] duplicate ignored event_id=%s", build_event_id
-                )
+                logger.warning("[Monitor] duplicate ignored event_id=%s", build_event_id)
                 return
 
             # build_event_type = BuildEventType(payload.get("type", "").lower())
@@ -212,14 +214,13 @@ class RabbitMQEventMonitor(MonitorBase):
                 logger.info("launch_id %s cancelled consumer", self.launch_id)
             except Exception as e:
                 # in case it is already stopped
-                logger.info(
-                    "launch_id %s failed to cancel the consumer: %s", self.launch_id, e
-                )
+                logger.info("launch_id %s failed to cancel the consumer: %s", self.launch_id, e)
         await self.msg.close()
         logger.info("launch_id %s messenger closed", self.launch_id)
 
 
 async def main():
+    """Main."""
     import os
 
     import yaml
@@ -234,9 +235,7 @@ async def main():
         )
     )
 
-    parser = argparse.ArgumentParser(
-        "Monitor with pluggable messaging and process monitoring"
-    )
+    parser = argparse.ArgumentParser("Monitor with pluggable messaging and process monitoring")
     parser.add_argument("--exchange", default="build_events")
     parser.add_argument("--stream", required=True)
     parser.add_argument("--routing-key", help="routing key")
@@ -252,9 +251,7 @@ async def main():
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGINT, stop_event.set)  # Ctrl-C means stop
-    addr: Address = Address(
-        exchange=args.exchange, queue=args.stream, routing_key=args.routing_key
-    )
+    addr: Address = Address(exchange=args.exchange, queue=args.stream, routing_key=args.routing_key)
     messenger = RabbitMQBase(addr=addr, stop_event=stop_event)
     await messenger.setup()
 

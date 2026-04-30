@@ -112,11 +112,7 @@ class NATSMessaging(MessagingBase):
         """Publish a JSON message. Uses JetStream if available, else core NATS."""
         if self._nc is None or self._nc.is_closed:
             raise RuntimeError("NATSMessaging not connected. Call setup() first.")
-        body = (
-            json.dumps(payload).encode("utf-8")
-            if not isinstance(payload, bytes)
-            else payload
-        )
+        body = json.dumps(payload).encode("utf-8") if not isinstance(payload, bytes) else payload
         subject = f"gbserver.{self.addr.queue}"
         if suffix:
             subject = f"{subject}.{suffix}"
@@ -132,9 +128,7 @@ class NATSMessaging(MessagingBase):
         else:
             await self._nc.publish(subject, body)
 
-    async def consume_stream(
-        self, handler: Callable[[bytes, str], Awaitable[None]]
-    ) -> None:
+    async def consume_stream(self, handler: Callable[[bytes, str], Awaitable[None]]) -> None:
         """Subscribe and consume messages. Uses JetStream durable consumer if available."""
         if self._nc is None or self._nc.is_closed:
             raise RuntimeError("NATSMessaging not connected. Call setup() first.")
@@ -162,9 +156,7 @@ class NATSMessaging(MessagingBase):
                 async for msg in self._sub.messages:
                     if self._closed:
                         break
-                    routing_key = msg.subject.removeprefix(
-                        f"gbserver.{self.addr.queue}."
-                    )
+                    routing_key = msg.subject.removeprefix(f"gbserver.{self.addr.queue}.")
                     try:
                         await handler(msg.data, routing_key)
                         await msg.ack()
@@ -185,9 +177,7 @@ class NATSMessaging(MessagingBase):
                 async for msg in self._sub.messages:
                     if self._closed:
                         break
-                    routing_key = msg.subject.removeprefix(
-                        f"gbserver.{self.addr.queue}."
-                    )
+                    routing_key = msg.subject.removeprefix(f"gbserver.{self.addr.queue}.")
                     await handler(msg.data, routing_key)
             except asyncio.CancelledError:
                 pass

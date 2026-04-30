@@ -58,7 +58,5 @@ class BaseBuildStorageTest(AbstractStorageTest):
 
 class BaseLegacyStoredBuildTest(AbstractExistingDataReadTest):
 
-    def _get_tested_readonly_storage(
-        self, storage: singleton_storage.SingletonAdminStorage
-    ):
+    def _get_tested_readonly_storage(self, storage: singleton_storage.SingletonAdminStorage):
         return storage.build_storage

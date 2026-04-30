@@ -1,3 +1,5 @@
+"""Checksum module."""
+
 import multiprocessing
 import os
 

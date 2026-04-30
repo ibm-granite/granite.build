@@ -140,17 +140,13 @@ class TestStandaloneE2E:
 
             # Verify the build completed successfully in storage
             finished_build = storage.build_storage.get_by_uuid(stored_build.uuid)
-            assert (
-                finished_build is not None
-            ), f"Build {stored_build.uuid} not found in storage"
+            assert finished_build is not None, f"Build {stored_build.uuid} not found in storage"
             assert (
                 finished_build.status == Status.SUCCESS
             ), f"Build status is {finished_build.status}, expected SUCCESS"
 
             # Verify target was created and completed
-            targets = storage.target_storage.get_by_where(
-                {"build_id": stored_build.uuid}
-            )
+            targets = storage.target_storage.get_by_where({"build_id": stored_build.uuid})
             assert len(targets) == 1, f"Expected 1 target, got {len(targets)}"
             assert (
                 targets[0].name == "helloworld"

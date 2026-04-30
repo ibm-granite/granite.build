@@ -33,9 +33,7 @@ class ILineageStore(ABC):
     """Abstract interface for lineage storage backends."""
 
     @abstractmethod
-    def add_jobstats_for_build(
-        self, storage: SingletonAdminStorage, build_id: str
-    ) -> None: ...
+    def add_jobstats_for_build(self, storage: SingletonAdminStorage, build_id: str) -> None: ...
 
     @abstractmethod
     def add_jobstats_for_build_target(
@@ -61,9 +59,7 @@ class ILineageStore(ABC):
     ): ...
 
     @abstractmethod
-    def count_release_ids(
-        self, release_id: str, target_id: Optional[str] = None
-    ) -> int: ...
+    def count_release_ids(self, release_id: str, target_id: Optional[str] = None) -> int: ...
 
     @abstractmethod
     def does_release_id_exist(

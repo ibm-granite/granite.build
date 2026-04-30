@@ -73,16 +73,13 @@ def get_gh_user(token: str, domain: Optional[str] = None) -> Tuple[Optional[User
         "X-GitHub-Api-Version": "2022-11-28",
     }
     try:
-        response = requests.get(
-            f"https://api.{domain}/user", headers=headers, timeout=10
-        )
+        response = requests.get(f"https://api.{domain}/user", headers=headers, timeout=10)
         response.raise_for_status()
         data = response.json()
         user = User.model_validate(data)
         if not user.email:
             logger.warning(
-                "GitHub /user returned no email for user %s; "
-                "space-access checks may fail",
+                "GitHub /user returned no email for user %s; " "space-access checks may fail",
                 user.login,
             )
         return (user, "")
@@ -118,12 +115,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             out["authorization"] = f"Bearer {auth[7:11]}...redacted"
         return out
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
-        logger.info(
-            "auth middleware headers: %s", self._redact_headers(request.headers)
-        )
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        logger.info("auth middleware headers: %s", self._redact_headers(request.headers))
 
         # Allow docs/openapi endpoints without authentication in all modes
         if request.method == "GET":
@@ -221,9 +214,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 if curr_time - user.gbserver_created_at > timedelta(
                     seconds=self.user_cache_lifetime
                 ):
-                    logger.info(
-                        "cached user expired, evicting (%s)", provider.provider_name
-                    )
+                    logger.info("cached user expired, evicting (%s)", provider.provider_name)
                     self.user_cache.pop(key)
                 else:
                     logger.info("user found in cache (%s)", provider.provider_name)
@@ -245,9 +236,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             logger.info("token identified as %s, validating...", provider.provider_name)
             user, error = provider.validate_token(token)
             if user is None:
-                logger.error(
-                    "auth middleware error (%s): %s", provider.provider_name, error
-                )
+                logger.error("auth middleware error (%s): %s", provider.provider_name, error)
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     content={

@@ -58,19 +58,15 @@ class TestK8sAntiAffinityTemplate:
 
         # Verify structure
         assert "nodeAffinity" in affinity
-        assert (
-            "requiredDuringSchedulingIgnoredDuringExecution" in affinity["nodeAffinity"]
-        )
+        assert "requiredDuringSchedulingIgnoredDuringExecution" in affinity["nodeAffinity"]
         assert (
             "nodeSelectorTerms"
-            in affinity["nodeAffinity"][
-                "requiredDuringSchedulingIgnoredDuringExecution"
-            ]
+            in affinity["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
         )
 
-        terms = affinity["nodeAffinity"][
-            "requiredDuringSchedulingIgnoredDuringExecution"
-        ]["nodeSelectorTerms"]
+        terms = affinity["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][
+            "nodeSelectorTerms"
+        ]
         assert len(terms) == 1
         assert "matchExpressions" in terms[0]
 
@@ -102,9 +98,9 @@ class TestK8sAntiAffinityTemplate:
             }
         }
 
-        expressions = affinity["nodeAffinity"][
-            "requiredDuringSchedulingIgnoredDuringExecution"
-        ]["nodeSelectorTerms"][0]["matchExpressions"]
+        expressions = affinity["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][
+            "nodeSelectorTerms"
+        ][0]["matchExpressions"]
         assert expressions[0]["values"] == [
             "worker-node-1",
             "worker-node-2",
@@ -199,14 +195,12 @@ class TestK8sAntiAffinityTemplate:
 
         # Validate against K8s affinity spec requirements
         # 1. nodeAffinity must have either required or preferred
-        assert (
-            "requiredDuringSchedulingIgnoredDuringExecution" in affinity["nodeAffinity"]
-        )
+        assert "requiredDuringSchedulingIgnoredDuringExecution" in affinity["nodeAffinity"]
 
         # 2. nodeSelectorTerms must be a list
-        terms = affinity["nodeAffinity"][
-            "requiredDuringSchedulingIgnoredDuringExecution"
-        ]["nodeSelectorTerms"]
+        terms = affinity["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][
+            "nodeSelectorTerms"
+        ]
         assert isinstance(terms, list)
         assert len(terms) > 0
 
@@ -263,9 +257,9 @@ class TestK8sAntiAffinityTemplate:
             list,
         )
 
-        term = affinity["nodeAffinity"][
-            "requiredDuringSchedulingIgnoredDuringExecution"
-        ]["nodeSelectorTerms"][0]
+        term = affinity["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][
+            "nodeSelectorTerms"
+        ][0]
         assert isinstance(term, dict)
         assert isinstance(term["matchExpressions"], list)
 
@@ -419,9 +413,7 @@ class TestAntiAffinityHelm:
         # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#affinity-v1-core
         affinity = pod_spec["affinity"]
         assert (
-            "nodeAffinity" in affinity
-            or "podAffinity" in affinity
-            or "podAntiAffinity" in affinity
+            "nodeAffinity" in affinity or "podAffinity" in affinity or "podAntiAffinity" in affinity
         )
 
         if "nodeAffinity" in affinity:

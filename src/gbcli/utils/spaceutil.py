@@ -1,3 +1,5 @@
+"""Spaceutil module."""
+
 import logging
 from datetime import datetime, timedelta
 
@@ -75,13 +77,9 @@ def resolve_space(github_token: str, space=None, callback=None):
     # Resolve space by name without going through the profile layer.
     if is_standalone():
         space_name = (
-            gb_environment_config()["default_space"]
-            if (not space or space == "default")
-            else space
+            gb_environment_config()["default_space"] if (not space or space == "default") else space
         )
-        found_space = next(
-            (s for s in updated_spaces if s.get("name") == space_name), None
-        )
+        found_space = next((s for s in updated_spaces if s.get("name") == space_name), None)
         if found_space is None and callback is not None:
             callback(
                 callback_event="error",
@@ -267,6 +265,7 @@ def save_profile(space_key: str, space_name: str, profile_name="default"):
 
 # handle legacy profile format that is not an array
 def format_profile_check():
+    """Format profile check."""
     profile_space = "profiles"
     gbconfig = GBConfig()
     config_section = gb_environment_config()["config_spaces"]
@@ -285,6 +284,7 @@ def format_profile_check():
 
 
 def user_is_space_admin(github_token: str, space: str, callback=None) -> bool:
+    """User is space admin."""
     space_info = resolve_space(github_token, space, callback)
     if space_info:
         return space_info["is_admin"]

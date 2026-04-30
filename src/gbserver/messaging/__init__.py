@@ -26,11 +26,7 @@ def discover_backends() -> Dict[str, "type"]:
             continue  # Skip backends with missing dependencies (e.g., aio_pika, nats)
 
         for obj in vars(module).values():
-            if (
-                inspect.isclass(obj)
-                and issubclass(obj, MessagingBase)
-                and obj is not MessagingBase
-            ):
+            if inspect.isclass(obj) and issubclass(obj, MessagingBase) and obj is not MessagingBase:
                 key = obj.__name__.lower()  # e.g. "rabbitmqbase"
                 backends[key] = obj
 

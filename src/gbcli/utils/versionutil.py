@@ -1,3 +1,5 @@
+"""Versionutil module."""
+
 import sys
 from importlib.metadata import PackageNotFoundError, version
 
@@ -13,6 +15,7 @@ from gbcli.utils.gh_clone import get_repo_tags, run_github_command
 
 
 def get_latest_version(user_token: str, repo_org: str, repo_name: str) -> str:
+    """Get the latest version."""
     tags = run_github_command(lambda: get_repo_tags(user_token, repo_org, repo_name))
 
     latest_tag = "0.0.0"
@@ -25,6 +28,7 @@ def get_latest_version(user_token: str, repo_org: str, repo_name: str) -> str:
 
 
 def get_current_version(package_name: str) -> str:
+    """Get the current version."""
     try:
         return str(version(package_name))
     except PackageNotFoundError:
@@ -32,6 +36,7 @@ def get_current_version(package_name: str) -> str:
 
 
 def check_current_and_latest_versions() -> str:
+    """Verify current and latest versions."""
     credentials = GBCredentials()
     if not credentials.check_values():
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)

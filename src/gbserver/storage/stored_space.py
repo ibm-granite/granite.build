@@ -29,6 +29,4 @@ class StoredSpace(BaseStoredItem):
 
     name: str
     git_repo_uri: str
-    lakehouse_namespace: (
-        str  # TODO: this should not be here. instead from the space.yaml
-    )
+    lakehouse_namespace: str  # TODO: this should not be here. instead from the space.yaml

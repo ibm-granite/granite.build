@@ -1,3 +1,5 @@
+"""Command template module."""
+
 import json
 import sys
 from typing import Dict
@@ -76,9 +78,7 @@ def list(
         templates = []
 
         if quiet:
-            templates = template_client.list_templates(
-                space, template_repo, callback=None
-            )
+            templates = template_client.list_templates(space, template_repo, callback=None)
         else:
             with tqdm(
                 total=100,
@@ -113,9 +113,7 @@ def list(
 
         if len(templates) > 0:
             if format == "plain":
-                templates_table = [
-                    [p["template_name"], p["description"]] for p in templates
-                ]
+                templates_table = [[p["template_name"], p["description"]] for p in templates]
                 templates_output = tabulate(
                     templates_table, TEMPLATE_LIST_HEADERS, tablefmt="plain"
                 )
@@ -191,9 +189,7 @@ def describe(
         for key in config.keys():
             if isinstance(config[key], dict):
                 for inner_key in config[key].keys():
-                    config_str = (
-                        config_str + f"{key}.{inner_key}: {config[key][inner_key]}\n"
-                    )
+                    config_str = config_str + f"{key}.{inner_key}: {config[key][inner_key]}\n"
             else:
                 config_str = config_str + f"{key}: {config[key]}\n"
             if "echo" in config_str:
@@ -260,21 +256,13 @@ def describe(
                         f"{target['target_name']}\n" + f"{target['environment_uri']}\n"
                     )
 
-                    input_artifacts_table = [
-                        [i["name"], i["uri"]] for i in target["inputs"]
-                    ]
+                    input_artifacts_table = [[i["name"], i["uri"]] for i in target["inputs"]]
 
-                    output_artifacts_table = [
-                        [o["name"], o["uri"]] for o in target["outputs"]
-                    ]
+                    output_artifacts_table = [[o["name"], o["uri"]] for o in target["outputs"]]
 
                     output_steps_table = [
                         [s["uri"]]
-                        + (
-                            [parse_config_output(s["config"])]
-                            if format == "full"
-                            else []
-                        )
+                        + ([parse_config_output(s["config"])] if format == "full" else [])
                         for s in target["steps"]
                     ]
 
@@ -305,11 +293,7 @@ def describe(
                             else ""
                         )
                         + (
-                            (
-                                "\n*️⃣  Output artifacts\n"
-                                + output_artifacts_output
-                                + "\n"
-                            )
+                            ("\n*️⃣  Output artifacts\n" + output_artifacts_output + "\n")
                             if len(target["outputs"]) > 0
                             else ""
                         )

@@ -31,9 +31,7 @@ class EventStorageTestSupport(AbstractStorageTestSupport):
     def _get_test_item(self, index):
         build_id = f"build_id_{index}"
         username = f"user{index}"
-        run_metadata = EntityRunMetadata(
-            build_id=build_id, username=username, type=f"mtype{index}"
-        )
+        run_metadata = EntityRunMetadata(build_id=build_id, username=username, type=f"mtype{index}")
         index_mod = index % 4
         event_data = {"somekey": f"somevalue{index}"}
         if index_mod == 0:
@@ -41,23 +39,17 @@ class EventStorageTestSupport(AbstractStorageTestSupport):
             payload = BuildEventStatusPayload(data=event_data, msg=f"msg{index}")
         elif index_mod == 1:
             type = BuildEventType.ARTIFACT_PUSHED_EVENT
-            payload = ArtifactPushedEventPayload(
-                data=event_data, uri=f"https://localhost/{index}"
-            )
+            payload = ArtifactPushedEventPayload(data=event_data, uri=f"https://localhost/{index}")
         elif index_mod == 2:
             type = BuildEventType.MESSAGE_EVENT
             payload = BuildEventMessagePayload(data=event_data, msg=f"msg{index}")
         elif index_mod == 3:
             type = BuildEventType.ARTIFACT_EVENT
-            payload = CreatedArtifactEventPayload(
-                data=event_data, uri=f"https://localhost/{index}"
-            )
+            payload = CreatedArtifactEventPayload(data=event_data, uri=f"https://localhost/{index}")
         elif index_mod == 4:
             type = BuildEventType.METRICS_EVENT
             metadata = MetricMetadata(username="user{index}")
-            metric = Metric(
-                name=MetricName.PROCESSING_DELAY, value=0.0, metadata=metadata
-            )
+            metric = Metric(name=MetricName.PROCESSING_DELAY, value=0.0, metadata=metadata)
             payload = BuildEventMetricsPayload(data=event_data, metrics=[metric])
         else:
             assert False, "should never reach this line"
@@ -91,13 +83,9 @@ class BaseEventStorageTest(AbstractStorageTest):
         inserted = []
         build_id = get_uuid()
         for i in range(count):
-            obj = self._get_test_item(
-                0
-            )  # Same index so we always get the same build id
+            obj = self._get_test_item(0)  # Same index so we always get the same build id
             assert isinstance(obj, StoredEvent), f"obj is of type {obj.__class__}"
-            assert isinstance(
-                obj.build_event, BuildEvent
-            ), f"obj is of type {obj.__class__}"
+            assert isinstance(obj.build_event, BuildEvent), f"obj is of type {obj.__class__}"
             obj.build_event.run_metadata.build_id = build_id
             self.storage.event_storage.add(obj)
             inserted.append(obj)
@@ -108,7 +96,5 @@ class BaseEventStorageTest(AbstractStorageTest):
 
 class BaseLegacyEventStorageTest(AbstractExistingDataReadTest):
 
-    def _get_tested_readonly_storage(
-        self, storage: singleton_storage.SingletonAdminStorage
-    ):
+    def _get_tested_readonly_storage(self, storage: singleton_storage.SingletonAdminStorage):
         return storage.event_storage

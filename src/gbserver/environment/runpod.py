@@ -100,9 +100,7 @@ class Runpod(Environment):
                 f"RunPod API key not found. Set the '{api_key_name}' secret "
                 f"or environment variable."
             )
-        logger.debug(
-            "Using RunPod API key from environment variable '%s'", api_key_name
-        )
+        logger.debug("Using RunPod API key from environment variable '%s'", api_key_name)
         return api_key
 
     def _get_defaults(self: Self) -> Dict[str, Any]:
@@ -120,9 +118,7 @@ class Runpod(Environment):
         if not gpu_type:
             gpu_type = defaults.get("gpu_type")
         if not gpu_type:
-            raise ValueError(
-                "No gpu_type specified in compute_config or environment defaults"
-            )
+            raise ValueError("No gpu_type specified in compute_config or environment defaults")
         return resolve_runpod_gpu_type(gpu_type)
 
     async def launch_runpod(
@@ -230,9 +226,7 @@ class Runpod(Environment):
                 logger.info("RunPod pod %s is RUNNING", pod_id)
                 return
             if status in ("EXITED", "TERMINATED", "ERROR"):
-                raise RuntimeError(
-                    f"RunPod pod {pod_id} reached terminal status: {status}"
-                )
+                raise RuntimeError(f"RunPod pod {pod_id} reached terminal status: {status}")
             logger.debug(
                 "Waiting for RunPod pod %s (status=%s), polling in %ds",
                 pod_id,
@@ -241,9 +235,7 @@ class Runpod(Environment):
             )
             await asyncio.sleep(poll_interval)
             poll_interval = min(poll_interval * 1.5, 30)
-        raise TimeoutError(
-            f"RunPod pod {pod_id} did not reach RUNNING within {timeout}s"
-        )
+        raise TimeoutError(f"RunPod pod {pod_id} did not reach RUNNING within {timeout}s")
 
     async def monitor_pod_status_monitor(
         self: Self,
@@ -303,9 +295,7 @@ class Runpod(Environment):
                     last_status = status
 
                 if status in terminal_states:
-                    logger.info(
-                        "RunPod pod %s reached terminal status: %s", pod_id, status
-                    )
+                    logger.info("RunPod pod %s reached terminal status: %s", pod_id, status)
                     return
 
             except Exception as e:

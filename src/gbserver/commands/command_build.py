@@ -243,8 +243,6 @@ def run_and_monitor(
             event = await event_q.get()
             assert isinstance(event, BuildEvent), f"invalid event: {event}"
             event_str = truncate(str(event))
-            logger.info(
-                "\x1b[0;35mGot a new event: %s : %s\x1b[0m", event.type, event_str
-            )
+            logger.info("\x1b[0;35mGot a new event: %s : %s\x1b[0m", event.type, event_str)
 
     asyncio.run(run_build_and_wait_on_queue())

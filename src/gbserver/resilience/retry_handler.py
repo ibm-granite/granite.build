@@ -121,9 +121,7 @@ def build_retry_strategies_from_config(
     for strategy_config in config:
         strategy_type = strategy_config.get("type")
         if not strategy_type:
-            logger.warning(
-                "Strategy config missing 'type' field, skipping: %s", strategy_config
-            )
+            logger.warning("Strategy config missing 'type' field, skipping: %s", strategy_config)
             continue
 
         strategy_class = strategy_map.get(strategy_type)
@@ -162,9 +160,7 @@ def build_retry_strategies_from_config(
 
     if not strategies:
         logger.warning("No valid strategies configured, using default")
-        strategies = [
-            UnhealthyInsufficientPodsRetryStrategy(object_types=default_object_types)
-        ]
+        strategies = [UnhealthyInsufficientPodsRetryStrategy(object_types=default_object_types)]
 
     return strategies
 
@@ -435,9 +431,7 @@ class RetryHandler:
                     metadata={
                         "strategy": strategy_name,
                         "event_type": (
-                            event.type.value
-                            if hasattr(event.type, "value")
-                            else str(event.type)
+                            event.type.value if hasattr(event.type, "value") else str(event.type)
                         ),
                     },
                     namespace=getattr(self.environment, "namespace", ""),
@@ -486,9 +480,7 @@ class RetryHandler:
                 self.nodes_to_avoid.update(failed_nodes)
 
                 # Record failures in health tracker
-                await self._record_node_failures(
-                    failed_nodes, strategy.__class__.__name__, event
-                )
+                await self._record_node_failures(failed_nodes, strategy.__class__.__name__, event)
 
                 logger.warning(
                     "[RetryHandler launch_id %s] Strategy %s recommends retry %d/%d, "

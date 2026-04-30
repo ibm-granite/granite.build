@@ -1,3 +1,5 @@
+"""Lakehouse list user namespaces module."""
+
 from gbserver.types.constants import (
     GRANITE_DOT_BUILD_PARENT_NAMESPACE,
     LAKEHOUSE_ENVIRONMENT,
@@ -61,12 +63,8 @@ def lakehouse_user_namespaces_admin_details(token, namespaces):
 
         user_email = lh.get_lakehouse_api().get_token_details().email.lower()
 
-        api = LakehouseApi(
-            host=Environment.build_from(LAKEHOUSE_ENVIRONMENT).value, token=token
-        )
-        result = api.make_api_call(
-            url=f"{api.host}/authz/namespace/team_with_owners", params={}
-        )
+        api = LakehouseApi(host=Environment.build_from(LAKEHOUSE_ENVIRONMENT).value, token=token)
+        result = api.make_api_call(url=f"{api.host}/authz/namespace/team_with_owners", params={})
 
         namespaces_owner = []
 

@@ -1,3 +1,5 @@
+"""Storage module."""
+
 import datetime
 import json
 import re
@@ -92,12 +94,15 @@ class QueryControl(BaseModel):
 
 
 class TaggedItem(BaseModel):
+    """Tagged Item implementation."""
+
     model_config = ConfigDict(validate_assignment=True)
 
     tags: Optional[list[str]] = Field(default_factory=list)
 
     @field_validator("tags")
     def validate_tags(cls, v: list):
+        """Verify tags."""
         if v is None:
             return []
         for item in v:
@@ -131,6 +136,7 @@ class IItemStorage(BaseModel, Generic[BASE_ITEM_TYPE]):
 
     @abstractmethod
     def get_table_name(self) -> str:
+        """Get the table name."""
         raise ValueError("Must be implemented by sub-class")
 
     @abstractmethod
@@ -153,9 +159,7 @@ class IItemStorage(BaseModel, Generic[BASE_ITEM_TYPE]):
         )
 
     @abstractmethod
-    def add(
-        self, items: Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]
-    ) -> Union[str, list[str]]:
+    def add(self, items: Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]) -> Union[str, list[str]]:
         """
         Add the given object(s) to the underlying storage instance.
         Checks for item field uniquess, if  configured in the initializer.
@@ -372,6 +376,7 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
         )
 
     def get_table_name(self) -> str:
+        """Get the table name."""
         return self.table_name
 
     def _get_column_values(self, item: BASE_ITEM_TYPE) -> dict[str, Any]:
@@ -388,9 +393,7 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
         """
         raise ValueError("Must be defined by the sub-class")
 
-    def add(
-        self, items: Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]
-    ) -> Union[str, list[str]]:
+    def add(self, items: Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]) -> Union[str, list[str]]:
         """
         Add the given object(s) to the underlying storage instance.
         Checks for item field uniquess, if  configured in the initializer.
@@ -485,18 +488,14 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
             f"Sub-class {self.__class__.__name__} did not implement method throwing this exception"
         )
 
-    def __validate_items(
-        self, items: Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]
-    ) -> None:
+    def __validate_items(self, items: Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]) -> None:
         if not isinstance(items, list):
             items = [items]
         else:
             assert len(items) > 0, "List of items is empty"
         for item in items:
             if not isinstance(item, self.item_class):
-                raise ValueError(
-                    f"Item is not the expected type {self.item_class.__name__}"
-                )
+                raise ValueError(f"Item is not the expected type {self.item_class.__name__}")
             if item.uuid is None or item.uuid == "":
                 raise ValueError(f"Item does not have a uuid: {item}")
 
@@ -563,11 +562,7 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
             # This avoid creating/initializing the table, which is useful for buildrunner tests that time out.
             return []
 
-        if (
-            where is not None
-            and not isinstance(where, str)
-            and not isinstance(where, dict)
-        ):
+        if where is not None and not isinstance(where, str) and not isinstance(where, dict):
             raise ValueError("where must be a string or dict")
         self.__initialize_storage()
         item_dict = self.__get_by_where(where=where, query_control=query_control)
@@ -607,9 +602,7 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
     ) -> dict[str, BASE_ITEM_TYPE]:
         items = {}
         self.logger.debug(f"Begin searching by where={where}")
-        row_dicts = self._get_by_where_row_dicts(
-            where=where, query_control=query_control
-        )
+        row_dicts = self._get_by_where_row_dicts(where=where, query_control=query_control)
         for row_dict in row_dicts:
             item = self._convert_row_dict_to_item(row_dict)
             items[item.uuid] = item
@@ -689,17 +682,13 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
             new_items = []
             for uuid in uuids:
                 item = items_by_uuid.get(uuid)
-                new_items.append(
-                    item
-                )  # Puts None in place where a uuid/item was not found.
+                new_items.append(item)  # Puts None in place where a uuid/item was not found.
             if len(uuids) == 1 and not uuids_was_list:
                 new_items = new_items[0]
 
         new_items_list = new_items if isinstance(new_items, list) else [new_items]
         num_found = len(new_items_list) - new_items_list.count(None)
-        self.logger.debug(
-            f"Done searching for items by uuid, found {num_found} matching items"
-        )
+        self.logger.debug(f"Done searching for items by uuid, found {num_found} matching items")
 
         return new_items
 
@@ -766,19 +755,13 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
         if pre_existing is None:
             # Item doesn't exist
             if not create_if_not_exist:
-                raise ValueError(
-                    f"Item with uuid {uuid} not found in table {self.table_name}"
-                )
+                raise ValueError(f"Item with uuid {uuid} not found in table {self.table_name}")
             self.add(item)
         else:
             # Get all fields from the item and call update_fields()
-            fields = vars(
-                item
-            ).copy()  # Copy, otherwise the pops modify the input item.
+            fields = vars(item).copy()  # Copy, otherwise the pops modify the input item.
             fields.pop(UUID_FIELD_NAME, None)  # Exclude since we never update that
-            fields.pop(
-                CREATED_TIME_FIELD_NAME, None
-            )  # Exclude since we never update that
+            fields.pop(CREATED_TIME_FIELD_NAME, None)  # Exclude since we never update that
             fields.pop(
                 UPDATED_TIME_FIELD_NAME, None
             )  # Exclude since we handle that in update_fields
@@ -921,9 +904,7 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
             f"Sub-class {self.__class__.__name__} did not implement method throwing this exception"
         )
 
-    def __enforce_uniqueness(
-        self, items: Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]
-    ) -> None:
+    def __enforce_uniqueness(self, items: Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]) -> None:
         """Enforce uniqueness of fields as defined by the sub-class, including uuid.
         LH had no in-db enforcement of uniqueness, so list of unique fields are set of LH storage sub-classes.
         SQL can enforce uniqueness in the DB, so generally these sub-classes have self.unique_fields=[] and thus disable this check.

@@ -199,9 +199,7 @@ class BuildRunner(AbstractBuildRunner):
                             self.stored_build.uuid,
                         )
 
-                    asyncio.run(
-                        self.__async_run_build(buildrunner_resume=buildrunner_resume)
-                    )
+                    asyncio.run(self.__async_run_build(buildrunner_resume=buildrunner_resume))
 
                     logger.info(
                         "Build run completed (build_id=%s, resume=%s)",
@@ -251,9 +249,7 @@ class BuildRunner(AbstractBuildRunner):
             description=latest.description,
             tags=latest.tags,
             retry_of_build_id=(
-                latest.retry_of_build_id
-                if latest.retry_of_build_id is not None
-                else latest.uuid
+                latest.retry_of_build_id if latest.retry_of_build_id is not None else latest.uuid
             ),
             retry_count=latest.retry_count + 1,
         )
@@ -271,9 +267,7 @@ class BuildRunner(AbstractBuildRunner):
 
     def __comment_on_original_pr(self: Self) -> None:
         """Post a comment on the original failed build's PR linking to this retry build's PR."""
-        original = self.storage.build_storage.get_by_uuid(
-            self.stored_build.retry_of_build_id
-        )
+        original = self.storage.build_storage.get_by_uuid(self.stored_build.retry_of_build_id)
         if not isinstance(original, StoredBuild) or not original.source_uri:
             return
         owner, repo, pr_id = original.get_pr_info()
@@ -289,9 +283,7 @@ class BuildRunner(AbstractBuildRunner):
             )
             myapi.update_issue_comment(body=body, pr_id=pr_id)
         except Exception as e:
-            logger.warning(
-                "Failed to post retry comment on original PR %s: %s", pr_id, e
-            )
+            logger.warning("Failed to post retry comment on original PR %s: %s", pr_id, e)
 
     def __get_targets_to_resume(self) -> Optional[List[str]]:
         """
@@ -299,15 +291,11 @@ class BuildRunner(AbstractBuildRunner):
 
         If any target is FAILED or INVALID, the build should be FAILED and NOT RESUMED.
         """
-        target_runs = self.storage.target_storage.get_by_where(
-            {"build_id": self.stored_build.uuid}
-        )
+        target_runs = self.storage.target_storage.get_by_where({"build_id": self.stored_build.uuid})
 
         # Get the already failed targets from storage to not resume them again
         failed_targets = {
-            tr.name
-            for tr in target_runs
-            if tr.status in (Status.FAILED, Status.INVALID)
+            tr.name for tr in target_runs if tr.status in (Status.FAILED, Status.INVALID)
         }
 
         if failed_targets:
@@ -327,14 +315,10 @@ class BuildRunner(AbstractBuildRunner):
                     ),
                 )
 
-            raise RuntimeError(
-                f"Build {self.stored_build.uuid} has failed targets; resume aborted"
-            )
+            raise RuntimeError(f"Build {self.stored_build.uuid} has failed targets; resume aborted")
 
         # Fetch the successful targets to NOT resume them again
-        completed_targets = {
-            tr.name for tr in target_runs if tr.status == Status.SUCCESS
-        }
+        completed_targets = {tr.name for tr in target_runs if tr.status == Status.SUCCESS}
 
         if not self.stored_build.targets:
             return None
@@ -394,9 +378,7 @@ class BuildRunner(AbstractBuildRunner):
 
                 # not triggering  __setup() again
 
-                build_dir = (
-                    None  # DO NOT recreate build dir again - will get in workspace dir
-                )
+                build_dir = None  # DO NOT recreate build dir again - will get in workspace dir
                 force_fetch = False  # DO NOT refetch
 
                 # Fetch the targets which has not COMPLETED - target-level resume in a build
@@ -420,9 +402,7 @@ class BuildRunner(AbstractBuildRunner):
             )
 
             if not buildrunner_resume:
-                if build.val_errors and not build.val_errors.is_valid(
-                    check_warnings=True
-                ):
+                if build.val_errors and not build.val_errors.is_valid(check_warnings=True):
                     self.build_message_logger.warning(str(build.val_errors))
 
                 lineage_body = STARTING_BUILD_MESSAGE.format(
@@ -462,15 +442,11 @@ class BuildRunner(AbstractBuildRunner):
             err_stack = traceback.format_exc()
             logger.error("%s", err_stack)
             if not stored_build.status.is_finished():
-                logger.info(
-                    "updating build status to failed for build %s", stored_build.uuid
-                )
+                logger.info("updating build status to failed for build %s", stored_build.uuid)
                 self.__update_stored_build_status(
                     status=Status.FAILED, failure_reason=str(err_stack)
                 )
-            markdown = (
-                f"build `{build_id}` status `{self.stored_build.status}`, error: {e}"
-            )
+            markdown = f"build `{build_id}` status `{self.stored_build.status}`, error: {e}"
             self.build_message_logger.error(markdown=markdown)
 
     def __setup(self: Self, space: Space):
@@ -504,9 +480,7 @@ class BuildRunner(AbstractBuildRunner):
         success, updates = build_setup.run(self.stored_build)
 
         # Recreate the message logger to include the PR logger created in run() above.
-        self.build_message_logger = get_message_logger(
-            self.stored_build, _BUILD_EVENT_SOURCE_NAME
-        )
+        self.build_message_logger = get_message_logger(self.stored_build, _BUILD_EVENT_SOURCE_NAME)
 
         # Persist the build status and PR link, if any.
         # Don't update if status is other than PENDING
@@ -525,9 +499,7 @@ class BuildRunner(AbstractBuildRunner):
             if self.stored_build.retry_of_build_id and self.stored_build.source_uri:
                 self.__comment_on_original_pr()
         else:
-            self.stored_build = self.storage.build_storage.get_by_uuid(
-                self.stored_build.uuid
-            )
+            self.stored_build = self.storage.build_storage.get_by_uuid(self.stored_build.uuid)
             success = False
             logger.warning(
                 "Build update failed.  Likely as the status was not %s (currently %s).",
@@ -586,13 +558,9 @@ class BuildRunner(AbstractBuildRunner):
         while not self.stop_event.is_set():
             try:
                 logger.info("build %s waiting for events...", build_id)
-                event = await asyncio.wait_for(
-                    event_q.get(), timeout=self.monitoring_interval
-                )
+                event = await asyncio.wait_for(event_q.get(), timeout=self.monitoring_interval)
                 assert isinstance(event, BuildEvent), f"invalid event: {event}"
-                logger.info(
-                    "build %s got a new event: %s : %s", build_id, event.type, event
-                )
+                logger.info("build %s got a new event: %s : %s", build_id, event.type, event)
                 build_finished = self.__process_event(event=event)
                 if build_finished:
                     logger.debug("build %s finished, exiting monitoring loop", build_id)
@@ -620,9 +588,7 @@ class BuildRunner(AbstractBuildRunner):
                     logger.error(
                         f"Ignoring failure to log msg via the build_message_logger\nmsg={body}\nbuild_message_logger exception=\n{err_stack_trace}"
                     )
-                if (
-                    GBSERVER_RAISE_BUILD_EXCEPTIONS
-                ):  # Initially enabled only during build tests.
+                if GBSERVER_RAISE_BUILD_EXCEPTIONS:  # Initially enabled only during build tests.
                     logger.error(
                         "Marking build %s as failed due to exception logged above",
                         build_id,
@@ -659,9 +625,7 @@ class BuildRunner(AbstractBuildRunner):
             logger.error("Could not cancel build %s", self.stored_build.uuid)
 
         try:
-            self.__update_stored_build_status(
-                status=Status.FAILED, failure_reason=failure_reason
-            )
+            self.__update_stored_build_status(status=Status.FAILED, failure_reason=failure_reason)
         except Exception as e:
             logger.error("Could not mark build %s as failed", self.stored_build.uuid)
 
@@ -696,9 +660,7 @@ class BuildRunner(AbstractBuildRunner):
 
     def __process_workload_status_event(self: Self, event: BuildEvent) -> None:
         payload = event.payload
-        assert isinstance(
-            payload, BuildEventWorkloadStatusPayload
-        ), f"payload is invalid: {event}"
+        assert isinstance(payload, BuildEventWorkloadStatusPayload), f"payload is invalid: {event}"
         logger.info(
             "Workload status is %s for build %s",
             payload.status,
@@ -707,9 +669,7 @@ class BuildRunner(AbstractBuildRunner):
 
     def __process_metrics_event(self: Self, event: BuildEvent) -> None:
         payload = event.payload
-        assert isinstance(
-            payload, BuildEventMetricsPayload
-        ), f"payload is invalid: {event}"
+        assert isinstance(payload, BuildEventMetricsPayload), f"payload is invalid: {event}"
         logger.info(
             "Got some metrics for the build '%s' : %s",
             event.run_metadata,
@@ -769,9 +729,7 @@ class BuildRunner(AbstractBuildRunner):
     def __process_terminate_event(self: Self, event: BuildEvent) -> None:
         build_id = event.run_metadata.build_id
         assert build_id is not None, f"build_id is missing: {event}"
-        assert (
-            build_id == self.stored_build.uuid
-        ), f"got an unknown build: {build_id} {event}"
+        assert build_id == self.stored_build.uuid, f"got an unknown build: {build_id} {event}"
         payload = event.payload
         assert isinstance(payload, BuildEventTerminatePayload), "payload is invalid"
         self.build_message_logger.info(markdown=payload.msg, triggering_event=event)
@@ -780,9 +738,7 @@ class BuildRunner(AbstractBuildRunner):
         run_meta = event.run_metadata
         build_id = run_meta.build_id
         assert build_id is not None, f"build_id is missing: {event}"
-        assert (
-            build_id == self.stored_build.uuid
-        ), f"got an unknown build: {build_id} {event}"
+        assert build_id == self.stored_build.uuid, f"got an unknown build: {build_id} {event}"
         payload = event.payload
         assert isinstance(payload, BuildEventMessagePayload), "payload is invalid"
         target_name = run_meta.target_name
@@ -806,9 +762,7 @@ Build ID    : {build_id}
         payload = event.payload
         run_info = event.run_metadata
         build_id = run_info.build_id
-        assert (
-            build_id == self.stored_build.uuid
-        ), f"got an unknown build: {build_id} {event}"
+        assert build_id == self.stored_build.uuid, f"got an unknown build: {build_id} {event}"
         assert isinstance(build_id, str)
         build_finished = False
         assert isinstance(
@@ -817,9 +771,7 @@ Build ID    : {build_id}
         logger.info("got a status: %s and a message: %s", payload.status, payload.msg)
         logger.info("run_info: %s", run_info)
         if self.build_run is None:
-            logger.warning(
-                "no run found for the build %s , assuming failure on creation", build_id
-            )
+            logger.warning("no run found for the build %s , assuming failure on creation", build_id)
             if run_info.type != "Build":
                 logger.info("not a build status event: %s, ignoring...", run_info.type)
                 return build_finished
@@ -839,9 +791,7 @@ Build ID    : {build_id}
             logger.error("unsupported run info type: %s", run_info)
         return build_finished
 
-    def __process_artifact_event(
-        self: Self, event: BuildEvent, pushed: bool = False
-    ) -> None:
+    def __process_artifact_event(self: Self, event: BuildEvent, pushed: bool = False) -> None:
         logger.info("artifact event: %s", event)
         payload = event.payload
         if pushed:
@@ -856,9 +806,7 @@ Build ID    : {build_id}
         logger.info("run_info: %s", run_info)
         build_id = run_info.build_id
         assert build_id is not None, f"build_id is missing: {event}"
-        assert (
-            build_id == self.stored_build.uuid
-        ), f"got an unknown build: {build_id} {event}"
+        assert build_id == self.stored_build.uuid, f"got an unknown build: {build_id} {event}"
         stored_build = self.stored_build
         target_id = run_info.targetrun_id
         logger.info(
@@ -915,9 +863,7 @@ Build ID    : {build_id}
             self.__update_target_with_artifact(event=event, artifact=artifact)
         else:
             art_store = self.storage.artifact_registry
-            artifact = art_store.get_by_uri(
-                uri=normalized_uri, space_name=stored_build.space_name
-            )
+            artifact = art_store.get_by_uri(uri=normalized_uri, space_name=stored_build.space_name)
             assert isinstance(
                 artifact, ArtifactRegistration
             ), f"failed to find an artifact registered for uri: {normalized_uri}"
@@ -993,9 +939,7 @@ Download : {download_msg}
         if target is None:
             # TODO: Not sure we ever get here since it seems like we call this on an earlier event.
             logger.info("target %s doesn't exist, creating...", target_id)
-            self.__create_and_store_target_run(
-                event=event, output_artifacts=output_artifacts
-            )
+            self.__create_and_store_target_run(event=event, output_artifacts=output_artifacts)
         else:
             logger.info("updating the target %s with artifact: %s", target_id, artifact)
             assert isinstance(target, StoredTargetRun)
@@ -1102,16 +1046,10 @@ Download : {download_msg}
         payload = event.payload
         assert isinstance(payload, BuildEventStatusPayload)
         logger.info("stored_target_run %s", stored_target_run)
-        if (
-            stored_target_run.status is Status.PENDING
-            and payload.status is Status.RUNNING
-        ):
+        if stored_target_run.status is Status.PENDING and payload.status is Status.RUNNING:
             logger.info("target started running at %s", event.timestamp)
             stored_target_run.started_at = event.timestamp
-        if (
-            stored_target_run.status is Status.RUNNING
-            and payload.status is not Status.RUNNING
-        ):
+        if stored_target_run.status is Status.RUNNING and payload.status is not Status.RUNNING:
             logger.info("target started finished running at %s", event.timestamp)
             stored_target_run.finished_at = event.timestamp
         stored_target_run.status = payload.status
@@ -1256,9 +1194,7 @@ Download : {download_msg}
                         f"Registration not found for target {target_name} in space {self.stored_build.space_name}, input {input_name}={uri}"
                     )
             elif len(items) > 1:
-                raise ValueError(
-                    f"Target input uri {uri} has {len(items)} registrations"
-                )
+                raise ValueError(f"Target input uri {uri} has {len(items)} registrations")
             else:
                 item = items[0]
             assert isinstance(item, ArtifactRegistration)
@@ -1268,9 +1204,7 @@ Download : {download_msg}
 
         return input_artifacts
 
-    def __register_input_artifact(
-        self, input_name: str, uri: str
-    ) -> ArtifactRegistration:
+    def __register_input_artifact(self, input_name: str, uri: str) -> ArtifactRegistration:
         """Register a URI-based input artifact and get the registered ArtifactRegistration"""
         asset = Asset(uri)
         artifact_type = asset.get_asset_type()
@@ -1297,9 +1231,7 @@ Download : {download_msg}
         status = payload.status
         failure_reason = ""
         if status is Status.FAILED:
-            failure_reason = (
-                payload.msg if payload.msg else "got a build failed status event!"
-            )
+            failure_reason = payload.msg if payload.msg else "got a build failed status event!"
 
         # Update the build status as the last thing so JobStats and PR are updated before declaring the build complete - tests expect this.
         valid_status_values = [Status.PENDING, Status.RUNNING]
@@ -1314,13 +1246,9 @@ Download : {download_msg}
                 self.stored_build.uuid,
                 str(status),
             )
-            push_failed_status_update_metric(
-                self.stored_build.uuid, valid_status_values
-            )
+            push_failed_status_update_metric(self.stored_build.uuid, valid_status_values)
         elif status == Status.SUCCESS:
-            logger.info(
-                "post the build status/lineage link once again upon build success..."
-            )
+            logger.info("post the build status/lineage link once again upon build success...")
             build_status_link = get_build_status_link(build_id=build_id)
             body = f"🥳🎉 Build status and lineage: {build_status_link}"
             self.build_message_logger.info(markdown=body, triggering_event=event)
@@ -1354,8 +1282,7 @@ Download : {download_msg}
         )
         if (
             status == Status.RUNNING
-            and self.__get_stored_build_status(self.stored_build.uuid)
-            == Status.CANCEL_REQUESTED
+            and self.__get_stored_build_status(self.stored_build.uuid) == Status.CANCEL_REQUESTED
         ):
             return None  # Don't do anything and process cancellation from the worker event loop.
         # Update the PR for failed and cancelled builds
@@ -1371,9 +1298,7 @@ Download : {download_msg}
 
         # If the build is finished, use finalize_build_status to update targets, steps, artifacts, and the build itself.
         if status.is_finished():
-            build = finalize_build_status(
-                self.stored_build.uuid, status, failure_reason
-            )
+            build = finalize_build_status(self.stored_build.uuid, status, failure_reason)
             if failure_reason:
                 self.stored_build.failure_reason = failure_reason
                 self.build_message_logger.error(failure_reason)
@@ -1438,9 +1363,7 @@ Download : {download_msg}
                 input_artifacts=input_artifacts,
             )
         if run_info.skipped_for_prerun_target_id:
-            stored_target_run.skipped_for_prerun_target_id = (
-                run_info.skipped_for_prerun_target_id
-            )
+            stored_target_run.skipped_for_prerun_target_id = run_info.skipped_for_prerun_target_id
             self.storage.target_storage.update(stored_target_run)
         if payload.status == Status.SUCCESS:
             # Target complete - record lineage here
@@ -1496,16 +1419,10 @@ Download : {download_msg}
                 status_msg=payload.msg,
                 started_at=event.timestamp,
             )
-        if (
-            stored_step_run.status is Status.PENDING
-            and payload.status is Status.RUNNING
-        ):
+        if stored_step_run.status is Status.PENDING and payload.status is Status.RUNNING:
             logger.info("step started running at %s", event.timestamp)
             stored_step_run.started_at = event.timestamp
-        elif (
-            stored_step_run.status is Status.RUNNING
-            and payload.status is not Status.RUNNING
-        ):
+        elif stored_step_run.status is Status.RUNNING and payload.status is not Status.RUNNING:
             logger.info("step started finished running at %s", event.timestamp)
             stored_step_run.finished_at = event.timestamp
         stored_step_run.status = payload.status

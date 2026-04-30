@@ -1,3 +1,5 @@
+"""Utils module."""
+
 import click
 
 from gbserver.storage import singleton_storage
@@ -48,9 +50,8 @@ class MutexOption(click.Option):
 def set_failed_build_status(build_id: str):
     # DEPRECATED in favor of finalize_build_status()
     # Don't update targets or steps if already FAILED or SUCCESS or CANCELED w/o updating the update_time field
-    _set_build_status(
-        build_id, status=Status.FAILED, unfinished_targets_and_steps_only=True
-    )
+    """Set the failed build status."""
+    _set_build_status(build_id, status=Status.FAILED, unfinished_targets_and_steps_only=True)
 
 
 def _set_build_status(

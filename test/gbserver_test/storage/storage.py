@@ -43,9 +43,7 @@ class AbstractStorageTestSupport:
             "Sub-classes must implement this to create instances to be stored in the test storage"
         )
 
-    def _get_ascending_sorted_test_items(
-        self, count: int
-    ) -> tuple[str, list[BaseStoredItem]]:
+    def _get_ascending_sorted_test_items(self, count: int) -> tuple[str, list[BaseStoredItem]]:
         """Get a list of items to store sorted by the returned column name.
         This uses the _get_test_item() method to generate the items and the self.sort_column which is expected to match
         the sort order of the indexed items 0,1,2,3,...
@@ -105,9 +103,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
     def _get_test_item(self, index: int) -> BaseStoredItem:
         return self.config._get_test_item(index)
 
-    def _get_ascending_sorted_test_items(
-        self, count: int
-    ) -> tuple[str, list[BaseStoredItem]]:
+    def _get_ascending_sorted_test_items(self, count: int) -> tuple[str, list[BaseStoredItem]]:
         return self.config._get_ascending_sorted_test_items(count)
 
     def _get_where_test_item(self, index: int) -> BaseStoredItem:
@@ -553,9 +549,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
         assert (
             len(field_names) > 0
         ), "This helper test method must be called with 1 or 2 field names"
-        assert (
-            len(field_names) <= 2
-        ), "This helper test method only supports 1 or 2 field names"
+        assert len(field_names) <= 2, "This helper test method only supports 1 or 2 field names"
         item1 = self._get_test_item(1)
         item2a = self._get_test_item(2)
         item2b = None if len(field_names) == 1 else self._get_test_item(2)
@@ -605,17 +599,13 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
             try:
                 storage.add(item2b)
             except Exception as exc:
-                assert (
-                    False
-                ), f"Was NOT allowed to add the item with N-1 fields the same"
+                assert False, f"Was NOT allowed to add the item with N-1 fields the same"
 
             # Test update/upsert (new item)
             try:
                 storage.update(item2b)
             except Exception as exc:
-                assert (
-                    False
-                ), f"Was NOT allowed to upsert the item with N-1 fields the same"
+                assert False, f"Was NOT allowed to upsert the item with N-1 fields the same"
             # Clean up storage
             storage.delete(item2b.uuid)
             assert storage.get_by_uuid(item2b.uuid) is None
@@ -650,9 +640,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
 
         # Query beyond the last page
         paginate = Pagination(index=pages, size=size)
-        results = storage.get_by_where(
-            where=None, query_control=QueryControl(pagination=paginate)
-        )
+        results = storage.get_by_where(where=None, query_control=QueryControl(pagination=paginate))
         self._verify_get_results([], results)
 
     def test_sorting(self):
@@ -763,9 +751,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
                 updates[name] = value
 
         # Update the stored item's attributes to match item1, but with should_update returning False
-        updated_item0 = storage.update_fields(
-            item0.uuid, updates, should_update=lambda item: False
-        )
+        updated_item0 = storage.update_fields(item0.uuid, updates, should_update=lambda item: False)
         assert updated_item0 == None, "The update did not fail"
 
         # Update the stored item's attributes to match item1, with should_update checking attributes match
@@ -775,9 +761,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
                     return False
             return True
 
-        updated_item0 = storage.update_fields(
-            item0.uuid, updates, should_update=check_matches
-        )
+        updated_item0 = storage.update_fields(item0.uuid, updates, should_update=check_matches)
         assert item0 != updated_item0, "Updates do not appear to have taken effect"
 
         # Make sure the stored item got updated with item1 public attributes.
@@ -788,9 +772,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
             ), "Updated attribute {name} did not get assigned value {value}"
 
         item = storage.get_by_uuid(item0.uuid)
-        assert (
-            item == updated_item0
-        ), "Reading item from db did not give the updated item"
+        assert item == updated_item0, "Reading item from db did not give the updated item"
 
         # Make sure we can update protected UUID column
         try:
@@ -822,9 +804,7 @@ class AbstractExistingDataReadTest(AbstractReadonlySingletonStorageUsingTest):
         except Exception as exc:
             assert False, f"Got exception reading legacy data {exc}"
 
-    def _get_tested_readonly_storage(
-        self, storage: singleton_storage.SingletonAdminStorage
-    ):
+    def _get_tested_readonly_storage(self, storage: singleton_storage.SingletonAdminStorage):
         raise ValueError("Subclass must implement this method")
 
     def _validate_item(self, item: BaseStoredItem):

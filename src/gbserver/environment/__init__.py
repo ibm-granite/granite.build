@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Init module."""
+
 from gbserver.environment.environment import Environment
 
 Environment._load_environment_types()

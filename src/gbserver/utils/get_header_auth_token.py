@@ -1,3 +1,5 @@
+"""Get header auth token."""
+
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 

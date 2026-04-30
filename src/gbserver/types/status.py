@@ -14,10 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Status module."""
+
 from enum import StrEnum, auto
 
 
 class Status(StrEnum):
+    """Status implementation."""
 
     SUBMITTED = auto()
     PENDING = auto()

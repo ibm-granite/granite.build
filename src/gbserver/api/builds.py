@@ -165,9 +165,7 @@ def list_builds(
     space_name: str = "",
     source_uri: str = "",
     username: str = "",  # needed
-    tag: Annotated[
-        list[str] | None, Query()
-    ] = [],  # Specified as multiple tag=v1&tag=v2 in URI
+    tag: Annotated[list[str] | None, Query()] = [],  # Specified as multiple tag=v1&tag=v2 in URI
     status: Annotated[
         list[str] | None, Query()
     ] = [],  # Specified as multiple status=RUNNING&status=PENDING in URI
@@ -273,11 +271,7 @@ def validate_build(req: BuildValidateRequest) -> JSONResponse:
         space_uri=req.space_uri,
         validation_type=req.validation_type,
     )
-    status_code = (
-        status.HTTP_200_OK
-        if errors.is_valid()
-        else status.HTTP_422_UNPROCESSABLE_CONTENT
-    )
+    status_code = status.HTTP_200_OK if errors.is_valid() else status.HTTP_422_UNPROCESSABLE_CONTENT
     return JSONResponse(
         content=errors.model_dump(),
         status_code=status_code,
@@ -310,9 +304,7 @@ def read_build(build_id: str) -> GetBuildResponse:
     build_storage = storage.build_storage
     item = build_storage.get_by_uuid(build_id)
     if item is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="build not found!")
     assert isinstance(item, StoredBuild), f"invalid item: {item}"
     resp = GetBuildResponse(build=item)
     return resp
@@ -352,15 +344,11 @@ def get_build_status2(build_id: str) -> BuildStatusResponse2:
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="build not found!")
     assert isinstance(build, StoredBuild)
     build.build_archive = ""
     row_filter = get_row_filter(build_id=build_id)
-    target_runs = cast(
-        List[StoredTargetRun], storage.target_storage.get_by_where(row_filter)
-    )
+    target_runs = cast(List[StoredTargetRun], storage.target_storage.get_by_where(row_filter))
     target_records = []
     for target in target_runs:
         input_artifacts, output_artifacts = __get_artifacts(storage, target)
@@ -385,9 +373,7 @@ def get_buildevents(build_id: str):
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="build not found!")
     assert isinstance(build, StoredBuild)
 
     row_filter = get_row_filter(build_id=build_id)
@@ -421,15 +407,11 @@ async def cancel_build(build_id: str, request: Request) -> CancelBuildResponse:
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="build not found!")
     assert isinstance(build, StoredBuild)
     user: User = request.state.data["user"]
     if user is None:  # Should never hit this
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="user not found"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="user not found")
     elif (
         user.login != build.username
         and not is_space_admin(request, build.space_name)

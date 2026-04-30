@@ -1,3 +1,5 @@
+"""Click utils module."""
+
 import json
 import os
 import sys
@@ -9,6 +11,8 @@ from gbcli.utils.utils import custom_parse_markdown_str, parse_markdown_str
 
 
 class FileOrStringParamType(click.ParamType):
+    """File Or String Param Type implementation."""
+
     name = "fileOrString"
 
     def convert(self, value, param, ctx):
@@ -32,6 +36,7 @@ def validation_formatting(
     format="simple",
     json_to_stderr=False,
 ):
+    """Validation formatting."""
     build_path = callback_args.get("build_path", "")
     validations = callback_args.get("validations", [])
     reformatted_original_yaml = callback_args.get("reformatted_original_yaml", "")
@@ -87,9 +92,7 @@ def validation_formatting(
         return
 
     option_text = (
-        "Use '--verbose-validation` to see more details."
-        if not verbose_validation
-        else ""
+        "Use '--verbose-validation` to see more details." if not verbose_validation else ""
     )
     if number_errors > 0:
         click.echo(
@@ -124,15 +127,9 @@ def validation_formatting(
                         parse_markdown_str(f"```\n{reformatted_original_yaml}\n ```"),
                         err=True,
                     )
-                    click.echo(
-                        "Build definition after the suggested correction:", err=True
-                    )
-                    click.echo(
-                        parse_markdown_str(f"```\n{updated_yaml}\n```"), err=True
-                    )
+                    click.echo("Build definition after the suggested correction:", err=True)
+                    click.echo(parse_markdown_str(f"```\n{updated_yaml}\n```"), err=True)
                 else:
                     if solution and len(solution) > 0:
                         click.echo(parse_markdown_str("***Solution:***"), err=True)
-                        click.echo(
-                            parse_markdown_str(f"```\n{solution}\n```"), err=True
-                        )
+                        click.echo(parse_markdown_str(f"```\n{solution}\n```"), err=True)

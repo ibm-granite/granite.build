@@ -1,3 +1,5 @@
+"""Lakehouse utils module."""
+
 from typing import Optional
 
 from tenacity import retry, stop_after_attempt, wait_exponential

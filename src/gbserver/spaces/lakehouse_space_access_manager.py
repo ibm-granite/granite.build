@@ -73,9 +73,7 @@ class LakehouseSpaceAccessManager(ISpaceAccessManager):
         try:
             space_list = []
             storage = get_admin_storage()
-            storage_items = cast(
-                List[StoredSpace], storage.space_storage.get_by_where(None)
-            )
+            storage_items = cast(List[StoredSpace], storage.space_storage.get_by_where(None))
             storage_namespaces = [item.lakehouse_namespace for item in storage_items]
 
             if storage_namespaces and self._lh_token:
@@ -88,10 +86,7 @@ class LakehouseSpaceAccessManager(ISpaceAccessManager):
                 if namespaces:
                     for item in storage_items:
                         for namespace_details in namespaces:
-                            if (
-                                item.lakehouse_namespace
-                                == namespace_details["namespace"]
-                            ):
+                            if item.lakehouse_namespace == namespace_details["namespace"]:
                                 space_list.append(
                                     SpaceAccessInfo(
                                         space=item,
@@ -148,9 +143,7 @@ class LakehouseSpaceAccessManager(ISpaceAccessManager):
             logger.error(f"Error get space access check: {e}")
             return False
 
-    def has_build_access(
-        self, username: str, build_id: str
-    ) -> Union[bool, JSONResponse]:
+    def has_build_access(self, username: str, build_id: str) -> Union[bool, JSONResponse]:
         """Check if user has access to the specified build via its space.
 
         Args:

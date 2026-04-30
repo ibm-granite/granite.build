@@ -1,3 +1,5 @@
+"""Command secret module."""
+
 import json
 import re
 import sys
@@ -73,18 +75,20 @@ def list(ctx, space, personal, format, skip_version_check, quiet):
                 spinner = callback_args.get("spinner", "")
                 if personal:
                     user = callback_args.get("user", "")
-                    callback_message = (
-                        f"\r📝 Obtaining secrets for user '{user}'... {spinner}"
-                    )
+                    callback_message = f"\r📝 Obtaining secrets for user '{user}'... {spinner}"
                 else:
                     space = callback_args.get("space", "")
                     space_name = callback_args.get("space_name", "")
-                    callback_message = f"\r📝 Obtaining secrets for space '{space}' ({space_name})... {spinner}"
+                    callback_message = (
+                        f"\r📝 Obtaining secrets for space '{space}' ({space_name})... {spinner}"
+                    )
                 click.echo(callback_message, nl=False)
             case "listed_secrets":
                 if personal:
                     user = callback_args.get("user", "")
-                    callback_message = f"{erase_sequence}📝 List of secrets obtained for user '{user}':"
+                    callback_message = (
+                        f"{erase_sequence}📝 List of secrets obtained for user '{user}':"
+                    )
                 else:
                     space = callback_args.get("space", "")
                     space_name = callback_args.get("space_name", "")
@@ -106,9 +110,7 @@ def list(ctx, space, personal, format, skip_version_check, quiet):
         if secrets:
             if format == "plain":
                 secrets_table = [[s] for s in secrets["secrets"]]
-                secrets_output = tabulate(
-                    secrets_table, ["SECRET_NAME"], tablefmt="plain"
-                )
+                secrets_output = tabulate(secrets_table, ["SECRET_NAME"], tablefmt="plain")
             else:
                 secrets_output = json.dumps(secrets)
 
@@ -170,7 +172,9 @@ def get(ctx, secret_name, space, personal, format, skip_version_check, quiet):
                 spinner = callback_args.get("spinner", "")
                 if personal:
                     user = callback_args.get("user", "")
-                    callback_message = f"\r📝 Obtaining secret {secret_name} from user '{user}'... {spinner}"
+                    callback_message = (
+                        f"\r📝 Obtaining secret {secret_name} from user '{user}'... {spinner}"
+                    )
                 else:
                     space = callback_args.get("space", "")
                     space_name = callback_args.get("space_name", "")
@@ -179,7 +183,9 @@ def get(ctx, secret_name, space, personal, format, skip_version_check, quiet):
             case "obtained_secret":
                 if personal:
                     user = callback_args.get("user", "")
-                    callback_message = f"{erase_sequence}📝 Secret {secret_name} obtained from user '{user}':"
+                    callback_message = (
+                        f"{erase_sequence}📝 Secret {secret_name} obtained from user '{user}':"
+                    )
                 else:
                     space = callback_args.get("space", "")
                     space_name = callback_args.get("space_name", "")
@@ -207,9 +213,7 @@ def get(ctx, secret_name, space, personal, format, skip_version_check, quiet):
                 )
 
                 if not personal:
-                    secrets_output = (
-                        f"Space name: {secret['space_name']}\n" + secrets_output
-                    )
+                    secrets_output = f"Space name: {secret['space_name']}\n" + secrets_output
             else:
                 secrets_output = json.dumps(secret)
 
@@ -337,7 +341,9 @@ def create(
         if secret:
             if format == "plain":
                 if personal:
-                    secrets_output = f"\n✅ New secret {secret_name} successfully created for user '{user}'."
+                    secrets_output = (
+                        f"\n✅ New secret {secret_name} successfully created for user '{user}'."
+                    )
                 else:
                     secrets_output = f"\n✅ New secret {secret_name} successfully created in space '{space_name}'."
             else:
@@ -416,7 +422,9 @@ def update(
                 spinner = callback_args.get("spinner", "")
                 if personal:
                     user = callback_args.get("user", "")
-                    callback_message = f"\r📝 (2/2) Updating secret {secret_name} for user '{user}'... {spinner}"
+                    callback_message = (
+                        f"\r📝 (2/2) Updating secret {secret_name} for user '{user}'... {spinner}"
+                    )
                 else:
                     space = callback_args.get("space", "")
                     space_name = callback_args.get("space_name", "")
@@ -450,9 +458,13 @@ def update(
         if secret:
             if format == "plain":
                 if personal:
-                    secrets_output = f"\n✅ Secret {secret_name} successfully updated for user '{user}'."
+                    secrets_output = (
+                        f"\n✅ Secret {secret_name} successfully updated for user '{user}'."
+                    )
                 else:
-                    secrets_output = f"\n✅ Secret {secret_name} successfully updated in space '{space_name}'."
+                    secrets_output = (
+                        f"\n✅ Secret {secret_name} successfully updated in space '{space_name}'."
+                    )
             else:
                 secrets_output = json.dumps(secret)
 
@@ -512,7 +524,9 @@ def delete(ctx, secret_name, space, personal, format, skip_version_check, quiet)
                 spinner = callback_args.get("spinner", "")
                 if personal:
                     user = callback_args.get("user", "")
-                    callback_message = f"\r📝 Deleting secret {secret_name} for user '{user}'... {spinner}"
+                    callback_message = (
+                        f"\r📝 Deleting secret {secret_name} for user '{user}'... {spinner}"
+                    )
                 else:
                     space = callback_args.get("space", "")
                     space_name = callback_args.get("space_name", "")
@@ -537,9 +551,13 @@ def delete(ctx, secret_name, space, personal, format, skip_version_check, quiet)
         if secret:
             if format == "plain":
                 if personal:
-                    secrets_output = f"\n✅ Secret {secret_name} successfully deleted for user '{user}'."
+                    secrets_output = (
+                        f"\n✅ Secret {secret_name} successfully deleted for user '{user}'."
+                    )
                 else:
-                    secrets_output = f"\n✅ Secret {secret_name} successfully deleted in space '{space_name}'."
+                    secrets_output = (
+                        f"\n✅ Secret {secret_name} successfully deleted in space '{space_name}'."
+                    )
             else:
                 secrets_output = json.dumps(secret)
 

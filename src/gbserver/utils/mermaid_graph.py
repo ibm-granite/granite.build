@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Mermaid graph module."""
+
 from typing import List, Set, Tuple
 
 from gbserver.types.buildconfig import BuildConfig

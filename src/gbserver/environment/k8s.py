@@ -123,13 +123,9 @@ class AtomicApiClient:
                         await config.load_kube_config_from_dict(
                             config_dict=kube_config_dict, context=kube_context
                         )
-                        logger.info(
-                            "loaded the context %s from kube_config_dict", kube_context
-                        )
+                        logger.info("loaded the context %s from kube_config_dict", kube_context)
                     else:
-                        await config.load_kube_config_from_dict(
-                            config_dict=kube_config_dict
-                        )
+                        await config.load_kube_config_from_dict(config_dict=kube_config_dict)
                         logger.info("loaded the default context from kube_config_dict")
                 else:
                     logger.info("no kube_config_string was provided")
@@ -148,9 +144,7 @@ class AtomicApiClient:
                 cfg = kubernetes_asyncio.client.Configuration.get_default_copy()
                 logger.info("Default SSL verification: %s", cfg.verify_ssl)
                 cfg.verify_ssl = ssl_verification
-                logger.info(
-                    "SSL verification from environment.yaml: %s", cfg.verify_ssl
-                )
+                logger.info("SSL verification from environment.yaml: %s", cfg.verify_ssl)
                 logger.info("creating the kubernetes_asyncio.client.ApiClient()")
                 api_client = kubernetes_asyncio.client.ApiClient(configuration=cfg)
                 return api_client
@@ -173,9 +167,7 @@ class K8s(Environment):
         self.launched_releases: Dict[str, str] = {}
         self.created_setup_secrets: Dict[str, str] = {}
         self.launch_params: Dict[str, Dict] = {}  # Store launch params for retry
-        self.monitors: Dict[str, "AppWrapperMonitor"] = (
-            {}
-        )  # Store monitor instances for retry
+        self.monitors: Dict[str, "AppWrapperMonitor"] = {}  # Store monitor instances for retry
         # Lazily retrieve the process-wide singleton if not explicitly passed
         if node_health_tracker is None:
             from gbserver.resilience import get_node_health_tracker
@@ -183,9 +175,7 @@ class K8s(Environment):
             node_health_tracker = get_node_health_tracker()
         self.node_health_tracker = node_health_tracker
         assert environment_config is not None, "environment_config is None"
-        assert (
-            environment_config.config is not None
-        ), "environment_config.config is None"
+        assert environment_config.config is not None, "environment_config.config is None"
         self.namespace: str = environment_config.config["namespace"]
         super().__init__(
             event_q=event_q,
@@ -221,9 +211,7 @@ class K8s(Environment):
             assert self.secrets is not None, "self.secrets is None"
             self.kube_context = self.secrets.get(kube_context_secret_name)
             if self.kube_context:
-                logger.info(
-                    "loaded self.kube_context %s from secrets", self.kube_context
-                )
+                logger.info("loaded self.kube_context %s from secrets", self.kube_context)
         if ssl_verification is not None:
             assert self.ssl_verification is not None, "self.ssl_verification is None"
             self.ssl_verification = ssl_verification
@@ -276,12 +264,8 @@ class K8s(Environment):
         if not runmetadata.build_id:
             logger.warning("build_id is not specified")
         labels["granite-dot-build/build-id"] = runmetadata.build_id or "no_build_id"
-        labels["granite-dot-build/target-name"] = (
-            runmetadata.target_name or "no_target_name"
-        )
-        labels["granite-dot-build/build-target-id"] = (
-            runmetadata.targetrun_id or "no_targetrun_id"
-        )
+        labels["granite-dot-build/target-name"] = runmetadata.target_name or "no_target_name"
+        labels["granite-dot-build/build-target-id"] = runmetadata.targetrun_id or "no_targetrun_id"
         labels["granite-dot-build/build-step-id"] = (
             runmetadata.targetsteprun_id or "no_targetsteprun_id"
         )
@@ -298,6 +282,7 @@ class K8s(Environment):
         space_secrets: Optional[Dict[str, str]] = None,
         **kwargs,
     ) -> Dict:
+        """Initialize helm."""
         if space_secrets is None:
             return {}
         setup_id_hash = short_alphanumeric_lower_hash(setup_id)
@@ -336,23 +321,17 @@ class K8s(Environment):
                     while retry_count < max_tries:
                         retry_count += 1
                         try:
-                            await v1.create_namespaced_secret(
-                                namespace=self.namespace, body=secret
-                            )
+                            await v1.create_namespaced_secret(namespace=self.namespace, body=secret)
                             break
                         except kubernetes_asyncio.client.exceptions.ApiException as ae:
                             if retry_count >= max_tries:
                                 raise
-                            logger.warning(
-                                "retrying because secret creation failed, error: %s", ae
-                            )
+                            logger.warning("retrying because secret creation failed, error: %s", ae)
                             await asyncio.sleep(1)
                         except aiohttp.client_exceptions.ServerDisconnectedError as se:
                             if retry_count >= max_tries:
                                 raise
-                            logger.warning(
-                                "retrying because secret creation failed, error: %s", se
-                            )
+                            logger.warning("retrying because secret creation failed, error: %s", se)
                             await asyncio.sleep(1)
                     self.created_setup_secrets[setup_id] = setup_id_hash
                     logger.info(
@@ -367,6 +346,7 @@ class K8s(Environment):
         return {"space": {"secret": setup_id_hash}}
 
     async def teardown_helm(self: Self, setup_id: str):
+        """Teardown helm."""
         if setup_id not in self.created_setup_secrets:
             return
         setup_id_hash = self.created_setup_secrets[setup_id]
@@ -377,12 +357,8 @@ class K8s(Environment):
         ) as api:
             try:
                 v1 = client.CoreV1Api(api)
-                await v1.delete_namespaced_secret(
-                    namespace=self.namespace, name=setup_id_hash
-                )
-                logger.info(
-                    f"Secret '{setup_id_hash}' deleted in namespace '{self.namespace}'."
-                )
+                await v1.delete_namespaced_secret(namespace=self.namespace, name=setup_id_hash)
+                logger.info(f"Secret '{setup_id_hash}' deleted in namespace '{self.namespace}'.")
             except Exception as e:
                 logger.error(
                     "failed to delete the space secret (%s) in namespace %s, error: %s",
@@ -414,9 +390,7 @@ class K8s(Environment):
         except client.ApiException as e:
             logger.error("Error fetching pods: %s", str(e))
             return None
-        logger.info(
-            "Found the pods %s for appwrapper %s", str(pod_names), appwrapper_name
-        )
+        logger.info("Found the pods %s for appwrapper %s", str(pod_names), appwrapper_name)
         return pod_names
 
     async def wait_for_pod_running(
@@ -449,13 +423,9 @@ class K8s(Environment):
         Fetch all user container names for a given pod.
         """
         try:
-            pod_object = await v1.read_namespaced_pod(
-                name=pod_name, namespace=namespace
-            )
+            pod_object = await v1.read_namespaced_pod(name=pod_name, namespace=namespace)
             container_names = [
-                c.name
-                for c in pod_object.spec.containers
-                if "sidecar" not in c.name.lower()
+                c.name for c in pod_object.spec.containers if "sidecar" not in c.name.lower()
             ]
             logger.info(
                 "======= Detected user containers for pod ======== '%s': %s",
@@ -514,9 +484,7 @@ class K8s(Environment):
             for tool in ["kubectl", "oc"]:
                 cmd = [tool] + base_cmd[1:] + cmd_args
                 command_executed = " ".join(cmd)
-                logger.info(
-                    f"====== Executing the following command: {command_executed} =====\n"
-                )
+                logger.info(f"====== Executing the following command: {command_executed} =====\n")
                 try:
                     proc = await asyncio.create_subprocess_exec(
                         *cmd,
@@ -676,16 +644,12 @@ class K8s(Environment):
         if setup_config is None:
             setup_config = {}
         build_step_k8s_config = self._get_step_env_config(config)
-        pull_secrets = (
-            build_step_k8s_config.secrets.secret_names_to_use_as_pull_secret or []
-        )
+        pull_secrets = build_step_k8s_config.secrets.secret_names_to_use_as_pull_secret or []
         environment_variables = (
             build_step_k8s_config.secrets.secret_names_to_use_as_env_variable or []
         )
 
-        release_name = (
-            HELM_RELEASE_NAME_PREFIX + short_alphanumeric_lower_hash(launch_id).lower()
-        )
+        release_name = HELM_RELEASE_NAME_PREFIX + short_alphanumeric_lower_hash(launch_id).lower()
         chart_path_str = str(targetsteprun_asset_dir / launcher_config[CHART_KEY])
         values_flags = ""
         values_default_file_path_str = str(
@@ -724,9 +688,7 @@ class K8s(Environment):
                     (f"k8s.userImagePullSecrets[{idx}].name", pull_secret_name)
                 )
                 # Write dockerconfigjson to a temp file
-                tmp_file = tempfile.NamedTemporaryFile(
-                    delete=False, mode="w", suffix=".json"
-                )
+                tmp_file = tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".json")
                 tmp_file.write(pull_secret_value)
                 tmp_file.close()
                 dockerconfig_files.append((idx, tmp_file.name))
@@ -826,9 +788,7 @@ class K8s(Environment):
                             )
                             continue
                     if len(command_list) >= 2 and command_list[1] == "install":
-                        command_list = ["helm", "template", "--debug"] + command_list[
-                            2:
-                        ]
+                        command_list = ["helm", "template", "--debug"] + command_list[2:]
                         logger.info(
                             "we will try to 'helm template' instead to get more information: %s",
                             command_list,
@@ -901,9 +861,7 @@ class K8s(Environment):
                             break
                         await asyncio.sleep(poll_interval)
                     logger.info(f"======= AppWrapper is now: {state} !!! =========")
-                    pod_names = await self.get_appwrapper_pod_list(
-                        v1, namespace, appwrapper_name
-                    )
+                    pod_names = await self.get_appwrapper_pod_list(v1, namespace, appwrapper_name)
                     logger.info(f"======= AppWrapper Pods: {pod_names} =========")
 
                     logger.info(
@@ -1137,9 +1095,7 @@ class K8s(Environment):
             # Build node anti-affinity rules
             affinity = k8s_config.get("affinity", {})
             node_affinity = affinity.get("nodeAffinity", {})
-            required = node_affinity.get(
-                "requiredDuringSchedulingIgnoredDuringExecution", {}
-            )
+            required = node_affinity.get("requiredDuringSchedulingIgnoredDuringExecution", {})
             node_selector_terms = required.get("nodeSelectorTerms", [])
 
             # Collect existing match expressions
@@ -1504,9 +1460,7 @@ class K8s(Environment):
                 assert pod_processes_queue is not None, "pod_processes_queue is None"
                 assert event_q is not None, "event_q is None"
                 assert entity_run_metadata is not None, "entity_run_metadata is None"
-                assert (
-                    event_log_parser_configs is not None
-                ), "event_log_parser_configs is None"
+                assert event_log_parser_configs is not None, "event_log_parser_configs is None"
                 pod_name = await asyncio.wait_for(pod_processes_queue.get(), timeout=10)
                 logger.info("Starting log monitoring for pod %s", pod_name)
                 log_tasks.append(
@@ -1574,9 +1528,7 @@ class K8s(Environment):
                     running_count = 0
                     while phase == "Running":
                         assert self.config is not None, "self.config is None"
-                        assert (
-                            self.config.config is not None
-                        ), "self.config.config is None"
+                        assert self.config.config is not None, "self.config.config is None"
                         pod = await v1.read_namespaced_pod(
                             name=pod_name, namespace=self.config.config["namespace"]
                         )
@@ -1624,9 +1576,7 @@ class K8s(Environment):
                                 pod_name,
                                 ke,
                             )
-                        logger.info(
-                            "- Stopped monitoring for shutdown pod %s", pod_name
-                        )
+                        logger.info("- Stopped monitoring for shutdown pod %s", pod_name)
                         break
                     # if "Cannot connect to host" in str(ex) or ex.status == 403 or ex.status == 429 or ex.status == 503:
                     logger.error(
@@ -1655,15 +1605,11 @@ class K8s(Environment):
                         try:
                             self.seen_pods.remove(pod_name)
                         except KeyError as ke:
-                            logger.error(
-                                "failed to remove %s from seen_pods: %s", pod_name, ke
-                            )
+                            logger.error("failed to remove %s from seen_pods: %s", pod_name, ke)
                         logger.info("Stopped monitoring for shutdown pod %s", pod_name)
                         break
 
-    async def get_helm_pods(
-        self: Self, api: client.ApiClient, appwrapper_name: str
-    ) -> List[str]:
+    async def get_helm_pods(self: Self, api: client.ApiClient, appwrapper_name: str) -> List[str]:
         """Retrieve the list of active pods for a given Helm release."""
         v1 = client.CoreV1Api(api)
         try:
@@ -1674,9 +1620,7 @@ class K8s(Environment):
             for pod in pod_list.items:
                 if (
                     pod.metadata.labels is not None
-                    and pod.metadata.labels.get(
-                        "workload.codeflare.dev/appwrapper", None
-                    )
+                    and pod.metadata.labels.get("workload.codeflare.dev/appwrapper", None)
                     == appwrapper_name
                 ):
                     # gather logs only for pods in these states: Running, Succeeded, and Completed.
@@ -1712,9 +1656,7 @@ class K8s(Environment):
             logger.error(f"Error fetching pods: {e}")
             return []
 
-    async def get_pod_failed_events(
-        self, api: client.ApiClient, pod_name: str
-    ) -> List[str]:
+    async def get_pod_failed_events(self, api: client.ApiClient, pod_name: str) -> List[str]:
         """Fetches events related to a specific pod."""
         v1 = client.CoreV1Api(api)
         field_selector = f"involvedObject.name={pod_name}"
@@ -1725,16 +1667,12 @@ class K8s(Environment):
         )
         failed_events = []
         for event in events.items:
-            logger.debug(
-                f"[EVENT] {event.last_timestamp} - {event.reason}: {event.message}"
-            )
+            logger.debug(f"[EVENT] {event.last_timestamp} - {event.reason}: {event.message}")
             if event.reason == "Failed":
                 failed_events.append(event.message)
         return failed_events
 
-    async def get_appwrapper_status(
-        self, api: client.ApiClient, appwrapper_name: str
-    ) -> str:
+    async def get_appwrapper_status(self, api: client.ApiClient, appwrapper_name: str) -> str:
         """Fetch the status of the AppWrapper (displayed before terminating monitoring)."""
         custom_api = client.CustomObjectsApi(api)
         try:
@@ -1868,9 +1806,7 @@ class K8s(Environment):
                 raise ValueError("Missing 'volume' in storeload configuration")
 
             binding_config = {
-                BINDING_KEY: {
-                    "path": os.path.join("/", volume, assetstore.get_relpath(uri))
-                }
+                BINDING_KEY: {"path": os.path.join("/", volume, assetstore.get_relpath(uri))}
             }
             return binding_config, None
         elif storeload_config.mode == "cos_pull":
@@ -1919,9 +1855,7 @@ class K8s(Environment):
         assert isinstance(
             binding, dict
         ), f"expected binding to be a dict, actual: {type(binding)} {binding}"
-        assert (
-            "path" in binding
-        ), f"expected 'path' to be in the binding, actual: {binding}"
+        assert "path" in binding, f"expected 'path' to be in the binding, actual: {binding}"
         binding_path = binding["path"]
         logger.info("binding_path: %s", binding_path)
         binding_path_path = Path(binding_path)
@@ -1939,9 +1873,7 @@ class K8s(Environment):
         else:
             bucket_name = uri_bucket_name
         if not uri_bucket_path.startswith(f"{bucket_name}/"):
-            uri_bucket_path = (
-                f"{bucket_name}/{uri_bucket_path}" if uri_bucket_path else bucket_name
-            )
+            uri_bucket_path = f"{bucket_name}/{uri_bucket_path}" if uri_bucket_path else bucket_name
         use_mount = (
             storepush_config is not None
             and storepush_config.config is not None
@@ -2003,12 +1935,7 @@ class K8s(Environment):
                 raise ValueError("Did not find 'cache_path' in storeload configuration")
 
             hf_uri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)
-            binding_path = (
-                Path(cache_path)
-                / hf_uri.get_owner()
-                / hf_uri.get_repo()
-                / hf_uri.hash()
-            )
+            binding_path = Path(cache_path) / hf_uri.get_owner() / hf_uri.get_repo() / hf_uri.hash()
             # binding_path.mkdir(parents=True, exist_ok=True)
             hfpull_config = {
                 "path": str(binding_path),
@@ -2073,9 +2000,7 @@ class K8s(Environment):
         assert isinstance(
             binding, dict
         ), f"expected binding to be a dict, actual: {type(binding)} {binding}"
-        assert (
-            "path" in binding
-        ), f"expected 'path' to be in the binding, actual: {binding}"
+        assert "path" in binding, f"expected 'path' to be in the binding, actual: {binding}"
         binding_path = binding["path"]
         logger.info("binding_path: %s", binding_path)
 
@@ -2094,9 +2019,7 @@ class K8s(Environment):
             hf_resource_group_name = output_config.store_push.config.get("hf", {}).get(
                 "resource_group_name", hf_resource_group_name
             )
-            hf_private = output_config.store_push.config.get("hf", {}).get(
-                "private", hf_private
-            )
+            hf_private = output_config.store_push.config.get("hf", {}).get("private", hf_private)
 
         hfpush_config = {
             "path": binding_path,
@@ -2151,18 +2074,12 @@ class K8s(Environment):
         assert storeload_config is not None, "storeload_config is None"
         if storeload_config.mode == "afm_mount" or storeload_config.mode == "cos_mount":
             assert storeload_config is not None, "storeload_config is None"
-            assert (
-                storeload_config.config is not None
-            ), "storeload_config.config is None"
+            assert storeload_config.config is not None, "storeload_config.config is None"
             volume = storeload_config.config.get("volume", None)
             if volume is None:
-                raise ValueError(
-                    "Did not find either 'volume' keys in storeload configuration"
-                )
+                raise ValueError("Did not find either 'volume' keys in storeload configuration")
             binding_config = {
-                BINDING_KEY: {
-                    "path": os.path.join("/", volume, assetstore.get_relpath(uri))
-                }
+                BINDING_KEY: {"path": os.path.join("/", volume, assetstore.get_relpath(uri))}
             }
             return binding_config, None
 
@@ -2171,9 +2088,7 @@ class K8s(Environment):
             assert isinstance(lhuri, LhURI)
             cache_path = storeload_config.config.get("cache_path", None)
             if cache_path is None:
-                raise ValueError(
-                    "Did not find either 'cache_path' keys in storeload configuration"
-                )
+                raise ValueError("Did not find either 'cache_path' keys in storeload configuration")
             binding_path = str(Path(cache_path) / lhuri.hash())
             lhuristr = URI.get_uristr(lhuri)
             lh_metadata = Asset(uri=lhuri).get_metadata()
@@ -2193,9 +2108,7 @@ class K8s(Environment):
             ):
                 lhpull_stepuri = storeload_config.config["step_uri"]
             binding_config = {
-                BINDING_KEY: {
-                    "path": str(Path(binding_path) / assetstore.get_subdir(uri))
-                }
+                BINDING_KEY: {"path": str(Path(binding_path) / assetstore.get_subdir(uri))}
             }
             return binding_config, BuildTargetStepConfig(
                 step_uri=lhpull_stepuri, config={"lhpull_config": lhpull_config}
@@ -2222,9 +2135,7 @@ class K8s(Environment):
         assert isinstance(
             binding, dict
         ), f"expected binding to be a dict, actual: {type(binding)} {binding}"
-        assert (
-            "path" in binding
-        ), f"expected 'path' to be in the binding, actual: {binding}"
+        assert "path" in binding, f"expected 'path' to be in the binding, actual: {binding}"
         binding_path = binding["path"]
         logger.info("binding_path: %s", binding_path)
         binding_path_path = Path(binding_path)
@@ -2307,9 +2218,7 @@ async def log_main() -> None:
         )
     )
     environment_config = EnvironmentConfig.from_yaml(Path(env_cfg_file), context=None)
-    k8s_monitor = K8s(
-        namespace=namespace, event_q=queue, environment_config=environment_config
-    )
+    k8s_monitor = K8s(namespace=namespace, event_q=queue, environment_config=environment_config)
     k8s_monitor._get_launch_ready_event(launch_id).set()
     k8s_monitor.launched_releases[launch_id] = launch_id
     k8s_monitor._get_launch_ready_event(launch_id_1).set()
@@ -2341,6 +2250,7 @@ async def log_main() -> None:
 
 
 async def log_main_multiple_instances() -> None:
+    """Log main multiple instances."""
     launch_id_1: str = (
         "gb-logging-1-10k"  # "feb19-digit-aw-digit-appwrapper" # input("Enter the Helm release name: ")
     )
@@ -2373,11 +2283,11 @@ async def log_main_multiple_instances() -> None:
     kube_config_1 = os.path.join(os.getenv("HOME"), ".kube", "config")
     kube_config_2 = os.path.join(os.getenv("HOME"), ".kube", "config")
     kube_context_1 = "granite-build/api-dmf-dipc-res-ibm-com:6443/cmadam@us.ibm.com"
-    kube_context_2 = "granite-build-staging/c100-e-us-south-containers-cloud-ibm-com:30049/IAM#cmadam@us.ibm.com"
-
-    environment_config_1 = EnvironmentConfig.from_yaml(
-        Path(env_cfg_file_1), context=None
+    kube_context_2 = (
+        "granite-build-staging/c100-e-us-south-containers-cloud-ibm-com:30049/IAM#cmadam@us.ibm.com"
     )
+
+    environment_config_1 = EnvironmentConfig.from_yaml(Path(env_cfg_file_1), context=None)
     k8s_monitor_1 = K8s(
         namespace=namespace_1,
         event_q=queue_1,
@@ -2388,9 +2298,7 @@ async def log_main_multiple_instances() -> None:
     k8s_monitor_1._get_launch_ready_event(launch_id_1).set()
     k8s_monitor_1.launched_releases[launch_id_1] = launch_id_1
 
-    environment_config_2 = EnvironmentConfig.from_yaml(
-        Path(env_cfg_file_2), context=None
-    )
+    environment_config_2 = EnvironmentConfig.from_yaml(Path(env_cfg_file_2), context=None)
     k8s_monitor_2 = K8s(
         namespace=namespace_2,
         event_q=queue_2,
@@ -2421,6 +2329,7 @@ async def log_main_multiple_instances() -> None:
 
 
 async def log_watch_multiple_clusters() -> None:
+    """Log watch multiple clusters."""
     launch_id_1: str = "gb-logging-1-10k"
     launch_id_2: str = "gb-logging-1-6k"
     namespace_1: str = "granite-build"
@@ -2446,9 +2355,7 @@ async def log_watch_multiple_clusters() -> None:
         )
     )
 
-    environment_config_1 = EnvironmentConfig.from_yaml(
-        Path(env_cfg_file_1), context=None
-    )
+    environment_config_1 = EnvironmentConfig.from_yaml(Path(env_cfg_file_1), context=None)
     k8s_monitor_1 = K8s(
         namespace=namespace_1,
         event_q=queue_1,
@@ -2459,9 +2366,7 @@ async def log_watch_multiple_clusters() -> None:
     k8s_monitor_1._get_launch_ready_event(launch_id_1).set()
     k8s_monitor_1.launched_releases[launch_id_1] = launch_id_1
 
-    environment_config_2 = EnvironmentConfig.from_yaml(
-        Path(env_cfg_file_2), context=None
-    )
+    environment_config_2 = EnvironmentConfig.from_yaml(Path(env_cfg_file_2), context=None)
     k8s_monitor_2 = K8s(
         namespace=namespace_2,
         event_q=queue_2,
@@ -2499,6 +2404,7 @@ async def log_watch_multiple_clusters() -> None:
 
 
 async def helm_multi_cluster() -> None:
+    """Helm multi cluster."""
     launch_id_1: str = (
         "gb-logging-1-10k"  # "feb19-digit-aw-digit-appwrapper" # input("Enter the Helm release name: ")
     )
@@ -2516,20 +2422,18 @@ async def helm_multi_cluster() -> None:
     queue_2 = asyncio.Queue()
 
     test_path = os.path.abspath(
-        os.path.join(
-            os.path.dirname(__file__), "../../../test/gbserver_test/environments"
-        )
+        os.path.join(os.path.dirname(__file__), "../../../test/gbserver_test/environments")
     )
     env_cfg_file_1 = os.path.join(test_path, ENVIRONMENT_FILENAME)
     env_cfg_file_2 = os.path.join(test_path, "environment_staging.yaml")
     kube_config_1 = os.path.join(os.getenv("HOME"), ".kube", "config")
     kube_config_2 = os.path.join(os.getenv("HOME"), ".kube", "config")
     kube_context_1 = "granite-build/api-dmf-dipc-res-ibm-com:6443/cmadam@us.ibm.com"
-    kube_context_2 = "granite-build-staging/c100-e-us-south-containers-cloud-ibm-com:30049/IAM#cmadam@us.ibm.com"
-
-    environment_config_1 = EnvironmentConfig.from_yaml(
-        Path(env_cfg_file_1), context=None
+    kube_context_2 = (
+        "granite-build-staging/c100-e-us-south-containers-cloud-ibm-com:30049/IAM#cmadam@us.ibm.com"
     )
+
+    environment_config_1 = EnvironmentConfig.from_yaml(Path(env_cfg_file_1), context=None)
     k8s_monitor_1 = K8s(
         namespace=namespace_1,
         event_q=queue_1,
@@ -2538,9 +2442,7 @@ async def helm_multi_cluster() -> None:
         kube_context=kube_context_1,
     )
 
-    environment_config_2 = EnvironmentConfig.from_yaml(
-        Path(env_cfg_file_2), context=None
-    )
+    environment_config_2 = EnvironmentConfig.from_yaml(Path(env_cfg_file_2), context=None)
     k8s_monitor_2 = K8s(
         namespace=namespace_2,
         event_q=queue_2,

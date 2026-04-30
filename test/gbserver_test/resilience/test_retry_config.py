@@ -39,9 +39,7 @@ class TestBuildRetryStrategiesFromConfig:
         strategies = build_retry_strategies_from_config(config=None)
 
         assert len(strategies) == 4
-        assert any(
-            isinstance(s, UnhealthyInsufficientPodsRetryStrategy) for s in strategies
-        )
+        assert any(isinstance(s, UnhealthyInsufficientPodsRetryStrategy) for s in strategies)
         assert any(isinstance(s, PodEvictionRetryStrategy) for s in strategies)
         assert any(isinstance(s, NCCLErrorRetryStrategy) for s in strategies)
         assert any(isinstance(s, FileNotFoundRetryStrategy) for s in strategies)
@@ -99,16 +97,12 @@ class TestBuildRetryStrategiesFromConfig:
 
         # Check UnhealthyInsufficientPods strategy
         unhealthy_strategy = next(
-            s
-            for s in strategies
-            if isinstance(s, UnhealthyInsufficientPodsRetryStrategy)
+            s for s in strategies if isinstance(s, UnhealthyInsufficientPodsRetryStrategy)
         )
         assert unhealthy_strategy.object_types == ["AppWrapper", "Job"]
 
         # Check PodEviction strategy
-        eviction_strategy = next(
-            s for s in strategies if isinstance(s, PodEvictionRetryStrategy)
-        )
+        eviction_strategy = next(s for s in strategies if isinstance(s, PodEvictionRetryStrategy))
         assert eviction_strategy.object_types == ["AppWrapper"]
         assert eviction_strategy.avoid_eviction_nodes is True
 
@@ -191,9 +185,7 @@ class TestBuildRetryStrategiesFromConfig:
 
         # Should return at least the default strategy
         assert len(strategies) >= 1
-        assert any(
-            isinstance(s, UnhealthyInsufficientPodsRetryStrategy) for s in strategies
-        )
+        assert any(isinstance(s, UnhealthyInsufficientPodsRetryStrategy) for s in strategies)
 
     def test_only_pod_eviction_enabled(self: Self) -> None:
         """Test configuration with only PodEviction strategy enabled."""
@@ -228,23 +220,17 @@ class TestBuildRetryStrategiesFromConfig:
 
         strategies = build_retry_strategies_from_config(
             config=config,
-            object_types=[
-                "AppWrapper"
-            ],  # This is ignored since each strategy specifies its own
+            object_types=["AppWrapper"],  # This is ignored since each strategy specifies its own
         )
 
         assert len(strategies) == 2
 
         # Verify both strategies are configured correctly
         unhealthy_strategy = next(
-            s
-            for s in strategies
-            if isinstance(s, UnhealthyInsufficientPodsRetryStrategy)
+            s for s in strategies if isinstance(s, UnhealthyInsufficientPodsRetryStrategy)
         )
         assert unhealthy_strategy.object_types == ["AppWrapper", "Job"]
 
-        eviction_strategy = next(
-            s for s in strategies if isinstance(s, PodEvictionRetryStrategy)
-        )
+        eviction_strategy = next(s for s in strategies if isinstance(s, PodEvictionRetryStrategy))
         assert eviction_strategy.object_types == ["AppWrapper", "Job"]
         assert eviction_strategy.avoid_eviction_nodes is False

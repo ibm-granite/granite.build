@@ -65,9 +65,7 @@ class MockLineageService(LineageService):
             for ev in self.events.values():
                 run_facets = ev.get("run", {}).get("facets", {})
                 ev_tags = run_facets.get("tags", {})
-                ev_tag_strings = {
-                    f"{k}={v}" for k, v in ev_tags.items() if not k.startswith("_")
-                }
+                ev_tag_strings = {f"{k}={v}" for k, v in ev_tags.items() if not k.startswith("_")}
                 if tag_set & ev_tag_strings:
                     all_events.append(ev)
         total = len(all_events)
@@ -181,9 +179,7 @@ class TestOpenLineageAPI:
         assert len(body["runs"]) == 1
 
     def test_search_lineage_by_tags_empty(self):
-        response = self.client.post(
-            "api/v1/lineage/search", json={"tags": ["no=match"]}
-        )
+        response = self.client.post("api/v1/lineage/search", json={"tags": ["no=match"]})
         assert response.status_code == 200
         body = response.json()
         assert body["total"] == 0

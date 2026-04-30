@@ -59,8 +59,7 @@ def get_test_env(
     with open(yaml_path, "r", encoding="utf-8") as f:
         _event_configs = yaml.safe_load(f)["event_configs"]
     event_configs = [
-        EventLogLineParserConfig.model_validate(event_config)
-        for event_config in _event_configs
+        EventLogLineParserConfig.model_validate(event_config) for event_config in _event_configs
     ]
     event_q = asyncio.Queue()
     launch_id = "7c930009-e59d-4bd9-befc-b5bf80f1330d"
@@ -71,9 +70,7 @@ def get_test_env(
 class TestEnvironment:
     @pytest.mark.asyncio
     async def test_get_events_from_log_line(self: Self, test_data_dir: Path) -> None:
-        log_line = (
-            "Pushed URI: lh://prod/granite_dot_build.public/tables/gb_tuning_data"
-        )
+        log_line = "Pushed URI: lh://prod/granite_dot_build.public/tables/gb_tuning_data"
         event_q, event_configs, entityrun_metadata = get_test_env(
             test_data_dir, "lhpush_events.yaml"
         )

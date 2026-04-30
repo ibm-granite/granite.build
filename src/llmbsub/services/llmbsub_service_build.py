@@ -69,9 +69,7 @@ def llmbsub_build_start(
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"Space {space} not found in available spaces."
-                    },
+                    callback_args={"reason": f"Space {space} not found in available spaces."},
                 )
             return
 
@@ -86,9 +84,7 @@ def llmbsub_build_start(
         build_name = os.path.split(os.getcwd())[-1]
     branch_name = f"{build_name}-{generate_unique_id()}"
 
-    experiment_folder = prepare_build_local_contents(
-        build_file_path, branch_name, filename
-    )
+    experiment_folder = prepare_build_local_contents(build_file_path, branch_name, filename)
 
     if callback and not quiet:
         callback(callback_event="prepared_contents", callback_args={"steps": 100})

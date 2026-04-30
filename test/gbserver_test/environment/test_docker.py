@@ -107,9 +107,7 @@ class TestLaunchDocker:
         mock_docker.from_env.return_value.images.get.return_value = MagicMock()
         mock_docker.types.DeviceRequest = MagicMock
 
-        with patch(
-            "gbserver.environment.docker._import_docker", return_value=mock_docker
-        ):
+        with patch("gbserver.environment.docker._import_docker", return_value=mock_docker):
             launch_id = "test-launch-001"
             docker_env._get_launch_ready_event(launch_id)
             await docker_env.launch_docker(
@@ -144,9 +142,7 @@ class TestLaunchDocker:
         mock_docker.from_env.return_value.images.get.return_value = MagicMock()
         mock_docker.types.DeviceRequest = MagicMock
 
-        with patch(
-            "gbserver.environment.docker._import_docker", return_value=mock_docker
-        ):
+        with patch("gbserver.environment.docker._import_docker", return_value=mock_docker):
             launch_id = "test-launch-gpu"
             docker_env._get_launch_ready_event(launch_id)
             await docker_env.launch_docker(
@@ -167,9 +163,7 @@ class TestLaunchDocker:
         mock_docker.errors.DockerException = type("DockerException", (Exception,), {})
         mock_docker.from_env.side_effect = Exception("Docker daemon not available")
 
-        with patch(
-            "gbserver.environment.docker._import_docker", return_value=mock_docker
-        ):
+        with patch("gbserver.environment.docker._import_docker", return_value=mock_docker):
             launch_id = "test-launch-err"
             docker_env._get_launch_ready_event(launch_id)
             with pytest.raises(Exception, match="Docker daemon not available"):
@@ -190,17 +184,13 @@ class TestLaunchDocker:
         mock_client = mock_docker.from_env.return_value
         mock_docker.errors = MagicMock()
         mock_docker.errors.ImageNotFound = type("ImageNotFound", (Exception,), {})
-        mock_client.images.get.side_effect = mock_docker.errors.ImageNotFound(
-            "not found"
-        )
+        mock_client.images.get.side_effect = mock_docker.errors.ImageNotFound("not found")
         mock_container = MagicMock()
         mock_container.id = "container-pulled"
         mock_client.containers.run.return_value = mock_container
         mock_docker.types.DeviceRequest = MagicMock
 
-        with patch(
-            "gbserver.environment.docker._import_docker", return_value=mock_docker
-        ):
+        with patch("gbserver.environment.docker._import_docker", return_value=mock_docker):
             launch_id = "test-launch-pull"
             docker_env._get_launch_ready_event(launch_id)
             await docker_env.launch_docker(
@@ -223,9 +213,7 @@ class TestLaunchDocker:
         mock_docker.from_env.return_value.images.get.return_value = MagicMock()
         mock_docker.types.DeviceRequest = MagicMock
 
-        with patch(
-            "gbserver.environment.docker._import_docker", return_value=mock_docker
-        ):
+        with patch("gbserver.environment.docker._import_docker", return_value=mock_docker):
             launch_id = "test-launch-default"
             docker_env._get_launch_ready_event(launch_id)
             await docker_env.launch_docker(
@@ -269,9 +257,7 @@ class TestMonitorDockerLog:
         mock_container.attrs = {"State": {"OOMKilled": False}}
         mock_docker.from_env.return_value.containers.get.return_value = mock_container
 
-        with patch(
-            "gbserver.environment.docker._import_docker", return_value=mock_docker
-        ):
+        with patch("gbserver.environment.docker._import_docker", return_value=mock_docker):
             await env.monitor_docker_log(
                 launch_id=launch_id,
                 event_q=event_q,
@@ -295,12 +281,8 @@ class TestMonitorDockerLog:
         mock_container.attrs = {"State": {"OOMKilled": False}}
         mock_docker.from_env.return_value.containers.get.return_value = mock_container
 
-        with patch(
-            "gbserver.environment.docker._import_docker", return_value=mock_docker
-        ):
-            with pytest.raises(
-                LogMonitoringFailedException, match="exited with code 1"
-            ):
+        with patch("gbserver.environment.docker._import_docker", return_value=mock_docker):
+            with pytest.raises(LogMonitoringFailedException, match="exited with code 1"):
                 await env.monitor_docker_log(
                     launch_id=launch_id,
                     event_q=event_q,
@@ -346,9 +328,7 @@ class TestCleanupDocker:
         mock_container = MagicMock()
         mock_docker.from_env.return_value.containers.get.return_value = mock_container
 
-        with patch(
-            "gbserver.environment.docker._import_docker", return_value=mock_docker
-        ):
+        with patch("gbserver.environment.docker._import_docker", return_value=mock_docker):
             await env.cleanup_docker(launch_id=launch_id)
 
         mock_container.stop.assert_called_once_with(timeout=30)
@@ -363,9 +343,7 @@ class TestCleanupDocker:
         mock_docker.from_env.return_value.containers.get.return_value = mock_container
         stop_event = env._get_launch_stopped_event(launch_id)
 
-        with patch(
-            "gbserver.environment.docker._import_docker", return_value=mock_docker
-        ):
+        with patch("gbserver.environment.docker._import_docker", return_value=mock_docker):
             await env.cleanup_docker(launch_id=launch_id)
 
         assert stop_event.is_set()
@@ -378,20 +356,16 @@ class TestCleanupDocker:
         await env.cleanup_docker(launch_id="nonexistent-launch")
 
     @pytest.mark.asyncio
-    async def test_cleanup_handles_already_removed_container(
-        self, docker_env_with_container
-    ):
+    async def test_cleanup_handles_already_removed_container(self, docker_env_with_container):
         env, launch_id = docker_env_with_container
         mock_docker = MagicMock()
         mock_docker.errors = MagicMock()
         mock_docker.errors.NotFound = type("NotFound", (Exception,), {})
-        mock_docker.from_env.return_value.containers.get.side_effect = (
-            mock_docker.errors.NotFound("gone")
+        mock_docker.from_env.return_value.containers.get.side_effect = mock_docker.errors.NotFound(
+            "gone"
         )
 
-        with patch(
-            "gbserver.environment.docker._import_docker", return_value=mock_docker
-        ):
+        with patch("gbserver.environment.docker._import_docker", return_value=mock_docker):
             await env.cleanup_docker(launch_id=launch_id)
 
         assert launch_id not in env.launched_containers

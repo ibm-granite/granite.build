@@ -40,8 +40,7 @@ class TestBackoffDelay(unittest.TestCase):
         """Delay should grow exponentially."""
         # retry 1: 1s, retry 2: 2s, retry 3: 4s, retry 4: 8s
         delays = [
-            _calculate_github_backoff_delay(i, base_delay=1.0, max_delay=100.0)
-            for i in range(1, 5)
+            _calculate_github_backoff_delay(i, base_delay=1.0, max_delay=100.0) for i in range(1, 5)
         ]
         # Check that each delay is roughly double the previous (within jitter bounds)
         for i in range(1, len(delays)):
@@ -183,9 +182,7 @@ class TestShouldRetryStatusCode(unittest.TestCase):
 class TestMyGHApiRetry(unittest.TestCase):
     """Test MyGHApi methods with retry logic."""
 
-    def _make_response(
-        self, status_code, headers=None, json_data=None, raise_error=False
-    ):
+    def _make_response(self, status_code, headers=None, json_data=None, raise_error=False):
         """Create a mock response that behaves like requests.Response."""
         response = MagicMock(spec=requests.Response)
         response.status_code = status_code
@@ -221,12 +218,8 @@ class TestMyGHApiRetry(unittest.TestCase):
 
         # Fail twice with 403, then succeed
         mock_get.side_effect = [
-            self._make_response(
-                403, headers={"x-ratelimit-remaining": "0"}, raise_error=True
-            ),
-            self._make_response(
-                403, headers={"x-ratelimit-remaining": "0"}, raise_error=True
-            ),
+            self._make_response(403, headers={"x-ratelimit-remaining": "0"}, raise_error=True),
+            self._make_response(403, headers={"x-ratelimit-remaining": "0"}, raise_error=True),
             self._make_response(200, json_data={"name": "test-repo"}),
         ]
 
@@ -288,9 +281,7 @@ class TestMyGHApiRetry(unittest.TestCase):
 
         # Fail once with 403, then succeed
         mock_get.side_effect = [
-            self._make_response(
-                403, headers={"x-ratelimit-remaining": "0"}, raise_error=True
-            ),
+            self._make_response(403, headers={"x-ratelimit-remaining": "0"}, raise_error=True),
             self._make_response(200, json_data={"name": "main"}),
         ]
 
@@ -313,12 +304,8 @@ class TestMyGHApiRetry(unittest.TestCase):
 
         # Fail twice, then succeed
         mock_put.side_effect = [
-            self._make_response(
-                403, headers={"x-ratelimit-remaining": "0"}, raise_error=True
-            ),
-            self._make_response(
-                403, headers={"x-ratelimit-remaining": "0"}, raise_error=True
-            ),
+            self._make_response(403, headers={"x-ratelimit-remaining": "0"}, raise_error=True),
+            self._make_response(403, headers={"x-ratelimit-remaining": "0"}, raise_error=True),
             self._make_response(
                 200,
                 json_data={

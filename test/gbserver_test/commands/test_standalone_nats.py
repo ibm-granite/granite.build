@@ -18,9 +18,7 @@ class TestEmbeddedNatsServer:
         with (
             patch("shutil.which", return_value="/usr/local/bin/nats-server"),
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch(
-                "gbserver.commands.command_standalone._wait_for_nats", return_value=True
-            ),
+            patch("gbserver.commands.command_standalone._wait_for_nats", return_value=True),
         ):
             proc = _start_nats_server(str(tmp_path), port=4222)
 

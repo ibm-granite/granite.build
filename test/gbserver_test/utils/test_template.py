@@ -64,9 +64,7 @@ class TestFillObjTemplate:
                             "DEFAULT_LH_MODEL_TABLE": "model_shared",
                         }
                     },
-                    "run_metadata": {
-                        "targetsteprun_id": "9a5e0004-8205-402a-aedc-a8b9c37d80cb"
-                    },
+                    "run_metadata": {"targetsteprun_id": "9a5e0004-8205-402a-aedc-a8b9c37d80cb"},
                     "binding": {
                         "path": "/aaa/bbb/ccc/dddd/checkpoint-10",
                     },

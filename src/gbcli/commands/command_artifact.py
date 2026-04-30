@@ -1,3 +1,5 @@
+"""Command artifact module."""
+
 import json
 import logging
 import sys
@@ -86,9 +88,7 @@ def cli(ctx):
 @click.option(
     "-t",
     "--type",
-    type=click.Choice(
-        ["model", "table", "fileset", "dataset", "bucket"], case_sensitive=True
-    ),
+    type=click.Choice(["model", "table", "fileset", "dataset", "bucket"], case_sensitive=True),
     help="Artifact type to be saved. Options: model, fileset, table, dataset, bucket",
     required=True,
 )
@@ -125,9 +125,7 @@ def cli(ctx):
     multiple=True,
     help="Single tag name or comma-separated list of tag names. Tag names can only contain alphanumeric characters, underscores, and hyphens.",
 )
-@click.option(
-    "--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'."
-)
+@click.option("--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'.")
 @click.option("--space", help="Space name.")
 @click.option(
     "--origin",
@@ -249,9 +247,7 @@ def push(
     if not resource_group_id:
         resource_group_id = HF_RESOURCE_GROUP_ID_DEFAULT
 
-    if (
-        type == "model" or type == "fileset" or type == "dataset" or type == "bucket"
-    ) and table:
+    if (type == "model" or type == "fileset" or type == "dataset" or type == "bucket") and table:
         click.echo(
             f"❌ The --table option is not valid for {type} artifacts. Please try again without the --table option.",
             err=True,
@@ -415,9 +411,7 @@ def push(
         # === Lakehouse-specific setup ===
         if store == "lh":
             # Prompt for model properties if needed
-            if type == "model" and (
-                showSizePrompt or showVariantPrompt or showModelTypePrompt
-            ):
+            if type == "model" and (showSizePrompt or showVariantPrompt or showModelTypePrompt):
                 try:
                     # try to infer it
                     parts = artifact_name.split("-")
@@ -480,9 +474,7 @@ def push(
             click.echo(f"Calculated artifact checksum: {checksum}")
 
             # Check for existing registration if checksums are being used
-            existing_registration = artifact_client.existing_checksum_artifacts(
-                space, checksum
-            )
+            existing_registration = artifact_client.existing_checksum_artifacts(space, checksum)
 
             # if existing artifact registration
             if existing_registration:
@@ -633,9 +625,7 @@ def push(
 
             artifact_id = response_register["uuid"]
             if not quiet:
-                click.echo(
-                    f"\nArtifact registered successfully with uuid {artifact_id}"
-                )
+                click.echo(f"\nArtifact registered successfully with uuid {artifact_id}")
 
         store_name = "HuggingFace" if store == "hf" else "Lakehouse"
         if not quiet:
@@ -757,9 +747,7 @@ def push(
 @click.option(
     "-t",
     "--type",
-    type=click.Choice(
-        ["dataset", "model", "table", "fileset", "bucket"], case_sensitive=True
-    ),
+    type=click.Choice(["dataset", "model", "table", "fileset", "bucket"], case_sensitive=True),
     help="Artifact type to be saved. Options: dataset, model, table (default), fileset, bucket",
 )
 @click.option(
@@ -823,9 +811,7 @@ def push(
     multiple=True,
     help="Single tag name or comma-separated list of tag names. Tag names can only contain alphanumeric characters, underscores, and hyphens.",
 )
-@click.option(
-    "--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'."
-)
+@click.option("--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'.")
 @click.option(
     "--status",
     type=click.Choice(["pending", "success", "failed"], case_sensitive=False),
@@ -990,16 +976,10 @@ def register(
         showRevisionPrompt = not revision or revision.strip() == ""
         showLabelPrompt = not label or label.strip() == ""
 
-        label = (
-            click.prompt("Model label", show_default=True).strip()
-            if showLabelPrompt
-            else label
-        )
+        label = click.prompt("Model label", show_default=True).strip() if showLabelPrompt else label
 
         revision = (
-            click.prompt(
-                "Revision", default=revision or "", show_default=False, type=str
-            ).strip()
+            click.prompt("Revision", default=revision or "", show_default=False, type=str).strip()
             if showRevisionPrompt
             else revision
         )
@@ -1036,9 +1016,7 @@ def register(
             table = click.prompt("Table").strip()
 
         if dataset == "" or table == "":
-            click.echo(
-                f"\n❌ Error: Please provide both table and dataset name", err=True
-            )
+            click.echo(f"\n❌ Error: Please provide both table and dataset name", err=True)
             ctx.exit(1)  # Exit with a non-zero status
 
     if type == "fileset":
@@ -1053,9 +1031,7 @@ def register(
             else label
         )
         version = (
-            click.prompt(
-                "Fileset version", default=version, show_default=False, type=str
-            ).strip()
+            click.prompt("Fileset version", default=version, show_default=False, type=str).strip()
             if showVersionPrompt
             else version
         )
@@ -1141,9 +1117,13 @@ def register(
             pass  # Ignore unknown events
 
     class TableVerificationException(Exception):
+        """Table Verification Exception implementation."""
+
         pass
 
     class DatasetVerificationException(Exception):
+        """Dataset Verification Exception implementation."""
+
         pass
 
     try:
@@ -1306,9 +1286,7 @@ def register(
     except Exception as e:
         click.echo(f"\n{str_exc_chain(e)}", err=True)
         store_name = "HuggingFace" if store == "hf" else "Lakehouse"
-        click.echo(
-            f"❌ Artifact/{type.title()} register to {store_name} failed!", err=True
-        )
+        click.echo(f"❌ Artifact/{type.title()} register to {store_name} failed!", err=True)
         ctx.exit(1)  # Exit with a non-zero status
 
 
@@ -1328,9 +1306,7 @@ def _lineage_lh(ctx, artifact_client, artifact, format, quiet, echo_callback):
     artifact_name = get_artifact_formatted_name(decoded_artifact)
 
     if artifact_name is None:
-        click.echo(
-            f"\nArtifact name couldn't be parsed from object URI. Please try again."
-        )
+        click.echo(f"\nArtifact name couldn't be parsed from object URI. Please try again.")
         return
 
     if not quiet:
@@ -1341,9 +1317,7 @@ def _lineage_lh(ctx, artifact_client, artifact, format, quiet, echo_callback):
     lineage_dict = (
         artifact_client.artifact_lineage(lh_token, artifact_name)
         if quiet
-        else execute_with_spinner(
-            artifact_client.artifact_lineage, lh_token, artifact_name
-        )
+        else execute_with_spinner(artifact_client.artifact_lineage, lh_token, artifact_name)
     )
 
     if len(lineage_dict) == 0:
@@ -1500,9 +1474,7 @@ def lineage(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
             artifact = (
                 artifact_client.fetch_artifact(artifact_id, callback=echo_callback)
                 if id_format == "uuid"
-                else artifact_client.fetch_artifact_uri(
-                    artifact_id, callback=echo_callback
-                )
+                else artifact_client.fetch_artifact_uri(artifact_id, callback=echo_callback)
             )
 
             if not artifact:
@@ -1512,9 +1484,7 @@ def lineage(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
             if artifact_uri.startswith("hf://"):
                 _lineage_hf(ctx, artifact_client, artifact, format, quiet)
             elif artifact_uri.startswith("lh://"):
-                _lineage_lh(
-                    ctx, artifact_client, artifact, format, quiet, echo_callback
-                )
+                _lineage_lh(ctx, artifact_client, artifact, format, quiet, echo_callback)
             else:
                 click.echo(
                     f"Artifact lineage is not supported for this URI scheme.",
@@ -1544,9 +1514,7 @@ def lineage(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
 @click.pass_context
 @click.option("--build-id", help="Filter artifacts by build. Provide Build ID or URL.")
 @click.option("--space", help="Space name.")
-@click.option(
-    "--all-spaces", is_flag=True, default=False, help="Artifacts from all spaces."
-)
+@click.option("--all-spaces", is_flag=True, default=False, help="Artifacts from all spaces.")
 @click.option(
     "--format",
     default="plain",
@@ -1571,12 +1539,8 @@ def lineage(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
     multiple=True,
     help="Single tag name or comma-separated list of tag names. Tag names can only contain alphanumeric characters, underscores, and hyphens.",
 )
-@click.option(
-    "--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'."
-)
-@click.option(
-    "--all", "-a", flag_value=True, default=False, help=f"List artifacts for all users."
-)
+@click.option("--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'.")
+@click.option("--all", "-a", flag_value=True, default=False, help=f"List artifacts for all users.")
 @click.option(
     "--show-pending",
     is_flag=True,
@@ -1680,9 +1644,7 @@ def list(
         sys.exit(1)
 
     if all and username:
-        click.echo(
-            f"❌ Error: --all was provided. It can't be used with the --username option."
-        )
+        click.echo(f"❌ Error: --all was provided. It can't be used with the --username option.")
         ctx.exit(1)
 
     normalized_tags = []
@@ -1806,9 +1768,7 @@ def list(
                     # need to filter by user spaces (will be in gbserver eventually)
                     spaces = [
                         s["name"]
-                        for s in GBClient.Space(get_user_token()).list_spaces(
-                            all, False, None
-                        )
+                        for s in GBClient.Space(get_user_token()).list_spaces(all, False, None)
                     ]
                     artifacts = [a for a in artifacts if a["space_name"] in spaces]
 
@@ -1860,9 +1820,7 @@ def list(
 
 
 @cli.command()
-@click.argument(
-    "artifact", required=False
-)  # not required until deprecated option is removed
+@click.argument("artifact", required=False)  # not required until deprecated option is removed
 @click.option(
     "--artifact-id",
     help="""
@@ -2031,9 +1989,7 @@ def download(
             artifact = (
                 artifact_client.fetch_artifact(artifact_id, callback=echo_callback)
                 if id_format == "uuid"
-                else artifact_client.fetch_artifact_uri(
-                    artifact_id, callback=echo_callback
-                )
+                else artifact_client.fetch_artifact_uri(artifact_id, callback=echo_callback)
             )
 
             if not artifact:
@@ -2100,9 +2056,7 @@ def download(
                     click.echo(f"  Repository: {result.get('repo_id')}")
                     click.echo(f"  Type: {result.get('artifact_type')}")
                     click.echo(f"  Files downloaded: {result.get('file_count')}")
-                    click.echo(
-                        f"  Total size: {result.get('total_size', 0) / (1024 ** 2):.2f} MB"
-                    )
+                    click.echo(f"  Total size: {result.get('total_size', 0) / (1024 ** 2):.2f} MB")
                     click.echo(f"  Location: {result.get('download_dir')}")
 
                 if format == "json":
@@ -2244,9 +2198,7 @@ def download(
                         echo_callback,
                     )
                 )
-                file_name = (
-                    f"{get_fileset_subforlder( file_label, version)}/artifact.origin"
-                )
+                file_name = f"{get_fileset_subforlder( file_label, version)}/artifact.origin"
                 file_path = f"{directory_path}/{file_name}"
                 artifact_client.save_origin(file_path, artifact)
 
@@ -2365,9 +2317,7 @@ def archive(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
             if not quiet:
                 click.echo(f"\n✅ Artifact archive successful!")
             if format == "json":
-                click.echo(
-                    json.dumps({"artifact_id": artifact_uuid, "is_archived": True})
-                )
+                click.echo(json.dumps({"artifact_id": artifact_uuid, "is_archived": True}))
         else:
             click.echo(f"\n❌ Artifact archive failed. Please try again.", err=True)
             sys.exit(1)  # Exit with a non-zero status
@@ -2395,9 +2345,7 @@ def archive(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
     help="Output format: simple (default), json",
 )
 @common_options
-def unarchive(
-    ctx, artifact_id: str, format: str, skip_version_check: bool, quiet: bool
-):
+def unarchive(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet: bool):
     """
     Unarchive an artifact.
 
@@ -2464,9 +2412,7 @@ def unarchive(
             if not quiet:
                 click.echo(f"\n✅ Artifact unarchive successful!")
             if format == "json":
-                click.echo(
-                    json.dumps({"artifact_id": artifact_uuid, "is_archived": False})
-                )
+                click.echo(json.dumps({"artifact_id": artifact_uuid, "is_archived": False}))
         else:
             click.echo(f"\n❌ Artifact unarchive failed. Please try again.", err=True)
             sys.exit(1)  # Exit with a non-zero status
@@ -2484,9 +2430,7 @@ def unarchive(
 @click.pass_context
 @click.argument("artifact_id")
 @click.option("--space-to", required=True, help="Destination space name.")
-@click.option(
-    "--artifact-name", required=False, help="New name for the copied artifact."
-)
+@click.option("--artifact-name", required=False, help="New name for the copied artifact.")
 @common_options
 def copy(
     ctx,
@@ -2535,9 +2479,7 @@ def copy(
             artifact = (
                 artifact_client.fetch_artifact(artifact_id, callback=echo_callback)
                 if id_format == "uuid"
-                else artifact_client.fetch_artifact_uri(
-                    artifact_id, callback=echo_callback
-                )
+                else artifact_client.fetch_artifact_uri(artifact_id, callback=echo_callback)
             )
 
             if not artifact:
@@ -2777,9 +2719,7 @@ def describe(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet
         artifact = (
             artifact_client.fetch_artifact(artifact_uuid, echo_callback)
             if quiet
-            else execute_with_spinner(
-                artifact_client.fetch_artifact, artifact_uuid, echo_callback
-            )
+            else execute_with_spinner(artifact_client.fetch_artifact, artifact_uuid, echo_callback)
         )
 
         if artifact:
@@ -2878,9 +2818,7 @@ def checksum(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet
             artifact = (
                 artifact_client.fetch_artifact(artifact_id, callback=echo_callback)
                 if id_format == "uuid"
-                else artifact_client.fetch_artifact_uri(
-                    artifact_id, callback=echo_callback
-                )
+                else artifact_client.fetch_artifact_uri(artifact_id, callback=echo_callback)
             )
 
             if artifact:
@@ -2935,14 +2873,10 @@ def checksum(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet
     multiple=True,
     help="Single tag name or comma-separated list of tag names. Tag names can only contain alphanumeric characters, underscores, and hyphens.",
 )
-@click.option(
-    "--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'."
-)
+@click.option("--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'.")
 @click.option(
     "--status",
-    type=click.Choice(
-        ["pending", "success", "failed", "cancelled"], case_sensitive=False
-    ),
+    type=click.Choice(["pending", "success", "failed", "cancelled"], case_sensitive=False),
     help="Status of the artifact: pending, success, failed, cancelled",
 )
 @click.option(
@@ -3028,9 +2962,7 @@ def update(
         artifact = (
             artifact_client.fetch_artifact(artifact_uuid, echo_callback)
             if quiet
-            else execute_with_spinner(
-                artifact_client.fetch_artifact, artifact_uuid, echo_callback
-            )
+            else execute_with_spinner(artifact_client.fetch_artifact, artifact_uuid, echo_callback)
         )
 
         if artifact:

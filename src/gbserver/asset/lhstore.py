@@ -77,6 +77,7 @@ class Lhstore(Assetstore):
         return {"env": lhenv, "token_secretname": lhtokenkey}
 
     def get_subdir(self, uri: URI) -> str:
+        """Get the subdir."""
         assert isinstance(uri, LhURI)
         asset_type = uri.get_lh_type()
         subdir_path = ""
@@ -84,18 +85,15 @@ class Lhstore(Assetstore):
             case LhType.TABLE:
                 subdir_path = uri.get_lh_table_name()
             case LhType.MODEL:
-                subdir_path = str(
-                    Path(uri.get_lh_model_label()) / uri.get_lh_model_revision()
-                )
+                subdir_path = str(Path(uri.get_lh_model_label()) / uri.get_lh_model_revision())
             case LhType.FILESET:
-                subdir_path = str(
-                    Path(uri.get_lh_fileset_label()) / uri.get_lh_fileset_version()
-                )
+                subdir_path = str(Path(uri.get_lh_fileset_label()) / uri.get_lh_fileset_version())
             case LhType.DATASET:
                 subdir_path = uri.get_lh_dataset_name()
         return subdir_path
 
     def get_relpath(self, uri: URI) -> str:
+        """Get the relpath."""
         lhtokensecret = (
             self.config.config["token_secretname"]
             if self is not None
@@ -173,9 +171,7 @@ class Lhstore(Assetstore):
         end_time = time.time()
         elapsed_time = end_time - start_time
         if elapsed_time > 30.0:  # Takes more than 30 seconds
-            logger.warning(
-                f"Taking too long retrieving cos_path elapsed_time={elapsed_time}"
-            )
+            logger.warning(f"Taking too long retrieving cos_path elapsed_time={elapsed_time}")
         rel_path = cos_path.removeprefix("s3a://")
         slash_loc = rel_path.find("/")
         rel_path = rel_path[slash_loc + 1 :]

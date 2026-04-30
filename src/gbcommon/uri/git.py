@@ -96,9 +96,7 @@ class GitURI(URI):
         return uriobj.hostname, owner, repo
 
     @staticmethod
-    def __get_config_branch(
-        token: str, uri: str, config_branch_name: str
-    ) -> Optional[str]:
+    def __get_config_branch(token: str, uri: str, config_branch_name: str) -> Optional[str]:
         host, owner, repo = GitURI.__parse_repo_components(uri)
         myapi = MyGHApi(token=token, owner=owner, repo=repo, domain=host)
         config_branch_exists = myapi.is_branch_present(config_branch_name)
@@ -220,9 +218,7 @@ class GitURI(URI):
             if not force:
                 logger.info("force is False, reusing repo at '%s'", repo_cache_path)
                 return repo_cache_path
-            logger.info(
-                "force is True, deleting repo at '%s' and recloning", repo_cache_path
-            )
+            logger.info("force is True, deleting repo at '%s' and recloning", repo_cache_path)
             shutil.rmtree(repo_cache_path, ignore_errors=True)
         if ref:
             logger.info(
@@ -284,9 +280,7 @@ class GitURI(URI):
     def append_path(self: Self, path: str) -> None:
         assert self.uri is not None, "self.uri is None"
         fragment_dict = urllib.parse.parse_qs(self.uri.fragment)
-        subdirectory = (
-            fragment_dict.get("subdirectory", [None])[0] if self.uri.fragment else None
-        )
+        subdirectory = fragment_dict.get("subdirectory", [None])[0] if self.uri.fragment else None
         if subdirectory:
             fragment_dict["subdirectory"] = [subdirectory + "/" + path.lstrip("/")]
         else:

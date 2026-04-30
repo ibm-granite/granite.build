@@ -92,9 +92,7 @@ def raise_error(error: str):
     raise ValueError(error)
 
 
-env = SandboxedEnvironment(
-    loader=BaseLoader(), undefined=PreserveUndefined, extensions=[debug]
-)
+env = SandboxedEnvironment(loader=BaseLoader(), undefined=PreserveUndefined, extensions=[debug])
 strict_env = SandboxedEnvironment(
     loader=BaseLoader(), undefined=StrictUndefined, extensions=[debug]
 )
@@ -138,12 +136,8 @@ def fill_template(templ: str, data: dict, strict: bool = False) -> str:
             "try again ==="
         )
         logger.error("template.render error: %s", e)
-        logger.error(
-            "failed to use the data '%s' to fill the template:\n%s", data, templ
-        )
-        raise RuntimeError(
-            f"failed to use the data to fill the template:\n{templ}"
-        ) from e
+        logger.error("failed to use the data '%s' to fill the template:\n%s", data, templ)
+        raise RuntimeError(f"failed to use the data to fill the template:\n{templ}") from e
 
 
 def traverse_obj(

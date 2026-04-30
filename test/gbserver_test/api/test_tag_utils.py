@@ -76,9 +76,7 @@ class TestGetTagsToSet:
     def test_non_super_set_empty_tags_with_system_tags(self):
         """Non-super user should be able to set tags to empty list, preserving system tags."""
         item = MockTaggedItem(tags=["sys-prod", "user-tag-1", "user-tag-2"])
-        result = get_tags_to_set(
-            is_super=False, tagged_item=item, tags=[], appending=False
-        )
+        result = get_tags_to_set(is_super=False, tagged_item=item, tags=[], appending=False)
         # System tags should be preserved, user tags should be cleared
         assert "sys-prod" in result
         assert "user-tag-1" not in result
@@ -101,9 +99,7 @@ class TestGetTagsToSet:
     def test_non_super_set_empty_tags_without_system_tags(self):
         """Non-super user should be able to set tags to empty list when no system tags exist."""
         item = MockTaggedItem(tags=["user-tag-1", "user-tag-2"])
-        result = get_tags_to_set(
-            is_super=False, tagged_item=item, tags=[], appending=False
-        )
+        result = get_tags_to_set(is_super=False, tagged_item=item, tags=[], appending=False)
         # All tags should be cleared
         assert result == []
 
@@ -121,9 +117,7 @@ class TestGetTagsToSet:
     def test_non_super_append_user_tags_with_system_tags(self):
         """Non-super user should be able to append user tags while preserving system tags."""
         item = MockTaggedItem(tags=["sys-prod", "existing-tag"])
-        result = get_tags_to_set(
-            is_super=False, tagged_item=item, tags=["new-tag"], appending=True
-        )
+        result = get_tags_to_set(is_super=False, tagged_item=item, tags=["new-tag"], appending=True)
         # All tags should be present
         assert "sys-prod" in result
         assert "existing-tag" in result
@@ -134,39 +128,27 @@ class TestGetTagsToSet:
         """Non-super user should not be able to set or add system tags."""
         item = MockTaggedItem(tags=["user-tag"])
         with pytest.raises(Exception) as exc_info:
-            get_tags_to_set(
-                is_super=False, tagged_item=item, tags=["sys-new-tag"], appending=False
-            )
-        assert (
-            "401" in str(exc_info.value) or "non-admin" in str(exc_info.value).lower()
-        )
+            get_tags_to_set(is_super=False, tagged_item=item, tags=["sys-new-tag"], appending=False)
+        assert "401" in str(exc_info.value) or "non-admin" in str(exc_info.value).lower()
 
     def test_non_super_cannot_append_system_tags(self):
         """Non-super user should not be able to append system tags."""
         item = MockTaggedItem(tags=["user-tag"])
         with pytest.raises(Exception) as exc_info:
-            get_tags_to_set(
-                is_super=False, tagged_item=item, tags=["sys-new-tag"], appending=True
-            )
-        assert (
-            "401" in str(exc_info.value) or "non-admin" in str(exc_info.value).lower()
-        )
+            get_tags_to_set(is_super=False, tagged_item=item, tags=["sys-new-tag"], appending=True)
+        assert "401" in str(exc_info.value) or "non-admin" in str(exc_info.value).lower()
 
     def test_non_super_with_none_tags(self):
         """Non-super user should handle None tags correctly."""
         item = MockTaggedItem(tags=["sys-prod", "user-tag"])
-        result = get_tags_to_set(
-            is_super=False, tagged_item=item, tags=None, appending=False
-        )
+        result = get_tags_to_set(is_super=False, tagged_item=item, tags=None, appending=False)
         # Only system tags should remain
         assert result == ["sys-prod"]
 
     def test_non_super_with_empty_item_tags(self):
         """Non-super user should handle items with no tags."""
         item = MockTaggedItem(tags=None)
-        result = get_tags_to_set(
-            is_super=False, tagged_item=item, tags=["tag1"], appending=False
-        )
+        result = get_tags_to_set(is_super=False, tagged_item=item, tags=["tag1"], appending=False)
         assert result == ["tag1"]
 
     # ============================================================================
@@ -176,18 +158,14 @@ class TestGetTagsToSet:
     def test_super_set_empty_tags_clears_all(self):
         """Super user should be able to clear all tags including system tags."""
         item = MockTaggedItem(tags=["sys-prod", "user-tag"])
-        result = get_tags_to_set(
-            is_super=True, tagged_item=item, tags=[], appending=False
-        )
+        result = get_tags_to_set(is_super=True, tagged_item=item, tags=[], appending=False)
         # Super users can clear everything
         assert result == []
 
     def test_super_set_system_tags_only(self):
         """Super user should be able to set only system tags."""
         item = MockTaggedItem(tags=["sys-prod", "user-tag"])
-        result = get_tags_to_set(
-            is_super=True, tagged_item=item, tags=["sys-new"], appending=False
-        )
+        result = get_tags_to_set(is_super=True, tagged_item=item, tags=["sys-new"], appending=False)
         # Super users can set arbitrary tags
         assert result == ["sys-new"]
 
@@ -216,9 +194,7 @@ class TestGetTagsToSet:
     def test_super_with_none_tags(self):
         """Super user should handle None tags correctly."""
         item = MockTaggedItem(tags=["sys-prod", "user-tag"])
-        result = get_tags_to_set(
-            is_super=True, tagged_item=item, tags=None, appending=False
-        )
+        result = get_tags_to_set(is_super=True, tagged_item=item, tags=None, appending=False)
         # When setting None, system tags are not preserved for super users
         assert result == []
 
@@ -240,21 +216,15 @@ class TestGetTagsToSet:
     def test_system_tag_prefix_consistency(self):
         """Ensure SYSTEM_TAG_PREFIX is used consistently."""
         item = MockTaggedItem(tags=[f"{SYSTEM_TAG_PREFIX}prod"])
-        result = get_tags_to_set(
-            is_super=False, tagged_item=item, tags=[], appending=False
-        )
+        result = get_tags_to_set(is_super=False, tagged_item=item, tags=[], appending=False)
         assert f"{SYSTEM_TAG_PREFIX}prod" in result
 
     def test_large_number_of_tags(self):
         """Test with a large number of tags."""
-        existing_tags = [f"sys-tag{i}" for i in range(5)] + [
-            f"user-tag{i}" for i in range(95)
-        ]
+        existing_tags = [f"sys-tag{i}" for i in range(5)] + [f"user-tag{i}" for i in range(95)]
         new_tags = [f"new-tag{i}" for i in range(50)]
         item = MockTaggedItem(tags=existing_tags)
-        result = get_tags_to_set(
-            is_super=False, tagged_item=item, tags=new_tags, appending=False
-        )
+        result = get_tags_to_set(is_super=False, tagged_item=item, tags=new_tags, appending=False)
         # System tags should be preserved
         for i in range(5):
             assert f"sys-tag{i}" in result

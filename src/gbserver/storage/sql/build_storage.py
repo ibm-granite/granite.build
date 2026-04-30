@@ -21,9 +21,7 @@ from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.constants import GB_BUILDS_TABLE_NAME
 
 
-class SQLBuildStorage(
-    BaseSQLItemStorage[StoredBuild], BaseStoredBuildStorage, IStoredBuildStorage
-):
+class SQLBuildStorage(BaseSQLItemStorage[StoredBuild], BaseStoredBuildStorage, IStoredBuildStorage):
 
     def __init__(self, **kwargs) -> None:
         kwargs["default_pagination_sort_by_column"] = UPDATED_TIME_FIELD_NAME

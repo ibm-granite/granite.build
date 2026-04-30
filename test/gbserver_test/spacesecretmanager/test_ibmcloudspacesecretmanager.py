@@ -22,21 +22,15 @@ class TestIbmcloudSpaceSecretManagerAdmin:
         manager = IbmcloudSpaceSecretManagerAdmin()
 
         letters = string.ascii_lowercase
-        secret_group_name = "test_secret_group" + "".join(
-            random.choice(letters) for i in range(6)
-        )
+        secret_group_name = "test_secret_group" + "".join(random.choice(letters) for i in range(6))
         secret_groups = manager.get_all_secret_groups()
-        secret_groups_before = list(
-            filter(lambda x: x["name"] == secret_group_name, secret_groups)
-        )
+        secret_groups_before = list(filter(lambda x: x["name"] == secret_group_name, secret_groups))
         assert len(secret_groups_before) == 0
 
         description1 = "my test 1"
         manager.create_secret_group(secret_group_name, description1)
         secret_groups = manager.get_all_secret_groups()
-        secret_groups_after = list(
-            filter(lambda x: x["name"] == secret_group_name, secret_groups)
-        )
+        secret_groups_after = list(filter(lambda x: x["name"] == secret_group_name, secret_groups))
         assert len(secret_groups_after) == 1
 
         secret_group = secret_groups_after[0]
@@ -60,18 +54,14 @@ class TestIbmcloudSpaceSecretManagerAdmin:
 
         manager.delete_secret_group(secret_group_name)
         secret_groups = manager.get_all_secret_groups()
-        secret_groups_final = list(
-            filter(lambda x: x["name"] == secret_group_name, secret_groups)
-        )
+        secret_groups_final = list(filter(lambda x: x["name"] == secret_group_name, secret_groups))
         assert len(secret_groups_final) == 0
 
     def test_secret_manager_admin_secrets(self):
         manager = IbmcloudSpaceSecretManagerAdmin()
 
         letters = string.ascii_lowercase
-        secret_group_name = "test_secret_group" + "".join(
-            random.choice(letters) for i in range(6)
-        )
+        secret_group_name = "test_secret_group" + "".join(random.choice(letters) for i in range(6))
         description1 = "my test 1"
         manager.create_secret_group(secret_group_name, description1)
 

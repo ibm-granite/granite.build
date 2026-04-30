@@ -1,3 +1,5 @@
+"""Client module."""
+
 import sys
 from typing import Any, List, Optional, Tuple
 
@@ -97,10 +99,14 @@ from gbcli.utils.gh_auth import get_user
 
 
 class GBClient:
+    """G B Client implementation."""
+
     def __init__(self):
         pass
 
     class Admin:
+        """Admin implementation."""
+
         def __init__(self, github_token: str):
             self.github_token = github_token
 
@@ -122,6 +128,7 @@ class GBClient:
             all: Optional[bool] = False,
             callback=None,
         ):
+            """Server log."""
             return server_log(
                 self.github_token,
                 module,
@@ -142,22 +149,24 @@ class GBClient:
             )
 
         def list_space_members(self, space=None, callback=None):
+            """List space members."""
             return list_space_members(self.github_token, space, callback)
 
         def add_space_member(self, space=None, username=None, role=None, callback=None):
+            """Add space member."""
             return add_space_member(self.github_token, space, username, role, callback)
 
-        def update_space_member(
-            self, space=None, username=None, role=None, callback=None
-        ):
-            return update_space_member(
-                self.github_token, space, username, role, callback
-            )
+        def update_space_member(self, space=None, username=None, role=None, callback=None):
+            """Update space member."""
+            return update_space_member(self.github_token, space, username, role, callback)
 
         def delete_space_member(self, space=None, username=None, callback=None):
+            """Remove space member."""
             return delete_space_member(self.github_token, space, username, callback)
 
     class Artifact:
+        """Artifact implementation."""
+
         def __init__(self, github_token: str):
             self.github_token = github_token
 
@@ -170,6 +179,7 @@ class GBClient:
             certify_no_restrictions: bool,
             callback=None,
         ):
+            """Verify origins."""
             origin_as_list = list(origin) if origin != None else origin
             return validate_origins(
                 github_token=self.github_token,
@@ -202,6 +212,7 @@ class GBClient:
             private: bool = False,
             callback=None,
         ):
+            """Push."""
             if store == "hf":
                 return upload_to_hf(
                     hf_token=hf_token,
@@ -248,6 +259,7 @@ class GBClient:
             revision: Optional[str] = None,
             version: Optional[str] = None,
         ):
+            """Verify existence."""
             return check_artifact_existence(
                 self.github_token,
                 lh_token,
@@ -284,6 +296,7 @@ class GBClient:
             store: str = "lh",
             callback=None,
         ):
+            """Register artifact."""
             return (
                 register_artifact_gbserver(
                     self.github_token,
@@ -325,9 +338,11 @@ class GBClient:
             )
 
         def artifact_lineage(self, token: str, artifact_name: str):
+            """Artifact lineage."""
             return artifact_lineage(token, artifact_name)
 
         def artifact_lineage_hf(self, repo_id: str):
+            """Artifact lineage hf."""
             return artifact_lineage_hf(self.github_token, repo_id)
 
         def artifact_list(
@@ -344,6 +359,7 @@ class GBClient:
             tags: list[str] | None,
             callback=None,
         ):
+            """Artifact list."""
             return artifact_list(
                 self.github_token,
                 list_all,
@@ -360,6 +376,7 @@ class GBClient:
             )
 
         def existing_checksum_artifacts(self, space: str, checksum: str):
+            """Existing checksum artifacts."""
             results = artifact_list(
                 self.github_token,
                 list_all=True,
@@ -375,9 +392,11 @@ class GBClient:
                 return None
 
         def fetch_artifact(self, artifact_id: str, callback=None):
+            """Fetch artifact."""
             return get_artifact(self.github_token, artifact_id, callback=callback)
 
         def fetch_artifact_uri(self, artifact_uri: str, callback=None):
+            """Fetch artifact uri."""
             return get_artifact_uri(self.github_token, artifact_uri, callback=callback)
 
         def get_dataset(
@@ -388,6 +407,7 @@ class GBClient:
             space: str,
             callback=None,
         ):
+            """Get the dataset."""
             return get_dataset_lh(
                 self.github_token,
                 lh_token,
@@ -407,6 +427,7 @@ class GBClient:
             space: Optional[str],
             callback=None,
         ):
+            """Download table."""
             return download_table_lh(
                 self.github_token,
                 lh_token,
@@ -426,9 +447,8 @@ class GBClient:
             space: Optional[str],
             callback=None,
         ):
-            return get_table_lh(
-                self.github_token, lh_token, namespace, table_name, space, callback
-            )
+            """Get the table."""
+            return get_table_lh(self.github_token, lh_token, namespace, table_name, space, callback)
 
         def download_model(
             self,
@@ -441,6 +461,7 @@ class GBClient:
             space: Optional[str],
             callback=None,
         ):
+            """Download model."""
             return download_model_lh(
                 self.github_token,
                 lh_token,
@@ -454,9 +475,11 @@ class GBClient:
             )
 
         def save_origin(self, file_path, artifact):
+            """Save origin."""
             return save_origin(file_path, artifact)
 
         def save_origin(self, file_path, artifact):
+            """Save origin."""
             return save_origin(file_path, artifact)
 
         def check_fileset(
@@ -469,6 +492,7 @@ class GBClient:
             space: Optional[str],
             callback=None,
         ):
+            """Verify fileset."""
             return check_fileset_lh(
                 self.github_token,
                 lh_token,
@@ -491,6 +515,7 @@ class GBClient:
             space: Optional[str],
             callback=None,
         ):
+            """Download fileset."""
             return download_fileset_lh(
                 self.github_token,
                 lh_token,
@@ -512,6 +537,7 @@ class GBClient:
             revision: str = "main",
             callback=None,
         ):
+            """Download hf artifact."""
             return download_hf_artifact(
                 hf_token,
                 repo_id,
@@ -531,6 +557,7 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ):
+            """Get the model."""
             return get_model_lh(
                 self.github_token,
                 lh_token,
@@ -543,6 +570,7 @@ class GBClient:
             )
 
         def archive_artifact(self, artifact_id: str, archive: bool, callback=None):
+            """Archive artifact."""
             return artifact_archive(self.github_token, artifact_id, archive, callback)
 
         def artifact_copy(
@@ -555,6 +583,7 @@ class GBClient:
             revision: str,
             callback=None,
         ) -> ArtifactCopyResult:
+            """Artifact copy."""
             return artifact_copy(
                 self.github_token,
                 lh_token,
@@ -576,7 +605,7 @@ class GBClient:
             isUpdate: bool = False,
             callback=None,
         ):
-
+            """Update artifact."""
             return update_artifact(
                 self.github_token,
                 artifact_id=artifact_id,
@@ -589,48 +618,58 @@ class GBClient:
             )
 
     class Auth:
+        """Auth implementation."""
+
         def __init__(self):
             pass
 
         def github_token(self):
+            """Github token."""
             return gh_token()
 
         def login_github_with_token(self, gh_access_token: str):
+            """Login github with token."""
             return gh_login(gh_access_token)
 
         def login_github(self, device_code: str):
+            """Login github."""
             token_obj = gh_token_verify(device_code)
             gh_access_token = token_obj.access_token[0]
             return gh_login(gh_access_token)
 
-        def lakehouse_token_for_space(
-            github_token: str, space: str = None, callback=None
-        ) -> str:
-            return lakehouse_token_for_space(
-                github_token, space=space, callback=callback
-            )
+        def lakehouse_token_for_space(github_token: str, space: str = None, callback=None) -> str:
+            """Lakehouse token for space."""
+            return lakehouse_token_for_space(github_token, space=space, callback=callback)
 
         def lakehouse_token(github_token: str, callback=None) -> str:
+            """Lakehouse token."""
             return lh_artifact_token(github_token, callback=callback)
 
         def lakehouse_user_token(github_token: str, callback=None) -> str:
+            """Lakehouse user token."""
             return lh_user_token(github_token, callback=callback)
 
         def rits_user_api_key(self):
+            """Rits user api key."""
             return rits_user_api_key()
 
         def hf_token(self) -> str:
+            """Hf token."""
             import os
 
             return os.environ.get("HF_TOKEN", None)
 
         def login_gbserver(self, api_user: str, api_key: str):
+            """Login gbserver."""
             return gbserver_login(api_user, api_key)
 
         def login_ibmid(self, open_browser=None):
+            """Login ibmid."""
             return ibmid_login(open_browser=open_browser)
 
     class Build:
+        """Build implementation."""
+
         def __init__(self, github_token: str):
             self.github_token = github_token
 
@@ -645,6 +684,7 @@ class GBClient:
             id_format: Optional[str] = None,
             callback=None,
         ):
+            """Create init."""
             return build_init(
                 self.github_token,
                 build_name,
@@ -671,6 +711,7 @@ class GBClient:
             callback=None,
             validation_type: str = "static",
         ) -> str:
+            """Create start."""
             return build_start(
                 self.github_token,
                 quiet,
@@ -693,21 +734,16 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ) -> Any:
-            return build_cancel(
-                self.github_token, build_id, id_format, space, callback=callback
-            )
+            """Create cancel."""
+            return build_cancel(self.github_token, build_id, id_format, space, callback=callback)
 
-        def build_lineage_lh(
-            self, token: str, build_id: str, id_format: str, callback=None
-        ):
-            return build_lineage_lh(
-                self.github_token, token, build_id, id_format, callback
-            )
+        def build_lineage_lh(self, token: str, build_id: str, id_format: str, callback=None):
+            """Create lineage lh."""
+            return build_lineage_lh(self.github_token, token, build_id, id_format, callback)
 
         def build_lineage(self, build_id: str, id_format: str, callback=None):
-            return build_lineage_gbserver(
-                self.github_token, build_id, id_format, callback
-            )
+            """Create lineage."""
+            return build_lineage_gbserver(self.github_token, build_id, id_format, callback)
 
         def build_list(
             self,
@@ -722,6 +758,7 @@ class GBClient:
             page_size: Optional[int] = None,
             callback=None,
         ):
+            """Create list."""
             return build_list(
                 self.github_token,
                 list_all,
@@ -755,6 +792,7 @@ class GBClient:
             skip_id_check: Optional[bool] = False,
             callback=None,
         ):
+            """Create log."""
             return build_log(
                 self.github_token,
                 id_format,
@@ -785,6 +823,7 @@ class GBClient:
             result_format: str,
             callback=None,
         ) -> str | List[Any]:
+            """Create status."""
             return build_status(
                 self.github_token,
                 build_id,
@@ -806,6 +845,7 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ) -> List[Any]:
+            """Create describe."""
             return build_describe(
                 self.github_token,
                 filename,
@@ -826,6 +866,7 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ) -> Tuple[str, str, List[Any]]:
+            """Create diff."""
             return build_diff(
                 self.github_token,
                 build_id_1,
@@ -844,6 +885,7 @@ class GBClient:
             id_format: Optional[str] = None,
             callback=None,
         ) -> Tuple[Any, List[Any], List[Any], List[Any]]:
+            """Create monitor."""
             return build_monitor(
                 self.github_token,
                 build_id,
@@ -864,6 +906,7 @@ class GBClient:
             callback=None,
             validation_type: str = "static",
         ) -> Optional[Tuple]:
+            """Create validate."""
             return build_validate(
                 self.github_token,
                 quiet,
@@ -884,7 +927,7 @@ class GBClient:
             append: bool = False,
             callback=None,
         ):
-
+            """Update build."""
             return update_build(
                 self.github_token,
                 build_id=build_id,
@@ -900,6 +943,7 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ) -> Tuple[str, str]:
+            """Create notification."""
             return build_notification(self.github_token, status, space, callback)
 
         def fetch_build(
@@ -908,6 +952,7 @@ class GBClient:
             id_format: str,
             callback=None,
         ):
+            """Fetch build."""
             return fetch_build(
                 self.github_token,
                 build_id=build_id,
@@ -916,29 +961,39 @@ class GBClient:
             )
 
     class Cleanup:
+        """Cleanup implementation."""
+
         def __init__(self, github_token: str):
             self.github_token = github_token
 
         def remove_config(self):
+            """Remove config."""
             return remove_config()
 
         def remove_credentials(self):
+            """Remove credentials."""
             return remove_credentials()
 
         def remove_local_cache(self):
+            """Remove local cache."""
             return remove_local_cache()
 
         def remove_default_fork(self, callback=None):
+            """Remove default fork."""
             return remove_user_fork_from_default(self.github_token, callback)
 
     class Model:
+        """Model implementation."""
+
         def __init__(self, github_token: str):
             self.github_token = github_token
 
         def lookup_model(self, rits_api_key: str, model_url: str, callback=None):
+            """Find model."""
             return lookup_model_url(rits_api_key, model_url, callback)
 
         def get_rits_models(self, rits_api_key: str, callback=None):
+            """Get the rits models."""
             return get_rits_models(rits_api_key, callback)
 
         def prompt_model(
@@ -952,9 +1007,8 @@ class GBClient:
             top_p: float,
             callback=None,
         ):
-            return prompt_model(
-                rits_api_key, prompt, url, model_id, temp, max, top_p, callback
-            )
+            """Prompt model."""
+            return prompt_model(rits_api_key, prompt, url, model_id, temp, max, top_p, callback)
 
         def model_chat(
             self,
@@ -968,6 +1022,7 @@ class GBClient:
             chat_template: Optional[Any] = None,
             callback=None,
         ):
+            """Model chat."""
             return model_chat(
                 rits_api_key,
                 url,
@@ -981,16 +1036,22 @@ class GBClient:
             )
 
     class Space:
+        """Space implementation."""
+
         def __init__(self, github_token: str):
             self.github_token = github_token
 
         def set_space(self, space_name: str, default: bool, callback=None, name=None):
+            """Set the space."""
             return set_space(self.github_token, space_name, default, callback, name)
 
         def list_spaces(self, all: bool, refresh: bool, callback=None) -> List[Any]:
+            """List spaces."""
             return list_spaces(self.github_token, all, refresh, callback)
 
     class Secret:
+        """Secret implementation."""
+
         def __init__(self, github_token: str):
             self.github_token = github_token
 
@@ -1000,6 +1061,7 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ) -> Any:
+            """List secrets."""
             return list_secrets(self.github_token, personal, space, callback)
 
         def get_secret(
@@ -1009,6 +1071,7 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ) -> Any:
+            """Get the secret."""
             return get_secret(self.github_token, secret_name, personal, space, callback)
 
         def create_secret(
@@ -1020,6 +1083,7 @@ class GBClient:
             path_name: Optional[str] = None,
             callback=None,
         ) -> Tuple[Any, str, str]:
+            """Create secret."""
             return create_secret(
                 self.github_token,
                 secret_name,
@@ -1039,6 +1103,7 @@ class GBClient:
             path_name: Optional[str] = None,
             callback=None,
         ) -> Tuple[Any, str, str]:
+            """Update secret."""
             return update_secret(
                 self.github_token,
                 secret_name,
@@ -1056,11 +1121,12 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ) -> Tuple[Any, str, str]:
-            return delete_secret(
-                self.github_token, secret_name, personal, space, callback
-            )
+            """Remove secret."""
+            return delete_secret(self.github_token, secret_name, personal, space, callback)
 
     class Step:
+        """Step implementation."""
+
         def __init__(self, github_token: str):
             self.github_token = github_token
 
@@ -1070,6 +1136,7 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ) -> List[Any]:
+            """List steps."""
             return list_steps(self.github_token, step_repo, space, callback)
 
         def describe_step(
@@ -1079,11 +1146,12 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ) -> Any:
-            return describe_step(
-                self.github_token, step_name, step_repo, space, callback
-            )
+            """Describe step."""
+            return describe_step(self.github_token, step_name, step_repo, space, callback)
 
     class Template:
+        """Template implementation."""
+
         def __init__(self, github_token: str):
             self.github_token = github_token
 
@@ -1093,6 +1161,7 @@ class GBClient:
             template_repo: Optional[str] = None,
             callback=None,
         ) -> List[Any]:
+            """List templates."""
             return list_templates(self.github_token, space, template_repo, callback)
 
         def describe_template(
@@ -1103,18 +1172,24 @@ class GBClient:
             template_repo: Optional[str] = None,
             callback=None,
         ) -> List[Any]:
+            """Describe template."""
             return describe_template(
                 self.github_token, template_name, format, space, template_repo, callback
             )
 
     class Version:
+        """Version implementation."""
+
         def __init__(self, github_token: str):
             self.github_token = github_token
 
         def get_gbserver_version(self, quiet: bool, callback=None) -> str:
+            """Get the gbserver version."""
             return get_gbserver_version(self.github_token, quiet, callback)
 
     class Tag:
+        """Tag implementation."""
+
         def __init__(self, github_token: str):
             self.github_token = github_token
 
@@ -1124,6 +1199,7 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ) -> list[str]:
+            """Artifact tag list."""
             return artifact_tag_list(self.github_token, username, space, callback)
 
         def build_tag_list(
@@ -1132,4 +1208,5 @@ class GBClient:
             space: Optional[str] = None,
             callback=None,
         ) -> list[str]:
+            """Create tag list."""
             return build_tag_list(self.github_token, username, space, callback)

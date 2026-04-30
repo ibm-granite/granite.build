@@ -123,9 +123,7 @@ def parse_inputs(llmbin: tuple) -> dict:
                 # if formatted as [type:]path
                 input_type = input_info[0]
                 input_uri = input_info[1]
-                input_name = re.sub(
-                    f"[^{ARTIFACT_NAME_CHARACTERS}]+", "_", input_info[1]
-                )
+                input_name = re.sub(f"[^{ARTIFACT_NAME_CHARACTERS}]+", "_", input_info[1])
             else:
                 # if formatted as name:path
                 input_name = input_info[0]
@@ -155,9 +153,7 @@ def parse_inputs(llmbin: tuple) -> dict:
             inputs[input_name] = {
                 "uri": f"env://{abs_path}",
                 "local_path": str(abs_path),  # For registration service
-                "type": (
-                    input_type.removesuffix("s") if input_type is not None else None
-                ),
+                "type": (input_type.removesuffix("s") if input_type is not None else None),
             }
         else:
             sys.exit(f"Error: Invalid URI {input_uri} for input {input_name}.")
@@ -165,13 +161,9 @@ def parse_inputs(llmbin: tuple) -> dict:
     return inputs
 
 
-def parse_outputs(
-    llmbout: tuple, output_is_subfolder: bool, lakehouse_namespace: str
-) -> dict:
+def parse_outputs(llmbout: tuple, output_is_subfolder: bool, lakehouse_namespace: str) -> dict:
     outputs = {}
-    base_path = (
-        f"lh://{{{{ space.variables.DEFAULT_LH_ENVIRONMENT }}}}/{lakehouse_namespace}"
-    )
+    base_path = f"lh://{{{{ space.variables.DEFAULT_LH_ENVIRONMENT }}}}/{lakehouse_namespace}"
 
     for output in llmbout:
         if output_is_subfolder:
@@ -193,9 +185,7 @@ def parse_outputs(
             "fileset",
             "filesets",
         ]:
-            sys.exit(
-                f"Error: Unknown artifact type {artifact_type} for output {output}."
-            )
+            sys.exit(f"Error: Unknown artifact type {artifact_type} for output {output}.")
 
         if not validate_artifact_name(output_name):
             sys.exit(
@@ -283,9 +273,7 @@ def generate_build_yaml(
 
     build_config = {
         "granite.build": {
-            "name": (
-                f"bluevela_job_{job_id}" if not bsub_build_name else bsub_build_name
-            ),
+            "name": (f"bluevela_job_{job_id}" if not bsub_build_name else bsub_build_name),
             "targets": {"my_workload": target},
         }
     }

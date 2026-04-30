@@ -81,9 +81,7 @@ def get_build_jobstats(build_id: str) -> BuildJobStatsResponse:
 
     for target in targets:
         assert isinstance(target, StoredTargetRun)
-        _, jobstats_dict = jobstats_storage.create_jobstats_for_target(
-            storage, target, build
-        )
+        _, jobstats_dict = jobstats_storage.create_jobstats_for_target(storage, target, build)
         target_responses.append(jobstats_dict)
 
     return BuildJobStatsResponse(build_id=build_id, targets=target_responses)
@@ -134,9 +132,7 @@ def ingest_lineage_event(event: OpenLineageEvent):
 @lineage_api.post("/search")
 def search_lineage_events(request: TagSearchRequest):
     service = _get_openlineage_service()
-    total, results = service.search_lineage_by_tags(
-        request.tags, request.limit, request.offset
-    )
+    total, results = service.search_lineage_by_tags(request.tags, request.limit, request.offset)
     return PaginatedResponse(
         count=len(results),
         total=total,
@@ -149,9 +145,7 @@ def search_lineage_events(request: TagSearchRequest):
 @lineage_api.post("/artifact/runs")
 def get_lineage_by_artifact(request: ArtifactLineageRequest):
     service = _get_openlineage_service()
-    total, results = service.search_runs_by_artifact(
-        request.repo_id, request.limit, request.offset
-    )
+    total, results = service.search_runs_by_artifact(request.repo_id, request.limit, request.offset)
     return PaginatedResponse(
         count=len(results),
         total=total,

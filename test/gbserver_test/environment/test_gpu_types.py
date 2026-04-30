@@ -24,9 +24,7 @@ class TestGPUTypeMapping:
         assert resolve_runpod_gpu_type("RTX-4090") == "NVIDIA GeForce RTX 4090"
 
     def test_resolve_passthrough_native_id(self):
-        assert (
-            resolve_runpod_gpu_type("NVIDIA A100 80GB PCIe") == "NVIDIA A100 80GB PCIe"
-        )
+        assert resolve_runpod_gpu_type("NVIDIA A100 80GB PCIe") == "NVIDIA A100 80GB PCIe"
 
     def test_resolve_unknown_type_raises(self):
         with pytest.raises(UnknownGPUType, match="FAKE-GPU"):

@@ -101,9 +101,7 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
         """
         return Integer
 
-    def add(
-        self, item: Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]
-    ) -> Union[str, list[str]]:
+    def add(self, item: Union[BASE_ITEM_TYPE, list[BASE_ITEM_TYPE]]) -> Union[str, list[str]]:
         with self._db_file_lock:
             return super().add(item)
 

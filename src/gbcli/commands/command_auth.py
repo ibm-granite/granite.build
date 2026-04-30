@@ -1,3 +1,5 @@
+"""Command auth module."""
+
 import itertools
 import threading
 import time
@@ -27,6 +29,7 @@ _INTERNAL_TO_DISPLAY = {"github": "github", "ibmid": "sso", "apikey": "apikey"}
 
 
 def str_exc_chain(exc) -> str:
+    """Str exc chain."""
     result = str(exc)
     if exc.__cause__:
         result += " caused by: " + str_exc_chain(exc.__cause__)
@@ -119,9 +122,7 @@ def login(ctx, token, gbserver, sso):
             runnable_browser = check_runnable_browser()
 
             def _open_browser(url):
-                if runnable_browser and click.confirm(
-                    "Open the browser?", default=True
-                ):
+                if runnable_browser and click.confirm("Open the browser?", default=True):
                     webbrowser.open(url)
                 else:
                     click.echo(f"Open this link in the browser: {url}")
@@ -181,9 +182,7 @@ def login(ctx, token, gbserver, sso):
             click.echo(
                 f"Open this link in the browser {'on your local environment' if not runnable_browser else ''}: {user_token.verification_uri}"
             )
-            click.echo(
-                f"and enter this code: " + click.style(user_token.user_code, bold=True)
-            )
+            click.echo(f"and enter this code: " + click.style(user_token.user_code, bold=True))
 
             if runnable_browser:
                 answer = click.confirm("Open the browser?", True)
@@ -218,9 +217,7 @@ def login(ctx, token, gbserver, sso):
 @click.option(
     "--set",
     "set_provider",
-    type=click.Choice(
-        ["github", "sso", "ibmid", "gbserver", "apikey"], case_sensitive=False
-    ),
+    type=click.Choice(["github", "sso", "ibmid", "gbserver", "apikey"], case_sensitive=False),
     default=None,
     help="Set the default authentication provider (sso/ibmid for IBMid, gbserver/apikey for API key).",
 )

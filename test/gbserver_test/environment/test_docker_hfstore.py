@@ -58,9 +58,7 @@ async def test_pullasset_hfstore_returns_container_path(
     docker_env, mock_assetstore, hf_storeload_config
 ):
     """Verify pullasset_hfstore returns a container-side path, not a host path."""
-    uri = HfURI.from_parts(
-        owner="ibm-granite", repo="granite-4.0-350m-base", hf_type=HfType.MODEL
-    )
+    uri = HfURI.from_parts(owner="ibm-granite", repo="granite-4.0-350m-base", hf_type=HfType.MODEL)
 
     with patch.object(HfURI, "pull", return_value=True):
         binding_config, extra_config = await docker_env.pullasset_hfstore(
@@ -97,9 +95,7 @@ async def test_pullasset_hfstore_registers_extra_volume(
             storeload_config=hf_storeload_config,
         )
 
-    expected_host = str(
-        tmp_path / "hf-cache" / "ibm-granite" / "granite-4.0-350m" / "main"
-    )
+    expected_host = str(tmp_path / "hf-cache" / "ibm-granite" / "granite-4.0-350m" / "main")
     assert expected_host in docker_env._extra_volumes
     mount = docker_env._extra_volumes[expected_host]
     assert mount["bind"] == "/gb-hf-models/ibm-granite/granite-4.0-350m/main"
@@ -125,12 +121,8 @@ async def test_pullasset_hfstore_multiple_models_accumulate(docker_env, tmp_path
     sc.config = {"cache_path": str(cache)}
 
     with patch.object(HfURI, "pull", return_value=True):
-        await docker_env.pullasset_hfstore(
-            uri=uri1, assetstore=store1, storeload_config=sc
-        )
-        await docker_env.pullasset_hfstore(
-            uri=uri2, assetstore=store2, storeload_config=sc
-        )
+        await docker_env.pullasset_hfstore(uri=uri1, assetstore=store1, storeload_config=sc)
+        await docker_env.pullasset_hfstore(uri=uri2, assetstore=store2, storeload_config=sc)
 
     assert len(docker_env._extra_volumes) == 2
     path1 = str(cache / "org1" / "model1" / "main")
@@ -200,9 +192,7 @@ def push_assetstore():
 
 
 @pytest.mark.asyncio
-async def test_pushasset_hfstore_translates_container_path(
-    docker_env, push_assetstore, tmp_path
-):
+async def test_pushasset_hfstore_translates_container_path(docker_env, push_assetstore, tmp_path):
     """pushasset_hfstore translates a /gb-workspace container path to the host path."""
     output_dir = tmp_path / "assets" / "outputs"
     output_dir.mkdir(parents=True)
@@ -230,9 +220,7 @@ async def test_pushasset_hfstore_translates_container_path(
 
 
 @pytest.mark.asyncio
-async def test_pushasset_hfstore_calls_hfuri_push(
-    docker_env, push_assetstore, tmp_path
-):
+async def test_pushasset_hfstore_calls_hfuri_push(docker_env, push_assetstore, tmp_path):
     """pushasset_hfstore delegates to HfURI.push() and returns the URI."""
     src = tmp_path / "model.bin"
     src.write_bytes(b"weights")
@@ -255,9 +243,7 @@ async def test_pushasset_hfstore_calls_hfuri_push(
 
 
 @pytest.mark.asyncio
-async def test_pushasset_hfstore_injects_assetstore_secrets(
-    docker_env, push_assetstore, tmp_path
-):
+async def test_pushasset_hfstore_injects_assetstore_secrets(docker_env, push_assetstore, tmp_path):
     """Secrets from the assetstore are merged into the URI before pushing."""
     src = tmp_path / "f.txt"
     src.write_text("data")
@@ -316,9 +302,7 @@ async def test_pushasset_hfstore_raises_on_missing_path(docker_env, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pushasset_hfstore_raises_on_push_failure(
-    docker_env, push_assetstore, tmp_path
-):
+async def test_pushasset_hfstore_raises_on_push_failure(docker_env, push_assetstore, tmp_path):
     """Exception from HfURI.push() propagates out of pushasset_hfstore."""
     src = tmp_path / "f.bin"
     src.write_bytes(b"x")

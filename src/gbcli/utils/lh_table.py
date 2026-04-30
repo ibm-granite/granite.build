@@ -1,3 +1,5 @@
+"""Lh table module."""
+
 import json
 import re
 
@@ -12,6 +14,7 @@ REGEX_VALID_ID = re.compile(REGEX_VALID_ID_STR)
 # Function to validate an identifier
 def is_valid_id(identifier: str) -> bool:
     # Define the regex pattern
+    """Check if valid id."""
     return REGEX_VALID_ID.match(identifier) is not None
 
 
@@ -22,6 +25,7 @@ def createTableFromFile(
     table_name,
     public,
 ):
+    """Create table from file."""
     from lakehouse.assets.table import Table
     from lakehouse.core import TableDetails
 
@@ -39,6 +43,7 @@ def createTableFromFile(
 
 
 def createTableDataset(lh, df, namespace, table_name, type: str, public: bool):
+    """Create table dataset."""
     try:
 
         from lakehouse.assets import Table  # type: ignore
@@ -61,9 +66,7 @@ def createTableDataset(lh, df, namespace, table_name, type: str, public: bool):
 
             if type == "table":
                 # create table
-                table_details = TableDetails(
-                    namespace=namespace, name=table_name, is_public=public
-                )
+                table_details = TableDetails(namespace=namespace, name=table_name, is_public=public)
                 table = Table.from_dataframe(
                     lh=lh,
                     df=df,
@@ -78,9 +81,7 @@ def createTableDataset(lh, df, namespace, table_name, type: str, public: bool):
                     description=table_name,
                     is_public=public,
                 )
-                dataset_table_details = TableDetails(
-                    namespace=namespace, is_public=public
-                )
+                dataset_table_details = TableDetails(namespace=namespace, is_public=public)
                 dataset = Dataset.from_dataframe(
                     lh=lh,
                     df=df,
@@ -101,10 +102,12 @@ def createTableDataset(lh, df, namespace, table_name, type: str, public: bool):
 
 
 def hasNullValues(df: pd.DataFrame):
+    """Check if null values."""
     return df.isnull().values.any()
 
 
 def preprocess_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Preprocess df."""
     df.columns = df.columns.str.replace(r"[. ]", "_", regex=True).str.lower()
     for col in df.columns:
         if df[col].isnull().any():  # If column contains nulls
@@ -118,6 +121,7 @@ def preprocess_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def convert_to_df(filepath: str, extension: str) -> pd.DataFrame:
+    """Convert to df."""
     try:
 
         from lakehouse.assets.utils.dataset_utils import (  # type: ignore
@@ -137,6 +141,7 @@ def convert_to_df(filepath: str, extension: str) -> pd.DataFrame:
 
 
 def table_lh(lh, namespace: str, table_name: str):
+    """Table lh."""
     try:
 
         from lakehouse.assets.table import Table  # type: ignore

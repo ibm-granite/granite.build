@@ -15,6 +15,8 @@
 # limitations under the License.
 
 
+"""Command rest server worker module."""
+
 import os
 
 import click

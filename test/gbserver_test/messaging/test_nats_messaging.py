@@ -41,9 +41,7 @@ class TestNATSMessagingUnit:
         messaging = NATSMessaging(addr, nats_url="nats://localhost:4222")
 
         mock_nc = AsyncMock()
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         assert messaging._nc is mock_nc
@@ -57,9 +55,7 @@ class TestNATSMessagingUnit:
 
         mock_nc = AsyncMock()
         mock_nc.is_closed = False
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         payload = {"event": "build_started", "build_id": "123"}
@@ -79,9 +75,7 @@ class TestNATSMessagingUnit:
 
         mock_nc = AsyncMock()
         mock_nc.is_closed = False
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         await messaging.publish({"data": "test"}, suffix="")
@@ -108,9 +102,7 @@ class TestNATSMessagingUnit:
 
         mock_nc = AsyncMock()
         mock_nc.is_closed = False
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         await messaging.close()
@@ -156,9 +148,7 @@ class TestNATSJetStreamUnit:
         mock_js = AsyncMock()
         mock_nc.jetstream = MagicMock(return_value=mock_js)
 
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         assert messaging._jetstream_available is True
@@ -177,9 +167,7 @@ class TestNATSJetStreamUnit:
         mock_js.account_info.side_effect = Exception("JetStream not enabled")
         mock_nc.jetstream = MagicMock(return_value=mock_js)
 
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         assert messaging._jetstream_available is False
@@ -196,17 +184,13 @@ class TestNATSJetStreamUnit:
         mock_js = AsyncMock()
         mock_nc.jetstream = MagicMock(return_value=mock_js)
 
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         mock_js.add_stream.assert_awaited_once()
         call_kwargs = mock_js.add_stream.call_args
         config = (
-            call_kwargs.kwargs.get("config")
-            or call_kwargs[1].get("config")
-            or call_kwargs[0][0]
+            call_kwargs.kwargs.get("config") or call_kwargs[1].get("config") or call_kwargs[0][0]
         )
         assert config.name == "GBSERVER_BUILD123"
         assert "gbserver.build123.>" in config.subjects
@@ -223,9 +207,7 @@ class TestNATSJetStreamUnit:
         mock_js = AsyncMock()
         mock_nc.jetstream = MagicMock(return_value=mock_js)
 
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         payload = {"event": "build_started", "build_id": "456"}
@@ -251,9 +233,7 @@ class TestNATSJetStreamUnit:
         mock_js.account_info.side_effect = Exception("no JS")
         mock_nc.jetstream = MagicMock(return_value=mock_js)
 
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         payload = {"event": "build_started"}
@@ -287,9 +267,7 @@ class TestNATSJetStreamUnit:
         mock_sub.messages = _messages()
         mock_js.subscribe.return_value = mock_sub
 
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         received = []
@@ -333,9 +311,7 @@ class TestNATSJetStreamUnit:
         mock_sub.messages = _messages()
         mock_js.subscribe.return_value = mock_sub
 
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         async def bad_handler(data, routing_key):
@@ -358,9 +334,7 @@ class TestNATSJetStreamUnit:
         mock_js = AsyncMock()
         mock_nc.jetstream = MagicMock(return_value=mock_js)
 
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         assert messaging._jetstream_available is True
@@ -386,9 +360,7 @@ class TestNATSJetStreamUnit:
         mock_js.account_info.side_effect = Exception("no JS")
         mock_nc.jetstream = MagicMock(return_value=mock_js)
 
-        with patch(
-            "gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc
-        ):
+        with patch("gbserver.messaging.nats_messaging.nats.connect", return_value=mock_nc):
             await messaging.setup()
 
         # Should return immediately (no timeout needed)

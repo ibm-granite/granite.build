@@ -1,8 +1,11 @@
+"""Cli config module."""
+
 import os
 from pathlib import Path
 
 
 def configureGBWorkingEnv():
+    """Configure g b working env."""
     if "GB_CONFIG" not in os.environ:
         os.environ["GB_CONFIG"] = os.path.join(os.path.expanduser("~"), ".gbcli")
 
@@ -14,8 +17,10 @@ def configureGBWorkingEnv():
 
 
 def get_local_gb_config():
+    """Get the local gb config."""
     return Path(os.path.abspath(os.environ["GB_CONFIG"]))
 
 
 def get_local_build_cache():
+    """Get the local build cache."""
     return Path(os.path.abspath(os.environ["GB_CACHE"]))

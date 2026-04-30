@@ -98,9 +98,7 @@ class FileNotFoundRetryStrategy(RetryStrategy):
                     return True
 
         except AttributeError as e:
-            logger.debug(
-                "[FileNotFoundRetryStrategy] Event missing expected attributes: %s", e
-            )
+            logger.debug("[FileNotFoundRetryStrategy] Event missing expected attributes: %s", e)
         except Exception as e:
             logger.debug("[FileNotFoundRetryStrategy] Could not parse event: %s", e)
 
@@ -136,11 +134,7 @@ class FileNotFoundRetryStrategy(RetryStrategy):
                     return nodes
 
             # Try to extract from JSON payload
-            if (
-                hasattr(_event, "payload")
-                and _event.payload
-                and hasattr(_event.payload, "msg")
-            ):
+            if hasattr(_event, "payload") and _event.payload and hasattr(_event.payload, "msg"):
                 msg = _event.payload.msg
 
                 # Parse JSON if present
@@ -185,13 +179,9 @@ class FileNotFoundRetryStrategy(RetryStrategy):
                                 )
 
         except json.JSONDecodeError as e:
-            logger.debug(
-                "[FileNotFoundRetryStrategy] Could not parse JSON from payload: %s", e
-            )
+            logger.debug("[FileNotFoundRetryStrategy] Could not parse JSON from payload: %s", e)
         except Exception as e:
-            logger.warning(
-                "[FileNotFoundRetryStrategy] Could not extract node name: %s", e
-            )
+            logger.warning("[FileNotFoundRetryStrategy] Could not extract node name: %s", e)
 
         if not nodes:
             logger.warning(

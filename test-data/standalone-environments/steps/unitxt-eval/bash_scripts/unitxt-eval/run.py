@@ -44,9 +44,7 @@ def main():
     )
     model.to(device)
     model.eval()
-    print(
-        f"Model loaded: {model.config.model_type}, {model.num_parameters():,} parameters"
-    )
+    print(f"Model loaded: {model.config.model_type}, {model.num_parameters():,} parameters")
 
     # --- Evaluation prompts ---
     prompts = [
@@ -66,9 +64,9 @@ def main():
         formatted = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        inputs = tokenizer(
-            formatted, return_tensors="pt", truncation=True, max_length=256
-        ).to(device)
+        inputs = tokenizer(formatted, return_tensors="pt", truncation=True, max_length=256).to(
+            device
+        )
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,

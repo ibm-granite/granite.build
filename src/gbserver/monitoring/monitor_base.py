@@ -57,9 +57,7 @@ class MonitorBase(abc.ABC):
 
     def stop(self: Self) -> None:
         """Stop the monitoring."""
-        logger.info(
-            "Stopping launch_id %s; stop_event = %s", self.launch_id, self.stop_event
-        )
+        logger.info("Stopping launch_id %s; stop_event = %s", self.launch_id, self.stop_event)
         if self.stop_event is not None:
             self.stop_event.set()
 

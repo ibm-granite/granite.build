@@ -37,9 +37,7 @@ class BaseSpaceUserStorageTest(AbstractStorageTest):
         storage = self._get_tested_storage()
         item1 = StoredSpaceUser(space_name="myspace", username="alice", role="admin")
         item2 = StoredSpaceUser(space_name="myspace", username="bob", role="member")
-        item3 = StoredSpaceUser(
-            space_name="otherspace", username="alice", role="member"
-        )
+        item3 = StoredSpaceUser(space_name="otherspace", username="alice", role="member")
         storage.add([item1, item2, item3])
 
         results = storage.get_by_space("myspace")

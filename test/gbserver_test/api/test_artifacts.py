@@ -152,23 +152,17 @@ class TestArtifactAPI(AbstractAPITest):
     ) -> ArtifactRegistration:
         assert response.status_code == 200
         resp_json = response.json()
-        resp: RegisterArtifactResponse = RegisterArtifactResponse.model_validate(
-            resp_json
-        )
+        resp: RegisterArtifactResponse = RegisterArtifactResponse.model_validate(resp_json)
         artifact = resp.registered
         return artifact
 
-    def _get_artifact_archive_response(
-        self, response: Response
-    ) -> ChangeArchiveResponse:
+    def _get_artifact_archive_response(self, response: Response) -> ChangeArchiveResponse:
         assert response.status_code == 200
         resp_json = response.json()
         resp: ChangeArchiveResponse = ChangeArchiveResponse.model_validate(resp_json)
         return resp
 
-    def _get_artifact_list_response(
-        self, response: Response
-    ) -> list[ArtifactRegistration]:
+    def _get_artifact_list_response(self, response: Response) -> list[ArtifactRegistration]:
         assert response.status_code == 200
         resp_json = response.json()
         resp: ListArtifactsResponse = ListArtifactsResponse.model_validate(resp_json)
@@ -176,9 +170,7 @@ class TestArtifactAPI(AbstractAPITest):
         return artifacts
 
     def _get_update_artifact_response(self, response: Response) -> ArtifactRegistration:
-        assert (
-            response.status_code == 200
-        ), f"Failed response content={str(response.content)}"
+        assert response.status_code == 200, f"Failed response content={str(response.content)}"
         resp_json = response.json()
         resp: ArtifactUpdateResponse = ArtifactUpdateResponse.model_validate(resp_json)  # type: ignore
         artifact = resp.artifact
@@ -197,9 +189,7 @@ class TestArtifactAPI(AbstractAPITest):
         artifact = self._get_artifact_registration_from_registration_response(response)
         assert isinstance(artifact, ArtifactRegistration)
         if isinstance(req, ArtifactTableRequest):
-            expected_uri = LhURI.get_table_uri(
-                table_name=req.table_name, namespace=req.namespace
-            )
+            expected_uri = LhURI.get_table_uri(table_name=req.table_name, namespace=req.namespace)
         elif isinstance(req, ArtifactModelRequest):
             expected_uri = LhURI.get_model_uri(
                 table_name=req.table_name,
@@ -236,9 +226,7 @@ class TestArtifactAPI(AbstractAPITest):
         assert artifact.description == req.description
         return artifact
 
-    def _XYZvalidate_artifact_registration_response(
-        self, response: Response, expected_uri
-    ):
+    def _XYZvalidate_artifact_registration_response(self, response: Response, expected_uri):
         artifact = self._get_artifact_registration_from_registration_response(response)
         uri = artifact.uri
         assert expected_uri == uri, f"Did not get expected uri {expected_uri}"
@@ -279,9 +267,7 @@ class TestArtifactAPI(AbstractAPITest):
             table_name=tablename0,
             certified_no_restrictions=True,
         )
-        response = client.post(
-            f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers
-        )
+        response = client.post(f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers)
         self._validate_artifact_registration_response(response, req)
 
         req = ArtifactDatasetRequest(
@@ -306,9 +292,7 @@ class TestArtifactAPI(AbstractAPITest):
             model_revision=model_revision1,
             certified_no_restrictions=True,
         )
-        response = client.post(
-            f"{base_url}/lh/model", data=req.model_dump_json(), headers=headers
-        )
+        response = client.post(f"{base_url}/lh/model", data=req.model_dump_json(), headers=headers)
         self._validate_artifact_registration_response(response, req)
 
         req = ArtifactFilesetlRequest(
@@ -373,9 +357,7 @@ class TestArtifactAPI(AbstractAPITest):
             table_name=tablename0,
             certified_no_restrictions=True,
         )
-        response = client.post(
-            f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers
-        )
+        response = client.post(f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers)
         artifact0 = self._get_artifact_registration_from_registration_response(response)
         assert artifact0.is_archived == False
 
@@ -446,9 +428,7 @@ class TestArtifactAPI(AbstractAPITest):
             table_name=tablename0,
             certified_no_restrictions=False,
         )
-        response = client.post(
-            f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers
-        )
+        response = client.post(f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers)
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
     def test_artifact_register_with_origins(self):
@@ -471,9 +451,7 @@ class TestArtifactAPI(AbstractAPITest):
             response = client.post(
                 f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers
             )
-            artifact = self._get_artifact_registration_from_registration_response(
-                response
-            )
+            artifact = self._get_artifact_registration_from_registration_response(response)
             origins.append(artifact)
             origin_uris.append(artifact.uri)
 
@@ -485,9 +463,7 @@ class TestArtifactAPI(AbstractAPITest):
             table_name=f"derived_table",
             origin_uris=origin_uris,
         )
-        response = client.post(
-            f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers
-        )
+        response = client.post(f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers)
         artifact = self._get_artifact_registration_from_registration_response(response)
 
         # JobStats record with a release_id equal to the output artifact id should have been created.
@@ -504,9 +480,7 @@ class TestArtifactAPI(AbstractAPITest):
             table_name=f"derived_table_should_fail",
             origin_uris=origin_uris,
         )
-        response = client.post(
-            f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers
-        )
+        response = client.post(f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers)
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def _get_uri_decoding(
@@ -546,9 +520,7 @@ class TestArtifactAPI(AbstractAPITest):
         table_name = "test_tablename"
         lh_env = "lh_env"
 
-        uri = LhURI.get_table_uri(
-            namespace=namespace, table_name=table_name, lh_env=lh_env
-        )
+        uri = LhURI.get_table_uri(namespace=namespace, table_name=table_name, lh_env=lh_env)
         expected = {
             "namespace": namespace,
             "table_name": table_name,
@@ -630,9 +602,7 @@ class TestArtifactAPI(AbstractAPITest):
             table_name=table_name,
             certified_no_restrictions=True,
         )
-        response = client.post(
-            f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers
-        )
+        response = client.post(f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers)
         artifact = self._get_artifact_registration_from_registration_response(response)
 
         # Now decode its uri via its uuid
@@ -671,9 +641,7 @@ class TestArtifactAPI(AbstractAPITest):
             description=current_description,
             tags=current_tags,
         )
-        response = client.post(
-            f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers
-        )
+        response = client.post(f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers)
         artifact0 = self._get_artifact_registration_from_registration_response(response)
         assert artifact0.tags == current_tags
         assert artifact0.description == current_description
@@ -758,9 +726,7 @@ class TestArtifactAPI(AbstractAPITest):
             tablename0 = "admintable"
         else:
             if non_admin_token is None:
-                pytest.skip(
-                    reason="No github non-admin token available in the environment"
-                )
+                pytest.skip(reason="No github non-admin token available in the environment")
             token = non_admin_token
             tablename0 = "nonadmintable"
 
@@ -793,16 +759,12 @@ class TestArtifactAPI(AbstractAPITest):
                 f"{base_url}/lh/table", data=req.model_dump_json(), headers=headers
             )
             if as_admin or not using_sys_tags:
-                artifact0 = self._get_artifact_registration_from_registration_response(
-                    response
-                )
+                artifact0 = self._get_artifact_registration_from_registration_response(response)
                 assert artifact0.tags == current_tags
                 assert artifact0.description == current_description
                 break  # don't need to retry when running as admin
             else:
-                assert (
-                    not as_admin and using_sys_tags
-                ), "Should only get here on this condition"
+                assert not as_admin and using_sys_tags, "Should only get here on this condition"
                 assert (
                     response.status_code == status.HTTP_401_UNAUTHORIZED
                 ), "Non-Admin should not be able to create with system tags"
@@ -847,9 +809,7 @@ class TestArtifactAPI(AbstractAPITest):
 
         # Try deleting a system tag as a non-admin
         if as_admin:
-            client = self.get_test_client(
-                token=non_admin_token
-            )  # switch to the non-admin client
+            client = self.get_test_client(token=non_admin_token)  # switch to the non-admin client
             set_tags = []
             tags_req = ListAppendOrSet(set=set_tags)
             req = ArtifactUpdateRequest(tags=tags_req)
@@ -916,9 +876,7 @@ class TestArtifactAPI(AbstractAPITest):
         content = json.loads(response.content)
         detail = content["detail"]
         assert detail["uri"] == artifact2.uri, "Conflicting URI is not the expected one"
-        assert (
-            detail["uuid"] == artifact2.uuid
-        ), "Conflicting UID is not the expected one"
+        assert detail["uuid"] == artifact2.uuid, "Conflicting UID is not the expected one"
 
     def test_update_status(self):
         if GBTEST_ADMIN_GITHUB_TOKEN is None or GBTEST_NON_ADMIN_GITHUB_TOKEN is None:

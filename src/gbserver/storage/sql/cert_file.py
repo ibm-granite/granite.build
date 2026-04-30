@@ -50,9 +50,7 @@ def get_ssl_cert_file(logger: LoggingUtility) -> Optional[str]:
                 ssl_cert_file = None
     if ssl_cert_file is None and ssl_cert_base64:
         ssl_cert_file = create_temp_file_name(suffix=".cert")
-        logger.info(
-            f"Using SQL SSL certification from env var placed in file {ssl_cert_file}"
-        )
+        logger.info(f"Using SQL SSL certification from env var placed in file {ssl_cert_file}")
         with _lock:
             if os.path.getsize(ssl_cert_file) == 0:
                 decoded_data = base64.b64decode(ssl_cert_base64)
@@ -62,9 +60,7 @@ def get_ssl_cert_file(logger: LoggingUtility) -> Optional[str]:
 
     if ssl_cert_file is not None:
         if not os.path.isfile(ssl_cert_file):
-            raise ValueError(
-                f"SQL SSL certificate {ssl_cert_file} does not exist or is not a file"
-            )
+            raise ValueError(f"SQL SSL certificate {ssl_cert_file} does not exist or is not a file")
         elif os.path.getsize(ssl_cert_file) == 0:
             raise ValueError(f"SQL SSL certificate {ssl_cert_file} is empty")
     logger.info(f"SQL SSL cert file located at '{ssl_cert_file}'")

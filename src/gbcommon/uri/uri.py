@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Uri module."""
+
 import hashlib
 import importlib
 import os
@@ -32,6 +34,7 @@ logger = get_logger(__name__)
 
 
 class URI(ABC):
+    """U R I implementation."""
 
     uri_handler_classes: ClassVar[Dict[str, Type[Self]]] = {}
     _thread_local = threading.local()
@@ -55,6 +58,7 @@ class URI(ABC):
 
     @staticmethod
     def get_uristr(uri: Union[str, "URI"]) -> str:
+        """Get the uristr."""
         if isinstance(uri, URI):
             if uri.uri is None:
                 return ""
@@ -67,12 +71,14 @@ class URI(ABC):
             return uri
 
     def get_secrets(self: Self) -> Optional[dict]:
+        """Get the secrets."""
         return self.secrets
 
     def __str__(self: Self) -> str:
         return self.get_uristr(self)
 
     def get_metadata(self: Self) -> Any:
+        """Get the metadata."""
         return {"uri": self.get_uristr(self)}
 
     @staticmethod
@@ -94,14 +100,10 @@ class URI(ABC):
                     )
                     if hasattr(module, urihandler_name):
                         handler_class = getattr(module, urihandler_name)
-                        if isinstance(handler_class, type) and issubclass(
-                            handler_class, URI
-                        ):
+                        if isinstance(handler_class, type) and issubclass(handler_class, URI):
                             supported_schemes = handler_class.get_supported_schemes()
                             for supported_scheme in supported_schemes:
-                                URI.uri_handler_classes[supported_scheme] = (
-                                    handler_class
-                                )
+                                URI.uri_handler_classes[supported_scheme] = handler_class
                         else:
                             logger.error(
                                 f"Ignoring {urihandler_name} since it is not a subclass or URI class"
@@ -113,9 +115,7 @@ class URI(ABC):
                 except ImportError as e:
                     logger.error(f"Error importing module {urihandler_name}: {e}")
                 except Exception as e:
-                    logger.error(
-                        f"Error loading uri handler from {urihandler_name}: {e}"
-                    )
+                    logger.error(f"Error loading uri handler from {urihandler_name}: {e}")
 
     @classmethod
     def get_uri_class(
@@ -167,6 +167,7 @@ class URI(ABC):
         """Returns if an artifact is accessible in the current context or not"""
 
     def hash(self) -> str:
+        """Hash."""
         assert self.uri is not None, "the URI is empty"
         return hashlib.sha256(self.uri.geturl().encode()).hexdigest()
 
@@ -193,6 +194,7 @@ class URI(ABC):
         return ArtifactType.UNDEFINED
 
     def append_path(self, path: str):
+        """Add path."""
         base_path = self.uri.path.rstrip("/")
         new_segment = path.lstrip("/")
         new_path = f"{base_path}/{new_segment}"
@@ -200,12 +202,14 @@ class URI(ABC):
 
     @classmethod
     def set_space_config(cls, space_config: SpaceConfig = None):
+        """Set the space config."""
         cls._thread_local.space_config = {
             "space": {"variables": space_config.variables, "name": space_config.name}
         }
 
     @classmethod
     def get_space_config(cls) -> dict:
+        """Get the space config."""
         if cls._thread_local is not None and hasattr(cls._thread_local, "space_config"):
             return cls._thread_local.space_config
         return {}

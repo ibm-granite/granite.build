@@ -156,6 +156,7 @@ class TargetStep(BuildEntity):
         return step_config.is_dry_run_compatible
 
     def init_validators(self):
+        """Initialize validators."""
         step_config = self.step.config
         self.validator_map = {}
         context = self.__get_validator_context()

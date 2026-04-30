@@ -27,9 +27,7 @@ class LhSpaceStorage(BaseLakehouseItemStorage, IStoredSpaceStorage):
 
     def __init__(self: Self, **kwargs):
         kwargs["item_class"] = StoredSpace
-        if (
-            kwargs.get("table_name") is None
-        ):  # Allow for testing using alternate table names.
+        if kwargs.get("table_name") is None:  # Allow for testing using alternate table names.
             kwargs["table_name"] = GB_SPACES_TABLE_NAME
         kwargs["unique_fields"] = ["uuid", "name", "git_repo_uri"]
         super().__init__(**kwargs)
@@ -59,9 +57,7 @@ class LhSpaceStorage(BaseLakehouseItemStorage, IStoredSpaceStorage):
 
 
 if __name__ == "__main__":
-    obj = StoredSpace(
-        name="foo", git_repo_uri="http://foo.bar", lakehouse_spacename="myspace"
-    )
+    obj = StoredSpace(name="foo", git_repo_uri="http://foo.bar", lakehouse_spacename="myspace")
     print(f"Space: {obj}")
     storage = LhSpaceStorage()
     print(f"Storage: {storage}")

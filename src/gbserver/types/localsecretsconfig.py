@@ -1,3 +1,5 @@
+"""Localsecretsconfig module."""
+
 import base64
 import logging
 from typing import Dict, List, Optional
@@ -27,6 +29,7 @@ class SecretConfig(BaseModel):
 
     @field_validator("payload")
     def payload_must_be_base64(cls, v: str) -> str:
+        """Payload must be base64."""
         errors = GBValidationErrors()
 
         if not v or not v.strip():
@@ -50,6 +53,7 @@ class SecretConfig(BaseModel):
 
     @field_validator("labels", mode="before")
     def validate_labels_format(cls, v):
+        """Verify labels format."""
         if v is None:
             return v
 
@@ -77,6 +81,7 @@ class SpaceSecretsConfig(BaseModel):
 
     @model_validator(mode="after")
     def ensure_at_least_one_secret(self):
+        """Ensure at least one secret."""
         errors = GBValidationErrors()
 
         if not self.secrets:
@@ -95,6 +100,7 @@ class SpacesConfig(BaseModel):
 
     @model_validator(mode="after")
     def ensure_spaces_exist(self):
+        """Ensure spaces exist."""
         errors = GBValidationErrors()
 
         if not self.spaces:

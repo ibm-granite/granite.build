@@ -28,9 +28,7 @@ class LhTargetRunStorage(BaseLakehouseItemStorage, IStoredTargetRunStorage):
 
     def __init__(self: Self, **kwargs):
         kwargs["item_class"] = StoredTargetRun
-        if (
-            kwargs.get("table_name") is None
-        ):  # Allow for testing using alternate table names.
+        if kwargs.get("table_name") is None:  # Allow for testing using alternate table names.
             kwargs["table_name"] = GB_TARGET_RUNS_TABLE_NAME
         kwargs["unique_fields"] = ["uuid"]
         super().__init__(**kwargs)
@@ -60,15 +58,11 @@ class LhTargetRunStorage(BaseLakehouseItemStorage, IStoredTargetRunStorage):
             item_dict = json.loads(json_item)
             input_ids = item_dict.get("input_artifact_ids", None)
             if input_ids is not None:
-                item_dict["input_artifacts"] = self.__make_artifacts(
-                    input_ids, as_input=True
-                )
+                item_dict["input_artifacts"] = self.__make_artifacts(input_ids, as_input=True)
                 item_dict.pop("input_artifact_ids")
             output_ids = item_dict.get("output_artifact_ids", None)
             if output_ids is not None:
-                item_dict["output_artifacts"] = self.__make_artifacts(
-                    output_ids, as_input=False
-                )
+                item_dict["output_artifacts"] = self.__make_artifacts(output_ids, as_input=False)
                 item_dict.pop("output_artifact_ids")
             json_item = json.dumps(item_dict)
         return json_item

@@ -1,3 +1,5 @@
+"""Command build module."""
+
 import json
 import logging
 import os
@@ -59,6 +61,7 @@ ALLOWED_VAL_TYPES = ["static", "dynamic"]
 
 
 def get_status_emoji(status: str) -> str:
+    """Get the status emoji."""
     match status.lower():
         case "submitted":
             return "◌"
@@ -86,7 +89,7 @@ def execution_status_plain_output(
     history: Any,
     show_events: bool,
 ):
-
+    """Execution status plain output."""
     targets_overview = [
         f"\n\tTarget #{index + 1} {target}: {get_status_emoji(targets[target]['status'])} {str(targets[target]['status']).upper()}\n"
         for index, target in enumerate(targets)
@@ -211,9 +214,7 @@ def cli(ctx):
     "--from-build",
     help=f"Initialize build from a previous build. Provide build ID or URL.",
 )
-@click.option(
-    "--from-template", help=f"Create build definition from an existing template"
-)
+@click.option("--from-template", help=f"Create build definition from an existing template")
 @click.option("--template-repo", help="Template GitHub repository URL")
 @click.option(
     "--format",
@@ -254,9 +255,7 @@ def init(
             ctx.exit(1)  # Exit with a non-zero status
     else:
         if build_name is not None:
-            click.echo(
-                f"Warning: BUILD_NAME '{build_name}' is ignored when filename is specified."
-            )
+            click.echo(f"Warning: BUILD_NAME '{build_name}' is ignored when filename is specified.")
         if os.path.exists(filename):
             click.echo(f"Error: File {filename} already exists.", err=True)
             ctx.exit(1)  # Exit with a non-zero status
@@ -335,9 +334,7 @@ def init(
                     match callback_event:
                         case "fetching_spaces":
                             progress_bar.reset(total=100)
-                            progress_bar.set_description(
-                                "Fetching spaces from GBSERVER"
-                            )
+                            progress_bar.set_description("Fetching spaces from GBSERVER")
                             progress_bar.update(n=steps)
                         case "done_fetching_spaces":
                             progress_bar.update(n=steps)
@@ -345,9 +342,7 @@ def init(
                             if steps == 1:
                                 progress_bar.reset(total=400)
                                 if progress_bar.desc != progress_bar_description:
-                                    progress_bar.set_description(
-                                        progress_bar_description
-                                    )
+                                    progress_bar.set_description(progress_bar_description)
                             progress_bar.update(n=steps)
                         case "warning":
                             progress_bar.clear()
@@ -427,9 +422,7 @@ def init(
     multiple=True,
     help="Single tag name or comma-separated list of tag names. Tag names can only contain alphanumeric characters, underscores, and hyphens.",
 )
-@click.option(
-    "--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'."
-)
+@click.option("--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'.")
 @click.option("--skip-validation", is_flag=True, help="Skip build contents validation.")
 @click.option(
     "--parameters-path",
@@ -571,9 +564,7 @@ def start(
                             progress_bar.update(n=steps)
                         case "prepared_contents":
                             progress_bar.update(n=400)
-                            progress_bar.write(
-                                f"(1/{callback_steps}) Prepared build contents."
-                            )
+                            progress_bar.write(f"(1/{callback_steps}) Prepared build contents.")
                         case "skip__pr_validation":
                             progress_bar.write(
                                 f"(2/{verbose_callback_steps}) Skipping build contents validation."
@@ -593,9 +584,7 @@ def start(
                         case "validating_targets":
                             if steps == 1:
                                 progress_bar.reset(total=100)
-                            progress_bar.set_description(
-                                f"(3/4) Validating build targets."
-                            )
+                            progress_bar.set_description(f"(3/4) Validating build targets.")
                             progress_bar.update(n=steps)
                         case "validated_targets":
                             progress_bar.update(n=steps)
@@ -611,15 +600,11 @@ def start(
                             space_org = callback_args.get("space_org", "")
                             space_name = callback_args.get("space_name", "")
                             if space_org:
-                                description = (
-                                    f"Submitted build to {space_org}/{space_name}."
-                                )
+                                description = f"Submitted build to {space_org}/{space_name}."
                             else:
                                 description = "Submitted build request."
                             progress_bar.update(n=steps)
-                            progress_bar.write(
-                                f"({callback_steps}/{callback_steps}) {description}"
-                            )
+                            progress_bar.write(f"({callback_steps}/{callback_steps}) {description}")
                         case "clear":
                             progress_bar.clear()
                         case "warning":
@@ -699,9 +684,7 @@ llmb build log --all {show_build_id} --build-step-id <step id>
             if not quiet:
                 click.echo(f"\n{parse_markdown_str(markdown_str)}")
             if format == "json":
-                click.echo(
-                    json.dumps({"build_url": details_page, "uuid": requested_build_url})
-                )
+                click.echo(json.dumps({"build_url": details_page, "uuid": requested_build_url}))
 
     except Exception as e:
         click.echo(str_exc_chain(e), err=True)
@@ -797,9 +780,7 @@ def validate(
                         sys.exit(1)  # Exit with a non-zero status
                     case "validation":
                         has_errors = callback_args.get("has_errors")
-                        validation_formatting(
-                            callback_args, verbose_validation, quiet, format
-                        )
+                        validation_formatting(callback_args, verbose_validation, quiet, format)
                         validation_emitted = True
                         if has_errors:
                             sys.exit(1)  # Exit with a non-zero status
@@ -849,9 +830,7 @@ def validate(
                         case "validating_targets":
                             if steps == 1:
                                 progress_bar.reset(total=100)
-                            progress_bar.set_description(
-                                f"(2/2) Validating build targets."
-                            )
+                            progress_bar.set_description(f"(2/2) Validating build targets.")
                             progress_bar.update(n=steps)
                         case "validated_targets":
                             progress_bar.update(n=steps)
@@ -873,9 +852,7 @@ def validate(
                             has_errors = callback_args.get("has_errors")
                             if has_errors:
                                 progress_bar.clear()
-                            validation_formatting(
-                                callback_args, verbose_validation, quiet, format
-                            )
+                            validation_formatting(callback_args, verbose_validation, quiet, format)
                             validation_emitted = True
                             if has_errors:
                                 sys.exit(1)  # Exit with a non-zero status
@@ -893,17 +870,13 @@ def validate(
                     update_bar,
                     validation_type=validation_type,
                 )
-                requested_build_url, validate_response = (
-                    result if result else (None, None)
-                )
+                requested_build_url, validate_response = result if result else (None, None)
 
         if requested_build_url:
             if not quiet:
                 click.echo(f"✅ Build contents have been succesfully validated")
             if format == "json" and not validation_emitted:
-                click.echo(
-                    json.dumps({"validated": True, "errors": [], "warnings": []})
-                )
+                click.echo(json.dumps({"validated": True, "errors": [], "warnings": []}))
 
     except Exception as e:
         click.echo(str_exc_chain(e), err=True)
@@ -1037,15 +1010,11 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
                         case _:
                             pass
 
-                build = build_client.build_cancel(
-                    build_id, id_format, space, update_bar
-                )
+                build = build_client.build_cancel(build_id, id_format, space, update_bar)
 
         if build:
             if not quiet:
-                click.echo(
-                    f"✅ Build {build['canceled']['uuid']} requested to be canceled."
-                )
+                click.echo(f"✅ Build {build['canceled']['uuid']} requested to be canceled.")
             if format == "json":
                 click.echo(json.dumps({"uuid": build["canceled"]["uuid"]}))
 
@@ -1174,9 +1143,7 @@ def lineage(ctx, build_id, format, lakehouse, skip_version_check, quiet):
                 token, build_id, id_format, echo_callback
             )
         else:
-            status, lineage_dict = build_client.build_lineage(
-                build_id, id_format, echo_callback
-            )
+            status, lineage_dict = build_client.build_lineage(build_id, id_format, echo_callback)
 
         if status in ["pending", "running", "submitted"]:
             click.echo(
@@ -1269,9 +1236,7 @@ def lineage(ctx, build_id, format, lakehouse, skip_version_check, quiet):
 @cli.command()
 @click.pass_context
 @click.option("--space", help="Space name.")
-@click.option(
-    "--all-spaces", is_flag=True, default=False, help="Builds from all spaces."
-)
+@click.option("--all-spaces", is_flag=True, default=False, help="Builds from all spaces.")
 @click.option(
     "--show-done",
     flag_value=True,
@@ -1296,9 +1261,7 @@ def lineage(ctx, build_id, format, lakehouse, skip_version_check, quiet):
     multiple=True,
     help="Single tag name or comma-separated list of tag names. Tag names can only contain alphanumeric characters, underscores, and hyphens.",
 )
-@click.option(
-    "--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'."
-)
+@click.option("--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'.")
 @click.option(
     "--page-size",
     "-n",
@@ -1312,9 +1275,7 @@ def lineage(ctx, build_id, format, lakehouse, skip_version_check, quiet):
     default=0,
     help="Page number to display, starts at 0 (default: 0)",
 )
-@click.option(
-    "--all", "-a", flag_value=True, default=False, help=f"List build for all users."
-)
+@click.option("--all", "-a", flag_value=True, default=False, help=f"List build for all users.")
 @click.option(
     "--format",
     default="plain",
@@ -1364,9 +1325,7 @@ def list(
         click.echo(f"{CLIPBOARD_CHAR}{PROJECT_NAME} build list")
 
     if all and username:
-        click.echo(
-            f"❌ Error: --all was provided. It can't be used with the --username option."
-        )
+        click.echo(f"❌ Error: --all was provided. It can't be used with the --username option.")
         ctx.exit(1)
 
     if all_spaces and space:
@@ -1424,9 +1383,7 @@ def list(
                         case "listing_builds":
                             if steps == 1:
                                 progress_bar.reset(total=100)
-                            used_all_spaces = callback_args.get(
-                                "used_all_spaces", False
-                            )
+                            used_all_spaces = callback_args.get("used_all_spaces", False)
                             space = callback_args.get("space", "")
                             space_name = callback_args.get("space_name", "")
                             if used_all_spaces:
@@ -1439,9 +1396,7 @@ def list(
                             progress_bar.update(n=steps)
                         case "listed_builds":
                             progress_bar.update(n=steps)
-                            used_all_spaces = callback_args.get(
-                                "used_all_spaces", False
-                            )
+                            used_all_spaces = callback_args.get("used_all_spaces", False)
                             space = callback_args.get("space", "")
                             space_name = callback_args.get("space_name", "")
                             if used_all_spaces:
@@ -1454,9 +1409,7 @@ def list(
                         case "processing_builds":
                             if steps == 1:
                                 progress_bar.reset(total=100)
-                            used_all_spaces = callback_args.get(
-                                "used_all_spaces", False
-                            )
+                            used_all_spaces = callback_args.get("used_all_spaces", False)
                             space = callback_args.get("space", "")
                             space_name = callback_args.get("space_name", "")
                             if used_all_spaces:
@@ -1468,9 +1421,7 @@ def list(
                             progress_bar.set_description(output_processing_builds)
                             progress_bar.update(n=steps)
                         case "processed_builds":
-                            used_all_spaces = callback_args.get(
-                                "used_all_spaces", False
-                            )
+                            used_all_spaces = callback_args.get("used_all_spaces", False)
                             space = callback_args.get("space", "")
                             space_name = callback_args.get("space_name", "")
                             progress_bar.update(n=steps)
@@ -1484,18 +1435,14 @@ def list(
                         case "listing_prs":
                             if steps == 1:
                                 progress_bar.reset(total=100)
-                            used_all_spaces = callback_args.get(
-                                "used_all_spaces", False
-                            )
+                            used_all_spaces = callback_args.get("used_all_spaces", False)
                             space_name = callback_args.get("space_name", "")
                             progress_bar.set_description(
                                 f"📝 (2/2) Obtaining additional information from {'all spaces' if used_all_spaces else space_name}."
                             )
                             progress_bar.update(n=steps)
                         case "listed_prs":
-                            used_all_spaces = callback_args.get(
-                                "used_all_spaces", False
-                            )
+                            used_all_spaces = callback_args.get("used_all_spaces", False)
                             space_name = callback_args.get("space_name", "")
                             progress_bar.update(n=steps)
                             progress_bar.write(
@@ -1551,9 +1498,7 @@ def list(
                     # need to filter by user spaces (will be in gbserver eventually)
                     spaces = [
                         s["name"]
-                        for s in GBClient.Space(get_user_token()).list_spaces(
-                            all, False, None
-                        )
+                        for s in GBClient.Space(get_user_token()).list_spaces(all, False, None)
                     ]
                     builds = [b for b in builds if b["space_name"] in spaces]
                 if wide:
@@ -1690,9 +1635,7 @@ def status(ctx, build_id, format, show_events, fetch_pr, skip_version_check, qui
 
                 def update_bar(callback_event: str, callback_args: Dict):
                     total_steps = 3 if not quiet else 2
-                    callback_steps = (
-                        (total_steps + 1) if id_format == "url" else total_steps
-                    )
+                    callback_steps = (total_steps + 1) if id_format == "url" else total_steps
                     steps = callback_args.get("steps", 0)
                     match callback_event:
                         case "fetching_build_id":
@@ -1781,9 +1724,7 @@ def status(ctx, build_id, format, show_events, fetch_pr, skip_version_check, qui
 
         if details:
             if format == "plain":
-                status = execution_status_plain_output(
-                    details, targets, history, show_events
-                )
+                status = execution_status_plain_output(details, targets, history, show_events)
             else:
                 if error:
                     builds_output = {"error": error}
@@ -1942,9 +1883,7 @@ def log(
         except ValueError:
             start_epoch = round(dateparser.parse(start_date).timestamp())
     else:
-        start_epoch = change_timestamp_by_days(
-            current_epoch, BUILD_LOG_DEFAULT_QUERY_RANGE
-        )
+        start_epoch = change_timestamp_by_days(current_epoch, BUILD_LOG_DEFAULT_QUERY_RANGE)
 
     if end_date:
         try:
@@ -1963,9 +1902,7 @@ def log(
             f"⚠️  Warning: the maximum log time range is {BUILD_LOG_MAX_QUERY_RANGE} days. Automatically setting the start date."
         )
     if start_date and not end_date and not follow and not all:
-        end_epoch = change_timestamp_by_days(
-            start_epoch, BUILD_LOG_MAX_QUERY_RANGE, True
-        )
+        end_epoch = change_timestamp_by_days(start_epoch, BUILD_LOG_MAX_QUERY_RANGE, True)
         click.echo(
             f"⚠️  Warning: the maximum log time range is {BUILD_LOG_MAX_QUERY_RANGE} days. Automatically setting the end date."
         )
@@ -2254,9 +2191,7 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
         for key in config.keys():
             if isinstance(config[key], dict):
                 for inner_key in config[key].keys():
-                    config_str = (
-                        config_str + f"{key}.{inner_key}: {config[key][inner_key]}\n"
-                    )
+                    config_str = config_str + f"{key}.{inner_key}: {config[key][inner_key]}\n"
             else:
                 config_str = config_str + f"{key}: {config[key]}\n"
             if "echo" in config_str:
@@ -2294,25 +2229,16 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
                         steps_header.remove("CONFIG")
                     for target in targets:
                         description_output = (
-                            f"{target['target_name']}\n"
-                            + f"{target['environment_uri']}\n"
+                            f"{target['target_name']}\n" + f"{target['environment_uri']}\n"
                         )
 
-                        input_artifacts_table = [
-                            [i["name"], i["uri"]] for i in target["inputs"]
-                        ]
+                        input_artifacts_table = [[i["name"], i["uri"]] for i in target["inputs"]]
 
-                        output_artifacts_table = [
-                            [o["name"], o["uri"]] for o in target["outputs"]
-                        ]
+                        output_artifacts_table = [[o["name"], o["uri"]] for o in target["outputs"]]
 
                         output_steps_table = [
                             [s["uri"]]
-                            + (
-                                [parse_config_output(s["config"])]
-                                if format == "full"
-                                else []
-                            )
+                            + ([parse_config_output(s["config"])] if format == "full" else [])
                             for s in target["steps"]
                         ]
 
@@ -2337,20 +2263,12 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
                         description = (
                             description_output
                             + (
-                                (
-                                    "\n*️⃣  Input artifacts\n"
-                                    + input_artifacts_output
-                                    + "\n"
-                                )
+                                ("\n*️⃣  Input artifacts\n" + input_artifacts_output + "\n")
                                 if len(target["inputs"]) > 0
                                 else ""
                             )
                             + (
-                                (
-                                    "\n*️⃣  Output artifacts\n"
-                                    + output_artifacts_output
-                                    + "\n"
-                                )
+                                ("\n*️⃣  Output artifacts\n" + output_artifacts_output + "\n")
                                 if len(target["outputs"]) > 0
                                 else ""
                             )
@@ -2498,9 +2416,7 @@ def diff(ctx, build_id_1, build_id_2, space, format, skip_version_check, quiet):
                 build_id = callback_args.get("build_id", "")
                 if build_id == build_id_2:
                     current_step = (
-                        f"(2/{callback_steps})"
-                        if id_format_2 == "url"
-                        else f"(1/{callback_steps})"
+                        f"(2/{callback_steps})" if id_format_2 == "url" else f"(1/{callback_steps})"
                     )
                 else:
                     current_step = f"({callback_steps}/{callback_steps})"
@@ -2634,9 +2550,7 @@ def monitor(ctx, build_id, show_events, fetch_pr, skip_version_check, quiet):
 
     def output_format_plain(logs, previous_logs=None):
         for log in logs:
-            if not previous_logs or (
-                previous_logs and log["logId"] not in previous_logs
-            ):
+            if not previous_logs or (previous_logs and log["logId"] not in previous_logs):
                 log_json = json.loads(log["text"])
                 if log_json.get("log") != None:
                     click.echo(f"{log_json['log']}\n")
@@ -2826,9 +2740,7 @@ def notification(ctx, status, space, format, skip_version_check, quiet):
     multiple=True,
     help="Single tag name or comma-separated list of tag names. Tag names can only contain alphanumeric characters, underscores, and hyphens.",
 )
-@click.option(
-    "--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'."
-)
+@click.option("--tags", help="Comma-separated list of tag names. For example: 'tagA, tagB'.")
 @click.option(
     "--append",
     is_flag=True,

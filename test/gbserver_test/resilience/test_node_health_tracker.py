@@ -318,9 +318,7 @@ class TestNodeHealthTracker(AbstractSingletonStorageUsingTest):
 
         try:
             await tracker.record_failure("node-1", "build-1", "launch-1", "FailedMount")
-            await tracker.record_failure(
-                "node-2", "build-2", "launch-2", "FailedAttachVolume"
-            )
+            await tracker.record_failure("node-2", "build-2", "launch-2", "FailedAttachVolume")
 
             metrics = tracker.get_metrics()
             assert metrics["failures_recorded"] == 2
@@ -364,9 +362,7 @@ class TestNodeHealthTracker(AbstractSingletonStorageUsingTest):
             downstream_queue=downstream_queue,
             environment=mock_env,
             max_retries=3,
-            strategies=[
-                UnhealthyInsufficientPodsRetryStrategy(object_types=["AppWrapper"])
-            ],
+            strategies=[UnhealthyInsufficientPodsRetryStrategy(object_types=["AppWrapper"])],
             node_health_tracker=tracker,
         )
 
@@ -425,9 +421,7 @@ class TestNodeHealthTracker(AbstractSingletonStorageUsingTest):
             assert failure.launch_id == "integration-test-launch"
             assert failure.failure_type == "UnhealthyInsufficientPodsRetryStrategy"
             assert failure.metadata.get("namespace") == "granite-build"
-            assert (
-                failure.metadata.get("cluster") == "test-cluster/api-server:6443/user"
-            )
+            assert failure.metadata.get("cluster") == "test-cluster/api-server:6443/user"
 
         finally:
             handler.stop()

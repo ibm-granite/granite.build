@@ -30,15 +30,9 @@ from gbserver.utils.filesystem import sync_or_copy
 class FileURI(URI):
     """Reference a file/folder in the local filesystem."""
 
-    def __init__(
-        self: Self, uri: URI, context: Optional[str] = None, **kwargs: Dict
-    ) -> None:
+    def __init__(self: Self, uri: URI, context: Optional[str] = None, **kwargs: Dict) -> None:
         self.context = context
-        if (
-            not Path(uri.path).is_absolute()
-            and self.context is not None
-            and self.context != ""
-        ):
+        if not Path(uri.path).is_absolute() and self.context is not None and self.context != "":
             uri = FileURI(uri=FILE_SCHEME + ":///" + self.context + "/" + uri.path)
         super().__init__(uri=uri, context=context, **kwargs)
 

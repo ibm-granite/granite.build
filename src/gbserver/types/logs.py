@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Logs module."""
+
 import json
 import time
 from typing import Any, List, Self, Type
@@ -27,24 +29,32 @@ from gbserver.types.constants import (
 
 
 class QueryItem(BaseModel):
+    """Query Item implementation."""
+
     text: str
     type: str
     syntax: str
 
 
 class QueryParams(BaseModel):
+    """Query Params implementation."""
+
     query: QueryItem | None = None
     metadata: Any = None
     jsonObject: Any = None
 
 
 class SortModel(BaseModel):
+    """Sort Model implementation."""
+
     field: str
     ordering: str
     missing: str
 
 
 class QueryDef(BaseModel):
+    """Query Def implementation."""
+
     nowDate: int | None = None
     startDate: int  # in milliseconds
     endDate: int  # in milliseconds
@@ -112,9 +122,7 @@ class LogqueryResponse(BaseModel):
     page_index: int = 0
     error: str = ""
 
-    def output_format_plain(
-        self: Self, reverse: bool = False, max_size: int = -1
-    ) -> str:
+    def output_format_plain(self: Self, reverse: bool = False, max_size: int = -1) -> str:
         """Output all/some of the log lines joined by new lines."""
         log_msgs = []
         log_list = self.logs

@@ -72,36 +72,26 @@ class WandBLineageService(LineageService):
                 resource_name = self._dataset_name(inp)
                 resource_type = self._get_hf_type(inp)
                 artifact_type = (
-                    resource_type
-                    if resource_type in ("model", "dataset", "bucket")
-                    else "dataset"
+                    resource_type if resource_type in ("model", "dataset", "bucket") else "dataset"
                 )
 
                 if self._is_huggingface_resource(inp):
-                    self._register_hf_reference(
-                        run, inp, resource_name, is_output=False
-                    )
+                    self._register_hf_reference(run, inp, resource_name, is_output=False)
                 else:
-                    artifact = wandb.Artifact(
-                        name=resource_name, type=artifact_type, metadata=inp
-                    )
+                    artifact = wandb.Artifact(name=resource_name, type=artifact_type, metadata=inp)
                     run.use_artifact(artifact)
 
             for out in event.get("outputs", []):
                 resource_name = self._dataset_name(out)
                 resource_type = self._get_hf_type(out)
                 artifact_type = (
-                    resource_type
-                    if resource_type in ("model", "dataset", "bucket")
-                    else "dataset"
+                    resource_type if resource_type in ("model", "dataset", "bucket") else "dataset"
                 )
 
                 if self._is_huggingface_resource(out):
                     self._register_hf_reference(run, out, resource_name, is_output=True)
                 else:
-                    artifact = wandb.Artifact(
-                        name=resource_name, type=artifact_type, metadata=out
-                    )
+                    artifact = wandb.Artifact(name=resource_name, type=artifact_type, metadata=out)
                     run.log_artifact(artifact)
 
             run_facets = event.get("run", {}).get("facets", {})
@@ -142,14 +132,10 @@ class WandBLineageService(LineageService):
                 config_update["category"] = job_details.get("category", "")
                 config_update["job_status"] = job_details.get("job_status", "")
                 config_update["job_started_at"] = job_details.get("job_started_at", "")
-                config_update["job_completed_at"] = job_details.get(
-                    "job_completed_at", ""
-                )
+                config_update["job_completed_at"] = job_details.get("job_completed_at", "")
                 config_update["release_id"] = job_details.get("release_id", "")
                 config_update["owner"] = job_details.get("owner", "")
-                config_update["job_output_stats"] = job_details.get(
-                    "job_output_stats", {}
-                )
+                config_update["job_output_stats"] = job_details.get("job_output_stats", {})
 
             if "documentation" in job_facets:
                 doc = job_facets["documentation"]
@@ -162,9 +148,7 @@ class WandBLineageService(LineageService):
 
             if "tags" in run_facets:
                 tags_dict = run_facets["tags"]
-                tags_list = [
-                    f"{k}={v}" for k, v in tags_dict.items() if not k.startswith("_")
-                ]
+                tags_list = [f"{k}={v}" for k, v in tags_dict.items() if not k.startswith("_")]
                 if tags_list:
                     run.tags = list(run.tags) + tags_list
 
@@ -307,16 +291,11 @@ class WandBLineageService(LineageService):
                 return artifact_type
 
         namespace = resource.get("namespace", "").lower()
-        if (
-            "huggingface://datasets" in namespace
-            or "huggingface://dataset" in namespace
-        ):
+        if "huggingface://datasets" in namespace or "huggingface://dataset" in namespace:
             return "dataset"
         elif "huggingface://models" in namespace or "huggingface://model" in namespace:
             return "model"
-        elif (
-            "huggingface://buckets" in namespace or "huggingface://bucket" in namespace
-        ):
+        elif "huggingface://buckets" in namespace or "huggingface://bucket" in namespace:
             return "bucket"
         elif "huggingface" in namespace:
             return "dataset"
@@ -354,9 +333,7 @@ class WandBLineageService(LineageService):
         resource_type = self._get_hf_type(resource)
 
         artifact_type = (
-            resource_type
-            if resource_type in ("model", "dataset", "bucket")
-            else "dataset"
+            resource_type if resource_type in ("model", "dataset", "bucket") else "dataset"
         )
 
         if not self._hf_resource_exists(resource_id, artifact_type):
@@ -398,14 +375,10 @@ class WandBLineageService(LineageService):
 
             if is_output:
                 run.log_artifact(artifact)
-                logger.info(
-                    "Logging existing HF %s output: %s", resource_type, resource_id
-                )
+                logger.info("Logging existing HF %s output: %s", resource_type, resource_id)
             else:
                 run.use_artifact(artifact)
-                logger.info(
-                    "Using existing HF %s input: %s", resource_type, resource_id
-                )
+                logger.info("Using existing HF %s input: %s", resource_type, resource_id)
 
     def search_lineage_by_tags(
         self, tags: list, limit: int = 10, offset: int = 0

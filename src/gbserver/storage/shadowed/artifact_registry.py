@@ -34,9 +34,7 @@ class BaseDualArtifactRegistry(BaseDualItemStorage, IArtifactRegistry):
         self: Self, uri: str, space_name: str = ""
     ) -> Union[List[ArtifactRegistration], Optional[ArtifactRegistration]]:
         assert self.primary is not None, "the primary artifact registry is missing"
-        assert isinstance(
-            self.primary, IArtifactRegistry
-        ), f"invalid primary: {self.primary}"
+        assert isinstance(self.primary, IArtifactRegistry), f"invalid primary: {self.primary}"
         r = self.primary.get_by_uri(uri=uri, space_name=space_name)
         if self.secondary is not None:
             try:

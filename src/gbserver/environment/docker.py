@@ -104,9 +104,7 @@ def _connect_docker_client(docker_module):
     except docker_module.errors.DockerException:
         pass
 
-    for socket_url in filter(
-        None, [_find_podman_socket(), "unix:///var/run/docker.sock"]
-    ):
+    for socket_url in filter(None, [_find_podman_socket(), "unix:///var/run/docker.sock"]):
         try:
             client = docker_module.DockerClient(base_url=socket_url)
             client.ping()
@@ -243,9 +241,7 @@ class Docker(Environment):
         elif pull_policy == "never":
             client.images.get(image)  # raises ImageNotFound if missing
         else:
-            logger.warning(
-                "Unknown pull_policy '%s', treating as if-not-present", pull_policy
-            )
+            logger.warning("Unknown pull_policy '%s', treating as if-not-present", pull_policy)
             try:
                 client.images.get(image)
             except docker_module.errors.ImageNotFound:
@@ -520,8 +516,7 @@ class Docker(Environment):
             raw_event_configs = kwargs.get("event_configs")
             if raw_event_configs:
                 event_configs = [
-                    EventLogLineParserConfig.model_validate(cfg)
-                    for cfg in raw_event_configs
+                    EventLogLineParserConfig.model_validate(cfg) for cfg in raw_event_configs
                 ]
 
             # Thread-safe queue bridge: a dedicated thread streams Docker logs
@@ -533,9 +528,7 @@ class Docker(Environment):
                     for chunk in container.logs(stream=True, follow=True):
                         log_q.put(chunk)
                 except Exception as e:
-                    logger.error(
-                        "Error streaming Docker logs for %s: %s", container_id, e
-                    )
+                    logger.error("Error streaming Docker logs for %s: %s", container_id, e)
                 finally:
                     log_q.put(None)  # EOF sentinel
 
@@ -586,9 +579,7 @@ class Docker(Environment):
                 )
                 exit_code = result.get("StatusCode", -1)
             except Exception as e:
-                logger.warning(
-                    "Failed to get exit code for container %s: %s", container_id, e
-                )
+                logger.warning("Failed to get exit code for container %s: %s", container_id, e)
 
             # Check OOM
             try:
@@ -602,9 +593,7 @@ class Docker(Environment):
                 )
 
             # Emit final status message
-            status_msg = (
-                f"Docker container {container_id[:12]} exited with code {exit_code}"
-            )
+            status_msg = f"Docker container {container_id[:12]} exited with code {exit_code}"
             if oom_killed:
                 status_msg += " (OOMKilled)"
             if event_q and entityrun_metadata:
@@ -663,16 +652,10 @@ class Docker(Environment):
         try:
             _docker, client = self._get_docker()
             container = client.containers.get(container_id)
-            logger.info(
-                "Stopping Docker container %s (launch_id=%s)", container_id, launch_id
-            )
+            logger.info("Stopping Docker container %s (launch_id=%s)", container_id, launch_id)
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None, functools.partial(container.stop, timeout=30)
-            )
-            await loop.run_in_executor(
-                None, functools.partial(container.remove, force=True)
-            )
+            await loop.run_in_executor(None, functools.partial(container.stop, timeout=30))
+            await loop.run_in_executor(None, functools.partial(container.remove, force=True))
             logger.info("Removed Docker container %s", container_id)
         except Exception as e:
             logger.error("Failed to cleanup Docker container %s: %s", container_id, e)

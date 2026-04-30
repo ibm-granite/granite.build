@@ -72,9 +72,7 @@ async def launch_command_and_raise_errors(
     except Exception as ee:
         logger.debug("failed to decode stderr: %s", ee)
     is_failed = process.returncode is None or process.returncode != 0
-    command_str = (
-        redacted_command_str if redacted_command_str else cmd_safe_join(command_list)
-    )
+    command_str = redacted_command_str if redacted_command_str else cmd_safe_join(command_list)
     if len(stdout) > 0:
         logger.info(
             "launch_id %s, command: `%s` , stdout: %s",
@@ -100,7 +98,9 @@ async def launch_command_and_raise_errors(
     if process.returncode is None:
         raise ValueError(f"failed to launch the process `{command_str}`")
     if process.returncode != 0:
-        err_msg = f"the process `{command_str}` failed with return code: {process.returncode}\n{stderr}"
+        err_msg = (
+            f"the process `{command_str}` failed with return code: {process.returncode}\n{stderr}"
+        )
         if raise_error:
             if ErrConnResetByPeer.matches_error_str(stderr):
                 raise ErrConnResetByPeer(err_msg)

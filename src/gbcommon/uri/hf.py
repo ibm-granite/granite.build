@@ -471,9 +471,7 @@ class HfURI(URI):
 
             hf_type = p.hf_type
             repo_type = (
-                _HF_TYPE_TO_REPO_TYPE.get(hf_type, "model")
-                if hf_type is not None
-                else "model"
+                _HF_TYPE_TO_REPO_TYPE.get(hf_type, "model") if hf_type is not None else "model"
             )
 
             logger.info(
@@ -587,9 +585,7 @@ class HfURI(URI):
 
             if p.hf_type == HfType.BUCKET:
                 if p.path_in_repo:
-                    logger.info(
-                        "Deleting file %s from bucket %s", p.path_in_repo, repo_id
-                    )
+                    logger.info("Deleting file %s from bucket %s", p.path_in_repo, repo_id)
                     api.batch_bucket_files(bucket_id=repo_id, delete=[p.path_in_repo])
                 else:
                     logger.info("Deleting bucket %s", repo_id)
@@ -598,9 +594,7 @@ class HfURI(URI):
 
             hf_type = p.hf_type
             repo_type = (
-                _HF_TYPE_TO_REPO_TYPE.get(hf_type, "model")
-                if hf_type is not None
-                else "model"
+                _HF_TYPE_TO_REPO_TYPE.get(hf_type, "model") if hf_type is not None else "model"
             )
             if p.path_in_repo:
                 logger.info(
@@ -640,10 +634,7 @@ class HfURI(URI):
         try:
             cache_info = scan_cache_dir()
             for cached_repo in cache_info.repos:
-                if (
-                    cached_repo.repo_id == repo_id
-                    and cached_repo.repo_type == repo_type
-                ):
+                if cached_repo.repo_id == repo_id and cached_repo.repo_type == repo_type:
                     # Match revisions where the ref set contains our revision, or
                     # where the commit hash starts with the revision string (for
                     # short commit hashes).
@@ -664,9 +655,7 @@ class HfURI(URI):
         except Exception as e:
             logger.warning("Could not clean HF cache for %s: %s", repo_id, e)
 
-    def _resolve_resource_group_id(
-        self, api: HfApi, organization: str, name: str
-    ) -> Optional[str]:
+    def _resolve_resource_group_id(self, api: HfApi, organization: str, name: str) -> Optional[str]:
         """Look up a resource group ID by name within the given organization.
 
         Uses the HF Hub enterprise REST API directly since ``huggingface_hub``
@@ -691,9 +680,7 @@ class HfURI(URI):
             for group in r.json():
                 if group.get("name") == name:
                     return group.get("id") or group.get("resourceGroupId")
-            logger.warning(
-                "Resource group '%s' not found in organization '%s'", name, organization
-            )
+            logger.warning("Resource group '%s' not found in organization '%s'", name, organization)
         except Exception as e:
             logger.warning("Could not list resource groups for %s: %s", organization, e)
         return None
@@ -773,9 +760,7 @@ class HfURI(URI):
             )
             if src.is_file():
                 dest_path = p.path_in_repo or src.name
-                logger.info(
-                    "Uploading file %s to bucket %s/%s", src, bucket_id, dest_path
-                )
+                logger.info("Uploading file %s to bucket %s/%s", src, bucket_id, dest_path)
                 api.batch_bucket_files(bucket_id=bucket_id, add=[(src, dest_path)])
             else:
                 bucket_hf_path = f"hf://buckets/{bucket_id}"
@@ -786,11 +771,7 @@ class HfURI(URI):
             return
 
         hf_type = p.hf_type
-        repo_type = (
-            _HF_TYPE_TO_REPO_TYPE.get(hf_type, "model")
-            if hf_type is not None
-            else "model"
-        )
+        repo_type = _HF_TYPE_TO_REPO_TYPE.get(hf_type, "model") if hf_type is not None else "model"
 
         # Create repository if it doesn't exist
         api.create_repo(

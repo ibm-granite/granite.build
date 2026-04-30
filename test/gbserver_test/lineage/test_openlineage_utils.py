@@ -77,9 +77,7 @@ class TestParseHfUrl:
         assert atype == "model"
 
     def test_dataset_url(self):
-        org, name, atype = parse_hf_url(
-            "https://huggingface.co/datasets/org/my-dataset"
-        )
+        org, name, atype = parse_hf_url("https://huggingface.co/datasets/org/my-dataset")
         assert org == "org"
         assert name == "my-dataset"
         assert atype == "dataset"

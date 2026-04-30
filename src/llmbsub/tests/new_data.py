@@ -110,9 +110,7 @@ def generate_dataset(
     bytes_per_file = total_bytes // num_files
     remainder = total_bytes % num_files
 
-    print(
-        f"Generating {num_files} JSONL files totaling {total_size_mb}MB in {output_path}"
-    )
+    print(f"Generating {num_files} JSONL files totaling {total_size_mb}MB in {output_path}")
     print(f"  Target bytes per file: ~{bytes_per_file:,}")
     print(f"  Using {workers} worker processes")
     if depth > 0:
@@ -162,9 +160,7 @@ def generate_dataset(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Generate fake JSONL dataset for testing"
-    )
+    parser = argparse.ArgumentParser(description="Generate fake JSONL dataset for testing")
     parser.add_argument("num_files", type=int, help="Number of JSONL files to create")
     parser.add_argument("total_size_mb", type=float, help="Total size in MB")
     parser.add_argument("path", help="Output directory path")
@@ -194,9 +190,7 @@ def main():
     if args.workers is not None and args.workers < 1:
         sys.exit("Error: workers must be at least 1")
 
-    generate_dataset(
-        args.num_files, args.total_size_mb, args.path, args.depth, args.workers
-    )
+    generate_dataset(args.num_files, args.total_size_mb, args.path, args.depth, args.workers)
 
 
 if __name__ == "__main__":

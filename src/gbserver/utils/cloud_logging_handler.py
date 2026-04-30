@@ -18,6 +18,8 @@
 # export INGESTION_API_KEY=`ibmcloud iam api-key-create logs-ingestion --output json | jq -r '.apikey'`
 # export IAM_TOKEN=`ibmcloud iam oauth-tokens --output json | jq -r '.iam_token'`
 
+"""Cloud logging handler module."""
+
 import logging
 import os
 
@@ -36,6 +38,8 @@ logger = get_logger(__name__)
 
 
 class IBMCloudLogger(logging.StreamHandler):
+    """I B M Cloud Logger implementation."""
+
     def __init__(
         self,
         endpoint: str,
@@ -59,6 +63,7 @@ class IBMCloudLogger(logging.StreamHandler):
         self.get_iam_token()
 
     def get_iam_token(self):
+        """Get the iam token."""
         cloud_api_key = os.environ.get("IBM_CLOUD_API_KEY")
         secret_manager_url = os.environ.get("IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL")
         if (
@@ -115,9 +120,7 @@ class IBMCloudLogger(logging.StreamHandler):
                 "Authorization": self.iam_token["access_token"],
                 "Content-Type": "application/json",  # If sending JSON data
             }
-            response = requests.post(
-                self.endpoint, headers=headers, json=cloud_log_json
-            )
+            response = requests.post(self.endpoint, headers=headers, json=cloud_log_json)
             response.raise_for_status()  # Raise an exception for error HTTP statuses
         except requests.exceptions.RequestException as e:
             print(f"Error sending log message: {e}")
@@ -131,9 +134,8 @@ def add_cloud_log_handler(
     buildstepid: Optional[str] = None,
     buildstepname: Optional[str] = None,
 ) -> None:
-    cloud_log_handler = IBMCloudLogger(
-        endpoint, buildid, stream, buildstepid, buildstepname
-    )
+    """Add cloud log handler."""
+    cloud_log_handler = IBMCloudLogger(endpoint, buildid, stream, buildstepid, buildstepname)
     default_logger.addHandler(cloud_log_handler)
 
 
@@ -157,22 +159,12 @@ if __name__ == "__main__":
     import datetime
     import time
 
-    logger.debug(
-        f'This is a DEBUG message {datetime.datetime.now().strftime("%H:%M:%S")}'
-    )
+    logger.debug(f'This is a DEBUG message {datetime.datetime.now().strftime("%H:%M:%S")}')
     time.sleep(3)
-    logger.info(
-        f'This is an INFO message {datetime.datetime.now().strftime("%H:%M:%S")}'
-    )
+    logger.info(f'This is an INFO message {datetime.datetime.now().strftime("%H:%M:%S")}')
     time.sleep(3)
-    logger.warning(
-        f'This is a WARNING message {datetime.datetime.now().strftime("%H:%M:%S")}'
-    )
+    logger.warning(f'This is a WARNING message {datetime.datetime.now().strftime("%H:%M:%S")}')
     time.sleep(3)
-    logger.error(
-        f'This is an ERROR message {datetime.datetime.now().strftime("%H:%M:%S")}'
-    )
+    logger.error(f'This is an ERROR message {datetime.datetime.now().strftime("%H:%M:%S")}')
     time.sleep(3)
-    logger.critical(
-        f'This is a CRITICAL message {datetime.datetime.now().strftime("%H:%M:%S")}'
-    )
+    logger.critical(f'This is a CRITICAL message {datetime.datetime.now().strftime("%H:%M:%S")}')

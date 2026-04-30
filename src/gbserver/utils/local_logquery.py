@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Local logquery module."""
+
 import json
 from time import sleep
 from typing import List, Self
@@ -119,16 +121,12 @@ class LocalLogQueryAPI:
             where["build_id"] = build_ids[0]
 
         # step_id
-        step_ids = json_object.get(
-            "kubernetes.labels.granite-dot-build/build-step-id", []
-        )
+        step_ids = json_object.get("kubernetes.labels.granite-dot-build/build-step-id", [])
         if step_ids:
             where["step_id"] = step_ids[0]
 
         # step_name -> source column
-        step_names = json_object.get(
-            "kubernetes.labels.granite-dot-build/build-step-name", []
-        )
+        step_names = json_object.get("kubernetes.labels.granite-dot-build/build-step-name", [])
         if step_names:
             where["source"] = step_names[0]
 

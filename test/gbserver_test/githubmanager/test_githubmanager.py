@@ -21,9 +21,7 @@ logger = get_logger(__name__)
 class TestGithubManager(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
     def setup_method(self, method):
-        super().setup_method(
-            method
-        )  # call the super class to give us the tables in self.storage
+        super().setup_method(method)  # call the super class to give us the tables in self.storage
 
     def test_builds(self):
         # src_file_dir = os.path.abspath(os.path.dirname(__file__))
@@ -55,9 +53,7 @@ class TestGithubManager(AbstractSingletonStorageUsingPreloadedSpaceTest):
             wait_for_new_builds=4,
         )
 
-    def __run_githubmanager(
-        self, token: str, expected_start_builds: int, wait_for_new_builds: int
-    ):
+    def __run_githubmanager(self, token: str, expected_start_builds: int, wait_for_new_builds: int):
         __tracebackhide__ = True  # Hide the token on stack traces.
         assert expected_start_builds >= 0, "Mis-used test"
         assert wait_for_new_builds > 0, "Mis-used test"
@@ -71,7 +67,9 @@ class TestGithubManager(AbstractSingletonStorageUsingPreloadedSpaceTest):
         # Watch for the PR and copy to StoredBuildStorage
         ghm = GitHubManager(token=token)  # , config_path=config_path)
         ghm.created_after = get_time() - timedelta(days=5)
-        ghm.config.validate_inputs_are_registered = False  # Since we're picking an arbitrary PR from the past which may be invalid.
+        ghm.config.validate_inputs_are_registered = (
+            False  # Since we're picking an arbitrary PR from the past which may be invalid.
+        )
         # Run this in a separate thread.  Also, uses the same singleton test storage
         ghm_thread = threading.Thread(target=ghm.start_and_wait, args=())
         ghm_thread.start()
@@ -105,8 +103,6 @@ class TestGithubManager(AbstractSingletonStorageUsingPreloadedSpaceTest):
         ghm.stop()
         ghm_thread.join()
 
-        assert (
-            found_build
-        ), f"Did not see the build in build storage after {max_seconds} seconds."
+        assert found_build, f"Did not see the build in build storage after {max_seconds} seconds."
         stored_builds = self.storage.build_storage.get_by_uuid(None)
         return len(stored_builds)

@@ -38,9 +38,7 @@ class GBValidator(ABC):
     # instance attributes
     validator_config: GBValidatorConfig
 
-    def __init__(
-        self: Self, validator_config: GBValidatorConfig, **kwargs: dict
-    ) -> None:
+    def __init__(self: Self, validator_config: GBValidatorConfig, **kwargs: dict) -> None:
         self.validator_config = validator_config
         super().__init__()
 
@@ -71,9 +69,7 @@ class GBValidator(ABC):
             module_name,
             validator_classname,
         )
-        my_module = importlib.import_module(
-            f".{module_name}", package="gbserver.validators"
-        )
+        my_module = importlib.import_module(f".{module_name}", package="gbserver.validators")
         logger.info("validator module %s", my_module)
         handler_class = getattr(my_module, validator_classname, None)
         if handler_class is None:
@@ -101,9 +97,7 @@ class GBValidator(ABC):
         curr_dir = curr_file.parent
         assert curr_dir.is_dir()
         for filename in os.listdir(curr_dir):
-            if (not filename.endswith(".py")) or (
-                filename in ("__init__.py", "validator.py")
-            ):
+            if (not filename.endswith(".py")) or (filename in ("__init__.py", "validator.py")):
                 continue
             module_path = curr_dir / filename
             logger.info("validator module_path %s", module_path)
@@ -119,9 +113,7 @@ class GBValidator(ABC):
         logger.info("load_validator_types end")
 
     @classmethod
-    def get_validator(
-        cls: Type[Self], validator_config: GBValidatorConfig, **kwargs: dict
-    ) -> Self:
+    def get_validator(cls: Type[Self], validator_config: GBValidatorConfig, **kwargs: dict) -> Self:
         """Factory method for getting a validator of a given type."""
         if validator_config.type not in cls.validator_types:
             raise ValueError(f"unknown validator type: {validator_config}")

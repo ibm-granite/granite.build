@@ -1,3 +1,5 @@
+"""Service artifact module."""
+
 import json
 import os
 from pathlib import Path
@@ -62,6 +64,8 @@ if TYPE_CHECKING:
 
 
 class ArtifactCopyResult(TypedDict):
+    """Artifact Copy Result implementation."""
+
     copy_response: Any  # CopyAssetStatus at runtime when lakehouse is installed
     target_table: str
 
@@ -88,12 +92,11 @@ def upload_to_lh(
     namespace: Optional[str] = None,
     callback=None,
 ):
+    """Upload to lh."""
     lh = getLH(lh_token)
 
     global_space = resolve_space(github_token, space, callback=callback)
-    namespace = (
-        global_space.get("lakehouse_namespace") if namespace is None else namespace
-    )
+    namespace = global_space.get("lakehouse_namespace") if namespace is None else namespace
     if namespace == None:
         raise Exception(
             f"Error: Lakehouse namespace of space='{space}' does not exist. Please check the 'llmb space list --all' or check if it is a valid space name and try again."
@@ -109,9 +112,7 @@ def upload_to_lh(
             variant=variant,
             model_type=model_type,
             namespace=namespace,
-            table_name=(
-                LAKEHOUSE_MODEL_SHARED_TABLE if public else LAKEHOUSE_MODEL_TABLE
-            ),
+            table_name=(LAKEHOUSE_MODEL_SHARED_TABLE if public else LAKEHOUSE_MODEL_TABLE),
             revision=REVISION_DEFAULT,
             disable_aspera=GB_DMF_USE_CLASSIC_LOADER,
         )
@@ -134,9 +135,7 @@ def upload_to_lh(
             version=version,
             namespace=namespace,
             table_name=(
-                LAKEHOUSE_FILESET_SHARED_TABLE_NAME
-                if public
-                else LAKEHOUSE_FILESET_TABLE_NAME
+                LAKEHOUSE_FILESET_SHARED_TABLE_NAME if public else LAKEHOUSE_FILESET_TABLE_NAME
             ),
             disable_aspera=GB_DMF_USE_CLASSIC_LOADER,
         )
@@ -151,6 +150,7 @@ def upload_file_lh(
     public: bool = False,
     callback=None,
 ):
+    """Upload file lh."""
     file_path = Path(path_name)
     # Check if file exists
     if file_path.exists() and file_path.is_file():
@@ -184,6 +184,7 @@ def upload_file_lh(
 
 
 def file_to_dataframe(path_name: str, callback=None):
+    """File to dataframe."""
     file_path = Path(path_name)
     # Check if file exists
     if file_path.exists() and file_path.is_file():
@@ -220,6 +221,7 @@ def upload_model_lh(
     revision: str = REVISION_DEFAULT,
     disable_aspera: bool = GB_DMF_USE_CLASSIC_LOADER,
 ):
+    """Upload model lh."""
     file_path = Path(path_name)
 
     # Check if file exists
@@ -253,6 +255,7 @@ def upload_fileset_lh(
     table_name: str,
     disable_aspera: bool = GB_DMF_USE_CLASSIC_LOADER,
 ):
+    """Upload fileset lh."""
     local_path = Path(path_name)
 
     # Check if path exists
@@ -285,6 +288,7 @@ def check_fileset_lh(
     space: str = SPACE_DEFAULT_NAME,
     callback=None,
 ):
+    """Verify fileset lh."""
     lh = getLH(lh_token)
     if namespace == None:
         global_space = resolve_space(github_token, space, callback=callback)
@@ -303,6 +307,7 @@ def upload_to_hf(
     private: bool = False,
     callback=None,
 ):
+    """Upload to hf."""
     org = hf_organization or HF_ORGANIZATION_DEFAULT
     group_id = resource_group_id or HF_RESOURCE_GROUP_ID_DEFAULT
     if not org:
@@ -331,6 +336,7 @@ def upload_to_hf(
 
 
 def get_artifact(github_token: str, artifact_id: str, callback=None):
+    """Get the artifact."""
     try:
         server_api = GBSERVER_ARTIFACT_API
         url = f"{server_api}{artifact_id}"
@@ -345,6 +351,7 @@ def get_artifact(github_token: str, artifact_id: str, callback=None):
 
 
 def get_artifact_uri(github_token: str, artifact_uri: str, callback=None):
+    """Get the artifact uri."""
     try:
         server_api = GBSERVER_ARTIFACT_API
         url = f"{server_api}?uri={artifact_uri}"
@@ -356,9 +363,7 @@ def get_artifact_uri(github_token: str, artifact_uri: str, callback=None):
 
     except Exception as e:
         if len(response["artifacts"]) != 1:
-            raise ArtifactURIError(
-                f"Error downloading file: URI has no matching artifacts."
-            )
+            raise ArtifactURIError(f"Error downloading file: URI has no matching artifacts.")
         raise Exception(f"Error downloading file: {e}")
 
 
@@ -372,6 +377,7 @@ def get_model_lh(
     space: str = SPACE_DEFAULT_NAME,
     callback=None,
 ):
+    """Get the model lh."""
     lh = getLH(lh_token)
     if namespace == None:
         global_space = resolve_space(github_token, space, callback=callback)
@@ -388,6 +394,7 @@ def get_dataset_lh(
     space: str = SPACE_DEFAULT_NAME,
     callback=None,
 ):
+    """Get the dataset lh."""
     lh = getLH(lh_token)
     if namespace == None:
         global_space = resolve_space(github_token, space, callback=callback)
@@ -404,6 +411,7 @@ def get_table_lh(
     space: str = SPACE_DEFAULT_NAME,
     callback=None,
 ):
+    """Get the table lh."""
     lh = getLH(lh_token)
     if namespace == None:
         global_space = resolve_space(github_token, space, callback=callback)
@@ -423,6 +431,7 @@ def download_model_lh(
     space: str = SPACE_DEFAULT_NAME,
     callback=None,
 ):
+    """Download model lh."""
     lh = getLH(lh_token)
     if namespace == None:
         global_space = resolve_space(github_token, space, callback=callback)
@@ -450,6 +459,7 @@ def download_fileset_lh(
     space: str = SPACE_DEFAULT_NAME,
     callback=None,
 ):
+    """Download fileset lh."""
     lh = getLH(lh_token)
     if namespace == None:
         global_space = resolve_space(github_token, space, callback=callback)
@@ -476,6 +486,7 @@ def download_table_lh(
     space: str = SPACE_DEFAULT_NAME,
     callback=None,
 ):
+    """Download table lh."""
     lh = getLH(lh_token)
     if namespace == None:
         global_space = resolve_space(github_token, space, callback=callback)
@@ -579,9 +590,7 @@ def download_hf_artifact(
     # Validate artifact type
     valid_types = ["model", "dataset", "space", "bucket"]
     if artifact_type not in valid_types:
-        raise ValueError(
-            f"Invalid artifact_type: '{artifact_type}'. Must be one of {valid_types}"
-        )
+        raise ValueError(f"Invalid artifact_type: '{artifact_type}'. Must be one of {valid_types}")
 
     try:
         # Initialize registry
@@ -614,6 +623,7 @@ def check_artifact_existence(
     version: Optional[str] = None,
     callback=None,
 ):
+    """Verify artifact existence."""
     if space is None:
         global_space = resolve_space(github_token, space, callback)
         space = global_space.get("name")
@@ -753,12 +763,8 @@ def register_artifact_hf(
             raise ValueError(f"{error_detail}")
         else:
             if "UniqueViolation" in error_detail:
-                raise ValueError(
-                    f"Artifact may already exist; registration was not completed."
-                )
-            raise ValueError(
-                f"gbserver returned error for url: {push_url}. {error_detail}"
-            )
+                raise ValueError(f"Artifact may already exist; registration was not completed.")
+            raise ValueError(f"gbserver returned error for url: {push_url}. {error_detail}")
 
     if response.get("registered") != None:
         obj = response.get("registered")
@@ -832,7 +838,7 @@ def register_artifact_gbserver(
     certified_no_restrictions: bool = False,
     callback=None,
 ):
-
+    """Register artifact gbserver."""
     global_space = resolve_space(github_token, space, callback=callback)
     space_name = global_space.get("name")
     namespace_lh = global_space.get("lakehouse_namespace")
@@ -844,22 +850,14 @@ def register_artifact_gbserver(
     if not username or not github_token:
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
 
-    lh_env = (
-        lh_env
-        if lh_env
-        else str(gb_environment_config()["lakehouse_environment"]).lower()
-    )
+    lh_env = lh_env if lh_env else str(gb_environment_config()["lakehouse_environment"]).lower()
 
     if namespace is None:
         namespace = LAKEHOUSE_NAMESPACE
 
     if table is None:
         if type == "fileset":
-            table = (
-                LAKEHOUSE_FILESET_SHARED_TABLE_NAME
-                if public
-                else LAKEHOUSE_FILESET_TABLE_NAME
-            )
+            table = LAKEHOUSE_FILESET_SHARED_TABLE_NAME if public else LAKEHOUSE_FILESET_TABLE_NAME
         elif type == "model":
             table = LAKEHOUSE_MODEL_SHARED_TABLE if public else LAKEHOUSE_MODEL_TABLE
         else:
@@ -895,19 +893,17 @@ def register_artifact_gbserver(
 
 
 def artifact_lineage(token: str, artifact_name: str):
+    """Artifact lineage."""
     from lakehouse import LakehouseLineage
 
     lh = getLH(token)
     lineage_df = LakehouseLineage(lh=lh).get_lineage(name=artifact_name)
 
-    return (
-        lineage_df.replace({np.nan: "None"})
-        .sort_values(by="job_started_at")
-        .to_dict("records")
-    )
+    return lineage_df.replace({np.nan: "None"}).sort_values(by="job_started_at").to_dict("records")
 
 
 def artifact_lineage_hf(github_token: str, repo_id: str):
+    """Artifact lineage hf."""
     from gbcli.utils.gbconstants import GBSERVER_LINEAGE_API
 
     url = f"{GBSERVER_LINEAGE_API}artifact/runs"
@@ -935,6 +931,7 @@ def artifact_list(
     tags=None,
     callback=None,
 ):
+    """Artifact list."""
     if all_spaces:
         space_default = None
         space_default_name = None
@@ -949,9 +946,7 @@ def artifact_list(
             if callback is not None:
                 callback(
                     callback_event="error",
-                    callback_args={
-                        "reason": f"Space {space} not found in available spaces."
-                    },
+                    callback_args={"reason": f"Space {space} not found in available spaces."},
                 )
             return None
 
@@ -987,9 +982,7 @@ def artifact_list(
         )
 
     gbserver_username = None if list_all else username
-    gbserver_artifact_filter = gb_environment_config()["feature_flags"][
-        "gbserver_artifact_filter"
-    ]
+    gbserver_artifact_filter = gb_environment_config()["feature_flags"]["gbserver_artifact_filter"]
     if gbserver_artifact_filter:
         # -u option with not username and not all, show all current user
         # -u option with username and not all, show specified user artifacts
@@ -998,9 +991,7 @@ def artifact_list(
         user_artifacts = []
         gbserver_artifacts = []
         gbserver_username = (
-            get_user(github_token).login
-            if username == None and not list_all
-            else username
+            get_user(github_token).login if username == None and not list_all else username
         )
 
         user_artifacts = make_gbserver_call(
@@ -1036,9 +1027,7 @@ def artifact_list(
                 callback,
             )
 
-        unique_by_id = {
-            item["uuid"]: item for item in (user_artifacts + gbserver_artifacts)
-        }
+        unique_by_id = {item["uuid"]: item for item in (user_artifacts + gbserver_artifacts)}
         unique_artifacts = list(unique_by_id.values())
 
         if callback is not None:
@@ -1085,15 +1074,11 @@ def artifact_list(
 
             # only return current user artifacts and official ones
             filtered_artifacts = [
-                a
-                for a in formatted_artifacts
-                if a["username"] == get_user(github_token).login
+                a for a in formatted_artifacts if a["username"] == get_user(github_token).login
             ]
         if checksum:
             # filter by the checksum
-            filtered_artifacts = [
-                a for a in filtered_artifacts if a["checksum"] == checksum
-            ]
+            filtered_artifacts = [a for a in filtered_artifacts if a["checksum"] == checksum]
         if tags:
             # filter the tags archived
             filtered_artifacts = [
@@ -1104,9 +1089,7 @@ def artifact_list(
 
     if not show_archived:
         # remove archived
-        filtered_artifacts = [
-            a for a in filtered_artifacts if a["is_archived"] is False
-        ]
+        filtered_artifacts = [a for a in filtered_artifacts if a["is_archived"] is False]
 
     if not show_pending:
         # remove pending
@@ -1117,9 +1100,8 @@ def artifact_list(
     return filtered_artifacts
 
 
-def artifact_archive(
-    github_token: str, artifact_uuid: str, archive: bool, callback=None
-):
+def artifact_archive(github_token: str, artifact_uuid: str, archive: bool, callback=None):
+    """Artifact archive."""
     username = get_user(github_token).login
     if not username or not github_token:
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
@@ -1141,6 +1123,7 @@ def artifact_archive(
 
 def save_origin(file_path, artifact):
     # Write to .yaml
+    """Save origin."""
     artifact_id = artifact["uuid"]
     artifact_uri = artifact["uri"]
     data = {"artifact_id": artifact_id, "artifact_uri": artifact_uri}
@@ -1157,6 +1140,7 @@ def validate_origins(
     certify_no_restrictions: bool,
     callback=None,
 ):
+    """Verify origins."""
     origin_list_values = read_lines(origin_list) if origin_list != None else None
     origin_list_provided = origin_list_values and len(origin_list_values) > 0
     origin_provided = origin and len(origin) > 0
@@ -1233,9 +1217,7 @@ def validate_origins(
 
             duplicated = find_duplicates(normalized_origins)
             if len(duplicated) > 0:
-                raise ValueError(
-                    f"Multiple URIs point to the same item name '{artifact_name}'"
-                )
+                raise ValueError(f"Multiple URIs point to the same item name '{artifact_name}'")
 
         return normalized_origins
 
@@ -1250,6 +1232,7 @@ def artifact_copy(
     revision: str,
     callback=None,
 ) -> ArtifactCopyResult:
+    """Artifact copy."""
     lh = getLH(lh_token)
     global_space = resolve_space(github_token, space_to, callback=callback)
     target_namespace = global_space.get("lakehouse_namespace")
@@ -1261,9 +1244,7 @@ def artifact_copy(
     target_table = LAKEHOUSE_MODEL_SHARED_TABLE if public else LAKEHOUSE_MODEL_TABLE
 
     if target_namespace == source_namespace:
-        raise Exception(
-            f"Error:  The origin and target Lakehouse's namespaces cannot be the same."
-        )
+        raise Exception(f"Error:  The origin and target Lakehouse's namespaces cannot be the same.")
     copy_response = copyModel(
         lh,
         source_namespace,
@@ -1291,6 +1272,7 @@ def update_artifact(
     callback=None,
 ):
     # Validate that append is not used with empty tags
+    """Update artifact."""
     if append and tags is not None and len(tags) == 0:
         raise ValueError("--append cannot be used with empty tags")
 

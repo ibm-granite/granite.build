@@ -1,3 +1,5 @@
+"""Service space module."""
+
 import logging
 from typing import Any, List
 
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 def list_spaces(
     github_token: str, all: bool = False, refresh: bool = False, callback=None
 ) -> List[Any]:
+    """List spaces."""
     if refresh:
         logger.info("fetching user spaces from GBSERVER")
         remote_spaces = get_remote_spaces(github_token, callback)
@@ -61,6 +64,7 @@ def set_space(
     callback=None,
     name=None,
 ):
+    """Set the space."""
     user_spaces = get_spaces(github_token, callback)
 
     if not user_spaces:
@@ -103,18 +107,16 @@ def _resolve_and_check_admin(github_token, space, callback):
 
 
 def list_space_members(github_token: str, space=None, callback=None):
+    """List space members."""
     space_info, space_name = _resolve_and_check_admin(github_token, space, callback)
     if space_info is None:
         return None
-    result = make_gbserver_call(
-        lambda: _get_space_members(github_token, space_name), callback
-    )
+    result = make_gbserver_call(lambda: _get_space_members(github_token, space_name), callback)
     return result
 
 
-def add_space_member(
-    github_token: str, space=None, username=None, role=None, callback=None
-):
+def add_space_member(github_token: str, space=None, username=None, role=None, callback=None):
+    """Add space member."""
     space_info, space_name = _resolve_and_check_admin(github_token, space, callback)
     if space_info is None:
         return None
@@ -124,9 +126,8 @@ def add_space_member(
     return result
 
 
-def update_space_member(
-    github_token: str, space=None, username=None, role=None, callback=None
-):
+def update_space_member(github_token: str, space=None, username=None, role=None, callback=None):
+    """Update space member."""
     space_info, space_name = _resolve_and_check_admin(github_token, space, callback)
     if space_info is None:
         return None
@@ -137,6 +138,7 @@ def update_space_member(
 
 
 def delete_space_member(github_token: str, space=None, username=None, callback=None):
+    """Remove space member."""
     space_info, space_name = _resolve_and_check_admin(github_token, space, callback)
     if space_info is None:
         return None

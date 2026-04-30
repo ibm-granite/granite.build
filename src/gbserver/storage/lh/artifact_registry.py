@@ -41,9 +41,7 @@ class LhArtifactRegistry(BaseLakehouseItemStorage, IArtifactRegistry):
 
     def __init__(self: Self, **kwargs) -> None:
         kwargs["item_class"] = ArtifactRegistration
-        if (
-            kwargs.get("table_name") is None
-        ):  # Allow for testing using alternate table names.
+        if kwargs.get("table_name") is None:  # Allow for testing using alternate table names.
             kwargs["table_name"] = GB_ARTIFACT_REGISTRY_TABLE_NAME
         kwargs["unique_fields"] = ["uuid", "uri"]
         super().__init__(**kwargs)
@@ -83,9 +81,7 @@ class LhArtifactRegistry(BaseLakehouseItemStorage, IArtifactRegistry):
             Optional[ArtifactRegistration]: None if not found, otherwise the single ArtifactRegistration with the given URI.
         """
         if space_name == "":
-            logger.warning(
-                "space name is empty, fetching artifact uri '%s' from all spaces", uri
-            )
+            logger.warning("space name is empty, fetching artifact uri '%s' from all spaces", uri)
             return self._get_by_single_field(
                 column_name="uri", column_value=uri, allow_multiple=True
             )
