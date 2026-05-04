@@ -187,9 +187,9 @@ check-table-prefix:
 
 .PHONY: format
 format:
-	isort . && black .
+	isort --profile black . && black .
 	# workaround for the build directory
-	isort src/gbserver/build/*
+	isort --profile black src/gbserver/build/*
 	black src/gbserver/build/*
 
 .PHONY: staticcheck
