@@ -25,7 +25,7 @@ jobs:
           pip install -e ".[standalone,thirdparty,dev]"
 
       - name: Check formatting (isort)
-        run: isort --check .
+        run: isort --profile black --check .
 
       - name: Check formatting (black)
         run: black --check .
