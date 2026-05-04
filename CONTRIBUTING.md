@@ -1,19 +1,20 @@
-# Contributing to gbserver
+# Contributing to Granite.Build
 
-Thank you for your interest in contributing to gbserver! This guide covers development setup, code style, testing, and the pull request process.
+Thank you for your interest in contributing to Granite.Build! This guide covers development setup, code style, testing, and the pull request process.
 
 ## Prerequisites
 
 - Python 3.11 or later (3.13 recommended; 3.14 is not yet supported)
 - Git
+- GNU Make
 
 ## Development Setup
 
 1. Fork and clone the repository:
 
    ```bash
-   git clone https://github.com/<your-username>/gbserver.git
-   cd gbserver
+   git clone https://github.com/<your-username>/granite.build.git
+   cd granite.build
    ```
 
 2. Create the virtual environment:
@@ -22,7 +23,7 @@ Thank you for your interest in contributing to gbserver! This guide covers devel
    make standalone-venv
    ```
 
-   This installs gbserver in editable mode with development dependencies. No external package registry access is needed.
+   This installs the project in editable mode with standalone and development dependencies. No external package registry access is needed.
 
 3. Activate the virtual environment:
 
@@ -32,24 +33,19 @@ Thank you for your interest in contributing to gbserver! This guide covers devel
 
 ## Running Tests
 
-Run the open-source test suite:
+Run the standalone test suite:
 
 ```bash
-pytest -m "not ibm" -s test
+make test-standalone
 ```
 
-This skips tests that require IBM-internal infrastructure. All other tests run by default.
+This runs unit tests, skipping any that require IBM-internal infrastructure, a NATS server, or Docker.
 
-To run a specific test file:
-
-```bash
-pytest -m "not ibm" -s test/gbserver_test/api/test_artifacts.py
-```
-
-To run a single test:
+To run a specific test file or method directly:
 
 ```bash
-pytest -m "not ibm" -s test/gbserver_test/api/test_artifacts.py::TestArtifactAPI::test_artifact_get
+pytest -s test/unit/space/test_space_config.py
+pytest -s test/unit/space/test_space_config.py::TestSpaceConfig::test_load
 ```
 
 ## Project Structure
@@ -64,43 +60,22 @@ The repository is a monorepo with three source packages:
 
 All packages follow the same code style rules and are linted together.
 
-### gbcli Development
-
-The gbcli source lives in `src/gbcli/`. It uses Click for the CLI framework and shares types with gbserver via `src/gbcommon/`.
-
-Run the standalone test suite (covers both gbserver and gbcli):
-
-```bash
-make test-standalone
-```
-
-Lint both server and CLI:
-
-```bash
-make lint
-```
-
 ## Code Style
 
-gbserver uses **black** for formatting and **isort** for import sorting, with **pylint** and **mypy** for linting.
+The project uses **black** for formatting and **isort** for import sorting, with **pylint** and **mypy** for linting.
 
-Format your changed files:
+Format and lint only files changed relative to `dev` (recommended before PRs):
 
 ```bash
-make xformat
+make xformat    # isort + black on changed files
+make xcheck     # pylint + mypy on changed files
 ```
 
-Run lint checks on your changed files:
+Format or check the entire codebase:
 
 ```bash
-make xcheck
-```
-
-To format or check the entire codebase:
-
-```bash
-make format       # format all files
-make staticcheck  # lint all files
+make format       # isort + black on all files
+make lint         # isort --check + black --check + pylint + mypy
 ```
 
 ## Pull Request Process
@@ -123,7 +98,7 @@ make staticcheck  # lint all files
 4. Run the test suite:
 
    ```bash
-   pytest -m "not ibm" -s test
+   make test-standalone
    ```
 
 5. Commit with a clear message:
@@ -132,7 +107,7 @@ make staticcheck  # lint all files
    git commit -m "feat: add support for new environment backend"
    ```
 
-6. Push and open a pull request against `dev`.
+6. Push to your fork and open a pull request against `dev`.
 
 ## Commit Messages
 
