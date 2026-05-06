@@ -907,15 +907,15 @@ def artifact_lineage(token: str, artifact_name: str):
     )
 
 
-def artifact_lineage_hf(github_token: str, repo_id: str):
+def artifact_lineage_hf(github_token: str, artifact_uri: str):
     from gbcli.utils.gbconstants import GBSERVER_LINEAGE_API
 
-    url = f"{GBSERVER_LINEAGE_API}artifact/runs"
+    url = f"{GBSERVER_LINEAGE_API}artifact"
     response = gb_server_request(
         user_token=github_token,
         url=url,
         http_method="post",
-        body={"repo_id": repo_id, "limit": 100, "offset": 0},
+        body={"artifact_url": artifact_uri},
         params=None,
     )
     return response

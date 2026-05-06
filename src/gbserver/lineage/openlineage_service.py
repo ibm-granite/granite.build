@@ -17,19 +17,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Type
-
-if TYPE_CHECKING:
-    pass
+from typing import Dict, List, Optional, Tuple, Type
 
 
 class LineageService(ABC):
     @abstractmethod
     def emit_event(self, event: Dict) -> None:
-        pass
-
-    @abstractmethod
-    def get_run_lineage(self, run_id: str) -> Optional[Dict]:
         pass
 
     @abstractmethod
@@ -39,13 +32,14 @@ class LineageService(ABC):
         pass
 
     @abstractmethod
-    def search_runs_by_artifact(
+    def get_artifact_graph(
         self,
-        repo_id: str,
+        artifact_name: Optional[str] = None,
+        artifact_url: Optional[str] = None,
         artifact_type: Optional[str] = None,
-        limit: int = 10,
-        offset: int = 0,
-    ) -> Tuple[int, List[Dict]]:
+        max_depth: int = 10,
+        direction: str = "downstream",
+    ) -> Optional[Dict]:
         pass
 
 

@@ -17,9 +17,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RunState(str, Enum):
@@ -89,16 +89,63 @@ class TagSearchRequest(BaseModel):
     offset: int = 0
 
 
-class ArtifactLineageRequest(BaseModel):
-    repo_id: str
-    artifact_type: Optional[str] = None
-    limit: int = 10
-    offset: int = 0
-
-
 class PaginatedResponse(BaseModel):
     count: int
     total: int
     limit: int
     offset: int
     runs: list
+
+
+class GraphNodeType(str, Enum):
+    ARTIFACT = "artifact"
+    RUN = "run"
+
+
+class GraphNode(BaseModel):
+    id: str
+    node_type: GraphNodeType
+    name: str
+    artifact_type: Optional[str] = None
+    is_root: bool = False
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphEdge(BaseModel):
+    source: str
+    target: str
+
+
+class ArtifactGraphRequest(BaseModel):
+    artifact_name: Optional[str] = None
+    artifact_url: Optional[str] = None
+    artifact_type: Optional[str] = None
+    max_depth: int = Field(default=10, ge=1, le=50)
+    direction: str = "downstream"
+
+
+class LineageNodeRef(BaseModel):
+    node_type: str
+    name: str = ""
+    uri: Optional[str] = None
+    url: Optional[str] = None
+    run_id: Optional[str] = None
+    job_name: Optional[str] = None
+
+
+class ArtifactRunEntry(BaseModel):
+    job_name: str = ""
+    job_namespace: str = ""
+    job_type: str = ""
+    run_id: str = ""
+    created_at: str = ""
+    status: str = ""
+    tags: List[str] = Field(default_factory=list)
+    inputs: List[LineageNodeRef] = Field(default_factory=list)
+    outputs: List[LineageNodeRef] = Field(default_factory=list)
+
+
+class ArtifactGraphResponse(BaseModel):
+    root_id: str
+    runs: List[ArtifactRunEntry]
+    truncated: bool = False

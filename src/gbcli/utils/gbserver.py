@@ -316,7 +316,6 @@ def get_builds(
 
 def get_build(build_id: str, token: str, gbserver_api: str) -> Any:
     build_details_url = f"{gbserver_api}{build_id}"
-
     return gb_server_request(
         user_token=token,
         url=build_details_url,
@@ -329,13 +328,14 @@ def get_build(build_id: str, token: str, gbserver_api: str) -> Any:
 def get_build_lineage(build_id: str, token: str, gbserver_api: str) -> Any:
     build_lineage_url = f"{gbserver_api}build/{build_id}"
 
-    return gb_server_request(
+    a= gb_server_request(
         user_token=token,
         url=build_lineage_url,
         http_method="get",
         body=None,
         params=None,
     )
+    return a
 
 
 def get_build_events(build_id: str, token: str, gbserver_api: str) -> Any:

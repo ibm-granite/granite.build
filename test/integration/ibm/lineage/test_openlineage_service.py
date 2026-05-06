@@ -23,11 +23,6 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from gbserver.lineage.openlineage_models import (
-    LineageEvent,
-    PaginatedResponse,
-    RunState,
-)
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
 
 pytestmark = pytest.mark.ibm
@@ -51,9 +46,6 @@ class MockLineageService(LineageService):
         run_id = event["run"]["runId"]
         self.events[run_id] = event
 
-    def get_run_lineage(self, run_id: str) -> Dict:
-        return self.events.get(run_id)
-
     def search_lineage_by_tags(
         self, tags: List[str], limit: int = 10, offset: int = 0
     ) -> Tuple[int, List[Dict]]:
@@ -73,28 +65,93 @@ class MockLineageService(LineageService):
         total = len(all_events)
         return total, all_events[offset : offset + limit]
 
-    def search_runs_by_artifact(
+    def get_artifact_graph(
         self,
-        repo_id: str,
-        artifact_type: Optional[str] = None,
-        limit: int = 10,
-        offset: int = 0,
-    ) -> Tuple[int, List[Dict]]:
-        matching = []
-        for ev in self.events.values():
-            for ds in ev.get("inputs", []) + ev.get("outputs", []):
-                facets = ds.get("facets", {})
-                if repo_id != facets.get("repo_id", ""):
-                    continue
-                if (
-                    artifact_type is not None
-                    and facets.get("artifact_type") != artifact_type
-                ):
-                    continue
-                matching.append(ev)
-                break
-        total = len(matching)
-        return total, matching[offset : offset + limit]
+        artifact_name: Optional[str] = None,
+        artifact_url: Optional[str] = None,
+        max_depth: int = 10,
+        direction: str = "downstream",
+    ) -> Optional[Dict]:
+        if artifact_name == "not-found:v0":
+            return None
+        if artifact_url == "https://huggingface.co/org/not-found":
+            return None
+        if not artifact_name and not artifact_url:
+            return None
+
+        display_name = artifact_name or artifact_url
+        root_id = f"entity/project/{display_name}"
+        root_node = {
+            "id": root_id,
+            "node_type": "artifact",
+            "name": display_name,
+            "artifact_type": "model",
+            "is_root": True,
+            "metadata": {},
+        }
+        nodes = [root_node]
+        edges = []
+
+        if max_depth > 1 and direction in ("downstream", "both"):
+            run_id = "entity/project/run-123"
+            nodes.append(
+                {
+                    "id": run_id,
+                    "node_type": "run",
+                    "name": "tunedmodel",
+                    "artifact_type": None,
+                    "is_root": False,
+                    "metadata": {"run_id": "run-123", "state": "finished", "created_at": "2025-03-19T18:00:00"},
+                }
+            )
+            edges.append({"source": root_id, "target": run_id})
+
+            output_id = "entity/project/output-model:v0"
+            nodes.append(
+                {
+                    "id": output_id,
+                    "node_type": "artifact",
+                    "name": "output-model:v0",
+                    "artifact_type": "model",
+                    "is_root": False,
+                    "metadata": {},
+                }
+            )
+            edges.append({"source": run_id, "target": output_id})
+
+        if max_depth > 1 and direction in ("upstream", "both"):
+            producer_run_id = "entity/project/run-000"
+            nodes.append(
+                {
+                    "id": producer_run_id,
+                    "node_type": "run",
+                    "name": "base-training",
+                    "artifact_type": None,
+                    "is_root": False,
+                    "metadata": {"run_id": "run-000", "state": "finished", "created_at": "2025-03-18T10:00:00"},
+                }
+            )
+            edges.append({"source": root_id, "target": producer_run_id})
+
+            input_id = "entity/project/raw-data:v0"
+            nodes.append(
+                {
+                    "id": input_id,
+                    "node_type": "artifact",
+                    "name": "raw-data:v0",
+                    "artifact_type": "dataset",
+                    "is_root": False,
+                    "metadata": {},
+                }
+            )
+            edges.append({"source": producer_run_id, "target": input_id})
+
+        return {
+            "root_id": root_id,
+            "nodes": nodes,
+            "edges": edges,
+            "truncated": max_depth <= 1,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -170,18 +227,6 @@ class TestOpenLineageAPI:
         response = self.client.post("api/v1/lineage/", json={"invalid": "data"})
         assert response.status_code == 422
 
-    def test_get_lineage_event_found(self):
-        self.mock_service.emit_event(_make_sample_event("run-abc"))
-        response = self.client.get("api/v1/lineage/run-abc")
-        assert response.status_code == 200
-        body = response.json()
-        assert body["run"]["runId"] == "run-abc"
-        assert body["job"]["name"] == "train_model"
-
-    def test_get_lineage_event_not_found(self):
-        response = self.client.get("api/v1/lineage/nonexistent-id")
-        assert response.status_code == 404
-
     def test_search_lineage_by_tags(self):
         self.mock_service.emit_event(_make_sample_event("run-1"))
         response = self.client.post("api/v1/lineage/search", json={"tags": ["env=dev"]})
@@ -223,59 +268,6 @@ class TestOpenLineageAPI:
         assert body["limit"] == 2
         assert body["offset"] == 1
 
-    def test_get_lineage_by_artifact(self):
-        self.mock_service.emit_event(_make_sample_event("run-art"))
-        response = self.client.post(
-            "api/v1/lineage/artifact/runs",
-            json={"repo_id": "org/granite-model"},
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["total"] == 1
-        assert len(body["runs"]) == 1
-
-    def test_get_lineage_by_artifact_no_match(self):
-        self.mock_service.emit_event(_make_sample_event("run-x"))
-        response = self.client.post(
-            "api/v1/lineage/artifact/runs",
-            json={"repo_id": "org/nonexistent"},
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["total"] == 0
-        assert body["runs"] == []
-
-    def test_get_lineage_by_artifact_with_type_filter(self):
-        ev = _make_sample_event(
-            "run-typed",
-            outputs=[
-                {
-                    "namespace": "huggingface://datasets",
-                    "name": "org/my-dataset",
-                    "facets": {
-                        "repo_id": "org/my-dataset",
-                        "artifact_type": "dataset",
-                    },
-                }
-            ],
-        )
-        self.mock_service.emit_event(ev)
-        response = self.client.post(
-            "api/v1/lineage/artifact/runs",
-            json={"repo_id": "org/my-dataset", "artifact_type": "dataset"},
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["total"] == 1
-
-        response = self.client.post(
-            "api/v1/lineage/artifact/runs",
-            json={"repo_id": "org/my-dataset", "artifact_type": "model"},
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["total"] == 0
-
     def test_existing_build_endpoint_still_works(self):
         response = self.client.get("api/v1/lineage/build/non-existent-uuid")
         assert response.status_code == 404
@@ -283,3 +275,93 @@ class TestOpenLineageAPI:
     def test_existing_target_endpoint_still_works(self):
         response = self.client.get("api/v1/lineage/target/non-existent-uuid")
         assert response.status_code == 404
+
+    # --- Artifact Graph Endpoint ---
+
+    def test_get_artifact_graph(self):
+        response = self.client.post(
+            "api/v1/lineage/artifact",
+            json={"artifact_name": "my-model:v0"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert "root_id" in body
+        assert "nodes" in body
+        assert "edges" in body
+        assert body["nodes"][0]["is_root"] is True
+        assert body["nodes"][0]["node_type"] == "artifact"
+        assert len(body["nodes"]) == 3
+        assert len(body["edges"]) == 2
+
+    def test_get_artifact_graph_not_found(self):
+        response = self.client.post(
+            "api/v1/lineage/artifact",
+            json={"artifact_name": "not-found:v0"},
+        )
+        assert response.status_code == 404
+
+    def test_get_artifact_graph_invalid_direction(self):
+        response = self.client.post(
+            "api/v1/lineage/artifact",
+            json={"artifact_name": "my-model:v0", "direction": "invalid"},
+        )
+        assert response.status_code == 400
+
+    def test_get_artifact_graph_max_depth(self):
+        response = self.client.post(
+            "api/v1/lineage/artifact",
+            json={"artifact_name": "my-model:v0", "max_depth": 1},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["truncated"] is True
+        assert len(body["nodes"]) == 1
+
+    def test_get_artifact_graph_upstream(self):
+        response = self.client.post(
+            "api/v1/lineage/artifact",
+            json={"artifact_name": "my-model:v0", "direction": "upstream"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["nodes"][0]["is_root"] is True
+        assert len(body["nodes"]) == 3
+        assert any(n["name"] == "base-training" for n in body["nodes"])
+
+    def test_get_artifact_graph_both_directions(self):
+        response = self.client.post(
+            "api/v1/lineage/artifact",
+            json={"artifact_name": "my-model:v0", "direction": "both"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["nodes"][0]["is_root"] is True
+        assert len(body["nodes"]) == 5
+        assert len(body["edges"]) == 4
+        node_names = {n["name"] for n in body["nodes"]}
+        assert "tunedmodel" in node_names
+        assert "base-training" in node_names
+
+    def test_get_artifact_graph_by_url(self):
+        response = self.client.post(
+            "api/v1/lineage/artifact",
+            json={"artifact_url": "https://huggingface.co/buckets/ibm-research/test-bucket"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["nodes"][0]["is_root"] is True
+        assert len(body["nodes"]) == 3
+
+    def test_get_artifact_graph_by_url_not_found(self):
+        response = self.client.post(
+            "api/v1/lineage/artifact",
+            json={"artifact_url": "https://huggingface.co/org/not-found"},
+        )
+        assert response.status_code == 404
+
+    def test_get_artifact_graph_no_params(self):
+        response = self.client.post(
+            "api/v1/lineage/artifact",
+            json={},
+        )
+        assert response.status_code == 400
