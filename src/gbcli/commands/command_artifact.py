@@ -1419,16 +1419,15 @@ def _lineage_lh(ctx, artifact_client, artifact, format, quiet, echo_callback):
 
 
 def _lineage_hf(ctx, artifact_client, artifact, format, quiet):
-    org, repo_name, artifact_type, _ = parse_hf_uri(artifact["uri"])
-    repo_id = f"{org}/{repo_name}"
+    artifact_uri = artifact["uri"]
 
     if not quiet:
-        click.echo(f"(2/2) Fetching artifact lineage for {repo_id}...")
+        click.echo(f"(2/2) Fetching artifact lineage for {artifact_uri}...")
 
     response = (
-        artifact_client.artifact_lineage_hf(repo_id)
+        artifact_client.artifact_lineage_hf(artifact_uri)
         if quiet
-        else execute_with_spinner(artifact_client.artifact_lineage_hf, repo_id)
+        else execute_with_spinner(artifact_client.artifact_lineage_hf, artifact_uri)
     )
 
     runs = response.get("runs", [])
@@ -1439,71 +1438,65 @@ def _lineage_hf(ctx, artifact_client, artifact, format, quiet):
     if format == "json":
         click.echo("\n" + json.dumps(response, indent=2, default=str))
     else:
-        if format == "full":
-            headers = ARTIFACT_LINEAGE_FULL_HEADERS
-        else:
-            headers = ARTIFACT_LINEAGE_DEFAULT_HEADERS
-
         table = Table(title="Artifact Lineage", padding=(0, 1))
-        for header in headers:
-            table.add_column(header, overflow="fold")
+        table.add_column("Job Name", overflow="fold")
+        table.add_column("Job Type", overflow="fold")
+        table.add_column("Run ID", overflow="fold")
+        table.add_column("Status", overflow="fold")
+        table.add_column("Created At", overflow="fold")
+        table.add_column("Inputs", overflow="fold")
+        table.add_column("Outputs", overflow="fold")
+
+        def _format_ref(ref):
+            uri = ref.get("uri", "")
+            name = ref.get("name", "")
+            if uri and uri.startswith("hf://"):
+                parts = [p for p in uri.replace("hf://", "").split("/") if p]
+                if parts[0] in ("datasets", "spaces", "buckets"):
+                    artifact_type = parts[0].rstrip("s").capitalize()
+                    repo_id = "/".join(parts[1:3])
+                elif "." in parts[0]:
+                    # host is present, check next segment
+                    if len(parts) > 1 and parts[1] in ("datasets", "spaces", "buckets"):
+                        artifact_type = parts[1].rstrip("s").capitalize()
+                        repo_id = "/".join(parts[2:4])
+                    else:
+                        artifact_type = "Model"
+                        repo_id = "/".join(parts[1:3])
+                else:
+                    artifact_type = "Model"
+                    repo_id = "/".join(parts[0:2])
+                return f"{artifact_type}:\n{repo_id}|{uri}"
+            return f"{name}\n{uri}" if uri else name
 
         for run in runs:
-            run_obj = run.get("run", {})
-            job_obj = run.get("job", {})
-            tags = run_obj.get("facets", {}).get("tags", {})
-            inputs = run.get("inputs", [])
-            outputs = run.get("outputs", [])
-
-            artifact_id = artifact.get("uuid", "-")
-            job_name = job_obj.get("name", "-")
-            job_id = run_obj.get("runId", "-")
-            job_status = run.get("eventType", "-")
-            source = ", ".join(i.get("name", "") for i in inputs) or "-"
-            target = ", ".join(o.get("name", "") for o in outputs) or "-"
-
-            if format == "full":
-                table.add_row(
-                    artifact_id,
-                    job_obj.get("namespace", "-"),
-                    job_name,
-                    job_id,
-                    "-",
-                    run.get("eventTime", "-"),
-                    run.get("eventTime", "-"),
-                    job_status,
-                    tags.get("username", "-"),
-                    source,
-                    "-",
-                    ", ".join(
-                        i.get("facets", {}).get("artifact_type", "-") for i in inputs
-                    )
-                    or "-",
-                    ", ".join(i.get("uri", "-") for i in inputs) or "-",
-                    target,
-                    "-",
-                    ", ".join(
-                        o.get("facets", {}).get("artifact_type", "-") for o in outputs
-                    )
-                    or "-",
-                    ", ".join(o.get("uri", "-") for o in outputs) or "-",
-                    run.get("producer", "-"),
-                    "-",
-                    "-",
-                    "-",
-                )
-            else:
-                table.add_row(
-                    artifact_id,
-                    job_name,
-                    job_id,
-                    job_status,
-                    source,
-                    target,
-                )
+            inputs_list = [
+                _format_ref(ref)
+                for ref in run.get("inputs", [])
+                if ref.get("node_type") == "artifact"
+            ]
+            outputs_list = [
+                _format_ref(ref)
+                for ref in run.get("outputs", [])
+                if ref.get("node_type") == "artifact"
+            ]
+            inputs_str = "\n".join(inputs_list)
+            outputs_str = "\n".join(outputs_list)
+            table.add_row(
+                run.get("job_name", "-"),
+                run.get("job_type", "-"),
+                run.get("run_id", "-"),
+                run.get("status", "-"),
+                run.get("created_at", "-"),
+                inputs_str or "-",
+                outputs_str or "-",
+            )
 
         console = Console()
         console.print(table)
+
+        if response.get("truncated"):
+            click.echo("(graph truncated at max depth)")
 
 
 @cli.command()
@@ -1559,7 +1552,7 @@ def lineage(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
         id_format = parse_artifact_identifier(artifact_id)
         if id_format in ["uuid", "uri"]:
             if not quiet:
-                click.echo(f"(1/?) Obtaining artifact..")
+                click.echo(f"(1/2) Obtaining artifact..")
 
             artifact = (
                 artifact_client.fetch_artifact(artifact_id, callback=echo_callback)

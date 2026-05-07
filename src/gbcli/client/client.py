@@ -327,8 +327,8 @@ class GBClient:
         def artifact_lineage(self, token: str, artifact_name: str):
             return artifact_lineage(token, artifact_name)
 
-        def artifact_lineage_hf(self, repo_id: str):
-            return artifact_lineage_hf(self.github_token, repo_id)
+        def artifact_lineage_hf(self, artifact_uri: str):
+            return artifact_lineage_hf(self.github_token, artifact_uri)
 
         def artifact_list(
             self,
