@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, ConfigDict
@@ -25,7 +26,10 @@ if TYPE_CHECKING:
     from lakehouse.api import JobStats
 
 from gbserver.lineage.openlineage_models import (
-    ArtifactLineageRequest,
+    ArtifactGraphRequest,
+    ArtifactGraphResponse,
+    ArtifactRunEntry,
+    LineageNodeRef,
 )
 from gbserver.lineage.openlineage_models import LineageEvent as OpenLineageEvent
 from gbserver.lineage.openlineage_models import (
@@ -33,10 +37,26 @@ from gbserver.lineage.openlineage_models import (
     TagSearchRequest,
 )
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
+from gbserver.lineage.openlineage_utils import parse_hf_url
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.constants import GBSERVER_LINEAGE_PROVIDER
+
+
+def _uri_from_url(url: Optional[str]) -> Optional[str]:
+    """Derive an hf:// URI from a huggingface.co URL."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or "huggingface.co"
+        org, name, artifact_type = parse_hf_url(url)
+        type_part = f"{artifact_type}s/" if artifact_type != "model" else ""
+        return f"hf://{host}/{type_part}{org}/{name}"
+    except Exception:
+        return url
+
 
 lineage_api = FastAPI()
 
@@ -146,28 +166,127 @@ def search_lineage_events(request: TagSearchRequest):
     )
 
 
-@lineage_api.post("/artifact/runs")
-def get_lineage_by_artifact(request: ArtifactLineageRequest):
-    service = _get_openlineage_service()
-    total, results = service.search_runs_by_artifact(
-        request.repo_id, request.artifact_type, request.limit, request.offset
-    )
-    return PaginatedResponse(
-        count=len(results),
-        total=total,
-        limit=request.limit,
-        offset=request.offset,
-        runs=results,
-    )
+@lineage_api.post("/artifact")
+def get_artifact_graph(request: ArtifactGraphRequest):
+    """Get the lineage DAG for an artifact, traversing downstream or upstream."""
+    if request.direction not in ("downstream", "upstream", "both"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="direction must be 'downstream', 'upstream', or 'both'",
+        )
 
+    if not request.artifact_name and not request.artifact_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either artifact_name or artifact_url must be provided",
+        )
 
-@lineage_api.get("/{run_id}")
-def get_lineage_event(run_id: str):
     service = _get_openlineage_service()
-    result = service.get_run_lineage(run_id)
+    try:
+        result = service.get_artifact_graph(
+            artifact_name=request.artifact_name,
+            artifact_url=request.artifact_url,
+            artifact_type=request.artifact_type,
+            max_depth=request.max_depth,
+            direction=request.direction,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
     if result is None:
+        identifier = request.artifact_name or request.artifact_url
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Run not found: {run_id}",
+            detail=f"Artifact not found: {identifier}",
         )
-    return result
+
+    nodes = result.get("nodes", [])
+    edges = result.get("edges", [])
+
+    nodes_by_id = {node["id"]: node for node in nodes}
+    run_nodes = [n for n in nodes if n.get("node_type") == "run"]
+
+    runs: list[ArtifactRunEntry] = []
+    for run in run_nodes:
+        node_id = run["id"]
+        metadata = run.get("metadata") or {}
+        tags = run.get("tags") or []
+
+        inputs: list[LineageNodeRef] = []
+        outputs: list[LineageNodeRef] = []
+        for edge in edges:
+            if edge["target"] == node_id:
+                source_node = nodes_by_id.get(edge["source"], {})
+                node_type = source_node.get("node_type", "")
+                if node_type == "artifact":
+                    source_meta = source_node.get("metadata") or {}
+                    uri = source_meta.get("uri") or _uri_from_url(
+                        source_meta.get("url")
+                    )
+                    inputs.append(
+                        LineageNodeRef(
+                            node_type="artifact",
+                            name=source_node.get("name", edge["source"]),
+                            uri=uri,
+                            url=source_meta.get("url"),
+                        )
+                    )
+                elif node_type == "run":
+                    source_meta = source_node.get("metadata") or {}
+                    inputs.append(
+                        LineageNodeRef(
+                            node_type="run",
+                            name=source_node.get("name", ""),
+                            run_id=source_meta.get("run_id"),
+                            job_name=source_meta.get("job_name"),
+                        )
+                    )
+            elif edge["source"] == node_id:
+                target_node = nodes_by_id.get(edge["target"], {})
+                node_type = target_node.get("node_type", "")
+                if node_type == "artifact":
+                    target_meta = target_node.get("metadata") or {}
+                    uri = target_meta.get("uri") or _uri_from_url(
+                        target_meta.get("url")
+                    )
+                    outputs.append(
+                        LineageNodeRef(
+                            node_type="artifact",
+                            name=target_node.get("name", edge["target"]),
+                            uri=uri,
+                            url=target_meta.get("url"),
+                        )
+                    )
+                elif node_type == "run":
+                    target_meta = target_node.get("metadata") or {}
+                    outputs.append(
+                        LineageNodeRef(
+                            node_type="run",
+                            name=target_node.get("name", ""),
+                            run_id=target_meta.get("run_id"),
+                            job_name=target_meta.get("job_name"),
+                        )
+                    )
+
+        runs.append(
+            ArtifactRunEntry(
+                job_name=metadata.get("job_name") or run.get("name", ""),
+                job_namespace=metadata.get("job_namespace") or "",
+                job_type=metadata.get("job_type") or "",
+                run_id=metadata.get("run_id") or "",
+                created_at=metadata.get("created_at") or "",
+                status=metadata.get("state") or "",
+                tags=tags,
+                inputs=inputs,
+                outputs=outputs,
+            )
+        )
+
+    return ArtifactGraphResponse(
+        root_id=result["root_id"],
+        runs=runs,
+        truncated=result["truncated"],
+    )

@@ -9,6 +9,7 @@ on:
       - 'examples/**'
   pull_request:
     branches: [dev]
+  merge_group:
 
 jobs:
   lint:
