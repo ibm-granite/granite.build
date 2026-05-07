@@ -12,12 +12,12 @@ def test_space_config_uris():
     check_test_config()
 
     # Without gbspace-config branch
-    uri = f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gbserver"
+    uri = f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/granite.build"
     config_branch_name = "notexists"
     cfg_uri = GitURI.get_gb_space_config_uri(
         uri=uri, config_branch_name=config_branch_name
     )
-    expected = f"git+ssh://{DEFAULT_GH_DOMAIN}/granite-dot-build/gbserver.git"
+    expected = f"git+ssh://{DEFAULT_GH_DOMAIN}/granite-dot-build/granite.build.git"
     assert cfg_uri == expected
 
     # With gbspace-config branch
@@ -39,9 +39,9 @@ def test_space_config_uris():
     assert cfg_uri == expected
 
     # Without  a branch and with a fragment (not expected, but just in case)
-    uri = f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gbserver#subdirectory=./foo"
+    uri = f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/granite.build#subdirectory=./foo"
     cfg_uri = GitURI.get_gb_space_config_uri(uri=uri)
-    expected = f"git+ssh://{DEFAULT_GH_DOMAIN}/granite-dot-build/gbserver.git#subdirectory=./foo"
+    expected = f"git+ssh://{DEFAULT_GH_DOMAIN}/granite-dot-build/granite.build.git#subdirectory=./foo"
     assert cfg_uri == expected
 
     # With gbspace-config branch and with a fragment  (not expected, but just in case)
