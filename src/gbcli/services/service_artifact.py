@@ -920,7 +920,6 @@ def artifact_lineage_hf(
     }
     if artifact_type:
         body["artifact_type"] = artifact_type
-    print(body)
     response = gb_server_request(
         user_token=github_token,
         url=url,

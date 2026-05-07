@@ -101,7 +101,11 @@ class MockLineageService(LineageService):
                     "name": "tunedmodel",
                     "artifact_type": None,
                     "is_root": False,
-                    "metadata": {"run_id": "run-123", "state": "finished", "created_at": "2025-03-19T18:00:00"},
+                    "metadata": {
+                        "run_id": "run-123",
+                        "state": "finished",
+                        "created_at": "2025-03-19T18:00:00",
+                    },
                 }
             )
             edges.append({"source": root_id, "target": run_id})
@@ -128,7 +132,11 @@ class MockLineageService(LineageService):
                     "name": "base-training",
                     "artifact_type": None,
                     "is_root": False,
-                    "metadata": {"run_id": "run-000", "state": "finished", "created_at": "2025-03-18T10:00:00"},
+                    "metadata": {
+                        "run_id": "run-000",
+                        "state": "finished",
+                        "created_at": "2025-03-18T10:00:00",
+                    },
                 }
             )
             edges.append({"source": root_id, "target": producer_run_id})
@@ -345,7 +353,9 @@ class TestOpenLineageAPI:
     def test_get_artifact_graph_by_url(self):
         response = self.client.post(
             "api/v1/lineage/artifact",
-            json={"artifact_url": "https://huggingface.co/buckets/ibm-research/test-bucket"},
+            json={
+                "artifact_url": "https://huggingface.co/buckets/ibm-research/test-bucket"
+            },
         )
         assert response.status_code == 200
         body = response.json()

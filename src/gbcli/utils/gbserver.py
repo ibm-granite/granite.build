@@ -328,7 +328,7 @@ def get_build(build_id: str, token: str, gbserver_api: str) -> Any:
 def get_build_lineage(build_id: str, token: str, gbserver_api: str) -> Any:
     build_lineage_url = f"{gbserver_api}build/{build_id}"
 
-    a= gb_server_request(
+    a = gb_server_request(
         user_token=token,
         url=build_lineage_url,
         http_method="get",

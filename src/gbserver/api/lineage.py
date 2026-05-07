@@ -57,6 +57,7 @@ def _uri_from_url(url: Optional[str]) -> Optional[str]:
     except Exception:
         return url
 
+
 lineage_api = FastAPI()
 
 
@@ -222,7 +223,9 @@ def get_artifact_graph(request: ArtifactGraphRequest):
                 node_type = source_node.get("node_type", "")
                 if node_type == "artifact":
                     source_meta = source_node.get("metadata") or {}
-                    uri = source_meta.get("uri") or _uri_from_url(source_meta.get("url"))
+                    uri = source_meta.get("uri") or _uri_from_url(
+                        source_meta.get("url")
+                    )
                     inputs.append(
                         LineageNodeRef(
                             node_type="artifact",
@@ -246,7 +249,9 @@ def get_artifact_graph(request: ArtifactGraphRequest):
                 node_type = target_node.get("node_type", "")
                 if node_type == "artifact":
                     target_meta = target_node.get("metadata") or {}
-                    uri = target_meta.get("uri") or _uri_from_url(target_meta.get("url"))
+                    uri = target_meta.get("uri") or _uri_from_url(
+                        target_meta.get("url")
+                    )
                     outputs.append(
                         LineageNodeRef(
                             node_type="artifact",
@@ -285,4 +290,3 @@ def get_artifact_graph(request: ArtifactGraphRequest):
         runs=runs,
         truncated=result["truncated"],
     )
-

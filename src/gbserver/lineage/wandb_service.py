@@ -422,7 +422,9 @@ class WandBLineageService(LineageService):
             else GBSERVER_WANDB_PROJECT
         )
 
-        search_types = [artifact_type] if artifact_type else ["model", "dataset", "bucket"]
+        search_types = (
+            [artifact_type] if artifact_type else ["model", "dataset", "bucket"]
+        )
         for art_type in search_types:
             try:
                 type_obj = api.artifact_type(art_type, project_path)
@@ -550,11 +552,11 @@ class WandBLineageService(LineageService):
 
             edge_set: set = set()
             edges: List[Dict] = []
-            for e in down["edges"] + up["edges"]:
-                key = (e["source"], e["target"])
+            for edge in down["edges"] + up["edges"]:
+                key = (edge["source"], edge["target"])
                 if key not in edge_set:
                     edge_set.add(key)
-                    edges.append(e)
+                    edges.append(edge)
 
             return {
                 "root_id": root_id,
@@ -604,9 +606,7 @@ class WandBLineageService(LineageService):
                     if not hasattr(run, "id") or not hasattr(run, "entity"):
                         continue
                     run_id = f"{run.entity}/{run.project}/{run.id}"
-                    edges.append(
-                        {"source": item.qualified_name, "target": run_id}
-                    )
+                    edges.append({"source": item.qualified_name, "target": run_id})
 
                     if run_id not in visited_runs:
                         visited_runs.add(run_id)
@@ -623,7 +623,9 @@ class WandBLineageService(LineageService):
                                 "metadata": {
                                     "run_id": run.id,
                                     "job_name": run_config.get("job_name", run_name),
-                                    "job_namespace": run_config.get("job_namespace", ""),
+                                    "job_namespace": run_config.get(
+                                        "job_namespace", ""
+                                    ),
                                     "job_type": run_config.get("job_type", ""),
                                     "state": getattr(run, "state", None),
                                     "created_at": getattr(run, "createdAt", None),
@@ -707,4 +709,3 @@ class WandBLineageService(LineageService):
         except Exception as e:
             logger.error("Failed to search lineage by tags: %s", e)
             return 0, []
-

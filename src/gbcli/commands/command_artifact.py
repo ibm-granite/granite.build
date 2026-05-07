@@ -1471,10 +1471,14 @@ def _lineage_hf(ctx, artifact_client, artifact, format, quiet):
 
         for run in runs:
             inputs_list = [
-                _format_ref(ref) for ref in run.get("inputs", []) if ref.get("node_type") == "artifact"
+                _format_ref(ref)
+                for ref in run.get("inputs", [])
+                if ref.get("node_type") == "artifact"
             ]
             outputs_list = [
-                _format_ref(ref) for ref in run.get("outputs", []) if ref.get("node_type") == "artifact"
+                _format_ref(ref)
+                for ref in run.get("outputs", [])
+                if ref.get("node_type") == "artifact"
             ]
             inputs_str = "\n".join(inputs_list)
             outputs_str = "\n".join(outputs_list)
