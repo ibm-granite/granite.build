@@ -29,10 +29,10 @@ from gbserver.lineage.openlineage_models import (
     ArtifactGraphRequest,
     ArtifactGraphResponse,
     ArtifactRunEntry,
-    LineageNodeRef,
 )
 from gbserver.lineage.openlineage_models import LineageEvent as OpenLineageEvent
 from gbserver.lineage.openlineage_models import (
+    LineageNodeRef,
     PaginatedResponse,
     TagSearchRequest,
 )
