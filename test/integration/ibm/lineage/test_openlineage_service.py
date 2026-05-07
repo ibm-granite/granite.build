@@ -69,6 +69,7 @@ class MockLineageService(LineageService):
         self,
         artifact_name: Optional[str] = None,
         artifact_url: Optional[str] = None,
+        artifact_type: Optional[str] = None,
         max_depth: int = 10,
         direction: str = "downstream",
     ) -> Optional[Dict]:
@@ -294,12 +295,10 @@ class TestOpenLineageAPI:
         assert response.status_code == 200
         body = response.json()
         assert "root_id" in body
-        assert "nodes" in body
-        assert "edges" in body
-        assert body["nodes"][0]["is_root"] is True
-        assert body["nodes"][0]["node_type"] == "artifact"
-        assert len(body["nodes"]) == 3
-        assert len(body["edges"]) == 2
+        assert "runs" in body
+        assert "truncated" in body
+        assert len(body["runs"]) == 2
+        assert body["truncated"] is False
 
     def test_get_artifact_graph_not_found(self):
         response = self.client.post(
@@ -323,7 +322,7 @@ class TestOpenLineageAPI:
         assert response.status_code == 200
         body = response.json()
         assert body["truncated"] is True
-        assert len(body["nodes"]) == 1
+        assert len(body["runs"]) == 0
 
     def test_get_artifact_graph_upstream(self):
         response = self.client.post(
@@ -332,9 +331,8 @@ class TestOpenLineageAPI:
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["nodes"][0]["is_root"] is True
-        assert len(body["nodes"]) == 3
-        assert any(n["name"] == "base-training" for n in body["nodes"])
+        assert len(body["runs"]) == 1
+        assert body["runs"][0]["job_name"] == "base-training"
 
     def test_get_artifact_graph_both_directions(self):
         response = self.client.post(
@@ -343,12 +341,10 @@ class TestOpenLineageAPI:
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["nodes"][0]["is_root"] is True
-        assert len(body["nodes"]) == 5
-        assert len(body["edges"]) == 4
-        node_names = {n["name"] for n in body["nodes"]}
-        assert "tunedmodel" in node_names
-        assert "base-training" in node_names
+        assert len(body["runs"]) == 2
+        job_names = {r["job_name"] for r in body["runs"]}
+        assert "tunedmodel" in job_names
+        assert "base-training" in job_names
 
     def test_get_artifact_graph_by_url(self):
         response = self.client.post(
@@ -359,8 +355,7 @@ class TestOpenLineageAPI:
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["nodes"][0]["is_root"] is True
-        assert len(body["nodes"]) == 3
+        assert len(body["runs"]) == 2
 
     def test_get_artifact_graph_by_url_not_found(self):
         response = self.client.post(
