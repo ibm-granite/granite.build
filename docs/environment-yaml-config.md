@@ -110,6 +110,9 @@ config:
   authentication:
     use_ssh: true                   # Whether to use SSH to reach the LSF cluster.
                                     # Default: true.
+    copy_method: scp                # File transfer method for copying assets to the
+                                    # remote LSF node. One of: "scp", "rsync".
+                                    # Default: scp.
     ssh_port: 22                    # SSH port. Default: 22.
     ssh_max_sessions: 10            # Maximum concurrent SSH multiplexed sessions.
                                     # Default: 10.
@@ -417,6 +420,7 @@ config:
     remote_dir: /gpfs/projects/myteam/gbserver
   authentication:
     use_ssh: true
+    copy_method: scp
     ssh_port: 22
     ssh_max_sessions: 10
     login_nodes:
