@@ -136,7 +136,7 @@ OneStepBlueVelaDownloadTestConfig = BuildTestSpecification(
 #     reason="GBTEST_ENABLE_BLUEVELA_TESTS is set to false",
 # )
 @extended_testing_only
-@pytest.mark.skip
+#@pytest.mark.skip
 @pytest.mark.xdist_group(name="buildtest_bv")
 class TestBuildRunner1StepBlueVela(AbstractBuildRunnerTest):
 

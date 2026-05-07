@@ -27,9 +27,18 @@ environment_configs:
         monitors:
         - log_monitor
         config:
-          chart: helm-charts/hfpull   
+          chart: helm-charts/hfpull
     monitors:
       log_monitor:
         type: sidecar_monitor
         config:
           event_configs: {}
+  Lsf:
+    launchers:
+      tuning:
+        type: bsub
+        monitors:
+        - bsub_monitor
+    monitors:
+      bsub_monitor:
+        type: bsub_monitor
