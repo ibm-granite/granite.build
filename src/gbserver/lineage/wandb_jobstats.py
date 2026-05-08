@@ -74,8 +74,25 @@ def _lh_uri_to_namespace_and_name(uri: str) -> Optional[Tuple[str, str]]:
     return namespace, name
 
 
+def _build_target_artifact_reference(
+    target_name: str,
+    target_artifact_name: str,
+    is_input: bool,
+    index: int,
+) -> str:
+    in_or_out = "inputs" if is_input else "outputs"
+    reference = f"{target_name}.{in_or_out}.{target_artifact_name}"
+    if index >= 0:
+        reference = f"{reference}[{index}]"
+    return reference
+
+
 def _artifact_to_lineage_entry(
-    artifact: ArtifactRegistration, target_artifact_name: str = ""
+    artifact: ArtifactRegistration,
+    target_artifact_name: str = "",
+    target_name: str = "",
+    is_input: bool = True,
+    index: int = -1,
 ) -> dict:
     from urllib.parse import urlparse
 
@@ -90,10 +107,19 @@ def _artifact_to_lineage_entry(
     namespace = artifact.uri
     name = artifact.name or target_artifact_name or artifact.uuid
 
+    target_artifact_reference = _build_target_artifact_reference(
+        target_name, target_artifact_name, is_input, index
+    )
+
     facets: dict[str, Any] = {
         "artifact_id": artifact.uuid,
         "artifact_uri": artifact.uri,
         "artifact_type": artifact_type.name,
+        "gb-artifact-id": artifact.uuid,
+        "gb-artifact-uri": artifact.uri,
+        "gb-build-id": artifact.created_by_build_id,
+        "gb-target-id": artifact.created_by_target_id,
+        "gb-build-target-artifact": target_artifact_reference,
     }
     facets.update(artifact.model_dump(mode="json"))
 
@@ -147,7 +173,13 @@ class WandBLineageStore(ILineageStore):
             artifact = storage.artifact_registry.get_by_uuid(uuid)
             if artifact and isinstance(artifact, ArtifactRegistration):
                 inputs.append(
-                    _artifact_to_lineage_entry(artifact, target_artifact_name)
+                    _artifact_to_lineage_entry(
+                        artifact,
+                        target_artifact_name,
+                        target_name=targetrun.name,
+                        is_input=True,
+                        index=-1,
+                    )
                 )
 
         step_configs = []
@@ -222,12 +254,22 @@ class WandBLineageStore(ILineageStore):
             output_artifact_list,
         ) in targetrun.output_artifacts.items():
             target_events: List[dict] = []
+            include_index = len(output_artifact_list) > 1
+            index = -1
             for output_uuid in output_artifact_list:
+                if include_index:
+                    index += 1
                 artifact = storage.artifact_registry.get_by_uuid(output_uuid)
                 outputs = []
                 if artifact and isinstance(artifact, ArtifactRegistration):
                     outputs.append(
-                        _artifact_to_lineage_entry(artifact, target_artifact_name)
+                        _artifact_to_lineage_entry(
+                            artifact,
+                            target_artifact_name,
+                            target_name=targetrun.name,
+                            is_input=False,
+                            index=index,
+                        )
                     )
                 event = {
                     **base_event,
@@ -347,17 +389,11 @@ class WandBLineageStore(ILineageStore):
     def count_release_ids(
         self, release_id: str, target_id: Optional[str] = None
     ) -> int:
-        total, results = self._service.search_lineage_by_tags(
-            [f"build_id={release_id}"], limit=10000, offset=0
+
+        required = [f"target_id={target_id}"] if target_id else None
+        return self._service.count_events_by_tags(
+            [f"build_id={release_id}"], required_tags=required
         )
-        if target_id is None:
-            return total
-        count = 0
-        for event in results:
-            tags = event.get("run", {}).get("facets", {}).get("tags", {})
-            if tags.get("target_id") == target_id:
-                count += 1
-        return count
 
     def does_release_id_exist(
         self,
@@ -373,8 +409,30 @@ class WandBLineageStore(ILineageStore):
         artifact: ArtifactRegistration,
         sources: list[ArtifactRegistration],
     ) -> dict:
-        inputs = [_artifact_to_lineage_entry(src) for src in sources]
-        outputs = [_artifact_to_lineage_entry(artifact)]
+        use_index = len(sources) > 0
+        inputs = []
+        index = -1
+        for src in sources:
+            if use_index:
+                index += 1
+            inputs.append(
+                _artifact_to_lineage_entry(
+                    src,
+                    target_artifact_name=src.name,
+                    target_name=src.name,
+                    is_input=True,
+                    index=index,
+                )
+            )
+        outputs = [
+            _artifact_to_lineage_entry(
+                artifact,
+                target_artifact_name=artifact.name,
+                target_name="pseudo-target",
+                is_input=False,
+                index=-1,
+            )
+        ]
 
         event_time = artifact.created_at.isoformat()
 

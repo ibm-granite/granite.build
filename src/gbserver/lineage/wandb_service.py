@@ -670,6 +670,37 @@ class WandBLineageService(LineageService):
             "truncated": truncated,
         }
 
+    def count_events_by_tags(
+        self, tags: list, required_tags: Optional[list] = None
+    ) -> int:
+        try:
+            api = wandb.Api()
+            project_path = (
+                f"{GBSERVER_WANDB_ENTITY}/{GBSERVER_WANDB_PROJECT}"
+                if GBSERVER_WANDB_ENTITY
+                else GBSERVER_WANDB_PROJECT
+            )
+            runs = api.runs(
+                project_path,
+                filters={"tags": {"$in": tags}} if tags else {},
+            )
+            required = set(required_tags or [])
+            total = 0
+            # run.log({"openlineage_event": <dict>}) flattens the dict in
+            # history, so there is no top-level "openlineage_event" column.
+            # Count rows by a stable flattened sub-key instead.
+            marker = "openlineage_event.eventType"
+            for run in runs:
+                if required and not required.issubset(set(run.tags or [])):
+                    continue
+                for row in run.scan_history(keys=[marker]):
+                    if row.get(marker) is not None:
+                        total += 1
+            return total
+        except Exception as e:
+            logger.error("Failed to count events by tags: %s", e)
+            return 0
+
     def search_lineage_by_tags(
         self, tags: list, limit: int = 10, offset: int = 0
     ) -> Tuple[int, list]:
