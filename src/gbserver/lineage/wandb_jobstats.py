@@ -24,7 +24,6 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
-from gbserver.types.artifact import ArtifactType
 from gbserver.types.constants import (
     GB_JOB_STATS_DETAIL_CATEGORY,
     GB_JOB_STATS_DETAIL_REGISTERED_ARTIFACT_JOB_NAME,
