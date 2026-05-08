@@ -41,7 +41,6 @@ from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_TAG_CONFIG_KEYS = ("build_id", "target_id", "username", "space_name")
 _PASSTHROUGH_FACET_KEYS = ("job_input_params", "execution_stats")
 _JOB_DETAIL_KEYS = (
     "job_id",
@@ -134,9 +133,9 @@ class WandBLineageService(LineageService):
             }
 
             tags = run_facets.get("tags", {})
-            for key in _TAG_CONFIG_KEYS:
-                if key in tags:
-                    config_update[key] = tags[key]
+            for key, value in tags.items():
+                if not key.startswith("_"):
+                    config_update[key] = value
 
             source_code = run_facets.get("source_code", {})
             if source_code.get("url"):

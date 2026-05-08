@@ -180,7 +180,8 @@ class TestWandBLineageStore:
         self.mock_service.emit_event.assert_called_once()
         event = self.mock_service.emit_event.call_args[0][0]
         assert event["eventType"] == "COMPLETE"
-        assert event["run"]["runId"] == "target-001"
+        assert event["run"]["runId"] == "target-001-out-1"
+        assert event["run"]["facets"]["job_details"]["job_id"] == "target-001"
         assert event["job"]["name"] == "train"
         assert event["job"]["namespace"] == "public/test-build"
         assert len(event["inputs"]) == 1
@@ -267,7 +268,8 @@ class TestWandBLineageStore:
         assert len(events_list) == 1
         assert "model" in events_dict
         assert len(events_dict["model"]) == 1
-        assert events_list[0]["run"]["runId"] == "target-001"
+        assert events_list[0]["run"]["runId"] == "target-001-out-1"
+        assert events_list[0]["run"]["facets"]["job_details"]["job_id"] == "target-001"
         assert events_list[0]["inputs"][0]["name"] == "data"
         assert events_list[0]["outputs"][0]["name"] == "model"
 
@@ -313,7 +315,10 @@ class TestWandBLineageStore:
         )
 
         assert len(events_list) == 1
-        assert events_list[0]["run"]["runId"] == "skipped-target"
+        assert events_list[0]["run"]["runId"] == "skipped-target-out-1"
+        assert (
+            events_list[0]["run"]["facets"]["job_details"]["job_id"] == "skipped-target"
+        )
         assert "model" in events_dict
 
     def test_create_jobstats_for_target_build_not_found(self):
@@ -494,44 +499,32 @@ class TestWandBLineageStore:
         )
 
     def test_count_release_ids_no_target(self):
-        self.mock_service.search_lineage_by_tags.return_value = (
-            2,
-            [
-                {"run": {"facets": {"tags": {"build_id": "b1", "target_id": "t1"}}}},
-                {"run": {"facets": {"tags": {"build_id": "b1", "target_id": "t2"}}}},
-            ],
-        )
+        self.mock_service.count_runs_by_tags.return_value = 2
         count = self.storage_impl.count_release_ids("b1")
         assert count == 2
-        self.mock_service.search_lineage_by_tags.assert_called_once_with(
-            ["build_id=b1"], limit=10000, offset=0
+        self.mock_service.count_runs_by_tags.assert_called_once_with(
+            ["build_id=b1"], required_tags=None
         )
 
     def test_count_release_ids_with_target(self):
-        self.mock_service.search_lineage_by_tags.return_value = (
-            2,
-            [
-                {"run": {"facets": {"tags": {"build_id": "b1", "target_id": "t1"}}}},
-                {"run": {"facets": {"tags": {"build_id": "b1", "target_id": "t2"}}}},
-            ],
-        )
+        self.mock_service.count_runs_by_tags.return_value = 1
         count = self.storage_impl.count_release_ids("b1", target_id="t1")
         assert count == 1
+        self.mock_service.count_runs_by_tags.assert_called_once_with(
+            ["build_id=b1"], required_tags=["target_id=t1"]
+        )
 
     def test_count_release_ids_no_results(self):
-        self.mock_service.search_lineage_by_tags.return_value = (0, [])
+        self.mock_service.count_runs_by_tags.return_value = 0
         count = self.storage_impl.count_release_ids("nonexistent")
         assert count == 0
 
     def test_does_release_id_exist_true(self):
-        self.mock_service.search_lineage_by_tags.return_value = (
-            1,
-            [{"run": {"facets": {"tags": {"build_id": "b1", "target_id": "t1"}}}}],
-        )
+        self.mock_service.count_runs_by_tags.return_value = 1
         assert self.storage_impl.does_release_id_exist("b1", 1, target_id="t1") is True
 
     def test_does_release_id_exist_false(self):
-        self.mock_service.search_lineage_by_tags.return_value = (0, [])
+        self.mock_service.count_runs_by_tags.return_value = 0
         assert self.storage_impl.does_release_id_exist("b1", 3) is False
 
 
