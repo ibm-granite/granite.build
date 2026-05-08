@@ -406,10 +406,44 @@ class RetryHandler:
                             forward_err,
                         )
 
+        await self._drain_wrapper_queue()
+
         logger.info(
             "[RetryHandler launch_id %s] Stopped event processing",
             self.launch_id,
         )
+
+    async def _drain_wrapper_queue(self: Self) -> None:
+        """Forward any remaining wrapper_queue events to the downstream queue.
+
+        Called after ``process_events`` exits its main loop so that events
+        put on the queue while processing was blocked (e.g. inside
+        ``_execute_retry``'s sleep + ``retry_workload`` call) are not
+        silently dropped.  No retry evaluation is performed since the launch
+        is shutting down.
+        """
+        drained = 0
+        while True:
+            try:
+                event = self.wrapper_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            try:
+                await self.downstream_queue.put(event)
+                drained += 1
+            except Exception as forward_err:
+                logger.error(
+                    "[RetryHandler launch_id %s] Failed to drain event to "
+                    "downstream: %s",
+                    self.launch_id,
+                    forward_err,
+                )
+        if drained:
+            logger.info(
+                "[RetryHandler launch_id %s] Drained %d queued event(s) on stop",
+                self.launch_id,
+                drained,
+            )
 
     async def _record_node_failures(
         self: Self,

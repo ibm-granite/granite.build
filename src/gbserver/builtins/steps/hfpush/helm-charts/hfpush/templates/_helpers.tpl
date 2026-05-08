@@ -8,8 +8,7 @@ exit(HfURI.hfpush_step(
     uri_str="{{ .Values.hfpush_config.uri }}",
     source_path="{{ .Values.hfpush_config.path }}",
     private={{ ternary "True" "False" (.Values.hfpush_config.hf.private | default true) }},
-    resource_group_name="{{ .Values.hfpush_config.hf.resource_group_name | default "" }}",
-    space_name="{{ .Values.hfpush_config.space_name | default "" }}",
+    resource_group_id="{{ .Values.hfpush_config.hf.resource_group_id | default "" }}",
 ))
 EOF
 

@@ -31,11 +31,13 @@ from pydantic import BaseModel
 
 from gbcommon.uri.cos import CosURI
 from gbcommon.uri.env import EnvURI
+from gbcommon.uri.hf import HfURI
 from gbcommon.uri.lh import LhURI
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
 from gbserver.asset.cosstore import Cosstore
+from gbserver.asset.hfstore import Hfstore
 from gbserver.asset.lhstore import Lhstore
 from gbserver.environment.environment import (
     BINDING_KEY,
@@ -47,13 +49,17 @@ from gbserver.monitoring.lsf_bsub_monitor import LSFBsubMonitor
 from gbserver.monitoring.streams.log_stream_base import LogStreamSource
 from gbserver.monitoring.streams.stream_factory import make_stream
 from gbserver.resilience.strategies.aspera_failure import AsperaRetryStrategy
-from gbserver.types.buildconfig import BuildTargetStepConfig
+from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
     EntityRunMetadata,
 )
 from gbserver.types.constants import (
     CODE_GBSERVER_BUILTINS_STEPS_COSRCLONE_DIR,
     CODE_GBSERVER_BUILTINS_STEPS_COSRCLONE_URI,
+    CODE_GBSERVER_BUILTINS_STEPS_HFPULL_DIR,
+    CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI,
+    CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_DIR,
+    CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI,
     CODE_GBSERVER_BUILTINS_STEPS_LHPULL_DIR,
     CODE_GBSERVER_BUILTINS_STEPS_LHPULL_URI,
     CODE_GBSERVER_BUILTINS_STEPS_LHPUSH_DIR,
@@ -1039,6 +1045,48 @@ class Lsf(Environment):
         lsf_dict["skip_finding_output_artifacts"] = True
         return lsf_dict, workload_dict
 
+    def _load_builtin_hf_lsf_section(
+        self: Self, step_dir: Path, hf_metadata: dict
+    ) -> Tuple[dict, dict]:
+        """Read a builtin HF step YAML and return (lsf_section_dict, workload_section_dict)
+        with the HF_TOKEN secret injected into the LSF section.
+
+        Args:
+            step_dir: Directory containing the builtin step YAML (e.g. hfpull or hfpush dir).
+            hf_metadata: HF metadata dict; must contain 'token_secretname'.
+        Returns:
+            Tuple of (lsf_dict, workload_dict) ready for BuildTargetStepConfig config.
+        Raises:
+            AssertionError: if the step YAML is missing or 'token_secretname' is absent.
+        """
+        step_path = step_dir / STEP_FILE_NAME
+        assert step_path.is_file(), f"step yaml is missing: {step_path}"
+        step_config = StepConfig.from_yaml(path=step_path)
+        hfpc = step_config.config
+        assert isinstance(
+            hfpc, dict
+        ), f"invalid step config type: {type(hfpc).__name__}"
+        step_config_section = StepConfigSection.model_validate(hfpc)
+        logger.info("step_config_section: %s", step_config_section)
+        lsf_dict = step_config_section.lsf.model_dump(exclude_unset=True)
+        workload_dict = step_config_section.workload.model_dump(exclude_unset=True)
+        assert isinstance(
+            hf_metadata, dict
+        ), f"invalid hf_metadata type: {type(hf_metadata).__name__}"
+        assert (
+            "token_secretname" in hf_metadata
+        ), "token_secretname is missing in hf_metadata"
+        lsf_dict["secrets"] = {
+            "secret_names_to_use_as_env_variable": [
+                {
+                    "env_name": "HF_TOKEN",
+                    "secret_name": hf_metadata["token_secretname"],
+                }
+            ]
+        }
+        lsf_dict["skip_finding_output_artifacts"] = True
+        return lsf_dict, workload_dict
+
     async def pullasset_lhstore(
         self: Self,
         uri: URI,
@@ -1163,6 +1211,182 @@ class Lsf(Environment):
                 "lsf": lsf_dict,
                 "workload": workload_dict,
                 "lhpush_config": lhpush_config,
+            },
+        )
+
+    async def pullasset_hfstore(
+        self: Self,
+        uri: URI,
+        binding: Optional[Any] = None,
+        storeload_config: Optional[StoreLoad] = None,
+        assetstore: Optional[Assetstore] = None,
+        secrets: Optional[dict] = None,
+        **kwargs: Dict,
+    ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
+        """Pull an asset from Hugging Face Hub to LSF cluster storage.
+
+        Args:
+            uri: HF URI to pull (e.g. hf://models/org/repo).
+            binding: Unused for hfpull.
+            storeload_config: Must have mode 'hf_pull' and config with 'cache_path'.
+            assetstore: Hfstore instance.
+            secrets: Optional secrets dict.
+        Returns:
+            Tuple of (binding_config, BuildTargetStepConfig).
+        Raises:
+            AssertionError: If assetstore type or mode is invalid.
+        """
+        assert isinstance(
+            assetstore, Hfstore
+        ), f"invalid type assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
+        assert storeload_config is not None, "storeload_config is None"
+        assert (
+            storeload_config.mode == "hf_pull"
+        ), f"Only 'hf_pull' mode is supported for Lsf, mode: {storeload_config.mode} uri: {uri}"
+        cache_path = storeload_config.config.get("cache_path", None)
+        assert isinstance(cache_path, str), f"invalid cache_path: {cache_path}"
+        assert cache_path != "", f"invalid cache_path: {cache_path}"
+        hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
+        binding_path = (
+            Path(cache_path) / hfuri.get_owner() / hfuri.get_repo() / hfuri.hash()
+        )
+        hf_metadata = Asset(uri=hfuri).get_metadata()
+        logger.info("hf_metadata: %s", hf_metadata)
+        hfpull_config = Hfstore.build_hfpull_step_config(
+            hfuri=hfuri,
+            binding_path=str(binding_path),
+        )
+        logger.info("hfpull_config: %s", hfpull_config)
+        hfpull_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI
+        if (
+            storeload_config is not None
+            and storeload_config.config is not None
+            and "step_uri" in storeload_config.config
+        ):
+            hfpull_stepuri = storeload_config.config["step_uri"]
+            assert isinstance(
+                hfpull_stepuri, str
+            ), f"invalid hfpull_stepuri: {hfpull_stepuri}"
+        binding_config = {BINDING_KEY: {"path": str(binding_path)}}
+        lsf_dict, workload_dict = self._load_builtin_hf_lsf_section(
+            CODE_GBSERVER_BUILTINS_STEPS_HFPULL_DIR, hf_metadata
+        )
+        return binding_config, BuildTargetStepConfig(
+            step_uri=hfpull_stepuri,
+            config={
+                "lsf": lsf_dict,
+                "workload": workload_dict,
+                "hfpull_config": hfpull_config,
+            },
+        )
+
+    async def pushasset_hfstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        storepush_config: Optional[StorePush] = None,
+        uri: Optional[Union[str, URI]] = None,
+        assetstore: Optional[Assetstore] = None,
+        output_config: Optional[BuildTargetOutputConfig] = None,
+        **kwargs: Dict,
+    ) -> BuildTargetStepConfig:
+        """Push an artifact from LSF cluster storage to Hugging Face Hub.
+
+        Pre-creates the target HF repo server-side (with the correct
+        resource_group_id resolved from the space name) so the LSF compute
+        node's ``huggingface-cli upload`` only has to push files to a repo
+        that already exists.
+
+        Args:
+            binding: Dict with a 'path' key pointing to the artifact on cluster.
+            binding_id: Output binding name for artifact tracking.
+            storepush_config: Environment-level push configuration.
+            uri: Target HF URI string or object.
+            assetstore: Hfstore instance.
+            output_config: Per-output config from build.yaml; ``space_name`` is
+                used to derive the HF Enterprise resource group.
+        Returns:
+            BuildTargetStepConfig for the hfpush step.
+        Raises:
+            ValueError: If uri is empty or the resource group cannot be resolved.
+            AssertionError: If binding has no 'path'.
+        """
+        if uri is None or uri == "":
+            raise ValueError(f"Empty uri received to pushasset {binding}")
+        hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
+        logger.info("binding type %s value %s", type(binding), binding)
+        assert isinstance(
+            binding, dict
+        ), f"expected binding to be a dict, actual: {type(binding).__name__} {binding}"
+        assert (
+            "path" in binding
+        ), f"expected 'path' to be in the binding, actual: {binding}"
+        binding_path = binding["path"]
+        logger.info("binding_path: %s", binding_path)
+        hf_metadata = Asset(uri=hfuri).get_metadata()
+        logger.info("hf_metadata: %s", hf_metadata)
+
+        hf_resource_group_id: Optional[str] = None
+        hf_resource_group_name: Optional[str] = None
+        hf_private = True
+        # Environment-level storepush_config (lower priority).
+        if storepush_config is not None and storepush_config.config is not None:
+            hf_cfg = storepush_config.config.get("hf", {})
+            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
+            hf_resource_group_name = hf_cfg.get(
+                "resource_group_name", hf_resource_group_name
+            )
+            hf_private = hf_cfg.get("private", hf_private)
+        # build.yaml output store_push (higher priority, overrides).
+        if output_config is not None and output_config.store_push is not None:
+            hf_cfg = output_config.store_push.config.get("hf", {})
+            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
+            hf_resource_group_name = hf_cfg.get(
+                "resource_group_name", hf_resource_group_name
+            )
+            hf_private = hf_cfg.get("private", hf_private)
+
+        space_name = output_config.space_name if output_config else None
+
+        assert isinstance(
+            assetstore, Hfstore
+        ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
+        if hf_resource_group_id:
+            resource_group_id: Optional[str] = hf_resource_group_id
+        else:
+            resource_group_id = hfuri.resolve_resource_group_id(
+                token=assetstore._resolve_token(hfuri),
+                resource_group_name=hf_resource_group_name,
+                space_name=space_name,
+            )
+
+        hfpush_config = Hfstore.build_hfpush_step_config(
+            hfuri=hfuri,
+            binding_path=binding_path,
+            binding_id=binding_id or "",
+            hf_private=hf_private,
+            hf_resource_group_id=resource_group_id,
+        )
+        logger.info("hfpush_config: %s", hfpush_config)
+        hfpush_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI
+        if (
+            storepush_config is not None
+            and storepush_config.config is not None
+            and "step_uri" in storepush_config.config
+        ):
+            hfpush_stepuri = storepush_config.config["step_uri"]
+            assert isinstance(
+                hfpush_stepuri, str
+            ), f"invalid hfpush_stepuri: {hfpush_stepuri}"
+        lsf_dict, workload_dict = self._load_builtin_hf_lsf_section(
+            CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_DIR, hf_metadata
+        )
+        return BuildTargetStepConfig(
+            step_uri=hfpush_stepuri,
+            config={
+                "lsf": lsf_dict,
+                "workload": workload_dict,
+                "hfpush_config": hfpush_config,
             },
         )
 

@@ -103,22 +103,23 @@ class Hfstore(Assetstore):
         binding_path: str,
         binding_id: str,
         hf_private: bool,
-        hf_resource_group_name: Optional[str],
-        space_name: Optional[str],
+        hf_resource_group_id: Optional[str] = None,
     ) -> dict:
         """Build the hfpush_config dict with all keys required by step templates.
 
         Both the LSF command.sh and Helm _helpers.tpl templates reference flat keys
-        (owner, repo, revision, private, binding_id) as well as nested hf.* keys.
-        This function produces a single dict that satisfies all template variants.
+        (owner, repo, revision, private, binding_id) plus nested ``hf.type`` and
+        ``hf.resource_group_id``.  Caller is responsible for resolving any
+        ``space_name`` / ``resource_group_name`` to the id passed here — see
+        :meth:`HfURI.resolve_resource_group_id`.
 
         Args:
             hfuri: Parsed HuggingFace URI.
             binding_path: Local path to the artifact being pushed.
             binding_id: Output binding name for artifact tracking.
             hf_private: Whether the repo should be private.
-            hf_resource_group_name: Optional HF Enterprise resource group.
-            space_name: Space name used for resource group derivation.
+            hf_resource_group_id: Pre-resolved HF Enterprise resource group id,
+                or ``None`` when no resource group applies.
 
         Returns:
             Dict suitable for passing as config={"hfpush_config": ...} to
@@ -133,10 +134,41 @@ class Hfstore(Assetstore):
             "revision": hfuri.get_revision(),
             "private": hf_private,
             "binding_id": binding_id,
-            "space_name": space_name,
             "hf": {
                 "type": hf_type,
                 "private": hf_private,
-                "resource_group_name": hf_resource_group_name,
+                "resource_group_id": hf_resource_group_id,
+            },
+        }
+
+    @staticmethod
+    def build_hfpull_step_config(
+        hfuri: HfURI,
+        binding_path: str,
+    ) -> dict:
+        """Build the hfpull_config dict with all keys required by step templates.
+
+        The LSF command.sh template passes ``--repo-type`` to
+        ``huggingface-cli download`` so it does not rely on CLI auto-detection,
+        which matches the explicit ``repo_type`` passed by the Python path
+        (``HfURI.pull``).
+
+        Args:
+            hfuri: Parsed HuggingFace URI.
+            binding_path: Local path where the asset will be cached.
+
+        Returns:
+            Dict suitable for passing as config={"hfpull_config": ...} to
+            BuildTargetStepConfig.
+        """
+        hf_type = hfuri.get_hf_type() or "model"
+        return {
+            "path": binding_path,
+            "uri": str(hfuri),
+            "owner": hfuri.get_owner(),
+            "repo": hfuri.get_repo(),
+            "revision": hfuri.get_revision(),
+            "hf": {
+                "type": hf_type,
             },
         }

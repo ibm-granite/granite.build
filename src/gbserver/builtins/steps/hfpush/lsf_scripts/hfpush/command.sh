@@ -9,9 +9,13 @@ echo 'hfpush start'
 
 HF_SOURCE='{{ hfp.path }}'
 HF_URI='{{ hfp.uri }}'
-HF_REPO='{{ hfp.owner }}/{{ hfp.repo }}'
+HF_OWNER='{{ hfp.owner }}'
+HF_REPO_NAME='{{ hfp.repo }}'
+HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"
 HF_REVISION='{{ hfp.revision }}'
 HF_PRIVATE='{{ hfp.private }}'
+HF_TYPE='{{ hfp.hf.type }}'
+HF_RESOURCE_GROUP_ID='{{ hfp.hf.resource_group_id }}'
 BINDING_ID='{{ hfp.binding_id }}'
 
 if [[ -z "$HF_TOKEN" ]]; then
@@ -41,6 +45,41 @@ echo "LLMB_LSF_TARGET_STEP_RUN_ID ${LLMB_LSF_TARGET_STEP_RUN_ID}"
 echo "LLMB_LSF_TARGET_NAME ${LLMB_LSF_TARGET_NAME}"
 
 # --------------------------------------------------------------------------
+# Create the HF repo (idempotent).  `hf upload` cannot attach a
+# resource_group_id, so we POST to /api/repos/create ourselves with the
+# resolved id.  HTTP 409 means the repo already exists, which is fine.
+
+HF_VISIBILITY="public"
+if [[ "${HF_PRIVATE}" == "True" ]]; then
+    HF_VISIBILITY="private"
+fi
+
+if [[ -n "${HF_RESOURCE_GROUP_ID}" ]]; then
+    CREATE_BODY=$(printf '{"name":"%s","organization":"%s","type":"%s","visibility":"%s","resourceGroupId":"%s"}' \
+        "${HF_REPO_NAME}" "${HF_OWNER}" "${HF_TYPE}" "${HF_VISIBILITY}" "${HF_RESOURCE_GROUP_ID}")
+else
+    CREATE_BODY=$(printf '{"name":"%s","organization":"%s","type":"%s","visibility":"%s"}' \
+        "${HF_REPO_NAME}" "${HF_OWNER}" "${HF_TYPE}" "${HF_VISIBILITY}")
+fi
+
+echo "Creating HF repo ${HF_REPO} (resource_group_id=${HF_RESOURCE_GROUP_ID:-<none>})"
+CREATE_RESP=$(mktemp)
+HTTP_CODE=$(curl -sS -o "${CREATE_RESP}" -w "%{http_code}" \
+    -X POST \
+    -H "Authorization: Bearer ${HF_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "${CREATE_BODY}" \
+    https://huggingface.co/api/repos/create)
+
+if [[ "${HTTP_CODE}" != "200" && "${HTTP_CODE}" != "409" ]]; then
+    echo "HF create_repo failed: HTTP ${HTTP_CODE}"
+    cat "${CREATE_RESP}"
+    rm -f "${CREATE_RESP}"
+    exit 1
+fi
+rm -f "${CREATE_RESP}"
+
+# --------------------------------------------------------------------------
 
 echo "Pushing HF URI: ${HF_URI} from path ${HF_SOURCE}"
 
@@ -54,8 +93,13 @@ if [[ "${HF_PRIVATE}" == "True" ]]; then
     PRIVATE_FLAG="--private"
 fi
 
-echo huggingface-cli upload "${HF_REPO}" "${HF_SOURCE}" ${REVISION_FLAG} ${PRIVATE_FLAG}
-huggingface-cli upload "${HF_REPO}" "${HF_SOURCE}" ${REVISION_FLAG} ${PRIVATE_FLAG}
+REPO_TYPE_FLAG=""
+if [[ -n "${HF_TYPE}" ]]; then
+    REPO_TYPE_FLAG="--repo-type ${HF_TYPE}"
+fi
+
+echo hf upload "${HF_REPO}" "${HF_SOURCE}" ${REVISION_FLAG} ${PRIVATE_FLAG} ${REPO_TYPE_FLAG}
+hf upload "${HF_REPO}" "${HF_SOURCE}" ${REVISION_FLAG} ${PRIVATE_FLAG} ${REPO_TYPE_FLAG}
 
 # --------------------------------------------------------------------------
 

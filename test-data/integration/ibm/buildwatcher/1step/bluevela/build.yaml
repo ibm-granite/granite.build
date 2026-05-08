@@ -5,10 +5,12 @@ granite.build:
       environment_uri: space://environments/bluevela
       inputs:
         seed_data:
-          uri: lh://staging/granite_dot_build.public/tables/maximo_digit_input1
+          #uri: lh://staging/granite_dot_build.public/tables/maximo_digit_input1
+          uri: hf:///datasets/ibm-research/vira-intents-live
       outputs:
         download_file:
-          uri: lh://staging/granite_dot_build.public/tables/test_dl_step_data_{{ binding.path | short_hash }}
+          #uri: lh://staging/granite_dot_build.public/tables/test_dl_step_data_{{ binding.path | short_hash }}
+          uri: hf://huggingface.co/datasets/ibm-research/test-output1_{{ binding.path | short_hash }}
       steps:
         - step_uri: space://steps/download 
           config:

@@ -258,6 +258,23 @@ class HfURI(URI):
         """Return the HF resource type if encoded in the URI."""
         return self._parts().hf_type
 
+    @staticmethod
+    def space_name_to_resource_group_name(space_name: Optional[str]) -> str:
+        """Return the HF resource group name derived from a GB space name.
+
+        By convention, GB space names are prefixed with ``_GB_RG_SPACE_NAME_PREFIX``
+        to form the resource group name used in HuggingFace Enterprise.
+
+        Args:
+            space_name: The GB space name to convert.
+
+        Returns:
+            The corresponding HF resource group name.
+        """
+        if not space_name:
+            return ""
+        return f"{_GB_RG_SPACE_NAME_PREFIX}{space_name}"
+
     def get_artifact_type(self) -> ArtifactType:
         """Return the artifact type based on the HF resource type encoded in the URI.
 
@@ -502,6 +519,7 @@ class HfURI(URI):
         uri_str: str,
         source_path: str,
         private: bool = True,
+        resource_group_id: Optional[str] = None,
         resource_group_name: Optional[str] = None,
         space_name: Optional[str] = None,
         timeout_seconds: int = 3600,
@@ -510,15 +528,22 @@ class HfURI(URI):
 
         Handles the push timeout via ``signal.SIGALRM`` so the process does not
         hang indefinitely if the HF API becomes unresponsive.  Intended as the
-        single entry point called from the hfpush builtin step script.
+        single entry point called from the hfpush builtin step script.  Accepts
+        any combination of ``resource_group_id``, ``resource_group_name``, and
+        ``space_name`` for backward compatibility with older helm templates;
+        resolution (and consistency verification when more than one is
+        provided) happens inside :meth:`HfURI.push`.
 
         Args:
             uri_str: HF URI string to push to (e.g. ``hf:///owner/repo``).
             source_path: Local file or directory path to upload.
             private: Whether to create a private repo/bucket if it does not exist.
-            resource_group_name: Enterprise resource group name; mutually exclusive
-                with ``space_name``.
-            space_name: GB space name; mutually exclusive with ``resource_group_name``.
+            resource_group_id: Pre-resolved HF Enterprise resource group id.
+            resource_group_name: HF Enterprise resource group name.  Resolved
+                to an id via the HF API when ``resource_group_id`` is not
+                provided.
+            space_name: GB space name.  Converted to a resource group name
+                (``"gbspace-<space>"``) and then resolved to an id.
             timeout_seconds: Seconds before the push is aborted. Defaults to 3600.
 
         Returns:
@@ -530,6 +555,7 @@ class HfURI(URI):
             raise TimeoutError(f"HF push timed out after {timeout_seconds} seconds")
 
         # Helm templates pass unset values as empty strings via `default ""`.
+        resource_group_id = resource_group_id or None
         resource_group_name = resource_group_name or None
         space_name = space_name or None
 
@@ -540,6 +566,7 @@ class HfURI(URI):
             uri.push(
                 Path(source_path),
                 private=private,
+                resource_group_id=resource_group_id,
                 resource_group_name=resource_group_name,
                 space_name=space_name,
             )
@@ -664,6 +691,78 @@ class HfURI(URI):
         except Exception as e:
             logger.warning("Could not clean HF cache for %s: %s", repo_id, e)
 
+    def resolve_resource_group_id(
+        self: Self,
+        token: Optional[str],
+        resource_group_id: Optional[str] = None,
+        resource_group_name: Optional[str] = None,
+        space_name: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve an HF Enterprise resource group id from id, name, or space.
+
+        Handles the full ``space_name -> resource_group_name -> resource_group_id``
+        flow in one place.  Any combination of inputs is accepted as long as
+        they agree:
+
+        * If ``resource_group_id`` is given with no name or space, it is
+          returned as-is (no API call).
+        * If ``resource_group_name`` and/or ``space_name`` are given (without
+          ``resource_group_id``), the name is resolved via the HF API.
+        * If ``resource_group_id`` is given *and* a name/space is also given,
+          the name/space is resolved and the result is verified to match the
+          explicit id; a ``ValueError`` is raised on mismatch.
+        * If both ``resource_group_name`` and ``space_name`` are given, the
+          name derived from ``space_name`` must equal the explicit name.
+
+        Args:
+            token: HF auth token used to build the temporary ``HfApi``.  May be
+                ``None`` for anonymous lookups, though Enterprise resource
+                groups typically require authentication.
+            resource_group_id: Explicit resource group id (e.g. from
+                build.yaml ``store_push.config.hf.resource_group_id``).
+            resource_group_name: Explicit resource group name.
+            space_name: GB space name; converted to a resource group name via
+                :meth:`space_name_to_resource_group_name`.
+
+        Returns:
+            The resolved resource group id, or ``None`` when no inputs were
+            supplied.
+
+        Raises:
+            ValueError: If any of the provided inputs disagree, or if name/space
+                resolution fails.
+        """
+        if not resource_group_id and not resource_group_name and not space_name:
+            return None
+        derived_name = (
+            self.space_name_to_resource_group_name(space_name) if space_name else None
+        )
+        if resource_group_name and derived_name and derived_name != resource_group_name:
+            raise ValueError(
+                f"space-derived resource group name '{derived_name}' does not "
+                f"match resource group name '{resource_group_name}'"
+            )
+        effective_name = resource_group_name or derived_name
+        if effective_name is None:
+            # Only resource_group_id was supplied; trust it.
+            return resource_group_id
+        p = self._parts()
+        endpoint = f"https://{p.host}" if p.host != HF_HOST else None
+        api = HfApi(endpoint=endpoint, token=token)
+        resolved_id = self._resolve_resource_group_id(api, p.owner, effective_name)
+        if not resolved_id:
+            raise ValueError(
+                f"Could not resolve resource group id for '{effective_name}' "
+                f"in organization '{p.owner}'"
+            )
+        if resource_group_id and resource_group_id != resolved_id:
+            raise ValueError(
+                f"resource group id '{resource_group_id}' does not match the "
+                f"id '{resolved_id}' resolved from '{effective_name}' in "
+                f"organization '{p.owner}'"
+            )
+        return resolved_id
+
     def _resolve_resource_group_id(
         self, api: HfApi, organization: str, name: str
     ) -> Optional[str]:
@@ -722,12 +821,13 @@ class HfURI(URI):
             src: Local path to a file or directory to upload.
             commit_message: Commit message attached to the upload (repos only).
             private: Whether to create a private repo/bucket (if creating).
-            resource_group_id: Optional resource group ID for Enterprise access control.
-            resource_group_name: Optional resource group name; resolved to an ID via
-                the HF API if ``resource_group_id`` is not provided.
-            space_name: only one of this or resource_group_* may be provided.
-                If provided, it is assumed to be g.b space name and by convention
-                we will prepend 'gbspace_' for alignment with HF GB resource group naming.
+            resource_group_id: Optional resource group ID for Enterprise
+                access control.  May be combined with ``resource_group_name``
+                or ``space_name`` as long as they agree — see
+                :meth:`resolve_resource_group_id`.
+            resource_group_name: Optional resource group name; resolved to an
+                ID via the HF API.
+            space_name: GB space name used to derive the resource group name.
 
         Raises:
             ValueError: If ``src`` does not exist.
@@ -744,24 +844,12 @@ class HfURI(URI):
         if not src.exists():
             raise ValueError(f"{src} does not exist")
 
-        param_clash = False
-        if resource_group_id is None:
-            if resource_group_name is None:
-                if space_name:
-                    resource_group_name = f"{_GB_RG_SPACE_NAME_PREFIX}{space_name}"
-            elif space_name:
-                param_clash = True
-            if resource_group_name:
-                resource_group_id = self._resolve_resource_group_id(
-                    api, p.owner, resource_group_name
-                )
-        elif resource_group_name or space_name:
-            param_clash = True
-
-        if param_clash:
-            raise ValueError(
-                "Only one of resource_group_id, resource_group_name and space_name are allowed"
-            )
+        resource_group_id = self.resolve_resource_group_id(
+            token=self._resolve_token(),
+            resource_group_id=resource_group_id,
+            resource_group_name=resource_group_name,
+            space_name=space_name,
+        )
 
         if p.hf_type == HfType.BUCKET:
             bucket_id = repo_id
