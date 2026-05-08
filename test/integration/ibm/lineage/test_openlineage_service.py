@@ -46,6 +46,12 @@ class MockLineageService(LineageService):
         run_id = event["run"]["runId"]
         self.events[run_id] = event
 
+    def count_events_by_tags(
+        self, tags: List[str], required_tags: Optional[List[str]] = None
+    ) -> int:
+        total, _ = self.search_lineage_by_tags(tags, limit=len(self.events), offset=0)
+        return total
+
     def search_lineage_by_tags(
         self, tags: List[str], limit: int = 10, offset: int = 0
     ) -> Tuple[int, List[Dict]]:
