@@ -101,7 +101,7 @@ _GBSERVER_ENVIRONMENT_CONFIGS = {
                 "GBSERVER_FEATURE_LAKEHOUSE_SPACE_MEMBERSHIP", False
             ),
             "lakehouse_lineage": getenv_boolean(
-                "GBSERVER_FEATURE_LAKEHOUSE_LINEAGE", True
+                "GBSERVER_FEATURE_LAKEHOUSE_LINEAGE", False
             ),
         },
     ),
@@ -122,7 +122,7 @@ _GBSERVER_ENVIRONMENT_CONFIGS = {
                 "GBSERVER_FEATURE_LAKEHOUSE_SPACE_MEMBERSHIP", False
             ),
             "lakehouse_lineage": getenv_boolean(
-                "GBSERVER_FEATURE_LAKEHOUSE_LINEAGE", True
+                "GBSERVER_FEATURE_LAKEHOUSE_LINEAGE", False
             ),
         },
     ),
@@ -164,7 +164,7 @@ _GBSERVER_ENVIRONMENT_CONFIGS = {
                 "GBSERVER_FEATURE_LAKEHOUSE_SPACE_MEMBERSHIP", False
             ),
             "lakehouse_lineage": getenv_boolean(
-                "GBSERVER_FEATURE_LAKEHOUSE_LINEAGE", True
+                "GBSERVER_FEATURE_LAKEHOUSE_LINEAGE", False
             ),
         },
     ),
