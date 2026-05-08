@@ -32,6 +32,12 @@ class LineageService(ABC):
         pass
 
     @abstractmethod
+    def count_events_by_tags(
+        self, tags: List[str], required_tags: Optional[List[str]] = None
+    ) -> int:
+        pass
+
+    @abstractmethod
     def get_artifact_graph(
         self,
         artifact_name: Optional[str] = None,
