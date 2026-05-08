@@ -49,7 +49,7 @@ from gbserver.monitoring.lsf_bsub_monitor import LSFBsubMonitor
 from gbserver.monitoring.streams.log_stream_base import LogStreamSource
 from gbserver.monitoring.streams.stream_factory import make_stream
 from gbserver.resilience.strategies.aspera_failure import AsperaRetryStrategy
-from gbserver.types.buildconfig import BuildTargetStepConfig
+from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
     EntityRunMetadata,
 )
@@ -1252,13 +1252,10 @@ class Lsf(Environment):
         )
         hf_metadata = Asset(uri=hfuri).get_metadata()
         logger.info("hf_metadata: %s", hf_metadata)
-        hfpull_config = {
-            "path": str(binding_path),
-            "uri": str(hfuri),
-            "owner": hfuri.get_owner(),
-            "repo": hfuri.get_repo(),
-            "revision": hfuri.get_revision(),
-        }
+        hfpull_config = Hfstore.build_hfpull_step_config(
+            hfuri=hfuri,
+            binding_path=str(binding_path),
+        )
         logger.info("hfpull_config: %s", hfpull_config)
         hfpull_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI
         if (
@@ -1290,9 +1287,15 @@ class Lsf(Environment):
         storepush_config: Optional[StorePush] = None,
         uri: Optional[Union[str, URI]] = None,
         assetstore: Optional[Assetstore] = None,
+        output_config: Optional[BuildTargetOutputConfig] = None,
         **kwargs: Dict,
     ) -> BuildTargetStepConfig:
         """Push an artifact from LSF cluster storage to Hugging Face Hub.
+
+        Pre-creates the target HF repo server-side (with the correct
+        resource_group_id resolved from the space name) so the LSF compute
+        node's ``huggingface-cli upload`` only has to push files to a repo
+        that already exists.
 
         Args:
             binding: Dict with a 'path' key pointing to the artifact on cluster.
@@ -1300,10 +1303,12 @@ class Lsf(Environment):
             storepush_config: Environment-level push configuration.
             uri: Target HF URI string or object.
             assetstore: Hfstore instance.
+            output_config: Per-output config from build.yaml; ``space_name`` is
+                used to derive the HF Enterprise resource group.
         Returns:
             BuildTargetStepConfig for the hfpush step.
         Raises:
-            ValueError: If uri is empty.
+            ValueError: If uri is empty or the resource group cannot be resolved.
             AssertionError: If binding has no 'path'.
         """
         if uri is None or uri == "":
@@ -1321,23 +1326,38 @@ class Lsf(Environment):
         hf_metadata = Asset(uri=hfuri).get_metadata()
         logger.info("hf_metadata: %s", hf_metadata)
 
+        hf_resource_group_id = None
+        hf_resource_group_name = None
         hf_private = True
-        if (
-            storepush_config is not None
-            and storepush_config.config is not None
-            and "hf" in storepush_config.config
-        ):
-            hf_private = storepush_config.config["hf"].get("private", hf_private)
+        if output_config is not None and output_config.store_push is not None:
+            hf_cfg = output_config.store_push.config.get("hf", {})
+            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
+            hf_resource_group_name = hf_cfg.get(
+                "resource_group_name", hf_resource_group_name
+            )
+            hf_private = hf_cfg.get("private", hf_private)
 
-        hfpush_config = {
-            "path": binding_path,
-            "uri": str(hfuri),
-            "binding_id": binding_id,
-            "owner": hfuri.get_owner(),
-            "repo": hfuri.get_repo(),
-            "revision": hfuri.get_revision(),
-            "private": hf_private,
-        }
+        space_name = output_config.space_name if output_config else None
+
+        assert isinstance(
+            assetstore, Hfstore
+        ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
+        if hf_resource_group_id:
+            resource_group_id: Optional[str] = hf_resource_group_id
+        else:
+            resource_group_id = hfuri.resolve_resource_group_id(
+                token=assetstore._resolve_token(hfuri),
+                resource_group_name=hf_resource_group_name,
+                space_name=space_name,
+            )
+
+        hfpush_config = Hfstore.build_hfpush_step_config(
+            hfuri=hfuri,
+            binding_path=binding_path,
+            binding_id=binding_id or "",
+            hf_private=hf_private,
+            hf_resource_group_id=resource_group_id,
+        )
         logger.info("hfpush_config: %s", hfpush_config)
         hfpush_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI
         if (

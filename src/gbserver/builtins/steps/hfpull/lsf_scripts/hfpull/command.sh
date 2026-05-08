@@ -11,6 +11,7 @@ HF_DEST='{{ hfp.path }}'
 HF_URI='{{ hfp.uri }}'
 HF_REPO='{{ hfp.owner }}/{{ hfp.repo }}'
 HF_REVISION='{{ hfp.revision }}'
+HF_TYPE='{{ hfp.hf.type }}'
 
 if [[ -z "$HF_TOKEN" ]]; then
     echo 'HF_TOKEN is not set'
@@ -47,8 +48,13 @@ if [[ -n "${HF_REVISION}" ]]; then
     REVISION_FLAG="--revision ${HF_REVISION}"
 fi
 
-echo huggingface-cli download "${HF_REPO}" --local-dir "${HF_DEST}" ${REVISION_FLAG}
-huggingface-cli download "${HF_REPO}" --local-dir "${HF_DEST}" ${REVISION_FLAG}
+REPO_TYPE_FLAG=""
+if [[ -n "${HF_TYPE}" ]]; then
+    REPO_TYPE_FLAG="--repo-type ${HF_TYPE}"
+fi
+
+echo hf download "${HF_REPO}" --local-dir "${HF_DEST}" ${REVISION_FLAG} ${REPO_TYPE_FLAG}
+hf download "${HF_REPO}" --local-dir "${HF_DEST}" ${REVISION_FLAG} ${REPO_TYPE_FLAG}
 
 # --------------------------------------------------------------------------
 

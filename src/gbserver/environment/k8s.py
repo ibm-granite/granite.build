@@ -2108,13 +2108,10 @@ class K8s(Environment):
                 / hf_uri.hash()
             )
             # binding_path.mkdir(parents=True, exist_ok=True)
-            hfpull_config = {
-                "path": str(binding_path),
-                "uri": str(hf_uri),
-                "owner": hf_uri.get_owner(),
-                "repo": hf_uri.get_repo(),
-                "revision": hf_uri.get_revision(),
-            }
+            hfpull_config = Hfstore.build_hfpull_step_config(
+                hfuri=hf_uri,
+                binding_path=str(binding_path),
+            )
 
             # Binding config for container
             binding_config = {BINDING_KEY: {"path": str(Path(binding_path))}}
@@ -2181,16 +2178,28 @@ class K8s(Environment):
         # resource_group_name is configured (ignored if resource_group_name is set).
         space_name = output_config.space_name if output_config else None
 
-        # Resolve resource_group_name with explicit priority:
-        #   build.yaml store_push.config.hf
+        # Resolve hf fields from build.yaml store_push (highest priority)
+        hf_resource_group_id = None
         hf_resource_group_name = None
         hf_private = True
         if output_config is not None and output_config.store_push is not None:
-            hf_resource_group_name = output_config.store_push.config.get("hf", {}).get(
+            hf_cfg = output_config.store_push.config.get("hf", {})
+            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
+            hf_resource_group_name = hf_cfg.get(
                 "resource_group_name", hf_resource_group_name
             )
-            hf_private = output_config.store_push.config.get("hf", {}).get(
-                "private", hf_private
+            hf_private = hf_cfg.get("private", hf_private)
+
+        assert isinstance(
+            assetstore, Hfstore
+        ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
+        if hf_resource_group_id:
+            resource_group_id: Optional[str] = hf_resource_group_id
+        else:
+            resource_group_id = hfuri.resolve_resource_group_id(
+                token=assetstore._resolve_token(hfuri),
+                resource_group_name=hf_resource_group_name,
+                space_name=space_name,
             )
 
         hfpush_config = Hfstore.build_hfpush_step_config(
@@ -2198,8 +2207,7 @@ class K8s(Environment):
             binding_path=binding_path,
             binding_id=binding_id or "",
             hf_private=hf_private,
-            hf_resource_group_name=hf_resource_group_name,
-            space_name=space_name,
+            hf_resource_group_id=resource_group_id,
         )
         # Apply remaining hf fields from environment-level storepush_config
         if (
