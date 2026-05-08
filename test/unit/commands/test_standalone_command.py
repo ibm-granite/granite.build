@@ -27,8 +27,8 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "samples"
-STANDALONE_SPACE_DIR = SAMPLES_DIR / "standalone" / "standalone-quickstart"
+TEST_DATA_DIR = Path(__file__).parent.parent.parent.parent / "test-data"
+STANDALONE_SPACE_DIR = TEST_DATA_DIR / "e2e" / "standalone" / "standalone-quickstart"
 
 
 def _find_free_port() -> int:
