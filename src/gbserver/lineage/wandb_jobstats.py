@@ -275,6 +275,16 @@ class WandBLineageStore(ILineageStore):
                     "inputs": inputs,
                     "outputs": outputs,
                 }
+                # Give each output-artifact event its own wandb run so
+                # history rows are not collapsed when multiple events share
+                # a single resumed run. Keeps counts aligned with the number
+                # of output artifacts. The job_id in job_details still points
+                # back to the logical target (targetrun.uuid).
+                job_id = base_event["run"]["facets"]["job_details"]["job_id"]
+                event["run"] = {
+                    **base_event["run"],
+                    "runId": f"{job_id}-{output_uuid}",
+                }
                 target_events.append(event)
             events_list.extend(target_events)
             events_dict[target_artifact_name] = target_events
@@ -388,9 +398,11 @@ class WandBLineageStore(ILineageStore):
     def count_release_ids(
         self, release_id: str, target_id: Optional[str] = None
     ) -> int:
-
+        # One wandb run is created per (target, output artifact), so counting
+        # runs tagged with this build_id (and optionally target_id) directly
+        # yields the number of jobstats records without scanning run history.
         required = [f"target_id={target_id}"] if target_id else None
-        return self._service.count_events_by_tags(
+        return self._service.count_runs_by_tags(
             [f"build_id={release_id}"], required_tags=required
         )
 
@@ -465,6 +477,7 @@ class WandBLineageStore(ILineageStore):
                         "job_started_at": event_time,
                         "job_completed_at": event_time,
                         "release_id": artifact.uuid,
+                        "owner": artifact.username,
                         "job_output_stats": {},
                     },
                 },
