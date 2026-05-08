@@ -96,3 +96,47 @@ class Hfstore(Assetstore):
         if token is not None and token.strip() == "":
             token = None
         return token
+
+    @staticmethod
+    def build_hfpush_step_config(
+        hfuri: HfURI,
+        binding_path: str,
+        binding_id: str,
+        hf_private: bool,
+        hf_resource_group_name: Optional[str],
+        space_name: Optional[str],
+    ) -> dict:
+        """Build the hfpush_config dict with all keys required by step templates.
+
+        Both the LSF command.sh and Helm _helpers.tpl templates reference flat keys
+        (owner, repo, revision, private, binding_id) as well as nested hf.* keys.
+        This function produces a single dict that satisfies all template variants.
+
+        Args:
+            hfuri: Parsed HuggingFace URI.
+            binding_path: Local path to the artifact being pushed.
+            binding_id: Output binding name for artifact tracking.
+            hf_private: Whether the repo should be private.
+            hf_resource_group_name: Optional HF Enterprise resource group.
+            space_name: Space name used for resource group derivation.
+
+        Returns:
+            Dict suitable for passing as config={"hfpush_config": ...} to
+            BuildTargetStepConfig.
+        """
+        hf_type = hfuri.get_hf_type() or "model"
+        return {
+            "path": binding_path,
+            "uri": str(hfuri),
+            "owner": hfuri.get_owner(),
+            "repo": hfuri.get_repo(),
+            "revision": hfuri.get_revision(),
+            "private": hf_private,
+            "binding_id": binding_id,
+            "space_name": space_name,
+            "hf": {
+                "type": hf_type,
+                "private": hf_private,
+                "resource_group_name": hf_resource_group_name,
+            },
+        }

@@ -2177,9 +2177,6 @@ class K8s(Environment):
         binding_path = binding["path"]
         logger.info("binding_path: %s", binding_path)
 
-        # Determine repo type from URI (defaults to "model" if not specified)
-        hf_type = hfuri.get_hf_type() or "model"
-
         # space_name is used to derive the HF resource group when no explicit
         # resource_group_name is configured (ignored if resource_group_name is set).
         space_name = output_config.space_name if output_config else None
@@ -2196,16 +2193,14 @@ class K8s(Environment):
                 "private", hf_private
             )
 
-        hfpush_config = {
-            "path": binding_path,
-            "uri": str(hfuri),
-            "space_name": space_name,
-            "hf": {
-                "type": hf_type,
-                "private": hf_private,
-                "resource_group_name": hf_resource_group_name,
-            },
-        }
+        hfpush_config = Hfstore.build_hfpush_step_config(
+            hfuri=hfuri,
+            binding_path=binding_path,
+            binding_id=binding_id or "",
+            hf_private=hf_private,
+            hf_resource_group_name=hf_resource_group_name,
+            space_name=space_name,
+        )
         # Apply remaining hf fields from environment-level storepush_config
         if (
             storepush_config is not None
