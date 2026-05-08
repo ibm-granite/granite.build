@@ -207,6 +207,12 @@ class Lsf(Environment):
                 "login_node_rotation is deprecated (we now always rotate through login nodes)"
             )
 
+        self.copy_method: str = authentication.get("copy_method", "scp")
+        assert self.copy_method in (
+            "scp",
+            "rsync",
+        ), f"invalid copy_method: {self.copy_method} (expected 'scp' or 'rsync')"
+
         self.ssh_timeout = int(authentication.get("ssh_timeout", "5"))
         self.node_search_lock = asyncio.Lock()
         self.unreachable_ssh_nodes = []  # type: ignore[var-annotated]
@@ -531,19 +537,26 @@ class Lsf(Environment):
             await ssh_tunnel.run_remote_with_retries(
                 f"mkdir -p {final_asset_dir} || true"
             )
-            # Copy assets using rsync (local-to-remote transfer)
-            rsync_cmd = await self._create_rsync_cmd(
-                launch_id=launch_id,
-                src=str(asset_dir),
-                dest=str(final_asset_dir),
-            )
-            logger.info("rsync_cmd: %s", rsync_cmd)
+            # Copy assets to remote host (local-to-remote transfer)
+            if self.copy_method == "rsync":
+                copy_cmd = await self._create_rsync_cmd(
+                    launch_id=launch_id,
+                    src=str(asset_dir),
+                    dest=str(final_asset_dir),
+                )
+            else:
+                copy_cmd = await self._create_scp_cmd(
+                    launch_id=launch_id,
+                    src=str(asset_dir),
+                    dest=str(final_asset_dir),
+                )
+            logger.info("copy command (%s): %s", self.copy_method, copy_cmd)
             returncode, stdout, stderr = await ssh_tunnel.run_local_with_retries(
-                command=rsync_cmd,
+                command=copy_cmd,
                 launch_id=launch_id,
             )
             logger.info(
-                "rsync command returncode %s stdout %s stderr %s",
+                "copy command returncode %s stdout %s stderr %s",
                 returncode,
                 stdout,
                 stderr,
@@ -1359,21 +1372,44 @@ class Lsf(Environment):
 
         return ssh_cmd
 
-    # def _create_scp_cmd(
-    #     self: Self, launch_id: str, src: str, dest: str, add_slashes: bool = True
-    # ) -> List[str]:
-    #     scp_cmd = ["scp", "-r"]
-    #     key_file_path = self._get_ssh_key(launch_id=launch_id)
-    #     if key_file_path:
-    #         scp_cmd.extend(["-i", key_file_path])
-    #     if add_slashes:
-    #         src = src if src.endswith("/") else src + "/"
-    #         dest = dest if dest.endswith("/") else dest + "/"
-    #         logger.info("after adding slashes src: %s dest: %s", src, dest)
-    #     scp_cmd.append(src)
-    #     ssh_host = self._get_login_ssh_host()
-    #     scp_cmd.append(f"{ssh_host}:{dest}")
-    #     return scp_cmd
+    async def _create_scp_cmd(
+        self: Self, launch_id: str, src: str, dest: str, add_slashes: bool = True
+    ) -> List[str]:
+        """Create an SCP command for copying assets to the remote LSF node.
+
+        Args:
+            launch_id: The launch identifier.
+            src: Source directory path.
+            dest: Destination directory path on the remote host.
+            add_slashes: Whether to ensure trailing slashes on src/dest.
+
+        Returns:
+            List of command tokens for the SCP invocation.
+        """
+        scp_cmd = ["scp", "-r"]
+        key_file_path = self.key_file_path
+        assert key_file_path, "SSH key file path is not set"
+        scp_cmd.extend(["-i", key_file_path])
+        scp_cmd.extend(self.ssh_no_verification_flags())
+        if self.use_ssh:
+            ssh_tunnel = self._ssh_tunnel
+            assert ssh_tunnel
+            ssh_dest = self.__get_ssh_destination(node="localhost")
+            local_port = ssh_tunnel.get_local_port(ssh_tunnel.host, self.ssh_port)
+            assert (
+                local_port is not None
+            ), "SSH tunnel has no local port forward for SSH"
+            scp_cmd.extend(["-P", str(local_port)])
+        else:
+            ssh_dest = await self._get_reachable_ssh_destination()
+        if add_slashes:
+            # SCP uses /. to copy directory contents (rsync uses trailing /)
+            src = src.rstrip("/") + "/."
+            dest = dest if dest.endswith("/") else dest + "/"
+            logger.info("after adding slashes src: %s dest: %s", src, dest)
+        scp_cmd.append(src)
+        scp_cmd.append(f"{ssh_dest}:{dest}")
+        return scp_cmd
 
     async def _create_rsync_cmd(
         self: Self, launch_id: str, src: str, dest: str, add_slashes: bool = True
