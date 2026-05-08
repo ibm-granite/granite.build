@@ -1326,9 +1326,18 @@ class Lsf(Environment):
         hf_metadata = Asset(uri=hfuri).get_metadata()
         logger.info("hf_metadata: %s", hf_metadata)
 
-        hf_resource_group_id = None
-        hf_resource_group_name = None
+        hf_resource_group_id: Optional[str] = None
+        hf_resource_group_name: Optional[str] = None
         hf_private = True
+        # Environment-level storepush_config (lower priority).
+        if storepush_config is not None and storepush_config.config is not None:
+            hf_cfg = storepush_config.config.get("hf", {})
+            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
+            hf_resource_group_name = hf_cfg.get(
+                "resource_group_name", hf_resource_group_name
+            )
+            hf_private = hf_cfg.get("private", hf_private)
+        # build.yaml output store_push (higher priority, overrides).
         if output_config is not None and output_config.store_push is not None:
             hf_cfg = output_config.store_push.config.get("hf", {})
             hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)

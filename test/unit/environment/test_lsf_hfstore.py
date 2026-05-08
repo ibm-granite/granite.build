@@ -160,6 +160,10 @@ class TestPushassetHfstore:
         self, lsf_env, mock_hfuri, mock_hf_metadata
     ):
         """pushasset_hfstore returns BuildTargetStepConfig with hfpush_config."""
+        from gbserver.asset.hfstore import Hfstore
+
+        assetstore = MagicMock(spec=Hfstore)
+        mock_hfuri.resolve_resource_group_id.return_value = None
         with (
             patch("gbserver.environment.lsf.Asset") as mock_asset_cls,
             patch.object(
@@ -173,6 +177,7 @@ class TestPushassetHfstore:
                 binding={"path": "/workspace/output/model"},
                 binding_id="output_model",
                 uri=mock_hfuri,
+                assetstore=assetstore,
             )
 
         assert isinstance(step_config, BuildTargetStepConfig)
@@ -213,6 +218,10 @@ class TestPushassetHfstore:
         self, lsf_env, mock_hfuri, mock_hf_metadata
     ):
         """pushasset_hfstore picks up private=False from storepush_config."""
+        from gbserver.asset.hfstore import Hfstore
+
+        assetstore = MagicMock(spec=Hfstore)
+        mock_hfuri.resolve_resource_group_id.return_value = None
         storepush_config = MagicMock()
         storepush_config.config = {"hf": {"private": False}}
 
@@ -229,6 +238,7 @@ class TestPushassetHfstore:
                 binding={"path": "/workspace/output/model"},
                 binding_id="output_model",
                 uri=mock_hfuri,
+                assetstore=assetstore,
                 storepush_config=storepush_config,
             )
 
