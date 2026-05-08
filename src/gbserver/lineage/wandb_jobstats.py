@@ -114,6 +114,7 @@ def _artifact_to_lineage_entry(
         "artifact_id": artifact.uuid,
         "artifact_uri": artifact.uri,
         "artifact_type": artifact_type.name,
+        "target_artifact_reference": target_artifact_reference,
         "gb-artifact-id": artifact.uuid,
         "gb-artifact-uri": artifact.uri,
         "gb-build-id": artifact.created_by_build_id,

@@ -41,6 +41,20 @@ from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+_TAG_CONFIG_KEYS = ("build_id", "target_id", "username", "space_name")
+_PASSTHROUGH_FACET_KEYS = ("job_input_params", "execution_stats")
+_JOB_DETAIL_KEYS = (
+    "job_id",
+    "job_type",
+    "category",
+    "job_status",
+    "job_started_at",
+    "job_completed_at",
+    "release_id",
+    "owner",
+    "job_output_stats",
+)
+
 
 class WandBLineageService(LineageService):
 
@@ -111,7 +125,7 @@ class WandBLineageService(LineageService):
             job_facets = event.get("job", {}).get("facets", {})
             namespace = event.get("job", {}).get("namespace", "")
 
-            config_update = {
+            config_update: Dict[str, Any] = {
                 "job_name": job_name,
                 "job_namespace": namespace,
                 "event_type": event_type,
@@ -120,47 +134,26 @@ class WandBLineageService(LineageService):
             }
 
             tags = run_facets.get("tags", {})
-            if tags:
-                config_update["build_id"] = tags.get("build_id", "")
-                config_update["target_id"] = tags.get("target_id", "")
-                config_update["username"] = tags.get("username", "")
-                config_update["space_name"] = tags.get("space_name", "")
-                for k, v in tags.items():
-                    if k not in config_update:
-                        config_update[k] = v
+            for key in _TAG_CONFIG_KEYS:
+                if key in tags:
+                    config_update[key] = tags[key]
 
             source_code = run_facets.get("source_code", {})
-            if source_code:
-                config_update["source_code_url"] = source_code.get("url", "")
+            if source_code.get("url"):
+                config_update["source_code_url"] = source_code["url"]
 
-            job_input_params = run_facets.get("job_input_params")
-            if job_input_params is not None:
-                config_update["job_input_params"] = job_input_params
-
-            execution_stats = run_facets.get("execution_stats")
-            if execution_stats is not None:
-                config_update["execution_stats"] = execution_stats
+            for key in _PASSTHROUGH_FACET_KEYS:
+                if run_facets.get(key) is not None:
+                    config_update[key] = run_facets[key]
 
             job_details = run_facets.get("job_details", {})
-            if job_details:
-                config_update["job_id"] = job_details.get("job_id", "")
-                config_update["job_type"] = job_details.get("job_type", "")
-                config_update["category"] = job_details.get("category", "")
-                config_update["job_status"] = job_details.get("job_status", "")
-                config_update["job_started_at"] = job_details.get("job_started_at", "")
-                config_update["job_completed_at"] = job_details.get(
-                    "job_completed_at", ""
-                )
-                config_update["release_id"] = job_details.get("release_id", "")
-                config_update["owner"] = job_details.get("owner", "")
-                config_update["job_output_stats"] = job_details.get(
-                    "job_output_stats", {}
-                )
+            for key in _JOB_DETAIL_KEYS:
+                if key in job_details:
+                    config_update[key] = job_details[key]
 
-            if "documentation" in job_facets:
-                doc = job_facets["documentation"]
-                if isinstance(doc, dict) and "description" in doc:
-                    config_update["description"] = doc["description"]
+            doc = job_facets.get("documentation", {})
+            if isinstance(doc, dict) and doc.get("description"):
+                config_update["description"] = doc["description"]
 
             run.config.update(config_update)
 
@@ -238,13 +231,9 @@ class WandBLineageService(LineageService):
         if tags_facet:
             run_facets["tags"] = tags_facet
 
-        job_input_params = config.get("job_input_params")
-        if job_input_params is not None:
-            run_facets["job_input_params"] = job_input_params
-
-        execution_stats = config.get("execution_stats")
-        if execution_stats is not None:
-            run_facets["execution_stats"] = execution_stats
+        for key in _PASSTHROUGH_FACET_KEYS:
+            if config.get(key) is not None:
+                run_facets[key] = config[key]
 
         source_code_url = config.get("source_code_url")
         if source_code_url is not None:
@@ -254,21 +243,7 @@ class WandBLineageService(LineageService):
                 "path": "",
             }
 
-        job_details: Dict[str, Any] = {}
-        for key in (
-            "job_id",
-            "job_type",
-            "category",
-            "job_status",
-            "job_started_at",
-            "job_completed_at",
-            "release_id",
-            "owner",
-        ):
-            if key in config:
-                job_details[key] = config.get(key, "")
-        if "job_output_stats" in config:
-            job_details["job_output_stats"] = config.get("job_output_stats", {})
+        job_details = {k: config[k] for k in _JOB_DETAIL_KEYS if k in config}
         if job_details:
             run_facets["job_details"] = job_details
 
