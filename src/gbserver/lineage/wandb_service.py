@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
-from typing import Dict, List, Literal, Optional, Tuple, cast
+from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
 import wandb
 from huggingface_hub import dataset_info, model_info
@@ -57,6 +57,7 @@ class WandBLineageService(LineageService):
             entity=GBSERVER_WANDB_ENTITY,
             id=run_id,
             name=job_name,
+            resume="allow",
         )
 
         self._runs[run_id] = run
@@ -220,8 +221,9 @@ class WandBLineageService(LineageService):
             #     continue
             outputs.append(self._artifact_to_openlineage_dataset(artifact))
 
-        job_name = run.config.get("job_name", run.name or "unknown")
-        event_type = run.config.get("event_type", "OTHER")
+        config = run.config or {}
+        job_name = config.get("job_name", run.name or "unknown")
+        event_type = config.get("event_type", "OTHER")
         event_time = run.summary.get("last_event_time", run.createdAt)
         namespace = f"{run.entity}/{run.project}"
 
@@ -232,7 +234,43 @@ class WandBLineageService(LineageService):
                     key, value = tag.split("=", 1)
                     tags_facet[key] = value
 
-        run_facets = {"tags": tags_facet} if tags_facet else {}
+        run_facets: Dict[str, Any] = {}
+        if tags_facet:
+            run_facets["tags"] = tags_facet
+
+        job_input_params = config.get("job_input_params")
+        if job_input_params is not None:
+            run_facets["job_input_params"] = job_input_params
+
+        execution_stats = config.get("execution_stats")
+        if execution_stats is not None:
+            run_facets["execution_stats"] = execution_stats
+
+        source_code_url = config.get("source_code_url")
+        if source_code_url is not None:
+            run_facets["source_code"] = {
+                "url": source_code_url,
+                "commit_hash": "",
+                "path": "",
+            }
+
+        job_details: Dict[str, Any] = {}
+        for key in (
+            "job_id",
+            "job_type",
+            "category",
+            "job_status",
+            "job_started_at",
+            "job_completed_at",
+            "release_id",
+            "owner",
+        ):
+            if key in config:
+                job_details[key] = config.get(key, "")
+        if "job_output_stats" in config:
+            job_details["job_output_stats"] = config.get("job_output_stats", {})
+        if job_details:
+            run_facets["job_details"] = job_details
 
         job_facets: Dict[str, Dict] = {}
         if run.notes:
@@ -629,6 +667,31 @@ class WandBLineageService(LineageService):
                                     "job_type": run_config.get("job_type", ""),
                                     "state": getattr(run, "state", None),
                                     "created_at": getattr(run, "createdAt", None),
+                                    "job_id": run_config.get("job_id", ""),
+                                    "job_status": run_config.get("job_status", ""),
+                                    "job_started_at": run_config.get(
+                                        "job_started_at", ""
+                                    ),
+                                    "job_completed_at": run_config.get(
+                                        "job_completed_at", ""
+                                    ),
+                                    "release_id": run_config.get("release_id", ""),
+                                    "category": run_config.get("category", ""),
+                                    "owner": run_config.get("owner", ""),
+                                    "source_code_details": {
+                                        "url": run_config.get("source_code_url", ""),
+                                        "commit_hash": "",
+                                        "path": "",
+                                    },
+                                    "job_input_params": run_config.get(
+                                        "job_input_params", {}
+                                    ),
+                                    "execution_stats": run_config.get(
+                                        "execution_stats", {}
+                                    ),
+                                    "job_output_stats": run_config.get(
+                                        "job_output_stats", {}
+                                    ),
                                 },
                                 "tags": run_tags,
                             }
@@ -699,6 +762,31 @@ class WandBLineageService(LineageService):
             return total
         except Exception as e:
             logger.error("Failed to count events by tags: %s", e)
+            return 0
+
+    def count_runs_by_tags(
+        self, tags: list, required_tags: Optional[list] = None
+    ) -> int:
+        try:
+            api = wandb.Api()
+            project_path = (
+                f"{GBSERVER_WANDB_ENTITY}/{GBSERVER_WANDB_PROJECT}"
+                if GBSERVER_WANDB_ENTITY
+                else GBSERVER_WANDB_PROJECT
+            )
+            runs = api.runs(
+                project_path,
+                filters={"tags": {"$in": tags}} if tags else {},
+            )
+            required = set(required_tags or [])
+            total = 0
+            for run in runs:
+                if required and not required.issubset(set(run.tags or [])):
+                    continue
+                total += 1
+            return total
+        except Exception as e:
+            logger.error("Failed to count runs by tags: %s", e)
             return 0
 
     def search_lineage_by_tags(

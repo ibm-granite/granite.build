@@ -143,6 +143,17 @@ class ArtifactRunEntry(BaseModel):
     tags: List[str] = Field(default_factory=list)
     inputs: List[LineageNodeRef] = Field(default_factory=list)
     outputs: List[LineageNodeRef] = Field(default_factory=list)
+    job_id: str = ""
+    job_status: str = ""
+    job_started_at: str = ""
+    job_completed_at: str = ""
+    release_id: str = ""
+    category: str = ""
+    owner: str = ""
+    source_code_details: Dict[str, Any] = Field(default_factory=dict)
+    job_input_params: Dict[str, Any] = Field(default_factory=dict)
+    execution_stats: Dict[str, Any] = Field(default_factory=dict)
+    job_output_stats: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ArtifactGraphResponse(BaseModel):
