@@ -1,0 +1,14 @@
+# S3-compatible object storage (AWS S3, MinIO, etc.)
+# The Cosstore backend handles both s3:// and cos:// URIs.
+#
+# Required secrets (set via environment variables or space secret manager):
+#   COS_ACCESS_KEY_ID      — AWS access key ID
+#   COS_SECRET_ACCESS_KEY  — AWS secret access key
+#
+# Example URI: s3://my-bucket/path/to/artifact
+base_uri: "s3://"
+config:
+  cos_access_key_id_secret_name: COS_ACCESS_KEY_ID
+  cos_secret_access_key_secret_name: COS_SECRET_ACCESS_KEY
+  cos_endpoint: "s3.amazonaws.com"
+  cos_region: "us-east-1"

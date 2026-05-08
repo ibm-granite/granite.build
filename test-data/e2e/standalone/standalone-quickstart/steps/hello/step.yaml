@@ -1,0 +1,76 @@
+name: hello
+version: v1
+type: custom
+config: {}
+
+environment_configs:
+  Bash:
+    launchers:
+      hello:
+        type: nohup
+        monitors:
+          - log_monitor
+    monitors:
+      log_monitor:
+        type: log_monitor
+        config:
+          event_configs:
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"
+  Docker:
+    launchers:
+      hello:
+        type: docker
+        monitors:
+          - docker_log
+        config:
+          image: alpine:latest
+    monitors:
+      docker_log:
+        type: docker_log
+        config:
+          event_configs:
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"
+  Runpod:
+    launchers:
+      hello:
+        type: runpod
+        monitors:
+          - pod_status_monitor
+        config:
+          image: alpine:latest
+    monitors:
+      pod_status_monitor:
+        type: pod_status_monitor
+  Skypilot:
+    default_launcher: hello
+    launchers:
+      hello:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          resources:
+            cpus: "2+"
+            memory: "4+"
+          run: |
+            set -e
+            echo 'hello step start'
+            echo "Hello from gbserver standalone (SkyPilot)!"
+            echo "Running on: $(hostname)"
+            echo "Cloud: ${SKYPILOT_CLUSTER_NAME:-unknown}"
+            echo 'hello step end'
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 15

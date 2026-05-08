@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import Dict, List, Optional
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest

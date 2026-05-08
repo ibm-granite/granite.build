@@ -18,7 +18,6 @@ import pytest
 from pydantic import ValidationError
 
 from gbserver.lineage.openlineage_models import (
-    ArtifactLineageRequest,
     Dataset,
     Job,
     LineageEvent,
@@ -94,19 +93,6 @@ class TestTagSearchRequest:
         assert req.tags == ["env=prod", "team=ml"]
         assert req.limit == 50
         assert req.offset == 20
-
-
-class TestArtifactLineageRequest:
-    def test_construction(self):
-        req = ArtifactLineageRequest(repo_id="org/my-model")
-        assert req.repo_id == "org/my-model"
-        assert req.limit == 10
-        assert req.offset == 0
-
-    def test_custom_pagination(self):
-        req = ArtifactLineageRequest(repo_id="org/data", limit=5, offset=10)
-        assert req.limit == 5
-        assert req.offset == 10
 
 
 class TestPaginatedResponse:

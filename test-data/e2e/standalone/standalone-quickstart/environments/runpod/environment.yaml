@@ -1,0 +1,17 @@
+name: runpod-standalone
+type: Runpod
+config:
+  authentication:
+    api_key: RUNPOD_API_KEY
+  defaults:
+    gpu_type: "NVIDIA A100 80GB PCIe"
+    cloud_type: "SECURE"
+    container_disk_gb: 50
+    volume_gb: 100
+    volume_mount_path: "/workspace"
+assetstores:
+  - store_uri: space://assetstores/s3/
+    load:
+      - mode: default
+    push:
+      - mode: default

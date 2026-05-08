@@ -36,8 +36,8 @@ from unittest.mock import patch
 import pytest
 import requests
 
-SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "samples"
-STANDALONE_BUILD_DIR = SAMPLES_DIR / "standalone" / "standalone-quickstart"
+TEST_DATA_DIR = Path(__file__).parent.parent.parent.parent / "test-data"
+STANDALONE_BUILD_DIR = TEST_DATA_DIR / "e2e" / "standalone" / "standalone-quickstart"
 
 
 def _get_free_port() -> int:
@@ -194,7 +194,7 @@ class TestStandaloneRestApiE2E:
         """Verify spaces_for_user works WITHOUT GBSERVER_API_KEY (real standalone scenario).
 
         This mimics the exact scenario when a user runs:
-            gbserver standalone --space-dir samples/standalone/standalone-quickstart
+            gbserver standalone --space-dir test-data/e2e/standalone/standalone-quickstart
         without setting GBSERVER_API_KEY, and gbcli sends an empty Bearer token.
         """
         from gbserver.commands.command_standalone import _run_standalone
