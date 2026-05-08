@@ -282,6 +282,17 @@ def get_artifact_graph(request: ArtifactGraphRequest):
                 tags=tags,
                 inputs=inputs,
                 outputs=outputs,
+                job_id=metadata.get("job_id") or "",
+                job_status=metadata.get("job_status") or "",
+                job_started_at=metadata.get("job_started_at") or "",
+                job_completed_at=metadata.get("job_completed_at") or "",
+                release_id=metadata.get("release_id") or "",
+                category=metadata.get("category") or "",
+                owner=metadata.get("owner") or "",
+                source_code_details=metadata.get("source_code_details") or {},
+                job_input_params=metadata.get("job_input_params") or {},
+                execution_stats=metadata.get("execution_stats") or {},
+                job_output_stats=metadata.get("job_output_stats") or {},
             )
         )
 
