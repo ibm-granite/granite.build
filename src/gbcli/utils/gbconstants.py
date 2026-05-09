@@ -27,7 +27,7 @@ ENVIRONMENT_CONFIGS = {
     "PROD_OLD": {
         "env": "PROD_OLD",
         "lakehouse_environment": "PROD",
-        "gbserver_host": "https://api.llm-build-prod.vpc-int.res.ibm.com"",
+        "gbserver_host": "https://granite-build-prod.bx.cloud9.ibm.com",
         "default_space": "public",
         "dmf_ui": "https://ui.dmf.vpc-int.res.ibm.com",
         "config_spaces": "gb.spaces",
@@ -77,7 +77,7 @@ ENVIRONMENT_CONFIGS = {
     "PROD": {
         "env": "PROD",
         "lakehouse_environment": "PROD",
-        "gbserver_host": "https://granite-build-prod.bx.cloud9.ibm.com",
+        "gbserver_host": "https://api.llm-build-prod.vpc-int.res.ibm.com",
         "default_space": "public",
         "dmf_ui": "https://ui.dmf.vpc-int.res.ibm.com",
         "config_spaces": "gb.spaces",
