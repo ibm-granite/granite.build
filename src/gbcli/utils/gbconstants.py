@@ -27,7 +27,7 @@ ENVIRONMENT_CONFIGS = {
     "PROD_OLD": {
         "env": "PROD_OLD",
         "lakehouse_environment": "PROD",
-        "gbserver_host": "https://granite-build-prod.bx.cloud9.ibm.com",
+        "gbserver_host": "localhost:8080",
         "default_space": "public",
         "dmf_ui": "https://ui.dmf.vpc-int.res.ibm.com",
         "config_spaces": "gb.spaces",
@@ -77,7 +77,7 @@ ENVIRONMENT_CONFIGS = {
     "PROD": {
         "env": "PROD",
         "lakehouse_environment": "PROD",
-        "gbserver_host": "https://api.llm-build-prod.vpc-int.res.ibm.com",
+        "gbserver_host": "http://localhost:8080",
         "default_space": "public",
         "dmf_ui": "https://ui.dmf.vpc-int.res.ibm.com",
         "config_spaces": "gb.spaces",
@@ -258,9 +258,8 @@ HF_RESOURCE_GROUP_ID_DEFAULT = gb_environment_config().get(
 
 # gbcli
 GBCLI_REPO_URL = os.environ.get(
-    # Change this to "https://github.com/granite-build/gbserver" once the repo exists. CLI version check fails if this points to an invalid repo
     "GBCLI_REPO_URL",
-    "https://github.ibm.com/granite-dot-build/gbcli",
+    "https://github.ibm.com/granite-dot-build/granite.buid",
 )
 
 # assets
