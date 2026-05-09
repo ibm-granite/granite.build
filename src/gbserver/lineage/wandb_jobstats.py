@@ -114,6 +114,7 @@ def _artifact_to_lineage_entry(
         "artifact_id": artifact.uuid,
         "artifact_uri": artifact.uri,
         "artifact_type": artifact_type.name,
+        "target_artifact_reference": target_artifact_reference,
         "gb-artifact-id": artifact.uuid,
         "gb-artifact-uri": artifact.uri,
         "gb-build-id": artifact.created_by_build_id,
@@ -141,6 +142,18 @@ def _artifact_to_lineage_entry(
         "uri": uri,
         "facets": facets,
     }
+
+
+def _add_jobstats_mirror_fields(event: dict) -> None:
+    # The REST jobstats endpoints expect a flat JobStats-shaped dict (with
+    # release_id / job_details / sources / targets at the top level). wandb
+    # stores these inside run.facets.job_details + inputs/outputs, so mirror
+    # them for readers. wandb itself ignores unknown top-level keys.
+    job_details = event.get("run", {}).get("facets", {}).get("job_details", {})
+    event["release_id"] = job_details.get("release_id", "")
+    event["job_details"] = job_details
+    event["sources"] = event.get("inputs", [])
+    event["targets"] = event.get("outputs", [])
 
 
 class WandBLineageStore(ILineageStore):
@@ -285,6 +298,7 @@ class WandBLineageStore(ILineageStore):
                     **base_event["run"],
                     "runId": f"{job_id}-{output_uuid}",
                 }
+                _add_jobstats_mirror_fields(event)
                 target_events.append(event)
             events_list.extend(target_events)
             events_dict[target_artifact_name] = target_events
@@ -295,6 +309,7 @@ class WandBLineageStore(ILineageStore):
                 "inputs": inputs,
                 "outputs": [],
             }
+            _add_jobstats_mirror_fields(event)
             events_list.append(event)
             events_dict["no-output"] = [event]
 
@@ -453,7 +468,7 @@ class WandBLineageStore(ILineageStore):
         if artifact.description:
             job_input_params["description"] = artifact.description
 
-        return {
+        event = {
             "eventType": "COMPLETE",
             "eventTime": event_time,
             "run": {
@@ -461,7 +476,10 @@ class WandBLineageStore(ILineageStore):
                 "facets": {
                     "tags": {
                         "artifact_id": artifact.uuid,
-                        "build_id": artifact.created_by_build_id,
+                        # For registered-artifact jobstats the "release_id" is
+                        # the artifact uuid itself — tag build_id with that so
+                        # count_release_ids({artifact.uuid}) finds this run.
+                        "build_id": artifact.uuid,
                         "target_id": artifact.created_by_target_id,
                         "username": artifact.username,
                         "space_name": artifact.space_name,
@@ -492,3 +510,5 @@ class WandBLineageStore(ILineageStore):
             "producer": "https://github.ibm.com/granite-dot-build/gbserver",
             "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
         }
+        _add_jobstats_mirror_fields(event)
+        return event
