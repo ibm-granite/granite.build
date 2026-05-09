@@ -1,5 +1,5 @@
 [project]
-name = "granite-build-tools"
+name = "granite.build"
 version = "0.3.0"
 authors = [
     { name = "Akash Nayak", email = "akash.nayak1@ibm.com" },
