@@ -1,0 +1,205 @@
+# Docker SLURM Cluster for local development and CI
+#
+# Based on giovtorres/slurm-docker-cluster.
+# Provides a fully functional multi-node SLURM cluster that SkyPilot's
+# SLURM backend can SSH into and submit real sbatch jobs.
+#
+# Usage:
+#   docker compose up -d        # start cluster
+#   docker compose down -v      # teardown (removes volumes)
+#
+# Containers:
+#   mysql     - MariaDB for SLURM accounting
+#   slurmdbd  - SLURM database daemon
+#   slurmctld - SLURM controller + login node (SSH target for SkyPilot)
+#   c1, c2    - Compute nodes
+#   auth      - Munge authentication key distributor
+
+x-slurm-common: &slurm-common
+  image: ghcr.io/giovtorres/docker-slurm:${SLURM_TAG:-latest}
+  volumes:
+    - slurm_shared_fs:/shared
+    - ./slurm.conf:/etc/slurm/slurm.conf:ro
+    - ./slurmdbd.conf:/etc/slurm/slurmdbd.conf:ro
+    - ./gres.conf:/etc/slurm/gres.conf:ro
+    - munge_socket:/run/munge
+    - munge_key:/etc/munge
+  networks:
+    - slurm-net
+  depends_on:
+    auth:
+      condition: service_healthy
+
+services:
+  # ---------- Munge authentication ----------
+  auth:
+    <<: *slurm-common
+    hostname: auth
+    container_name: slurm-auth
+    depends_on: []
+    command: >-
+      bash -c '
+        if [ ! -f /etc/munge/munge.key ]; then
+          echo "Generating munge key..."
+          dd if=/dev/urandom of=/etc/munge/munge.key bs=1024 count=1 2>/dev/null
+          chown munge:munge /etc/munge/munge.key
+          chmod 0400 /etc/munge/munge.key
+        fi
+        chown -R munge:munge /run/munge /etc/munge
+        exec gosu munge munged --foreground --force
+      '
+    healthcheck:
+      test: ["CMD", "munge", "-n"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # ---------- Database ----------
+  mysql:
+    image: mariadb:10.11
+    hostname: mysql
+    container_name: slurm-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: slurm_root_pw
+      MYSQL_DATABASE: slurm_acct_db
+      MYSQL_USER: slurm
+      MYSQL_PASSWORD: slurm_db_pw
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - slurm-net
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # ---------- SLURM database daemon ----------
+  slurmdbd:
+    <<: *slurm-common
+    hostname: slurmdbd
+    container_name: slurm-slurmdbd
+    depends_on:
+      auth:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    command: >-
+      bash -c '
+        echo "Waiting for munge key..."
+        until [ -f /etc/munge/munge.key ]; do sleep 1; done
+        exec gosu slurm slurmdbd -D
+      '
+    healthcheck:
+      test: ["CMD", "bash", "-c", "sacctmgr -n show cluster 2>/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  # ---------- SLURM controller + login node ----------
+  slurmctld:
+    <<: *slurm-common
+    hostname: slurmctld
+    container_name: slurm-slurmctld
+    depends_on:
+      auth:
+        condition: service_healthy
+      slurmdbd:
+        condition: service_healthy
+    ports:
+      - "${SLURM_SSH_PORT:-2222}:22"
+    command: >-
+      bash -c '
+        echo "Waiting for munge key..."
+        until [ -f /etc/munge/munge.key ]; do sleep 1; done
+
+        # Configure SSH for SkyPilot access
+        apt-get update -qq && apt-get install -y -qq openssh-server > /dev/null 2>&1 || true
+        yum install -y -q openssh-server 2>/dev/null || true
+        mkdir -p /root/.ssh /run/sshd
+        chmod 700 /root/.ssh
+
+        # Accept any authorized key placed by setup-slurm.sh
+        touch /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+
+        # Generate host keys if missing
+        ssh-keygen -A 2>/dev/null || true
+
+        # Allow root login with key
+        sed -i "s/#*PermitRootLogin.*/PermitRootLogin prohibit-password/" /etc/ssh/sshd_config 2>/dev/null || true
+        sed -i "s/#*PubkeyAuthentication.*/PubkeyAuthentication yes/" /etc/ssh/sshd_config 2>/dev/null || true
+
+        # Start SSH daemon in background
+        /usr/sbin/sshd
+
+        # Create the default cluster in accounting if it does not exist
+        sacctmgr -i add cluster linux 2>/dev/null || true
+
+        exec gosu slurm slurmctld -D
+      '
+    healthcheck:
+      test: ["CMD", "sinfo", "--noheader"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  # ---------- Compute nodes ----------
+  c1:
+    <<: *slurm-common
+    hostname: c1
+    container_name: slurm-c1
+    depends_on:
+      slurmctld:
+        condition: service_healthy
+    command: >-
+      bash -c '
+        echo "Waiting for munge key..."
+        until [ -f /etc/munge/munge.key ]; do sleep 1; done
+        exec gosu slurm slurmd -D
+      '
+    healthcheck:
+      test: ["CMD", "sinfo", "-n", "c1", "--noheader"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  c2:
+    <<: *slurm-common
+    hostname: c2
+    container_name: slurm-c2
+    depends_on:
+      slurmctld:
+        condition: service_healthy
+    command: >-
+      bash -c '
+        echo "Waiting for munge key..."
+        until [ -f /etc/munge/munge.key ]; do sleep 1; done
+        exec gosu slurm slurmd -D
+      '
+    healthcheck:
+      test: ["CMD", "sinfo", "-n", "c2", "--noheader"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+volumes:
+  slurm_shared_fs:
+    name: slurm_shared_fs
+  mysql_data:
+    name: slurm_mysql_data
+  munge_socket:
+    name: slurm_munge_socket
+  munge_key:
+    name: slurm_munge_key
+
+networks:
+  slurm-net:
+    name: slurm-net
+    driver: bridge
