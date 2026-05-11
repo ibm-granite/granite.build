@@ -101,11 +101,17 @@ ENV_VAR_GBTEST_ENABLE_EXTENDED_TESTS = TEST_ENV_VAR_PREFIX + "ENABLE_EXTENDED_TE
 #   @extended_testing_only
 #   def test_something_slow(self): ...
 
-is_extended_testing_enabled = os.environ.get(ENV_VAR_GBTEST_ENABLE_EXTENDED_TESTS, "false").lower() == "true" 
-extended_testing_only = pytest.mark.skipif(
-    not is_extended_testing_enabled,
-    reason=f"{ENV_VAR_GBTEST_ENABLE_EXTENDED_TESTS} is set to false",
-)
+is_extended_testing_enabled = os.environ.get(ENV_VAR_GBTEST_ENABLE_EXTENDED_TESTS, "false").lower() == "true"
+
+
+def extended_testing_only(func):
+    """Mark a test to only run in the extended (merge) CI suite."""
+    func = pytest.mark.extended_testing_only(func)
+    func = pytest.mark.skipif(
+        not is_extended_testing_enabled,
+        reason=f"{ENV_VAR_GBTEST_ENABLE_EXTENDED_TESTS} is set to false",
+    )(func)
+    return func
 
 
 def failed_build_assert_message(build_id: str, message: str) -> str:

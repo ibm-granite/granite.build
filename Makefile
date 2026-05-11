@@ -49,7 +49,7 @@ PYTEST_NUM_TEST_PROC ?= auto
 #PYTEST_DIST_MODE ?= worksteal 	# 26 min, but faile test_build_watcher_c/gpu
 PYTEST_DIST_MODE ?= loadgroup
 DEFAULT_PYTEST_MARKERS ?= not secret_manager and not nats_server and not docker_required
-PR_PYTEST_MARKERS ?= $(DEFAULT_PYTEST_MARKERS) 
+PR_PYTEST_MARKERS ?= $(DEFAULT_PYTEST_MARKERS) and not extended_testing_only
 MERGE_PYTEST_MARKERS ?=  $(DEFAULT_PYTEST_MARKERS)
 STANDALONE_PYTEST_MARKERS ?= not secret_manager and not nats_server and not docker_required and not ibm and not nats
 
@@ -232,7 +232,7 @@ cicd-merge-test:
 	$(MAKE) cicd-venv
 	$(MAKE) test-merge 
 
-.PHONY: test-merge 
+.PHONY: test-merge
 test-merge:
 	#source $(VENVDIR)/bin/activate && pytest --cov -s test
 	#source $(VENVDIR)/bin/activate && $(MAKE) start-docker	# Needed by some build integration tests
@@ -244,6 +244,19 @@ test-merge:
 		args=(--durations=20 --cov --cov-report=xml --junitxml=report.xml) && \
 		args+=(-n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
 		args+=(-m '$(MERGE_PYTEST_MARKERS)' --strict-markers) && \
+		pytest "$${args[@]}" test/unit test/e2e test/integration/ibm && \
+		coverage report --fail-under=$(MIN_COVERAGE) --sort=Cover
+
+.PHONY: test-extended
+test-extended:
+	source $(VENVDIR)/bin/activate && \
+		export GBTEST_MODE=live && \
+		export GBTEST_ENABLE_EXTENDED_TESTS=true &&	\
+		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
+		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
+		args=(--durations=20 --cov --cov-report=xml --junitxml=report.xml) && \
+		args+=(-n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
+		args+=(-m '$(MERGE_PYTEST_MARKERS) and extended_testing_only' --strict-markers) && \
 		pytest "$${args[@]}" test/unit test/e2e test/integration/ibm && \
 		coverage report --fail-under=$(MIN_COVERAGE) --sort=Cover
 

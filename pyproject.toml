@@ -158,6 +158,7 @@ markers = [
     "slow: tests that run for longer",
     "hf_integration: tests that perform real integration with HuggingFace Hub",
     "live: opt specific services into live mode (e.g. @pytest.mark.live('storage', 'github'))",
+    "extended_testing_only: tests that only run in the extended (merge) CI suite",
 ]
 testpaths = ["test/unit", "test/integration", "test/e2e"]
 norecursedirs = [".venv", ".git", "dist", "__pycache__", "*.egg-info"]
