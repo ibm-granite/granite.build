@@ -961,49 +961,81 @@ class K8s(Environment):
 
     async def cleanup_helm(self: Self, launch_id: str, **kwargs) -> None:
         """
-        Uninstalls a helm chart
+        Uninstalls a helm chart with retry on transient failures.
+
+        Retries with exponential backoff (base_delay * 2^attempt) to handle cases
+        where the K8s API is temporarily unreachable at cleanup time.
         """
+        from gbserver.types.constants import (
+            GBSERVER_CLEANUP_MAX_RETRIES,
+            GBSERVER_CLEANUP_RETRY_BASE_DELAY,
+        )
+
         if launch_id not in self.launched_releases:
             return
         release_name = self.launched_releases[launch_id]
         if release_name is None or release_name == "":
             return
 
-        kube_config_path = None
-        try:
-            command_str = f"helm uninstall {release_name}"
-            if self.kube_config:
-                with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_file:
-                    temp_file.write(self.kube_config)
-                    kube_config_path = temp_file.name
-                command_str = f"{command_str} --kubeconfig {kube_config_path}"
-            if self.kube_context:
-                command_str = f"{command_str} --kube-context {self.kube_context}"
-            command_list = shlex.split(command_str)
-            process, _, _ = await launch_command_and_raise_errors(
-                command_list=command_list,
-                launch_id=launch_id,
-            )
-            logger.debug("process: %s", process)
-        except Exception as e:
-            raise ValueError("helm uninstall failed:") from e
-        finally:
-            if kube_config_path is not None:
-                try:
-                    os.unlink(kube_config_path)  # remove the temporary kube_config file
-                except:
-                    pass  # if the file was not created, or already removed, do nothing
+        max_attempts = GBSERVER_CLEANUP_MAX_RETRIES + 1
+        for attempt in range(max_attempts):
+            kube_config_path = None
+            try:
+                command_str = f"helm uninstall {release_name}"
+                if self.kube_config:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", delete=False
+                    ) as temp_file:
+                        temp_file.write(self.kube_config)
+                        kube_config_path = temp_file.name
+                    command_str = f"{command_str} --kubeconfig {kube_config_path}"
+                if self.kube_context:
+                    command_str = f"{command_str} --kube-context {self.kube_context}"
+                command_list = shlex.split(command_str)
+                process, _, _ = await launch_command_and_raise_errors(
+                    command_list=command_list,
+                    launch_id=launch_id,
+                )
+                logger.debug("process: %s", process)
+                break  # success
+            except Exception as e:
+                if attempt < max_attempts - 1:
+                    delay = GBSERVER_CLEANUP_RETRY_BASE_DELAY * (2**attempt)
+                    logger.warning(
+                        "[K8s launch_id %s] helm uninstall failed (attempt %d/%d), "
+                        "retrying in %ds: %s",
+                        launch_id,
+                        attempt + 1,
+                        max_attempts,
+                        delay,
+                        e,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        "[K8s launch_id %s] helm uninstall failed after %d attempts: %s",
+                        launch_id,
+                        max_attempts,
+                        e,
+                    )
+                    raise ValueError("helm uninstall failed:") from e
+            finally:
+                if kube_config_path is not None:
+                    try:
+                        os.unlink(kube_config_path)
+                    except:
+                        pass
 
         # Safety net: explicitly delete RayClusters that may survive helm uninstall.
-        # Runs after helm uninstall completes, with a timeout to avoid blocking cleanup.
+        # Runs after helm uninstall completes, with increased timeout.
         try:
             await asyncio.wait_for(
                 self._delete_rayclusters_for_release(release_name, launch_id),
-                timeout=15,
+                timeout=30,
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "[K8s launch_id %s] RayCluster cleanup timed out after 15s, skipping",
+                "[K8s launch_id %s] RayCluster cleanup timed out after 30s, skipping",
                 launch_id,
             )
         except Exception as e:

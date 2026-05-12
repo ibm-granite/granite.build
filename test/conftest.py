@@ -49,6 +49,7 @@ if not _can_import("psutil"):
 if not _can_import("kubernetes_asyncio"):
     collect_ignore.append("unit/resilience/test_k8s_retry.py")
     collect_ignore.append("unit/monitoring/test_appwrapper_monitor.py")
+    collect_ignore.append("unit/environment/test_cleanup_retry.py")
     collect_ignore.append("integration/ibm/environment/test_k8s_raycluster_cleanup.py")
 
 if not _can_import("asyncssh"):
