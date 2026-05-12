@@ -69,12 +69,15 @@ $COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" \
 
 log "Containers and volumes removed."
 
-# ---- Step 2: Remove SkyPilot SLURM SSH config ----
+# ---- Step 2: Remove slurm-docker block from ~/.slurm/config ----
 
 SLURM_SSH_CONFIG="${HOME}/.slurm/config"
-if [ -f "$SLURM_SSH_CONFIG" ]; then
-    log "Removing SkyPilot SLURM SSH config: $SLURM_SSH_CONFIG"
-    rm -f "$SLURM_SSH_CONFIG"
+MARKER_BEGIN="# BEGIN slurm-docker (managed by setup-slurm.sh)"
+MARKER_END="# END slurm-docker"
+
+if [ -f "$SLURM_SSH_CONFIG" ] && grep -q "$MARKER_BEGIN" "$SLURM_SSH_CONFIG"; then
+    log "Removing slurm-docker entry from $SLURM_SSH_CONFIG"
+    sed -i "/$MARKER_BEGIN/,/$MARKER_END/d" "$SLURM_SSH_CONFIG"
 fi
 
 # ---- Step 3: Clean up SSH key (if --all) ----
