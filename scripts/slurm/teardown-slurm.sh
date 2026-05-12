@@ -17,7 +17,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SSH_KEY_PATH="${HOME}/.ssh/slurm_docker_key"
-SKY_CONFIG="${HOME}/.sky/config.yaml"
 CLEAN_ALL=false
 
 for arg in "$@"; do
@@ -70,44 +69,24 @@ $COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" \
 
 log "Containers and volumes removed."
 
-# ---- Step 2: Clean up SSH key and SkyPilot config (if --all) ----
+# ---- Step 2: Remove SkyPilot SLURM SSH config ----
+
+SLURM_SSH_CONFIG="${HOME}/.slurm/config"
+if [ -f "$SLURM_SSH_CONFIG" ]; then
+    log "Removing SkyPilot SLURM SSH config: $SLURM_SSH_CONFIG"
+    rm -f "$SLURM_SSH_CONFIG"
+fi
+
+# ---- Step 3: Clean up SSH key (if --all) ----
 
 if [ "$CLEAN_ALL" = true ]; then
     if [ -f "$SSH_KEY_PATH" ]; then
         log "Removing SSH key pair: $SSH_KEY_PATH"
         rm -f "$SSH_KEY_PATH" "${SSH_KEY_PATH}.pub"
     fi
-
-    if [ -f "$SKY_CONFIG" ]; then
-        log "Removing SLURM stanza from SkyPilot config: $SKY_CONFIG"
-        python3 - "$SKY_CONFIG" <<'PYEOF'
-import sys, os
-
-try:
-    import yaml
-except ImportError:
-    print("PyYAML not installed; skipping config cleanup.")
-    sys.exit(0)
-
-config_path = sys.argv[1]
-if not os.path.exists(config_path):
-    sys.exit(0)
-
-with open(config_path) as f:
-    config = yaml.safe_load(f) or {}
-
-if "slurm" in config:
-    del config["slurm"]
-    with open(config_path, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-    print(f"Removed SLURM config from {config_path}")
-else:
-    print("No SLURM config found; nothing to remove.")
-PYEOF
-    fi
 fi
 
-# ---- Step 3: Remove known hosts entry for localhost:SLURM_SSH_PORT ----
+# ---- Step 4: Remove known hosts entry for localhost:SLURM_SSH_PORT ----
 
 KNOWN_HOSTS="${HOME}/.ssh/known_hosts"
 if [ -f "$KNOWN_HOSTS" ]; then
