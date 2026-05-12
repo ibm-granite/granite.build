@@ -920,6 +920,9 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 build_id,
                 f"Artifact status is {artifact.status}, but expected one of {status_list}",
             )
+            uri = URI.get_uri(artifact.uri)
+            assert uri is not None, f"Could not resovle artifact uri {artifact.uri} to an object"
+            assert uri.exists(), f"URI {artifact.uri} does not exist in artifact storage"
 
     def _verify_skipped_target_and_steps(
         self: Self,
