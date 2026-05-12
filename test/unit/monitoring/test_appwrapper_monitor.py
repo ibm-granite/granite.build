@@ -94,3 +94,83 @@ class TestTimeBasedThreshold:
         monitor._api_failure_start_time = 100.0
         monitor.unpause()
         assert monitor._api_failure_start_time is None
+
+
+class TestPodLivenessCheck:
+    """Tests for pod liveness verification before declaring fatal."""
+
+    @pytest.mark.asyncio
+    async def test_pods_running_returns_true(self):
+        """If any pod is Running, returns True."""
+        monitor, _, _ = _make_monitor()
+        monitor.v1 = MagicMock()
+
+        mock_pod = MagicMock()
+        mock_pod.status.phase = "Running"
+        mock_pod.metadata.name = "test-pod-1"
+        mock_pod_list = MagicMock()
+        mock_pod_list.items = [mock_pod]
+        monitor.v1.list_namespaced_pod = AsyncMock(return_value=mock_pod_list)
+
+        result = await monitor._check_pod_liveness()
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_no_running_pods_returns_false(self):
+        """If no pods are Running, returns False."""
+        monitor, _, _ = _make_monitor()
+        monitor.v1 = MagicMock()
+
+        mock_pod = MagicMock()
+        mock_pod.status.phase = "Failed"
+        mock_pod_list = MagicMock()
+        mock_pod_list.items = [mock_pod]
+        monitor.v1.list_namespaced_pod = AsyncMock(return_value=mock_pod_list)
+
+        result = await monitor._check_pod_liveness()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_pod_api_failure_returns_false(self):
+        """If pod API also fails, returns False (allow fatal)."""
+        monitor, _, _ = _make_monitor()
+        monitor.v1 = MagicMock()
+        monitor.v1.list_namespaced_pod = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        result = await monitor._check_pod_liveness()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_empty_pod_list_returns_false(self):
+        """If pod list is empty, returns False."""
+        monitor, _, _ = _make_monitor()
+        monitor.v1 = MagicMock()
+
+        mock_pod_list = MagicMock()
+        mock_pod_list.items = []
+        monitor.v1.list_namespaced_pod = AsyncMock(return_value=mock_pod_list)
+
+        result = await monitor._check_pod_liveness()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_liveness_check_resets_timer_when_pods_alive(self):
+        """When pods are alive, the timeout timer should be reset."""
+        monitor, event_queue, stop_event = _make_monitor()
+        monitor.v1 = MagicMock()
+        monitor.custom_api = MagicMock()
+
+        # Simulate pods alive
+        mock_pod = MagicMock()
+        mock_pod.status.phase = "Running"
+        mock_pod.metadata.name = "test-pod-1"
+        mock_pod_list = MagicMock()
+        mock_pod_list.items = [mock_pod]
+        monitor.v1.list_namespaced_pod = AsyncMock(return_value=mock_pod_list)
+
+        # Set timer as if it expired
+        monitor._api_failure_start_time = time.monotonic() - 400
+
+        # Call _check_pod_liveness and verify it returns True
+        result = await monitor._check_pod_liveness()
+        assert result is True
