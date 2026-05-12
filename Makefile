@@ -285,6 +285,29 @@ test-g4os:
 .PHONY: cicd-skypilot-pr
 cicd-skypilot-pr: test-g4os
 
+# --- Local infrastructure (SLURM + MinIO) ---
+
+.PHONY: slurm-setup
+slurm-setup:
+	bash scripts/slurm/setup-slurm.sh
+
+.PHONY: slurm-teardown
+slurm-teardown:
+	bash scripts/slurm/teardown-slurm.sh
+
+.PHONY: minio-setup
+minio-setup:
+	bash scripts/minio/setup-minio.sh
+
+.PHONY: minio-teardown
+minio-teardown:
+	bash scripts/minio/teardown-minio.sh
+
+.PHONY: integration-test
+integration-test:
+	source $(VENVDIR)/bin/activate && \
+		pytest -s -m skypilot_integration --strict-markers test
+
 # --- Mock/Live test mode targets ---
 
 .PHONY: test-mock
@@ -451,12 +474,12 @@ demo-venv:
 
 .PHONY: g4os-skypilot-venv
 g4os-skypilot-venv:
-	@# Help: Create a venv with standalone + skypilot + dev deps (no Artifactory required)
+	@# Help: Create a venv with standalone + thirdparty + dev deps (no Artifactory required)
 	rm -rf $(VENVDIR)
 	$(PYTHON) -m venv $(VENVDIR)
 	source $(VENVDIR)/bin/activate; \
 	${PIP} install --upgrade pip; \
-	${PIP} install -e '.[standalone,skypilot,dev]'
+	${PIP} install -e '.[standalone,thirdparty,dev]'
 
 $(VENVDIR): pyproject.toml 
 	$(MAKE) .check-build-env

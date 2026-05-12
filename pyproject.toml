@@ -77,6 +77,7 @@ standalone = [
 # Tier 2: Third-party open-source — installable from PyPI, testable in GH Actions
 thirdparty = [
     "docker>=7.0.0",
+    "skypilot[kubernetes,slurm]>=0.12.1",
     "wandb",
 ]
 # Tier 3: IBM-specific — requires IBM infrastructure (cloud, cluster, Artifactory)
@@ -91,7 +92,7 @@ ibm = [
     "ibm_secrets_manager_sdk",
     "kubernetes_asyncio",
     "psycopg2-binary",
-    "skypilot[kubernetes]>=0.11.2",
+    "skypilot[kubernetes,slurm]>=0.12.1",
 ]
 # All optional dependencies
 all = [
@@ -158,6 +159,7 @@ markers = [
     "slow: tests that run for longer",
     "hf_integration: tests that perform real integration with HuggingFace Hub",
     "live: opt specific services into live mode (e.g. @pytest.mark.live('storage', 'github'))",
+    "skypilot_integration: tests requiring local SLURM + MinIO infrastructure (run via make integration-test)",
 ]
 testpaths = ["test/unit", "test/integration", "test/e2e"]
 norecursedirs = [".venv", ".git", "dist", "__pycache__", "*.egg-info"]
