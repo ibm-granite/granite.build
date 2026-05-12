@@ -327,9 +327,7 @@ class WandBLineageStore(ILineageStore):
         count = 0
         for target in targets:
             assert isinstance(target, StoredTargetRun)
-            events, _ = self._build_events_for_target(storage, build, target)
-            for event in events:
-                self._service.emit_event(event)
+            self.__add_jobstats_for_target(storage, build, target)
             count += 1
         if count == 0:
             raise ValueError(f"Zero targets found in build with id {build_id}")
@@ -348,12 +346,20 @@ class WandBLineageStore(ILineageStore):
         count = 0
         for target in targets:
             assert isinstance(target, StoredTargetRun)
-            events, _ = self._build_events_for_target(storage, build, target)
-            for event in events:
-                self._service.emit_event(event)
+            self.__add_jobstats_for_target(storage, build, target)
             count += 1
         if count == 0:
             raise ValueError(f"Zero targets found in build with id {build_id}")
+
+    def __add_jobstats_for_target(
+        self,
+        storage: SingletonAdminStorage,
+        build: StoredBuild,
+        targetrun: StoredTargetRun,
+    ) -> None:
+        events, _ = self.create_jobstats_for_target(storage, targetrun, build)
+        for event in events:
+            self._service.emit_event(event)
 
     def add_jobstats_for_original_artifact(
         self,
