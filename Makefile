@@ -474,12 +474,12 @@ demo-venv:
 
 .PHONY: g4os-skypilot-venv
 g4os-skypilot-venv:
-	@# Help: Create a venv with standalone + skypilot + dev deps (no Artifactory required)
+	@# Help: Create a venv with standalone + thirdparty + dev deps (no Artifactory required)
 	rm -rf $(VENVDIR)
 	$(PYTHON) -m venv $(VENVDIR)
 	source $(VENVDIR)/bin/activate; \
 	${PIP} install --upgrade pip; \
-	${PIP} install -e '.[standalone,skypilot,dev]'
+	${PIP} install -e '.[standalone,thirdparty,dev]'
 
 $(VENVDIR): pyproject.toml 
 	$(MAKE) .check-build-env
