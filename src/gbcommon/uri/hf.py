@@ -210,7 +210,7 @@ class HfURI(URI):
         try:
             p = self._parts()
             repo_id = f"{p.owner}/{p.repo}"
-            token = self.secrets.get("HF_TOKEN") if self.secrets else None
+            token = self._resolve_token()
 
             if p.hf_type == HfType.BUCKET:
                 endpoint = f"https://{p.host}" if p.host != HF_HOST else None
