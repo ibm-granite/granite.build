@@ -21,6 +21,7 @@ Monitor AppWrappers in K8s clusters.
 import asyncio
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional, Self, Set
 
 import aiohttp
@@ -34,15 +35,13 @@ from gbserver.types.buildevent import (
     EntityRunMetadata,
     EventPayload,
 )
-from gbserver.types.constants import GBSERVER_MONITORING_GRACE_PERIOD
+from gbserver.types.constants import GBSERVER_API_FAILURE_TIMEOUT, GBSERVER_MONITORING_GRACE_PERIOD
 from gbserver.types.metrics import Metric, MetricMetadata, MetricName, MetricUnits
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_utc_time
 
 logger = get_logger(__name__)
 
-# Maximum number of consecutive API failures before treating as fatal error
-MAX_CONSECUTIVE_API_FAILURES = 10
 
 # Timeout for Kubernetes API calls (in seconds)
 API_CALL_TIMEOUT = 30
@@ -146,7 +145,7 @@ class AppWrapperMonitor(MonitorBase):
         self.latest_events = []  # type: ignore[var-annotated]
         self.failed_pods = {}  # type: ignore[var-annotated]
         self.launched_pods = {}  # type: ignore[var-annotated]
-        self.consecutive_api_failures = 0
+        self._api_failure_start_time: Optional[float] = None
         self._run_event = asyncio.Event()
         self._run_event.set()  # running by default; cleared by pause()
 
@@ -182,8 +181,29 @@ class AppWrapperMonitor(MonitorBase):
         self.latest_events = []
         self.failed_pods = {}
         self.launched_pods = {}
-        self.consecutive_api_failures = 0
+        self._api_failure_start_time = None
         self._run_event.set()
+
+    def _is_api_failure_timeout(self: Self) -> bool:
+        """Check if sustained API failures have exceeded the configured timeout."""
+        if self._api_failure_start_time is None:
+            return False
+        elapsed = time.monotonic() - self._api_failure_start_time
+        return elapsed > GBSERVER_API_FAILURE_TIMEOUT
+
+    def _record_api_failure(self: Self) -> None:
+        """Record an API failure, setting the start time if this is the first in a streak."""
+        if self._api_failure_start_time is None:
+            self._api_failure_start_time = time.monotonic()
+        elapsed = time.monotonic() - self._api_failure_start_time
+        logger.warning(
+            "[AWMonitor launch_id %s] API failure for AppWrapper %s "
+            "(sustained for %.0fs / %ds timeout)",
+            self.launch_id,
+            self.name,
+            elapsed,
+            GBSERVER_API_FAILURE_TIMEOUT,
+        )
 
     # ------------------------ override monitor() ------------------------
     async def monitor(self: Self) -> None:
@@ -225,18 +245,15 @@ class AppWrapperMonitor(MonitorBase):
                         await asyncio.sleep(self.poll)
                         continue
 
-                    # Check if we've had too many consecutive API failures
-                    if self.consecutive_api_failures >= MAX_CONSECUTIVE_API_FAILURES:
+                    # Check if sustained API failures have exceeded the timeout
+                    if self._is_api_failure_timeout():
                         error_message = (
                             f"[AWMonitor launch_id {self.launch_id}] Failed to retrieve AppWrapper {self.name} status "
-                            f"{self.consecutive_api_failures} consecutive times. "
+                            f"for over {GBSERVER_API_FAILURE_TIMEOUT} seconds. "
                             f"The AppWrapper may have been deleted or the Kubernetes API is unreachable. "
                             f"Treating this as a fatal error."
                         )
                         logger.error("%s", error_message)
-                        # Publish a terminal failure event so RetryHandler can detect it
-                        # and raise WorkloadFailedException. We build the event manually
-                        # because _publish_state_change calls K8s APIs which are unreachable.
                         payload = json.dumps(
                             {
                                 "appwrapper": self.name,
@@ -355,18 +372,11 @@ class AppWrapperMonitor(MonitorBase):
             self.additional_appwrapper_state_info["max_retries"] = max_retries
             res_status = response.get("status", {}).get("phase", "Unknown")
             logger.info("Appwrapper %s status is %s", self.name, res_status)
-            # Reset consecutive failures on successful API call
-            self.consecutive_api_failures = 0
+            # Reset failure tracking on successful API call
+            self._api_failure_start_time = None
             rstatus = res_status
         except asyncio.TimeoutError:
-            self.consecutive_api_failures += 1
-            logger.warning(
-                "Timeout retrieving AppWrapper %s status after %d seconds (failure %d/%d)",
-                self.name,
-                API_CALL_TIMEOUT,
-                self.consecutive_api_failures,
-                MAX_CONSECUTIVE_API_FAILURES,
-            )
+            self._record_api_failure()
             rstatus = "Running"
         except client.ApiException as e:
             logger.error(
@@ -387,37 +397,15 @@ class AppWrapperMonitor(MonitorBase):
                 503,
                 504,
             ]:
-                self.consecutive_api_failures += 1
-                logger.warning(
-                    "Error retrieving appwrapper %s state (failure %d/%d): %s",
-                    self.name,
-                    self.consecutive_api_failures,
-                    MAX_CONSECUTIVE_API_FAILURES,
-                    e,
-                )
+                self._record_api_failure()
                 rstatus = "Running"
             else:
                 rstatus = f"Exception: Failed to get status for appwrapper {self.name} in namespace {self.ns}; client.ApiException {str(e)}, status = {e.status}"
         except aiohttp.ClientError as aio_ce:
-            self.consecutive_api_failures += 1
-            logger.warning(
-                "Exception: Failed to retrieve AppWrapper %s status aiohttp.ClientError (failure %d/%d) - %s: %s",
-                self.name,
-                self.consecutive_api_failures,
-                MAX_CONSECUTIVE_API_FAILURES,
-                type(aio_ce).__name__,
-                str(aio_ce),
-            )
+            self._record_api_failure()
             rstatus = "Running"
         except AssertionError as ae:
-            self.consecutive_api_failures += 1
-            logger.warning(
-                "AssertionError: Failed to retrieve AppWrapper %s (failure %d/%d): %s",
-                self.name,
-                self.consecutive_api_failures,
-                MAX_CONSECUTIVE_API_FAILURES,
-                str(ae),
-            )
+            self._record_api_failure()
             rstatus = "Running"
         except Exception as e:
             logger.error(
@@ -427,14 +415,7 @@ class AppWrapperMonitor(MonitorBase):
                 e,
             )
             if "Cannot connect to host" in str(e):
-                self.consecutive_api_failures += 1
-                logger.warning(
-                    "Error retrieving appwrapper %s state (failure %d/%d): %s",
-                    self.name,
-                    self.consecutive_api_failures,
-                    MAX_CONSECUTIVE_API_FAILURES,
-                    e,
-                )
+                self._record_api_failure()
                 rstatus = "Running"
             else:
                 status = getattr(e, "status", "N/A")
