@@ -194,18 +194,21 @@ class AppWrapperMonitor(MonitorBase):
         elapsed = time.monotonic() - self._api_failure_start_time
         return elapsed > GBSERVER_API_FAILURE_TIMEOUT
 
-    def _record_api_failure(self: Self) -> None:
+    def _record_api_failure(
+        self: Self, exc: Optional[Exception] = None
+    ) -> None:
         """Record an API failure, setting the start time if this is the first in a streak."""
         if self._api_failure_start_time is None:
             self._api_failure_start_time = time.monotonic()
         elapsed = time.monotonic() - self._api_failure_start_time
         logger.warning(
             "[AWMonitor launch_id %s] API failure for AppWrapper %s "
-            "(sustained for %.0fs / %ds timeout)",
+            "(sustained for %.0fs / %ds timeout): %s",
             self.launch_id,
             self.name,
             elapsed,
             GBSERVER_API_FAILURE_TIMEOUT,
+            exc if exc else "unknown",
         )
 
     async def _check_pod_liveness(self: Self) -> bool:
@@ -433,8 +436,8 @@ class AppWrapperMonitor(MonitorBase):
             # Reset failure tracking on successful API call
             self._api_failure_start_time = None
             rstatus = res_status
-        except asyncio.TimeoutError:
-            self._record_api_failure()
+        except asyncio.TimeoutError as e:
+            self._record_api_failure(e)
             rstatus = "Running"
         except client.ApiException as e:
             logger.error(
@@ -455,15 +458,15 @@ class AppWrapperMonitor(MonitorBase):
                 503,
                 504,
             ]:
-                self._record_api_failure()
+                self._record_api_failure(e)
                 rstatus = "Running"
             else:
                 rstatus = f"Exception: Failed to get status for appwrapper {self.name} in namespace {self.ns}; client.ApiException {str(e)}, status = {e.status}"
         except aiohttp.ClientError as aio_ce:
-            self._record_api_failure()
+            self._record_api_failure(aio_ce)
             rstatus = "Running"
         except AssertionError as ae:
-            self._record_api_failure()
+            self._record_api_failure(ae)
             rstatus = "Running"
         except Exception as e:
             logger.error(
@@ -473,7 +476,7 @@ class AppWrapperMonitor(MonitorBase):
                 e,
             )
             if "Cannot connect to host" in str(e):
-                self._record_api_failure()
+                self._record_api_failure(e)
                 rstatus = "Running"
             else:
                 status = getattr(e, "status", "N/A")

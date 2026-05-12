@@ -10,11 +10,11 @@ import pytest
 
 @pytest.fixture
 def k8s_env():
-    """Create a minimal K8sEnvironment instance for testing cleanup_helm."""
+    """Create a minimal K8s instance for testing cleanup_helm."""
     # Import here to avoid issues if kubernetes_asyncio is not installed
-    from gbserver.environment.k8s import K8sEnvironment
+    from gbserver.environment.k8s import K8s
 
-    k8s = K8sEnvironment.__new__(K8sEnvironment)
+    k8s = K8s.__new__(K8s)
     k8s.launched_releases = {"launch-1": "release-1"}
     k8s.kube_config = None
     k8s.kube_context = None
