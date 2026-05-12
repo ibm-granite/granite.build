@@ -1,0 +1,159 @@
+# Docker SLURM Cluster for local development and CI
+#
+# Uses giovtorres/slurm-docker-cluster image with its built-in entrypoint.
+# The entrypoint handles munge, SSH, and service startup automatically.
+#
+# Containers:
+#   mysql     - MariaDB for SLURM accounting
+#   slurmdbd  - SLURM database daemon
+#   slurmctld - SLURM controller + login node (SSH target for SkyPilot)
+#   c1, c2    - Compute nodes with virtual GPU GRES
+#
+# Required env vars for SSH access (set by setup-slurm.sh):
+#   SSH_AUTHORIZED_KEYS - path to public key file mounted into slurmctld
+
+services:
+  mysql:
+    image: mariadb:10.11
+    hostname: mysql
+    container_name: slurm-mysql
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_DATABASE: slurm_acct_db
+      MYSQL_USER: slurm
+      MYSQL_PASSWORD: password
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - slurm-net
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  slurmdbd:
+    image: giovtorres/slurm-docker-cluster:${SLURM_VERSION:-25.11.4}
+    init: true
+    command: ["bash", "-c", "cp /tmp/slurmdbd.conf /etc/slurm/slurmdbd.conf && chown slurm:slurm /etc/slurm/slurmdbd.conf && chmod 600 /etc/slurm/slurmdbd.conf && exec gosu slurm /usr/sbin/slurmdbd -Dvvv"]
+    hostname: slurmdbd
+    container_name: slurm-slurmdbd
+    environment:
+      MYSQL_USER: slurm
+      MYSQL_PASSWORD: password
+    volumes:
+      - etc_munge:/etc/munge
+      - ./slurm.conf:/etc/slurm/slurm.conf
+      - ./slurmdbd.conf:/tmp/slurmdbd.conf:ro
+      - ./gres.conf:/etc/slurm/gres.conf
+      - var_log_slurm:/var/log/slurm
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - slurm-net
+    healthcheck:
+      test: ["CMD-SHELL", "pidof slurmdbd"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  slurmctld:
+    image: giovtorres/slurm-docker-cluster:${SLURM_VERSION:-25.11.4}
+    init: true
+    command: ["slurmctld"]
+    hostname: slurmctld
+    container_name: slurm-slurmctld
+    privileged: true
+    environment:
+      SSH_ENABLE: "true"
+    volumes:
+      - etc_munge:/etc/munge
+      - ./slurm.conf:/etc/slurm/slurm.conf
+      - ./slurmdbd.conf:/etc/slurm/slurmdbd.conf
+      - ./gres.conf:/etc/slurm/gres.conf
+      - slurm_shared_fs:/shared
+      - var_log_slurm:/var/log/slurm
+      - ${SSH_AUTHORIZED_KEYS:-/dev/null}:/tmp/authorized_keys_host:ro
+    ports:
+      - "${SLURM_SSH_PORT:-2222}:22"
+    depends_on:
+      slurmdbd:
+        condition: service_healthy
+    networks:
+      - slurm-net
+    healthcheck:
+      test: ["CMD-SHELL", "scontrol ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  c1:
+    image: giovtorres/slurm-docker-cluster:${SLURM_VERSION:-25.11.4}
+    init: true
+    command: ["slurmd", "-Dvvv"]
+    hostname: c1
+    container_name: slurm-c1
+    privileged: true
+    volumes:
+      - etc_munge:/etc/munge
+      - ./slurm.conf:/etc/slurm/slurm.conf
+      - ./slurmdbd.conf:/etc/slurm/slurmdbd.conf
+      - ./gres.conf:/etc/slurm/gres.conf
+      - slurm_shared_fs:/shared
+      - var_log_slurm:/var/log/slurm
+    depends_on:
+      slurmctld:
+        condition: service_healthy
+    networks:
+      - slurm-net
+    healthcheck:
+      test: ["CMD-SHELL", "pidof slurmd"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  c2:
+    image: giovtorres/slurm-docker-cluster:${SLURM_VERSION:-25.11.4}
+    init: true
+    command: ["slurmd", "-Dvvv"]
+    hostname: c2
+    container_name: slurm-c2
+    privileged: true
+    volumes:
+      - etc_munge:/etc/munge
+      - ./slurm.conf:/etc/slurm/slurm.conf
+      - ./slurmdbd.conf:/etc/slurm/slurmdbd.conf
+      - ./gres.conf:/etc/slurm/gres.conf
+      - slurm_shared_fs:/shared
+      - var_log_slurm:/var/log/slurm
+    depends_on:
+      slurmctld:
+        condition: service_healthy
+    networks:
+      - slurm-net
+    healthcheck:
+      test: ["CMD-SHELL", "pidof slurmd"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+volumes:
+  etc_munge:
+    name: slurm_etc_munge
+  mysql_data:
+    name: slurm_mysql_data
+  slurm_shared_fs:
+    name: slurm_shared_fs
+  var_log_slurm:
+    name: slurm_var_log_slurm
+
+networks:
+  slurm-net:
+    name: slurm-net
+    driver: bridge
