@@ -116,13 +116,6 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu, compute, utility]
 
   c2:
     image: giovtorres/slurm-docker-cluster:${SLURM_VERSION:-25.11.4}

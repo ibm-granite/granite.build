@@ -1,0 +1,13 @@
+# GPU override for Docker SLURM cluster.
+# Applied automatically by setup-slurm.sh when a GPU is detected.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+
+services:
+  c1:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]

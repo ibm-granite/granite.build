@@ -64,16 +64,44 @@ else
     log "SSH key already exists at $SSH_KEY_PATH."
 fi
 
-# ---- Step 2: Start the SLURM cluster ----
+# ---- Step 2: Detect GPU and configure SLURM ----
+# Set SLURM_NO_GPU=1 to force the CPU-only path even when a GPU is present.
+
+COMPOSE_FILES="-f $SCRIPT_DIR/docker-compose.yml"
+HAS_GPU=false
+
+if [ "${SLURM_NO_GPU:-0}" = "1" ] || ! nvidia-smi -L >/dev/null 2>&1; then
+    log "No GPU detected (or SLURM_NO_GPU=1) — CPU-only cluster."
+    # CPU-only: empty gres.conf, no GPU in node definitions
+    cat > "$SCRIPT_DIR/gres.conf" <<'GRESEOF'
+# No GPU resources available
+GRESEOF
+    sed -i 's/^NodeName=c1.*/NodeName=c1 CPUs=2 RealMemory=1024 State=UNKNOWN/' "$SCRIPT_DIR/slurm.conf"
+    sed -i '/^GresTypes=/d' "$SCRIPT_DIR/slurm.conf"
+else
+    HAS_GPU=true
+    log "GPU detected — enabling GPU passthrough on c1."
+    COMPOSE_FILES="$COMPOSE_FILES -f $SCRIPT_DIR/docker-compose.gpu.yml"
+    # GPU: enable nvidia auto-detection and add GRES to c1
+    cat > "$SCRIPT_DIR/gres.conf" <<'GRESEOF'
+AutoDetect=nvidia
+GRESEOF
+    sed -i 's/^NodeName=c1.*/NodeName=c1 CPUs=2 RealMemory=1024 Gres=gpu:1 State=UNKNOWN/' "$SCRIPT_DIR/slurm.conf"
+    if ! grep -q '^GresTypes=' "$SCRIPT_DIR/slurm.conf"; then
+        sed -i '/^# ---- Compute nodes/i GresTypes=gpu\n' "$SCRIPT_DIR/slurm.conf"
+    fi
+fi
+
+# ---- Step 3: Start the SLURM cluster ----
 
 log "Starting Docker SLURM cluster..."
 export SSH_AUTHORIZED_KEYS="${SSH_KEY_PATH}.pub"
 export SLURM_SSH_PORT
 
-$COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" \
+$COMPOSE_CMD $COMPOSE_FILES \
     --project-name slurm-dev up -d
 
-log "Waiting for SLURM cluster to become ready..."
+log "Waiting for SLURM cluster to become ready (may take 1-2 minutes)..."
 timeout=240
 elapsed=0
 while true; do
@@ -97,7 +125,7 @@ while true; do
 done
 log "SLURM cluster is ready with $node_count compute nodes."
 
-# ---- Step 3: Verify SSH connectivity ----
+# ---- Step 4: Verify SSH connectivity ----
 
 log "Verifying SSH connectivity to slurmctld..."
 ssh_ok=false
@@ -115,7 +143,7 @@ if [ "$ssh_ok" = false ]; then
 fi
 log "SSH connectivity verified."
 
-# ---- Step 4: Configure SkyPilot ----
+# ---- Step 5: Configure SkyPilot ----
 
 log "Configuring SkyPilot for SLURM cluster..."
 mkdir -p "$(dirname "$SKY_CONFIG")"
@@ -163,7 +191,7 @@ PYEOF
 
 log "SkyPilot config written to $SKY_CONFIG."
 
-# ---- Step 5: Verify cluster health ----
+# ---- Step 6: Verify cluster health ----
 
 log "Verifying SLURM cluster health..."
 NODE_COUNT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
