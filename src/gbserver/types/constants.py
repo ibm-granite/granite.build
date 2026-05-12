@@ -340,6 +340,19 @@ GBSERVER_LSF_TRANSIENT_ERROR_RETRY_DELAY = int(
 GBSERVER_MONITORING_GRACE_PERIOD = int(
     os.getenv(ENV_VAR_PREFIX + "_MONITORING_GRACE_PERIOD", "30"), base=10
 )
+# Maximum duration (seconds) of sustained API failures before declaring fatal.
+# Replaces the old count-based MAX_CONSECUTIVE_API_FAILURES approach.
+GBSERVER_API_FAILURE_TIMEOUT = int(
+    os.getenv(ENV_VAR_PREFIX + "_API_FAILURE_TIMEOUT", "300"), base=10
+)
+# Maximum number of retries for helm uninstall during cleanup
+GBSERVER_CLEANUP_MAX_RETRIES = int(
+    os.getenv(ENV_VAR_PREFIX + "_CLEANUP_MAX_RETRIES", "5"), base=10
+)
+# Base delay (seconds) between cleanup retries (exponential backoff: delay * 2^attempt)
+GBSERVER_CLEANUP_RETRY_BASE_DELAY = int(
+    os.getenv(ENV_VAR_PREFIX + "_CLEANUP_RETRY_BASE_DELAY", "10"), base=10
+)
 USE_LESS_COMPUTE_ON_DRY_RUN = (
     os.getenv(ENV_VAR_USE_LESS_COMPUTE_ON_DRY_RUN, "True").lower() == "true"
 )
