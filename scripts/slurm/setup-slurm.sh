@@ -21,7 +21,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SLURM_SSH_PORT="${SLURM_SSH_PORT:-2222}"
 SSH_KEY_PATH="${HOME}/.ssh/slurm_docker_key"
-SKY_CONFIG="${HOME}/.sky/config.yaml"
 
 # ---- Helpers ----
 
@@ -144,52 +143,23 @@ fi
 log "SSH connectivity verified."
 
 # ---- Step 5: Configure SkyPilot ----
+# SkyPilot >=0.12 reads SLURM cluster SSH config from ~/.slurm/config.
 
-log "Configuring SkyPilot for SLURM cluster..."
-mkdir -p "$(dirname "$SKY_CONFIG")"
+SLURM_SSH_CONFIG="${HOME}/.slurm/config"
+log "Configuring SkyPilot SLURM SSH config at $SLURM_SSH_CONFIG..."
+mkdir -p "$(dirname "$SLURM_SSH_CONFIG")"
 
-python3 - "$SKY_CONFIG" "$SSH_KEY_PATH" "$SLURM_SSH_PORT" <<'PYEOF'
-import sys, os
+cat > "$SLURM_SSH_CONFIG" <<SSHEOF
+Host slurm-docker
+    HostName localhost
+    User root
+    Port ${SLURM_SSH_PORT}
+    IdentityFile ${SSH_KEY_PATH}
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+SSHEOF
 
-try:
-    import yaml
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "pyyaml"])
-    import yaml
-
-config_path = sys.argv[1]
-ssh_key     = sys.argv[2]
-ssh_port    = int(sys.argv[3])
-
-if os.path.exists(config_path):
-    with open(config_path) as f:
-        config = yaml.safe_load(f) or {}
-else:
-    config = {}
-
-slurm_cluster = {
-    "name": "slurm-docker",
-    "ips": ["localhost"],
-    "auth": {
-        "ssh_user": "root",
-        "ssh_private_key": ssh_key,
-    },
-    "ssh_port": ssh_port,
-    "python": "/usr/bin/python3",
-}
-
-if "slurm" not in config:
-    config["slurm"] = {}
-config["slurm"]["cluster"] = slurm_cluster
-
-with open(config_path, "w") as f:
-    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-
-print(f"Wrote SLURM config to {config_path}")
-PYEOF
-
-log "SkyPilot config written to $SKY_CONFIG."
+log "SkyPilot SLURM config written to $SLURM_SSH_CONFIG."
 
 # ---- Step 6: Verify cluster health ----
 
@@ -214,8 +184,8 @@ echo ""
 log "Setup complete."
 log ""
 log "Quick reference:"
-log "  SSH to login node:   ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@localhost"
-log "  Run sinfo:           ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@localhost sinfo"
-log "  Submit a test job:   ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@localhost sbatch --wrap 'hostname'"
+log "  SSH to login node:   ssh -F ~/.slurm/config slurm-docker"
+log "  Run sinfo:           ssh -F ~/.slurm/config slurm-docker sinfo"
+log "  Submit a test job:   ssh -F ~/.slurm/config slurm-docker sbatch --wrap 'hostname'"
 log "  SkyPilot check:      sky check"
 log "  Teardown:            bash $SCRIPT_DIR/teardown-slurm.sh"
