@@ -2,9 +2,9 @@
 # setup-slurm.sh -- Bring up a Docker SLURM cluster and configure SkyPilot.
 #
 # This script:
-#   1. Starts the Docker SLURM cluster (slurmctld, c1, c2, mysql, slurmdbd, auth)
-#   2. Generates an SSH key pair for passwordless access to the login node
-#   3. Injects the public key into slurmctld's authorized_keys
+#   1. Generates an SSH key pair for passwordless access to the login node
+#   2. Starts the Docker SLURM cluster (slurmctld, c1, c2, mysql, slurmdbd)
+#   3. Verifies SSH connectivity to slurmctld
 #   4. Configures ~/.sky/config.yaml so SkyPilot discovers the SLURM cluster
 #   5. Verifies the cluster is healthy (sinfo shows 2 compute nodes)
 #
@@ -13,7 +13,7 @@
 #
 # Environment variables:
 #   SLURM_SSH_PORT  - Host port for SSH to slurmctld (default: 2222)
-#   SLURM_TAG       - Docker image tag for giovtorres/docker-slurm (default: latest)
+#   SLURM_VERSION   - SLURM version / image tag (default: 25.11.4)
 #   DOCKER          - Container runtime: docker or podman (default: auto-detect)
 
 set -euo pipefail
@@ -44,7 +44,6 @@ detect_docker() {
 DOCKER_CMD="$(detect_docker)"
 COMPOSE_CMD="$DOCKER_CMD compose"
 
-# Test that compose subcommand works; fall back to docker-compose binary
 if ! $COMPOSE_CMD version &>/dev/null 2>&1; then
     if command -v docker-compose &>/dev/null; then
         COMPOSE_CMD="docker-compose"
@@ -53,26 +52,9 @@ if ! $COMPOSE_CMD version &>/dev/null 2>&1; then
     fi
 fi
 
-# ---- Step 1: Start the SLURM cluster ----
-
-log "Starting Docker SLURM cluster..."
-SLURM_SSH_PORT="$SLURM_SSH_PORT" \
-    $COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" \
-    --project-name slurm-dev up -d
-
-log "Waiting for slurmctld to become healthy..."
-timeout=180
-elapsed=0
-while ! $DOCKER_CMD exec slurm-slurmctld sinfo --noheader &>/dev/null; do
-    sleep 3
-    elapsed=$((elapsed + 3))
-    if [ "$elapsed" -ge "$timeout" ]; then
-        err "Timed out waiting for slurmctld (${timeout}s). Check: $DOCKER_CMD logs slurm-slurmctld"
-    fi
-done
-log "slurmctld is healthy."
-
-# ---- Step 2: Generate SSH key pair ----
+# ---- Step 1: Generate SSH key pair ----
+# Must happen before docker compose up because the public key is
+# bind-mounted into slurmctld via SSH_AUTHORIZED_KEYS.
 
 if [ ! -f "$SSH_KEY_PATH" ]; then
     log "Generating SSH key pair at $SSH_KEY_PATH..."
@@ -82,18 +64,41 @@ else
     log "SSH key already exists at $SSH_KEY_PATH."
 fi
 
-# ---- Step 3: Inject public key into slurmctld ----
+# ---- Step 2: Start the SLURM cluster ----
 
-log "Injecting SSH public key into slurmctld..."
-PUB_KEY="$(cat "${SSH_KEY_PATH}.pub")"
-$DOCKER_CMD exec slurm-slurmctld bash -c "
-    mkdir -p /root/.ssh && chmod 700 /root/.ssh
-    grep -qF '${PUB_KEY}' /root/.ssh/authorized_keys 2>/dev/null || \
-        echo '${PUB_KEY}' >> /root/.ssh/authorized_keys
-    chmod 600 /root/.ssh/authorized_keys
-"
+log "Starting Docker SLURM cluster..."
+export SSH_AUTHORIZED_KEYS="${SSH_KEY_PATH}.pub"
+export SLURM_SSH_PORT
 
-# Verify SSH connectivity
+$COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" \
+    --project-name slurm-dev up -d
+
+log "Waiting for SLURM cluster to become ready..."
+timeout=240
+elapsed=0
+while true; do
+    node_count=$($DOCKER_CMD exec slurm-slurmctld sinfo --noheader -N 2>/dev/null | wc -l || echo 0)
+    if [ "$node_count" -ge 2 ]; then
+        break
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+    if [ "$elapsed" -ge "$timeout" ]; then
+        warn "Timed out after ${timeout}s. Current container status:"
+        $COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" --project-name slurm-dev ps
+        warn "slurmctld logs:"
+        $DOCKER_CMD logs slurm-slurmctld 2>&1 | tail -20
+        warn "c1 logs:"
+        $DOCKER_CMD logs slurm-c1 2>&1 | tail -10
+        warn "c2 logs:"
+        $DOCKER_CMD logs slurm-c2 2>&1 | tail -10
+        err "Cluster not ready. Expected 2 compute nodes but found $node_count."
+    fi
+done
+log "SLURM cluster is ready with $node_count compute nodes."
+
+# ---- Step 3: Verify SSH connectivity ----
+
 log "Verifying SSH connectivity to slurmctld..."
 ssh_ok=false
 for i in $(seq 1 10); do
@@ -115,14 +120,12 @@ log "SSH connectivity verified."
 log "Configuring SkyPilot for SLURM cluster..."
 mkdir -p "$(dirname "$SKY_CONFIG")"
 
-# Build the SLURM stanza for ~/.sky/config.yaml using Python for safe YAML handling
 python3 - "$SKY_CONFIG" "$SSH_KEY_PATH" "$SLURM_SSH_PORT" <<'PYEOF'
 import sys, os
 
 try:
     import yaml
 except ImportError:
-    # Fallback: install PyYAML if missing
     import subprocess
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "pyyaml"])
     import yaml
@@ -131,14 +134,12 @@ config_path = sys.argv[1]
 ssh_key     = sys.argv[2]
 ssh_port    = int(sys.argv[3])
 
-# Load existing config or start fresh
 if os.path.exists(config_path):
     with open(config_path) as f:
         config = yaml.safe_load(f) or {}
 else:
     config = {}
 
-# Define the SLURM cluster configuration for SkyPilot
 slurm_cluster = {
     "name": "slurm-docker",
     "ips": ["localhost"],
@@ -150,8 +151,6 @@ slurm_cluster = {
     "python": "/usr/bin/python3",
 }
 
-# Place under allowed_clouds or slurm section depending on SkyPilot version.
-# SkyPilot >= 0.7 uses 'allowed_clouds' list and 'slurm' key.
 if "slurm" not in config:
     config["slurm"] = {}
 config["slurm"]["cluster"] = slurm_cluster
@@ -178,7 +177,6 @@ else
     log "SLURM cluster is ready: $NODE_COUNT compute nodes."
 fi
 
-# Show cluster status
 echo ""
 log "Cluster status:"
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
