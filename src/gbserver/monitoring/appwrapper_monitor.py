@@ -35,7 +35,10 @@ from gbserver.types.buildevent import (
     EntityRunMetadata,
     EventPayload,
 )
-from gbserver.types.constants import GBSERVER_API_FAILURE_TIMEOUT, GBSERVER_MONITORING_GRACE_PERIOD
+from gbserver.types.constants import (
+    GBSERVER_API_FAILURE_TIMEOUT,
+    GBSERVER_MONITORING_GRACE_PERIOD,
+)
 from gbserver.types.metrics import Metric, MetricMetadata, MetricName, MetricUnits
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_utc_time

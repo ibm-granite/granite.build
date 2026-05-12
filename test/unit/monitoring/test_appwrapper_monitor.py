@@ -85,7 +85,9 @@ class TestTimeBasedThreshold:
     def test_is_api_failure_timeout_true_after_threshold(self):
         """Timeout if duration exceeds threshold."""
         monitor, _, _ = _make_monitor()
-        monitor._api_failure_start_time = time.monotonic() - 400  # 400s ago (> 300 default)
+        monitor._api_failure_start_time = (
+            time.monotonic() - 400
+        )  # 400s ago (> 300 default)
         assert monitor._is_api_failure_timeout() is True
 
     def test_unpause_resets_api_failure_start_time(self):
