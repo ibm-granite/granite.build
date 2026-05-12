@@ -144,12 +144,22 @@ log "SSH connectivity verified."
 
 # ---- Step 5: Configure SkyPilot ----
 # SkyPilot >=0.12 reads SLURM cluster SSH config from ~/.slurm/config.
+# We manage only the slurm-docker block, leaving other entries untouched.
 
 SLURM_SSH_CONFIG="${HOME}/.slurm/config"
+MARKER_BEGIN="# BEGIN slurm-docker (managed by setup-slurm.sh)"
+MARKER_END="# END slurm-docker"
+
 log "Configuring SkyPilot SLURM SSH config at $SLURM_SSH_CONFIG..."
 mkdir -p "$(dirname "$SLURM_SSH_CONFIG")"
+touch "$SLURM_SSH_CONFIG"
 
-cat > "$SLURM_SSH_CONFIG" <<SSHEOF
+# Remove existing slurm-docker block if present
+sed -i "/$MARKER_BEGIN/,/$MARKER_END/d" "$SLURM_SSH_CONFIG"
+
+# Append the managed block
+cat >> "$SLURM_SSH_CONFIG" <<SSHEOF
+$MARKER_BEGIN
 Host slurm-docker
     HostName localhost
     User root
@@ -157,6 +167,7 @@ Host slurm-docker
     IdentityFile ${SSH_KEY_PATH}
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
+$MARKER_END
 SSHEOF
 
 log "SkyPilot SLURM config written to $SLURM_SSH_CONFIG."
