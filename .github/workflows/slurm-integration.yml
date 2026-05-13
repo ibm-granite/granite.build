@@ -1,0 +1,46 @@
+name: SLURM Integration Tests
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'src/gbserver/environment/skypilot.py'
+      - 'scripts/slurm/**'
+      - 'test/integration/environment/**'
+      - '.github/workflows/slurm-integration.yml'
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'src/gbserver/environment/skypilot.py'
+      - 'scripts/slurm/**'
+      - 'test/integration/environment/**'
+      - '.github/workflows/slurm-integration.yml'
+
+jobs:
+  slurm-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[standalone,thirdparty,dev]"
+
+      - name: Start Docker SLURM cluster
+        run: bash scripts/slurm/setup-slurm.sh
+
+      - name: Verify SkyPilot sees SLURM
+        run: sky check --cloud slurm
+
+      - name: Run SLURM integration tests
+        run: pytest -s -m skypilot_integration test/integration/environment/ -v
+
+      - name: Teardown SLURM cluster
+        if: always()
+        run: bash scripts/slurm/teardown-slurm.sh
