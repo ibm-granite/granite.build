@@ -1,0 +1,19 @@
+name: slurm-e2e-test
+description: End-to-end lifecycle test for SLURM via SkyPilot
+targets:
+  - name: echo-test
+    steps:
+      - name: hello
+        environment_configs:
+          Skypilot:
+            default_launcher: slurm
+            launchers:
+              slurm:
+                type: skypilot
+                config:
+                  resources:
+                    cloud: slurm
+                    cluster: slurm-docker
+                    zone: normal
+                  run: |
+                    echo hello && hostname
