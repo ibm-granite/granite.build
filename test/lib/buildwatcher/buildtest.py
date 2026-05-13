@@ -136,13 +136,12 @@ class ClassTestedEnum(Enum):
 
 class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
-
     def setup_method(self: Self, method):
         # breakpoint()
-        # Only use real HF calls when extended testing is enabled. 
+        # Only use real HF calls when extended testing is enabled.
         if not is_extended_testing_enabled:
             self._enable_artifact_mocks()
-            
+
         self.class_tested = None
         run_locally = getattr(self, "run_locally", False)
         logger.info(f"Test to be run locally: {run_locally}")
@@ -167,7 +166,6 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         )
 
         super().setup_method(method)
-
 
     def teardown_method(self: Self, method):
         if not is_extended_testing_enabled:
@@ -920,6 +918,15 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 build_id,
                 f"Artifact status is {artifact.status}, but expected one of {status_list}",
             )
+            try:
+                uri = URI.get_uri(artifact.uri)
+            except Exception as e:
+                raise AssertionError(
+                    f"Could not resolve artifact uri {artifact.uri} to an object: {e}"
+                ) from e
+            assert (
+                uri.exists()
+            ), f"URI {artifact.uri} does not exist in artifact storage"
 
     def _verify_skipped_target_and_steps(
         self: Self,
