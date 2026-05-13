@@ -1,0 +1,7 @@
+base_uri: "s3://"
+config:
+  cos_bucket_name: "gb-checkpoints"
+  cos_endpoint: "http://gb-minio:9000"
+  cos_region: "us-east-1"
+  cos_access_key_id_secret_name: ""
+  cos_secret_access_key_secret_name: ""

@@ -75,6 +75,7 @@ services:
       - ./slurmdbd.conf:/etc/slurm/slurmdbd.conf
       - ./gres.conf:/etc/slurm/gres.conf
       - slurm_shared_fs:/shared
+      - slurm_home:/root
       - var_log_slurm:/var/log/slurm
       - ${SSH_AUTHORIZED_KEYS:-/dev/null}:/tmp/authorized_keys_host:ro
     ports:
@@ -98,13 +99,17 @@ services:
     hostname: c1
     container_name: slurm-c1
     privileged: true
+    environment:
+      SSH_ENABLE: "true"
     volumes:
       - etc_munge:/etc/munge
       - ./slurm.conf:/etc/slurm/slurm.conf
       - ./slurmdbd.conf:/etc/slurm/slurmdbd.conf
       - ./gres.conf:/etc/slurm/gres.conf
       - slurm_shared_fs:/shared
+      - slurm_home:/root
       - var_log_slurm:/var/log/slurm
+      - ${SSH_AUTHORIZED_KEYS:-/dev/null}:/tmp/authorized_keys_host:ro
     depends_on:
       slurmctld:
         condition: service_healthy
@@ -124,13 +129,17 @@ services:
     hostname: c2
     container_name: slurm-c2
     privileged: true
+    environment:
+      SSH_ENABLE: "true"
     volumes:
       - etc_munge:/etc/munge
       - ./slurm.conf:/etc/slurm/slurm.conf
       - ./slurmdbd.conf:/etc/slurm/slurmdbd.conf
       - ./gres.conf:/etc/slurm/gres.conf
       - slurm_shared_fs:/shared
+      - slurm_home:/root
       - var_log_slurm:/var/log/slurm
+      - ${SSH_AUTHORIZED_KEYS:-/dev/null}:/tmp/authorized_keys_host:ro
     depends_on:
       slurmctld:
         condition: service_healthy
@@ -150,6 +159,8 @@ volumes:
     name: slurm_mysql_data
   slurm_shared_fs:
     name: slurm_shared_fs
+  slurm_home:
+    name: slurm_home
   var_log_slurm:
     name: slurm_var_log_slurm
 

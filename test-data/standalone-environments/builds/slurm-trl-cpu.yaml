@@ -5,7 +5,7 @@ granite.build:
       environment_uri: space://environments/slurm
       outputs:
         finetuned_model:
-          uri: file:outputs/slurm-trl-finetune/
+          uri: s3://gb-checkpoints/outputs/trl-finetune/
       steps:
         - step_uri: space://steps/trl-finetune
           launcher: slurm-trl-finetune
@@ -13,5 +13,7 @@ granite.build:
             launcher_config:
               envs:
                 LLMB_HF_MODEL_NAME: "ibm-granite/granite-4.0-350m"
-                LLMB_BASH_OUTPUT_DIR: "/tmp/gb-outputs/trl"
+                LLMB_BASH_OUTPUT_DIR: "/root/gb-outputs/trl"
                 LLMB_ARTIFACT_OUTPUT_ID: "finetuned_model"
+                AWS_ACCESS_KEY_ID: "minioadmin"
+                AWS_SECRET_ACCESS_KEY: "minioadmin"

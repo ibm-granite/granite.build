@@ -3,3 +3,9 @@ type: Skypilot
 config:
   default_cloud: slurm
   idle_minutes_to_autostop: 0
+assetstores:
+  - store_uri: space://assetstores/cos/
+    push:
+      - mode: default
+        config:
+          step_uri: space://steps/s3push

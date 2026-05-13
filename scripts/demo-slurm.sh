@@ -44,6 +44,8 @@ API="http://127.0.0.1:${PORT}/api/v1"
 LOG_FILE="/tmp/gbserver-slurm-demo-$(date +%Y%m%d-%H%M%S).log"
 export GB_ENVIRONMENT=STANDALONE
 export GBSERVER_HOST="http://127.0.0.1:${PORT}"
+export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-minioadmin}"
+export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-minioadmin}"
 
 # Colors
 GREEN='\033[0;32m'
@@ -85,6 +87,15 @@ if ! sky check slurm 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -q "Slurm.*enabled"
     exit 1
 fi
 ok "SkyPilot SLURM enabled"
+
+# Ensure MinIO is running (S3-compatible artifact store)
+if ! curl -sf http://localhost:9000/minio/health/ready >/dev/null 2>&1; then
+    step "Starting MinIO (S3 artifact store)"
+    bash scripts/minio/setup-minio.sh
+    ok "MinIO ready"
+else
+    ok "MinIO already running"
+fi
 
 # --- 1. Clean state ---
 step "Preparing clean environment"
