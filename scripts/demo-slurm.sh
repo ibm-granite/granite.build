@@ -4,14 +4,16 @@
 # Quick start:
 #   1. make g4os-skypilot-venv PYTHON=python3.13
 #   2. source .venv/bin/activate
-#   3. make slurm-setup
-#   4. bash scripts/demo-slurm.sh
+#   3. make minio-setup
+#   4. make slurm-setup
+#   5. bash scripts/demo-slurm.sh
 #
 # This script runs the same workloads as scripts/demo-standalone.sh but on
 # a Docker SLURM cluster via SkyPilot instead of Docker containers.
 #
 # Requirements:
 #   - Docker SLURM cluster running (make slurm-setup)
+#   - MinIO running for artifact storage (make minio-setup, or auto-started)
 #   - SkyPilot configured for SLURM (sky check shows Slurm: enabled)
 #
 # Usage:
