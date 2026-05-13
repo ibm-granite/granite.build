@@ -36,7 +36,7 @@ jobs:
         run: bash scripts/slurm/setup-slurm.sh
 
       - name: Verify SkyPilot sees SLURM
-        run: sky check --cloud slurm
+        run: sky check slurm
 
       - name: Run SLURM integration tests
         run: pytest -s -m skypilot_integration test/integration/environment/ -v

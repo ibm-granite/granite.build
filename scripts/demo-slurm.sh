@@ -79,9 +79,9 @@ if ! ssh -F ~/.slurm/config -o ConnectTimeout=5 slurm-docker sinfo --noheader &>
 fi
 ok "SLURM cluster is running"
 
-if ! sky check --cloud slurm &>/dev/null; then
+if ! sky check slurm 2>&1 | grep -q "Slurm.*enabled"; then
     echo "ERROR: SkyPilot does not see SLURM."
-    echo "  Check: sky check"
+    echo "  Check: sky check slurm"
     exit 1
 fi
 ok "SkyPilot SLURM enabled"
