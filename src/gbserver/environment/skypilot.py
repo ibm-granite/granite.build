@@ -114,12 +114,21 @@ class Skypilot(Environment):
 
             # Build sky.Resources
             res_config = launcher_config.get("resources", {})
+
+            # Build infra string: supports 'slurm/cluster/partition' format
+            infra = res_config.get("infra") or cloud
+            if not res_config.get("infra") and res_config.get("cluster"):
+                infra = f"{cloud}/{res_config['cluster']}"
+                if res_config.get("zone"):
+                    infra = f"{infra}/{res_config['zone']}"
+
             resources = sky.Resources(
-                infra=cloud,
+                infra=infra,
                 accelerators=res_config.get("accelerators"),
                 cpus=res_config.get("cpus"),
                 memory=res_config.get("memory"),
                 disk_size=res_config.get("disk_size"),
+                zone=res_config.get("zone"),
                 image_id=launcher_config.get("image_id"),
             )
 
