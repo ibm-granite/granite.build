@@ -1,0 +1,20 @@
+granite.build:
+  name: slurm-trl-test
+  targets:
+    finetune:
+      environment_uri: space://environments/slurm
+      inputs:
+        model:
+          uri: hf:///ibm-granite/granite-4.0-350m
+      outputs:
+        finetuned_model:
+          uri: file:outputs/slurm-trl-finetune/
+      steps:
+        - step_uri: space://steps/trl-finetune
+          launcher: slurm-trl-finetune
+          config:
+            launcher_config:
+              envs:
+                LLMB_HF_MODEL_NAME: "ibm-granite/granite-4.0-350m"
+                LLMB_BASH_OUTPUT_DIR: "/tmp/gb-outputs/trl"
+                LLMB_ARTIFACT_OUTPUT_ID: "finetuned_model"
