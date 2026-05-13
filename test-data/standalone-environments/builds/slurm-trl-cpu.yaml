@@ -3,9 +3,6 @@ granite.build:
   targets:
     finetune:
       environment_uri: space://environments/slurm
-      inputs:
-        model:
-          uri: hf:///ibm-granite/granite-4.0-350m
       outputs:
         finetuned_model:
           uri: file:outputs/slurm-trl-finetune/

@@ -3,9 +3,6 @@ granite.build:
   targets:
     evaluate:
       environment_uri: space://environments/slurm
-      inputs:
-        model:
-          uri: hf:///ibm-granite/granite-4.0-350m
       outputs:
         eval_results:
           uri: file:outputs/slurm-unitxt-eval/
