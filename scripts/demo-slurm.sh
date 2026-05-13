@@ -5,7 +5,7 @@
 #   1. make g4os-skypilot-venv PYTHON=python3.13
 #   2. source .venv/bin/activate
 #   3. make slurm-setup
-#   4. HF_TOKEN=<your-token> bash scripts/demo-slurm.sh
+#   4. bash scripts/demo-slurm.sh
 #
 # This script runs the same workloads as scripts/demo-standalone.sh but on
 # a Docker SLURM cluster via SkyPilot instead of Docker containers.
@@ -13,12 +13,11 @@
 # Requirements:
 #   - Docker SLURM cluster running (make slurm-setup)
 #   - SkyPilot configured for SLURM (sky check shows Slurm: enabled)
-#   - HF_TOKEN env var for model download
 #
 # Usage:
-#   HF_TOKEN=<token> bash scripts/demo-slurm.sh
-#   HF_TOKEN=<token> bash scripts/demo-slurm.sh --trl-only
-#   HF_TOKEN=<token> bash scripts/demo-slurm.sh --unitxt-only
+#   bash scripts/demo-slurm.sh
+#   bash scripts/demo-slurm.sh --trl-only
+#   bash scripts/demo-slurm.sh --unitxt-only
 
 set -euo pipefail
 
@@ -30,7 +29,7 @@ for arg in "$@"; do
         --trl-only)   RUN_UNITXT=false ;;
         --unitxt-only) RUN_TRL=false ;;
         --help|-h)
-            echo "Usage: HF_TOKEN=<token> bash scripts/demo-slurm.sh [--trl-only | --unitxt-only]"
+            echo "Usage: bash scripts/demo-slurm.sh [--trl-only | --unitxt-only]"
             echo "  --trl-only    Run only the TRL fine-tuning build"
             echo "  --unitxt-only Run only the unitxt evaluation build"
             exit 0
@@ -72,13 +71,6 @@ trap cleanup EXIT
 
 # --- 0. Pre-flight checks ---
 step "Pre-flight checks"
-
-if [ -z "${HF_TOKEN:-}" ]; then
-    echo "ERROR: HF_TOKEN environment variable is required for model download."
-    echo "  export HF_TOKEN=hf_..."
-    exit 1
-fi
-ok "HF_TOKEN is set"
 
 if ! ssh -F ~/.slurm/config -o ConnectTimeout=5 slurm-docker sinfo --noheader &>/dev/null; then
     echo "ERROR: Docker SLURM cluster not reachable."
