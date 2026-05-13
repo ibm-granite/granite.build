@@ -918,10 +918,12 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 build_id,
                 f"Artifact status is {artifact.status}, but expected one of {status_list}",
             )
-            uri = URI.get_uri(artifact.uri)
-            assert (
-                uri is not None
-            ), f"Could not resovle artifact uri {artifact.uri} to an object"
+            try:
+                uri = URI.get_uri(artifact.uri)
+            except Exception as e:
+                raise AssertionError(
+                    f"Could not resolve artifact uri {artifact.uri} to an object: {e}"
+                ) from e
             assert (
                 uri.exists()
             ), f"URI {artifact.uri} does not exist in artifact storage"
