@@ -254,6 +254,59 @@ class AppWrapperMonitor(MonitorBase):
             )
             return False
 
+    async def _handle_api_failure_timeout(self: Self) -> bool:
+        """
+        Handle the case where sustained API failures have exceeded the timeout.
+
+        Performs a secondary pod liveness check. If pods are still running, resets
+        the failure timer (extends grace). Otherwise, publishes a fatal failure event
+        and stops the monitor.
+
+        Returns:
+            True if the monitor should stop (fatal failure), False if grace was extended.
+        """
+        pods_alive = await self._check_pod_liveness()
+        if pods_alive:
+            logger.warning(
+                "[AWMonitor launch_id %s] AppWrapper API unreachable for >%ds "
+                "but pods still Running — extending grace period",
+                self.launch_id,
+                GBSERVER_API_FAILURE_TIMEOUT,
+            )
+            self._api_failure_start_time = None  # reset timer
+            return False
+
+        # Fatal failure — publish Failed event and stop
+        error_message = (
+            f"[AWMonitor launch_id {self.launch_id}] Failed to retrieve AppWrapper {self.name} status "
+            f"for over {GBSERVER_API_FAILURE_TIMEOUT} seconds. "
+            f"The AppWrapper may have been deleted or the Kubernetes API is unreachable. "
+            f"Treating this as a fatal error."
+        )
+        logger.error("%s", error_message)
+        payload = json.dumps(
+            {
+                "appwrapper": self.name,
+                "state": "Failed",
+                "previous_state": self._last_state,
+                "error": error_message,
+            },
+            indent=4,
+        )
+        build_event = BuildEvent(
+            run_metadata=self.entityrun_metadata,
+            type=BuildEventType.MESSAGE_EVENT,
+            payload=EventPayload.payload_parser(
+                event_type=BuildEventType.MESSAGE_EVENT,
+                data={"msg": f"\n```json\n{payload}\n```\n"},
+            ),
+        )
+        if self.event_q is not None:
+            await self.event_q.put(build_event)
+        await asyncio.sleep(GBSERVER_MONITORING_GRACE_PERIOD)
+        self.stop()
+        return True
+
     # ------------------------ override monitor() ------------------------
     async def monitor(self: Self) -> None:
         """Poll (or watch) the AppWrapper; publish on every state change."""
@@ -296,46 +349,8 @@ class AppWrapperMonitor(MonitorBase):
 
                     # Check if sustained API failures have exceeded the timeout
                     if self._is_api_failure_timeout():
-                        # Secondary check: are pods still running?
-                        pods_alive = await self._check_pod_liveness()
-                        if pods_alive:
-                            logger.warning(
-                                "[AWMonitor launch_id %s] AppWrapper API unreachable for >%ds "
-                                "but pods still Running — extending grace period",
-                                self.launch_id,
-                                GBSERVER_API_FAILURE_TIMEOUT,
-                            )
-                            self._api_failure_start_time = None  # reset timer
-                        else:
-                            # Fatal failure — publish Failed event and stop
-                            error_message = (
-                                f"[AWMonitor launch_id {self.launch_id}] Failed to retrieve AppWrapper {self.name} status "
-                                f"for over {GBSERVER_API_FAILURE_TIMEOUT} seconds. "
-                                f"The AppWrapper may have been deleted or the Kubernetes API is unreachable. "
-                                f"Treating this as a fatal error."
-                            )
-                            logger.error("%s", error_message)
-                            payload = json.dumps(
-                                {
-                                    "appwrapper": self.name,
-                                    "state": "Failed",
-                                    "previous_state": self._last_state,
-                                    "error": error_message,
-                                },
-                                indent=4,
-                            )
-                            build_event = BuildEvent(
-                                run_metadata=self.entityrun_metadata,
-                                type=BuildEventType.MESSAGE_EVENT,
-                                payload=EventPayload.payload_parser(
-                                    event_type=BuildEventType.MESSAGE_EVENT,
-                                    data={"msg": f"\n```json\n{payload}\n```\n"},
-                                ),
-                            )
-                            if self.event_q is not None:
-                                await self.event_q.put(build_event)
-                            await asyncio.sleep(GBSERVER_MONITORING_GRACE_PERIOD)
-                            self.stop()
+                        should_stop = await self._handle_api_failure_timeout()
+                        if should_stop:
                             return
 
                     await self._get_appwrapper_failed_pods()

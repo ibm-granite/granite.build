@@ -961,21 +961,59 @@ class K8s(Environment):
 
     async def cleanup_helm(self: Self, launch_id: str, **kwargs) -> None:
         """
-        Uninstalls a helm chart with retry on transient failures.
+        Uninstalls a helm chart and cleans up associated resources.
 
-        Retries with exponential backoff (base_delay * 2^attempt) to handle cases
-        where the K8s API is temporarily unreachable at cleanup time.
+        Performs helm uninstall with retry, then removes any orphaned RayClusters
+        that may survive the uninstall.
         """
-        from gbserver.types.constants import (
-            GBSERVER_CLEANUP_MAX_RETRIES,
-            GBSERVER_CLEANUP_RETRY_BASE_DELAY,
-        )
-
         if launch_id not in self.launched_releases:
             return
         release_name = self.launched_releases[launch_id]
         if release_name is None or release_name == "":
             return
+
+        await self._helm_uninstall_with_retry(release_name, launch_id)
+
+        # Safety net: explicitly delete RayClusters that may survive helm uninstall.
+        # Runs after helm uninstall completes, with increased timeout.
+        try:
+            await asyncio.wait_for(
+                self._delete_rayclusters_for_release(release_name, launch_id),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[K8s launch_id %s] RayCluster cleanup timed out after 30s, skipping",
+                launch_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "[K8s launch_id %s] RayCluster cleanup failed: %s",
+                launch_id,
+                e,
+            )
+
+    async def _helm_uninstall_with_retry(
+        self: Self, release_name: str, launch_id: str
+    ) -> None:
+        """
+        Executes helm uninstall with exponential backoff on transient failures.
+
+        Retries up to GBSERVER_CLEANUP_MAX_RETRIES times with exponential backoff
+        (base_delay * 2^attempt) to handle cases where the K8s API is temporarily
+        unreachable at cleanup time.
+
+        Args:
+            release_name: The helm release name to uninstall.
+            launch_id: The build launch identifier for logging.
+
+        Raises:
+            ValueError: If all retry attempts are exhausted.
+        """
+        from gbserver.types.constants import (
+            GBSERVER_CLEANUP_MAX_RETRIES,
+            GBSERVER_CLEANUP_RETRY_BASE_DELAY,
+        )
 
         max_attempts = GBSERVER_CLEANUP_MAX_RETRIES + 1
         for attempt in range(max_attempts):
@@ -1025,25 +1063,6 @@ class K8s(Environment):
                         os.unlink(kube_config_path)
                     except:
                         pass
-
-        # Safety net: explicitly delete RayClusters that may survive helm uninstall.
-        # Runs after helm uninstall completes, with increased timeout.
-        try:
-            await asyncio.wait_for(
-                self._delete_rayclusters_for_release(release_name, launch_id),
-                timeout=30,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "[K8s launch_id %s] RayCluster cleanup timed out after 30s, skipping",
-                launch_id,
-            )
-        except Exception as e:
-            logger.warning(
-                "[K8s launch_id %s] RayCluster cleanup failed: %s",
-                launch_id,
-                e,
-            )
 
     async def _delete_rayclusters_for_release(
         self: Self, release_name: str, launch_id: str
