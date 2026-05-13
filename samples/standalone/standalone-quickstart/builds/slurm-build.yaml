@@ -1,0 +1,21 @@
+name: slurm-hello-world
+description: Example build targeting the local Docker SLURM cluster
+targets:
+  - name: hello-gpu
+    steps:
+      - name: run-nvidia-smi
+        environment_configs:
+          Skypilot:
+            default_launcher: slurm
+            launchers:
+              slurm:
+                type: skypilot
+                config:
+                  resources:
+                    cloud: slurm
+                    cluster: slurm-docker
+                    zone: normal
+                    accelerators: "GPU:1"
+                  run: |
+                    echo "Running on SLURM"
+                    nvidia-smi

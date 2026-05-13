@@ -1,0 +1,20 @@
+name: slurm-gpu-test
+description: Test build targeting SLURM with GPU GRES
+targets:
+  - name: gpu-check
+    steps:
+      - name: nvidia-smi
+        environment_configs:
+          Skypilot:
+            default_launcher: slurm
+            launchers:
+              slurm:
+                type: skypilot
+                config:
+                  resources:
+                    cloud: slurm
+                    cluster: slurm-docker
+                    zone: normal
+                    accelerators: "GPU:1"
+                  run: |
+                    nvidia-smi
