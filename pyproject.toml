@@ -1,6 +1,6 @@
 [project]
 name = "granite.build"
-version = "0.3.0"
+dynamic = ["version"]
 authors = [
     { name = "Akash Nayak", email = "akash.nayak1@ibm.com" },
     { name = "Alexei Karve", email = "karve@us.ibm.com" },
@@ -131,6 +131,9 @@ Issues = "https://github.com/ibm-granite/granite.build/issues"
 [build-system]
 requires = ["setuptools", "setuptools_scm", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
 where = ["src", "test"]
