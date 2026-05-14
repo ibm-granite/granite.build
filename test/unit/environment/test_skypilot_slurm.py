@@ -57,7 +57,7 @@ class TestSlurmInfraPath:
         mock_sky.Resources.assert_called_once()
         call_kwargs = mock_sky.Resources.call_args[1]
         assert call_kwargs["infra"] == "slurm/slurm-docker/normal"
-        assert call_kwargs["zone"] == "normal"
+        assert call_kwargs["zone"] is None
         assert call_kwargs["accelerators"] == "GPU:1"
 
     @pytest.mark.asyncio
