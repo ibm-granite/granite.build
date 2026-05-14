@@ -35,14 +35,14 @@ DiGiT_SFTFull_FMEval = BuildTestSpecification(
         ),
         ExpectedTarget(
             target_name="tunedmodel",
-            step_count=6,   # 2 inputs, 1 tuning, 2 outputs, one of which has 2 checkpoints = 6 
+            step_count=6,  # 2 inputs, 1 tuning, 2 outputs, one of which has 2 checkpoints = 6
             input_artifact_count=2,
             output_artifact_count=2,
             jobstats_count=3,
         ),
         ExpectedTarget(
             target_name="evalresults",
-            step_count=3,   # 1 input, 1 step, 1 output
+            step_count=3,  # 1 input, 1 step, 1 output
             input_artifact_count=1,
             output_artifact_count=1,
             jobstats_count=1,
