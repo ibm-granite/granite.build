@@ -308,6 +308,10 @@ integration-test:
 	source $(VENVDIR)/bin/activate && \
 		pytest -s -m skypilot_integration --strict-markers test
 
+.PHONY: demo-slurm
+demo-slurm:
+	bash scripts/demo-slurm.sh
+
 # --- Mock/Live test mode targets ---
 
 .PHONY: test-mock

@@ -124,6 +124,42 @@ while true; do
 done
 log "SLURM cluster is ready with $node_count compute nodes."
 
+# ---- Step 3b: Install rsync and enable SSH on all nodes ----
+# SkyPilot requires rsync for file transfer and SSH access to compute nodes
+# for running setup commands after SLURM job allocation.
+
+log "Installing rsync in SLURM containers..."
+for node in slurm-slurmctld slurm-c1 slurm-c2; do
+    if ! $DOCKER_CMD exec "$node" which rsync &>/dev/null; then
+        $DOCKER_CMD exec "$node" dnf install -y -q rsync 2>/dev/null
+    fi
+done
+log "rsync installed."
+
+log "Starting sshd on compute nodes..."
+for node in slurm-c1 slurm-c2; do
+    $DOCKER_CMD exec "$node" bash -c '
+        ssh-keygen -A 2>/dev/null
+        mkdir -p /root/.ssh && chmod 700 /root/.ssh
+        /usr/sbin/sshd -D -e &
+    '
+done
+log "sshd started on compute nodes."
+
+# ---- Step 3c: Connect MinIO to slurm-net (if running) ----
+# Allows SLURM containers to reach MinIO at gb-minio:9000 for S3 artifact push.
+
+if $DOCKER_CMD container inspect gb-minio &>/dev/null 2>&1; then
+    if ! $DOCKER_CMD network inspect slurm-net --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null | grep -q gb-minio; then
+        $DOCKER_CMD network connect slurm-net gb-minio
+        log "Connected MinIO (gb-minio) to slurm-net."
+    else
+        log "MinIO already connected to slurm-net."
+    fi
+else
+    warn "MinIO container (gb-minio) not found. Run: bash scripts/minio/setup-minio.sh"
+fi
+
 # ---- Step 4: Verify SSH connectivity ----
 
 log "Verifying SSH connectivity to slurmctld..."

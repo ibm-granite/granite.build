@@ -10,11 +10,14 @@ import asyncio
 import glob
 import os
 import urllib.parse
-from typing import Any, Dict, List, Optional, Self
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Self, Union
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
+from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.utils.logger import get_logger
 
@@ -117,10 +120,12 @@ class Skypilot(Environment):
 
             # Build infra string: supports 'slurm/cluster/partition' format
             infra = res_config.get("infra") or cloud
+            zone = res_config.get("zone")
             if not res_config.get("infra") and res_config.get("cluster"):
                 infra = f"{cloud}/{res_config['cluster']}"
-                if res_config.get("zone"):
-                    infra = f"{infra}/{res_config['zone']}"
+                if zone:
+                    infra = f"{infra}/{zone}"
+                    zone = None
 
             resources = sky.Resources(
                 infra=infra,
@@ -128,7 +133,7 @@ class Skypilot(Environment):
                 cpus=res_config.get("cpus"),
                 memory=res_config.get("memory"),
                 disk_size=res_config.get("disk_size"),
-                zone=res_config.get("zone"),
+                zone=zone,
                 image_id=launcher_config.get("image_id"),
             )
 
@@ -137,6 +142,8 @@ class Skypilot(Environment):
             if self.secrets:
                 env_vars.update(self.secrets)
             env_vars.update(launcher_config.get("envs", {}))
+            # Also pick up envs from config.launcher_config (for auto-queued steps)
+            env_vars.update(config.get("launcher_config", {}).get("envs", {}))
             env_vars["GB_SKYPILOT_LAUNCH_ID"] = launch_id
             env_vars["GB_SKYPILOT_CLUSTER_NAME"] = cluster_name
             # Expose run metadata so steps in the same target can share state
@@ -310,6 +317,22 @@ class Skypilot(Environment):
                             entityrun_metadata=entityrun_metadata,
                             event_log_parser_configs=event_log_parser_configs,
                         )
+                    if event_q and entityrun_metadata and str(status) != "JobStatus.SUCCEEDED":
+                        from gbserver.types.buildevent import (
+                            BuildEvent,
+                            BuildEventType,
+                            BuildEventWorkloadStatusPayload,
+                        )
+                        from gbserver.types.status import Status
+
+                        fail_event = BuildEvent(
+                            run_metadata=entityrun_metadata,
+                            type=BuildEventType.WORKLOAD_STATUS_EVENT,
+                            payload=BuildEventWorkloadStatusPayload(
+                                status=Status.FAILED,
+                            ),
+                        )
+                        await event_q.put(fail_event)
                     return
 
             except Exception as e:
@@ -415,3 +438,113 @@ class Skypilot(Environment):
         finally:
             self._cluster_names.pop(launch_id, None)
             self._job_ids.pop(launch_id, None)
+
+    async def pullasset_hfstore(
+        self: Self,
+        uri: URI = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        assetstore=None,
+        secrets: Optional[dict] = None,
+        **kwargs,
+    ) -> tuple:
+        """Register an HF model as an input artifact.
+
+        On remote environments (SLURM, cloud) the model is downloaded by
+        the step itself via huggingface_hub.  This handler just records the
+        binding so the model appears as an input artifact in build status.
+        """
+        from gbcommon.uri.hf import HfURI
+
+        hfuri = uri if isinstance(uri, HfURI) else URI.get_uri(uri)
+        assert isinstance(hfuri, HfURI), f"expected HfURI, got {type(hfuri)}"
+
+        parts = hfuri._parts()
+        model_id = f"{parts.owner}/{parts.repo}"
+        logger.info("pullasset_hfstore: registered input model %s", model_id)
+
+        binding_config = {"binding": {"hf_model_name": model_id, "path": model_id}}
+        return binding_config, None
+
+    async def pushasset_cosstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        storepush_config=None,
+        uri: Optional[Union[str, URI]] = None,
+        assetstore=None,
+        **kwargs,
+    ) -> BuildTargetStepConfig:
+        """Push artifact to S3/COS by queuing the builtin s3push step."""
+        from gbcommon.uri.cos import CosURI
+        from gbserver.asset.asset import Asset
+
+        if uri is None or uri == "":
+            raise ValueError(f"Empty uri received for pushasset: {binding}")
+
+        cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
+        assert isinstance(cosuri, CosURI), f"expected CosURI, got {type(cosuri)}"
+
+        assert isinstance(binding, dict) and "path" in binding, (
+            f"expected binding dict with 'path', got {binding}"
+        )
+        local_path = binding["path"]
+
+        metadata = cosuri.get_metadata()
+        bucket_path = metadata["bucket_path"]
+        s3_uri = f"s3://{bucket_path}"
+
+        cos_md = Asset(cosuri).get_metadata() if assetstore else {}
+        cos_config = cos_md.get("config", cos_md) if cos_md else {}
+        endpoint_url = cos_config.get("cos_endpoint", "") if cos_config else ""
+
+        # Resolve AWS credentials from assetstore secrets, environment, or kwargs
+        secrets = kwargs.get("secrets", {}) or {}
+        aws_key_id = (
+            secrets.get("AWS_ACCESS_KEY_ID")
+            or secrets.get("COS_ACCESS_KEY_ID")
+            or os.environ.get("AWS_ACCESS_KEY_ID", "")
+        )
+        aws_secret = (
+            secrets.get("AWS_SECRET_ACCESS_KEY")
+            or secrets.get("COS_SECRET_ACCESS_KEY")
+            or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+        )
+
+        s3push_config: Dict[str, Any] = {
+            "s3push_config": {
+                "local_path": local_path,
+                "s3_uri": s3_uri,
+                "endpoint_url": endpoint_url,
+            },
+            "launcher_config": {
+                "envs": {
+                    "AWS_ACCESS_KEY_ID": aws_key_id,
+                    "AWS_SECRET_ACCESS_KEY": aws_secret,
+                },
+            },
+        }
+
+        s3push_stepuri = "file://" + str(
+            Path(__file__).parent.parent / "builtins" / "steps" / "s3push"
+        )
+        if (
+            storepush_config is not None
+            and hasattr(storepush_config, "config")
+            and storepush_config.config is not None
+            and "step_uri" in storepush_config.config
+        ):
+            s3push_stepuri = storepush_config.config["step_uri"]
+
+        logger.info(
+            "pushasset_cosstore: queuing s3push step_uri=%s local=%s s3=%s endpoint=%s",
+            s3push_stepuri,
+            local_path,
+            s3_uri,
+            endpoint_url,
+        )
+
+        return BuildTargetStepConfig(
+            step_uri=s3push_stepuri,
+            config=s3push_config,
+        )
