@@ -24,13 +24,10 @@ WORKDIR /app
 RUN mkdir -p /opt/app-root/src/.pip
 RUN echo "[global]" >> /opt/app-root/src/.pip/pip.conf
 RUN echo "extra-index-url = https://${ARTIFACTORY_USER}:${ARTIFACTORY_API_KEY}@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> /opt/app-root/src/.pip/pip.conf
-# Copy the pyproject.toml and .git (needed by setuptools-scm for versioning)
-COPY pyproject.toml pyproject.toml
-COPY .git .git
-RUN pip install ".[all]"
+
 # Copy the source code and install in editable mode
 COPY . .
-RUN pip install --no-deps -e .
+RUN pip install --upgrade -e ".[all]"
 # Patch aiohttp and kubernetes_asyncio
 RUN patch -i connector.py.patch /opt/app-root/lib/python3.12/site-packages/aiohttp/connector.py
 RUN patch -i api_client.py.patch /opt/app-root/lib/python3.12/site-packages/kubernetes_asyncio/client/api_client.py
