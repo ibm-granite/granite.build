@@ -162,9 +162,9 @@ def cli(ctx):
 )
 @click.option(
     "--store",
-    default="lh",
+    default="hf",
     type=click.Choice(["lh", "hf"], case_sensitive=True),
-    help="Target artifact store: lh (Lakehouse, default) or hf (HuggingFace).",
+    help="Target artifact store: hf (HuggingFace, default) or lh (Lakehouse).",
 )
 @click.option(
     "--public",
@@ -842,9 +842,9 @@ def push(
 )
 @click.option(
     "--store",
-    default="lh",
+    default="hf",
     type=click.Choice(["lh", "hf"], case_sensitive=True),
-    help="Target artifact store: lh (Lakehouse, default) or hf (HuggingFace).",
+    help="Target artifact store: hf (HuggingFace, default) or lh (Lakehouse).",
 )
 @click.option(
     "--format",

@@ -195,7 +195,7 @@ class GBClient:
             space: Optional[str],
             table: Optional[str],
             namespace: Optional[str],
-            store: str = "lh",
+            store: str = "hf",
             hf_token: Optional[str] = None,
             hf_organization: Optional[str] = None,
             resource_group_id: Optional[str] = None,
@@ -281,7 +281,7 @@ class GBClient:
             certified_no_restrictions: bool = False,
             hf_organization: Optional[str] = None,
             resource_group_id: Optional[str] = None,
-            store: str = "lh",
+            store: str = "hf",
             callback=None,
         ):
             return (
@@ -303,7 +303,6 @@ class GBClient:
                     lh_env=lh_env,
                     origin_uris=origin_uris,
                     certified_no_restrictions=certified_no_restrictions,
-                    store=store,
                     callback=callback,
                 )
                 if store == "lh"
