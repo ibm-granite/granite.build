@@ -95,7 +95,7 @@ ibm = [
 ]
 # All optional dependencies
 all = [
-    "granite-build-tools[standalone,thirdparty,ibm]",
+    "granite.build[standalone,thirdparty,ibm]",
 ]
 # Development tools
 dev = [
