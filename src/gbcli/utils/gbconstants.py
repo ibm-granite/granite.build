@@ -165,7 +165,7 @@ ENVIRONMENT_CONFIGS = {
                 "GBSERVER_BUILD_EVENTS", True
             ),  # Default false
             "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", False
+                "GBSERVER_ARTIFACT_FILTER", True
             ),  # Default false
             "gbserver_build_update": getenv_boolean(
                 "GBSERVER_BUILD_UPDATE", True
@@ -258,9 +258,8 @@ HF_RESOURCE_GROUP_ID_DEFAULT = gb_environment_config().get(
 
 # gbcli
 GBCLI_REPO_URL = os.environ.get(
-    # Change this to "https://github.com/granite-build/gbserver" once the repo exists. CLI version check fails if this points to an invalid repo
     "GBCLI_REPO_URL",
-    "https://github.ibm.com/granite-dot-build/gbcli",
+    "https://github.ibm.com/granite-dot-build/granite.build",
 )
 
 # assets

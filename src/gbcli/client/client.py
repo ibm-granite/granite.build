@@ -303,7 +303,6 @@ class GBClient:
                     lh_env=lh_env,
                     origin_uris=origin_uris,
                     certified_no_restrictions=certified_no_restrictions,
-                    store=store,
                     callback=callback,
                 )
                 if store == "lh"
