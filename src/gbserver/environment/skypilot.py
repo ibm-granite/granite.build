@@ -439,6 +439,33 @@ class Skypilot(Environment):
             self._cluster_names.pop(launch_id, None)
             self._job_ids.pop(launch_id, None)
 
+    async def pullasset_hfstore(
+        self: Self,
+        uri: URI = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        assetstore=None,
+        secrets: Optional[dict] = None,
+        **kwargs,
+    ) -> tuple:
+        """Register an HF model as an input artifact.
+
+        On remote environments (SLURM, cloud) the model is downloaded by
+        the step itself via huggingface_hub.  This handler just records the
+        binding so the model appears as an input artifact in build status.
+        """
+        from gbcommon.uri.hf import HfURI
+
+        hfuri = uri if isinstance(uri, HfURI) else URI.get_uri(uri)
+        assert isinstance(hfuri, HfURI), f"expected HfURI, got {type(hfuri)}"
+
+        parts = hfuri._parts()
+        model_id = f"{parts.owner}/{parts.repo}"
+        logger.info("pullasset_hfstore: registered input model %s", model_id)
+
+        binding_config = {"binding": {"hf_model_name": model_id, "path": model_id}}
+        return binding_config, None
+
     async def pushasset_cosstore(
         self: Self,
         binding: Any,

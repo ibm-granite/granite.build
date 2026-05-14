@@ -240,7 +240,14 @@ The demo submits builds that run on the SLURM cluster via SkyPilot. When trainin
 #### Verify artifacts in MinIO
 
 ```bash
+export AWS_ACCESS_KEY_ID=minioadmin
+export AWS_SECRET_ACCESS_KEY=minioadmin
+
+# Fine-tuning checkpoint
 aws --endpoint-url http://localhost:9000 s3 ls s3://gb-checkpoints/outputs/trl-finetune/ --recursive
+
+# Evaluation results
+aws --endpoint-url http://localhost:9000 s3 ls s3://gb-checkpoints/outputs/unitxt-eval/ --recursive
 ```
 
 #### Teardown
