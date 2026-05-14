@@ -39,13 +39,13 @@ def check_current_and_latest_versions() -> str:
     user_token = credentials.get("token", section="user.github")
     repo_org, repo_name = GBCLI_REPO_URL.split("/")[3:]
     latest_version = get_latest_version(user_token, repo_org, repo_name)
-    current_version = get_current_version("granite-build-tools")
+    current_version = get_current_version("granite.build")
 
     if Version(current_version) < Version(latest_version):
         return (
             f"A new version of {PROJECT_NAME} CLI ({latest_version}) is available. "
             f"You are currently running version {current_version}. "
-            "Run `pip install --upgrade granite-build-tools` or a command suitable to your environment to upgrade."
+            "Run `pip install --upgrade granite.build` or a command suitable to your environment to upgrade."
         )
     else:
         return ""
