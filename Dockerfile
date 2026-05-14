@@ -24,8 +24,9 @@ WORKDIR /app
 RUN mkdir -p /opt/app-root/src/.pip
 RUN echo "[global]" >> /opt/app-root/src/.pip/pip.conf
 RUN echo "extra-index-url = https://${ARTIFACTORY_USER}:${ARTIFACTORY_API_KEY}@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> /opt/app-root/src/.pip/pip.conf
-# Copy the pyproject.toml to install dependencies
+# Copy the pyproject.toml and .git (needed by setuptools-scm for versioning)
 COPY pyproject.toml pyproject.toml
+COPY .git .git
 RUN pip install ".[all]"
 # Copy the source code and install in editable mode
 COPY . .
