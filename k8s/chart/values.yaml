@@ -84,7 +84,7 @@ deployments:
       DMF_CACHE: /tmp/dmf_cache
       GBSERVER_SQL_SSLROOT_CERT: ibm-cloud-databases.cert
       GBSERVER_REST_SERVER_WORKERS: "4"
-      GBSERVER_AUTH_MODE: github
+      GBSERVER_AUTH_MODE: multi
       GBSERVER_LINEAGE_PROVIDER: wandb
       GBSERVER_WANDB_BASE_URL: https://ibm.wandb.io
       GBSERVER_WANDB_PROJECT: lineage-tracking

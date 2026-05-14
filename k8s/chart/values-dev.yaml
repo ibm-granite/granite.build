@@ -21,8 +21,6 @@ deployments:
         cpu: "2"
       requests:
         cpu: "2"
-    env:
-      GBSERVER_AUTH_MODE: multi
 ingresses:
   enable: false
 pvcs:
