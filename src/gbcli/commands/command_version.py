@@ -61,10 +61,10 @@ def cli(ctx, check_updates, client, format, quiet):
             ctx.exit(1)  # Exit with a non-zero status
         else:
             click.echo(
-                f"The current client version ({get_current_version('granite-build-tools')}) is up to date."
+                f"The current client version ({get_current_version('granite.build')}) is up to date."
             )
     else:
-        client_version = get_current_version("granite-build-tools")
+        client_version = get_current_version("granite.build")
         gbserver_version = None
 
         if not client:

@@ -21,4 +21,4 @@ The version of the package.
 
 from importlib.metadata import version
 
-__version__ = version("granite-build-tools")
+__version__ = version("granite.build")
