@@ -223,7 +223,7 @@ test-pr:
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
 		args=(--durations=20 --cov --cov-report=xml --junitxml=report.xml) && \
 		args+=(-n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
-		args+=(-m '$(PR_PYTEST_MARKERS)' --strict-markers) && \
+		args+=(-m '$(PR_PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
 		pytest "$${args[@]}" test/unit test/e2e test/integration/ibm && \
 		coverage report --fail-under=$(MIN_COVERAGE) --sort=Cover
 
@@ -243,7 +243,7 @@ test-merge:
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
 		args=(--durations=20 --cov --cov-report=xml --junitxml=report.xml) && \
 		args+=(-n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
-		args+=(-m '$(MERGE_PYTEST_MARKERS)' --strict-markers) && \
+		args+=(-m '$(MERGE_PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
 		pytest "$${args[@]}" test/unit test/e2e test/integration/ibm && \
 		coverage report --fail-under=$(MIN_COVERAGE) --sort=Cover
 
