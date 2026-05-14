@@ -195,7 +195,7 @@ class GBClient:
             space: Optional[str],
             table: Optional[str],
             namespace: Optional[str],
-            store: str = "hf",
+            store: str = "lh",
             hf_token: Optional[str] = None,
             hf_organization: Optional[str] = None,
             resource_group_id: Optional[str] = None,
@@ -281,7 +281,7 @@ class GBClient:
             certified_no_restrictions: bool = False,
             hf_organization: Optional[str] = None,
             resource_group_id: Optional[str] = None,
-            store: str = "hf",
+            store: str = "lh",
             callback=None,
         ):
             return (
