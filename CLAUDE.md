@@ -105,7 +105,7 @@ gbserver pr-watch --gh-token $TOKEN --config <config.yaml>
 
 The central registry is `src/gbserver/types/constants.py`. All gbserver env vars use the `GBSERVER_` prefix. Key ones for development:
 
-- `GB_ENVIRONMENT` — DEV, STAGING, or PROD (controls cluster, namespace, and Lakehouse config)
+- `GB_ENVIRONMENT` — DEV, STAGING, PROD, or STANDALONE (controls cluster, namespace, Lakehouse config, and standalone-mode defaults)
 - `GBSERVER_GITHUB_TOKEN` — GitHub Enterprise access token
 - `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` — `job` (k8s), `process`, or `thread` (useful for local dev: set to `thread` to avoid needing a cluster)
 - `GBSERVER_METADATA_STORAGE` — Storage backend selection (default: `sql`)

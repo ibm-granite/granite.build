@@ -284,15 +284,15 @@ class TestEnvironmentConfig:
 
 
 # ---------------------------------------------------------------------------
-# h) Standalone mode env-var defaults
+# h) Standalone environment defaults
 # ---------------------------------------------------------------------------
 
 
-class TestStandaloneMode:
-    """Verify GBSERVER_STANDALONE_MODE sets expected env-var defaults."""
+class TestStandaloneEnvironmentDefaults:
+    """Verify GB_ENVIRONMENT=STANDALONE sets expected env-var defaults."""
 
-    def test_standalone_mode_sets_defaults(self, monkeypatch):
-        """When STANDALONE_MODE is true, env defaults are applied."""
+    def test_standalone_env_sets_defaults(self, monkeypatch):
+        """When GB_ENVIRONMENT=STANDALONE, env defaults are applied."""
         import importlib
 
         from gbserver.types import constants
@@ -302,11 +302,10 @@ class TestStandaloneMode:
             "GBSERVER_METADATA_STORAGE",
             "GBSERVER_DEFAULT_BUILDRUNNER_TYPE",
             "GBSERVER_PROCEED_WITHOUT_SECRETS",
-            "GB_ENVIRONMENT",
         ]:
             monkeypatch.delenv(key, raising=False)
 
-        monkeypatch.setenv("GBSERVER_STANDALONE_MODE", "true")
+        monkeypatch.setenv("GB_ENVIRONMENT", "STANDALONE")
         importlib.reload(constants)
 
         try:
@@ -315,23 +314,20 @@ class TestStandaloneMode:
             assert os.environ.get("GBSERVER_METADATA_STORAGE") == "sqlite"
             assert os.environ.get("GBSERVER_DEFAULT_BUILDRUNNER_TYPE") == "thread"
             assert os.environ.get("GBSERVER_PROCEED_WITHOUT_SECRETS") == "true"
-            assert os.environ.get("GB_ENVIRONMENT") == "STANDALONE"
-            assert constants.GBSERVER_STANDALONE_MODE is True
+            assert constants.GB_ENVIRONMENT == "STANDALONE"
             assert constants.GBSERVER_PROCEED_WITHOUT_SECRETS is True
         finally:
             # Restore original module state
-            monkeypatch.delenv("GBSERVER_STANDALONE_MODE", raising=False)
             importlib.reload(constants)
 
-    def test_standalone_mode_preserves_explicit_overrides(self, monkeypatch):
+    def test_standalone_env_preserves_explicit_overrides(self, monkeypatch):
         """Explicit env vars are not overwritten by standalone defaults."""
         import importlib
 
         from gbserver.types import constants
 
-        monkeypatch.setenv("GBSERVER_STANDALONE_MODE", "true")
+        monkeypatch.setenv("GB_ENVIRONMENT", "STANDALONE")
         monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sql")
-        monkeypatch.setenv("GB_ENVIRONMENT", "DEV")
 
         # Clear others so setdefault takes effect on them
         monkeypatch.delenv("GBSERVER_DEFAULT_BUILDRUNNER_TYPE", raising=False)
@@ -342,12 +338,10 @@ class TestStandaloneMode:
         try:
             import os
 
-            # Explicit overrides preserved
+            # Explicit override preserved
             assert os.environ.get("GBSERVER_METADATA_STORAGE") == "sql"
-            assert os.environ.get("GB_ENVIRONMENT") == "DEV"
             # Defaults still applied where not overridden
             assert os.environ.get("GBSERVER_DEFAULT_BUILDRUNNER_TYPE") == "thread"
             assert os.environ.get("GBSERVER_PROCEED_WITHOUT_SECRETS") == "true"
         finally:
-            monkeypatch.delenv("GBSERVER_STANDALONE_MODE", raising=False)
             importlib.reload(constants)
