@@ -1694,7 +1694,9 @@ class Lsf(Environment):
     #     return copy_assets_cmd
 
     def _get_job_name(self: Self, launch_id: str) -> str:
-        return "launch-" + launch_id
+        from gbserver.environment.lsf_paths import build_launch_sub_dir
+
+        return build_launch_sub_dir(launch_id=launch_id)
 
     def _get_workspace_sub_dir(
         self: Self,
@@ -1705,13 +1707,15 @@ class Lsf(Environment):
         targetsteprun_id: str,
         launch_id: str,
     ) -> Path:
-        return (
-            Path(f"llm-build-{build_id}")
-            / f"target-{target_name}"
-            / f"target-run-{targetrun_id}"
-            / f"step-{step_name}"
-            / f"step-run-{targetsteprun_id}"
-            / self._get_job_name(launch_id=launch_id)
+        from gbserver.environment.lsf_paths import build_workspace_sub_dir
+
+        return build_workspace_sub_dir(
+            build_id=build_id,
+            target_name=target_name,
+            targetrun_id=targetrun_id,
+            step_name=step_name,
+            targetsteprun_id=targetsteprun_id,
+            launch_id=launch_id,
         )
 
     def _get_final_asset_dir(
