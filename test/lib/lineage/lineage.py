@@ -1,7 +1,6 @@
 from abc import abstractmethod
 from typing import Self
 
-from lakehouse.api import JobStats
 from lib.storage.artifact_storage import ArtifactStorageTestSupport
 from lib.storage.build_storage import BuildStorageTestSupport
 from lib.storage.step_storage import StepStorageTestSupport
@@ -9,26 +8,22 @@ from lib.storage.target_storage import TargetStorageTestSupport
 from lib.test_utils import AbstractSingletonStorageUsingTest
 
 from gbcommon.uri.lh import LhURI
-from gbserver.lineage.lakehouse_jobstats import LakehouseLineageStore as JobStatsStorage
 from gbserver.storage.singleton_storage import get_storage_factory
 
 
 def get_test_support():
     ssts = StepStorageTestSupport()
-
     tsts = TargetStorageTestSupport()
-
     bsts = BuildStorageTestSupport()
-
     asts = ArtifactStorageTestSupport()
-
     return tsts, bsts, ssts, asts
 
 
 class AbstractLineageTest(AbstractSingletonStorageUsingTest):
-    """This class is created in anticipation of supporting tests for other lineage implementations, when
-    1) We will have a lineage storage interface (currently JobStatsStorage class), and
-    2) Storage independent build lineage-holding object (currently JobStats)
+    """Base class for lineage store integration tests.
+
+    Subclasses must implement _get_tested_lineage_storage() to return
+    an ILineageStore instance.
     """
 
     @abstractmethod
@@ -53,13 +48,11 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
 
         tsts, bsts, ssts, asts = get_test_support()
 
-        # Create the build that will hold our targets
         build = bsts._get_test_item(0)
         build_storage.add(build)
         model_table = "a_model_table"
         fileset_table = "a_fileset_table"
 
-        # Create 1st target in our build
         targetrun0 = tsts._get_test_item(0)
 
         input_artifact0 = asts._get_test_item(0)
@@ -120,21 +113,14 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         step_storage.add(step0)
 
         targetrun0.build_id = build.uuid
-        # targetrun0.input_artifact_ids = [input_artifact0.uuid, input_artifact1.uuid, input_artifact2.uuid]
         targetrun0.input_artifacts = {
             "in0": input_artifact0.uuid,
             "in1": input_artifact1.uuid,
             "in2": input_artifact2.uuid,
         }
-        # targetrun0.output_artifact_ids = [output_artifact0.uuid]
         targetrun0.output_artifacts = {"out0": [output_artifact0.uuid]}
         target_storage.add(targetrun0)
 
-        # jobstats = JobStatsStorage().create_job_stats(build_storage, targetrun0, artifact_registry)
-        # jobstats = JobStatsStorage().create_job_stats(build_storage, targetrun0, step_storage, artifact_registry)
-        # print(f"jobstats0={jobstats}")
-
-        # create 2nd target
         targetrun1 = tsts._get_test_item(1)
 
         output_artifact1 = asts._get_test_item(4)
@@ -159,16 +145,13 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         step_storage.add(step1)
 
         targetrun1.build_id = build.uuid
-        # targetrun1.input_artifact_ids = [input_artifact0.uuid, input_artifact1.uuid]
         targetrun1.input_artifacts = {
             "in0": input_artifact0.uuid,
             "in1": input_artifact1.uuid,
         }
-        # targetrun1.output_artifact_ids = [output_artifact1.uuid]
         targetrun1.output_artifacts = {"out0": [output_artifact1.uuid]}
         target_storage.add(targetrun1)
 
-        # create 3nd target that takes outputs of previous targets
         targetrun2 = tsts._get_test_item(2)
 
         output_artifact2 = asts._get_test_item(5)
@@ -234,11 +217,6 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         }
         target_storage.add(targetrun2)
 
-        # jobstats = JobStatsStorage().create_job_stats(build_storage, targetrun2, artifact_registry)
-        # jobstats = JobStatsStorage().create_job_stats(build_storage, targetrun2, step_storage, artifact_registry)
-        # print(f"jobstats2={jobstats}")
-        # jobstats = JobStatsStorage().create_job_stats(build_storage, targetrun, artifact_registry)
-        # JobStatsStorage().add_step(build_storage, targetrun, artifact_registry )
         lineage_storage = self._get_tested_lineage_storage()
         lineage_storage.add_jobstats_for_build(self.storage, build.uuid)
 
@@ -250,28 +228,21 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
     def test_create_from_artifact(self):
         tsts, bsts, ssts, asts = get_test_support()
 
-        # output = asts._get_test_item(0)
-        # inputs = []
-        # stats = JobStatsStorage.create_jobstats_for_original_artifact(output, inputs)
-        # assert isinstance(stats,JobStats)
-        # assert len(stats.sources) == 0
-        # assert len(stats.targets) == 1
-
         storage = self._get_tested_lineage_storage()
 
         output = asts._get_test_item(0)
         inputs = [asts._get_test_item(1)]
         stats = storage.create_jobstats_for_original_artifact(output, inputs)
-        assert isinstance(stats, JobStats)
-        assert len(stats.sources) == 1
-        assert len(stats.targets) == 1
+        assert isinstance(stats, dict)
+        assert len(stats.get("inputs", [])) == 1
+        assert len(stats.get("outputs", [])) == 1
 
         output = asts._get_test_item(0)
         inputs = [asts._get_test_item(1), asts._get_test_item(2)]
         stats = storage.create_jobstats_for_original_artifact(output, inputs)
-        assert isinstance(stats, JobStats)
-        assert len(stats.sources) == 2
-        assert len(stats.targets) == 1
+        assert isinstance(stats, dict)
+        assert len(stats.get("inputs", [])) == 2
+        assert len(stats.get("outputs", [])) == 1
 
     def test_create_from_non_gb_artifact(self):
         tsts, bsts, ssts, asts = get_test_support()
@@ -283,7 +254,6 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         input.uri = "env:///foo/bar"
         inputs = [input]
         stats = storage.create_jobstats_for_original_artifact(output, inputs)
-        assert isinstance(stats, JobStats)
-        assert len(stats.sources) == 1
-        assert len(stats.targets) == 1
-        # TODO: Should really make sure the placeholder artifacts got created,
+        assert isinstance(stats, dict)
+        assert len(stats.get("inputs", [])) == 1
+        assert len(stats.get("outputs", [])) == 1

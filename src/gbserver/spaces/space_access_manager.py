@@ -18,7 +18,7 @@
 Abstract interface for space access control management.
 
 This module defines the interface for checking user permissions on spaces,
-allowing for multiple implementations (e.g., Lakehouse-based, mock for testing).
+allowing for multiple implementations (e.g., storage-based, mock for testing).
 """
 
 from abc import ABC, abstractmethod
@@ -47,7 +47,7 @@ class ISpaceAccessManager(ABC):
 
     This interface defines the contract for checking user permissions on spaces.
     Implementations should provide concrete logic for determining access based on
-    their specific authorization backend (e.g., Lakehouse, alternative systems).
+    their specific authorization backend.
     """
 
     @abstractmethod
@@ -123,23 +123,13 @@ _override_manager: Optional[ISpaceAccessManager] = None
 _storage_manager: Optional["StorageSpaceAccessManager"] = None  # type: ignore[name-defined]
 
 
-def get_space_access_manager(lh_token: Optional[str] = None) -> ISpaceAccessManager:
+def get_space_access_manager() -> ISpaceAccessManager:
     """Get a space access manager instance.
 
     When an override has been set via :func:`set_space_access_manager` (e.g.
     for testing or standalone mode), that instance is returned unconditionally.
 
-    Otherwise the implementation is selected based on the
-    ``lakehouse_space_membership`` feature flag:
-
-    - **True** (default): a fresh :class:`LakehouseSpaceAccessManager` is
-      created for each call, initialised with *lh_token*.
-    - **False**: a cached :class:`StorageSpaceAccessManager` singleton is
-      returned.
-
-    Args:
-        lh_token: Lakehouse token, required when the Lakehouse feature flag
-            is active.  Ignored for the storage-backed implementation.
+    Otherwise a cached :class:`StorageSpaceAccessManager` singleton is returned.
 
     Returns:
         An ISpaceAccessManager instance
@@ -148,16 +138,6 @@ def get_space_access_manager(lh_token: Optional[str] = None) -> ISpaceAccessMana
 
     if _override_manager is not None:
         return _override_manager
-
-    # Import here to avoid circular dependencies
-    from gbserver.types.constants import GB_ENVIRONMENT_CONFIG
-
-    if GB_ENVIRONMENT_CONFIG.feature_flags.get("lakehouse_space_membership", True):
-        from gbserver.spaces.lakehouse_space_access_manager import (
-            LakehouseSpaceAccessManager,
-        )
-
-        return LakehouseSpaceAccessManager(lh_token or "")
 
     if _storage_manager is None:
         from gbserver.spaces.storage_space_access_manager import (

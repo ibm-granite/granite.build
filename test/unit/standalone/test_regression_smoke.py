@@ -42,8 +42,10 @@ class TestModuleImports:
     def test_import_sql_factory(self):
         from gbserver.storage.sql.storage_factory import SQLStorageFactory
 
-    def test_import_lh_factory(self):
-        from gbserver.storage.lh.storage_factory import LhStorageFactory
+    def test_import_dual_factory(self):
+        from gbserver.storage.shadowed.storage_factory import (
+            DualSQLSqliteStorageFactory,
+        )
 
     def test_import_root_api(self):
         try:
@@ -98,10 +100,12 @@ class TestStorageFactories:
         factory = SQLStorageFactory()
         self._assert_factory_creates_all_storages(factory)
 
-    def test_lh_factory_importable(self):
-        from gbserver.storage.lh.storage_factory import LhStorageFactory
+    def test_dual_factory_importable(self):
+        from gbserver.storage.shadowed.storage_factory import (
+            DualSQLSqliteStorageFactory,
+        )
 
-        assert LhStorageFactory is not None
+        assert DualSQLSqliteStorageFactory is not None
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +125,6 @@ class TestCLIDiscovery:
         "pr-watch",
         "rest-server",
         "rest-server-worker",
-        "sync-sql-tables",
     ]
 
     def test_list_commands(self):

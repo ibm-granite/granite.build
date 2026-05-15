@@ -3,12 +3,12 @@ from typing import Self
 import pytest
 from lib.lineage.lineage import AbstractLineageTest
 
-from gbserver.lineage.lakehouse_jobstats import LakehouseLineageStore
+from gbserver.lineage.wandb_jobstats import WandBLineageStore
 
 pytestmark = pytest.mark.ibm
 
 
-class TestLHJobStatsLineage(AbstractLineageTest):
+class TestWandBLineage(AbstractLineageTest):
 
     def _get_tested_lineage_storage(self: Self):
-        return LakehouseLineageStore()
+        return WandBLineageStore()
