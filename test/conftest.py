@@ -31,6 +31,8 @@ collect_ignore: list[str] = []
 
 if not _can_import("psutil"):
     collect_ignore += [
+        "integration/ibm/buildrunner/k8s/test_buildrunner_1step_cpu.py",
+        "integration/ibm/buildrunner/k8s/test_buildrunner_1step_gpu.py",
         "integration/ibm/buildrunner/k8s/test_buildrunner_retry.py",
         "integration/ibm/buildrunner/k8s/test_buildrunnerjob.py",
         "integration/ibm/buildrunner/k8s/test_builds.py",
