@@ -283,6 +283,16 @@ class SshTunnel:
         rc: int = process.returncode if process.returncode is not None else -1
         return rc, self.__to_str(stdout), self.__to_str(stderr)
 
+    async def start_sftp(self) -> "asyncssh.SFTPClient":
+        """Start an SFTP subsystem on the open connection.
+
+        Callers should close the returned client themselves (``await client.exit()``).
+        Exposed so code outside this module doesn't need to reach into ``_conn``.
+        """
+        if self._conn is None:
+            raise SshTunnelError("Tunnel is not open. Call open() first.")
+        return await self._conn.start_sftp_client()
+
     def get_local_port(self, remote_host: str, remote_port: int) -> Optional[int]:
         """Return the actual local port forwarding to remote_host:remote_port, or None."""
         for i, (_, rh, rp) in enumerate(self.port_forwards):

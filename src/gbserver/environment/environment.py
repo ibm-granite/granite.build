@@ -561,25 +561,21 @@ class Environment(ABC):
             self.supported_assetstores[assetstore] = storeenv
 
     @classmethod
-    def get_environment(
+    def load_environment_config(
         cls: Type[Self],
         environment_uri: str,
-        event_q: Queue,
         context: Optional[str] = None,
-        secrets: Optional[dict] = None,
         force_fetch: bool = False,
-    ) -> Self:
-        """Resolve environment uri to environment"""
-        if not hasattr(cls._thread_local, "environments"):
-            cls._thread_local.environments = {}
+    ) -> Tuple[EnvironmentConfig, Asset]:
+        """Sync the environment asset and parse its environment.yaml.
+
+        Returns the parsed EnvironmentConfig plus the synced Asset.
+        Shared by get_environment (buildwatcher) and the bluevela REST API,
+        which only needs the parsed config and not a constructed Environment.
+        """
+        if not hasattr(cls._thread_local, "environmentcache_dir"):
             cls._thread_local.environmentcache_dir = Path(tempfile.mkdtemp())
-        if not hasattr(cls._thread_local, "asset_events"):
-            cls._thread_local.asset_events = {}  # URI to event map
-        if environment_uri in cls._thread_local.environments:
-            return cls._thread_local.environments[environment_uri]
         environment_asset = Asset(environment_uri, context=context)
-        # Set environment_uri again after any templates get filled
-        environment_uri = environment_asset.uristr
         th_env_dir = cls._thread_local.environmentcache_dir
         assert isinstance(th_env_dir, Path)
         environmentasset_dir = th_env_dir / environment_asset.urihash()
@@ -597,6 +593,29 @@ class Environment(ABC):
                 "more than one %s found, using %s", ENVIRONMENT_FILENAME, env_yaml_path
             )
         environment_config = EnvironmentConfig.from_yaml(env_yaml_path, context=context)
+        return environment_config, environment_asset
+
+    @classmethod
+    def get_environment(
+        cls: Type[Self],
+        environment_uri: str,
+        event_q: Queue,
+        context: Optional[str] = None,
+        secrets: Optional[dict] = None,
+        force_fetch: bool = False,
+    ) -> Self:
+        """Resolve environment uri to environment"""
+        if not hasattr(cls._thread_local, "environments"):
+            cls._thread_local.environments = {}
+        if not hasattr(cls._thread_local, "asset_events"):
+            cls._thread_local.asset_events = {}  # URI to event map
+        if environment_uri in cls._thread_local.environments:
+            return cls._thread_local.environments[environment_uri]
+        environment_config, environment_asset = cls.load_environment_config(
+            environment_uri, context=context, force_fetch=force_fetch
+        )
+        # Set environment_uri again after any templates get filled
+        environment_uri = environment_asset.uristr
         if (
             environment_config.type is None
             or environment_config.type == ""
