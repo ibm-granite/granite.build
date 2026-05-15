@@ -110,7 +110,7 @@ class AbstractReadonlySingletonStorageUsingTest:
         if cls._is_cloud_config_required():
             if GB_ENVIRONMENT not in ("DEV", "STAGING", "STANDALONE"):
                 pytest.skip(
-                    "Requires cloud configuration (GB_ENVIRONMENT=DEV or STAGING)"
+                    "Requires cloud configuration (GB_ENVIRONMENT=DEV, STAGING, or STANDALONE)"
                 )
             check_test_config()
         f = cls._get_storage_factory()

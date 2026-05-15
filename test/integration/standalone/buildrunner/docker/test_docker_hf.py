@@ -39,7 +39,7 @@ from lib.buildwatcher.buildtest import (
     ExpectedTarget,
 )
 
-pytestmark = pytest.mark.ibm
+pytestmark = pytest.mark.docker_required
 
 # from gbcommon.uri.hf import HfURI
 
