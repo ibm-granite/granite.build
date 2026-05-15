@@ -31,10 +31,9 @@ collect_ignore: list[str] = []
 
 if not _can_import("psutil"):
     collect_ignore += [
-        "integration/ibm/buildwatcher/test_buildrunner_1step.py",
-        "integration/ibm/buildwatcher/test_buildrunner_retry.py",
-        "integration/ibm/buildwatcher/test_buildrunnerjob.py",
-        "integration/ibm/buildwatcher/test_builds.py",
+        "integration/ibm/buildrunner/k8s/test_buildrunner_retry.py",
+        "integration/ibm/buildrunner/k8s/test_buildrunnerjob.py",
+        "integration/ibm/buildrunner/k8s/test_builds.py",
         "integration/ibm/buildwatcher/test_buildwatcher.py",
         "integration/ibm/githubmanager/test_githubmanager_subselect_targets.py",
         "e2e/sidecar/test_multi_sidecar_cmdmon_delayed_pytest.py",

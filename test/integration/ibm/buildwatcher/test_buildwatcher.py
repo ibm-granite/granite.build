@@ -2,10 +2,14 @@ import os
 from abc import abstractmethod
 
 import pytest
-from integration.ibm.buildwatcher.test_buildrunner_1step import (
-    InvalidBuildTestConfig,
+from integration.ibm.buildrunner.k8s.test_buildrunner_1step_cpu import (
     OneStepCPUDownloadTestConfig,
+)
+from integration.ibm.buildrunner.k8s.test_buildrunner_1step_gpu import (
     OneStepGPUDownloadTestConfig,
+)
+from integration.ibm.buildrunner.test_buildrunner_invalid import (
+    InvalidBuildTestConfig,
 )
 from lib.buildwatcher.buildtest import (
     AbstractBuildTest,

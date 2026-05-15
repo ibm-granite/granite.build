@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from integration.ibm.buildwatcher.test_buildrunner_1step import (
+from integration.ibm.buildrunner.k8s.test_buildrunner_1step_cpu import (
     OneStepCPUDownloadTestConfig,
 )
 from lib.buildwatcher.buildtest import AbstractBuildTest, ClassTestedEnum
