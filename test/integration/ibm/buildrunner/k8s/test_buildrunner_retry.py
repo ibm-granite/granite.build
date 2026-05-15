@@ -74,7 +74,7 @@ class TestBuildRunnerRetry(AbstractBuildTest):
     and validates the full storage state across gb_builds, gb_targets, gb_steps,
     gb_artifacts, and gb_events.
     Although this is using the K8s environment, this test should really be independent
-    of the environment. 
+    of the environment.
     """
 
     def _get_retried_build_id(self, original_build_id: str) -> Optional[str]:
