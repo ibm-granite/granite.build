@@ -48,11 +48,13 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
 
         tsts, bsts, ssts, asts = get_test_support()
 
+        # Create the build that will hold our targets
         build = bsts._get_test_item(0)
         build_storage.add(build)
         model_table = "a_model_table"
         fileset_table = "a_fileset_table"
 
+        # Create 1st target in our build
         targetrun0 = tsts._get_test_item(0)
 
         input_artifact0 = asts._get_test_item(0)
@@ -121,6 +123,7 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         targetrun0.output_artifacts = {"out0": [output_artifact0.uuid]}
         target_storage.add(targetrun0)
 
+        # create 2nd target
         targetrun1 = tsts._get_test_item(1)
 
         output_artifact1 = asts._get_test_item(4)
@@ -152,6 +155,7 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         targetrun1.output_artifacts = {"out0": [output_artifact1.uuid]}
         target_storage.add(targetrun1)
 
+        # create 3rd target that takes outputs of previous targets
         targetrun2 = tsts._get_test_item(2)
 
         output_artifact2 = asts._get_test_item(5)
@@ -257,3 +261,4 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         assert isinstance(stats, dict)
         assert len(stats.get("inputs", [])) == 1
         assert len(stats.get("outputs", [])) == 1
+        # TODO: Should really make sure the placeholder artifacts got created,
