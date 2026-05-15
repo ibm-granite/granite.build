@@ -144,6 +144,9 @@ where = ["src", "test"]
 [tool.isort]
 profile = "black"
 
+[tool.black]
+target-version = ["py311"]
+
 [tool.pytest.ini_options]
 log_cli = true
 log_cli_level = "INFO"
