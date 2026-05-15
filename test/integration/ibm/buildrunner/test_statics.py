@@ -6,7 +6,7 @@ from gbserver.buildwatcher.buildrunner import BuildRunner
 pytestmark = pytest.mark.ibm
 
 
-class TestBuildWatcherStatics:
+class TestBuildRunnerStatics:
 
     def test_get_normalized_uri(self):
         namespace = "mynamespace"

@@ -48,12 +48,12 @@ pytestmark = pytest.mark.ibm
 # ---------------------------------------------------------------------------
 
 _TEST_DATA_DIR = (
-    Path(__file__).parent.parent.parent.parent.parent
+    Path(__file__).parent.parent.parent.parent.parent.parent
     / "test-data"
     / "integration"
     / "ibm"
-    / "buildwatcher"
-    / "1step"
+    / "buildrunner"
+    / "docker"
     / "docker-hf"
 ).resolve()
 
