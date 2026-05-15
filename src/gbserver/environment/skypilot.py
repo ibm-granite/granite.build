@@ -317,7 +317,11 @@ class Skypilot(Environment):
                             entityrun_metadata=entityrun_metadata,
                             event_log_parser_configs=event_log_parser_configs,
                         )
-                    if event_q and entityrun_metadata and str(status) != "JobStatus.SUCCEEDED":
+                    if (
+                        event_q
+                        and entityrun_metadata
+                        and str(status) != "JobStatus.SUCCEEDED"
+                    ):
                         from gbserver.types.buildevent import (
                             BuildEvent,
                             BuildEventType,
@@ -485,9 +489,9 @@ class Skypilot(Environment):
         cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
         assert isinstance(cosuri, CosURI), f"expected CosURI, got {type(cosuri)}"
 
-        assert isinstance(binding, dict) and "path" in binding, (
-            f"expected binding dict with 'path', got {binding}"
-        )
+        assert (
+            isinstance(binding, dict) and "path" in binding
+        ), f"expected binding dict with 'path', got {binding}"
         local_path = binding["path"]
 
         metadata = cosuri.get_metadata()
