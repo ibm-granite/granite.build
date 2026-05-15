@@ -4,6 +4,7 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.artifact_registry import IArtifactRegistry
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.event_storage import IStoredEventStorage
+from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.node_failure_storage import INodeFailureStorage
 from gbserver.storage.shadowed.storage import BaseDualItemStorage
 from gbserver.storage.space_storage import IStoredSpaceStorage
@@ -60,7 +61,11 @@ class DualArtifactRegistry(BaseDualItemStorage, IArtifactRegistry):
 
 
 class DualEventStorage(BaseDualItemStorage, IStoredEventStorage):
-    pass
+
+    def get_sorted_build_events(
+        self, build_id: str, where: Optional[dict] = None
+    ) -> list[StoredEvent]:
+        return self.primary.get_sorted_build_events(build_id, where)  # type: ignore[union-attr]
 
 
 class DualNodeFailureStorage(BaseDualItemStorage, INodeFailureStorage):
