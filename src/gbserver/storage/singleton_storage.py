@@ -94,12 +94,6 @@ def get_storage_factory() -> StorageFactory:
             __STORAGE_FACTORY = SQLStorageFactory()
         elif GB_METADATA_STORAGE == "sqlite":
             __STORAGE_FACTORY = SqliteStorageFactory()
-        elif GB_METADATA_STORAGE == "sql+sqlite":
-            from gbserver.storage.shadowed.storage_factory import (
-                DualSQLSqliteStorageFactory,
-            )
-
-            __STORAGE_FACTORY = DualSQLSqliteStorageFactory()
         else:
             raise ValueError(
                 f"Unrecognized storage factory config {GB_METADATA_STORAGE}"
