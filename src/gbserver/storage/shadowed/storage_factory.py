@@ -1,5 +1,6 @@
-from typing import Optional
+from typing import List, Optional, Union
 
+from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.artifact_registry import IArtifactRegistry
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.event_storage import IStoredEventStorage
@@ -8,6 +9,7 @@ from gbserver.storage.shadowed.storage import BaseDualItemStorage
 from gbserver.storage.space_storage import IStoredSpaceStorage
 from gbserver.storage.space_user_storage import ISpaceUserStorage
 from gbserver.storage.stored_space import StoredSpace
+from gbserver.storage.stored_space_user import StoredSpaceUser
 from gbserver.storage.sql.artifact_registry import SQLArtifactRegistry
 from gbserver.storage.sql.build_storage import SQLBuildStorage
 from gbserver.storage.sql.event_storage import SQLEventStorage
@@ -50,7 +52,11 @@ class DualSpaceStorage(BaseDualItemStorage, IStoredSpaceStorage):
 
 
 class DualArtifactRegistry(BaseDualItemStorage, IArtifactRegistry):
-    pass
+
+    def get_by_uri(
+        self, uri: str, space_name: str = ""
+    ) -> Union[List[ArtifactRegistration], Optional[ArtifactRegistration]]:
+        return self.primary.get_by_uri(uri, space_name)  # type: ignore[union-attr]
 
 
 class DualEventStorage(BaseDualItemStorage, IStoredEventStorage):
@@ -62,7 +68,17 @@ class DualNodeFailureStorage(BaseDualItemStorage, INodeFailureStorage):
 
 
 class DualSpaceUserStorage(BaseDualItemStorage, ISpaceUserStorage):
-    pass
+
+    def get_by_space(self, space_name: str) -> List[StoredSpaceUser]:
+        return self.primary.get_by_space(space_name)  # type: ignore[union-attr]
+
+    def get_by_username(self, username: str) -> List[StoredSpaceUser]:
+        return self.primary.get_by_username(username)  # type: ignore[union-attr]
+
+    def get_by_space_and_username(
+        self, space_name: str, username: str
+    ) -> Optional[StoredSpaceUser]:
+        return self.primary.get_by_space_and_username(space_name, username)  # type: ignore[union-attr]
 
 
 class DualSQLSqliteStorageFactory(StorageFactory):
