@@ -276,18 +276,14 @@ GBSERVER_IBM_CLOUD_SERVER_LOGS_API_KEY = os.getenv("IBM_CLOUD_SERVER_LOGS_API_KE
 GBSERVER_IBM_CLOUD_SERVER_LOGS_API_URL = os.getenv("IBM_CLOUD_SERVER_LOGS_API_URL", "")
 GBSERVER_DEBUG_MODE = os.getenv(ENV_VAR_DEBUG_MODE, None)
 GBSERVER_GIT_COMMIT = os.getenv(ENV_VAR_PREFIX + "_GIT_COMMIT", "")
-# Standalone mode — must be evaluated before constants that read the env vars
-# it sets (PROCEED_WITHOUT_SECRETS, METADATA_STORAGE, etc.). Uses setdefault()
-# so explicit user overrides are preserved.
-ENV_VAR_STANDALONE_MODE = ENV_VAR_PREFIX + "_STANDALONE_MODE"
-GBSERVER_STANDALONE_MODE = getenv_boolean(ENV_VAR_STANDALONE_MODE, False)
-
-if GBSERVER_STANDALONE_MODE:
+# Standalone defaults — when GB_ENVIRONMENT=STANDALONE, fill in env vars
+# that other constants below will read. Uses setdefault() so explicit user
+# overrides are preserved.
+if os.getenv("GB_ENVIRONMENT", "").upper() == "STANDALONE":
     for _k, _v in {
         ENV_VAR_METADATA_STORAGE: "sqlite",
         ENV_VAR_DEFAULT_BUILDRUNNER_TYPE: "thread",
         ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS": "true",
-        "GB_ENVIRONMENT": "STANDALONE",
     }.items():
         os.environ.setdefault(_k, _v)
 

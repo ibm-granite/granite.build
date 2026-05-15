@@ -39,7 +39,7 @@ from lib.buildwatcher.buildtest import (
     ExpectedTarget,
 )
 
-pytestmark = pytest.mark.ibm
+pytestmark = pytest.mark.docker_required
 
 # from gbcommon.uri.hf import HfURI
 
@@ -51,7 +51,7 @@ _TEST_DATA_DIR = (
     Path(__file__).parent.parent.parent.parent.parent.parent
     / "test-data"
     / "integration"
-    / "ibm"
+    / "standalone"
     / "buildrunner"
     / "docker"
     / "docker-hf"
