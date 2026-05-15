@@ -1,0 +1,82 @@
+name: s3push
+version: 1.0.0
+type: upload
+config:
+  s3push_config:
+    local_path: <source>
+    s3_uri: <s3://bucket/path>
+    endpoint_url: ""
+environment_configs:
+  Skypilot:
+    default_launcher: s3push
+    launchers:
+      s3push:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          resources:
+            cpus: "1+"
+          setup: |
+            pip install boto3
+          run: |
+            set -e
+            echo 's3push start'
+            python3 -c "
+            import boto3, os, sys
+            from pathlib import Path
+
+            local_path = '{{ config.s3push_config.local_path }}'
+            s3_uri = '{{ config.s3push_config.s3_uri }}'
+            endpoint_url = '{{ config.s3push_config.endpoint_url }}'
+
+            access_key = os.environ.get('AWS_ACCESS_KEY_ID', '')
+            secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
+            if not access_key or not secret_key:
+                print('ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set', file=sys.stderr)
+                sys.exit(1)
+
+            # Parse s3://bucket/prefix from the URI
+            parts = s3_uri.replace('s3://', '').split('/', 1)
+            bucket = parts[0]
+            prefix = parts[1] if len(parts) > 1 else ''
+
+            kwargs = {}
+            if endpoint_url:
+                kwargs['endpoint_url'] = endpoint_url
+
+            s3 = boto3.client(
+                's3',
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'),
+                **kwargs,
+            )
+
+            local = Path(local_path)
+            if not local.exists():
+                print(f'ERROR: local path {local_path} does not exist', file=sys.stderr)
+                sys.exit(1)
+
+            uploaded = 0
+            if local.is_file():
+                key = prefix + local.name
+                print(f'  uploading {local} -> s3://{bucket}/{key}')
+                s3.upload_file(str(local), bucket, key)
+                uploaded = 1
+            else:
+                for f in sorted(local.rglob('*')):
+                    if f.is_file():
+                        rel = f.relative_to(local)
+                        key = prefix + str(rel)
+                        print(f'  uploading {rel} -> s3://{bucket}/{key}')
+                        s3.upload_file(str(f), bucket, key)
+                        uploaded += 1
+
+            print(f's3push end: {uploaded} files uploaded to s3://{bucket}/{prefix}')
+            "
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 15
