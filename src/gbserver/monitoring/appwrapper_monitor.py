@@ -401,7 +401,7 @@ class AppWrapperMonitor(MonitorBase):
                             )
                 except Exception as e:
                     if not self._run_event.is_set():
-                        # Exception from a K8s call that raced with pause() — safe to ignore.
+                        # Exception from a K8s call that raced with pause() - safe to ignore.
                         logger.debug(
                             "[AWMonitor launch_id %s] Ignoring exception during paused cleanup: %s",
                             self.launch_id,
