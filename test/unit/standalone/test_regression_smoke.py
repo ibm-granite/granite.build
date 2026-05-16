@@ -95,6 +95,7 @@ class TestStorageFactories:
         factory = SQLStorageFactory()
         self._assert_factory_creates_all_storages(factory)
 
+
 # ---------------------------------------------------------------------------
 # c) CLI command discovery
 # ---------------------------------------------------------------------------

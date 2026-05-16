@@ -20,9 +20,9 @@ import re
 from collections import deque
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
-import wandb
 from huggingface_hub import dataset_info, model_info
 
+import wandb
 from gbcommon.uri.hf import HfURI
 from gbserver.lineage.openlineage_service import LineageService
 from gbserver.lineage.openlineage_utils import (
