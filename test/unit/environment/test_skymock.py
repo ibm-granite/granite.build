@@ -1,4 +1,4 @@
-from gbserver.testing.skymock.mock_sky import MockJobStatus
+from gbserver.testing.skymock.mock_sky import MockJobStatus, MockSky
 from gbserver.testing.skymock.scenario import Scenario, ScenarioStep
 
 
@@ -86,3 +86,41 @@ class TestMockJobStatus:
         s1 = MockJobStatus("RUNNING", is_terminal=False)
         s2 = MockJobStatus("RUNNING", is_terminal=False)
         assert s1 == s2
+
+
+class TestMockSkyLaunch:
+    def test_launch_returns_request_id(self):
+        mock = MockSky(default_scenario=Scenario.happy_path())
+        task = mock.Task(name="test-cluster", run="echo hi")
+        req_id = mock.launch(task, cluster_name="gb-test123")
+        assert isinstance(req_id, str)
+        assert len(req_id) > 0
+
+    def test_stream_and_get_returns_job_id_and_handle(self):
+        mock = MockSky(default_scenario=Scenario.happy_path())
+        task = mock.Task(name="test-cluster", run="echo hi")
+        req_id = mock.launch(task, cluster_name="gb-test123")
+        job_id, handle = mock.stream_and_get(req_id)
+        assert isinstance(job_id, int)
+        assert handle is not None
+
+    def test_resources_returns_mock_object(self):
+        mock = MockSky()
+        res = mock.Resources(infra="aws", accelerators="A100:1")
+        assert res is not None
+
+    def test_task_accepts_resources(self):
+        mock = MockSky()
+        res = mock.Resources(infra="aws")
+        task = mock.Task(name="test", run="echo", resources=res)
+        assert task is not None
+
+    def test_storage_and_storage_mode(self):
+        mock = MockSky()
+        storage = mock.Storage(source="s3://bucket", mode=mock.StorageMode.MOUNT)
+        assert storage is not None
+
+    def test_storage_mode_getitem(self):
+        mock = MockSky()
+        assert mock.StorageMode["MOUNT"] == "MOUNT"
+        assert mock.StorageMode["COPY"] == "COPY"
