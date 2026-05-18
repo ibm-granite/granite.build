@@ -179,3 +179,41 @@ class TestMockSkyPolling:
         req = mock.job_status("gb-unknown", job_ids=[1])
         result = mock.get(req)
         assert result[1] == MockJobStatus("PENDING", is_terminal=False)
+
+
+class TestMockSkyCleanup:
+    def test_download_logs_returns_configured_path(self):
+        scenario = Scenario(
+            cloud="aws",
+            steps=[
+                ScenarioStep(status="RUNNING", is_terminal=False),
+                ScenarioStep(
+                    status="SUCCEEDED",
+                    is_terminal=True,
+                    logs={"1": "/tmp/sky_logs/job-1"},
+                ),
+            ],
+        )
+        mock = MockSky()
+        mock.set_scenario("gb-logs", scenario)
+        mock.launch(mock.Task(run="x"), cluster_name="gb-logs")
+        # Advance through both steps
+        for _ in range(2):
+            req = mock.job_status("gb-logs", job_ids=[1])
+            mock.get(req)
+        result = mock.download_logs("gb-logs", job_ids=["1"])
+        assert result == {"1": "/tmp/sky_logs/job-1"}
+
+    def test_download_logs_returns_empty_when_no_logs(self):
+        mock = MockSky(default_scenario=Scenario.happy_path())
+        mock.launch(mock.Task(run="x"), cluster_name="gb-nologs")
+        result = mock.download_logs("gb-nologs", job_ids=["1"])
+        assert result == {}
+
+    def test_down_returns_request_id(self):
+        mock = MockSky(default_scenario=Scenario.happy_path())
+        mock.launch(mock.Task(run="x"), cluster_name="gb-down")
+        req_id = mock.down("gb-down", purge=True)
+        assert isinstance(req_id, str)
+        result = mock.get(req_id)
+        assert result is None

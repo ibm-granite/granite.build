@@ -134,4 +134,27 @@ class MockSky:
             if position < len(scenario.steps) - 1:
                 self._positions[cluster_name] = position + 1
             return result_dict
+        elif entry[0] == "down":
+            return entry[1]
         return entry[1]
+
+    def download_logs(self, cluster_name: str, job_ids=None) -> dict:
+        """Mock sky.download_logs — returns logs from the most recently polled step."""
+        scenario = self._scenarios.get(cluster_name)
+        if scenario is None:
+            return {}
+        position = self._positions.get(cluster_name, 0)
+        # The position points to the last step that was returned (it caps at len-1).
+        # Search backwards from current position for a step with logs.
+        for i in range(position, -1, -1):
+            step = scenario.steps[min(i, len(scenario.steps) - 1)]
+            if step.logs:
+                return step.logs
+        return {}
+
+    def down(self, cluster_name: str, purge: bool = False) -> str:
+        """Mock sky.down — removes cluster and returns request_id."""
+        request_id = str(uuid.uuid4())
+        self._request_results[request_id] = ("down", None)
+        self._clusters.pop(cluster_name, None)
+        return request_id
