@@ -124,3 +124,58 @@ class TestMockSkyLaunch:
         mock = MockSky()
         assert mock.StorageMode["MOUNT"] == "MOUNT"
         assert mock.StorageMode["COPY"] == "COPY"
+
+
+class TestMockSkyPolling:
+    def test_job_status_then_get_advances_scenario(self):
+        scenario = Scenario.happy_path()
+        mock = MockSky(default_scenario=scenario)
+        task = mock.Task(name="t", run="echo")
+        mock.launch(task, cluster_name="gb-poll1")
+
+        # Poll 1: PENDING
+        req = mock.job_status("gb-poll1", job_ids=[1])
+        result = mock.get(req)
+        assert result[1] == MockJobStatus("PENDING", is_terminal=False)
+
+        # Poll 2: RUNNING
+        req = mock.job_status("gb-poll1", job_ids=[1])
+        result = mock.get(req)
+        assert result[1] == MockJobStatus("RUNNING", is_terminal=False)
+
+        # Poll 3: SUCCEEDED
+        req = mock.job_status("gb-poll1", job_ids=[1])
+        result = mock.get(req)
+        assert result[1] == MockJobStatus("SUCCEEDED", is_terminal=True)
+
+    def test_terminal_status_has_is_terminal_true(self):
+        mock = MockSky(default_scenario=Scenario.happy_path())
+        mock.launch(mock.Task(run="x"), cluster_name="gb-term")
+        for _ in range(3):
+            req = mock.job_status("gb-term", job_ids=[1])
+            result = mock.get(req)
+        assert result[1].is_terminal() is True
+
+    def test_non_terminal_status_has_is_terminal_false(self):
+        mock = MockSky(default_scenario=Scenario.happy_path())
+        mock.launch(mock.Task(run="x"), cluster_name="gb-nonterm")
+        req = mock.job_status("gb-nonterm", job_ids=[1])
+        result = mock.get(req)
+        assert result[1].is_terminal() is False
+
+    def test_scenario_exhausted_repeats_last_step(self):
+        mock = MockSky(default_scenario=Scenario.happy_path())
+        mock.launch(mock.Task(run="x"), cluster_name="gb-exhaust")
+        # Advance past all 3 steps
+        for _ in range(5):
+            req = mock.job_status("gb-exhaust", job_ids=[1])
+            result = mock.get(req)
+        assert result[1] == MockJobStatus("SUCCEEDED", is_terminal=True)
+
+    def test_unknown_cluster_uses_default_scenario(self):
+        mock = MockSky(default_scenario=Scenario.happy_path())
+        # launch auto-assigns default scenario
+        mock.launch(mock.Task(run="x"), cluster_name="gb-unknown")
+        req = mock.job_status("gb-unknown", job_ids=[1])
+        result = mock.get(req)
+        assert result[1] == MockJobStatus("PENDING", is_terminal=False)

@@ -106,3 +106,32 @@ class MockSky:
         """Mock sky.stream_and_get — returns (job_id, handle)."""
         self._request_results.pop(request_id, None)
         return (1, MagicMock())
+
+    def job_status(self, cluster_name: str, job_ids=None) -> str:
+        """Mock sky.job_status — returns a request_id for later get()."""
+        scenario = self._get_scenario(cluster_name)
+        position = self._positions.get(cluster_name, 0)
+        # Cap at last step
+        position = min(position, len(scenario.steps) - 1)
+        step = scenario.steps[position]
+
+        job_id = job_ids[0] if job_ids else 1
+        status = MockJobStatus(step.status, is_terminal=step.is_terminal)
+        result_dict = {job_id: status}
+
+        request_id = str(uuid.uuid4())
+        self._request_results[request_id] = ("job_status", result_dict, cluster_name)
+        return request_id
+
+    def get(self, request_id: str):
+        """Mock sky.get — retrieves stored result and advances scenario."""
+        entry = self._request_results.pop(request_id)
+        if entry[0] == "job_status":
+            _, result_dict, cluster_name = entry
+            scenario = self._scenarios[cluster_name]
+            position = self._positions.get(cluster_name, 0)
+            # Advance position, capping at last step
+            if position < len(scenario.steps) - 1:
+                self._positions[cluster_name] = position + 1
+            return result_dict
+        return entry[1]
