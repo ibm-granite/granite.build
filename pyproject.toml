@@ -144,6 +144,8 @@ where = ["src", "test"]
 
 [tool.isort]
 profile = "black"
+known_first_party = ["gbserver", "gbcli", "gbcommon"]
+known_third_party = ["huggingface_hub", "wandb"]
 
 [tool.black]
 target-version = ["py311"]

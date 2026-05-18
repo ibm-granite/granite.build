@@ -99,9 +99,13 @@ def _artifact_to_lineage_entry(
 
     artifact_type = artifact.type
     if artifact.uri:
+        from gbcommon.uri.uri import UnknownURIScheme
         from gbcommon.uri.utils import get_artifact_type
 
-        artifact_type = get_artifact_type(artifact.uri)
+        try:
+            artifact_type = get_artifact_type(artifact.uri)
+        except UnknownURIScheme:
+            pass
 
     namespace = artifact.uri
     name = artifact.name or target_artifact_name or artifact.uuid

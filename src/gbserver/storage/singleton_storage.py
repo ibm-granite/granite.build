@@ -73,7 +73,7 @@ __STORAGE_FACTORY: Optional[StorageFactory] = None
 
 def set_storage_factory(factory: StorageFactory):
     """Set the storage factory to use.
-    Primarily used by testing to test different storage implementstions (i.e. lakehouse and sql)
+    Primarily used by testing to test different storage implementations.
     """
     global __STORAGE_FACTORY
     __STORAGE_FACTORY = factory
@@ -90,30 +90,10 @@ def get_storage_factory() -> StorageFactory:
     """
     global __STORAGE_FACTORY
     if __STORAGE_FACTORY is None:
-        if GB_METADATA_STORAGE in ("lakehouse", "sql+lakehouse", "lakehouse+sql"):
-            from gbserver.utils.optional_imports import HAS_LAKEHOUSE
-
-            if not HAS_LAKEHOUSE:
-                raise ImportError(
-                    f"GBSERVER_METADATA_STORAGE={GB_METADATA_STORAGE!r} requires "
-                    "the lakehouse package. Install with: pip install 'gbserver[ibm]'"
-                )
-        if GB_METADATA_STORAGE == "lakehouse":
-            from gbserver.storage.lh.storage_factory import LhStorageFactory
-
-            __STORAGE_FACTORY = LhStorageFactory()
-        elif GB_METADATA_STORAGE == "sql":
+        if GB_METADATA_STORAGE == "sql":
             __STORAGE_FACTORY = SQLStorageFactory()
         elif GB_METADATA_STORAGE == "sqlite":
             __STORAGE_FACTORY = SqliteStorageFactory()
-        elif GB_METADATA_STORAGE == "sql+lakehouse":
-            from gbserver.storage.shadowed.storage_factory import SQLLhStorageFactory
-
-            __STORAGE_FACTORY = SQLLhStorageFactory()
-        elif GB_METADATA_STORAGE == "lakehouse+sql":
-            from gbserver.storage.shadowed.storage_factory import LhSQLStorageFactory
-
-            __STORAGE_FACTORY = LhSQLStorageFactory()
         else:
             raise ValueError(
                 f"Unrecognized storage factory config {GB_METADATA_STORAGE}"

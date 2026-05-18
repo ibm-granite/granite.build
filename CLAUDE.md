@@ -74,8 +74,6 @@ gbserver pr-watch --gh-token $TOKEN --config <config.yaml>
 - **storage/** — Data persistence layer with multiple backends:
   - `sql/` — Primary backend using SQLAlchemy with PostgreSQL
   - `sqlite/` — SQLite backend for local/testing use
-  - `lh/` — Lakehouse (DMF) backend (excluded from coverage)
-  - `shadowed/` — Dual-write storage for migration (excluded from coverage)
   - `singleton_storage.py` — Global storage access point
   - `storage_factory.py` — Backend selection based on `GBSERVER_METADATA_STORAGE` env var
 - **types/** — Pydantic models and configuration types. `constants.py` is the central env var registry — almost all `GBSERVER_*` env vars are defined here. `gbserverenvconfig.py` handles per-environment (DEV/STAGING/PROD) configuration.

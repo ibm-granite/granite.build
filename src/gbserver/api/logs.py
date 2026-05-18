@@ -17,7 +17,6 @@
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from gbserver.api.utils import get_lh_token_if_needed
 from gbserver.spaces.user_spaces_list import build_id_access_check, space_admin_check
 from gbserver.types.logs import Item, LogqueryResponse
 from gbserver.utils.cloud_logquery import get_log_manager
@@ -64,9 +63,8 @@ def logquery(request: Request, query: Item) -> LogqueryResponse:
         )
 
     username = request.state.data["user"].email
-    lh_token = get_lh_token_if_needed(request)
 
-    is_admin = space_admin_check(username, lh_token=lh_token)
+    is_admin = space_admin_check(username)
     if not is_admin:
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -98,12 +96,11 @@ def logquery(request: Request, build_id: str, query: Item) -> LogqueryResponse:
         )
 
     username = request.state.data["user"].email
-    lh_token = get_lh_token_if_needed(request)
 
     """ Set query model name to 'gbserver-build-runner' """
     query.queryDef.queryParams.metadata["subsystemName"] = ["gbserver-build-runner"]
 
-    has_access = build_id_access_check(username, build_id, lh_token=lh_token)
+    has_access = build_id_access_check(username, build_id)
 
     if not isinstance(has_access, bool):
         return has_access

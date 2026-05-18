@@ -194,9 +194,7 @@ class AppWrapperMonitor(MonitorBase):
         elapsed = time.monotonic() - self._api_failure_start_time
         return elapsed > GBSERVER_API_FAILURE_TIMEOUT
 
-    def _record_api_failure(
-        self: Self, exc: Optional[Exception] = None
-    ) -> None:
+    def _record_api_failure(self: Self, exc: Optional[Exception] = None) -> None:
         """Record an API failure, setting the start time if this is the first in a streak."""
         if self._api_failure_start_time is None:
             self._api_failure_start_time = time.monotonic()
@@ -401,7 +399,7 @@ class AppWrapperMonitor(MonitorBase):
                             )
                 except Exception as e:
                     if not self._run_event.is_set():
-                        # Exception from a K8s call that raced with pause() — safe to ignore.
+                        # Exception from a K8s call that raced with pause() - safe to ignore.
                         logger.debug(
                             "[AWMonitor launch_id %s] Ignoring exception during paused cleanup: %s",
                             self.launch_id,

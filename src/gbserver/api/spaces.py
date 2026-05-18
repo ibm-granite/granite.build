@@ -19,7 +19,7 @@ from typing import List, Literal, cast
 from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel
 
-from gbserver.api.utils import get_lh_token_if_needed, is_space_admin, is_super_admin
+from gbserver.api.utils import is_space_admin, is_super_admin
 from gbserver.spaces.user_spaces_list import user_spaces_list
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_space import StoredSpace
@@ -56,17 +56,9 @@ def _require_member_management_access(request: Request, space_name: str) -> None
     """Verify that the caller can manage members of the given space.
 
     Raises HTTPException with:
-    - 501 if lakehouse_space_membership feature flag is True
     - 404 if the named space does not exist
     - 401 if the requesting user is neither admin of the space nor super-admin
     """
-    from gbserver.types.constants import GB_ENVIRONMENT_CONFIG
-
-    if GB_ENVIRONMENT_CONFIG.feature_flags.get("lakehouse_space_membership", True):
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Space member management is not available in lakehouse mode",
-        )
     storage = get_admin_storage()
     space = storage.space_storage.get_by_name(space_name)
     if space is None:
@@ -97,12 +89,11 @@ def list_spaces(
 
 @spaces_api.get("/spaces_for_user")
 def spaces_for_user(request: Request):
-    """Get a users spaces with admin details depending on LH access"""
+    """Get a user's spaces with admin details"""
     try:
         username = request.state.data["user"].email
-        lh_token = get_lh_token_if_needed(request)
 
-        list = user_spaces_list(username, lh_token=lh_token)
+        list = user_spaces_list(username)
 
         return {"spaces": list}
 

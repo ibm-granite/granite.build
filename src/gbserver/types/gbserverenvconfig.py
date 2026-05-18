@@ -96,14 +96,7 @@ _GBSERVER_ENVIRONMENT_CONFIGS = {
         default_pod_namespace=BACKEND_SERVER_NAMESPACE_PROD,
         default_sql_schema="granite_dot_build_prod",
         space_config_branch_name="gbspace-config",
-        feature_flags={
-            "lakehouse_space_membership": getenv_boolean(
-                "GBSERVER_FEATURE_LAKEHOUSE_SPACE_MEMBERSHIP", False
-            ),
-            "lakehouse_lineage": getenv_boolean(
-                "GBSERVER_FEATURE_LAKEHOUSE_LINEAGE", False
-            ),
-        },
+        feature_flags={},
     ),
     "STAGING": GBServerEnvConfig(
         env="STAGING",
@@ -117,14 +110,7 @@ _GBSERVER_ENVIRONMENT_CONFIGS = {
         default_pod_namespace=BACKEND_SERVER_NAMESPACE_STAGING,
         default_sql_schema="granite_dot_build_staging",
         space_config_branch_name="gbspace-config",
-        feature_flags={
-            "lakehouse_space_membership": getenv_boolean(
-                "GBSERVER_FEATURE_LAKEHOUSE_SPACE_MEMBERSHIP", False
-            ),
-            "lakehouse_lineage": getenv_boolean(
-                "GBSERVER_FEATURE_LAKEHOUSE_LINEAGE", False
-            ),
-        },
+        feature_flags={},
     ),
     "DEV": GBServerEnvConfig(
         env="DEV",
@@ -140,14 +126,7 @@ _GBSERVER_ENVIRONMENT_CONFIGS = {
         # For now this is the same as staging and prod, but when we have a CI/CD with a dev environtment,
         # we will likely want to change this to be something like gbspace-config-dev.
         space_config_branch_name="gbspace-config",
-        feature_flags={
-            "lakehouse_space_membership": getenv_boolean(
-                "GBSERVER_FEATURE_LAKEHOUSE_SPACE_MEMBERSHIP", False
-            ),
-            "lakehouse_lineage": getenv_boolean(
-                "GBSERVER_FEATURE_LAKEHOUSE_LINEAGE", False
-            ),
-        },
+        feature_flags={},
     ),
     "STANDALONE": GBServerEnvConfig(
         env="STANDALONE",
@@ -159,14 +138,7 @@ _GBSERVER_ENVIRONMENT_CONFIGS = {
         default_pod_namespace="default",
         default_sql_schema="standalone",
         space_config_branch_name="main",
-        feature_flags={
-            "lakehouse_space_membership": getenv_boolean(
-                "GBSERVER_FEATURE_LAKEHOUSE_SPACE_MEMBERSHIP", False
-            ),
-            "lakehouse_lineage": getenv_boolean(
-                "GBSERVER_FEATURE_LAKEHOUSE_LINEAGE", False
-            ),
-        },
+        feature_flags={},
     ),
 }
 

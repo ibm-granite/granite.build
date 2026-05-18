@@ -60,7 +60,7 @@ class CLICreateSpacesConfig(BaseModel):
     is_flag=True,
     help="If set, clear the spaces table before adding the spaces",
 )
-@click.option("--force", is_flag=True, help="Force clearing of PROD Lakehouse tables")
+@click.option("--force", is_flag=True, help="Force clearing of PROD tables")
 @click.option(
     "--replace",
     is_flag=True,
@@ -116,7 +116,7 @@ def cli(
             storage.delete_table()
         else:
             logger.info(
-                "Skipped clearing of PROD Lakehouse space table.  Use --force to override"
+                "Skipped clearing of PROD space table.  Use --force to override"
             )
 
     logger.info("Check for existing spaces")

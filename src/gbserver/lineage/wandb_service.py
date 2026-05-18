@@ -154,7 +154,7 @@ class WandBLineageService(LineageService):
             if isinstance(doc, dict) and doc.get("description"):
                 config_update["description"] = doc["description"]
 
-            run.config.update(config_update)
+            run.config.update(config_update, allow_val_change=True)
 
             run.summary["last_event_time"] = event.get("eventTime")
 

@@ -56,11 +56,6 @@ if not _can_import("kubernetes_asyncio"):
 if not _can_import("asyncssh"):
     collect_ignore.append("integration/ibm/utils/test_ssh_tunnel.py")
 
-if not _can_import("lakehouse"):
-    collect_ignore += [
-        "integration/ibm/lineage/test_jobstats.py",
-        "integration/ibm/storage/lh/test_lh_loader.py",
-    ]
 
 import lib
 import lib.constants
@@ -93,8 +88,6 @@ TEST_REQUIRED_ENV_VARS = [
     # GB Test Configuration
     "GBTEST_HAS_COMPUTE_CLUSTER_ACCESS",
     "GBTEST_HAS_GB_CLUSTER_ACCESS",
-    "GBTEST_SKIP_LAKEHOUSE_ADMIN_TESTS",
-    "GBTEST_SKIP_SHADOW_ADMIN_TESTS",
     # GB Server Secrets
     "GBSERVER_GITHUB_TOKEN",
     "GBSERVER_SQL_PASSWD",
@@ -115,8 +108,6 @@ DEFAULT_NON_SECRET_ENV_VAR_VALUES = {}
 DEFAULT_NON_SECRET_ENV_VAR_VALUES["GB_ENVIRONMENT"] = "DEV"
 DEFAULT_NON_SECRET_ENV_VAR_VALUES["GBTEST_HAS_COMPUTE_CLUSTER_ACCESS"] = "True"
 DEFAULT_NON_SECRET_ENV_VAR_VALUES["GBTEST_HAS_GB_CLUSTER_ACCESS"] = "True"
-DEFAULT_NON_SECRET_ENV_VAR_VALUES["GBTEST_SKIP_LAKEHOUSE_ADMIN_TESTS"] = "True"
-DEFAULT_NON_SECRET_ENV_VAR_VALUES["GBTEST_SKIP_SHADOW_ADMIN_TESTS"] = "True"
 DEFAULT_NON_SECRET_ENV_VAR_VALUES["GBSERVER_RAISE_BUILD_EXCEPTIONS"] = "True"
 
 # SPS id of the secret
@@ -208,7 +199,7 @@ def _reset_space_access_manager():
 
     Tests that call _run_standalone() set a StandaloneSpaceAccessManager
     singleton that persists in the xdist worker process.  This fixture
-    ensures subsequent tests get the default LakehouseSpaceAccessManager.
+    ensures subsequent tests get the default StorageSpaceAccessManager.
     """
     yield
     from gbserver.spaces.space_access_manager import set_space_access_manager

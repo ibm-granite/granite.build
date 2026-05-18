@@ -75,28 +75,16 @@ __JOBSTATS_STORAGE: Optional[ILineageStore] = None
 
 
 def reset_lineage_store() -> None:
-    """Reset the singleton so the next call to get_lineage_store() re-evaluates the feature flag."""
+    """Reset the singleton so the next call to get_lineage_store() re-creates it."""
     global __JOBSTATS_STORAGE
     __JOBSTATS_STORAGE = None
 
 
 def get_lineage_store() -> ILineageStore:
-    """Get a singleton instance of the lineage storage backend.
-
-    Selects the backend based on the ``lakehouse_lineage`` feature flag:
-    - True (default): Lakehouse job_stats table
-    - False: WandB/OpenLineage
-    """
+    """Get a singleton instance of the lineage storage backend."""
     global __JOBSTATS_STORAGE
     if __JOBSTATS_STORAGE is None:
-        from gbserver.types.constants import GB_ENVIRONMENT_CONFIG
+        from gbserver.lineage.wandb_jobstats import WandBLineageStore
 
-        if GB_ENVIRONMENT_CONFIG.feature_flags.get("lakehouse_lineage", True):
-            from gbserver.lineage.lakehouse_jobstats import LakehouseLineageStore
-
-            __JOBSTATS_STORAGE = LakehouseLineageStore()
-        else:
-            from gbserver.lineage.wandb_jobstats import WandBLineageStore
-
-            __JOBSTATS_STORAGE = WandBLineageStore()
+        __JOBSTATS_STORAGE = WandBLineageStore()
     return __JOBSTATS_STORAGE

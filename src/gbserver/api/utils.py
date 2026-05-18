@@ -23,47 +23,6 @@ from pydantic import BaseModel
 from gbserver.spaces.user_spaces_list import space_admin_check
 from gbserver.storage.storage import Pagination, QueryControl, SortOrder, TaggedItem
 from gbserver.types.constants import PUBLIC_SPACE_NAME, SYSTEM_TAG_PREFIX
-from gbserver.utils.get_header_auth_token import get_header_auth_token
-
-
-def get_lh_token_if_needed(request: Request) -> Optional[str]:
-    """Generate a Lakehouse token from the request's auth token if Lakehouse mode is active.
-
-    Returns None when the ``lakehouse_space_membership`` feature flag is off,
-    when the token exchange fails, or when the auth provider does not yet
-    support Lakehouse token exchange.
-    """
-    from gbserver.types.constants import GB_ENVIRONMENT_CONFIG
-
-    if not GB_ENVIRONMENT_CONFIG.feature_flags.get("lakehouse_space_membership", True):
-        return None
-
-    user_token = get_header_auth_token(request.headers.get("authorization", ""))
-    if not isinstance(user_token, str):
-        return None
-
-    user = request.state.data.get("user")
-    auth_provider = getattr(user, "auth_provider", "github") if user else "github"
-
-    if auth_provider == "ibmid":
-        from gbserver.utils.lakehouse_token_generator import (
-            generate_lakehouse_key_from_ibmid_token,
-        )
-
-        result = generate_lakehouse_key_from_ibmid_token(user_token)
-        if result and "token" in result:
-            return result["token"]
-        return None
-
-    # Default: GitHub token exchange
-    from gbserver.utils.lakehouse_token_generator import (
-        generate_lakehouse_key_from_user_token,
-    )
-
-    result = generate_lakehouse_key_from_user_token(user_token)
-    if result and "token" in result:
-        return result["token"]
-    return None
 
 
 def get_row_filter(**kwargs):
@@ -80,20 +39,9 @@ def get_row_filter(**kwargs):
 
 
 def is_space_admin(request: Request, space_name: str) -> bool:
-    """Determine if the user making the given request is an admin in the given named space.
-
-    Args:
-        request (Request): _description_
-        space_name (str): _description_
-
-    Returns:
-        bool: _description_
-    """
+    """Determine if the user making the given request is an admin in the given named space."""
     username = request.state.data["user"].email
-    lh_token = get_lh_token_if_needed(request)
-    return space_admin_check(
-        username=username, space_name=space_name, lh_token=lh_token
-    )
+    return space_admin_check(username=username, space_name=space_name)
 
 
 def is_super_admin(request: Request) -> bool:

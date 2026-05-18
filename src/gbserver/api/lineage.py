@@ -16,14 +16,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, ConfigDict
-
-if TYPE_CHECKING:
-    from lakehouse.api import JobStats
 
 from gbserver.lineage.openlineage_models import (
     ArtifactGraphRequest,
