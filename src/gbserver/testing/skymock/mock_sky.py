@@ -30,7 +30,7 @@ class MockJobStatus:
         return hash(self._name)
 
 
-class _StorageMode:
+class _StorageMode:  # pylint: disable=too-few-public-methods
     """Mock for sky.StorageMode with attribute and item access."""
 
     MOUNT = "MOUNT"
@@ -42,7 +42,7 @@ class _StorageMode:
         raise KeyError(f"Invalid StorageMode: {key}")
 
 
-class MockSky:
+class MockSky:  # pylint: disable=invalid-name
     """Drop-in mock replacement for the sky module."""
 
     def __init__(self, default_scenario: Optional[Scenario] = None):
@@ -67,14 +67,14 @@ class MockSky:
             self._scenarios[cluster_name] = self._default_scenario
         return self._scenarios[cluster_name]
 
-    def Resources(self, **kwargs) -> MagicMock:  # noqa: N802
+    def Resources(self, **kwargs) -> MagicMock:
         """Mock sky.Resources constructor."""
         mock = MagicMock()
         for key, value in kwargs.items():
             setattr(mock, key, value)
         return mock
 
-    def Task(self, **kwargs) -> MagicMock:  # noqa: N802
+    def Task(self, **kwargs) -> MagicMock:
         """Mock sky.Task constructor."""
         mock = MagicMock()
         for key, value in kwargs.items():
@@ -83,7 +83,7 @@ class MockSky:
         mock.set_storage_mounts = MagicMock()
         return mock
 
-    def Storage(self, **kwargs) -> MagicMock:  # noqa: N802
+    def Storage(self, **kwargs) -> MagicMock:
         """Mock sky.Storage constructor."""
         mock = MagicMock()
         for key, value in kwargs.items():
@@ -130,15 +130,12 @@ class MockSky:
             _, result_dict, cluster_name = entry
             scenario = self._scenarios[cluster_name]
             position = self._positions.get(cluster_name, 0)
-            # Advance position, capping at last step
             if position < len(scenario.steps) - 1:
                 self._positions[cluster_name] = position + 1
             return result_dict
-        elif entry[0] == "down":
-            return entry[1]
         return entry[1]
 
-    def download_logs(self, cluster_name: str, job_ids=None) -> dict:
+    def download_logs(self, cluster_name: str, job_ids=None) -> dict:  # pylint: disable=unused-argument
         """Mock sky.download_logs — returns logs from the most recently polled step."""
         scenario = self._scenarios.get(cluster_name)
         if scenario is None:
@@ -152,7 +149,7 @@ class MockSky:
                 return step.logs
         return {}
 
-    def down(self, cluster_name: str, purge: bool = False) -> str:
+    def down(self, cluster_name: str, purge: bool = False) -> str:  # pylint: disable=unused-argument
         """Mock sky.down — removes cluster and returns request_id."""
         request_id = str(uuid.uuid4())
         self._request_results[request_id] = ("down", None)

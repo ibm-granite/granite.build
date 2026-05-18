@@ -11,7 +11,9 @@ class TestScenarioStep:
         assert step.logs is None
 
     def test_step_with_error(self):
-        step = ScenarioStep(status="FAILED", is_terminal=True, error="ResourceExhausted")
+        step = ScenarioStep(
+            status="FAILED", is_terminal=True, error="ResourceExhausted"
+        )
         assert step.error == "ResourceExhausted"
 
     def test_step_with_logs(self):
@@ -221,7 +223,12 @@ class TestMockSkyCleanup:
 
 class TestPackageExports:
     def test_public_api_importable_from_package(self):
-        from gbserver.testing.skymock import MockJobStatus, MockSky, Scenario, ScenarioStep
+        from gbserver.testing.skymock import (
+            MockJobStatus,
+            MockSky,
+            Scenario,
+            ScenarioStep,
+        )
 
         assert MockSky is not None
         assert Scenario is not None
@@ -248,7 +255,11 @@ class TestPackageExports:
             if status.is_terminal():
                 break
 
-        assert statuses == ["JobStatus.PENDING", "JobStatus.RUNNING", "JobStatus.SUCCEEDED"]
+        assert statuses == [
+            "JobStatus.PENDING",
+            "JobStatus.RUNNING",
+            "JobStatus.SUCCEEDED",
+        ]
 
         # Cleanup
         req = mock.down("gb-smoke", purge=True)
