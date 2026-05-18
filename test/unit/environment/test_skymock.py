@@ -1,3 +1,4 @@
+from gbserver.testing.skymock.mock_sky import MockJobStatus
 from gbserver.testing.skymock.scenario import Scenario, ScenarioStep
 
 
@@ -66,3 +67,22 @@ class TestScenarioFactory:
         gcp = Scenario.failure(cloud="gcp")
         assert "AWS" in aws.steps[-1].error
         assert "GCP" in gcp.steps[-1].error
+
+
+class TestMockJobStatus:
+    def test_terminal_status_is_terminal(self):
+        status = MockJobStatus("SUCCEEDED", is_terminal=True)
+        assert status.is_terminal() is True
+
+    def test_non_terminal_status_is_not_terminal(self):
+        status = MockJobStatus("RUNNING", is_terminal=False)
+        assert status.is_terminal() is False
+
+    def test_str_representation_matches_sky_format(self):
+        status = MockJobStatus("SUCCEEDED", is_terminal=True)
+        assert str(status) == "JobStatus.SUCCEEDED"
+
+    def test_equality_by_name(self):
+        s1 = MockJobStatus("RUNNING", is_terminal=False)
+        s2 = MockJobStatus("RUNNING", is_terminal=False)
+        assert s1 == s2
