@@ -217,3 +217,39 @@ class TestMockSkyCleanup:
         assert isinstance(req_id, str)
         result = mock.get(req_id)
         assert result is None
+
+
+class TestPackageExports:
+    def test_public_api_importable_from_package(self):
+        from gbserver.testing.skymock import MockJobStatus, MockSky, Scenario, ScenarioStep
+
+        assert MockSky is not None
+        assert Scenario is not None
+        assert ScenarioStep is not None
+        assert MockJobStatus is not None
+
+    def test_integration_full_happy_path_flow(self):
+        """Smoke test: full launch -> poll -> terminal -> cleanup flow."""
+        from gbserver.testing.skymock import MockSky, Scenario
+
+        mock = MockSky(default_scenario=Scenario.happy_path(cloud="aws"))
+        res = mock.Resources(infra="aws", accelerators="A100:1")
+        task = mock.Task(name="gb-smoke", run="train.py", resources=res, envs={})
+        req = mock.launch(task, cluster_name="gb-smoke", idle_minutes_to_autostop=10)
+        job_id, handle = mock.stream_and_get(req)
+
+        # Poll until terminal
+        statuses = []
+        for _ in range(10):
+            req = mock.job_status("gb-smoke", job_ids=[job_id])
+            result = mock.get(req)
+            status = result[job_id]
+            statuses.append(str(status))
+            if status.is_terminal():
+                break
+
+        assert statuses == ["JobStatus.PENDING", "JobStatus.RUNNING", "JobStatus.SUCCEEDED"]
+
+        # Cleanup
+        req = mock.down("gb-smoke", purge=True)
+        mock.get(req)
