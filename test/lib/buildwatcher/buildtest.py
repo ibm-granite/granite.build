@@ -19,13 +19,16 @@ End-to-end build tests.
 """
 
 import os
+import re
 from abc import abstractmethod
 from datetime import timedelta
 from enum import Enum
+from pathlib import Path
 from time import sleep, time
 from typing import List, Optional, Self, Union
 
 import pytest
+import yaml
 
 pytest.importorskip("kubernetes_asyncio")
 
@@ -49,7 +52,7 @@ from lib.test_utils import (
     check_env_var_set,
     is_pytest_running_parallel,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from gbcommon.types.testing import (
     disable_failure_simulation,
@@ -126,6 +129,112 @@ class BuildTestSpecification(BaseModel):
     automatically skipped when this is set (no GitHub repo available)."""
     skip_target_names: list[str] = []
     """Target names expected to be skipped on a second run (used by _run_two_builds_sequential)."""
+    tests: list[str] = ["runner", "runner_cancellation"]
+    """Which test methods on AbstractYamlBuildRunnerTest run for this spec.
+    Each value <key> maps to a method test_<key> on the base class.  Default
+    runs both the basic build and the cancellation variant — fixtures that
+    want to skip the cancellation path can override with ['runner'].  Future
+    test types: add a base-class method and the corresponding key here — no
+    schema change required."""
+
+    @field_validator("expected_status", mode="before")
+    @classmethod
+    def _normalize_status(cls, v):
+        """Allow YAML to write SUCCESS or success — Status (StrEnum) values are lowercase."""
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> "BuildTestSpecification":
+        """Construct a BuildTestSpecification from a YAML file.
+
+        Path-typed fields are resolved relative to the YAML file's directory so a
+        fixture is self-contained (move the directory, the spec still resolves).
+        Specifically:
+          - ``build_yaml`` defaults to ``./build.yaml`` (sibling) when omitted, and
+            relative paths resolve against the YAML's parent directory.
+          - ``space_uri``: a relative ``file://`` URI or a bare relative filesystem
+            path is resolved against the YAML's parent directory and returned as
+            an absolute ``file://`` URI. Other URI schemes pass through unchanged.
+
+        Args:
+            path: Path to the buildtest.yaml file.
+
+        Returns:
+            A validated BuildTestSpecification.
+
+        Raises:
+            AssertionError: if the path does not exist or YAML is not a mapping.
+            pydantic.ValidationError: if required fields are missing/invalid.
+        """
+        path = Path(path).resolve()
+        assert path.is_file(), f"expected path '{path}' to be a file"
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        assert isinstance(data, dict), f"expected a dict, actual: {data}"
+
+        yaml_dir = path.parent
+        data["build_yaml"] = _resolve_build_yaml(data.get("build_yaml"), yaml_dir)
+        if data.get("space_uri") is not None:
+            data["space_uri"] = _resolve_space_uri(data["space_uri"], yaml_dir)
+        return cls.model_validate(data)
+
+
+def _resolve_build_yaml(value: Optional[str], yaml_dir: Path) -> str:
+    """Resolve a build_yaml value from a buildtest.yaml.
+
+    Defaults to './build.yaml' when value is None.  Relative paths are resolved
+    against ``yaml_dir`` and absolute paths are returned unchanged.
+    """
+    if value is None:
+        value = "./build.yaml"
+    p = Path(value)
+    if not p.is_absolute():
+        p = (yaml_dir / p).resolve()
+    return str(p)
+
+
+def _resolve_space_uri(value: str, yaml_dir: Path) -> str:
+    """Resolve a space_uri value from a buildtest.yaml.
+
+    Returns absolute URIs unchanged.  Relative ``file://`` URIs and bare relative
+    filesystem paths are resolved against ``yaml_dir`` and returned as absolute
+    ``file://`` URIs.
+    """
+    scheme_match = re.match(r"^([a-zA-Z][a-zA-Z0-9+\-.]*)://", value)
+    if scheme_match:
+        if scheme_match.group(1) != "file":
+            return value
+        path_part = value[len("file://") :]
+        p = Path(path_part)
+        if p.is_absolute():
+            return value
+        p = (yaml_dir / p).resolve()
+        return f"file://{p}"
+    p = Path(value)
+    if not p.is_absolute():
+        p = (yaml_dir / p).resolve()
+    return f"file://{p}"
+
+
+def get_test_data_dir_for(test_module_file: str) -> Path:
+    """Return the test-data directory that mirrors the given test module file.
+
+    Implements the project's ``test/<...>`` ↔ ``test-data/<...>`` parallel-tree
+    convention so YAML-driven test classes can spell out the fixture directory
+    in one readable line:
+
+        return get_test_data_dir_for(__file__) / "1step/cpu"
+
+    Args:
+        test_module_file: Pass ``__file__`` from the test module.
+
+    Returns:
+        Absolute Path to the test-data directory parallel to the test module.
+    """
+    d = Path(test_module_file).resolve().parent
+    return Path(str(d).replace("/test/", "/test-data/", 1))
 
 
 class ClassTestedEnum(Enum):
@@ -1161,4 +1270,72 @@ class AbstractBuildRunnerTest(AbstractBuildTest):
             tested_class=ClassTestedEnum.TEST_BUILDRUNNER,
             test_spec=test_spec,
             test_cancel=False,
+        )
+
+
+class AbstractYamlBuildRunnerTest(AbstractBuildRunnerTest):
+    """YAML-driven variant of AbstractBuildRunnerTest.
+
+    Concrete subclasses override exactly one method, ``_get_yaml_spec_dir``,
+    which returns the directory containing this fixture's ``build.yaml`` and
+    ``buildtest.yaml``.  This base class implements ``_get_test_specification``
+    (loads the YAML) and provides ``test_runner`` + ``test_runner_cancellation``
+    methods that consult the spec's ``tests:`` list and skip themselves when
+    the YAML doesn't opt in.
+
+    Example:
+        @extended_testing_only
+        @pytest.mark.xdist_group(name="buildtest_cpu")
+        class TestBuildRunner1StepCPU_Yaml(AbstractYamlBuildRunnerTest):
+            def _get_yaml_spec_dir(self) -> Path:
+                return get_test_data_dir_for(__file__) / "1step/cpu"
+    """
+
+    @abstractmethod
+    def _get_yaml_spec_dir(self: Self) -> Path:
+        """Return the directory containing this fixture's build.yaml and buildtest.yaml."""
+        raise NotImplementedError
+
+    def _get_test_specification(self: Self) -> BuildTestSpecification:
+        """Load the spec from <spec_dir>/buildtest.yaml.
+
+        Implemented here so subclasses don't need to repeat the from_yaml call —
+        the only contract for a concrete class is to override
+        ``_get_yaml_spec_dir``.
+        """
+        return BuildTestSpecification.from_yaml(
+            self._get_yaml_spec_dir() / "buildtest.yaml"
+        )
+
+    def test_runner(self):
+        """Run the basic build (test_cancel=False).
+
+        Skipped if the YAML's ``tests:`` list does not include ``'runner'``.
+        Overrides the inherited AbstractBuildRunnerTest.test_runner so the
+        spec's tests list controls both methods symmetrically.
+        """
+        spec = self._get_test_specification()
+        if "runner" not in spec.tests:
+            pytest.skip(f"YAML did not list 'runner' in tests: {spec.tests}")
+        self._run_build_test(
+            tested_class=ClassTestedEnum.TEST_BUILDRUNNER,
+            test_spec=spec,
+            test_cancel=False,
+        )
+
+    def test_runner_cancellation(self):
+        """Run with the cancellation path (test_cancel=True).
+
+        Skipped if the YAML's ``tests:`` list does not include
+        ``'runner_cancellation'``.
+        """
+        spec = self._get_test_specification()
+        if "runner_cancellation" not in spec.tests:
+            pytest.skip(
+                f"YAML did not list 'runner_cancellation' in tests: {spec.tests}"
+            )
+        self._run_build_test(
+            tested_class=ClassTestedEnum.TEST_BUILDRUNNER,
+            test_spec=spec,
+            test_cancel=True,
         )
