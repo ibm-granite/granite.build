@@ -29,7 +29,7 @@ def make_skypilot_env(
 
     Returns (env, event_q, mock_sky) tuple.
     """
-    event_q = asyncio.Queue()
+    event_q: asyncio.Queue = asyncio.Queue()
     config = EnvironmentConfig(
         name=f"test-{cloud}",
         type="Skypilot",
