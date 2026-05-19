@@ -537,30 +537,13 @@ class TestFeatureFlagSelection:
         yield
         reset_lineage_store()
 
-    def test_lakehouse_lineage_true_selects_lakehouse(self):
-        import gbserver.lineage.jobstats as jobstats_mod
-        from gbserver.lineage.lakehouse_jobstats import LakehouseLineageStore
-
-        mock_config = MagicMock()
-        mock_config.feature_flags = {"lakehouse_lineage": True}
-
-        with patch("gbserver.types.constants.GB_ENVIRONMENT_CONFIG", mock_config):
-            result = jobstats_mod.get_lineage_store()
-            assert isinstance(result, LakehouseLineageStore)
-
-    def test_lakehouse_lineage_false_selects_wandb(self):
+    def test_lineage_store_returns_wandb(self):
         import gbserver.lineage.jobstats as jobstats_mod
         from gbserver.lineage.wandb_jobstats import WandBLineageStore
 
-        mock_config = MagicMock()
-        mock_config.feature_flags = {"lakehouse_lineage": False}
-
-        with (
-            patch("gbserver.types.constants.GB_ENVIRONMENT_CONFIG", mock_config),
-            patch(
-                "gbserver.lineage.wandb_jobstats.LineageServiceFactory"
-            ) as mock_factory,
-        ):
+        with patch(
+            "gbserver.lineage.wandb_jobstats.LineageServiceFactory"
+        ) as mock_factory:
             mock_factory.create.return_value = MagicMock(spec=LineageService)
             result = jobstats_mod.get_lineage_store()
             assert isinstance(result, WandBLineageStore)

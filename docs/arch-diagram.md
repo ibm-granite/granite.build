@@ -79,15 +79,11 @@ flowchart TB
         SSTR["StoredStepRun"]
         SQLB["SqlStorage\nPostgreSQL"]
         SQLITEB["SqliteStorage"]
-        LHB["LhStorage\nLakehouse"]
-        SHADB["ShadowedStorage\ndual-write"]
         SAS --> SB
         SAS --> STR
         SAS --> SSTR
         SAS --> SQLB
         SAS --> SQLITEB
-        SAS --> LHB
-        SAS --> SHADB
     end
 
     subgraph External["External Systems"]
@@ -133,7 +129,7 @@ flowchart TB
     class BRUN,TR,TSR runtime
     class ENV,K8S,LSF,DOCKER,BASH,RUNPOD,SKYPILOT environment
     class ASSET,ASB,FS,GS,COS,HFS,LHS,ENVS asset
-    class SAS,SB,STR,SSTR,SQLB,SQLITEB,LHB,SHADB storage
+    class SAS,SB,STR,SSTR,SQLB,SQLITEB storage
     class EQ,BE event
     class GH,K8SAPI,LSFAPI,HFHUB,IBMCOS external
 ```

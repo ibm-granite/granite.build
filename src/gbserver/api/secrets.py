@@ -22,7 +22,6 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel
 
-from gbserver.api.utils import get_lh_token_if_needed
 from gbserver.spaces.user_spaces_list import user_spaces_list
 from gbserver.types.constants import (
     ENV_VAR_IBM_SEC_MAN_API_KEY,
@@ -70,10 +69,8 @@ class SecretUpdateRequest(BaseModel):
     encoding: str
 
 
-def _get_space_for_admin(
-    username: str, space_name: str, lh_token: Optional[str] = None
-):
-    spaces = user_spaces_list(username, lh_token=lh_token)
+def _get_space_for_admin(username: str, space_name: str):
+    spaces = user_spaces_list(username)
     # logger.info(spaces)
     space = list(filter(lambda x: x["name"] == space_name, spaces))
     if space is None or len(space) != 1:
@@ -88,9 +85,7 @@ def list_space_secrets(request: Request, space_name: str):
     """Get the list of secrets for a space."""
     try:
         username = request.state.data["user"].email
-        lh_token = get_lh_token_if_needed(request)
-
-        space = _get_space_for_admin(username, space_name, lh_token=lh_token)
+        space = _get_space_for_admin(username, space_name)
         manager = _get_ibm_secret_manager_admin()
         logger.info("Fetching secrets for", space)
         secret_group_name = manager.get_secret_group_for_space(space)
@@ -110,9 +105,7 @@ def get_space_secret(request: Request, space_name: str, secret_name: str):
     """Get a secret value."""
     try:
         username = request.state.data["user"].email
-        lh_token = get_lh_token_if_needed(request)
-
-        space = _get_space_for_admin(username, space_name, lh_token=lh_token)
+        space = _get_space_for_admin(username, space_name)
         manager = _get_ibm_secret_manager_admin()
         logger.info("Fetching a secret for", space)
         secret_group_name = manager.get_secret_group_for_space(space)
@@ -139,7 +132,6 @@ def create_space_secret(
     """Create a new secret."""
     try:
         username = request.state.data["user"].email
-        lh_token = get_lh_token_if_needed(request)
 
         if secret_request.secret_name is None:
             raise Exception("Invalid secret name")
@@ -152,7 +144,7 @@ def create_space_secret(
         ):
             raise Exception("Unsupported encoding")
 
-        space = _get_space_for_admin(username, space_name, lh_token=lh_token)
+        space = _get_space_for_admin(username, space_name)
         manager = _get_ibm_secret_manager_admin()
         logger.info("Creating a secret for", space)
         secret_group_name = manager.get_secret_group_for_space(space)
@@ -186,7 +178,6 @@ def update_space_secret(
     """Update an existing secret."""
     try:
         username = request.state.data["user"].email
-        lh_token = get_lh_token_if_needed(request)
 
         if secret_name is None:
             raise Exception("Invalid secret name")
@@ -199,7 +190,7 @@ def update_space_secret(
         ):
             raise Exception("Unsupported encoding")
 
-        space = _get_space_for_admin(username, space_name, lh_token=lh_token)
+        space = _get_space_for_admin(username, space_name)
         manager = _get_ibm_secret_manager_admin()
         logger.info("Updating a secret for", space)
         secret_group_name = manager.get_secret_group_for_space(space)
@@ -224,12 +215,11 @@ def delete_space_secret(request: Request, space_name: str, secret_name: str):
     """Delete a secret."""
     try:
         username = request.state.data["user"].email
-        lh_token = get_lh_token_if_needed(request)
 
         if secret_name is None:
             raise Exception("Invalid secret name")
 
-        space = _get_space_for_admin(username, space_name, lh_token=lh_token)
+        space = _get_space_for_admin(username, space_name)
         manager = _get_ibm_secret_manager_admin()
         logger.info("Deleting a secret for", space)
         secret_group_name = manager.get_secret_group_for_space(space)

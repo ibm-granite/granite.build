@@ -31,7 +31,6 @@ from gbserver.types.constants import (
     GB_METADATA_STORAGE,
     GBSERVER_SQL_DBNAME,
     GBSERVER_SQL_SCHEMA,
-    LAKEHOUSE_ENVIRONMENT,
 )
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.types.status import Status
@@ -74,10 +73,7 @@ def cli(
     print(f"G.B environment       : {GB_ENVIRONMENT}")
     print(f"Admin/metadata storage: {GB_METADATA_STORAGE}")
     print(f"OpenShift project     : {GB_ENVIRONMENT_CONFIG.default_pod_namespace}")
-    if "lakehouse" in GB_METADATA_STORAGE:
-        print(f"Lakehouse environment : {LAKEHOUSE_ENVIRONMENT}")
-    else:
-        print(f"SQL db.schema         : {GBSERVER_SQL_DBNAME}.{GBSERVER_SQL_SCHEMA}")
+    print(f"SQL db.schema         : {GBSERVER_SQL_DBNAME}.{GBSERVER_SQL_SCHEMA}")
 
     print("Do you want to proceed? (yes/no)")
     user_input = input().lower()

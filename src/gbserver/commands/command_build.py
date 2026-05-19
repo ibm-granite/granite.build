@@ -43,27 +43,11 @@ def get_space_uri_from_space_name(space_name: str) -> Optional[str]:
     storage = singleton_storage.get_admin_storage().space_storage
     space = storage.get_by_name(space_name)
     if space is None:
-        from gbserver.utils.optional_imports import HAS_LAKEHOUSE
-
-        if HAS_LAKEHOUSE:
-            from gbserver.storage.lh.space_storage import LhSpaceStorage
-
-            is_lh = isinstance(storage, LhSpaceStorage)
-        else:
-            is_lh = False
-        if is_lh:
-            logger.error(
-                "Could not find space %s in table %s.%s",
-                space_name,
-                storage.namespace,  # type: ignore[attr-defined]
-                storage.table_name,  # type: ignore[attr-defined]
-            )
-        else:
-            logger.error(
-                "Could not find space %s in table %s",
-                space_name,
-                storage.get_table_name(),
-            )
+        logger.error(
+            "Could not find space %s in table %s",
+            space_name,
+            storage.get_table_name(),
+        )
         return None
     uri = space.git_repo_uri
     logger.info("Found space %s with uri %s", space_name, uri)

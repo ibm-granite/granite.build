@@ -2,9 +2,6 @@
 source = src
 omit =
     test/*
-    ; Ignore code that we skip in normal PR builds
-    src/gbserver/storage/lh/*
-    src/gbserver/storage/shadowed/*
 
 [report]
 ; Regexes for lines to exclude from consideration

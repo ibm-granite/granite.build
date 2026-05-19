@@ -280,17 +280,6 @@ class TestSpaceMembersAPI(AbstractAPITest):
             response = client.get(f"{base_url}/nonexistent/members")
             assert response.status_code == 404
 
-    def test_501_in_lakehouse_mode(self):
-        """Endpoints return 501 when lakehouse_space_membership flag is True."""
-        with patch.dict(
-            "gbserver.types.constants.GB_ENVIRONMENT_CONFIG.feature_flags",
-            {"lakehouse_space_membership": True},
-        ):
-            self.storage.space_storage.add([_TEST_SPACE])
-            client = self.get_test_client()
-            response = client.get(f"{base_url}/{_TEST_SPACE.name}/members")
-            assert response.status_code == 501
-
     def test_unauthorized_user(self):
         """Endpoints return 401 when user is not a space admin or super-admin."""
         with patch.dict(
