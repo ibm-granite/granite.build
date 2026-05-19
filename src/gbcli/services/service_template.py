@@ -14,6 +14,7 @@ from gbcli.utils.gbconstants import (
 from gbcli.utils.gh_clone import download_repo_file, list_repo_tree
 from gbcli.utils.spaceutil import resolve_space
 from gbcli.utils.utils import remove_suffix
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ def list_templates(
             templates.append(
                 {
                     "template_name": file_path[1],
-                    "description": f"https://github.ibm.com/{assets_org}/{assets_name}/tree/{branch_name}/{file['path']}",
+                    "description": f"https://{DEFAULT_GH_DOMAIN}/{assets_org}/{assets_name}/tree/{branch_name}/{file['path']}",
                 }
             )
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN, is_public_github
 from gbserver.lineage.jobstats import ILineageStore
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
 from gbserver.storage.artifact_registration import ArtifactRegistration
@@ -32,6 +33,9 @@ from gbserver.types.constants import (
     GBSERVER_LINEAGE_PROVIDER,
 )
 from gbserver.types.status import Status
+
+_LINEAGE_REPO_ORG = "ibm-granite" if is_public_github() else "granite-dot-build"
+LINEAGE_PRODUCER_URL = f"https://{DEFAULT_GH_DOMAIN}/{_LINEAGE_REPO_ORG}/granite.build"
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -253,7 +257,7 @@ class WandBLineageStore(ILineageStore):
                 "name": targetrun.name,
                 "facets": {},
             },
-            "producer": "https://github.ibm.com/granite-dot-build/gbserver",
+            "producer": LINEAGE_PRODUCER_URL,
             "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
         }
 
@@ -517,7 +521,7 @@ class WandBLineageStore(ILineageStore):
             },
             "inputs": inputs,
             "outputs": outputs,
-            "producer": "https://github.ibm.com/granite-dot-build/gbserver",
+            "producer": LINEAGE_PRODUCER_URL,
             "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
         }
         _add_jobstats_mirror_fields(event)

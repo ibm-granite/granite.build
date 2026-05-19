@@ -15,10 +15,14 @@
 # limitations under the License.
 
 import os
+from typing import Optional
 
 API_VERSION = "v1"
 API_BASE_PATH = f"/api/{API_VERSION}"
-DEFAULT_GH_DOMAIN = "github.ibm.com"
+
+ENV_VAR_PREFIX = "GBSERVER"
+ENV_VAR_GH_DOMAIN = ENV_VAR_PREFIX + "_GH_DOMAIN"
+DEFAULT_GH_DOMAIN = os.getenv(ENV_VAR_GH_DOMAIN, "github.ibm.com")
 DEFAULT_WORKSPACE_DIR = os.environ.get(
     "GBSERVER_DEFAULT_WORKSPACE_DIR", "gbserverworkspace"
 )
@@ -29,8 +33,6 @@ CURRENT_BUILD_YAML_KEY = "granite.build"
 BUILD_YAML_BASE_KEYS = ["llm.build", "granite.build"]
 CURRENT_BUILD_YAML_VERSION_KEY = "version"
 CURRENT_BUILD_YAML_VERSION = "0.0.1"
-ENV_VAR_PREFIX = "GBSERVER"
-ENV_VAR_GH_DOMAIN = ENV_VAR_PREFIX + "_GH_DOMAIN"
 ENV_VAR_IBM_SEC_MAN_ENDPOINT = ENV_VAR_PREFIX + "_IBM_SEC_MAN_ENDPOINT"
 ENV_VAR_IBM_SEC_MAN_API_KEY = ENV_VAR_PREFIX + "_IBM_SEC_MAN_API_KEY"
 ENV_VAR_DEFAULT_LOG_LEVEL = ENV_VAR_PREFIX + "_DEFAULT_LOG_LEVEL"
@@ -66,3 +68,44 @@ GB_DEFAULT_LH_ARTIFACT_HOST = (
 # gbserver
 GRANITE_DOT_BUILD_PARENT_NAMESPACE = "granite_dot_build"
 GB_PUBLIC_ARTIFACT_NAMESPACE = f"{GRANITE_DOT_BUILD_PARENT_NAMESPACE}.public"
+
+
+# ---------------------------------------------------------------------------
+# GitHub domain helpers
+# ---------------------------------------------------------------------------
+
+
+def is_public_github(domain: Optional[str] = None) -> bool:
+    """Return True if the domain is public github.com."""
+    if domain is None:
+        domain = DEFAULT_GH_DOMAIN
+    return domain.lower() == "github.com"
+
+
+def get_gh_api_base(domain: Optional[str] = None) -> str:
+    """Return the GitHub REST API base URL.
+
+    Enterprise: https://{domain}/api/v3
+    Public:     https://api.github.com
+    """
+    if domain is None:
+        domain = DEFAULT_GH_DOMAIN
+    if is_public_github(domain):
+        return "https://api.github.com"
+    return f"https://{domain}/api/v3"
+
+
+def get_gh_web_base(domain: Optional[str] = None) -> str:
+    """Return the GitHub web (HTML) base URL."""
+    if domain is None:
+        domain = DEFAULT_GH_DOMAIN
+    return f"https://{domain}"
+
+
+def get_gh_credentials_section(domain: Optional[str] = None) -> str:
+    """Return the TOML credentials section name for the given domain."""
+    if domain is None:
+        domain = DEFAULT_GH_DOMAIN
+    if is_public_github(domain):
+        return "user.github_com"
+    return "user.github"

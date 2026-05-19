@@ -47,8 +47,11 @@ from gbcli.utils.gbconstants import (
 from gbcli.utils.gbserver import get_artifacts, make_gbserver_call
 from gbcli.utils.gh_auth import get_user
 from gbcli.utils.spaceutil import resolve_space
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 from gbcommon.uri.lh import LhURI
 from gbcommon.uri.uri import URI
+
+_KNOWN_GH_DOMAINS = ["github.ibm.com", "github.com"]
 
 
 def normalize_to_filename(value: str, allow_unicode: bool = False) -> str:
@@ -245,10 +248,15 @@ def resolve_canonical_expression_to_url(expression: str, addSuffix: bool):
         expression = expression[1:]
     if expression.endswith("/"):
         expression = expression[:-1]
-    if expression.startswith("https://github.ibm.com/"):
-        expression = expression.replace("https://github.ibm.com/", "")
-    if expression.startswith("github.ibm.com/"):
-        expression = expression.replace("github.ibm.com/", "")
+
+    # Strip any known GitHub URL prefix
+    for domain in _KNOWN_GH_DOMAINS:
+        if expression.startswith(f"https://{domain}/"):
+            expression = expression[len(f"https://{domain}/") :]
+            break
+        if expression.startswith(f"{domain}/"):
+            expression = expression[len(f"{domain}/") :]
+            break
 
     slash_count = expression.count("/")
 
@@ -266,7 +274,7 @@ def resolve_canonical_expression_to_url(expression: str, addSuffix: bool):
     if addSuffix:
         suffix = ".git"
 
-    return f"https://github.ibm.com/{space_org}/{space_repo_name}{suffix}"
+    return f"https://{DEFAULT_GH_DOMAIN}/{space_org}/{space_repo_name}{suffix}"
 
 
 def resolve_url_to_canonical_expression(url: str, removeSuffix=True):
@@ -275,7 +283,12 @@ def resolve_url_to_canonical_expression(url: str, removeSuffix=True):
     return canonical expression
     """
 
-    expression = remove_prefix("https://github.ibm.com/", url)
+    expression = url
+    for domain in _KNOWN_GH_DOMAINS:
+        prefix = f"https://{domain}/"
+        if expression.startswith(prefix):
+            expression = expression[len(prefix) :]
+            break
 
     if removeSuffix:
         expression = remove_suffix(expression, ".git")

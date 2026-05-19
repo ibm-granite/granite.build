@@ -7,6 +7,8 @@ import os
 import sys
 from sys import platform
 
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN, is_public_github
+
 logger = logging.getLogger(__name__)
 
 PROJECT_NAME = "LLM.build"
@@ -257,9 +259,10 @@ HF_RESOURCE_GROUP_ID_DEFAULT = gb_environment_config().get(
 
 
 # gbcli
+_GBCLI_REPO_ORG = "ibm-granite" if is_public_github() else "granite-dot-build"
 GBCLI_REPO_URL = os.environ.get(
     "GBCLI_REPO_URL",
-    "https://github.ibm.com/granite-dot-build/granite.build",
+    f"https://{DEFAULT_GH_DOMAIN}/{_GBCLI_REPO_ORG}/granite.build",
 )
 
 # assets
@@ -267,7 +270,7 @@ ASSETS_REPO_ORG = os.environ.get("GBCLI_ASSETS_REPO_ORG", "granite-dot-build")
 ASSETS_REPO_NAME = os.environ.get("GBCLI_ASSETS_REPO_NAME", "assets")
 ASSETS_REPO_URL = os.environ.get(
     "GBCLI_ASSETS_REPO_URL",
-    f"https://github.ibm.com/{ASSETS_REPO_ORG}/{ASSETS_REPO_NAME}.git",
+    f"https://{DEFAULT_GH_DOMAIN}/{ASSETS_REPO_ORG}/{ASSETS_REPO_NAME}.git",
 )
 
 # templates

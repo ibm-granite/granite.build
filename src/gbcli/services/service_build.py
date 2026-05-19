@@ -90,7 +90,7 @@ from gbcli.utils.utils import (
     remove_suffix,
 )
 from gbcommon.types.buildconfig import BuildConfig
-from gbcommon.types.constants import BUILD_YAML_BASE_KEYS
+from gbcommon.types.constants import BUILD_YAML_BASE_KEYS, DEFAULT_GH_DOMAIN
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +212,10 @@ def build_init(
         if space:
             template_repo = resolved_space.get("git_repo_uri")
         elif template_repo != None:
-            if "github.ibm.com" not in template_repo:
+            if (
+                DEFAULT_GH_DOMAIN not in template_repo
+                and "github.com" not in template_repo
+            ):
                 if callback is not None:
                     callback(
                         callback_event="error",

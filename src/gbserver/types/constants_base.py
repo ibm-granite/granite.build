@@ -18,6 +18,8 @@
 
 import os
 
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN, ENV_VAR_GH_DOMAIN  # noqa: F401
+
 
 def getenv_boolean(envname: str, default: bool = False) -> bool:
     """Evaluate the environment variable and return as a boolean value"""
@@ -30,7 +32,6 @@ def getenv_boolean(envname: str, default: bool = False) -> bool:
 
 ENV_VAR_PREFIX = "GBSERVER"
 
-ENV_VAR_GH_DOMAIN = ENV_VAR_PREFIX + "_GH_DOMAIN"
 ENV_VAR_GBSERVER_BACKEND_SERVER_NAMESPACE_PROD = (
     ENV_VAR_PREFIX + "_BACKEND_SERVER_NAMESPACE_PROD"
 )
@@ -42,7 +43,6 @@ ENV_VAR_GBSERVER_BACKEND_SERVER_NAMESPACE_DEV = (
 )
 
 DEFAULT_GB_ENVIRONMENT = "PROD"
-DEFAULT_GH_DOMAIN = os.getenv(ENV_VAR_GH_DOMAIN, "github.ibm.com")
 BACKEND_SERVER_NAMESPACE_PROD = os.getenv(
     ENV_VAR_GBSERVER_BACKEND_SERVER_NAMESPACE_PROD, "llm-build-prod"
 )
