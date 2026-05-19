@@ -122,6 +122,8 @@ gbserver = "gbserver.cli:gbserver"
 gbcli = "gbcli.cli:gbcli"
 gb = "gbcli.cli:gbcli"
 llmbuild = "gbcli.cli:gbcli"
+# gbtest: run a single buildtest.yaml via the pytest harness
+gbtest = "lib.buildwatcher.gbtest:main"
 llmb = "gbcli.cli:gbcli"
 lamb = "gbcli.cli:gbcli"
 

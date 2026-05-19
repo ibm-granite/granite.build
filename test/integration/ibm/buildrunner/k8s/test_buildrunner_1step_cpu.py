@@ -24,6 +24,7 @@ from lib.constants import extended_testing_only
 
 pytestmark = pytest.mark.ibm
 
+
 @extended_testing_only
 @pytest.mark.xdist_group(name="buildtest_cpu")
 class TestBuildRunner1StepCPU(AbstractYamlBuildRunnerTest):
