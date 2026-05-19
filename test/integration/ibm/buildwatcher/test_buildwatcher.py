@@ -2,9 +2,6 @@ import os
 from abc import abstractmethod
 
 import pytest
-from integration.ibm.buildrunner.test_buildrunner_invalid import (
-    InvalidBuildTestConfig,
-)
 from lib.buildwatcher.buildtest import (
     AbstractBuildTest,
     BuildTestSpecification,
@@ -20,6 +17,14 @@ pytestmark = pytest.mark.ibm
 _K8S_FIXTURES = get_test_data_dir_for(__file__).parent / "buildrunner" / "k8s"
 _CPU_YAML = _K8S_FIXTURES / "1step" / "cpu" / "buildtest.yaml"
 _GPU_YAML = _K8S_FIXTURES / "1step" / "gpu" / "buildtest.yaml"
+# The invalid-build fixture is environment-agnostic and lives in the standalone tree.
+_INVALID_YAML = (
+    get_test_data_dir_for(__file__).parent.parent
+    / "standalone"
+    / "buildrunner"
+    / "invalid"
+    / "buildtest.yaml"
+)
 
 
 @pytest.mark.skipif(
@@ -75,7 +80,7 @@ class TestBuildWatcherInvalidBuild(AbstractTestBuildWatcher):
 
     @abstractmethod
     def _get_test_config(self) -> BuildTestSpecification:
-        return InvalidBuildTestConfig
+        return BuildTestSpecification.from_yaml(_INVALID_YAML)
 
 
 @pytest.mark.xdist_group(name="buildwatcher_gpu")

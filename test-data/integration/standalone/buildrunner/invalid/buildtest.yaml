@@ -1,0 +1,15 @@
+# YAML-driven equivalent of InvalidBuildTestConfig.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+expected_status: invalid
+# Empty targets list is intentional — the build is expected to fail validation
+# before any target runs.
+targets: []
+target_expections: []
+# Use the local sibling space dir so the BuildRunner resolves space:// URIs
+# without cloning from GitHub.  Relative path resolves against this YAML's
+# directory and is returned as an absolute file:// URI by from_yaml.
+space_uri: ./space
+# Cancellation isn't meaningful for an invalid build, so opt out of the
+# default test_runner_cancellation method.
+tests:
+  - runner
