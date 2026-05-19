@@ -1,0 +1,5 @@
+name: gcp-skypilot
+type: Skypilot
+config:
+  default_cloud: gcp
+  idle_minutes_to_autostop: 10

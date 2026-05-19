@@ -1,0 +1,5 @@
+name: aws-skypilot
+type: Skypilot
+config:
+  default_cloud: aws
+  idle_minutes_to_autostop: 10

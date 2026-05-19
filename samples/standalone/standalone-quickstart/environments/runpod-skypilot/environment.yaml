@@ -1,0 +1,5 @@
+name: runpod-skypilot
+type: Skypilot
+config:
+  default_cloud: runpod
+  idle_minutes_to_autostop: 5
