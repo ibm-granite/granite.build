@@ -777,46 +777,51 @@ def build_lineage_gbserver(
                     sources = record.get("inputs", [])
                     targets = record.get("outputs", [])
 
-                    if sources and targets:
-                        for source in sources:
-                            for target in targets:
-                                jobs.append(
-                                    {
-                                        "release_id": job_details.get("release_id", ""),
-                                        "category": job_details.get("category", ""),
-                                        "job_name": record.get("job", {}).get(
-                                            "name", ""
-                                        ),
-                                        "job_id": job_details.get("job_id", ""),
-                                        "job_type": job_details.get("job_type", ""),
-                                        "job_started_at": job_details.get(
-                                            "job_started_at", ""
-                                        ),
-                                        "job_completed_at": job_details.get(
-                                            "job_completed_at", ""
-                                        ),
-                                        "job_status": job_details.get("job_status", ""),
-                                        "owner": tags.get("username", ""),
-                                        "source": format_obj_name(source),
-                                        "source_type": infer_artifact_type(source),
-                                        "source_object": source,
-                                        "target": format_obj_name(target),
-                                        "target_type": infer_artifact_type(target),
-                                        "target_object": target,
-                                        "source_code_details": run_facets.get(
-                                            "source_code", {}
-                                        ),
-                                        "job_input_params": run_facets.get(
-                                            "job_input_params", {}
-                                        ),
-                                        "execution_stats": run_facets.get(
-                                            "execution_stats", {}
-                                        ),
-                                        "job_output_stats": job_details.get(
-                                            "job_output_stats", {}
-                                        ),
-                                    }
-                                )
+                    # Emit one row per (source, target) pair. When either side
+                    # is empty (e.g. an initial run with no inputs), still emit
+                    # rows so the run is not dropped from the CLI output.
+                    source_iter = sources if sources else [None]
+                    target_iter = targets if targets else [None]
+
+                    for source in source_iter:
+                        for target in target_iter:
+                            jobs.append(
+                                {
+                                    "release_id": job_details.get("release_id", ""),
+                                    "category": job_details.get("category", ""),
+                                    "job_name": record.get("job", {}).get(
+                                        "name", ""
+                                    ),
+                                    "job_id": job_details.get("job_id", ""),
+                                    "job_type": job_details.get("job_type", ""),
+                                    "job_started_at": job_details.get(
+                                        "job_started_at", ""
+                                    ),
+                                    "job_completed_at": job_details.get(
+                                        "job_completed_at", ""
+                                    ),
+                                    "job_status": job_details.get("job_status", ""),
+                                    "owner": tags.get("username", ""),
+                                    "source": format_obj_name(source) if source else "",
+                                    "source_type": infer_artifact_type(source) if source else "",
+                                    "source_object": source if source else {},
+                                    "target": format_obj_name(target) if target else "",
+                                    "target_type": infer_artifact_type(target) if target else "",
+                                    "target_object": target if target else {},
+                                    "source_code_details": run_facets.get(
+                                        "source_code", {}
+                                    ),
+                                    "job_input_params": run_facets.get(
+                                        "job_input_params", {}
+                                    ),
+                                    "execution_stats": run_facets.get(
+                                        "execution_stats", {}
+                                    ),
+                                    "job_output_stats": job_details.get(
+                                        "job_output_stats", {}
+                                    ),
+                                }
+                            )
 
         return jobs
 
