@@ -1,0 +1,20 @@
+# YAML-driven equivalent of the _SPEC in
+# test/integration/standalone/buildrunner/docker/test_docker_hf.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+targets:
+  - image-run
+target_expections:
+  - target_name: image-run
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 2
+    jobstats_count: 3
+# Use the local sibling space dir so the BuildRunner resolves space:// URIs
+# without cloning from GitHub (HF traffic is mocked separately).
+space_uri: ./space
+simulate_failure: false
+timeout_minutes: 10
+# This fixture has no cancellation variant in the original Python class —
+# opt out of the default test_runner_cancellation method.
+tests:
+  - runner
