@@ -1,10 +1,12 @@
 import os
 
 import pytest
-from integration.ibm.buildrunner.k8s.test_buildrunner_1step_cpu import (
-    OneStepCPUDownloadTestConfig,
+from lib.buildwatcher.buildtest import (
+    AbstractBuildTest,
+    BuildTestSpecification,
+    ClassTestedEnum,
+    get_test_data_dir_for,
 )
-from lib.buildwatcher.buildtest import AbstractBuildTest, ClassTestedEnum
 from lib.constants import extended_testing_only
 
 pytestmark = pytest.mark.ibm
@@ -12,6 +14,12 @@ pytestmark = pytest.mark.ibm
 
 @extended_testing_only
 class TestBuildRunnerJob(AbstractBuildTest):
+
+    def _get_test_specification(self) -> BuildTestSpecification:
+        """Load the 1step/cpu fixture spec from buildtest.yaml."""
+        return BuildTestSpecification.from_yaml(
+            get_test_data_dir_for(__file__) / "1step/cpu/buildtest.yaml"
+        )
 
     # We set HAS_GB_CLUSTER_ACCESS=False in the travis builds. HAS_VELA_ACCESS is deprecated.
     @pytest.mark.skipif(
@@ -23,7 +31,7 @@ class TestBuildRunnerJob(AbstractBuildTest):
         # Note that this requires oc login to ris3
         self._run_build_test(
             tested_class=ClassTestedEnum.TEST_BUILDRUNNERJOB,
-            test_spec=OneStepCPUDownloadTestConfig,
+            test_spec=self._get_test_specification(),
             test_cancel=False,
         )
 
@@ -37,6 +45,6 @@ class TestBuildRunnerJob(AbstractBuildTest):
         # Note that this requires oc login to ris3
         self._run_build_test(
             tested_class=ClassTestedEnum.TEST_BUILDRUNNERJOB,
-            test_spec=OneStepCPUDownloadTestConfig,
+            test_spec=self._get_test_specification(),
             test_cancel=True,
         )

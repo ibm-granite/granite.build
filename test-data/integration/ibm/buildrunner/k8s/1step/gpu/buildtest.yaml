@@ -1,0 +1,11 @@
+# YAML-driven equivalent of OneStepGPUDownloadTestConfig in
+# test/integration/ibm/buildrunner/k8s/test_buildrunner_1step_gpu.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+targets:
+  - download_file
+target_expections:
+  - target_name: download_file
+    step_count: 5
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 3

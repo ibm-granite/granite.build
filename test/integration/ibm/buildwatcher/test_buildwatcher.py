@@ -2,12 +2,6 @@ import os
 from abc import abstractmethod
 
 import pytest
-from integration.ibm.buildrunner.k8s.test_buildrunner_1step_cpu import (
-    OneStepCPUDownloadTestConfig,
-)
-from integration.ibm.buildrunner.k8s.test_buildrunner_1step_gpu import (
-    OneStepGPUDownloadTestConfig,
-)
 from integration.ibm.buildrunner.test_buildrunner_invalid import (
     InvalidBuildTestConfig,
 )
@@ -15,10 +9,17 @@ from lib.buildwatcher.buildtest import (
     AbstractBuildTest,
     BuildTestSpecification,
     ClassTestedEnum,
+    get_test_data_dir_for,
 )
 from lib.constants import extended_testing_only
 
 pytestmark = pytest.mark.ibm
+
+# K8s buildrunner fixtures live under test-data/integration/ibm/buildrunner/k8s/
+# (sibling of this file's test-data dir test-data/integration/ibm/buildwatcher).
+_K8S_FIXTURES = get_test_data_dir_for(__file__).parent / "buildrunner" / "k8s"
+_CPU_YAML = _K8S_FIXTURES / "1step" / "cpu" / "buildtest.yaml"
+_GPU_YAML = _K8S_FIXTURES / "1step" / "gpu" / "buildtest.yaml"
 
 
 @pytest.mark.skipif(
@@ -59,7 +60,7 @@ class TestBuildWatcherCPU(AbstractTestBuildWatcher):
 
     @abstractmethod
     def _get_test_config(self) -> BuildTestSpecification:
-        return OneStepCPUDownloadTestConfig
+        return BuildTestSpecification.from_yaml(_CPU_YAML)
 
 
 @pytest.mark.xdist_group(name="buildwatcher_invalid_build")
@@ -85,7 +86,7 @@ class TestBuildWatcherGPU(AbstractTestBuildWatcher):
 
     @abstractmethod
     def _get_test_config(self) -> BuildTestSpecification:
-        return OneStepGPUDownloadTestConfig
+        return BuildTestSpecification.from_yaml(_GPU_YAML)
 
 
 # @pytest.mark.skip(
@@ -100,4 +101,4 @@ class TestBuildWatcherMultiCPU(AbstractTestBuildWatcher):
 
     @abstractmethod
     def _get_test_config(self) -> BuildTestSpecification:
-        return OneStepCPUDownloadTestConfig
+        return BuildTestSpecification.from_yaml(_CPU_YAML)
