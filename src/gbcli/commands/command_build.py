@@ -1235,8 +1235,16 @@ def lineage(ctx, build_id, format, lakehouse, skip_version_check, quiet):
                         str(l["job_name"]),
                         str(l["job_id"]),
                         str(l["job_status"]),
-                        l["source_type"].capitalize() + ": " + str(l["source"]),
-                        l["target_type"].capitalize() + ": " + str(l["target"]),
+                        (
+                            (l["source_type"].capitalize() + ": " + str(l["source"]))
+                            if l["source"]
+                            else ""
+                        ),
+                        (
+                            (l["target_type"].capitalize() + ": " + str(l["target"]))
+                            if l["target"]
+                            else ""
+                        ),
                     )
 
             click.echo("")
