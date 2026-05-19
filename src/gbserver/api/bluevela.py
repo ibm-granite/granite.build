@@ -16,38 +16,43 @@
 
 """REST endpoints for inspecting BlueVela/LSF remote-file outputs of a build.
 
-Three endpoints, all scoped to a single step-run:
-  - GET /builds/{id}/files             — directory listing
-  - GET /builds/{id}/files/content     — small text file, inline JSON
-  - GET /builds/{id}/files/download    — any file, streamed via SFTP
+Three endpoints, registered on the shared builds_api:
+  - GET /builds/{id}/files          — single-level listing
+  - GET /builds/{id}/file           — file contents (base64, capped small)
+  - GET /builds/{id}/file/download  — streamed file bytes (capped large)
+
+Path resolution: ``path`` is relative to the build root
+(``{workspace_remote_dir}/llm-build-{build_id}``).
 
 Auth matches PUT /builds/{id}/update (owner or space/super admin).
-Every user-supplied path passes through validate_subpath() before it hits
-a shell or SFTP call — do not bypass that helper.
-
-NOTE (in-flight steps): a running step's directory may be partially
-written, so a listing taken mid-run is a snapshot and can disagree with
-the next listing moments later. This is intentional — surfacing progress
-is a feature.
+Every user-supplied path passes through validate_subpath() and then
+resolve_and_check_real_path() before it hits a shell or SFTP call — do
+not bypass those helpers.
 """
 
+import base64
 import shlex
+from datetime import datetime
 from pathlib import PurePosixPath
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, List, cast
+from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from gbserver.api.bluevela_paths import (
-    _step_name_of,
     authorize_build_access,
-    lookup_build_target_step,
-    resolve_step_asset_dir,
+    lookup_build,
+    resolve_and_check_real_path,
     validate_subpath,
 )
 from gbserver.api.bluevela_tunnel import open_bluevela_tunnel
-from gbserver.environment.lsf_paths import build_step_run_parent_dir
+from gbserver.api.builds import builds_api
+from gbserver.environment.lsf_paths import build_remote_root_dir
+from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
+from gbserver.storage.stored_build import StoredBuild
+from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.constants import (
     BLUEVELA_CONTENT_MAX_BYTES,
     BLUEVELA_DOWNLOAD_MAX_BYTES,
@@ -56,222 +61,149 @@ from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-bluevela_api = FastAPI()
+_FIND_MAX_ENTRIES = 10000
 
 
 # --------------------------------------------------------------------- models
 
 
-class FileEntry(BaseModel):
-    path: str
-    """Path relative to the step's asset dir (empty string = the asset dir itself)."""
-    size: int
-    mtime_epoch: int
-    is_dir: bool
-
-
-class FileListResponse(BaseModel):
-    asset_dir: str
-    entries: List[FileEntry]
-
-
 class FileContentResponse(BaseModel):
     path: str
-    size: int
-    content: str
-    truncated: bool
-    """Always false today; reserved for a future larger-cap mode."""
+    """Path relative to the build root."""
+    content_base64: str
 
 
 # --------------------------------------------------------------------- helpers
 
 
-# stat format: name<TAB>size<TAB>mtime_epoch<TAB>type
-# Use a literal TAB (0x09) inside the format. Some remote login shells
-# (csh/tcsh) and some `stat` implementations don't expand `\t` escapes,
-# leaving a backslash-t pair in the output that breaks our parser.
-_STAT_FMT = "%n\t%s\t%Y\t%F"
-_FIND_MAX_ENTRIES = 10000
+def _pick_environment_uri(build: StoredBuild) -> str:
+    """Return the most recent target run's environment_uri for this build.
 
-
-def _parse_stat_line(line: str, asset_dir: PurePosixPath) -> Optional[FileEntry]:
-    parts = line.rstrip("\n").split("\t")
-    if len(parts) < 4:
-        return None
-    abs_name, size_s, mtime_s, ftype = parts[0], parts[1], parts[2], parts[3]
-    try:
-        size = int(size_s)
-        mtime = int(mtime_s)
-    except ValueError:
-        return None
-    try:
-        rel = str(PurePosixPath(abs_name).relative_to(asset_dir))
-    except ValueError:
-        # Shouldn't happen since we rooted the listing at asset_dir, but if
-        # `stat` printed something outside (e.g. symlink target following),
-        # drop it rather than risk leaking paths.
-        return None
-    if rel == ".":
-        rel = ""
-    return FileEntry(
-        path=rel,
-        size=size,
-        mtime_epoch=mtime,
-        is_dir=ftype.startswith("directory"),
+    Build-root listings still need an SSH tunnel, which is keyed by
+    environment_uri. We don't persist environment on the build, so we
+    borrow it from any of its target runs.
+    """
+    storage: SingletonAdminStorage = get_admin_storage()
+    target_runs = cast(
+        list[StoredTargetRun],
+        storage.target_storage.get_by_where({"build_id": build.uuid}),
     )
-
-
-async def _remote_stat(tunnel, target: PurePosixPath) -> tuple[int, bool]:
-    """Return (size, is_dir) for `target`. 404 if missing, 500 otherwise."""
-    cmd = f"stat -c '%s\t%F' -- {shlex.quote(str(target))}"  # literal TAB
-    rc, stdout, stderr = await tunnel.run_remote(cmd, raise_on_error=False)
-    if rc != 0:
-        err = (stderr or "").strip().lower()
-        if "no such file" in err or "cannot stat" in err:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"path not found")
+    if not target_runs:
         raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"stat failed: {stderr.strip() or 'unknown error'}",
+            status.HTTP_404_NOT_FOUND,
+            f"build {build.uuid!r} has no target runs to ssh through",
         )
-    first = (stdout or "").splitlines()[0] if stdout else ""
-    parts = first.split("\t")
-    if len(parts) < 2:
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR, f"unexpected stat output: {first!r}"
-        )
-    try:
-        size = int(parts[0])
-    except ValueError as e:
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR, f"unexpected stat size: {parts[0]!r}"
-        ) from e
-    is_dir = parts[1].startswith("directory")
-    return size, is_dir
+    target = max(target_runs, key=lambda t: t.started_at or datetime.min)
+    return target.environment_uri
 
 
-# --------------------------------------------------------------------- /files
+# ---------------------------------------------------------------------- /files
 
 
-@bluevela_api.get(
-    "/builds/{build_id}/files",
-    response_model=FileListResponse,
+@builds_api.get(
+    "/{build_id}/files",
+    response_model=List[str],
 )
 async def list_files(
     request: Request,
     build_id: str,
-    target_name: str = Query(...),
-    step_name: str = Query(...),
-    path: Optional[str] = Query(None),
+    path: str = Query(".", min_length=1),
     recursive: bool = Query(False),
-) -> FileListResponse:
-    """List files under a step-run's asset dir.
+) -> List[str]:
+    """List entries under the resolved path, returning paths relative to
+    the build root, sorted lexicographically. Includes both files and
+    directories (no trailing slash) and dotfiles.
 
-    `path` is relative to the asset dir; a running step's dir may be
-    partially written.
+    With ``recursive=true`` the subtree is walked (capped at
+    ``_FIND_MAX_ENTRIES`` entries). Symlinks are listed as their own
+    entries; their targets are not followed. Use ``GET /file`` to read a
+    single symlink's target — that path goes through ``readlink -f`` and
+    is rejected if it leaves the build root.
     """
-    build, target, step = lookup_build_target_step(build_id, target_name, step_name)
+    build = lookup_build(build_id)
     authorize_build_access(request, build)
+    environment_uri = _pick_environment_uri(build)
 
-    async with open_bluevela_tunnel(build.space_name, target.environment_uri) as (
+    async with open_bluevela_tunnel(build.space_name, environment_uri) as (
         tunnel,
         cfg,
     ):
-        asset_dir = await resolve_step_asset_dir(
-            build=build,
-            target=target,
-            step=step,
-            workspace_remote_dir=cfg.workspace_remote_dir,
-            tunnel=tunnel,
-        )
-        target_path = validate_subpath(asset_dir, path)
+        build_root = build_remote_root_dir(cfg.workspace_remote_dir, build.uuid)
+        candidate = validate_subpath(build_root, path)
+        real = await resolve_and_check_real_path(tunnel, build_root, candidate)
+
         logger.info(
-            "[bluevela] list build=%s target=%s step=%s recursive=%s",
+            "[bluevela] list build=%s recursive=%s",
             build_id,
-            target_name,
-            step_name,
             recursive,
         )
-        logger.debug("[bluevela] list asset_dir=%s target=%s", asset_dir, target_path)
+        logger.debug("[bluevela] list real=%s build_root=%s", real, build_root)
 
-        quoted = shlex.quote(str(target_path))
+        quoted = shlex.quote(str(real))
         if recursive:
-            # `find -exec stat` is portable across GNU and BSD find (some
-            # cluster filesystems ship BSD-style find where `-printf %F`
-            # returns the filesystem type, not the entry type — using stat
-            # for formatting keeps output consistent.
+            # pipefail so find's rc propagates through head; without it
+            # head's success would mask a failed find.
             cmd = (
-                f"find {quoted} -exec stat -c '{_STAT_FMT}' {{}} \\; "
+                f"set -o pipefail; "
+                f"find {quoted} -mindepth 1 "
                 f"| head -n {_FIND_MAX_ENTRIES}"
             )
         else:
-            # stat on the dir + its entries. -L would follow symlinks; we don't.
-            cmd = (
-                f"stat -c '{_STAT_FMT}' -- {quoted} 2>/dev/null; "
-                f"stat -c '{_STAT_FMT}' -- {quoted}/* 2>/dev/null || true"
-            )
+            cmd = f"ls -1A -- {quoted}"
 
         rc, stdout, stderr = await tunnel.run_remote(cmd, raise_on_error=False)
-        if rc != 0 and not stdout:
+        if rc != 0:
             err = (stderr or "").lower()
-            if "no such file" in err or "cannot stat" in err:
-                raise HTTPException(
-                    status.HTTP_404_NOT_FOUND, "path not found under asset dir"
-                )
+            if "no such file" in err or "cannot access" in err:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
             raise HTTPException(
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
                 f"listing failed: {stderr.strip() or 'unknown error'}",
             )
 
-        entries: List[FileEntry] = []
-        for line in (stdout or "").splitlines():
-            entry = _parse_stat_line(line, asset_dir)
-            if entry is not None:
-                entries.append(entry)
+        lines = [ln for ln in (stdout or "").splitlines() if ln]
+        if recursive:
+            # find emits absolute paths.
+            rels = [str(PurePosixPath(ln).relative_to(build_root)) for ln in lines]
+        else:
+            # ls -1A emits bare names rooted at `real`.
+            rels = [str((real / name).relative_to(build_root)) for name in lines]
+        rels.sort()
+        return rels
 
-        return FileListResponse(asset_dir=str(asset_dir), entries=entries)
+
+# ----------------------------------------------------------------------- /file
 
 
-# ------------------------------------------------------------- /files/content
-
-
-@bluevela_api.get(
-    "/builds/{build_id}/files/content",
+@builds_api.get(
+    "/{build_id}/file",
     response_model=FileContentResponse,
 )
-async def get_file_content(
+async def get_file(
     request: Request,
     build_id: str,
-    target_name: str = Query(...),
-    step_name: str = Query(...),
     path: str = Query(..., min_length=1),
 ) -> FileContentResponse:
-    """Return a small text file inline.
-
-    Rejects files larger than BLUEVELA_CONTENT_MAX_BYTES (413) and files
-    that look binary (415). Decodes as UTF-8 with `replace` so one stray
-    byte in an otherwise-text log doesn't fail the whole response.
+    """Return a file's bytes base64-encoded, with its path relative to
+    the build root.
     """
-    build, target, step = lookup_build_target_step(build_id, target_name, step_name)
+    build = lookup_build(build_id)
     authorize_build_access(request, build)
+    environment_uri = _pick_environment_uri(build)
 
-    async with open_bluevela_tunnel(build.space_name, target.environment_uri) as (
+    async with open_bluevela_tunnel(build.space_name, environment_uri) as (
         tunnel,
         cfg,
     ):
-        asset_dir = await resolve_step_asset_dir(
-            build=build,
-            target=target,
-            step=step,
-            workspace_remote_dir=cfg.workspace_remote_dir,
-            tunnel=tunnel,
-        )
-        target_path = validate_subpath(asset_dir, path)
+        build_root = build_remote_root_dir(cfg.workspace_remote_dir, build.uuid)
+        candidate = validate_subpath(build_root, path)
+        real = await resolve_and_check_real_path(tunnel, build_root, candidate)
 
-        size, is_dir = await _remote_stat(tunnel, target_path)
+        size, is_dir = await _remote_stat(tunnel, real)
         if is_dir:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                "content endpoint requires a file, not a directory",
+                "file endpoint requires a file, not a directory",
             )
         if size > BLUEVELA_CONTENT_MAX_BYTES:
             raise HTTPException(
@@ -283,51 +215,20 @@ async def get_file_content(
                 },
             )
 
-        # Binary sniff on the first 8 KiB.
-        sniff_cmd = (
-            f"head -c 8192 -- {shlex.quote(str(target_path))} | od -An -vtu1 -N 8192"
-        )
-        rc_s, sniff_stdout, sniff_stderr = await tunnel.run_remote(
-            sniff_cmd, raise_on_error=False
-        )
-        if rc_s != 0:
-            raise HTTPException(
-                status.HTTP_500_INTERNAL_SERVER_ERROR,
-                f"content probe failed: {sniff_stderr.strip() or 'unknown error'}",
-            )
-        byte_values = []
-        for tok in (sniff_stdout or "").split():
-            try:
-                byte_values.append(int(tok))
-            except ValueError:
-                continue
-        if any(b == 0 for b in byte_values):
-            raise HTTPException(
-                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                "file appears to be binary (null byte detected)",
-            )
-
-        # Read the full body via SFTP — cleaner than shell-quoting `cat`.
         sftp = await tunnel.start_sftp()
         try:
-            async with sftp.open(str(target_path), "rb") as fh:
+            async with sftp.open(str(real), "rb") as fh:
                 raw = await fh.read()
         finally:
             sftp.exit()
-        content = raw.decode("utf-8", errors="replace")
+
         return FileContentResponse(
-            path=(
-                str(target_path.relative_to(asset_dir))
-                if target_path != asset_dir
-                else ""
-            ),
-            size=size,
-            content=content,
-            truncated=False,
+            path=str(real.relative_to(build_root)),
+            content_base64=base64.b64encode(raw).decode("ascii"),
         )
 
 
-# ------------------------------------------------------------ /files/download
+# ------------------------------------------------------------- /file/download
 
 
 async def _stream_sftp_file(tunnel, remote_path: str) -> AsyncIterator[bytes]:
@@ -345,39 +246,43 @@ async def _stream_sftp_file(tunnel, remote_path: str) -> AsyncIterator[bytes]:
         sftp.exit()
 
 
-@bluevela_api.get("/builds/{build_id}/files/download")
+def _content_disposition(filename: str) -> str:
+    """RFC 5987 Content-Disposition value with an ASCII fallback + UTF-8 form."""
+    ascii_fallback = (
+        filename.encode("ascii", "replace").decode("ascii").replace('"', "_")
+    ) or "download.bin"
+    return (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
+
+
+@builds_api.get("/{build_id}/file/download")
 async def download_file(
     request: Request,
     build_id: str,
-    target_name: str = Query(...),
-    step_name: str = Query(...),
     path: str = Query(..., min_length=1),
 ) -> StreamingResponse:
     """Stream a remote file as application/octet-stream.
 
-    Rejects files larger than BLUEVELA_DOWNLOAD_MAX_BYTES. Uses SFTP so
-    filenames with shell-unfriendly characters work and backpressure flows
-    end-to-end. Rate-limiting is out of scope for v1.
+    ``path`` is relative to the build root. Rejects files larger than
+    BLUEVELA_DOWNLOAD_MAX_BYTES with 413 before any bytes are streamed.
     """
-    build, target, step = lookup_build_target_step(build_id, target_name, step_name)
+    build = lookup_build(build_id)
     authorize_build_access(request, build)
+    environment_uri = _pick_environment_uri(build)
 
-    # Tunnel lifecycle must outlive the streaming response body, so we
-    # open it here, stat, then hand the tunnel to the streaming generator
-    # and close it when that generator finishes.
-    ctx = open_bluevela_tunnel(build.space_name, target.environment_uri)
+    # Tunnel lifecycle must outlive the streaming response body, so we open
+    # it manually here and close it inside the body's finally on success or
+    # in the except below if anything fails before we hand off to streaming.
+    ctx = open_bluevela_tunnel(build.space_name, environment_uri)
     tunnel, cfg = await ctx.__aenter__()
     try:
-        asset_dir = await resolve_step_asset_dir(
-            build=build,
-            target=target,
-            step=step,
-            workspace_remote_dir=cfg.workspace_remote_dir,
-            tunnel=tunnel,
-        )
-        target_path = validate_subpath(asset_dir, path)
+        build_root = build_remote_root_dir(cfg.workspace_remote_dir, build.uuid)
+        candidate = validate_subpath(build_root, path)
+        real = await resolve_and_check_real_path(tunnel, build_root, candidate)
 
-        size, is_dir = await _remote_stat(tunnel, target_path)
+        size, is_dir = await _remote_stat(tunnel, real)
         if is_dir:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
@@ -393,11 +298,17 @@ async def download_file(
                 },
             )
 
-        filename = target_path.name or "download.bin"
+        logger.info(
+            "[bluevela] download build=%s size=%d",
+            build_id,
+            size,
+        )
+
+        filename = real.name or "download.bin"
 
         async def body() -> AsyncIterator[bytes]:
             try:
-                async for chunk in _stream_sftp_file(tunnel, str(target_path)):
+                async for chunk in _stream_sftp_file(tunnel, str(real)):
                     yield chunk
             finally:
                 await ctx.__aexit__(None, None, None)
@@ -406,7 +317,7 @@ async def download_file(
             body(),
             media_type="application/octet-stream",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": _content_disposition(filename),
                 "Content-Length": str(size),
             },
         )
@@ -416,86 +327,30 @@ async def download_file(
         raise
 
 
-# --------------------------------------------------------------- /files/debug
-
-
-class StepRunDebugResponse(BaseModel):
-    step_run_dir: str
-    entries: List[FileEntry]
-
-
-@bluevela_api.get(
-    "/builds/{build_id}/files/debug",
-    response_model=StepRunDebugResponse,
-)
-async def list_step_run_debug(
-    request: Request,
-    build_id: str,
-    target_name: str = Query(...),
-    step_name: str = Query(...),
-) -> StepRunDebugResponse:
-    """Recursively list the step-run dir (every launch-* sibling and its files).
-
-    Intentionally non-traversable: pinned to the step-run dir so the latest
-    launch being empty doesn't hide earlier ones. Caps results at
-    _FIND_MAX_ENTRIES.
-    """
-    build, target, step = lookup_build_target_step(build_id, target_name, step_name)
-    authorize_build_access(request, build)
-
-    resolved_step_name = _step_name_of(step)
-    if resolved_step_name == "":
+async def _remote_stat(tunnel, target: PurePosixPath) -> tuple[int, bool]:
+    """Return (size, is_dir) for `target`. 404 if missing, 500 otherwise."""
+    cmd = f"stat -c '%s\t%F' -- {shlex.quote(str(target))}"  # literal TAB
+    rc, stdout, stderr = await tunnel.run_remote(cmd, raise_on_error=False)
+    if rc != 0:
+        err = (stderr or "").strip().lower()
+        if "no such file" in err or "cannot stat" in err:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"step {step.uuid} has no step.name in its config",
+            f"stat failed: {stderr.strip() or 'unknown error'}",
         )
-
-    async with open_bluevela_tunnel(build.space_name, target.environment_uri) as (
-        tunnel,
-        cfg,
-    ):
-        step_run_dir = build_step_run_parent_dir(
-            workspace_remote_dir=cfg.workspace_remote_dir,
-            build_id=build.uuid,
-            target_name=target.name,
-            targetrun_id=target.uuid,
-            step_name=resolved_step_name,
-            targetsteprun_id=step.uuid,
+    first = (stdout or "").splitlines()[0] if stdout else ""
+    parts = first.split("\t")
+    if len(parts) < 2:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"unexpected stat output: {first!r}",
         )
-        logger.info(
-            "[bluevela] debug build=%s target=%s step=%s",
-            build_id,
-            target_name,
-            step_name,
-        )
-        logger.debug("[bluevela] debug step_run_dir=%s", step_run_dir)
-
-        quoted = shlex.quote(str(step_run_dir))
-        # pipefail so find's rc propagates through head; without it, a
-        # missing or unreadable dir produces empty stdout but rc=0 (head's
-        # success). `find -exec stat` is used in lieu of `find -printf`
-        # for portability across GNU and BSD find — see list_files.
-        cmd = (
-            f"set -o pipefail; "
-            f"find {quoted} -exec stat -c '{_STAT_FMT}' {{}} \\; "
-            f"| head -n {_FIND_MAX_ENTRIES}"
-        )
-        rc, stdout, stderr = await tunnel.run_remote(cmd, raise_on_error=False)
-        if rc != 0:
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND,
-                f"step-run dir not accessible: {stderr.strip() or 'unknown error'}",
-            )
-
-        entries: List[FileEntry] = []
-        for line in (stdout or "").splitlines():
-            entry = _parse_stat_line(line, step_run_dir)
-            if entry is not None:
-                entries.append(entry)
-
-        return StepRunDebugResponse(
-            step_run_dir=str(step_run_dir), entries=entries
-        )
-
-
-__all__ = ["bluevela_api"]
+    try:
+        size = int(parts[0])
+    except ValueError as e:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"unexpected stat size: {parts[0]!r}",
+        ) from e
+    return size, parts[1].startswith("directory")

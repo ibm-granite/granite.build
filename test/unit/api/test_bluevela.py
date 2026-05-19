@@ -18,15 +18,15 @@
 
 These tests stub out:
   - ``open_bluevela_tunnel`` (so no SSH / IBM Cloud is contacted)
-  - ``lookup_build_target_step`` (so no DB is required)
+  - ``lookup_build`` (so no DB is required)
   - ``authorize_build_access`` (so no auth middleware is required)
+  - ``_pick_environment_uri`` (so no target lookup is required)
 
 What we exercise here is the request/response surface: path-traversal
-rejection, size caps, and binary detection. Every request first runs
-``ls -1t`` on the step-run parent dir to pick the newest ``launch-*``
-entry; the test tunnels return a canned listing for that step.
+rejection, build-root resolution, size caps, and auth.
 """
 
+import base64
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -35,11 +35,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from gbserver.api import bluevela as bluevela_mod
-from gbserver.api.bluevela import bluevela_api
 from gbserver.api.bluevela_tunnel import BlueVelaConfig
+from gbserver.api.builds import builds_api
 from gbserver.storage.stored_build import StoredBuild
-from gbserver.storage.stored_step_run import StoredStepRun
-from gbserver.storage.stored_target_run import StoredTargetRun
 
 # --------------------------------------------------------------------- fixtures
 
@@ -47,9 +45,9 @@ from gbserver.storage.stored_target_run import StoredTargetRun
 @pytest.fixture
 def app() -> FastAPI:
     app = FastAPI()
-    # Mount the api the same way root_api does, but without AuthMiddleware —
+    # Mount only the builds_api routes; AuthMiddleware is omitted because
     # we stub authorize_build_access in each test.
-    app.mount("/api/v1/bluevela", bluevela_api)
+    app.mount("/api/v1/builds", builds_api)
     return app
 
 
@@ -58,28 +56,14 @@ def client(app: FastAPI) -> TestClient:
     return TestClient(app)
 
 
-def _fake_build_target_step():
-    build = StoredBuild(
+def _fake_build() -> StoredBuild:
+    return StoredBuild(
         uuid="B1",
         name="b",
         space_name="space-a",
         source_uri="",
         username="alice",
     )
-    target = StoredTargetRun(
-        uuid="TR1",
-        build_id="B1",
-        environment_uri="env://x",
-        name="train",
-    )
-    step = StoredStepRun(
-        uuid="SR1",
-        build_id="B1",
-        target_id="TR1",
-        definition_uri="step://x",
-        config={"step": {"name": "step1"}},
-    )
-    return build, target, step
 
 
 def _fake_tunnel_cm(tunnel_mock):
@@ -96,34 +80,21 @@ def _fake_tunnel_cm(tunnel_mock):
     return _cm
 
 
-def _tunnel_with_launch_listing():
-    """Mock tunnel whose `ls -1t` returns a single launch-NEW entry.
-
-    Use for tests that should fail BEFORE running the listing/stat command
-    (path traversal, etc.) — the resolver still needs the `ls -1t` round
-    trip to succeed.
-    """
-    tunnel = MagicMock()
-
-    async def run_remote(cmd, raise_on_error=True):
-        if cmd.startswith("ls -1t"):
-            return (0, "launch-NEW\n", "")
-        return (0, "", "")
-
-    tunnel.run_remote = AsyncMock(side_effect=run_remote)
-    return tunnel
-
-
 def _patches(
     tunnel_mock,
+    *,
+    build: StoredBuild | None = None,
     authorize_raises: Exception | None = None,
+    lookup_raises: Exception | None = None,
 ):
-    build, target, step = _fake_build_target_step()
-    lookup = patch.object(
-        bluevela_mod,
-        "lookup_build_target_step",
-        return_value=(build, target, step),
-    )
+    build = build or _fake_build()
+
+    if lookup_raises is not None:
+        lookup_build = patch.object(
+            bluevela_mod, "lookup_build", side_effect=lookup_raises
+        )
+    else:
+        lookup_build = patch.object(bluevela_mod, "lookup_build", return_value=build)
     tunnel = patch.object(
         bluevela_mod, "open_bluevela_tunnel", _fake_tunnel_cm(tunnel_mock)
     )
@@ -132,120 +103,215 @@ def _patches(
         "authorize_build_access",
         side_effect=(authorize_raises if authorize_raises else (lambda *a, **kw: None)),
     )
-    return lookup, tunnel, auth
+    pick_env = patch.object(
+        bluevela_mod, "_pick_environment_uri", return_value="env://x"
+    )
+    return lookup_build, tunnel, auth, pick_env
+
+
+def _tunnel_with_listing(entries: str, *, find_out: str | None = None):
+    """Mock tunnel for listing flows.
+
+    ``readlink -f`` echoes the input. ``ls -1A`` returns ``entries``. If
+    ``find_out`` is provided, recursive ``find`` returns it.
+    """
+    tunnel = MagicMock()
+
+    async def run_remote(cmd, raise_on_error=True):
+        if cmd.startswith("readlink -f"):
+            target = cmd.split("--", 1)[1].strip().strip("'\"")
+            return (0, target + "\n", "")
+        if "find " in cmd:
+            return (0, find_out or "", "")
+        if cmd.startswith("ls -1A"):
+            return (0, entries, "")
+        return (0, "", "")
+
+    tunnel.run_remote = AsyncMock(side_effect=run_remote)
+    return tunnel
 
 
 # ---------------------------------------------------------------------- /files
 
 
 class TestListFiles:
-    def test_happy_path_nonrecursive(self, client):
-        tunnel = MagicMock()
-        stat_out = (
-            "/ws/llm-build-B1/target-train/target-run-TR1/step-step1/step-run-SR1/launch-NEW\t4096\t100\tdirectory\n"
-            "/ws/llm-build-B1/target-train/target-run-TR1/step-step1/step-run-SR1/launch-NEW/a.txt\t7\t101\tregular file\n"
-        )
-
-        async def run_remote(cmd, raise_on_error=True):
-            if cmd.startswith("ls -1t"):
-                return (0, "launch-NEW\nlaunch-OLD\n", "")
-            return (0, stat_out, "")
-
-        tunnel.run_remote = AsyncMock(side_effect=run_remote)
-        lookup, tun, auth = _patches(tunnel)
-        with lookup, tun, auth:
+    def test_build_root_listing(self, client):
+        tunnel = _tunnel_with_listing("target-train\n.gbstate\n")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/bluevela/builds/B1/files",
-                params={"target_name": "train", "step_name": "step1"},
+                "/api/v1/builds/B1/files",
+                params={"path": "."},
             )
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["asset_dir"].endswith("launch-NEW")
-        paths = {e["path"] for e in body["entries"]}
-        assert "" in paths  # the dir itself
-        assert "a.txt" in paths
+        assert sorted(body) == [".gbstate", "target-train"]
 
-    def test_path_traversal_rejected(self, client):
-        tunnel = _tunnel_with_launch_listing()
-        lookup, tun, auth = _patches(tunnel)
-        with lookup, tun, auth:
+    def test_recursive_returns_nested_paths(self, client):
+        find_out = (
+            "/ws/llm-build-B1/a.txt\n"
+            "/ws/llm-build-B1/sub\n"
+            "/ws/llm-build-B1/sub/nested.log\n"
+        )
+        tunnel = _tunnel_with_listing("", find_out=find_out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/bluevela/builds/B1/files",
-                params={
-                    "target_name": "train",
-                    "step_name": "step1",
-                    "path": "../../etc/passwd",
-                },
+                "/api/v1/builds/B1/files",
+                params={"path": ".", "recursive": "true"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body == sorted(["a.txt", "sub", "sub/nested.log"])
+        # And confirm a `find` command was actually issued.
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        assert any(c.startswith("set -o pipefail; find ") for c in cmds)
+
+    def test_recursive_default_false(self, client):
+        tunnel = _tunnel_with_listing("a.txt\nb.log\n")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": "."},
+            )
+        assert r.status_code == 200, r.text
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        # Single-level branch: ls used, find absent.
+        assert any(c.startswith("ls -1A ") for c in cmds)
+        assert not any("find " in c for c in cmds)
+
+    def test_recursive_traversal_still_rejected(self, client):
+        tunnel = _tunnel_with_listing("")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": "../../etc", "recursive": "true"},
             )
         assert r.status_code == 400
-        # run_remote must never have been invoked with the hostile path.
+        for call in tunnel.run_remote.await_args_list:
+            assert "etc" not in call.args[0]
+
+    def test_missing_path_defaults_to_dot(self, client):
+        tunnel = _tunnel_with_listing("target-train\n.gbstate\n")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get("/api/v1/builds/B1/files")
+        assert r.status_code == 200, r.text
+        assert sorted(r.json()) == [".gbstate", "target-train"]
+        # Default of "." resolves to the build root, so ls -1A runs there.
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        assert any(c.startswith("ls -1A ") and "llm-build-B1" in c for c in cmds)
+
+    def test_path_traversal_rejected(self, client):
+        tunnel = _tunnel_with_listing("")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": "../../etc/passwd"},
+            )
+        assert r.status_code == 400
+        # readlink/ls must never have been invoked with the hostile path.
         for call in tunnel.run_remote.await_args_list:
             assert "etc/passwd" not in call.args[0]
 
     def test_absolute_path_rejected(self, client):
-        tunnel = _tunnel_with_launch_listing()
-        lookup, tun, auth = _patches(tunnel)
-        with lookup, tun, auth:
+        tunnel = _tunnel_with_listing("")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/bluevela/builds/B1/files",
-                params={
-                    "target_name": "train",
-                    "step_name": "step1",
-                    "path": "/etc/passwd",
-                },
+                "/api/v1/builds/B1/files",
+                params={"path": "/etc/passwd"},
             )
         assert r.status_code == 400
 
     def test_null_byte_rejected(self, client):
-        tunnel = _tunnel_with_launch_listing()
-        lookup, tun, auth = _patches(tunnel)
-        with lookup, tun, auth:
+        tunnel = _tunnel_with_listing("")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/bluevela/builds/B1/files",
-                params={
-                    "target_name": "train",
-                    "step_name": "step1",
-                    "path": "a\x00b",
-                },
+                "/api/v1/builds/B1/files",
+                params={"path": "a\x00b"},
             )
         assert r.status_code == 400
+
+    def test_backslash_rejected(self, client):
+        tunnel = _tunnel_with_listing("")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": "a\\b"},
+            )
+        assert r.status_code == 400
+
+    def test_symlink_escape_returns_404(self, client):
+        # readlink resolves to /etc/passwd — outside build_root /ws/llm-build-B1.
+        tunnel = MagicMock()
+
+        async def run_remote(cmd, raise_on_error=True):
+            if cmd.startswith("readlink -f"):
+                return (0, "/etc/passwd\n", "")
+            return (0, "", "")
+
+        tunnel.run_remote = AsyncMock(side_effect=run_remote)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": "evil-symlink"},
+            )
+        assert r.status_code == 404
 
     def test_unauthorized(self, client):
         tunnel = MagicMock()
         tunnel.run_remote = AsyncMock(return_value=(0, "", ""))
-        lookup, tun, auth = _patches(
+        lb, tun, auth, env = _patches(
             tunnel,
             authorize_raises=HTTPException(status_code=401, detail="no"),
         )
-        with lookup, tun, auth:
+        with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/bluevela/builds/B1/files",
-                params={"target_name": "train", "step_name": "step1"},
+                "/api/v1/builds/B1/files",
+                params={"path": "."},
             )
         assert r.status_code == 401
 
+    def test_missing_build_returns_404(self, client):
+        tunnel = MagicMock()
+        tunnel.run_remote = AsyncMock(return_value=(0, "", ""))
+        lb, tun, auth, env = _patches(
+            tunnel,
+            lookup_raises=HTTPException(status_code=404, detail="build not found"),
+        )
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": "."},
+            )
+        assert r.status_code == 404
 
-# -------------------------------------------------------------- /files/content
+
+# ----------------------------------------------------------------------- /file
 
 
-class TestContent:
+class TestGetFile:
     def _tunnel_with_file(self, size: int, body: bytes):
         tunnel = MagicMock()
 
         async def run_remote(cmd, raise_on_error=True):
-            if cmd.startswith("ls -1t"):
-                return (0, "launch-NEW\n", "")
+            if cmd.startswith("readlink -f"):
+                target = cmd.split("--", 1)[1].strip().strip("'\"")
+                return (0, target + "\n", "")
             if cmd.startswith("stat -c"):
                 # size<TAB>type
                 return (0, f"{size}\tregular file\n", "")
-            if cmd.startswith("head -c"):
-                # space-separated decimal bytes
-                return (0, " ".join(str(b) for b in body[:8192]), "")
             return (0, "", "")
 
         tunnel.run_remote = AsyncMock(side_effect=run_remote)
 
-        # Fake SFTP
         sftp = MagicMock()
         fh = MagicMock()
         fh.read = AsyncMock(return_value=body)
@@ -256,120 +322,203 @@ class TestContent:
         tunnel.start_sftp = AsyncMock(return_value=sftp)
         return tunnel
 
-    def test_text_file_returned(self, client):
-        body = b"hello world"
+    def test_file_returned_as_base64(self, client):
+        body = b"hello\x00world"  # has a null byte; base64 doesn't care
         tunnel = self._tunnel_with_file(size=len(body), body=body)
-        lookup, tun, auth = _patches(tunnel)
-        with lookup, tun, auth:
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/bluevela/builds/B1/files/content",
-                params={
-                    "target_name": "train",
-                    "step_name": "step1",
-                    "path": "log.txt",
-                },
+                "/api/v1/builds/B1/file",
+                params={"path": "log.bin"},
             )
         assert r.status_code == 200, r.text
-        assert r.json()["content"] == "hello world"
-        assert r.json()["truncated"] is False
+        body_json = r.json()
+        assert body_json["content_base64"] == base64.b64encode(body).decode("ascii")
+        assert body_json["path"] == "log.bin"
+
+    def test_file_dir_returns_400(self, client):
+        tunnel = MagicMock()
+
+        async def run_remote(cmd, raise_on_error=True):
+            if cmd.startswith("readlink -f"):
+                target = cmd.split("--", 1)[1].strip().strip("'\"")
+                return (0, target + "\n", "")
+            if cmd.startswith("stat -c"):
+                return (0, "4096\tdirectory\n", "")
+            return (0, "", "")
+
+        tunnel.run_remote = AsyncMock(side_effect=run_remote)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file",
+                params={"path": "subdir"},
+            )
+        assert r.status_code == 400
 
     def test_too_large_returns_413(self, client):
         # 2 MiB > default 1 MiB cap
         tunnel = self._tunnel_with_file(size=2 * 1024 * 1024, body=b"x" * 100)
-        lookup, tun, auth = _patches(tunnel)
-        with lookup, tun, auth:
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/bluevela/builds/B1/files/content",
-                params={
-                    "target_name": "train",
-                    "step_name": "step1",
-                    "path": "big.bin",
-                },
+                "/api/v1/builds/B1/file",
+                params={"path": "big.bin"},
             )
         assert r.status_code == 413
 
-    def test_binary_returns_415(self, client):
-        body = b"abc\x00def"
-        tunnel = self._tunnel_with_file(size=len(body), body=body)
-        lookup, tun, auth = _patches(tunnel)
-        with lookup, tun, auth:
+    def test_unauthorized(self, client):
+        tunnel = MagicMock()
+        tunnel.run_remote = AsyncMock(return_value=(0, "", ""))
+        lb, tun, auth, env = _patches(
+            tunnel,
+            authorize_raises=HTTPException(status_code=401, detail="no"),
+        )
+        with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/bluevela/builds/B1/files/content",
-                params={
-                    "target_name": "train",
-                    "step_name": "step1",
-                    "path": "img.bin",
-                },
+                "/api/v1/builds/B1/file",
+                params={"path": "log.txt"},
             )
-        assert r.status_code == 415
+        assert r.status_code == 401
+
+    def test_missing_path_returns_422(self, client):
+        tunnel = MagicMock()
+        tunnel.run_remote = AsyncMock(return_value=(0, "", ""))
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get("/api/v1/builds/B1/file")
+        assert r.status_code == 422
 
 
-# ------------------------------------------------------------- /files/download
+# -------------------------------------------------------------- /file/download
 
 
-class TestDownload:
-    def test_streams_and_sets_content_disposition(self, client):
-        body = b"payload-bytes"
+class TestDownloadFile:
+    def _tunnel_with_file(self, size: int, body: bytes, *, is_dir: bool = False):
         tunnel = MagicMock()
 
         async def run_remote(cmd, raise_on_error=True):
-            if cmd.startswith("ls -1t"):
-                return (0, "launch-NEW\n", "")
+            if cmd.startswith("readlink -f"):
+                target = cmd.split("--", 1)[1].strip().strip("'\"")
+                return (0, target + "\n", "")
             if cmd.startswith("stat -c"):
-                return (0, f"{len(body)}\tregular file\n", "")
+                kind = "directory" if is_dir else "regular file"
+                return (0, f"{size}\t{kind}\n", "")
             return (0, "", "")
 
         tunnel.run_remote = AsyncMock(side_effect=run_remote)
 
         sftp = MagicMock()
         fh = MagicMock()
-        # Emit once then EOF.
-        reads = [body, b""]
-        fh.read = AsyncMock(side_effect=reads)
+        # Stream body in one chunk, then EOF on subsequent reads.
+        fh.read = AsyncMock(side_effect=[body, b""])
         fh.__aenter__ = AsyncMock(return_value=fh)
         fh.__aexit__ = AsyncMock(return_value=None)
         sftp.open = MagicMock(return_value=fh)
         sftp.exit = MagicMock(return_value=None)
         tunnel.start_sftp = AsyncMock(return_value=sftp)
+        return tunnel
 
-        lookup, tun, auth = _patches(tunnel)
-        with lookup, tun, auth:
+    def test_download_build_root_scope(self, client):
+        body = b"yaml: yes\n"
+        tunnel = self._tunnel_with_file(size=len(body), body=body)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/bluevela/builds/B1/files/download",
-                params={
-                    "target_name": "train",
-                    "step_name": "step1",
-                    "path": "out.bin",
-                },
+                "/api/v1/builds/B1/file/download",
+                params={"path": "builds.yaml"},
             )
         assert r.status_code == 200, r.text
         assert r.content == body
-        assert r.headers["content-disposition"].endswith('filename="out.bin"')
-        assert r.headers["content-length"] == str(len(body))
-        assert r.headers["content-type"] == "application/octet-stream"
+        assert 'filename="builds.yaml"' in r.headers["content-disposition"]
+
+    def test_download_directory_returns_400(self, client):
+        tunnel = self._tunnel_with_file(size=4096, body=b"", is_dir=True)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "subdir"},
+            )
+        assert r.status_code == 400
 
     def test_download_too_large_returns_413(self, client):
+        # 2 GiB > default 1 GiB cap
+        tunnel = self._tunnel_with_file(size=2 * 1024**3, body=b"x" * 100)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "big.bin"},
+            )
+        assert r.status_code == 413
+
+    def test_download_path_traversal_rejected(self, client):
+        tunnel = self._tunnel_with_file(size=10, body=b"x" * 10)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "../../etc/passwd"},
+            )
+        assert r.status_code == 400
+        for call in tunnel.run_remote.await_args_list:
+            assert "etc/passwd" not in call.args[0]
+
+    def test_download_missing_file_returns_404(self, client):
         tunnel = MagicMock()
 
         async def run_remote(cmd, raise_on_error=True):
-            if cmd.startswith("ls -1t"):
-                return (0, "launch-NEW\n", "")
-            if cmd.startswith("stat -c"):
-                return (0, f"{600 * 1024 * 1024}\tregular file\n", "")
+            if cmd.startswith("readlink -f"):
+                return (1, "", "readlink: cannot access: No such file")
             return (0, "", "")
 
         tunnel.run_remote = AsyncMock(side_effect=run_remote)
-        lookup, tun, auth = _patches(tunnel)
-        with lookup, tun, auth:
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/bluevela/builds/B1/files/download",
-                params={
-                    "target_name": "train",
-                    "step_name": "step1",
-                    "path": "huge.bin",
-                },
+                "/api/v1/builds/B1/file/download",
+                params={"path": "missing.txt"},
             )
-        assert r.status_code == 413
+        assert r.status_code == 404
+
+    def test_download_unauthorized(self, client):
+        tunnel = MagicMock()
+        tunnel.run_remote = AsyncMock(return_value=(0, "", ""))
+        lb, tun, auth, env = _patches(
+            tunnel,
+            authorize_raises=HTTPException(status_code=401, detail="no"),
+        )
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "log.txt"},
+            )
+        assert r.status_code == 401
+
+    def test_download_missing_path_returns_422(self, client):
+        tunnel = MagicMock()
+        tunnel.run_remote = AsyncMock(return_value=(0, "", ""))
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get("/api/v1/builds/B1/file/download")
+        assert r.status_code == 422
+
+    def test_download_non_ascii_filename(self, client):
+        body = b"data"
+        tunnel = self._tunnel_with_file(size=len(body), body=body)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "rapport-é.txt"},
+            )
+        assert r.status_code == 200, r.text
+        cd = r.headers["content-disposition"]
+        # ASCII fallback: non-ASCII char becomes "?" via "replace".
+        assert 'filename="rapport-?.txt"' in cd
+        # RFC 5987 form: percent-encoded UTF-8.
+        assert "filename*=UTF-8''rapport-%C3%A9.txt" in cd
 
 
 # ------------------------------------------------------- _resolve_lsf_config
@@ -448,56 +597,3 @@ class TestResolveLsfConfig:
         detail = str(ei.value.detail)
         assert "login_node_username" in detail
         assert "login_node_ssh_key" in detail
-
-
-# ---------------------------------------------------------------- /files/debug
-
-
-class TestStepRunDebug:
-    def test_happy_path(self, client):
-        tunnel = MagicMock()
-        step_run_dir = (
-            "/ws/llm-build-B1/target-train/target-run-TR1/step-step1/step-run-SR1"
-        )
-        find_out = (
-            f"{step_run_dir}\t4096\t100\tdirectory\n"
-            f"{step_run_dir}/launch-NEW\t4096\t101\tdirectory\n"
-            f"{step_run_dir}/launch-NEW/stdout.log\t12\t102\tregular file\n"
-            f"{step_run_dir}/launch-OLD\t4096\t99\tdirectory\n"
-        )
-
-        async def run_remote(cmd, raise_on_error=True):
-            if "find " in cmd:
-                return (0, find_out, "")
-            return (0, "", "")
-
-        tunnel.run_remote = AsyncMock(side_effect=run_remote)
-        lookup, tun, auth = _patches(tunnel)
-        with lookup, tun, auth:
-            r = client.get(
-                "/api/v1/bluevela/builds/B1/files/debug",
-                params={"target_name": "train", "step_name": "step1"},
-            )
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["step_run_dir"].endswith("step-run-SR1")
-        paths = {e["path"] for e in body["entries"]}
-        assert "" in paths
-        assert "launch-NEW" in paths
-        assert "launch-NEW/stdout.log" in paths
-        assert "launch-OLD" in paths
-
-    def test_step_run_dir_missing(self, client):
-        tunnel = MagicMock()
-
-        async def run_remote(cmd, raise_on_error=True):
-            return (1, "", "find: No such file or directory")
-
-        tunnel.run_remote = AsyncMock(side_effect=run_remote)
-        lookup, tun, auth = _patches(tunnel)
-        with lookup, tun, auth:
-            r = client.get(
-                "/api/v1/bluevela/builds/B1/files/debug",
-                params={"target_name": "train", "step_name": "step1"},
-            )
-        assert r.status_code == 404
