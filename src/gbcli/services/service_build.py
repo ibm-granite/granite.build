@@ -789,9 +789,7 @@ def build_lineage_gbserver(
                                 {
                                     "release_id": job_details.get("release_id", ""),
                                     "category": job_details.get("category", ""),
-                                    "job_name": record.get("job", {}).get(
-                                        "name", ""
-                                    ),
+                                    "job_name": record.get("job", {}).get("name", ""),
                                     "job_id": job_details.get("job_id", ""),
                                     "job_type": job_details.get("job_type", ""),
                                     "job_started_at": job_details.get(
@@ -803,10 +801,14 @@ def build_lineage_gbserver(
                                     "job_status": job_details.get("job_status", ""),
                                     "owner": tags.get("username", ""),
                                     "source": format_obj_name(source) if source else "",
-                                    "source_type": infer_artifact_type(source) if source else "",
+                                    "source_type": (
+                                        infer_artifact_type(source) if source else ""
+                                    ),
                                     "source_object": source if source else {},
                                     "target": format_obj_name(target) if target else "",
-                                    "target_type": infer_artifact_type(target) if target else "",
+                                    "target_type": (
+                                        infer_artifact_type(target) if target else ""
+                                    ),
                                     "target_object": target if target else {},
                                     "source_code_details": run_facets.get(
                                         "source_code", {}
