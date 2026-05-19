@@ -16,9 +16,17 @@ pytestmark = pytest.mark.ibm
 class TestBuildRunnerJob(AbstractBuildTest):
 
     def _get_test_specification(self) -> BuildTestSpecification:
-        """Load the 1step/cpu fixture spec from buildtest.yaml."""
+        """Load the 1step/cpu fixture spec from buildtest.yaml.
+
+        The fixture lives under the sibling buildrunner/k8s/ test-data tree —
+        this test exercises the same build but via the K8s buildrunner job
+        path rather than the local buildrunner — so reach across via .parent.
+        """
+        k8s_fixtures = (
+            get_test_data_dir_for(__file__).parent.parent / "buildrunner" / "k8s"
+        )
         return BuildTestSpecification.from_yaml(
-            get_test_data_dir_for(__file__) / "1step/cpu/buildtest.yaml"
+            k8s_fixtures / "1step" / "cpu" / "buildtest.yaml"
         )
 
     # We set HAS_GB_CLUSTER_ACCESS=False in the travis builds. HAS_VELA_ACCESS is deprecated.
