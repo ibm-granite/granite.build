@@ -20,8 +20,8 @@ from fastapi import FastAPI
 from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
-from gbserver.api.bluevela import bluevela_api
 from gbserver.api.builds import builds_api
+from gbserver.api import bluevela as _bluevela  # noqa: F401  registers routes on builds_api
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
@@ -58,7 +58,6 @@ def read_root():
 
 root_api.mount(f"{API_BASE_PATH}/auth", auth_api)
 root_api.mount(f"{API_BASE_PATH}/artifacts", artifacts_api)
-root_api.mount(f"{API_BASE_PATH}/bluevela", bluevela_api)
 root_api.mount(f"{API_BASE_PATH}/builds", builds_api)
 root_api.mount(f"{API_BASE_PATH}/lineage", lineage_api)
 root_api.mount(f"{API_BASE_PATH}/logs", logs_api)

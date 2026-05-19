@@ -30,6 +30,16 @@ def build_launch_sub_dir(launch_id: str) -> str:
     return "launch-" + launch_id
 
 
+def build_remote_root_dir(
+    workspace_remote_dir: Optional[str], build_id: str
+) -> PurePosixPath:
+    """Absolute POSIX path of a build's remote root directory."""
+    rel = Path(f"llm-build-{build_id}")
+    if workspace_remote_dir:
+        return PurePosixPath(workspace_remote_dir) / rel.as_posix()
+    return PurePosixPath(rel.as_posix())
+
+
 def build_workspace_sub_dir(
     build_id: str,
     target_name: str,
@@ -75,28 +85,3 @@ def build_remote_asset_dir(
     if workspace_remote_dir:
         return PurePosixPath(workspace_remote_dir) / sub.as_posix()
     return PurePosixPath(sub.as_posix())
-
-
-def build_step_run_parent_dir(
-    workspace_remote_dir: Optional[str],
-    build_id: str,
-    target_name: str,
-    targetrun_id: str,
-    step_name: str,
-    targetsteprun_id: str,
-) -> PurePosixPath:
-    """Absolute POSIX path of a step-run's parent dir (one level above any launch dir).
-
-    Used by the BlueVela file API to enumerate launch directories when a
-    step-run row has no persisted launch_id (older rows).
-    """
-    rel = (
-        Path(f"llm-build-{build_id}")
-        / f"target-{target_name}"
-        / f"target-run-{targetrun_id}"
-        / f"step-{step_name}"
-        / f"step-run-{targetsteprun_id}"
-    )
-    if workspace_remote_dir:
-        return PurePosixPath(workspace_remote_dir) / rel.as_posix()
-    return PurePosixPath(rel.as_posix())

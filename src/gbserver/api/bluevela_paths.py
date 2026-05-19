@@ -21,23 +21,19 @@ the LSF build runtime stay in sync.
 
 SECURITY: every remote path that enters a shell command or SFTP call MUST
 pass through validate_subpath(). Do not concatenate user-supplied segments
-onto the asset_dir yourself.
+onto the build root yourself.
 """
 
 import os
 import shlex
-from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Optional, cast
+from typing import Optional
 
 from fastapi import HTTPException, Request, status
 
 from gbserver.api.utils import confirm_space_write_access
-from gbserver.environment.lsf_paths import build_step_run_parent_dir
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
-from gbserver.storage.stored_step_run import StoredStepRun
-from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -52,131 +48,28 @@ def authorize_build_access(request: Request, build: StoredBuild) -> None:
     confirm_space_write_access(request, build.username, build.space_name)
 
 
-def lookup_build_target_step(
-    build_id: str, target_name: str, step_name: str
-) -> tuple[StoredBuild, StoredTargetRun, StoredStepRun]:
-    """Resolve (build, target_run, step_run) by build_id + human names.
-
-    Picks the most recent target run and its most recent step run matching
-    the requested names. Raises 404 if any lookup fails.
-    """
+def lookup_build(build_id: str) -> StoredBuild:
+    """Load a StoredBuild by uuid; 404 if missing."""
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"build {build_id!r} not found")
     assert isinstance(build, StoredBuild)
-
-    target_runs = cast(
-        list[StoredTargetRun],
-        storage.target_storage.get_by_where(
-            {"build_id": build_id, "name": target_name}
-        ),
-    )
-    if not target_runs:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            f"target {target_name!r} not found on build {build_id}",
-        )
-    # Most recent target_run first; pending runs (no started_at) sort last.
-    target = max(target_runs, key=lambda t: t.started_at or datetime.min)
-
-    step_runs = cast(
-        list[StoredStepRun],
-        storage.step_storage.get_by_where({"target_id": target.uuid}),
-    )
-    matching_steps = [s for s in step_runs if _step_name_of(s) == step_name]
-    if not matching_steps:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            f"step {step_name!r} not found on target {target_name!r}",
-        )
-    step = max(matching_steps, key=lambda s: s.started_at or datetime.min)
-    return build, target, step
-
-
-def _step_name_of(step: StoredStepRun) -> str:
-    """Pull the human step name out of a StoredStepRun.
-
-    Prefers config["step"]["name"]; falls back to the last non-empty path
-    segment of definition_uri (e.g. "space://steps/tuning" -> "tuning",
-    "file:///app/src/gbserver/builtins/steps/lhpull" -> "lhpull"). The
-    fallback covers older step_run rows where config wasn't persisted.
-    """
-    try:
-        name = step.config.get("step", {}).get("name", "")
-    except AttributeError:
-        name = ""
-    if isinstance(name, str) and name:
-        return name
-    uri = step.definition_uri or ""
-    # Strip query/fragment, then take the last non-empty path segment.
-    path = uri.split("?", 1)[0].split("#", 1)[0]
-    for segment in reversed(path.split("/")):
-        if segment:
-            return segment
-    return ""
-
-
-async def resolve_step_asset_dir(
-    *,
-    build: StoredBuild,
-    target: StoredTargetRun,
-    step: StoredStepRun,
-    workspace_remote_dir: str,
-    tunnel,
-) -> PurePosixPath:
-    """Return the absolute remote POSIX path of a step-launch's asset dir.
-
-    Resolution: ``ls -1t`` the step-run parent dir and pick the newest
-    ``launch-*`` entry. We do not persist launch_id on StoredStepRun, so
-    mtime ordering is the source of truth. Concurrent overlapping
-    relaunches are an accepted edge case.
-    """
-    # If per-launch selection is needed later, accept a launch_id arg here
-    # and route through gbserver.environment.lsf_paths.build_remote_asset_dir.
-    step_name = _step_name_of(step)
-    if step_name == "":
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"step {step.uuid} has no step.name in its config",
-        )
-
-    parent = build_step_run_parent_dir(
-        workspace_remote_dir=workspace_remote_dir,
-        build_id=build.uuid,
-        target_name=target.name,
-        targetrun_id=target.uuid,
-        step_name=step_name,
-        targetsteprun_id=step.uuid,
-    )
-    cmd = f"ls -1t -- {shlex.quote(str(parent))}"
-    rc, stdout, stderr = await tunnel.run_remote(cmd, raise_on_error=False)
-    if rc != 0:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            f"step-run dir not accessible: {stderr.strip() or 'unknown error'}",
-        )
-    entries = [e for e in (stdout or "").splitlines() if e.startswith("launch-")]
-    if not entries:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            f"no launch directories found under step-run {step.uuid}",
-        )
-    return parent / entries[0]
+    return build
 
 
 def validate_subpath(
-    asset_dir: PurePosixPath, user_path: Optional[str]
+    build_root: PurePosixPath, user_path: Optional[str]
 ) -> PurePosixPath:
-    """Resolve user_path relative to asset_dir, rejecting anything escaping it.
+    """Resolve user_path relative to build_root, rejecting anything escaping it.
 
     Rejects: absolute paths, ``~``, ``..`` segments that escape the root,
     null bytes, backslashes. Returns a normalized absolute PurePosixPath
-    that is guaranteed to be at or below asset_dir.
+    that is guaranteed to be at or below build_root.
     """
     raw = (user_path or "").strip()
     if raw == "":
-        return asset_dir
+        return build_root
 
     if "\x00" in raw or "\\" in raw:
         raise HTTPException(
@@ -184,7 +77,7 @@ def validate_subpath(
         )
     if raw.startswith("/") or raw.startswith("~"):
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "path must be relative to the step asset dir"
+            status.HTTP_400_BAD_REQUEST, "path must be relative to the build root"
         )
 
     # os.path.normpath handles ../ collapsing on posix when run on any OS,
@@ -192,22 +85,43 @@ def validate_subpath(
     normalized = os.path.normpath(raw)
     if normalized.startswith("..") or normalized == "..":
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "path traversal above asset dir rejected"
+            status.HTTP_400_BAD_REQUEST, "path traversal above build root rejected"
         )
-    candidate = asset_dir / normalized
+    candidate = build_root / normalized
     # Final defense: a normalized candidate must still be a descendant.
     try:
-        candidate.relative_to(asset_dir)
+        candidate.relative_to(build_root)
     except ValueError as e:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "path escapes asset dir"
+            status.HTTP_400_BAD_REQUEST, "path escapes build root"
         ) from e
     return candidate
 
 
+async def resolve_and_check_real_path(
+    tunnel,
+    build_root: PurePosixPath,
+    candidate: PurePosixPath,
+) -> PurePosixPath:
+    """Resolve symlinks remotely and confirm the result stays under build_root.
+
+    Returns 404 (without leaking existence) if readlink fails OR the resolved
+    path escapes build_root.
+    """
+    cmd = f"readlink -f -- {shlex.quote(str(candidate))}"
+    rc, stdout, _ = await tunnel.run_remote(cmd, raise_on_error=False)
+    resolved = (stdout or "").strip()
+    if rc != 0 or not resolved:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
+    real = PurePosixPath(resolved)
+    if not real.is_relative_to(build_root):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
+    return real
+
+
 __all__ = [
     "authorize_build_access",
-    "lookup_build_target_step",
-    "resolve_step_asset_dir",
+    "lookup_build",
+    "resolve_and_check_real_path",
     "validate_subpath",
 ]
