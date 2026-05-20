@@ -34,11 +34,12 @@ target_expectations:
 # Optional (defaults shown).
 build_yaml: ./build.yaml          # path relative to this YAML; defaults to sibling
 expected_status: SUCCESS          # SUCCESS | INVALID | FAILED | ...
-space_name: gbtest                # space the build runs under
+space_name: public                # space the build runs under
 targets: null                     # list of targets to run; null = run all
 timeout_minutes: 30
 simulate_step_failure: true            # inject one environment failure to exercise retry path
-space_uri: null                   # if set, overrides the space's git_repo_uri
+space_uri: null                   # if set, takes precedence over the space's
+                                  #   git_repo_uri in the gb_spaces table
                                   #   (relative file:// or filesystem paths resolve against this YAML's dir)
 skip_target_names: []             # targets expected to be skipped on a 2nd run
 tests:                            # which test methods to run (see below)
@@ -53,11 +54,11 @@ tests:                            # which test methods to run (see below)
 | `target_expectations`  | list[ExpectedTarget] | **required**                  | Per-target assertions; see below. |
 | `build_yaml`           | str             | `./build.yaml`                     | Relative paths resolve against this YAML's directory. |
 | `expected_status`      | str (Status)    | `SUCCESS`                          | Case-insensitive (`SUCCESS`/`success` both accepted). |
-| `space_name`           | str             | `GBTEST_SPACE_NAME` (`gbtest`)     | Space the build runs in. |
+| `space_name`           | str             | `GBTEST_SPACE_NAME` (`public`)     | Space the build runs in. |
 | `targets`              | list[str] \| null | `null` (run all)                 | Subset of targets in `build.yaml` to run. |
 | `timeout_minutes`      | int             | `30`                               | Wall-clock cap for the build. |
 | `simulate_step_failure`     | bool            | `true`                             | If `true`, signals the environment to inject one simulated failure to exercise the retry path. |
-| `space_uri`            | str \| null     | `null`                             | Override the space's git URI; relative `file://` or bare paths resolve against this YAML's directory. |
+| `space_uri`            | str \| null     | `null`                             | When set, takes precedence over the `git_repo_uri` recorded for `space_name` in the `gb_spaces` table — the BuildRunner resolves `space://` URIs from this value instead of cloning the registered git repo. Relative `file://` URIs and bare relative filesystem paths resolve against this YAML's directory. PR creation and verification are skipped automatically (no GitHub repo). |
 | `skip_target_names`    | list[str]       | `[]`                               | Targets expected to be skipped on a second run (used with retry/two-build flows). |
 | `tests`                | list[str]       | `["runner", "runner_cancellation"]` | Which test methods opt in for this spec. Unknown values fail at load time. |
 
