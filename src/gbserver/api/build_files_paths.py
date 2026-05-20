@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Path resolution and auth helpers for the BlueVela remote-file REST API.
+"""Path resolution and auth helpers for the build-files REST API.
 
 Path math is delegated to gbserver.environment.lsf_paths so the REST API and
 the LSF build runtime stay in sync.
