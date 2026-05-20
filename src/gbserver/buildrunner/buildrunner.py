@@ -751,6 +751,9 @@ class BuildRunner(AbstractBuildRunner):
         # Add the BuildEvent to the history of events for this build
         self.event_storage.add(StoredEvent(build_event=event))
 
+        # Dispatch to webhook subscribers
+        self.__dispatch_to_webhooks(event)
+
         if event.type in (
             BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT,
             BuildEventType.NEW_MULTIARTIFACT_IN_ENVIRONMENT_EVENT,
@@ -778,6 +781,41 @@ class BuildRunner(AbstractBuildRunner):
             logger.error("unsupported event type: %s", event)
         logger.debug("BuildRunner.process_event end")
         return build_finished
+
+    def __dispatch_to_webhooks(self: Self, event: BuildEvent) -> None:
+        """Buffer event for webhook subscribers if webhooks are enabled."""
+        from gbserver.types.constants import GBSERVER_WEBHOOKS_ENABLED
+
+        if not GBSERVER_WEBHOOKS_ENABLED:
+            return
+
+        try:
+            if not hasattr(self, "_webhook_dispatcher"):
+                self._webhook_dispatcher = None
+                from gbserver.webhooks.sql_storage import SQLWebhookStorage
+                from gbserver.webhooks.dispatcher import WebhookDispatcher
+
+                storage = SQLWebhookStorage()
+                subs = storage.get_active_for_build(self.stored_build.uuid)
+                if subs:
+                    self._webhook_dispatcher = WebhookDispatcher(
+                        webhook_storage=storage,
+                        build_id=self.stored_build.uuid,
+                        space_name=self.stored_build.space_name,
+                        build_name=self.stored_build.name,
+                        username=self.stored_build.username,
+                        build_start_time=self.stored_build.created_time.isoformat(),
+                    )
+                    self._webhook_dispatcher.start(subs)
+                    logger.info(
+                        "[BuildRunner] Webhook dispatcher initialized with %d subscription(s)",
+                        len(subs),
+                    )
+
+            if self._webhook_dispatcher is not None:
+                self._webhook_dispatcher.accept_event(event)
+        except Exception as e:
+            logger.warning("[BuildRunner] Webhook dispatch error (non-fatal): %s", e)
 
     def __process_terminate_event(self: Self, event: BuildEvent) -> None:
         build_id = event.run_metadata.build_id
