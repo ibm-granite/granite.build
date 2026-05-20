@@ -739,8 +739,11 @@ Expected: FAIL with `ModuleNotFoundError`
 # src/gbserver/webhooks/log_scanner.py
 """Regex-based build log scanner for webhook LOG_EVENT generation.
 
-Scans build log lines against subscriber-defined patterns and produces
-structured match results to include in webhook batches.
+Scans MESSAGE_EVENT payloads (already in-process via the BuildRunner event queue)
+against subscriber-defined patterns. No external log backend access required.
+
+Future enhancement: add cloud_logs mode using IBM Cloud Logs API search pattern
+from gb_dashboard/cloud_logs.py for full pod stdout coverage.
 """
 
 import re
