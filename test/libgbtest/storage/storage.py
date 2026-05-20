@@ -3,7 +3,7 @@ from abc import abstractmethod
 from typing import Any, Self
 
 import pytest
-from lib.test_utils import (
+from libgbtest.utils import (
     AbstractReadonlySingletonStorageUsingTest,
     AbstractSingletonStorageUsingTest,
 )

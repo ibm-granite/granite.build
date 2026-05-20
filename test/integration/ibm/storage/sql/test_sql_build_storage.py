@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from lib.storage.build_storage import (
+from libgbtest.storage.build_storage import (
     BaseBuildStorageTest,
     BaseLegacyStoredBuildTest,
 )

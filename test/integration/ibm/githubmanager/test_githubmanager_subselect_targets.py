@@ -3,10 +3,10 @@ import threading
 import time
 
 import pytest
-from lib.buildrunner.utils import pre_register_input_artifacts
+from libgbtest.buildrunner.utils import pre_register_input_artifacts
 
 pytestmark = pytest.mark.ibm
-from lib.test_utils import AbstractSingletonStorageUsingPreloadedSpaceTest
+from libgbtest.utils import AbstractSingletonStorageUsingPreloadedSpaceTest
 
 from gbserver.github.githubmanager import GitHubManager
 from gbserver.storage.stored_build import StoredBuild

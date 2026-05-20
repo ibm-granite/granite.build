@@ -17,14 +17,14 @@ those imports happen AFTER ``pytest_sessionstart`` runs, so
 
 Pytest collects test classes from any file given by explicit path regardless
 of the ``python_files`` pattern, so the unconventional filename is fine.
-``test/lib/`` is not in ``testpaths`` (see pyproject.toml), so a plain
+``test/libgbtest/`` is not in ``testpaths`` (see pyproject.toml), so a plain
 ``pytest`` run won't pick this class up as a side effect.
 """
 
 from pathlib import Path
 
 import pytest
-from lib.buildrunner.buildtest import AbstractYamlBuildRunnerTest
+from libgbtest.buildrunner.buildtest import AbstractYamlBuildRunnerTest
 
 
 class TestYamlRunnerCli(AbstractYamlBuildRunnerTest):

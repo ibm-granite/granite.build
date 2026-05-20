@@ -2,15 +2,15 @@ from time import sleep, time
 from typing import Optional, Self
 
 import pytest
-from lib.buildrunner.buildtest import (
+from libgbtest.buildrunner.buildtest import (
     AbstractBuildTest,
     BuildTestSpecification,
     ClassTestedEnum,
     ExpectedTarget,
     get_test_data_dir_for,
 )
-from lib.buildrunner.utils import ExceptionRaisingThread
-from lib.constants import (
+from libgbtest.buildrunner.utils import ExceptionRaisingThread
+from libgbtest.constants import (
     GBTEST_SPACE_NAME,
     GBTEST_USER_NAME,
     extended_testing_only,

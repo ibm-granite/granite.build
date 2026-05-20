@@ -75,7 +75,7 @@ def check_test_config():
     In mock mode (GBTEST_MODE != 'live'), this check is skipped since credentials
     are intentionally absent.
     """
-    from lib.test_mode import is_mock_mode
+    from libgbtest.mode import is_mock_mode
 
     if is_mock_mode():
         return

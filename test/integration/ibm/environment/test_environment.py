@@ -20,7 +20,7 @@ from typing import List, Self, Tuple
 
 import pytest
 import yaml
-from lib.buildrunner.buildtest import get_test_data_dir_for
+from libgbtest.buildrunner.buildtest import get_test_data_dir_for
 
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.types.buildevent import (

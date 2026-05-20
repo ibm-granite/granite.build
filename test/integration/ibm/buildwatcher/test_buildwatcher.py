@@ -2,13 +2,13 @@ import os
 from abc import abstractmethod
 
 import pytest
-from lib.buildrunner.buildtest import (
+from libgbtest.buildrunner.buildtest import (
     AbstractBuildTest,
     BuildTestSpecification,
     ClassTestedEnum,
     get_test_data_root,
 )
-from lib.constants import extended_testing_only
+from libgbtest.constants import extended_testing_only
 
 pytestmark = pytest.mark.ibm
 

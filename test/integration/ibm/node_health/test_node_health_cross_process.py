@@ -30,7 +30,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 import pytest_asyncio
-from lib.test_utils import AbstractSingletonStorageUsingTest
+from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbserver.api.node_health import (
     get_failure_summary,

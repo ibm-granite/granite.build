@@ -2,12 +2,12 @@ from datetime import timedelta
 from typing import Self
 
 import pytest
-from lib.storage.storage import (
+from libgbtest.storage.storage import (
     AbstractExistingDataReadTest,
     AbstractStorageTest,
     AbstractStorageTestSupport,
 )
-from lib.test_utils import AbstractSingletonStorageUsingTest
+from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbserver.storage import singleton_storage
 from gbserver.storage.storage import BaseItemStorage

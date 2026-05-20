@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
-from lib.test_utils import AbstractSingletonStorageUsingTest
+from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbserver.resilience.node_health_tracker import NodeHealthTracker
 from gbserver.resilience.retry_handler import RetryHandler

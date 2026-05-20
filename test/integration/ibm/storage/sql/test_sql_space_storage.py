@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from lib.storage.space_storage import (
+from libgbtest.storage.space_storage import (
     BaseLegacyStoredSpaceTest,
     BaseSpaceStorageTest,
 )

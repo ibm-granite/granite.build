@@ -90,7 +90,7 @@ class ProcessLock:
         self.release()
 
 
-from lib.constants import (
+from libgbtest.constants import (
     ENV_VAR_GBTEST_COMPUTE_CLUSTER_API_KEY,
     ENV_VAR_GBTEST_COMPUTE_CLUSTER_TOKEN,
     ENV_VAR_GBTEST_GB_CLUSTER_API_KEY,
@@ -105,7 +105,7 @@ from lib.constants import (
     GBTEST_GB_CLUSTER_TOKEN,
     GBTEST_USER_NAME,
 )
-from lib.test_utils import is_pytest_running_parallel
+from libgbtest.utils import is_pytest_running_parallel
 
 from gbcommon.uri.utils import get_artifact_type
 from gbserver.storage.artifact_registration import ArtifactRegistration

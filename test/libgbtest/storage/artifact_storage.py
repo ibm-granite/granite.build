@@ -1,7 +1,7 @@
 import uuid
 from typing import Any
 
-from lib.storage.storage import (
+from libgbtest.storage.storage import (
     AbstractExistingDataReadTest,
     AbstractStorageTest,
     AbstractStorageTestSupport,

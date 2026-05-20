@@ -57,9 +57,9 @@ if not _can_import("asyncssh"):
     collect_ignore.append("integration/ibm/utils/test_ssh_tunnel.py")
 
 
-import lib
-import lib.constants
-from lib.constants import BUILD_ID_PATTERN
+import libgbtest
+import libgbtest.constants
+from libgbtest.constants import BUILD_ID_PATTERN
 
 import gbserver.types.constants
 from gbserver.storage.artifact_registration import ArtifactRegistration
@@ -244,7 +244,7 @@ def pytest_addoption(parser):
     """Register custom pytest CLI options.
 
     --buildtest-yaml: path to a buildtest.yaml file consumed by
-    TestYamlRunnerCli in test/lib/buildrunner/gbtest_runner.py (driven by
+    TestYamlRunnerCli in test/libgbtest/buildrunner/gbtest_runner.py (driven by
     the ``gbtest`` console script).  Allows running a single YAML-driven
     build test from the command line without authoring a concrete test
     class.
@@ -263,14 +263,14 @@ def pytest_sessionstart(session):
     Called after the Session object has been created and
     before performing collection and entering the run test loop.
     """
-    from lib.test_mode import get_test_mode
+    from libgbtest.mode import get_test_mode
 
     test_mode = get_test_mode()
     logger.info(f"GBTEST_MODE={test_mode}")
 
     if test_mode != "live":
         # Mock mode: apply placeholder env vars so modules can import safely
-        from lib.mock_env import MOCK_ENV_DEFAULTS, MOCK_ENV_FORCED
+        from libgbtest.mock_env import MOCK_ENV_DEFAULTS, MOCK_ENV_FORCED
 
         for key, value in MOCK_ENV_FORCED.items():
             os.environ[key] = value
@@ -334,7 +334,7 @@ def pytest_sessionstart(session):
             )
 
         importlib.reload(gbserver.types.constants)
-        importlib.reload(lib.constants)
+        importlib.reload(libgbtest.constants)
 
         from gbserver.lineage.jobstats import reset_lineage_store
 
@@ -417,8 +417,8 @@ def pytest_runtest_makereport(item, call):
 
 from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 
-from lib.fixture_loader import load_fixture  # noqa: E402
-from lib.test_mode import should_use_live  # noqa: E402
+from libgbtest.fixture_loader import load_fixture  # noqa: E402
+from libgbtest.mode import should_use_live  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # a. Storage — mock = SQLite, live = whatever the test class chooses

@@ -1,7 +1,7 @@
 import os
 
 from fastapi.testclient import TestClient
-from lib.test_utils import AbstractSingletonStorageUsingPreloadedSpaceTest
+from libgbtest.utils import AbstractSingletonStorageUsingPreloadedSpaceTest
 
 from gbserver.api.auth import get_gh_user
 from gbserver.api.builds import BuildStatusResponse2

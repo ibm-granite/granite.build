@@ -4,8 +4,8 @@ import pytest
 
 pytestmark = pytest.mark.ibm
 
-from lib.api.utils import AbstractAPITest
-from lib.storage.space_storage import SpaceStorageTestSupport
+from libgbtest.api.utils import AbstractAPITest
+from libgbtest.storage.space_storage import SpaceStorageTestSupport
 
 import gbserver.api.spaces as spaces_api
 

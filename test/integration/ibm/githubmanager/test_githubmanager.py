@@ -5,7 +5,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from lib.test_utils import AbstractSingletonStorageUsingPreloadedSpaceTest
+from libgbtest.utils import AbstractSingletonStorageUsingPreloadedSpaceTest
 
 from gbserver.github.githubmanager import GitHubManager
 from gbserver.storage.stored_build import StoredBuild

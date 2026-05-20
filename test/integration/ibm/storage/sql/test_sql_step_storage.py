@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from lib.storage.step_storage import (
+from libgbtest.storage.step_storage import (
     BaseLegacyStoredStepTest,
     BaseStepStorageTest,
 )

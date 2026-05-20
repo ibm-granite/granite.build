@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from lib.storage.artifact_storage import BaseArtifactStorageTest
+from libgbtest.storage.artifact_storage import BaseArtifactStorageTest
 
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 

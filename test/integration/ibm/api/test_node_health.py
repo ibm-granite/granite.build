@@ -27,7 +27,7 @@ from unittest.mock import Mock, patch
 import pytest
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.testclient import TestClient
-from lib.test_utils import AbstractSingletonStorageUsingTest
+from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbserver.api.node_health import (
     get_failure_summary,

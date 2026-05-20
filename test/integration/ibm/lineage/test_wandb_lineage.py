@@ -1,8 +1,8 @@
 from typing import Self
 
 import pytest
-from lib.lineage.lineage import AbstractLineageTest
-from lib.lineage.mock_lineage_service import MockLineageService
+from libgbtest.lineage.lineage import AbstractLineageTest
+from libgbtest.lineage.mock_lineage_service import MockLineageService
 
 from gbserver.lineage.wandb_jobstats import WandBLineageStore
 

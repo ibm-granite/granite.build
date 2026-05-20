@@ -1,5 +1,5 @@
 import pytest
-from lib.test_utils import check_test_config
+from libgbtest.utils import check_test_config
 
 from gbcommon.uri.git import GitURI
 from gbserver.types.constants import SPACE_REPO_CONFIG_BRANCH_NAME

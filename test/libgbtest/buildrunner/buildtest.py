@@ -32,14 +32,14 @@ import yaml
 
 pytest.importorskip("kubernetes_asyncio")
 
-from lib.buildrunner.utils import (
+from libgbtest.buildrunner.utils import (
     ExceptionRaisingThread,
     cluster_logout,
     delete_buildrunner_pod,
     gb_cluster_login,
     is_buildrunner_pod_finished,
 )
-from lib.constants import (
+from libgbtest.constants import (
     GBTEST_JOB_TERMINATION_TIMEOUT_SECONDS,
     GBTEST_SKIP_BUILD_TEARDOWN,
     GBTEST_SPACE_NAME,
@@ -47,7 +47,7 @@ from lib.constants import (
     failed_build_assert_message,
     is_extended_testing_enabled,
 )
-from lib.test_utils import (
+from libgbtest.utils import (
     AbstractSingletonStorageUsingPreloadedSpaceTest,
     check_env_var_set,
     is_pytest_running_parallel,
@@ -272,7 +272,7 @@ def get_test_data_root() -> Path:
     are stable against test-tree reorganization.
 
     Computed from this module's own filesystem location
-    (``<repo>/test/lib/buildrunner/buildtest.py``) so the result is independent
+    (``<repo>/test/libgbtest/buildrunner/buildtest.py``) so the result is independent
     of the caller's location.
 
     Returns:

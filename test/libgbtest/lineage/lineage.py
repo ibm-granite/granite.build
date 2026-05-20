@@ -1,11 +1,11 @@
 from abc import abstractmethod
 from typing import Self
 
-from lib.storage.artifact_storage import ArtifactStorageTestSupport
-from lib.storage.build_storage import BuildStorageTestSupport
-from lib.storage.step_storage import StepStorageTestSupport
-from lib.storage.target_storage import TargetStorageTestSupport
-from lib.test_utils import AbstractSingletonStorageUsingTest
+from libgbtest.storage.artifact_storage import ArtifactStorageTestSupport
+from libgbtest.storage.build_storage import BuildStorageTestSupport
+from libgbtest.storage.step_storage import StepStorageTestSupport
+from libgbtest.storage.target_storage import TargetStorageTestSupport
+from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbcommon.uri.lh import LhURI
 from gbserver.storage.singleton_storage import get_storage_factory

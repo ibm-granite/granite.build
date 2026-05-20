@@ -2,7 +2,7 @@ import os
 
 import integration.ibm.storage.sql.test_sql_build_storage as HIDE_FROM_PYTEST  # Doing it this way keeps pytest from also adding TestSQLBuildStorage tests as part of this file.
 import pytest
-from lib.storage.build_storage import BuildStorageTestSupport
+from libgbtest.storage.build_storage import BuildStorageTestSupport
 
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 

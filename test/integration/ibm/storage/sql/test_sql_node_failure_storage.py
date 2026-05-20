@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from lib.storage.node_failure_storage import (
+from libgbtest.storage.node_failure_storage import (
     BaseLegacyNodeFailureTest,
     BaseNodeFailureStorageTest,
 )

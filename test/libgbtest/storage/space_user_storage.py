@@ -1,4 +1,4 @@
-from lib.storage.storage import (
+from libgbtest.storage.storage import (
     AbstractStorageTest,
     AbstractStorageTestSupport,
 )
