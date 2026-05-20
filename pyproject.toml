@@ -77,6 +77,7 @@ standalone = [
 # Tier 2: Third-party open-source — installable from PyPI, testable in GH Actions
 thirdparty = [
     "docker>=7.0.0",
+    "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "skypilot[kubernetes,slurm]>=0.12.1",
     "wandb",
 ]
@@ -90,7 +91,8 @@ ibm = [
     "dmf-lib==1.10.2",
     "ibm_cloud_sdk_core==3.24.1",
     "ibm_secrets_manager_sdk",
-    "kubernetes_asyncio",
+    "kubernetes_asyncio>=35.0.1",	# Avoids missing watch import created in kubernetes==36.0.0
+    "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg2-binary",
     "skypilot[kubernetes,slurm]>=0.12.1",
 ]
