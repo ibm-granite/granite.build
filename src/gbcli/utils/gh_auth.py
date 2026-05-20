@@ -13,7 +13,7 @@ from gbcommon.types.constants import (
 )
 
 # https://github.com/cli/cli/blob/8288011149e71d5658b80ebef393522ba2d0e7cc/internal/authflow/flow.go#L24-L27
-# The "GitHub CLI" OAuth app
+# The "GitHub CLI" OAuth app — works on both public GitHub and GitHub Enterprise.
 oauthClientID = "178c6fc778ccc68e1d6a"
 # This value is safe to be embedded in version control (public GitHub CLI OAuth app secret)
 oauthClientSecret = "34ddeff2b558a23d38fba8a6de74f086ede1cc0b"  # gitleaks:allow

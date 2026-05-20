@@ -18,8 +18,6 @@
 
 import os
 
-from gbcommon.types.constants import DEFAULT_GH_DOMAIN, ENV_VAR_GH_DOMAIN  # noqa: F401
-
 
 def getenv_boolean(envname: str, default: bool = False) -> bool:
     """Evaluate the environment variable and return as a boolean value"""

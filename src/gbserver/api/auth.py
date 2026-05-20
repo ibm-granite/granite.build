@@ -27,9 +27,12 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from gbcommon.types.constants import (
     DEFAULT_GH_DOMAIN,
     get_gh_api_base,
-    is_public_github,
 )
-from gbserver.api.auth_providers import AuthProvider, build_provider_list
+from gbserver.api.auth_providers import (
+    AuthProvider,
+    build_provider_list,
+    resolve_github_email,
+)
 from gbserver.types.auth import User
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_time
@@ -83,24 +86,7 @@ def get_gh_user(token: str, domain: Optional[str] = None) -> Tuple[Optional[User
         data = response.json()
         user = User.model_validate(data)
 
-        # Public GitHub may not include email if the user has it set to private.
-        # Fall back to /user/emails which lists verified emails.
-        if not user.email and is_public_github(domain):
-            try:
-                emails_resp = requests.get(
-                    f"{api_base}/user/emails", headers=headers, timeout=10
-                )
-                emails_resp.raise_for_status()
-                for entry in emails_resp.json():
-                    if entry.get("primary") and entry.get("verified"):
-                        user.email = entry["email"]
-                        break
-            except Exception as email_err:
-                logger.warning(
-                    "Failed to fetch /user/emails for %s: %s",
-                    user.login,
-                    email_err,
-                )
+        resolve_github_email(user, domain, headers)
 
         if not user.email:
             logger.warning(

@@ -101,6 +101,32 @@ def _peek_jwt_issuer(token: str) -> Optional[str]:
         return None
 
 
+def resolve_github_email(user: User, domain: str, headers: dict) -> None:
+    """Fetch the primary verified email from /user/emails if missing.
+
+    Public GitHub may omit the email when the user has set it to private.
+    This mutates *user* in place, setting ``user.email`` if found.
+    """
+    if user.email or not is_public_github(domain):
+        return
+    api_base = get_gh_api_base(domain)
+    try:
+        emails_resp = requests.get(
+            f"{api_base}/user/emails", headers=headers, timeout=10
+        )
+        emails_resp.raise_for_status()
+        for entry in emails_resp.json():
+            if entry.get("primary") and entry.get("verified"):
+                user.email = entry["email"]
+                break
+    except Exception as email_err:
+        logger.warning(
+            "Failed to fetch /user/emails for %s: %s",
+            user.login,
+            email_err,
+        )
+
+
 # ---------------------------------------------------------------------------
 # GitHub Enterprise provider
 # ---------------------------------------------------------------------------
@@ -138,23 +164,7 @@ class GitHubAuthProvider(AuthProvider):
             user = User.model_validate(data)
             user.auth_provider = "github"
 
-            # Public GitHub may not include email if set to private.
-            if not user.email and is_public_github(self._gh_domain):
-                try:
-                    emails_resp = requests.get(
-                        f"{api_base}/user/emails", headers=headers, timeout=10
-                    )
-                    emails_resp.raise_for_status()
-                    for entry in emails_resp.json():
-                        if entry.get("primary") and entry.get("verified"):
-                            user.email = entry["email"]
-                            break
-                except Exception as email_err:
-                    logger.warning(
-                        "Failed to fetch /user/emails for %s: %s",
-                        user.login,
-                        email_err,
-                    )
+            resolve_github_email(user, self._gh_domain, headers)
 
             if not user.email:
                 logger.warning(

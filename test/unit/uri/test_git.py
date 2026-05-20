@@ -3,7 +3,7 @@ from lib.test_utils import check_test_config
 
 from gbcommon.uri.git import GitURI
 from gbserver.types.constants import SPACE_REPO_CONFIG_BRANCH_NAME
-from gbserver.types.constants_base import DEFAULT_GH_DOMAIN
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 
 pytestmark = pytest.mark.ibm
 

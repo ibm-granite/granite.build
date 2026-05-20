@@ -51,7 +51,9 @@ from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 from gbcommon.uri.lh import LhURI
 from gbcommon.uri.uri import URI
 
-_KNOWN_GH_DOMAINS = ["github.ibm.com", "github.com"]
+_KNOWN_GH_DOMAINS = list(
+    dict.fromkeys([DEFAULT_GH_DOMAIN, "github.ibm.com", "github.com"])
+)
 
 
 def normalize_to_filename(value: str, allow_unicode: bool = False) -> str:
