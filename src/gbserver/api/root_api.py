@@ -26,6 +26,7 @@ from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
 from gbserver.api.secrets import secrets_api
 from gbserver.api.spaces import spaces_api
+from gbserver.webhooks.api import webhooks_api
 from gbserver.types.constants import (
     API_BASE_PATH,
     GBSERVER_GIT_COMMIT,
@@ -63,3 +64,4 @@ root_api.mount(f"{API_BASE_PATH}/logs", logs_api)
 root_api.mount(f"{API_BASE_PATH}/node-health", node_health_api)
 root_api.mount(f"{API_BASE_PATH}/secrets", secrets_api)
 root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
+root_api.mount(f"{API_BASE_PATH}/webhooks", webhooks_api)
