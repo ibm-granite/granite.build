@@ -1,9 +1,9 @@
 import pytest
-from lib.test_utils import check_test_config
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 from gbcommon.uri.git import GitURI
 from gbserver.types.constants import SPACE_REPO_CONFIG_BRANCH_NAME
+from lib.test_utils import check_test_config
 
 pytestmark = pytest.mark.ibm
 
