@@ -458,6 +458,16 @@ def init(
     default="static",
     help=f"The type of validation to perform, one of {ALLOWED_VAL_TYPES} . Default is 'static'",
 )
+@click.option(
+    "--webhook-url",
+    default=None,
+    help="Webhook URL to receive build event notifications. Auto-subscribes on build start, auto-deactivates on completion.",
+)
+@click.option(
+    "--webhook-secret",
+    default=None,
+    help="Secret for HMAC-SHA256 webhook signature verification.",
+)
 @common_options
 def start(
     ctx,
@@ -475,6 +485,8 @@ def start(
     skip_version_check,
     quiet: bool,
     validation_type: str,
+    webhook_url,
+    webhook_secret,
 ):
     """Start a build. Specify targets to run as arguments. If no target is specified, all targets in build.yaml are executed."""
     if format == "json":
@@ -546,6 +558,8 @@ def start(
                 normalized_tags,
                 callback=echo_callback,
                 validation_type=validation_type,
+                webhook_url=webhook_url,
+                webhook_secret=webhook_secret,
             )
 
         else:
@@ -665,6 +679,8 @@ def start(
                     normalized_tags,
                     callback=update_bar,
                     validation_type=validation_type,
+                    webhook_url=webhook_url,
+                    webhook_secret=webhook_secret,
                 )
 
         if requested_build_url:

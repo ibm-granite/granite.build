@@ -669,6 +669,8 @@ class GBClient:
             tags: list[str] = [],
             callback=None,
             validation_type: str = "static",
+            webhook_url: Optional[str] = None,
+            webhook_secret: Optional[str] = None,
         ) -> str:
             return build_start(
                 self.github_token,
@@ -683,6 +685,8 @@ class GBClient:
                 tags=tags,
                 callback=callback,
                 validation_type=validation_type,
+                webhook_url=webhook_url,
+                webhook_secret=webhook_secret,
             )
 
         def build_cancel(
