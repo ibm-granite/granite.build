@@ -12,7 +12,7 @@ target_expectations:
 # Use the local sibling space dir so the BuildRunner resolves space:// URIs
 # without cloning from GitHub (HF traffic is mocked separately).
 space_uri: ./space
-simulate_failure: false
+simulate_step_failure: false
 timeout_minutes: 10
 # This fixture has no cancellation variant in the original Python class —
 # opt out of the default test_runner_cancellation method.

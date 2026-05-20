@@ -40,7 +40,7 @@ _RETRY_CPU_TEST_SPEC = BuildTestSpecification(
             jobstats_count=3,
         ),
     ],
-    simulate_failure=False,
+    simulate_step_failure=False,
 )
 
 # Same build config but download_file is expected to be skipped on the retry because
@@ -57,7 +57,7 @@ _RETRY_CPU_SKIPPED_TARGET_SPEC = BuildTestSpecification(
             jobstats_count=3,
         ),
     ],
-    simulate_failure=False,
+    simulate_step_failure=False,
     skip_target_names=["download_file"],
 )
 

@@ -37,7 +37,7 @@ expected_status: SUCCESS          # SUCCESS | INVALID | FAILED | ...
 space_name: gbtest                # space the build runs under
 targets: null                     # list of targets to run; null = run all
 timeout_minutes: 30
-simulate_failure: true            # inject one environment failure to exercise retry path
+simulate_step_failure: true            # inject one environment failure to exercise retry path
 space_uri: null                   # if set, overrides the space's git_repo_uri
                                   #   (relative file:// or filesystem paths resolve against this YAML's dir)
 skip_target_names: []             # targets expected to be skipped on a 2nd run
@@ -56,7 +56,7 @@ tests:                            # which test methods to run (see below)
 | `space_name`           | str             | `GBTEST_SPACE_NAME` (`gbtest`)     | Space the build runs in. |
 | `targets`              | list[str] \| null | `null` (run all)                 | Subset of targets in `build.yaml` to run. |
 | `timeout_minutes`      | int             | `30`                               | Wall-clock cap for the build. |
-| `simulate_failure`     | bool            | `true`                             | If `true`, signals the environment to inject one simulated failure to exercise the retry path. |
+| `simulate_step_failure`     | bool            | `true`                             | If `true`, signals the environment to inject one simulated failure to exercise the retry path. |
 | `space_uri`            | str \| null     | `null`                             | Override the space's git URI; relative `file://` or bare paths resolve against this YAML's directory. |
 | `skip_target_names`    | list[str]       | `[]`                               | Targets expected to be skipped on a second run (used with retry/two-build flows). |
 | `tests`                | list[str]       | `["runner", "runner_cancellation"]` | Which test methods opt in for this spec. Unknown values fail at load time. |

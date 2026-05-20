@@ -118,7 +118,7 @@ class BuildTestSpecification(BaseModel):
     """List of expected results for each target execute in the build.yaml."""
     timeout_minutes: int = 30
     """Number of minutes to wait for the build completion"""
-    simulate_failure: bool = True
+    simulate_step_failure: bool = True
     """If True, signal the environment to inject a simulated failure once the workload starts.
     The specific failure event is chosen by the environment implementation (e.g. K8s injects
     an AppWrapper failure). The RetryHandler absorbs the failure and retries, so expected_status
@@ -516,7 +516,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         logger.info(f"Done creating the build")
         timeout_seconds = build_count * test_spec.timeout_minutes * 60
 
-        if test_spec.simulate_failure:
+        if test_spec.simulate_step_failure:
             enable_failure_simulation()
 
         try:
@@ -627,7 +627,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             and GBSERVER_DEFAULT_BUILDRUNNER_TYPE == "job"
         ) or tested_class == ClassTestedEnum.TEST_BUILDRUNNERJOB:
             self._verify_pods_finished(build_ids)
-        if test_spec.simulate_failure:
+        if test_spec.simulate_step_failure:
             self.__verify_simulated_step_retry_event(build_ids)
 
         if test_spec.space_uri is None:
