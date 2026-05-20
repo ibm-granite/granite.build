@@ -1,0 +1,22 @@
+target_expections:
+  - target_name: syntheticdatageneration
+    step_count: 3
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+  - target_name: tunedmodel
+    # 2 inputs, 1 tuning, 2 outputs, one of which has 2 checkpoints = 6
+    step_count: 6
+    input_artifact_count: 2
+    output_artifact_count: 2
+    jobstats_count: 3
+  - target_name: evalresults
+    # 1 input, 1 step, 1 output
+    step_count: 3
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+timeout_minutes: 120
+# Original TestDiGiT_SFTFull_FMEval had no cancellation test — preserve that.
+tests:
+  - runner
