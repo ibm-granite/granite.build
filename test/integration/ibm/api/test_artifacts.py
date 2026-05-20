@@ -26,13 +26,13 @@ pytestmark = pytest.mark.ibm
 from fastapi import Response, status
 from fastapi.testclient import TestClient
 from git import Union
-from lib.api.utils import AbstractAPITest
-from lib.constants import (
+from libgbtest.api.utils import AbstractAPITest
+from libgbtest.constants import (
     GBTEST_ADMIN_GITHUB_TOKEN,
     GBTEST_NON_ADMIN_GITHUB_TOKEN,
     GBTEST_SPACE_NAME,
 )
-from lib.storage.artifact_storage import ArtifactStorageTestSupport
+from libgbtest.storage.artifact_storage import ArtifactStorageTestSupport
 
 from gbcommon.uri.hf import HfType, HfURI
 from gbcommon.uri.lh import LhURI

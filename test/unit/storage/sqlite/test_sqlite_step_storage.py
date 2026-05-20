@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from lib.storage.step_storage import BaseStepStorageTest
+from libgbtest.storage.step_storage import BaseStepStorageTest
 
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 

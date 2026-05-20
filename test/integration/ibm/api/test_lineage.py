@@ -19,12 +19,12 @@ import pytest
 pytestmark = pytest.mark.ibm
 
 from fastapi import status
-from lib.api.utils import AbstractAPITest
-from lib.storage.artifact_storage import ArtifactStorageTestSupport
-from lib.storage.build_storage import BuildStorageTestSupport
-from lib.storage.step_storage import StepStorageTestSupport
-from lib.storage.target_storage import TargetStorageTestSupport
-from lib.storage.utils import (
+from libgbtest.api.utils import AbstractAPITest
+from libgbtest.storage.artifact_storage import ArtifactStorageTestSupport
+from libgbtest.storage.build_storage import BuildStorageTestSupport
+from libgbtest.storage.step_storage import StepStorageTestSupport
+from libgbtest.storage.target_storage import TargetStorageTestSupport
+from libgbtest.storage.utils import (
     StorageCollection,
     TargetSpec,
     connect_and_store_build,

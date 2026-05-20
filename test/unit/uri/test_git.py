@@ -1,5 +1,5 @@
 import pytest
-from lib.test_utils import check_test_config
+from libgbtest.utils import check_test_config
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 from gbcommon.uri.git import GitURI

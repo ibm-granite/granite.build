@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from lib.test_utils import AbstractSingletonStorageUsingTest
+from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbserver.spaces.storage_space_access_manager import StorageSpaceAccessManager
 from gbserver.storage.stored_build import StoredBuild

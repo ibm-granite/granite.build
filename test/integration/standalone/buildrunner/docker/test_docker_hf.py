@@ -19,91 +19,24 @@
 Validates the full pipeline:
   HF URI input  →  Docker container (image step)  →  HF URI output
 
-HF network calls are mocked so no real HuggingFace traffic is required.
-The Docker daemon must be available (gated by skipif_no_docker).
+The Docker daemon must be available.
+
+The fixture's build.yaml and buildtest.yaml live in the directory returned by
+_get_yaml_spec_dir below.
 """
 
-# import os
 import os
 from pathlib import Path
-from typing import Self
 
 import pytest
 
-# from unittest.mock import patch
-
 pytest.importorskip("kubernetes_asyncio")
-from lib.buildwatcher.buildtest import (
-    AbstractBuildRunnerTest,
-    BuildTestSpecification,
-    ExpectedTarget,
+from libgbtest.buildrunner.buildtest import (
+    AbstractYamlBuildRunnerTest,
+    get_test_data_dir_for,
 )
 
 pytestmark = pytest.mark.docker_required
-
-# from gbcommon.uri.hf import HfURI
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-
-_TEST_DATA_DIR = (
-    Path(__file__).parent.parent.parent.parent.parent.parent
-    / "test-data"
-    / "integration"
-    / "standalone"
-    / "buildrunner"
-    / "docker"
-    / "docker-hf"
-).resolve()
-
-# ---------------------------------------------------------------------------
-# Docker availability guard
-# ---------------------------------------------------------------------------
-
-
-# def _docker_available() -> bool:
-#     """Return True if a Docker/Podman daemon is reachable via the Python SDK."""
-#     try:
-#         import docker
-
-#         client = docker.from_env()
-#         client.ping()
-#         return True
-#     except Exception:
-#         return False
-
-
-# skipif_no_docker = pytest.mark.skipif(
-#     not _docker_available(),
-#     reason="Docker/Podman daemon not available",
-# )
-
-# ---------------------------------------------------------------------------
-# Test specification
-# ---------------------------------------------------------------------------
-
-_SPEC = BuildTestSpecification(
-    build_yaml=str(_TEST_DATA_DIR / "build.yaml"),
-    space_uri=f"file://{_TEST_DATA_DIR}/space",
-    targets=["image-run"],
-    target_expections=[
-        ExpectedTarget(
-            target_name="image-run",
-            step_count=1,
-            input_artifact_count=1,
-            output_artifact_count=2,
-            jobstats_count=3,
-        ),
-    ],
-    simulate_failure=False,
-    timeout_minutes=10,
-)
-
-
-# ---------------------------------------------------------------------------
-# Test class
-# ---------------------------------------------------------------------------
 
 
 # TODO: We need to disable this skip when image pulling is supported
@@ -111,23 +44,12 @@ _SPEC = BuildTestSpecification(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
     reason="Skip in CI/CD until we have automatic image pulling during the build",
 )
-class TestDockerImageBuild(AbstractBuildRunnerTest):
+class TestDockerImageBuild(AbstractYamlBuildRunnerTest):
     """Integration test: HF input → Docker image step → HF output.
 
     Runs a real local Docker container with HF I/O mocked so no actual
     HuggingFace network calls are made.
     """
 
-    # @pytest.fixture(autouse=True)
-    # def _hf_mocks(self: Self):
-    #     """Mock HfURI.sync and HfURI.push to avoid real HuggingFace network calls."""
-    #     with (
-    #         patch.object(HfURI, "sync", return_value=True),
-    #         patch.object(HfURI, "push", return_value=True),
-    #         patch.object(HfURI, "exists", return_value=True),   # TODO: use an existing input artifact in HF
-    #     ):
-    #         yield
-
-    def _get_test_specification(self: Self) -> BuildTestSpecification:
-        """Return the build spec for the Docker image HF pipeline test."""
-        return _SPEC
+    def _get_yaml_spec_dir(self) -> Path:
+        return get_test_data_dir_for(__file__) / "docker-hf"

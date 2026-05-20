@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from lib.storage.target_storage import BaseTargetStorageTest
+from libgbtest.storage.target_storage import BaseTargetStorageTest
 
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 

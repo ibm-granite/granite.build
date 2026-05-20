@@ -5,7 +5,7 @@ import pytest
 from gbserver.storage.sql.storage_factory import SQLStorageFactory
 
 pytestmark = pytest.mark.ibm
-from lib.storage.artifact_storage import (
+from libgbtest.storage.artifact_storage import (
     BaseArtifactStorageTest,
     BaseLegacyArtifactStorageTest,
 )

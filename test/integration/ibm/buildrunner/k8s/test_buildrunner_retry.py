@@ -1,16 +1,16 @@
-import os
 from time import sleep, time
 from typing import Optional, Self
 
 import pytest
-from lib.buildwatcher.buildtest import (
+from libgbtest.buildrunner.buildtest import (
     AbstractBuildTest,
     BuildTestSpecification,
     ClassTestedEnum,
     ExpectedTarget,
+    get_test_data_dir_for,
 )
-from lib.buildwatcher.utils import ExceptionRaisingThread
-from lib.constants import (
+from libgbtest.buildrunner.utils import ExceptionRaisingThread
+from libgbtest.constants import (
     GBTEST_SPACE_NAME,
     GBTEST_USER_NAME,
     extended_testing_only,
@@ -25,14 +25,13 @@ from gbserver.utils.logger import get_logger
 pytestmark = pytest.mark.ibm
 
 
-_src_file_dir = os.path.abspath(os.path.dirname(__file__))
-_test_data_dir = _src_file_dir.replace("test", "test-data", 1)
+_RETRY_CPU_BUILD_YAML = get_test_data_dir_for(__file__) / "retry" / "cpu" / "build.yaml"
 
 
 _RETRY_CPU_TEST_SPEC = BuildTestSpecification(
-    build_yaml=os.path.join(_test_data_dir, "retry/cpu/build.yaml"),
+    build_yaml=str(_RETRY_CPU_BUILD_YAML),
     expected_status=Status.SUCCESS,
-    target_expections=[
+    target_expectations=[
         ExpectedTarget(
             target_name="download_file",
             step_count=5,
@@ -41,15 +40,15 @@ _RETRY_CPU_TEST_SPEC = BuildTestSpecification(
             jobstats_count=3,
         ),
     ],
-    simulate_failure=False,
+    simulate_step_failure=False,
 )
 
 # Same build config but download_file is expected to be skipped on the retry because
 # it already succeeded in the original run that is in the same retry chain.
 _RETRY_CPU_SKIPPED_TARGET_SPEC = BuildTestSpecification(
-    build_yaml=os.path.join(_test_data_dir, "retry/cpu/build.yaml"),
+    build_yaml=str(_RETRY_CPU_BUILD_YAML),
     expected_status=Status.SUCCESS,
-    target_expections=[
+    target_expectations=[
         ExpectedTarget(
             target_name="download_file",
             step_count=5,
@@ -58,7 +57,7 @@ _RETRY_CPU_SKIPPED_TARGET_SPEC = BuildTestSpecification(
             jobstats_count=3,
         ),
     ],
-    simulate_failure=False,
+    simulate_step_failure=False,
     skip_target_names=["download_file"],
 )
 

@@ -2,8 +2,8 @@ import pytest
 
 pytestmark = pytest.mark.ibm
 
-from lib.storage.space_storage import SpaceStorageTestSupport
-from lib.test_utils import AbstractSingletonStorageUsingTest
+from libgbtest.storage.space_storage import SpaceStorageTestSupport
+from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbserver.spaces.space_access_manager import set_space_access_manager
 from gbserver.spaces.storage_space_access_manager import StorageSpaceAccessManager

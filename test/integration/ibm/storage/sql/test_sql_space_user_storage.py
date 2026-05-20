@@ -2,7 +2,7 @@ import os
 import uuid
 
 import pytest
-from lib.storage.space_user_storage import BaseSpaceUserStorageTest
+from libgbtest.storage.space_user_storage import BaseSpaceUserStorageTest
 
 from gbserver.storage.sql.storage_factory import SQLStorageFactory
 from gbserver.storage.storage import UUID_COLUMN_NAME, BaseItemStorage, BaseStoredItem

@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from lib.storage.target_storage import (
+from libgbtest.storage.target_storage import (
     BaseLegacyStoredTargetTest,
     BaseTargetStorageTest,
 )

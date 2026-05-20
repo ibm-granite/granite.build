@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from lib.storage.event_storage import BaseEventStorageTest
+from libgbtest.storage.event_storage import BaseEventStorageTest
 
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 

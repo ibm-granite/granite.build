@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from lib.storage.space_storage import BaseSpaceStorageTest
+from libgbtest.storage.space_storage import BaseSpaceStorageTest
 
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 
