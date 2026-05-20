@@ -216,10 +216,12 @@ The `WebhookBatchBuffer` accumulates events per subscription:
 
 When a subscription has a `log_pattern`:
 
-1. At each batch flush, retrieve build log lines produced since the last flush (time-block based).
-2. Apply the regex against each line.
+1. At each batch flush, scan MESSAGE_EVENT payloads that arrived since the last flush (in-process, time-block based).
+2. Apply the regex against each message text.
 3. For each match, synthesize a `LOG_EVENT` entry in the batch with the matched line, line number, and pattern.
-4. Log scanning uses the same log source as `build_log` (stored log output).
+4. Log scanning operates on MESSAGE_EVENTs already flowing through the BuildRunner event queue — no external log backend access required.
+
+**Future enhancement:** For full log coverage (including verbose pod stdout not relayed via MESSAGE_EVENTs), add a `log_source` subscription option (`"event_stream"` vs `"cloud_logs"`). The cloud logs mode would use the IBM Cloud Logs API search pattern from [gb_dashboard/cloud_logs.py](https://github.ibm.com/granite-dot-build/gb_dashboard/blob/678c73e/src/gb_dashboard/services/cloud_logs.py#L227).
 
 ## Retry Policy
 
