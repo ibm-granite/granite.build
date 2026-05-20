@@ -116,6 +116,25 @@ def finalize_build_status(
     if not build.status.is_finished():
         build = update_stored_build_status(build.uuid, status, failure_reason)
         logger.info("Build %s finalized with status %s", build_id, status)
+
+    # Deactivate webhook subscriptions for completed builds
+    try:
+        from gbserver.types.constants import GBSERVER_WEBHOOKS_ENABLED
+
+        if GBSERVER_WEBHOOKS_ENABLED:
+            from gbserver.webhooks.sql_storage import SQLWebhookStorage
+
+            webhook_storage = SQLWebhookStorage()
+            count = webhook_storage.deactivate_for_build(build_id)
+            if count > 0:
+                logger.info(
+                    "Deactivated %d webhook subscription(s) for completed build %s",
+                    count,
+                    build_id,
+                )
+    except Exception as e:
+        logger.warning("Failed to deactivate webhook subscriptions: %s", e)
+
     return build
 
 
