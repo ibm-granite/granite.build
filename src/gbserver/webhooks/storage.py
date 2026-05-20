@@ -49,6 +49,20 @@ class IWebhookStorage(IItemStorage[StoredWebhookSubscription]):
         """
         raise NotImplementedError
 
+    def get_active_for_space(self, space_name: str) -> List[StoredWebhookSubscription]:
+        """Get active space-wide subscriptions (build_id is empty/None).
+
+        Space-wide subscriptions are those where build_id is not set,
+        meaning they receive events for ALL builds in the space.
+
+        Args:
+            space_name: The space to find subscriptions for.
+
+        Returns:
+            List of active subscriptions where build_id is empty (space-wide).
+        """
+        raise NotImplementedError
+
     def deactivate(self, subscription_id: str) -> None:
         """Deactivate a single subscription by its UUID.
 
@@ -145,6 +159,27 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
         result: List[StoredWebhookSubscription] = []
         for page in self.get_paged(
             {"build_id": build_id, "active": True}, page_size=_PAGE_SIZE
+        ):
+            result.extend(page)
+        return result
+
+    def get_active_for_space(self, space_name: str) -> List[StoredWebhookSubscription]:
+        """Get active space-wide subscriptions (build_id is empty string = NULL).
+
+        Space-wide subscriptions have build_id stored as empty string (the
+        storage layer maps None to "" in _get_column_values). Only active
+        subscriptions are returned.
+
+        Args:
+            space_name: The space to find subscriptions for.
+
+        Returns:
+            List of active space-wide subscriptions for the given space.
+        """
+        result: List[StoredWebhookSubscription] = []
+        for page in self.get_paged(
+            {"space_name": space_name, "build_id": "", "active": True},
+            page_size=_PAGE_SIZE,
         ):
             result.extend(page)
         return result
