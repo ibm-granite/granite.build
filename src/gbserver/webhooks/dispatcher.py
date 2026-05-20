@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional
 from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventStatusPayload,
-    BuildEventType,
 )
 from gbserver.utils.logger import get_logger
 from gbserver.webhooks.batch_buffer import WebhookBatchBuffer
@@ -100,9 +99,11 @@ class WebhookDispatcher:
         data: Dict[str, Any] = {
             "event_id": str(uuid.uuid4()),
             "event_type": event.type.value,
-            "timestamp": event.timestamp.isoformat()
-            if hasattr(event, "timestamp")
-            else datetime.now(timezone.utc).isoformat(),
+            "timestamp": (
+                event.timestamp.isoformat()
+                if hasattr(event, "timestamp")
+                else datetime.now(timezone.utc).isoformat()
+            ),
             "target_name": meta.target_name,
             "step_name": meta.targetstep_uri,
         }
@@ -168,9 +169,7 @@ class WebhookDispatcher:
         )
         await delivery.deliver(payload)
 
-    async def flush_all_ready(
-        self, log_lines: Optional[List[str]] = None
-    ) -> None:
+    async def flush_all_ready(self, log_lines: Optional[List[str]] = None) -> None:
         """Flush all subscriptions whose batch interval has elapsed.
 
         Errors during individual subscription flushes are logged but do
@@ -186,13 +185,9 @@ class WebhookDispatcher:
                 try:
                     await self.flush_subscription(sub, log_lines)
                 except Exception as e:
-                    logger.error(
-                        "[WebhookDispatcher] Error flushing %s: %s", sub_id, e
-                    )
+                    logger.error("[WebhookDispatcher] Error flushing %s: %s", sub_id, e)
 
-    async def flush_final(
-        self, log_lines: Optional[List[str]] = None
-    ) -> None:
+    async def flush_final(self, log_lines: Optional[List[str]] = None) -> None:
         """Force-flush all subscriptions (on build completion).
 
         Unlike flush_all_ready, this ignores batch timers and flushes

@@ -2,8 +2,6 @@
 
 import time
 
-import pytest
-
 from gbserver.webhooks.batch_buffer import WebhookBatchBuffer
 from gbserver.webhooks.models import StoredWebhookSubscription
 

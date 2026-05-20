@@ -4,14 +4,12 @@ Tests the FastAPI routes for creating, listing, and deleting webhook
 subscriptions, including authentication, authorization, and validation.
 """
 
-import datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
-from gbserver.webhooks.api import webhooks_api, set_webhook_storage
-from gbserver.webhooks.models import StoredWebhookSubscription, WEBHOOK_MIN_FREQUENCY
+from gbserver.webhooks.api import webhooks_api
+from gbserver.webhooks.models import StoredWebhookSubscription
 
 
 class TestWebhookAPI:

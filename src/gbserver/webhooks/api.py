@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 webhooks_api = FastAPI()
 
 # Module-level storage (lazily initialized)
-_webhook_storage: Optional[IWebhookStorage] = None
+_webhook_storage: Optional[IWebhookStorage] = None  # pylint: disable=invalid-name
 
 
 def set_webhook_storage(storage: IWebhookStorage) -> None:
@@ -35,7 +35,7 @@ def set_webhook_storage(storage: IWebhookStorage) -> None:
     Args:
         storage: An IWebhookStorage implementation.
     """
-    global _webhook_storage
+    global _webhook_storage  # pylint: disable=global-statement
     _webhook_storage = storage
 
 
@@ -215,7 +215,7 @@ def create_subscription(
     # Verify build exists
     admin_storage = get_admin_storage()
     build = admin_storage.build_storage.get_by_uuid(build_id)
-    if build is None:
+    if build is None or isinstance(build, list):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Build {build_id} not found",
@@ -309,7 +309,7 @@ def delete_subscription(webhook_id: str, request: Request) -> Response:
 
     storage = get_webhook_storage()
     subscription = storage.get_by_uuid(webhook_id)
-    if subscription is None:
+    if subscription is None or isinstance(subscription, list):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Subscription {webhook_id} not found",

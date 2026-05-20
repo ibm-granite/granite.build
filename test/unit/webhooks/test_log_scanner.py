@@ -25,13 +25,13 @@ class TestLogScanner:
         """Verify empty list returned when no lines match the pattern."""
         lines = ["INFO all good", "INFO still good"]
         matches = scan_log_lines(lines, pattern=r"FATAL")
-        assert matches == []
+        assert not matches
 
     def test_scan_with_invalid_regex_returns_empty(self):
         """Verify invalid regex gracefully returns empty list."""
         lines = ["some text"]
         matches = scan_log_lines(lines, pattern=r"[invalid")
-        assert matches == []
+        assert not matches
 
     def test_scan_includes_pattern_in_result(self):
         """Verify each match dict includes the matched_pattern field."""
