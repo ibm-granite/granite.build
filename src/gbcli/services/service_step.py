@@ -15,6 +15,7 @@ from gbcli.utils.gbconstants import (
 from gbcli.utils.gh_clone import download_repo_file, list_repo_tree
 from gbcli.utils.spaceutil import resolve_space
 from gbcli.utils.utils import parse_markdown_str, remove_suffix
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 from gbcommon.types.stepconfig import (
     StepConfig,
     StepEnvironmentTypeConfig,
@@ -121,7 +122,7 @@ def list_steps(
             steps.append(
                 {
                     "step_name": file_path[1],
-                    "description": f"https://github.ibm.com/{steps_org}/{steps_name}/tree/{branch_name}/{file['path']}",
+                    "description": f"https://{DEFAULT_GH_DOMAIN}/{steps_org}/{steps_name}/tree/{branch_name}/{file['path']}",
                 }
             )
 

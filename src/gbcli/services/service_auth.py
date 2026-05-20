@@ -11,6 +11,7 @@ from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gbserver import gbserver_get, make_gbserver_call
 from gbcli.utils.gh_auth import *
 from gbcli.utils.spaceutil import resolve_space
+from gbcommon.types.constants import get_gh_credentials_section
 
 
 def gh_token():
@@ -35,10 +36,11 @@ def gh_token_verify(device_code: str) -> TokenURLResponse:
 
 def gh_login(gh_access_token: str):
     user_obj = get_user(token=gh_access_token)
+    gh_section = get_gh_credentials_section()
     credentials = GBCredentials()
-    credentials.set("token", gh_access_token, section="user.github")
-    credentials.set("login", user_obj.login, section="user.github")
-    credentials.set("email", user_obj.email, section="user.github")
+    credentials.set("token", gh_access_token, section=gh_section)
+    credentials.set("login", user_obj.login, section=gh_section)
+    credentials.set("email", user_obj.email, section=gh_section)
     credentials.set("default_provider", "github", section="user")
     credentials.save()
 

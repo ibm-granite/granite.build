@@ -11,6 +11,7 @@ from toml import TomlDecodeError
 
 from gbcli.utils.cli_config import get_local_gb_config
 from gbcli.utils.gbconstants import USER_NOT_LOGGED_IN_ERROR_MESSAGE, is_standalone
+from gbcommon.types.constants import get_gh_api_base, get_gh_credentials_section
 
 logger = logging.getLogger(__name__)
 
@@ -130,10 +131,11 @@ class GBCredentials(GBTomlConfig):
         return all(val is not None for val in credentials)
 
     def check_values(self):
+        gh_section = get_gh_credentials_section()
         credentials = [
-            self.get("token", section="user.github"),
-            self.get("login", section="user.github"),
-            self.get("email", section="user.github"),
+            self.get("token", section=gh_section),
+            self.get("login", section=gh_section),
+            self.get("email", section=gh_section),
         ]
 
         if any(val is None for val in credentials):
@@ -141,13 +143,11 @@ class GBCredentials(GBTomlConfig):
         else:
             # Validate token
             headers = {
-                "Authorization": f'token {self.get("token", section="user.github")}'
+                "Authorization": f'token {self.get("token", section=gh_section)}'
             }
 
             try:
-                response = requests.get(
-                    "https://api.github.ibm.com/user", headers=headers
-                )
+                response = requests.get(f"{get_gh_api_base()}/user", headers=headers)
                 response.raise_for_status()
                 return True
 
@@ -225,7 +225,7 @@ def get_user_token() -> str:
 
     creds.check_permissions()
 
-    token = creds.get("token", section="user.github")
+    token = creds.get("token", section=get_gh_credentials_section())
     return token or ""
 
 

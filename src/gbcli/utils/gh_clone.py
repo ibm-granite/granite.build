@@ -10,8 +10,11 @@ from git import GitCommandError, Repo
 from requests.exceptions import ConnectionError
 
 from gbcli.utils.utils import CloneProgress, remove_prefix
+from gbcommon.types.constants import get_gh_api_base
 
 logger = logging.getLogger(__name__)
+
+_GH_API_BASE = get_gh_api_base()
 
 
 def clone_github_repo(
@@ -86,7 +89,9 @@ def clone_github_repo(
 def list_repo_tree(
     token: str, assets_org: str, assets_name: str, branch_name: str
 ) -> bool:
-    tree_url = f"https://github.ibm.com/api/v3/repos/{assets_org}/{assets_name}/git/trees/{branch_name}"
+    tree_url = (
+        f"{_GH_API_BASE}/repos/{assets_org}/{assets_name}/git/trees/{branch_name}"
+    )
 
     params = {"recursive": 1}
 
@@ -122,7 +127,7 @@ def list_repo_tree(
 #         prs_url = next_page_url
 #         params = {}
 #     else:
-#         prs_url = f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/pulls"
+#         prs_url = f"{_GH_API_BASE}/repos/{space_org}/{space_name}/pulls"
 #         params = {
 #             "state": state,
 #             "sort": sort,
@@ -152,7 +157,7 @@ def get_pr_comments(
     if next_page_url:
         comments_url = next_page_url
     else:
-        comments_url = f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/issues/{pull_number}/comments"
+        comments_url = f"{_GH_API_BASE}/repos/{space_org}/{space_name}/issues/{pull_number}/comments"
 
     headers = {
         "Accept": "application/vnd.github+json",
@@ -178,9 +183,7 @@ def get_forks(
     if next_page_url:
         forks_url = next_page_url
     else:
-        forks_url = (
-            f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/forks"
-        )
+        forks_url = f"{_GH_API_BASE}/repos/{space_org}/{space_name}/forks"
 
     params = {
         "sort": sort,
@@ -229,9 +232,7 @@ def generate_exception_message(
 
 
 def download_repo_file(token: str, space_org: str, space_name: str, path: str):
-    file_url = (
-        f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/contents/{path}"
-    )
+    file_url = f"{_GH_API_BASE}/repos/{space_org}/{space_name}/contents/{path}"
 
     headers = {
         "Accept": "application/vnd.github.raw+json",
@@ -246,9 +247,7 @@ def download_repo_file(token: str, space_org: str, space_name: str, path: str):
 
 
 def get_repo_tags(token: str, space_org: str, space_name: str) -> Any:
-    tags_url = (
-        f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/git/refs/tags"
-    )
+    tags_url = f"{_GH_API_BASE}/repos/{space_org}/{space_name}/git/refs/tags"
 
     headers = {
         "Accept": "application/vnd.github.raw+json",
@@ -279,9 +278,7 @@ def run_github_command(command, callback=None, final_command=None):
 
 
 def get_repo_subscription(token: str, space_org: str, space_name: str) -> Any:
-    subscription_url = (
-        f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/subscription"
-    )
+    subscription_url = f"{_GH_API_BASE}/repos/{space_org}/{space_name}/subscription"
 
     headers = {
         "Accept": "application/vnd.github.raw+json",
@@ -297,9 +294,7 @@ def get_repo_subscription(token: str, space_org: str, space_name: str) -> Any:
 
 
 def ignore_repo_subscription(token: str, space_org: str, space_name: str) -> Any:
-    subscription_url = (
-        f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/subscription"
-    )
+    subscription_url = f"{_GH_API_BASE}/repos/{space_org}/{space_name}/subscription"
 
     data = {
         "ignored": True,
@@ -317,9 +312,7 @@ def ignore_repo_subscription(token: str, space_org: str, space_name: str) -> Any
 
 
 def delete_repo_subscription(token: str, space_org: str, space_name: str) -> Any:
-    subscription_url = (
-        f"https://github.ibm.com/api/v3/repos/{space_org}/{space_name}/subscription"
-    )
+    subscription_url = f"{_GH_API_BASE}/repos/{space_org}/{space_name}/subscription"
 
     headers = {
         "Accept": "application/vnd.github+json",
