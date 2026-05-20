@@ -3,7 +3,7 @@ import threading
 import time
 
 import pytest
-from lib.buildwatcher.utils import pre_register_input_artifacts
+from lib.buildrunner.utils import pre_register_input_artifacts
 
 pytestmark = pytest.mark.ibm
 from lib.test_utils import AbstractSingletonStorageUsingPreloadedSpaceTest

@@ -15,7 +15,7 @@ _get_yaml_spec_dir below.
 from pathlib import Path
 
 import pytest
-from lib.buildwatcher.buildtest import (
+from lib.buildrunner.buildtest import (
     AbstractYamlBuildRunnerTest,
     get_test_data_dir_for,
 )

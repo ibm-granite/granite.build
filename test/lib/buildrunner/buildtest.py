@@ -32,7 +32,7 @@ import yaml
 
 pytest.importorskip("kubernetes_asyncio")
 
-from lib.buildwatcher.utils import (
+from lib.buildrunner.utils import (
     ExceptionRaisingThread,
     cluster_logout,
     delete_buildrunner_pod,

@@ -2,7 +2,7 @@ import os
 from typing import Self
 
 import pytest
-from lib.buildwatcher.buildtest import (
+from lib.buildrunner.buildtest import (
     AbstractBuildRunnerTest,
     BuildTestSpecification,
     ExpectedTarget,

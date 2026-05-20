@@ -2,7 +2,7 @@ import os
 from abc import abstractmethod
 
 import pytest
-from lib.buildwatcher.buildtest import (
+from lib.buildrunner.buildtest import (
     AbstractBuildTest,
     BuildTestSpecification,
     ClassTestedEnum,

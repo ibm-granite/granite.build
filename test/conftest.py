@@ -244,7 +244,7 @@ def pytest_addoption(parser):
     """Register custom pytest CLI options.
 
     --buildtest-yaml: path to a buildtest.yaml file consumed by
-    TestYamlRunnerCli in test/lib/buildwatcher/gbtest_runner.py (driven by
+    TestYamlRunnerCli in test/lib/buildrunner/gbtest_runner.py (driven by
     the ``gbtest`` console script).  Allows running a single YAML-driven
     build test from the command line without authoring a concrete test
     class.

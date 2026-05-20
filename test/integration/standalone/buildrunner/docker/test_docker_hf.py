@@ -34,7 +34,7 @@ import pytest
 # from unittest.mock import patch
 
 pytest.importorskip("kubernetes_asyncio")
-from lib.buildwatcher.buildtest import (
+from lib.buildrunner.buildtest import (
     AbstractYamlBuildRunnerTest,
     get_test_data_dir_for,
 )
