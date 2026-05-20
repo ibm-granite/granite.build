@@ -6,24 +6,17 @@ from lib.buildrunner.buildtest import (
     AbstractBuildTest,
     BuildTestSpecification,
     ClassTestedEnum,
-    get_test_data_dir_for,
+    get_test_data_root,
 )
 from lib.constants import extended_testing_only
 
 pytestmark = pytest.mark.ibm
 
-# K8s buildrunner fixtures live under test-data/integration/ibm/buildrunner/k8s/
-# (sibling of this file's test-data dir test-data/integration/ibm/buildwatcher).
-_K8S_FIXTURES = get_test_data_dir_for(__file__).parent / "buildrunner" / "k8s"
+_K8S_FIXTURES = get_test_data_root() / "ibm" / "buildrunner" / "k8s"
 _CPU_YAML = _K8S_FIXTURES / "1step" / "cpu" / "buildtest.yaml"
 _GPU_YAML = _K8S_FIXTURES / "1step" / "gpu" / "buildtest.yaml"
-# The invalid-build fixture is environment-agnostic and lives in the standalone tree.
 _INVALID_YAML = (
-    get_test_data_dir_for(__file__).parent.parent
-    / "standalone"
-    / "buildrunner"
-    / "invalid"
-    / "buildtest.yaml"
+    get_test_data_root() / "standalone" / "buildrunner" / "invalid" / "buildtest.yaml"
 )
 
 
@@ -78,7 +71,6 @@ class TestBuildWatcherInvalidBuild(AbstractTestBuildWatcher):
     def test_build_watcher_cancel(self):
         pass
 
-    @abstractmethod
     def _get_test_config(self) -> BuildTestSpecification:
         return BuildTestSpecification.from_yaml(_INVALID_YAML)
 

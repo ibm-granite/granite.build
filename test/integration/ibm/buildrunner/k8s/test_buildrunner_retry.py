@@ -32,7 +32,7 @@ _test_data_dir = _src_file_dir.replace("test", "test-data", 1)
 _RETRY_CPU_TEST_SPEC = BuildTestSpecification(
     build_yaml=os.path.join(_test_data_dir, "retry/cpu/build.yaml"),
     expected_status=Status.SUCCESS,
-    target_expections=[
+    target_expectations=[
         ExpectedTarget(
             target_name="download_file",
             step_count=5,
@@ -49,7 +49,7 @@ _RETRY_CPU_TEST_SPEC = BuildTestSpecification(
 _RETRY_CPU_SKIPPED_TARGET_SPEC = BuildTestSpecification(
     build_yaml=os.path.join(_test_data_dir, "retry/cpu/build.yaml"),
     expected_status=Status.SUCCESS,
-    target_expections=[
+    target_expectations=[
         ExpectedTarget(
             target_name="download_file",
             step_count=5,

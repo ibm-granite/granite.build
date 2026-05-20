@@ -5,7 +5,7 @@ from lib.buildrunner.buildtest import (
     AbstractBuildTest,
     BuildTestSpecification,
     ClassTestedEnum,
-    get_test_data_dir_for,
+    get_test_data_root,
 )
 from lib.constants import extended_testing_only
 
@@ -20,13 +20,16 @@ class TestBuildRunnerJob(AbstractBuildTest):
 
         The fixture lives under the sibling buildrunner/k8s/ test-data tree —
         this test exercises the same build but via the K8s buildrunner job
-        path rather than the local buildrunner — so reach across via .parent.
+        path rather than the local buildrunner.
         """
-        k8s_fixtures = (
-            get_test_data_dir_for(__file__).parent.parent / "buildrunner" / "k8s"
-        )
         return BuildTestSpecification.from_yaml(
-            k8s_fixtures / "1step" / "cpu" / "buildtest.yaml"
+            get_test_data_root()
+            / "ibm"
+            / "buildrunner"
+            / "k8s"
+            / "1step"
+            / "cpu"
+            / "buildtest.yaml"
         )
 
     # We set HAS_GB_CLUSTER_ACCESS=False in the travis builds. HAS_VELA_ACCESS is deprecated.

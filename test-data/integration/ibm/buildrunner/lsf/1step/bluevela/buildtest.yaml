@@ -3,7 +3,7 @@
 # build_yaml defaults to ./build.yaml (sibling) when omitted.
 targets:
   - download_file
-target_expections:
+target_expectations:
   # TODO: is this true for BlueVela?
   # CPU env has 5 steps (not 4 like GPU) since it does not mount the AFM and does an lhpull step instead.
   - target_name: download_file

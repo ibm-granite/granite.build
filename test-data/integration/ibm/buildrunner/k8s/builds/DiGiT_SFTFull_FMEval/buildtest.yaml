@@ -1,4 +1,4 @@
-target_expections:
+target_expectations:
   - target_name: syntheticdatageneration
     step_count: 3
     input_artifact_count: 1

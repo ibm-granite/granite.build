@@ -3,7 +3,7 @@
 # build_yaml defaults to ./build.yaml (sibling) when omitted.
 targets:
   - download_file
-target_expections:
+target_expectations:
   # CPU env has 5 steps (not 4 like GPU): no AFM mount, lhpull step instead.
   - target_name: download_file
     step_count: 5

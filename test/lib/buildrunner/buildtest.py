@@ -114,7 +114,7 @@ class BuildTestSpecification(BaseModel):
     space_name: str = GBTEST_SPACE_NAME
     targets: Optional[list[str]] = None  # list of targets to run or None for all.
     """Optional list of targets within the build.yaml to be executed."""
-    target_expections: list[ExpectedTarget]
+    target_expectations: list[ExpectedTarget]
     """List of expected results for each target execute in the build.yaml."""
     timeout_minutes: int = 30
     """Number of minutes to wait for the build completion"""
@@ -257,6 +257,28 @@ def get_test_data_dir_for(test_module_file: str) -> Path:
     """
     d = Path(test_module_file).resolve().parent
     return Path(str(d).replace("/test/", "/test-data/", 1))
+
+
+def get_test_data_root() -> Path:
+    """Return the absolute path of the integration test-data root.
+
+    Use this for cross-tree fixture references (e.g. a buildwatcher test that
+    consumes a buildrunner fixture) so callers don't have to count
+    ``.parent.parent`` levels — those break the moment a test file moves up or
+    down a directory.  Top-down reads like::
+
+        get_test_data_root() / "ibm" / "buildrunner" / "k8s"
+
+    are stable against test-tree reorganization.
+
+    Computed from this module's own filesystem location
+    (``<repo>/test/lib/buildrunner/buildtest.py``) so the result is independent
+    of the caller's location.
+
+    Returns:
+        Absolute Path of ``<repo>/test-data/integration``.
+    """
+    return Path(__file__).resolve().parents[3] / "test-data" / "integration"
 
 
 class ClassTestedEnum(Enum):
@@ -1009,7 +1031,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             target_dict[target.name] = target
 
         skip_set = set(test_spec.skip_target_names)
-        expected_targets = test_spec.target_expections
+        expected_targets = test_spec.target_expectations
         for index in range(0, len(expected_targets)):
             expected_target = expected_targets[index]
             target = target_dict.get(expected_target.target_name)

@@ -4,7 +4,7 @@ expected_status: invalid
 # Empty targets list is intentional — the build is expected to fail validation
 # before any target runs.
 targets: []
-target_expections: []
+target_expectations: []
 # Use the local sibling space dir so the BuildRunner resolves space:// URIs
 # without cloning from GitHub.  Relative path resolves against this YAML's
 # directory and is returned as an absolute file:// URI by from_yaml.
