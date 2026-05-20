@@ -20,6 +20,7 @@ from typing import List, Self, Tuple
 
 import pytest
 import yaml
+from lib.buildrunner.buildtest import get_test_data_dir_for
 
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.types.buildevent import (
@@ -35,19 +36,7 @@ pytestmark = pytest.mark.ibm
 
 @pytest.fixture
 def test_data_dir() -> Path:
-    src_file_dir = Path(__file__).resolve().parent
-    assert src_file_dir.is_dir()
-    # print("src_file_dir.parts", src_file_dir.parts)
-    path_paths: List[str] = []
-    test_done = False
-    # start from the end and replace
-    for x in src_file_dir.parts[::-1]:
-        if not test_done and x == "test":
-            test_done = True
-            path_paths.append("test-data")
-            continue
-        path_paths.append(x)
-    test_data_dir = Path(*path_paths[::-1])
+    test_data_dir = get_test_data_dir_for(__file__)
     assert test_data_dir.is_dir()
     return test_data_dir
 

@@ -1,4 +1,3 @@
-import os
 from time import sleep, time
 from typing import Optional, Self
 
@@ -8,6 +7,7 @@ from lib.buildrunner.buildtest import (
     BuildTestSpecification,
     ClassTestedEnum,
     ExpectedTarget,
+    get_test_data_dir_for,
 )
 from lib.buildrunner.utils import ExceptionRaisingThread
 from lib.constants import (
@@ -25,12 +25,11 @@ from gbserver.utils.logger import get_logger
 pytestmark = pytest.mark.ibm
 
 
-_src_file_dir = os.path.abspath(os.path.dirname(__file__))
-_test_data_dir = _src_file_dir.replace("test", "test-data", 1)
+_RETRY_CPU_BUILD_YAML = get_test_data_dir_for(__file__) / "retry" / "cpu" / "build.yaml"
 
 
 _RETRY_CPU_TEST_SPEC = BuildTestSpecification(
-    build_yaml=os.path.join(_test_data_dir, "retry/cpu/build.yaml"),
+    build_yaml=str(_RETRY_CPU_BUILD_YAML),
     expected_status=Status.SUCCESS,
     target_expectations=[
         ExpectedTarget(
@@ -47,7 +46,7 @@ _RETRY_CPU_TEST_SPEC = BuildTestSpecification(
 # Same build config but download_file is expected to be skipped on the retry because
 # it already succeeded in the original run that is in the same retry chain.
 _RETRY_CPU_SKIPPED_TARGET_SPEC = BuildTestSpecification(
-    build_yaml=os.path.join(_test_data_dir, "retry/cpu/build.yaml"),
+    build_yaml=str(_RETRY_CPU_BUILD_YAML),
     expected_status=Status.SUCCESS,
     target_expectations=[
         ExpectedTarget(

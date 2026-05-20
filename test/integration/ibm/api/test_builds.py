@@ -10,6 +10,7 @@ pytestmark = pytest.mark.ibm
 
 from fastapi import Response, status
 from lib.api.utils import AbstractAPITest
+from lib.buildrunner.buildtest import get_test_data_dir_for
 from lib.constants import (
     GBTEST_ADMIN_GITHUB_TOKEN,
     GBTEST_NON_ADMIN_GITHUB_TOKEN,
@@ -615,17 +616,7 @@ class TestBuildAPI(AbstractAPITest):
 
     def _get_validate_test_data_dir(self) -> Path:
         """Get the directory containing validation test data."""
-        repo_root_dir = Path(__file__).resolve().parent.parent.parent.parent.parent
-        # Navigate from test/integration/ibm/api to test-data/integration/ibm/api/builds/validate
-        test_data_dir = (
-            repo_root_dir
-            / "test-data"
-            / "integration"
-            / "ibm"
-            / "api"
-            / "builds"
-            / "validate"
-        )
+        test_data_dir = get_test_data_dir_for(__file__) / "builds" / "validate"
         assert test_data_dir.is_dir(), f"Test data directory not found: {test_data_dir}"
         return test_data_dir
 
