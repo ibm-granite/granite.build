@@ -285,6 +285,107 @@ def list_subscriptions(build_id: str, request: Request) -> ListWebhooksResponse:
     )
 
 
+@webhooks_api.post(
+    "/spaces/{space_name}/subscriptions",
+    status_code=status.HTTP_201_CREATED,
+    response_model=WebhookResponse,
+)
+def create_space_subscription(
+    space_name: str, body: CreateWebhookRequest, request: Request
+) -> WebhookResponse:
+    """Create a space-wide webhook subscription.
+
+    Space-wide subscriptions receive events for ALL builds in the space,
+    useful for monitoring dashboards or aggregate notification systems.
+
+    Args:
+        space_name: The space to subscribe to.
+        body: The subscription creation request body.
+        request: The incoming FastAPI request (for auth headers).
+
+    Returns:
+        WebhookResponse with the created subscription details.
+
+    Raises:
+        HTTPException: 401 if unauthenticated, 400 if frequency too low,
+            404 if space not found.
+    """
+    username = _get_username(request)
+
+    # Validate frequency
+    if body.frequency < WEBHOOK_MIN_FREQUENCY:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Frequency must be at minimum {WEBHOOK_MIN_FREQUENCY} seconds. "
+                f"Got {body.frequency}."
+            ),
+        )
+
+    # Verify space exists
+    admin_storage = get_admin_storage()
+    spaces = admin_storage.space_storage.get_by_where({"name": space_name})
+    if not spaces:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Space {space_name} not found",
+        )
+
+    # Create and persist subscription (build_id=None = space-wide)
+    subscription = StoredWebhookSubscription(
+        space_name=space_name,
+        build_id=None,
+        webhook_url=body.webhook_url,
+        secret=body.secret,
+        event_types=body.event_types,
+        excluded_types=body.excluded_types,
+        frequency=body.frequency,
+        log_pattern=body.log_pattern,
+        created_by=username,
+        metadata=body.metadata,
+    )
+
+    storage = get_webhook_storage()
+    storage.add(subscription)
+
+    logger.info(
+        "Created space-wide webhook subscription %s for space %s by user %s",
+        subscription.uuid,
+        space_name,
+        username,
+    )
+
+    return _to_response(subscription)
+
+
+@webhooks_api.get(
+    "/spaces/{space_name}/subscriptions",
+    status_code=status.HTTP_200_OK,
+    response_model=ListWebhooksResponse,
+)
+def list_space_subscriptions(space_name: str, request: Request) -> ListWebhooksResponse:
+    """List active space-wide webhook subscriptions.
+
+    Args:
+        space_name: The space to list subscriptions for.
+        request: The incoming FastAPI request (for auth headers).
+
+    Returns:
+        ListWebhooksResponse containing active space-wide subscriptions.
+
+    Raises:
+        HTTPException: 401 if unauthenticated.
+    """
+    _get_username(request)
+
+    storage = get_webhook_storage()
+    subscriptions = storage.get_active_for_space(space_name)
+
+    return ListWebhooksResponse(
+        subscriptions=[_to_response(sub) for sub in subscriptions]
+    )
+
+
 @webhooks_api.delete(
     "/{webhook_id}",
     status_code=status.HTTP_204_NO_CONTENT,

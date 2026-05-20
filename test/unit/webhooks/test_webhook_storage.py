@@ -139,6 +139,45 @@ class TestWebhookStorage:
         retrieved_other = self.storage.get_by_uuid(sub_other.uuid)
         assert retrieved_other.active is True
 
+    def test_get_active_for_space(self):
+        """Test filtering active space-wide subscriptions.
+
+        Setup: 1 space-wide sub (build_id=None) in target-space, 1 per-build
+        sub in target-space, 1 space-wide sub in another space.
+        Expected: Only the active space-wide sub in target-space is returned.
+        """
+        target_space = f"space-target-{uuid.uuid4().hex[:8]}"
+        other_space = f"space-other-{uuid.uuid4().hex[:8]}"
+
+        # Space-wide subscription (build_id=None)
+        space_sub = self._make_subscription(
+            build_id=None, space_name=target_space, active=True
+        )
+        # Per-build subscription in same space (should NOT be returned)
+        build_sub = self._make_subscription(
+            build_id="build-123", space_name=target_space, active=True
+        )
+        # Space-wide subscription in different space (should NOT be returned)
+        other_sub = self._make_subscription(
+            build_id=None, space_name=other_space, active=True
+        )
+        # Inactive space-wide subscription (should NOT be returned)
+        inactive_sub = self._make_subscription(
+            build_id=None, space_name=target_space, active=False
+        )
+
+        self.storage.add(space_sub)
+        self.storage.add(build_sub)
+        self.storage.add(other_sub)
+        self.storage.add(inactive_sub)
+
+        results = self.storage.get_active_for_space(target_space)
+        assert len(results) == 1
+        assert results[0].uuid == space_sub.uuid
+        assert results[0].space_name == target_space
+        # build_id may be None or "" depending on storage layer serialization
+        assert results[0].build_id is None or results[0].build_id == ""
+
     def test_get_by_space(self):
         """Test filtering subscriptions by space name.
 
