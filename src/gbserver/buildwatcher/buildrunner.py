@@ -595,7 +595,9 @@ class BuildRunner(AbstractBuildRunner):
                     "build %s got a new event: %s : %s", build_id, event.type, event
                 )
                 build_finished = self.__process_event(event=event)
+                await self.__flush_webhooks()
                 if build_finished:
+                    await self.__flush_webhooks_final()
                     logger.debug("build %s finished, exiting monitoring loop", build_id)
                     break
             # This is only available in Python 3.13
@@ -605,6 +607,7 @@ class BuildRunner(AbstractBuildRunner):
             #     break
             except TimeoutError:
                 logger.debug("event_q.get() timeout!")
+                await self.__flush_webhooks()
                 continue
             except Exception as e:
                 # TODO: do we need to exit the loop and mark the build as failed and cancel the build.
@@ -781,9 +784,9 @@ class BuildRunner(AbstractBuildRunner):
             if not hasattr(self, "_webhook_dispatcher"):
                 self._webhook_dispatcher = None
                 from gbserver.webhooks.dispatcher import WebhookDispatcher
-                from gbserver.webhooks.sql_storage import SQLWebhookStorage
+                from gbserver.webhooks.sql_storage import create_webhook_storage
 
-                storage = SQLWebhookStorage()
+                storage = create_webhook_storage()
                 # Get per-build subscriptions
                 subs = storage.get_active_for_build(self.stored_build.uuid)
                 # Also get space-wide subscriptions
@@ -810,6 +813,24 @@ class BuildRunner(AbstractBuildRunner):
                 self._webhook_dispatcher.accept_event(event)
         except Exception as e:
             logger.warning("[BuildRunner] Webhook dispatch error (non-fatal): %s", e)
+
+    async def __flush_webhooks(self: Self) -> None:
+        """Flush webhook batches that are ready (time interval elapsed)."""
+        if not hasattr(self, "_webhook_dispatcher") or self._webhook_dispatcher is None:
+            return
+        try:
+            await self._webhook_dispatcher.flush_all_ready()
+        except Exception as e:
+            logger.warning("[BuildRunner] Webhook flush error (non-fatal): %s", e)
+
+    async def __flush_webhooks_final(self: Self) -> None:
+        """Force-flush all webhook batches on build completion."""
+        if not hasattr(self, "_webhook_dispatcher") or self._webhook_dispatcher is None:
+            return
+        try:
+            await self._webhook_dispatcher.flush_final()
+        except Exception as e:
+            logger.warning("[BuildRunner] Webhook final flush error (non-fatal): %s", e)
 
     def __process_terminate_event(self: Self, event: BuildEvent) -> None:
         build_id = event.run_metadata.build_id

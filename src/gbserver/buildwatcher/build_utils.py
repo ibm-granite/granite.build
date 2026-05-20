@@ -122,9 +122,9 @@ def finalize_build_status(
         from gbserver.types.constants import GBSERVER_WEBHOOKS_ENABLED
 
         if GBSERVER_WEBHOOKS_ENABLED:
-            from gbserver.webhooks.sql_storage import SQLWebhookStorage
+            from gbserver.webhooks.sql_storage import create_webhook_storage
 
-            webhook_storage = SQLWebhookStorage()
+            webhook_storage = create_webhook_storage()
             count = webhook_storage.deactivate_for_build(build_id)
             if count > 0:
                 logger.info(

@@ -42,17 +42,16 @@ def set_webhook_storage(storage: IWebhookStorage) -> None:
 def get_webhook_storage() -> IWebhookStorage:
     """Get the module-level webhook storage instance.
 
+    Lazily initializes using the configured storage backend if not set.
+
     Returns:
         The configured IWebhookStorage implementation.
-
-    Raises:
-        HTTPException: 500 if webhook storage has not been initialized.
     """
+    global _webhook_storage  # pylint: disable=global-statement
     if _webhook_storage is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Webhook storage not initialized",
-        )
+        from gbserver.webhooks.sql_storage import create_webhook_storage
+
+        _webhook_storage = create_webhook_storage()
     return _webhook_storage
 
 

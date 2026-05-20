@@ -303,9 +303,9 @@ def _create_webhook_subscription(
             WEBHOOK_MIN_FREQUENCY,
             StoredWebhookSubscription,
         )
-        from gbserver.webhooks.sql_storage import SQLWebhookStorage
+        from gbserver.webhooks.sql_storage import create_webhook_storage
 
-        webhook_storage = SQLWebhookStorage()
+        webhook_storage = create_webhook_storage()
         subscription = StoredWebhookSubscription(
             space_name=stored_build.space_name,
             build_id=stored_build.uuid,
