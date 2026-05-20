@@ -212,10 +212,7 @@ def build_init(
         if space:
             template_repo = resolved_space.get("git_repo_uri")
         elif template_repo != None:
-            if not any(
-                d in template_repo
-                for d in {DEFAULT_GH_DOMAIN, "github.com"}
-            ):
+            if not any(d in template_repo for d in {DEFAULT_GH_DOMAIN, "github.com"}):
                 if callback is not None:
                     callback(
                         callback_event="error",
