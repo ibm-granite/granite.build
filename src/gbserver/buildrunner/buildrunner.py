@@ -796,7 +796,13 @@ class BuildRunner(AbstractBuildRunner):
                 from gbserver.webhooks.sql_storage import SQLWebhookStorage
 
                 storage = SQLWebhookStorage()
+                # Get per-build subscriptions
                 subs = storage.get_active_for_build(self.stored_build.uuid)
+                # Also get space-wide subscriptions
+                space_subs = storage.get_active_for_space(
+                    self.stored_build.space_name
+                )
+                subs = subs + space_subs
                 if subs:
                     self._webhook_dispatcher = WebhookDispatcher(
                         webhook_storage=storage,
