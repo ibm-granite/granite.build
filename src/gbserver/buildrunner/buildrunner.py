@@ -792,8 +792,8 @@ class BuildRunner(AbstractBuildRunner):
         try:
             if not hasattr(self, "_webhook_dispatcher"):
                 self._webhook_dispatcher = None
-                from gbserver.webhooks.sql_storage import SQLWebhookStorage
                 from gbserver.webhooks.dispatcher import WebhookDispatcher
+                from gbserver.webhooks.sql_storage import SQLWebhookStorage
 
                 storage = SQLWebhookStorage()
                 subs = storage.get_active_for_build(self.stored_build.uuid)

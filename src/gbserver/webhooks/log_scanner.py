@@ -40,10 +40,12 @@ def scan_log_lines(
     matches = []
     for i, line in enumerate(lines):
         if compiled.search(line):
-            matches.append({
-                "line": line,
-                "line_number": start_line_number + i,
-                "matched_pattern": pattern,
-            })
+            matches.append(
+                {
+                    "line": line,
+                    "line_number": start_line_number + i,
+                    "matched_pattern": pattern,
+                }
+            )
 
     return matches

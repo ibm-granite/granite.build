@@ -6,8 +6,6 @@ query operations for StoredWebhookSubscription records.
 
 import uuid
 
-import pytest
-
 from gbserver.webhooks.models import StoredWebhookSubscription
 
 

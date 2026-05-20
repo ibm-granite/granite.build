@@ -74,13 +74,15 @@ class IWebhookStorage(IItemStorage[StoredWebhookSubscription]):
         raise NotImplementedError
 
 
-class BaseWebhookStorage(
+class BaseWebhookStorage(  # pylint: disable=abstract-method
     BaseItemStorage[StoredWebhookSubscription], IWebhookStorage
 ):
     """Base storage implementation for webhook subscriptions.
 
     Provides common functionality for storing and querying webhook
     subscription data across different storage backends (SQL, SQLite, etc.).
+    Low-level storage methods (_add_item_dicts, _count, etc.) are left
+    abstract for concrete backends (SQL, SQLite) to implement.
     """
 
     def __init__(self, **kwargs) -> None:
@@ -157,9 +159,7 @@ class BaseWebhookStorage(
             List of subscriptions (active and inactive) for the space.
         """
         result: List[StoredWebhookSubscription] = []
-        for page in self.get_paged(
-            {"space_name": space_name}, page_size=_PAGE_SIZE
-        ):
+        for page in self.get_paged({"space_name": space_name}, page_size=_PAGE_SIZE):
             result.extend(page)
         return result
 
