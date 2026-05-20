@@ -50,9 +50,7 @@ class MockLineageService(LineageService):
         self, tags: List[str], limit: int = 10, offset: int = 0
     ) -> Tuple[int, List[Dict]]:
         tag_set = set(tags)
-        matching = [
-            e for e in self._events if tag_set & self._tags_for_event(e)
-        ]
+        matching = [e for e in self._events if tag_set & self._tags_for_event(e)]
         return len(matching), matching[offset : offset + limit]
 
     def get_artifact_graph(

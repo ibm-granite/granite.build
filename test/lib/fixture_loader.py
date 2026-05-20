@@ -7,9 +7,7 @@ in the existing test-data/ directory alongside other test configuration files.
 import json
 from pathlib import Path
 
-FIXTURE_DIR = (
-    Path(__file__).parent.parent.parent / "test-data" / "lib" / "fixtures"
-)
+FIXTURE_DIR = Path(__file__).parent.parent.parent / "test-data" / "lib" / "fixtures"
 
 
 def load_fixture(service: str, name: str) -> dict:
