@@ -3,7 +3,7 @@ SHELL=/bin/bash
 PYTHON=python3
 PIP=$(PYTHON) -m pip
 DOCKER ?= podman
-GBSERVER_GH_DOMAIN ?= github.ibm.com
+GB_GH_DOMAIN ?= github.ibm.com
 VENVDIR=.venv
 VENV_INSTALL_TARGET='.[dev]'
 ARTIFACTORY_DESTINATION=https://na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-engineering-team-pypi-local
@@ -505,7 +505,7 @@ test-1step: .check-test-env $(VENVDIR)
 
 gbcli:
 	source $(VENVDIR)/bin/activate; 	\
-	${PIP} install "gbcli @ git+ssh://git@${GBSERVER_GH_DOMAIN}/granite-dot-build/gbcli.git"
+	${PIP} install "gbcli @ git+ssh://git@${GB_GH_DOMAIN}/granite-dot-build/gbcli.git"
 
 .PHONY: image
 image: .check-build-env check-git-status-clean
