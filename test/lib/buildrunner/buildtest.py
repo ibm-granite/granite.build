@@ -25,7 +25,7 @@ from datetime import timedelta
 from enum import Enum
 from pathlib import Path
 from time import sleep, time
-from typing import List, Optional, Self, Union
+from typing import ClassVar, List, Optional, Self, Union
 
 import pytest
 import yaml
@@ -133,9 +133,16 @@ class BuildTestSpecification(BaseModel):
     """Which test methods on AbstractYamlBuildRunnerTest run for this spec.
     Each value <key> maps to a method test_<key> on the base class.  Default
     runs both the basic build and the cancellation variant — fixtures that
-    want to skip the cancellation path can override with ['runner'].  Future
-    test types: add a base-class method and the corresponding key here — no
-    schema change required."""
+    want to skip the cancellation path can override with ['runner'].  Adding
+    a new key requires both a new ``test_<key>`` method on
+    AbstractYamlBuildRunnerTest AND adding the key to ``KNOWN_TEST_KEYS``
+    below so YAML typos are caught at load time."""
+
+    KNOWN_TEST_KEYS: ClassVar[set[str]] = {"runner", "runner_cancellation"}
+    """Valid values for the ``tests`` field.  Kept in sync with the
+    ``test_<key>`` methods on AbstractYamlBuildRunnerTest so a YAML typo like
+    ``tests: [runer]`` fails at load time rather than silently skipping every
+    test method."""
 
     @field_validator("expected_status", mode="before")
     @classmethod
@@ -143,6 +150,21 @@ class BuildTestSpecification(BaseModel):
         """Allow YAML to write SUCCESS or success — Status (StrEnum) values are lowercase."""
         if isinstance(v, str):
             return v.lower()
+        return v
+
+    @field_validator("tests")
+    @classmethod
+    def _validate_tests(cls, v: list[str]) -> list[str]:
+        """Reject unknown test keys at YAML-load time.
+
+        Without this, ``tests: [runer]`` would silently skip every test method
+        with no error.  Catching it here means the failure surfaces during
+        collection with a clear message naming the offending key.
+        """
+        unknown = sorted(set(v) - cls.KNOWN_TEST_KEYS)
+        assert (
+            not unknown
+        ), f"unknown test keys {unknown}; valid keys: {sorted(cls.KNOWN_TEST_KEYS)}"
         return v
 
     @classmethod
@@ -1286,7 +1308,7 @@ class AbstractYamlBuildRunnerTest(AbstractBuildRunnerTest):
     Example:
         @extended_testing_only
         @pytest.mark.xdist_group(name="buildtest_cpu")
-        class TestBuildRunner1StepCPU_Yaml(AbstractYamlBuildRunnerTest):
+        class TestBuildRunner1StepCPU(AbstractYamlBuildRunnerTest):
             def _get_yaml_spec_dir(self) -> Path:
                 return get_test_data_dir_for(__file__) / "1step/cpu"
     """
@@ -1307,6 +1329,21 @@ class AbstractYamlBuildRunnerTest(AbstractBuildRunnerTest):
             self._get_yaml_spec_dir() / "buildtest.yaml"
         )
 
+    def _run_yaml_spec(self: Self, test_key: str, test_cancel: bool) -> None:
+        """Shared body for the YAML-driven test_<key> methods.
+
+        Loads the spec, skips if ``test_key`` is not in the spec's ``tests``
+        list, and otherwise dispatches to ``_run_build_test``.
+        """
+        spec = self._get_test_specification()
+        if test_key not in spec.tests:
+            pytest.skip(f"YAML did not list '{test_key}' in tests: {spec.tests}")
+        self._run_build_test(
+            tested_class=ClassTestedEnum.TEST_BUILDRUNNER,
+            test_spec=spec,
+            test_cancel=test_cancel,
+        )
+
     def test_runner(self):
         """Run the basic build (test_cancel=False).
 
@@ -1314,14 +1351,7 @@ class AbstractYamlBuildRunnerTest(AbstractBuildRunnerTest):
         Overrides the inherited AbstractBuildRunnerTest.test_runner so the
         spec's tests list controls both methods symmetrically.
         """
-        spec = self._get_test_specification()
-        if "runner" not in spec.tests:
-            pytest.skip(f"YAML did not list 'runner' in tests: {spec.tests}")
-        self._run_build_test(
-            tested_class=ClassTestedEnum.TEST_BUILDRUNNER,
-            test_spec=spec,
-            test_cancel=False,
-        )
+        self._run_yaml_spec("runner", test_cancel=False)
 
     def test_runner_cancellation(self):
         """Run with the cancellation path (test_cancel=True).
@@ -1329,13 +1359,4 @@ class AbstractYamlBuildRunnerTest(AbstractBuildRunnerTest):
         Skipped if the YAML's ``tests:`` list does not include
         ``'runner_cancellation'``.
         """
-        spec = self._get_test_specification()
-        if "runner_cancellation" not in spec.tests:
-            pytest.skip(
-                f"YAML did not list 'runner_cancellation' in tests: {spec.tests}"
-            )
-        self._run_build_test(
-            tested_class=ClassTestedEnum.TEST_BUILDRUNNER,
-            test_spec=spec,
-            test_cancel=True,
-        )
+        self._run_yaml_spec("runner_cancellation", test_cancel=True)
