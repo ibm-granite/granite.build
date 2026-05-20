@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""REST endpoints for inspecting BlueVela/LSF remote-file outputs of a build.
+"""REST endpoints for inspecting an LSF build's remote-file outputs.
 
 Three endpoints, registered on the shared builds_api:
   - GET /builds/{id}/files          — single-level listing
@@ -41,27 +41,26 @@ from fastapi import HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from gbserver.api.bluevela_paths import (
+from gbserver.api.build_files_paths import (
     authorize_build_access,
     lookup_build,
     resolve_and_check_real_path,
     validate_subpath,
 )
-from gbserver.api.bluevela_tunnel import open_bluevela_tunnel
 from gbserver.api.builds import builds_api
+from gbserver.api.lsf_tunnel import open_lsf_tunnel
 from gbserver.environment.lsf_paths import build_remote_root_dir
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.constants import (
-    BLUEVELA_CONTENT_MAX_BYTES,
-    BLUEVELA_DOWNLOAD_MAX_BYTES,
+    BUILD_FILES_CONTENT_MAX_BYTES,
+    BUILD_FILES_DOWNLOAD_MAX_BYTES,
+    BUILD_FILES_LIST_MAX_ENTRIES,
 )
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-_FIND_MAX_ENTRIES = 10000
 
 
 # --------------------------------------------------------------------- models
@@ -124,7 +123,7 @@ async def list_files(
     authorize_build_access(request, build)
     environment_uri = _pick_environment_uri(build)
 
-    async with open_bluevela_tunnel(build.space_name, environment_uri) as (
+    async with open_lsf_tunnel(build.space_name, environment_uri) as (
         tunnel,
         cfg,
     ):
@@ -133,11 +132,11 @@ async def list_files(
         real = await resolve_and_check_real_path(tunnel, build_root, candidate)
 
         logger.info(
-            "[bluevela] list build=%s recursive=%s",
+            "[build-files] list build=%s recursive=%s",
             build_id,
             recursive,
         )
-        logger.debug("[bluevela] list real=%s build_root=%s", real, build_root)
+        logger.debug("[build-files] list real=%s build_root=%s", real, build_root)
 
         quoted = shlex.quote(str(real))
         if recursive:
@@ -146,7 +145,7 @@ async def list_files(
             cmd = (
                 f"set -o pipefail; "
                 f"find {quoted} -mindepth 1 "
-                f"| head -n {_FIND_MAX_ENTRIES}"
+                f"| head -n {BUILD_FILES_LIST_MAX_ENTRIES}"
             )
         else:
             cmd = f"ls -1A -- {quoted}"
@@ -191,7 +190,7 @@ async def get_file(
     authorize_build_access(request, build)
     environment_uri = _pick_environment_uri(build)
 
-    async with open_bluevela_tunnel(build.space_name, environment_uri) as (
+    async with open_lsf_tunnel(build.space_name, environment_uri) as (
         tunnel,
         cfg,
     ):
@@ -205,20 +204,22 @@ async def get_file(
                 status.HTTP_400_BAD_REQUEST,
                 "file endpoint requires a file, not a directory",
             )
-        if size > BLUEVELA_CONTENT_MAX_BYTES:
+        if size > BUILD_FILES_CONTENT_MAX_BYTES:
             raise HTTPException(
                 status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 {
                     "message": "file exceeds content cap",
                     "size": size,
-                    "cap": BLUEVELA_CONTENT_MAX_BYTES,
+                    "cap": BUILD_FILES_CONTENT_MAX_BYTES,
                 },
             )
 
         sftp = await tunnel.start_sftp()
         try:
-            async with sftp.open(str(real), "rb") as fh:
-                raw = await fh.read()
+            # encoding=None makes read() return bytes; the asyncssh stub uses
+            # AnyStr so mypy can't narrow the return type — cast explicitly.
+            async with sftp.open(str(real), "rb", encoding=None) as fh:
+                raw = cast(bytes, await fh.read())
         finally:
             sftp.exit()
 
@@ -236,7 +237,7 @@ async def _stream_sftp_file(tunnel, remote_path: str) -> AsyncIterator[bytes]:
     chunk_size = 256 * 1024
     sftp = await tunnel.start_sftp()
     try:
-        async with sftp.open(remote_path, "rb") as fh:
+        async with sftp.open(remote_path, "rb", encoding=None) as fh:
             while True:
                 chunk = await fh.read(chunk_size)
                 if not chunk:
@@ -266,7 +267,7 @@ async def download_file(
     """Stream a remote file as application/octet-stream.
 
     ``path`` is relative to the build root. Rejects files larger than
-    BLUEVELA_DOWNLOAD_MAX_BYTES with 413 before any bytes are streamed.
+    BUILD_FILES_DOWNLOAD_MAX_BYTES with 413 before any bytes are streamed.
     """
     build = lookup_build(build_id)
     authorize_build_access(request, build)
@@ -275,7 +276,7 @@ async def download_file(
     # Tunnel lifecycle must outlive the streaming response body, so we open
     # it manually here and close it inside the body's finally on success or
     # in the except below if anything fails before we hand off to streaming.
-    ctx = open_bluevela_tunnel(build.space_name, environment_uri)
+    ctx = open_lsf_tunnel(build.space_name, environment_uri)
     tunnel, cfg = await ctx.__aenter__()
     try:
         build_root = build_remote_root_dir(cfg.workspace_remote_dir, build.uuid)
@@ -288,18 +289,18 @@ async def download_file(
                 status.HTTP_400_BAD_REQUEST,
                 "download endpoint requires a file, not a directory",
             )
-        if size > BLUEVELA_DOWNLOAD_MAX_BYTES:
+        if size > BUILD_FILES_DOWNLOAD_MAX_BYTES:
             raise HTTPException(
                 status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 {
                     "message": "file exceeds download cap",
                     "size": size,
-                    "cap": BLUEVELA_DOWNLOAD_MAX_BYTES,
+                    "cap": BUILD_FILES_DOWNLOAD_MAX_BYTES,
                 },
             )
 
         logger.info(
-            "[bluevela] download build=%s size=%d",
+            "[build-files] download build=%s size=%d",
             build_id,
             size,
         )

@@ -570,7 +570,7 @@ class Environment(ABC):
         """Sync the environment asset and parse its environment.yaml.
 
         Returns the parsed EnvironmentConfig plus the synced Asset.
-        Shared by get_environment (buildwatcher) and the bluevela REST API,
+        Shared by get_environment (buildwatcher) and the build-files REST API,
         which only needs the parsed config and not a constructed Environment.
         """
         if not hasattr(cls._thread_local, "environmentcache_dir"):

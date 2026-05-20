@@ -14,10 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the BlueVela file API.
+"""Unit tests for the build-files REST API.
 
 These tests stub out:
-  - ``open_bluevela_tunnel`` (so no SSH / IBM Cloud is contacted)
+  - ``open_lsf_tunnel`` (so no SSH / IBM Cloud is contacted)
   - ``lookup_build`` (so no DB is required)
   - ``authorize_build_access`` (so no auth middleware is required)
   - ``_pick_environment_uri`` (so no target lookup is required)
@@ -34,9 +34,9 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from gbserver.api import bluevela as bluevela_mod
-from gbserver.api.bluevela_tunnel import BlueVelaConfig
+from gbserver.api import build_files as build_files_mod
 from gbserver.api.builds import builds_api
+from gbserver.api.lsf_tunnel import LsfTunnelConfig
 from gbserver.storage.stored_build import StoredBuild
 
 # --------------------------------------------------------------------- fixtures
@@ -67,15 +67,11 @@ def _fake_build() -> StoredBuild:
 
 
 def _fake_tunnel_cm(tunnel_mock):
-    """Return an async context manager yielding (tunnel, BlueVelaConfig)."""
+    """Return an async context manager yielding (tunnel, LsfTunnelConfig)."""
 
     @asynccontextmanager
     async def _cm(space_name: str, environment_uri: str):
-        yield tunnel_mock, BlueVelaConfig(
-            login_node="login-1",
-            username="ci-user",
-            workspace_remote_dir="/ws",
-        )
+        yield tunnel_mock, LsfTunnelConfig(workspace_remote_dir="/ws")
 
     return _cm
 
@@ -91,20 +87,20 @@ def _patches(
 
     if lookup_raises is not None:
         lookup_build = patch.object(
-            bluevela_mod, "lookup_build", side_effect=lookup_raises
+            build_files_mod, "lookup_build", side_effect=lookup_raises
         )
     else:
-        lookup_build = patch.object(bluevela_mod, "lookup_build", return_value=build)
+        lookup_build = patch.object(build_files_mod, "lookup_build", return_value=build)
     tunnel = patch.object(
-        bluevela_mod, "open_bluevela_tunnel", _fake_tunnel_cm(tunnel_mock)
+        build_files_mod, "open_lsf_tunnel", _fake_tunnel_cm(tunnel_mock)
     )
     auth = patch.object(
-        bluevela_mod,
+        build_files_mod,
         "authorize_build_access",
         side_effect=(authorize_raises if authorize_raises else (lambda *a, **kw: None)),
     )
     pick_env = patch.object(
-        bluevela_mod, "_pick_environment_uri", return_value="env://x"
+        build_files_mod, "_pick_environment_uri", return_value="env://x"
     )
     return lookup_build, tunnel, auth, pick_env
 
@@ -528,22 +524,22 @@ class TestResolveLsfConfig:
     """Direct unit tests for the env-config -> SSH params resolver."""
 
     def test_non_lsf_environment_returns_400(self):
-        from gbserver.api import bluevela_tunnel
+        from gbserver.api import lsf_tunnel
         from gbserver.types.environmentconfig import EnvironmentConfig
 
         env_config = EnvironmentConfig(name="kube-env", type="Kubernetes", config={})
         with patch.object(
-            bluevela_tunnel.Environment,
+            lsf_tunnel.Environment,
             "load_environment_config",
             return_value=(env_config, MagicMock()),
         ):
             with pytest.raises(HTTPException) as ei:
-                bluevela_tunnel._resolve_lsf_config("space://environments/kube")
+                lsf_tunnel._resolve_lsf_config("space://environments/kube")
         assert ei.value.status_code == 400
         assert "Lsf" in str(ei.value.detail)
 
     def test_lsf_returns_fields(self):
-        from gbserver.api import bluevela_tunnel
+        from gbserver.api import lsf_tunnel
         from gbserver.types.environmentconfig import EnvironmentConfig
 
         env_config = EnvironmentConfig(
@@ -559,11 +555,11 @@ class TestResolveLsfConfig:
             },
         )
         with patch.object(
-            bluevela_tunnel.Environment,
+            lsf_tunnel.Environment,
             "load_environment_config",
             return_value=(env_config, MagicMock()),
         ):
-            login_nodes, username, key, ws = bluevela_tunnel._resolve_lsf_config(
+            login_nodes, username, key, ws = lsf_tunnel._resolve_lsf_config(
                 "space://environments/bluevela"
             )
         assert login_nodes == ["node-a", "node-b"]
@@ -572,7 +568,7 @@ class TestResolveLsfConfig:
         assert ws == "/ws"
 
     def test_missing_field_returns_503(self):
-        from gbserver.api import bluevela_tunnel
+        from gbserver.api import lsf_tunnel
         from gbserver.types.environmentconfig import EnvironmentConfig
 
         env_config = EnvironmentConfig(
@@ -587,12 +583,12 @@ class TestResolveLsfConfig:
             },
         )
         with patch.object(
-            bluevela_tunnel.Environment,
+            lsf_tunnel.Environment,
             "load_environment_config",
             return_value=(env_config, MagicMock()),
         ):
             with pytest.raises(HTTPException) as ei:
-                bluevela_tunnel._resolve_lsf_config("space://environments/bluevela")
+                lsf_tunnel._resolve_lsf_config("space://environments/bluevela")
         assert ei.value.status_code == 503
         detail = str(ei.value.detail)
         assert "login_node_username" in detail

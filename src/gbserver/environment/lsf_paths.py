@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pure path helpers for LSF/BlueVela remote asset directories.
+"""Pure path helpers for LSF remote asset directories.
 
 Kept separate from gbserver.environment.lsf.Lsf so both the build runtime
 and the REST API can compute the same paths without instantiating the

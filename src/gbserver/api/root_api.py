@@ -17,11 +17,13 @@
 
 from fastapi import FastAPI
 
+from gbserver.api import (  # noqa: F401  registers routes on builds_api
+    build_files as _build_files,
+)
 from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
 from gbserver.api.builds import builds_api
-from gbserver.api import bluevela as _bluevela  # noqa: F401  registers routes on builds_api
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api

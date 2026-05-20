@@ -14,10 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Per-request SSH tunnel factory for the BlueVela remote-file REST API.
+"""Per-request SSH tunnel factory for the build-files REST API.
 
-Opens a short-lived `SshTunnel` scoped to a single REST request. The REST
-process does not share tunnels with the buildwatcher — each request pays a
+Opens a short-lived `SshTunnel` scoped to a single REST request, used to
+read a build's remote outputs from an LSF login node. The REST process
+does not share tunnels with the buildwatcher — each request pays a
 handshake cost (~1s typical, more under load). This is acceptable for
 interactive file inspection; if it becomes a bottleneck, a pooled tunnel
 with health checks can be introduced here without changing callers.
@@ -48,11 +49,14 @@ logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
-class BlueVelaConfig:
-    """Connection + layout config resolved for one REST request."""
+class LsfTunnelConfig:
+    """Layout config resolved for one REST request.
 
-    login_node: str
-    username: str
+    Connection params (login_node, username) are consumed inside this
+    module to open the tunnel; only the workspace path is needed by callers
+    to compute the build root.
+    """
+
     workspace_remote_dir: str
 
 
@@ -90,7 +94,7 @@ def _resolve_lsf_config(environment_uri: str) -> tuple[List[str], str, str, str]
     if (env_config.type or "").lower() != "lsf":
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            f"bluevela API only supports Lsf environments; this target uses {env_config.type!r}",
+            f"build-files API only supports Lsf environments; this target uses {env_config.type!r}",
         )
     cfg: Dict = env_config.config or {}
     authentication: Dict = cfg.get("authentication", {})
@@ -169,7 +173,7 @@ def _fetch_ssh_key_for_space(space_name: str, secret_name: str) -> str:
 
 def _write_key_file(key_material: str) -> str:
     """Write an SSH private key to a 0600 tempfile. Caller must unlink."""
-    fd, path = tempfile.mkstemp(prefix="bluevela_ssh_", suffix=".key")
+    fd, path = tempfile.mkstemp(prefix="gbserver_ssh_", suffix=".key")
     try:
         os.write(fd, key_material.encode("utf-8"))
         if not key_material.endswith("\n"):
@@ -181,11 +185,11 @@ def _write_key_file(key_material: str) -> str:
 
 
 @asynccontextmanager
-async def open_bluevela_tunnel(
+async def open_lsf_tunnel(
     space_name: str,
     environment_uri: str,
-) -> AsyncIterator[tuple[SshTunnel, BlueVelaConfig]]:
-    """Open a short-lived SSH tunnel to a BlueVela login node for one request.
+) -> AsyncIterator[tuple[SshTunnel, LsfTunnelConfig]]:
+    """Open a short-lived SSH tunnel to an LSF login node for one request.
 
     Resolves SSH connection params from the target's environment.yaml (via
     Environment.load_environment_config) so the API stays in sync with the
@@ -204,7 +208,7 @@ async def open_bluevela_tunnel(
     try:
         key_file_path = _write_key_file(key_material)
         logger.info(
-            "[bluevela] opening tunnel: space=%s node=%s key_file=%s",
+            "[build-files] opening tunnel: space=%s node=%s key_file=%s",
             space_name,
             login_node,
             key_file_path,
@@ -216,24 +220,20 @@ async def open_bluevela_tunnel(
             host_key_verification=ENABLE_SSH_HOST_KEY_VERIFICATION,
         )
         await tunnel.open()
-        yield tunnel, BlueVelaConfig(
-            login_node=login_node,
-            username=username,
-            workspace_remote_dir=workspace_remote_dir,
-        )
+        yield tunnel, LsfTunnelConfig(workspace_remote_dir=workspace_remote_dir)
     finally:
         if tunnel is not None:
             try:
                 await tunnel.close()
             except Exception as e:
-                logger.warning("[bluevela] tunnel close failed: %s", e)
+                logger.warning("[build-files] tunnel close failed: %s", e)
         if key_file_path is not None:
             try:
                 os.unlink(key_file_path)
             except OSError as e:
                 logger.warning(
-                    "[bluevela] failed to remove key file %s: %s", key_file_path, e
+                    "[build-files] failed to remove key file %s: %s", key_file_path, e
                 )
 
 
-__all__ = ["BlueVelaConfig", "open_bluevela_tunnel"]
+__all__ = ["LsfTunnelConfig", "open_lsf_tunnel"]

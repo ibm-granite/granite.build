@@ -286,7 +286,7 @@ class SshTunnel:
     async def start_sftp(self) -> "asyncssh.SFTPClient":
         """Start an SFTP subsystem on the open connection.
 
-        Callers should close the returned client themselves (``await client.exit()``).
+        Callers should close the returned client themselves (``client.exit()`` — sync).
         Exposed so code outside this module doesn't need to reach into ``_conn``.
         """
         if self._conn is None:
