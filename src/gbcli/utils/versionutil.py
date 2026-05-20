@@ -10,6 +10,7 @@ from gbcli.utils.gbconstants import (
 )
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gh_clone import get_repo_tags, run_github_command
+from gbcommon.types.constants import get_gh_credentials_section
 
 
 def get_latest_version(user_token: str, repo_org: str, repo_name: str) -> str:
@@ -36,7 +37,7 @@ def check_current_and_latest_versions() -> str:
     if not credentials.check_values():
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
 
-    user_token = credentials.get("token", section="user.github")
+    user_token = credentials.get("token", section=get_gh_credentials_section())
     repo_org, repo_name = GBCLI_REPO_URL.split("/")[3:]
     latest_version = get_latest_version(user_token, repo_org, repo_name)
     current_version = get_current_version("granite.build")

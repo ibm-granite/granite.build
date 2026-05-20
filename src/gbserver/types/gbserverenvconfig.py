@@ -24,12 +24,12 @@ from typing import Any, Dict, Optional, Self
 import yaml
 from pydantic import BaseModel
 
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 from gbserver.types.constants_base import (
     BACKEND_SERVER_NAMESPACE_DEV,
     BACKEND_SERVER_NAMESPACE_PROD,
     BACKEND_SERVER_NAMESPACE_STAGING,
     DEFAULT_GB_ENVIRONMENT,
-    DEFAULT_GH_DOMAIN,
     getenv_boolean,
 )
 

@@ -24,9 +24,16 @@ from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from gbserver.api.auth_providers import AuthProvider, build_provider_list
+from gbcommon.types.constants import (
+    DEFAULT_GH_DOMAIN,
+    get_gh_api_base,
+)
+from gbserver.api.auth_providers import (
+    AuthProvider,
+    build_provider_list,
+    resolve_github_email,
+)
 from gbserver.types.auth import User
-from gbserver.types.constants_base import DEFAULT_GH_DOMAIN
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_time
 
@@ -67,18 +74,20 @@ def get_gh_user(token: str, domain: Optional[str] = None) -> Tuple[Optional[User
     if domain is None:
         domain = DEFAULT_GH_DOMAIN
 
+    api_base = get_gh_api_base(domain)
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
         "X-GitHub-Api-Version": "2022-11-28",
     }
     try:
-        response = requests.get(
-            f"https://api.{domain}/user", headers=headers, timeout=10
-        )
+        response = requests.get(f"{api_base}/user", headers=headers, timeout=10)
         response.raise_for_status()
         data = response.json()
         user = User.model_validate(data)
+
+        resolve_github_email(user, domain, headers)
+
         if not user.email:
             logger.warning(
                 "GitHub /user returned no email for user %s; "

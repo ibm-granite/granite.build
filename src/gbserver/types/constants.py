@@ -22,8 +22,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN, get_gh_api_base
 from gbserver.types.constants_base import (
-    DEFAULT_GH_DOMAIN,
     ENV_VAR_IBMID_AUTHORIZE_URL,
     ENV_VAR_IBMID_CALLBACK_URL,
     ENV_VAR_IBMID_CLIENT_ID,
@@ -172,7 +172,7 @@ ENV_VAR_HF_TOKEN = ENV_VAR_PREFIX + "_HF_TOKEN"
 # Hugging Face Hub default values from environment
 GBSERVER_HF_TOKEN = os.getenv(ENV_VAR_HF_TOKEN, os.getenv("HF_TOKEN", None))
 
-DEFAULT_GH_API_ENDPOINT = f"https://api.{DEFAULT_GH_DOMAIN}"
+DEFAULT_GH_API_ENDPOINT = get_gh_api_base()
 # NOTE: To do multiple dmf pushes with aspera, the aspera daemon needs to be kept running.
 # This causes an issue where the LSF job doesn't end because the daemon is still running.
 K8S_USE_ASPERA = os.getenv(ENV_VAR_GBSERVER_K8S_USE_ASPERA, "true").lower() == "true"

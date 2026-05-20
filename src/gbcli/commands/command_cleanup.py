@@ -11,6 +11,7 @@ from gbcli.utils.gbconstants import CLIPBOARD_CHAR
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.utils import check_runnable_browser
 from gbcli.utils.versionutil import check_current_and_latest_versions
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 
 
 @click.command()
@@ -126,9 +127,7 @@ def cli(
                 callback=echo_callback
             )
             if "Error" not in remove_fork_output:
-                settings_url = (
-                    f"https://github.ibm.com/{remove_fork_output}/settings#danger-zone"
-                )
+                settings_url = f"https://{DEFAULT_GH_DOMAIN}/{remove_fork_output}/settings#danger-zone"
                 click.echo(
                     f"Navigate to {settings_url}, scroll to the bottom 'Danger Zone' section, and select 'Delete this repository'"
                 )

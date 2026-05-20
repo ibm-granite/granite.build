@@ -12,6 +12,7 @@ from gbcli.utils.click_utils import FileOrStringParamType
 from gbcli.utils.gbconstants import PROJECT_NAME, is_standalone
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.utils import check_runnable_browser
+from gbcommon.types.constants import get_gh_credentials_section
 
 # Maps user-facing provider names to internal credential keys.
 # Multiple synonyms may map to the same internal value.
@@ -279,7 +280,7 @@ def _get_provider_login(creds: GBCredentials, internal_provider: str) -> str:
     if internal_provider == "ibmid":
         return creds.get("login", section="user.ibmid") or ""
     if internal_provider == "github":
-        return creds.get("login", section="user.github") or ""
+        return creds.get("login", section=get_gh_credentials_section()) or ""
     if internal_provider == "apikey":
         return creds.get("login", section="user.gbserver") or ""
     return ""
@@ -287,9 +288,10 @@ def _get_provider_login(creds: GBCredentials, internal_provider: str) -> str:
 
 def _has_github_credentials(creds: GBCredentials) -> bool:
     """Check if GitHub credentials exist (without network validation)."""
+    gh_section = get_gh_credentials_section()
     fields = [
-        creds.get("token", section="user.github"),
-        creds.get("login", section="user.github"),
-        creds.get("email", section="user.github"),
+        creds.get("token", section=gh_section),
+        creds.get("login", section=gh_section),
+        creds.get("email", section=gh_section),
     ]
     return all(val is not None for val in fields)
