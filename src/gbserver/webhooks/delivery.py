@@ -37,7 +37,7 @@ def sign_payload(payload_bytes: bytes, secret: str) -> str:
     return f"sha256={digest}"
 
 
-class WebhookDelivery:
+class WebhookDelivery:  # pylint: disable=too-few-public-methods
     """Delivers a batched webhook payload with HMAC signing and retry.
 
     Args:

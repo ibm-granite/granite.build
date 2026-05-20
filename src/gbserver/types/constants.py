@@ -617,7 +617,9 @@ def truncate(s: str, l: int = GBSERVER_TRUNCATE_LENGTH) -> str:
 
 # Webhook push notifications
 ENV_VAR_GBSERVER_WEBHOOKS_ENABLED = f"{ENV_VAR_PREFIX}WEBHOOKS_ENABLED"
-GBSERVER_WEBHOOKS_ENABLED: bool = getenv_boolean(ENV_VAR_GBSERVER_WEBHOOKS_ENABLED, True)
+GBSERVER_WEBHOOKS_ENABLED: bool = getenv_boolean(
+    ENV_VAR_GBSERVER_WEBHOOKS_ENABLED, True
+)
 
 # Tags that begin with this are only editable via the super admin
 SYSTEM_TAG_PREFIX = "sys-"

@@ -47,9 +47,7 @@ class WebhookBatchBuffer:
         with self._lock:
             sub_id = subscription.uuid
             if sub_id in self._buffers:
-                logger.debug(
-                    "Subscription %s already registered, skipping", sub_id
-                )
+                logger.debug("Subscription %s already registered, skipping", sub_id)
                 return
             self._buffers[sub_id] = []
             self._frequencies[sub_id] = subscription.frequency

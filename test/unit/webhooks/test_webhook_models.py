@@ -2,8 +2,6 @@
 
 import datetime
 
-import pytest
-
 from gbserver.webhooks.models import (
     WEBHOOK_DEFAULT_FREQUENCY,
     WEBHOOK_MIN_FREQUENCY,

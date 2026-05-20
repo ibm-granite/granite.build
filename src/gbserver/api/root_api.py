@@ -29,11 +29,11 @@ from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
 from gbserver.api.secrets import secrets_api
 from gbserver.api.spaces import spaces_api
-from gbserver.webhooks.api import webhooks_api
 from gbserver.types.constants import (
     API_BASE_PATH,
     GBSERVER_GIT_COMMIT,
 )
+from gbserver.webhooks.api import webhooks_api
 
 
 def get_app() -> FastAPI:
