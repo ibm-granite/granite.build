@@ -281,6 +281,12 @@ class HfURI(URI):
         name = f"{_GB_RG_SPACE_NAME_PREFIX}{space_name}"
         if GB_ENVIRONMENT and GB_ENVIRONMENT.upper() not in ("PROD", ""):
             name = f"{name}-{GB_ENVIRONMENT.lower()}"
+        logger.info(
+            "Resolved resource group name '%s' from space '%s' (env=%s)",
+            name,
+            space_name,
+            GB_ENVIRONMENT,
+        )
         return name
 
     def get_artifact_type(self) -> ArtifactType:
@@ -769,6 +775,12 @@ class HfURI(URI):
                 f"id '{resolved_id}' resolved from '{effective_name}' in "
                 f"organization '{p.owner}'"
             )
+        logger.info(
+            "Resolved resource group id '%s' for name '%s' in org '%s'",
+            resolved_id,
+            effective_name,
+            p.owner,
+        )
         return resolved_id
 
     def _resolve_resource_group_id(
