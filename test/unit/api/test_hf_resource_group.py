@@ -28,9 +28,7 @@ client = TestClient(artifacts_api)
 
 class TestHFResourceGroupEndpoint:
     def test_resolve_success(self):
-        with patch(
-            "gbserver.api.artifacts.HfURI.from_parts"
-        ) as mock_from_parts:
+        with patch("gbserver.api.artifacts.HfURI.from_parts") as mock_from_parts:
             mock_uri = mock_from_parts.return_value
             mock_uri.resolve_resource_group_id.return_value = "prod-id-123"
 
@@ -48,9 +46,7 @@ class TestHFResourceGroupEndpoint:
         assert "gbspace-public" in data["resource_group_name"]
 
     def test_resolve_not_found(self):
-        with patch(
-            "gbserver.api.artifacts.HfURI.from_parts"
-        ) as mock_from_parts:
+        with patch("gbserver.api.artifacts.HfURI.from_parts") as mock_from_parts:
             mock_uri = mock_from_parts.return_value
             mock_uri.resolve_resource_group_id.return_value = None
 
@@ -66,9 +62,7 @@ class TestHFResourceGroupEndpoint:
         assert "not found" in resp.json()["detail"].lower()
 
     def test_resolve_value_error(self):
-        with patch(
-            "gbserver.api.artifacts.HfURI.from_parts"
-        ) as mock_from_parts:
+        with patch("gbserver.api.artifacts.HfURI.from_parts") as mock_from_parts:
             mock_uri = mock_from_parts.return_value
             mock_uri.resolve_resource_group_id.side_effect = ValueError(
                 "Could not resolve resource group id"
@@ -112,9 +106,7 @@ class TestHFResourceGroupEndpoint:
 
     def test_staging_env_uses_suffixed_name(self, monkeypatch):
         monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STAGING")
-        with patch(
-            "gbserver.api.artifacts.HfURI.from_parts"
-        ) as mock_from_parts:
+        with patch("gbserver.api.artifacts.HfURI.from_parts") as mock_from_parts:
             mock_uri = mock_from_parts.return_value
             mock_uri.resolve_resource_group_id.return_value = "staging-id"
 
