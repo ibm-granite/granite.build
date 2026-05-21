@@ -22,20 +22,47 @@ Example:
     python scripts/test-webhook-e2e.py
 """
 
+import os
+import sys
+
+# On macOS, the kqueue-based asyncio event loop in daemon threads can starve
+# unless stderr is connected to a pipe (logging writes from the BuildRunner
+# thread provide the I/O activity that keeps kqueue responsive). When running
+# interactively, redirect stderr through an internal pipe while still printing
+# to the terminal.
+if sys.platform == "darwin" and sys.stderr.isatty():
+    _stderr_r, _stderr_w = os.pipe()
+    _original_stderr_fd = os.dup(2)
+    os.dup2(_stderr_w, 2)
+    os.close(_stderr_w)
+
+    def _stderr_pump():
+        """Read from pipe and forward to original terminal stderr."""
+        with os.fdopen(_stderr_r, "r", errors="replace") as pipe:
+            with os.fdopen(_original_stderr_fd, "w") as tty:
+                for line in pipe:
+                    tty.write(line)
+                    tty.flush()
+
+    import threading as _th
+    _th.Thread(target=_stderr_pump, daemon=True).start()
+
 import argparse
+import asyncio
 import hashlib
 import hmac
 import json
-import os
 import random
 import signal
 import socket
-import sys
 import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, List, Optional
+
+# Force standard asyncio event loop policy BEFORE any gbserver imports.
+asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -145,6 +172,7 @@ def start_gbserver(port: int, build_dir: str) -> threading.Thread:
     os.environ["GBSERVER_WEBHOOKS_ENABLED"] = "true"
 
     from gbserver.commands.command_standalone import _run_standalone
+
 
     started = threading.Event()
 
@@ -274,6 +302,13 @@ def main():
     )
     args = parser.parse_args()
 
+    # Clean stale SQLite DB to avoid leftover builds from previous runs
+    # interfering with this test (the BuildWatcher would try to run them).
+    db_path = os.path.join(os.path.expanduser("~"), ".llmb", "llmb-server.db")
+    for path in (db_path, f"{db_path}.lck"):
+        if os.path.exists(path):
+            os.remove(path)
+
     webhook_port = args.port or get_free_port()
     server_port = args.server_port or get_free_port()
     build_dir = os.path.abspath(args.build_dir)
@@ -296,6 +331,7 @@ def main():
     print(f"  Listening at {receiver.url}")
     print()
 
+
     # Step 2: Start gbserver
     print("▶ Starting gbserver (standalone mode)...")
     start_gbserver(server_port, build_dir)
@@ -312,12 +348,34 @@ def main():
     )
     print()
 
-    # Step 4: Wait for events
+
+    # Step 4: Wait for events with status polling
     print("▶ Waiting for webhook events...")
     print("  (Events will appear below as they arrive)")
     print("-" * 60)
 
-    finished = receiver.build_finished.wait(timeout=args.timeout)
+    import requests as _requests
+
+    poll_interval = 5
+    elapsed = 0
+    finished = False
+    while elapsed < args.timeout and not finished:
+        finished = receiver.build_finished.wait(timeout=poll_interval)
+        elapsed += poll_interval
+        if not finished:
+            try:
+                r = _requests.get(
+                    f"http://127.0.0.1:{server_port}/api/v1/builds/{build_id}/status",
+                    timeout=2,
+                )
+                data = r.json()
+                status = data.get("build", {}).get("status", "?")
+            except Exception as e:
+                status = f"error: {e}"
+            print(
+                f"  [{elapsed:3d}s] Build status: {status} | "
+                f"Deliveries so far: {len(receiver.deliveries)}"
+            )
 
     print("-" * 60)
     print()
