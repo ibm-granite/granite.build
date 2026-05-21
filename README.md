@@ -124,10 +124,10 @@ cd granite.build
 # Create a virtual environment and install
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[standalone,docker]"
+pip install -e ".[standalone,thirdparty]"
 ```
 
-This installs both the server (`gbserver`) and the CLI client (`gb`) with standalone (SQLite + NATS) and Docker execution support.
+This installs both the server (`gbserver`) and the CLI client (`gb`) with standalone (SQLite + NATS) and third-party (Docker, SkyPilot, W&B) execution support.
 
 ### Starting the server
 
