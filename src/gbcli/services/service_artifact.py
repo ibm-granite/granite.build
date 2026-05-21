@@ -12,7 +12,6 @@ from gbcli.utils.gbconstants import (
     GB_DMF_USE_CLASSIC_LOADER,
     GBSERVER_ARTIFACT_API,
     HF_ORGANIZATION_DEFAULT,
-    HF_RESOURCE_GROUP_ID_DEFAULT,
     HF_REVISION_DEFAULT,
     LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
     LAKEHOUSE_FILESET_TABLE_NAME,
@@ -304,7 +303,6 @@ def upload_to_hf(
     callback=None,
 ):
     org = hf_organization or HF_ORGANIZATION_DEFAULT
-    group_id = resource_group_id or HF_RESOURCE_GROUP_ID_DEFAULT
     if not org:
         raise Exception(
             "Error: No HuggingFace organization configured. Use --hf-organization or set hf_organization in the environment config."
@@ -319,7 +317,7 @@ def upload_to_hf(
     hf_type = artifact_type_map.get(type, "dataset")
     registry = HFRegistry(
         hf_token=hf_token,
-        resource_group_id=group_id,
+        resource_group_id=resource_group_id,
         organization=org,
     )
     return registry.upload_artifact(
@@ -714,9 +712,6 @@ def register_artifact_hf(
 
     if hf_organization is None:
         hf_organization = HF_ORGANIZATION_DEFAULT
-
-    if resource_group_id is None:
-        resource_group_id = HF_RESOURCE_GROUP_ID_DEFAULT
 
     payload = {
         "space_name": space_name,

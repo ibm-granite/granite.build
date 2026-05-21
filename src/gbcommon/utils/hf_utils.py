@@ -1,7 +1,10 @@
 """General utility functions."""
 
-from typing import Literal
+import logging
+from typing import Literal, Optional
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 _ARTIFACT_TYPE_TO_SEGMENT: dict[str, str] = {
     "model": "models",
@@ -308,3 +311,27 @@ def convert_hf_uri_to_url(uri: str) -> str:
 
     else:
         raise ValueError(f"Invalid HuggingFace URI format: {uri}")
+
+
+def lookup_hf_resource_group_id(
+    organization: str, resource_group_name: str, token: Optional[str]
+) -> Optional[str]:
+    """Look up an HF Enterprise resource group id by name within an organization."""
+    if not organization or not resource_group_name:
+        return None
+    from huggingface_hub import HfApi
+    from huggingface_hub.utils._http import get_session, hf_raise_for_status
+
+    api = HfApi(token=token)
+    try:
+        r = get_session().get(
+            f"{api.endpoint}/api/organizations/{organization}/resource-groups",
+            headers=api._build_hf_headers(),
+        )
+        hf_raise_for_status(r)
+        for group in r.json():
+            if group.get("name") == resource_group_name:
+                return group.get("id") or group.get("resourceGroupId")
+    except Exception as e:
+        logger.warning("Could not list resource groups for %s: %s", organization, e)
+    return None

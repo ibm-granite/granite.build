@@ -37,7 +37,6 @@ ENVIRONMENT_CONFIGS = {
         "server_log_application_name": "granite-build-prod",
         "branch_assets": "gbspace-config",
         "branch_space": "gbspace-config",
-        "hf_resource_group_id": "69d649051d3e7b3cce6503fe",
         "hf_organization": "ibm-granite",
         "feature_flags": {
             "gbserver_build_events": getenv_boolean(
@@ -62,7 +61,6 @@ ENVIRONMENT_CONFIGS = {
         "server_log_application_name": "granite-build-prod",
         "branch_assets": "gbspace-config",
         "branch_space": "gbspace-config",
-        "hf_resource_group_id": "69d649051d3e7b3cce6503fe",
         "hf_organization": "ibm-granite",
         "feature_flags": {
             "gbserver_build_events": getenv_boolean(
@@ -87,7 +85,6 @@ ENVIRONMENT_CONFIGS = {
         "server_log_application_name": "llm-build-prod",
         "branch_assets": "gbspace-config",
         "branch_space": "gbspace-config",
-        "hf_resource_group_id": "69d649051d3e7b3cce6503fe",
         "hf_organization": "ibm-granite",
         "feature_flags": {
             "gbserver_build_events": getenv_boolean(
@@ -112,7 +109,6 @@ ENVIRONMENT_CONFIGS = {
         "server_log_application_name": "llm-build-prod",
         "branch_assets": "gbspace-config",
         "branch_space": "gbspace-config",
-        "hf_resource_group_id": "69d649051d3e7b3cce6503fe",
         "hf_organization": "ibm-granite",
         "feature_flags": {
             "gbserver_build_events": getenv_boolean(
@@ -137,7 +133,6 @@ ENVIRONMENT_CONFIGS = {
         "server_log_application_name": "llm-build-staging",
         "branch_assets": "gbspace-config-dev",
         "branch_space": "gbspace-config",
-        "hf_resource_group_id": "699cae1275ab75b381de01b5",
         "hf_organization": "ibm-research",
         "feature_flags": {
             "gbserver_build_events": getenv_boolean(
@@ -160,7 +155,6 @@ ENVIRONMENT_CONFIGS = {
         "server_log_application_name": "llm-build-dev",
         "branch_assets": "gbspace-config-dev",
         "branch_space": "gbspace-config",
-        "hf_resource_group_id": "699cae1275ab75b381de01b5",
         "hf_organization": "ibm-research",
         "feature_flags": {
             "gbserver_build_events": getenv_boolean(
@@ -186,7 +180,6 @@ ENVIRONMENT_CONFIGS = {
         "branch_assets": "",
         "branch_space": "",
         "branch_builds": "",
-        "hf_resource_group_id": "699cae1275ab75b381de01b5",
         "hf_organization": "ibm-research",
         "feature_flags": {
             "build_start_via_github": False,
@@ -253,9 +246,6 @@ def is_standalone() -> bool:
 
 # HuggingFace defaults
 HF_ORGANIZATION_DEFAULT = gb_environment_config().get("hf_organization", "ibm-research")
-HF_RESOURCE_GROUP_ID_DEFAULT = gb_environment_config().get(
-    "hf_resource_group_id", "699cae1275ab75b381de01b5"
-)
 
 
 # gbcli
@@ -493,9 +483,6 @@ SPACE_TIMESTAMP_DELTA_HOURS = 2
 
 # HuggingFace Organization
 HF_ORGANIZATION_DEFAULT = gb_environment_config().get("hf_organization", "")
-
-# HuggingFace Resource Group ID
-HF_RESOURCE_GROUP_ID_DEFAULT = gb_environment_config().get("hf_resource_group_id", "")
 
 
 def to_int(value: str, type: str) -> str:

@@ -22,7 +22,7 @@ from gbcli.utils.gbconstants import (
     ARTIFACT_LIST_HEADERS,
     CLIPBOARD_CHAR,
     DEFAULT_CHECKSUM_CONCURRENCY,
-    HF_RESOURCE_GROUP_ID_DEFAULT,
+    HF_ORGANIZATION_DEFAULT,
     LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
     LAKEHOUSE_FILESET_TABLE_NAME,
     LAKEHOUSE_MODEL_SHARED_TABLE,
@@ -52,7 +52,12 @@ from gbcli.utils.utils import (
     validate_tags,
 )
 from gbcli.utils.versionutil import check_current_and_latest_versions
-from gbcommon.utils.hf_utils import convert_hf_uri_to_url, parse_hf_uri
+from gbcommon.uri.hf import HfURI
+from gbcommon.utils.hf_utils import (
+    convert_hf_uri_to_url,
+    lookup_hf_resource_group_id,
+    parse_hf_uri,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +163,7 @@ def cli(ctx):
 @click.option(
     "--resource-group-id",
     default=None,
-    help="Resource group ID (defaults to HF_RESOURCE_GROUP_ID from settings).",
+    help="Resource group ID. If omitted, resolved from the GB space name via the HF Enterprise API.",
 )
 @click.option(
     "--store",
@@ -244,10 +249,6 @@ def push(
             err=True,
         )
         ctx.exit(1)  # Exit with a non-zero status
-
-    # Apply default resource_group_id if not provided
-    if not resource_group_id:
-        resource_group_id = HF_RESOURCE_GROUP_ID_DEFAULT
 
     if (
         type == "model" or type == "fileset" or type == "dataset" or type == "bucket"
@@ -469,6 +470,35 @@ def push(
                 return
             if not quiet:
                 click.echo(f"HuggingFace token obtained successfully!")
+
+            # Resolve resource group id from the GB space name when not given.
+            if not resource_group_id:
+                org = hf_organization or HF_ORGANIZATION_DEFAULT
+                resolved_space_name = space
+                if not resolved_space_name:
+                    from gbcli.utils.spaceutil import resolve_space
+
+                    global_space = resolve_space(
+                        artifact_client.github_token, space, callback=echo_callback
+                    )
+                    if global_space is not None:
+                        resolved_space_name = global_space.get("name")
+                rg_name = HfURI.space_name_to_resource_group_name(resolved_space_name)
+                resource_group_id = lookup_hf_resource_group_id(
+                    organization=org,
+                    resource_group_name=rg_name,
+                    token=hf_token,
+                )
+                if not resource_group_id:
+                    click.echo(
+                        f"❌ Could not resolve HuggingFace resource group id for "
+                        f"space '{resolved_space_name}' (resource group name '{rg_name}') in "
+                        f"organization '{org}'. Pass --resource-group-id "
+                        f"explicitly, or ensure the resource group exists and "
+                        f"your HF token has access to it.",
+                        err=True,
+                    )
+                    ctx.exit(1)
 
         checksum = None
         existing_registration = None
