@@ -36,6 +36,7 @@ from huggingface_hub import (
 from gbcommon.types.testing import is_hf_mocked
 from gbcommon.uri.uri import URI
 from gbserver.types.artifact import ArtifactType
+from gbserver.types.constants import GB_ENVIRONMENT
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -265,6 +266,10 @@ class HfURI(URI):
         By convention, GB space names are prefixed with ``_GB_RG_SPACE_NAME_PREFIX``
         to form the resource group name used in HuggingFace Enterprise.
 
+        For non-production environments (STAGING, DEV), a lowercase environment
+        suffix is appended to differentiate resource groups within the same HF
+        organization (e.g. ``gbspace-public-staging``).
+
         Args:
             space_name: The GB space name to convert.
 
@@ -273,7 +278,10 @@ class HfURI(URI):
         """
         if not space_name:
             return ""
-        return f"{_GB_RG_SPACE_NAME_PREFIX}{space_name}"
+        name = f"{_GB_RG_SPACE_NAME_PREFIX}{space_name}"
+        if GB_ENVIRONMENT and GB_ENVIRONMENT.upper() not in ("PROD", ""):
+            name = f"{name}-{GB_ENVIRONMENT.lower()}"
+        return name
 
     def get_artifact_type(self) -> ArtifactType:
         """Return the artifact type based on the HF resource type encoded in the URI.

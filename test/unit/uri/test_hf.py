@@ -787,3 +787,152 @@ class TestHfURIBucketDeleteUnit:
             result = uri.delete()
 
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# space_name_to_resource_group_name — environment suffix logic
+# ---------------------------------------------------------------------------
+
+
+class TestSpaceNameToResourceGroupName:
+    def test_prod_no_suffix(self, monkeypatch):
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "PROD")
+        assert HfURI.space_name_to_resource_group_name("public") == "gbspace-public"
+
+    def test_empty_env_no_suffix(self, monkeypatch):
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "")
+        assert HfURI.space_name_to_resource_group_name("public") == "gbspace-public"
+
+    def test_staging_suffix(self, monkeypatch):
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STAGING")
+        assert HfURI.space_name_to_resource_group_name("public") == "gbspace-public-staging"
+
+    def test_dev_suffix(self, monkeypatch):
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "DEV")
+        assert HfURI.space_name_to_resource_group_name("public") == "gbspace-public-dev"
+
+    def test_empty_space_name_returns_empty(self, monkeypatch):
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STAGING")
+        assert HfURI.space_name_to_resource_group_name("") == ""
+
+    def test_none_space_name_returns_empty(self, monkeypatch):
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "DEV")
+        assert HfURI.space_name_to_resource_group_name(None) == ""
+
+    def test_custom_space_name(self, monkeypatch):
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STAGING")
+        assert HfURI.space_name_to_resource_group_name("my-team") == "gbspace-my-team-staging"
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "PROD")
+        assert HfURI.space_name_to_resource_group_name("my-team") == "gbspace-my-team"
+
+
+# ---------------------------------------------------------------------------
+# resolve_resource_group_id with environment-derived names (mocked)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveResourceGroupIdWithEnvironment:
+    """Test that resolve_resource_group_id uses the environment-aware
+    resource group name when space_name is provided."""
+
+    def _mock_hf_api_response(self, groups):
+        """Patch the HF HTTP session to return the given resource groups list."""
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = groups
+        mock_session.get.return_value = mock_response
+        return mock_session
+
+    def test_staging_env_resolves_suffixed_name(self, monkeypatch):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STAGING")
+        uri = HfURI.from_parts(owner="ibm-research", repo="dummy")
+        groups = [{"name": "gbspace-public-staging", "id": "staging-id-123"}]
+
+        with patch("gbcommon.uri.hf.HfApi"):
+            with patch(
+                "huggingface_hub.utils._http.get_session",
+                return_value=self._mock_hf_api_response(groups),
+            ):
+                with patch("huggingface_hub.utils._http.hf_raise_for_status"):
+                    result = uri.resolve_resource_group_id(
+                        token="fake-token",
+                        space_name="public",
+                    )
+
+        assert result == "staging-id-123"
+
+    def test_prod_env_resolves_unsuffixed_name(self, monkeypatch):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "PROD")
+        uri = HfURI.from_parts(owner="ibm-research", repo="dummy")
+        groups = [{"name": "gbspace-public", "id": "prod-id-456"}]
+
+        with patch("gbcommon.uri.hf.HfApi"):
+            with patch(
+                "huggingface_hub.utils._http.get_session",
+                return_value=self._mock_hf_api_response(groups),
+            ):
+                with patch("huggingface_hub.utils._http.hf_raise_for_status"):
+                    result = uri.resolve_resource_group_id(
+                        token="fake-token",
+                        space_name="public",
+                    )
+
+        assert result == "prod-id-456"
+
+    def test_dev_env_resolves_suffixed_name(self, monkeypatch):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "DEV")
+        uri = HfURI.from_parts(owner="ibm-research", repo="dummy")
+        groups = [{"name": "gbspace-public-dev", "id": "dev-id-789"}]
+
+        with patch("gbcommon.uri.hf.HfApi"):
+            with patch(
+                "huggingface_hub.utils._http.get_session",
+                return_value=self._mock_hf_api_response(groups),
+            ):
+                with patch("huggingface_hub.utils._http.hf_raise_for_status"):
+                    result = uri.resolve_resource_group_id(
+                        token="fake-token",
+                        space_name="public",
+                    )
+
+        assert result == "dev-id-789"
+
+    def test_explicit_name_ignores_environment(self, monkeypatch):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STAGING")
+        uri = HfURI.from_parts(owner="ibm-research", repo="dummy")
+        groups = [{"name": "my-custom-group", "id": "custom-id"}]
+
+        with patch("gbcommon.uri.hf.HfApi"):
+            with patch(
+                "huggingface_hub.utils._http.get_session",
+                return_value=self._mock_hf_api_response(groups),
+            ):
+                with patch("huggingface_hub.utils._http.hf_raise_for_status"):
+                    result = uri.resolve_resource_group_id(
+                        token="fake-token",
+                        resource_group_name="my-custom-group",
+                    )
+
+        assert result == "custom-id"
+
+    def test_raises_when_group_not_found(self, monkeypatch):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STAGING")
+        uri = HfURI.from_parts(owner="ibm-research", repo="dummy")
+        groups = [{"name": "gbspace-other", "id": "other-id"}]
+
+        with patch("gbcommon.uri.hf.HfApi"):
+            with patch(
+                "huggingface_hub.utils._http.get_session",
+                return_value=self._mock_hf_api_response(groups),
+            ):
+                with patch("huggingface_hub.utils._http.hf_raise_for_status"):
+                    with pytest.raises(ValueError, match="Could not resolve"):
+                        uri.resolve_resource_group_id(
+                            token="fake-token",
+                            space_name="public",
+                        )
