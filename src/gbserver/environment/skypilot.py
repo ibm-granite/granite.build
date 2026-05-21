@@ -445,30 +445,174 @@ class Skypilot(Environment):
 
     async def pullasset_hfstore(
         self: Self,
-        uri: URI = None,
+        uri: Optional[URI] = None,
         binding: Optional[Any] = None,
         storeload_config=None,
         assetstore=None,
         secrets: Optional[dict] = None,
         **kwargs,
     ) -> tuple:
-        """Register an HF model as an input artifact.
+        """Pull an HF model/dataset/space onto the Skypilot cluster via the hfpull step.
 
-        On remote environments (SLURM, cloud) the model is downloaded by
-        the step itself via huggingface_hub.  This handler just records the
-        binding so the model appears as an input artifact in build status.
+        Resolves the local cache path, builds the canonical hfpull_config dict,
+        and queues the builtin hfpull step (its Skypilot launcher uses ``hf
+        download``).  Returns a binding dict whose ``path`` points at the cache
+        location so downstream steps can consume the downloaded snapshot.
         """
         from gbcommon.uri.hf import HfURI
+        from gbserver.asset.hfstore import Hfstore
+        from gbserver.environment.local_assets import get_hf_cache_dir
+        from gbserver.types.constants import CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI
 
-        hfuri = uri if isinstance(uri, HfURI) else URI.get_uri(uri)
-        assert isinstance(hfuri, HfURI), f"expected HfURI, got {type(hfuri)}"
+        assert isinstance(
+            assetstore, Hfstore
+        ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
 
-        parts = hfuri._parts()
-        model_id = f"{parts.owner}/{parts.repo}"
-        logger.info("pullasset_hfstore: registered input model %s", model_id)
+        if storeload_config is not None and storeload_config.mode not in (
+            None,
+            "hf_pull",
+        ):
+            raise ValueError(
+                f"unsupported storeload mode: {storeload_config.mode}"
+            )
 
-        binding_config = {"binding": {"hf_model_name": model_id, "path": model_id}}
-        return binding_config, None
+        hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
+        cache_dir = Path(get_hf_cache_dir(storeload_config))
+        binding_path = (
+            cache_dir / hfuri.get_owner() / hfuri.get_repo() / hfuri.get_revision()
+        )
+
+        hfpull_config = Hfstore.build_hfpull_step_config(
+            hfuri=hfuri,
+            binding_path=str(binding_path),
+        )
+        hf_token = assetstore._resolve_token(hfuri) or ""
+
+        hfpull_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI
+        if (
+            storeload_config is not None
+            and storeload_config.config is not None
+            and "step_uri" in storeload_config.config
+        ):
+            hfpull_stepuri = storeload_config.config["step_uri"]
+
+        logger.info(
+            "pullasset_hfstore: queuing hfpull step_uri=%s uri=%s dest=%s",
+            hfpull_stepuri,
+            str(hfuri),
+            binding_path,
+        )
+
+        pull_step_config = BuildTargetStepConfig(
+            step_uri=hfpull_stepuri,
+            config={
+                "hfpull_config": hfpull_config,
+                "launcher_config": {"envs": {"HF_TOKEN": hf_token}},
+            },
+        )
+        binding_config = {"binding": {"path": str(binding_path)}}
+        return binding_config, pull_step_config
+
+    async def pushasset_hfstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        storepush_config=None,
+        uri: Optional[Union[str, URI]] = None,
+        assetstore=None,
+        output_config=None,
+        **kwargs,
+    ) -> BuildTargetStepConfig:
+        """Push an artifact from the cluster to HuggingFace Hub via the hfpush step.
+
+        Mirrors the K8s ``pushasset_hfstore`` resolution order for resource group
+        and private fields, then queues the builtin hfpush step (its Skypilot
+        launcher creates the repo via curl and uploads with ``hf upload``).
+        """
+        from gbcommon.uri.hf import HfURI
+        from gbserver.asset.hfstore import Hfstore
+        from gbserver.types.constants import CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI
+
+        if uri is None or uri == "":
+            raise ValueError(f"Empty uri received to pushasset {binding}")
+        hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
+        assert isinstance(
+            binding, dict
+        ), f"expected binding to be a dict, actual: {type(binding)} {binding}"
+        assert (
+            "path" in binding
+        ), f"expected 'path' to be in the binding, actual: {binding}"
+        binding_path = binding["path"]
+
+        space_name = output_config.space_name if output_config else None
+
+        hf_resource_group_id = None
+        hf_resource_group_name = None
+        hf_private = True
+        if output_config is not None and output_config.store_push is not None:
+            hf_cfg = output_config.store_push.config.get("hf", {})
+            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
+            hf_resource_group_name = hf_cfg.get(
+                "resource_group_name", hf_resource_group_name
+            )
+            hf_private = hf_cfg.get("private", hf_private)
+
+        assert isinstance(
+            assetstore, Hfstore
+        ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
+        if hf_resource_group_id:
+            resource_group_id: Optional[str] = hf_resource_group_id
+        else:
+            resource_group_id = hfuri.resolve_resource_group_id(
+                token=assetstore._resolve_token(hfuri),
+                resource_group_name=hf_resource_group_name,
+                space_name=space_name,
+            )
+
+        hfpush_config = Hfstore.build_hfpush_step_config(
+            hfuri=hfuri,
+            binding_path=binding_path,
+            binding_id=binding_id or "",
+            hf_private=hf_private,
+            hf_resource_group_id=resource_group_id,
+        )
+        if (
+            storepush_config is not None
+            and storepush_config.config is not None
+            and "hf" in storepush_config.config
+        ):
+            hfpush_config["hf"].update(storepush_config.config["hf"])
+        if (
+            output_config is not None
+            and output_config.store_push is not None
+            and "hf" in output_config.store_push.config
+        ):
+            hfpush_config["hf"].update(output_config.store_push.config["hf"])
+
+        hf_token = assetstore._resolve_token(hfuri) or ""
+
+        hfpush_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI
+        if (
+            storepush_config is not None
+            and storepush_config.config is not None
+            and "step_uri" in storepush_config.config
+        ):
+            hfpush_stepuri = storepush_config.config["step_uri"]
+
+        logger.info(
+            "pushasset_hfstore: queuing hfpush step_uri=%s uri=%s source=%s",
+            hfpush_stepuri,
+            str(hfuri),
+            binding_path,
+        )
+
+        return BuildTargetStepConfig(
+            step_uri=hfpush_stepuri,
+            config={
+                "hfpush_config": hfpush_config,
+                "launcher_config": {"envs": {"HF_TOKEN": hf_token}},
+            },
+        )
 
     async def pushasset_cosstore(
         self: Self,

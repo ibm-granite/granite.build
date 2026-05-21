@@ -68,3 +68,110 @@ environment_configs:
                 field_regex: "hf://[^\\s]+"
               - field_name: binding_id
                 field_regex: "(?<=binding\\s)[^\\s]+"
+  Skypilot:
+    default_launcher: hfpush
+    launchers:
+      hfpush:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:python:3.11-slim"
+          resources:
+            cpus: "2+"
+            memory: "4+"
+          setup: |
+            pip install --no-cache-dir 'huggingface_hub[cli]'
+            apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+          run: |
+            echo 'hfpush start'
+
+            HF_SOURCE='{{ config.hfpush_config.path }}'
+            HF_URI='{{ config.hfpush_config.uri }}'
+            HF_OWNER='{{ config.hfpush_config.owner }}'
+            HF_REPO_NAME='{{ config.hfpush_config.repo }}'
+            HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"
+            HF_REVISION='{{ config.hfpush_config.revision }}'
+            HF_PRIVATE='{{ config.hfpush_config.private }}'
+            HF_TYPE='{{ config.hfpush_config.hf.type }}'
+            HF_RESOURCE_GROUP_ID='{{ config.hfpush_config.hf.resource_group_id }}'
+            BINDING_ID='{{ config.hfpush_config.binding_id }}'
+
+            if [ -z "${HF_TOKEN:-}" ]; then
+                echo 'HF_TOKEN is not set' >&2
+                exit 1
+            fi
+
+            # Create the HF repo (idempotent).  `hf upload` cannot attach a
+            # resource_group_id, so we POST to /api/repos/create ourselves.
+            HF_VISIBILITY="public"
+            if [ "${HF_PRIVATE}" = "True" ]; then
+                HF_VISIBILITY="private"
+            fi
+
+            if [ -n "${HF_RESOURCE_GROUP_ID}" ]; then
+                CREATE_BODY=$(printf '{"name":"%s","organization":"%s","type":"%s","visibility":"%s","resourceGroupId":"%s"}' \
+                    "${HF_REPO_NAME}" "${HF_OWNER}" "${HF_TYPE}" "${HF_VISIBILITY}" "${HF_RESOURCE_GROUP_ID}")
+            else
+                CREATE_BODY=$(printf '{"name":"%s","organization":"%s","type":"%s","visibility":"%s"}' \
+                    "${HF_REPO_NAME}" "${HF_OWNER}" "${HF_TYPE}" "${HF_VISIBILITY}")
+            fi
+
+            echo "Creating HF repo ${HF_REPO} (resource_group_id=${HF_RESOURCE_GROUP_ID:-<none>})"
+            CREATE_RESP=$(mktemp)
+            HTTP_CODE=$(curl -sS -o "${CREATE_RESP}" -w "%{http_code}" \
+                -X POST \
+                -H "Authorization: Bearer ${HF_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "${CREATE_BODY}" \
+                https://huggingface.co/api/repos/create)
+
+            if [ "${HTTP_CODE}" != "200" ] && [ "${HTTP_CODE}" != "409" ]; then
+                echo "HF create_repo failed: HTTP ${HTTP_CODE}"
+                cat "${CREATE_RESP}"
+                rm -f "${CREATE_RESP}"
+                exit 1
+            fi
+            rm -f "${CREATE_RESP}"
+
+            echo "Pushing HF URI: ${HF_URI} from path ${HF_SOURCE}"
+
+            REVISION_FLAG=""
+            if [ -n "${HF_REVISION}" ]; then
+                REVISION_FLAG="--revision ${HF_REVISION}"
+            fi
+
+            PRIVATE_FLAG=""
+            if [ "${HF_PRIVATE}" = "True" ]; then
+                PRIVATE_FLAG="--private"
+            fi
+
+            REPO_TYPE_FLAG=""
+            if [ -n "${HF_TYPE}" ]; then
+                REPO_TYPE_FLAG="--repo-type ${HF_TYPE}"
+            fi
+
+            hf upload "${HF_REPO}" "${HF_SOURCE}" ${REVISION_FLAG} ${PRIVATE_FLAG} ${REPO_TYPE_FLAG}
+
+            MY_EXIT_CODE=$?
+            if [ "${MY_EXIT_CODE}" != "0" ]; then
+                echo "hfpush failed, exit code: ${MY_EXIT_CODE}" >&2
+                exit 1
+            fi
+
+            echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
+            echo 'hfpush end'
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 15
+          event_configs:
+          - event_type: ARTIFACT_PUSHED_EVENT
+            line_regex: "Pushed HF URI:\\s.+"
+            is_json: False
+            event_fields:
+              - field_name: uri
+                field_regex: "hf://[^\\s]+"
+              - field_name: binding_id
+                field_regex: "(?<=binding\\s)[^\\s]+"
