@@ -26,7 +26,7 @@ from gbcommon.uri.hf import HfURI
 from gbcommon.uri.uri import URI
 from gbserver.asset.assetstore import Assetstore
 from gbserver.types.artifact import ArtifactType
-from gbserver.types.constants import GBSERVER_HF_TOKEN
+from gbserver.types.constants import get_hf_token
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -91,7 +91,7 @@ class Hfstore(Assetstore):
             token = os.getenv(token_key, None)
             # Fall back to GBSERVER_HF_TOKEN if token_key is not set
             if token is None:
-                token = GBSERVER_HF_TOKEN
+                token = get_hf_token()
 
         if token is not None and token.strip() == "":
             token = None

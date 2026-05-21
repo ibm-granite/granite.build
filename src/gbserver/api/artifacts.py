@@ -44,8 +44,8 @@ from gbserver.types.artifact import ArtifactType
 from gbserver.types.constants import (
     ENV_URI_SCHEME,
     GB_ENVIRONMENT,
-    GBSERVER_HF_TOKEN,
     LAKEHOUSE_ENVIRONMENT,
+    get_hf_token,
 )
 
 artifacts_api = FastAPI()
@@ -438,7 +438,7 @@ def resolve_hf_resource_group(
     hfuri = HfURI.from_parts(owner=organization, repo="__lookup__")
     try:
         resolved_id = hfuri.resolve_resource_group_id(
-            token=GBSERVER_HF_TOKEN,
+            token=get_hf_token(),
             resource_group_name=rg_name,
         )
     except ValueError as exc:
