@@ -26,7 +26,6 @@ What we exercise here is the request/response surface: path-traversal
 rejection, build-root resolution, size caps, and auth.
 """
 
-import base64
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -290,100 +289,219 @@ class TestListFiles:
         assert r.status_code == 404
 
 
-# ----------------------------------------------------------------------- /file
+# ----------------------------------------------------- /files (pattern filter)
 
 
-class TestGetFile:
-    def _tunnel_with_file(self, size: int, body: bytes):
-        tunnel = MagicMock()
+def _tunnel_with_grep(grep_rc: int, grep_out: str = "", grep_err: str = ""):
+    """Mock tunnel where any piped grep command returns the supplied result.
 
-        async def run_remote(cmd, raise_on_error=True):
-            if cmd.startswith("readlink -f"):
-                target = cmd.split("--", 1)[1].strip().strip("'\"")
-                return (0, target + "\n", "")
-            if cmd.startswith("stat -c"):
-                # size<TAB>type
-                return (0, f"{size}\tregular file\n", "")
-            return (0, "", "")
+    ``readlink -f`` echoes the input. Any command containing ``grep -F``
+    (the listing's substring filter or the search endpoint) returns
+    ``(grep_rc, grep_out, grep_err)``.
+    """
+    tunnel = MagicMock()
 
-        tunnel.run_remote = AsyncMock(side_effect=run_remote)
+    async def run_remote(cmd, raise_on_error=True):
+        if cmd.startswith("readlink -f"):
+            target = cmd.split("--", 1)[1].strip().strip("'\"")
+            return (0, target + "\n", "")
+        if "grep -F" in cmd or "grep -r" in cmd:
+            return (grep_rc, grep_out, grep_err)
+        return (0, "", "")
 
-        sftp = MagicMock()
-        fh = MagicMock()
-        fh.read = AsyncMock(return_value=body)
-        fh.__aenter__ = AsyncMock(return_value=fh)
-        fh.__aexit__ = AsyncMock(return_value=None)
-        sftp.open = MagicMock(return_value=fh)
-        sftp.exit = MagicMock(return_value=None)
-        tunnel.start_sftp = AsyncMock(return_value=sftp)
-        return tunnel
+    tunnel.run_remote = AsyncMock(side_effect=run_remote)
+    return tunnel
 
-    def test_file_returned_as_base64(self, client):
-        body = b"hello\x00world"  # has a null byte; base64 doesn't care
-        tunnel = self._tunnel_with_file(size=len(body), body=body)
+
+class TestListFilesPattern:
+    def test_pattern_filters_listing(self, client):
+        tunnel = _tunnel_with_grep(0, "a.log\nsub.log\n")
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/builds/B1/file",
-                params={"path": "log.bin"},
+                "/api/v1/builds/B1/files",
+                params={"path": ".", "pattern": ".log"},
             )
         assert r.status_code == 200, r.text
-        body_json = r.json()
-        assert body_json["content_base64"] == base64.b64encode(body).decode("ascii")
-        assert body_json["path"] == "log.bin"
+        assert sorted(r.json()) == ["a.log", "sub.log"]
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        # Filter is applied via piped grep -F, with pipefail and head cap.
+        assert any(
+            "set -o pipefail" in c and "grep -F --" in c and "head -n" in c
+            for c in cmds
+        )
 
-    def test_file_dir_returns_400(self, client):
-        tunnel = MagicMock()
-
-        async def run_remote(cmd, raise_on_error=True):
-            if cmd.startswith("readlink -f"):
-                target = cmd.split("--", 1)[1].strip().strip("'\"")
-                return (0, target + "\n", "")
-            if cmd.startswith("stat -c"):
-                return (0, "4096\tdirectory\n", "")
-            return (0, "", "")
-
-        tunnel.run_remote = AsyncMock(side_effect=run_remote)
+    def test_pattern_recursive_filters_listing(self, client):
+        find_out = "/ws/llm-build-B1/a.log\n" "/ws/llm-build-B1/sub/nested.log\n"
+        tunnel = _tunnel_with_grep(0, find_out)
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/builds/B1/file",
-                params={"path": "subdir"},
+                "/api/v1/builds/B1/files",
+                params={"path": ".", "recursive": "true", "pattern": ".log"},
+            )
+        assert r.status_code == 200, r.text
+        assert sorted(r.json()) == ["a.log", "sub/nested.log"]
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        assert any("find " in c and "grep -F --" in c for c in cmds)
+
+    def test_pattern_no_matches_returns_empty(self, client):
+        # grep exits 1 with empty stdout when nothing matches.
+        tunnel = _tunnel_with_grep(1, "", "")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": ".", "pattern": "nope"},
+            )
+        assert r.status_code == 200, r.text
+        assert r.json() == []
+
+    def test_pattern_command_failure_returns_500(self, client):
+        # rc>=2 from grep (or upstream under pipefail) is a real failure.
+        # stderr that doesn't contain a missing-path signature -> 500.
+        tunnel = _tunnel_with_grep(2, "", "grep: out of memory")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": ".", "pattern": "x"},
+            )
+        assert r.status_code == 500
+
+    def test_pattern_with_newline_rejected(self, client):
+        tunnel = _tunnel_with_grep(0, "")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": ".", "pattern": "a\nb"},
+            )
+        assert r.status_code == 400
+        for call in tunnel.run_remote.await_args_list:
+            assert "a\nb" not in call.args[0]
+
+
+# --------------------------------------------------------------- /files/search
+
+
+class TestSearchFiles:
+    def test_search_returns_hits(self, client):
+        out = (
+            "/ws/llm-build-B1/a.txt:1:hello world\n"
+            "/ws/llm-build-B1/sub/b.txt:42:world!\n"
+        )
+        tunnel = _tunnel_with_grep(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "world"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body == [
+            {"path": "a.txt", "line": 1, "text": "hello world"},
+            {"path": "sub/b.txt", "line": 42, "text": "world!"},
+        ]
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        # grep -r -n -I -H -F flags must all be present.
+        assert any("grep -r -n -I -H -F" in c and "head -n" in c for c in cmds)
+
+    def test_search_no_matches_returns_empty(self, client):
+        tunnel = _tunnel_with_grep(1, "", "")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "nope"},
+            )
+        assert r.status_code == 200, r.text
+        assert r.json() == []
+
+    def test_search_ignore_case_passes_flag(self, client):
+        tunnel = _tunnel_with_grep(0, "/ws/llm-build-B1/a.txt:1:HELLO\n")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "hello", "ignore_case": "true"},
+            )
+        assert r.status_code == 200, r.text
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        assert any("grep -r -n -I -H -F -i" in c for c in cmds)
+
+    def test_search_long_text_truncated(self, client):
+        long_text = "x" * 2000
+        out = f"/ws/llm-build-B1/a.txt:1:{long_text}\n"
+        tunnel = _tunnel_with_grep(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "x"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body) == 1
+        # Default cap is 512 bytes.
+        assert len(body[0]["text"]) == 512
+
+    def test_search_text_with_colons_preserved(self, client):
+        # Match text contains its own ':' — split must use maxsplit=2.
+        out = "/ws/llm-build-B1/a.yaml:7:key: value: nested\n"
+        tunnel = _tunnel_with_grep(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "value"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body == [{"path": "a.yaml", "line": 7, "text": "key: value: nested"}]
+
+    def test_search_path_traversal_rejected(self, client):
+        tunnel = _tunnel_with_grep(0, "")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "x", "path": "../../etc"},
+            )
+        assert r.status_code == 400
+        for call in tunnel.run_remote.await_args_list:
+            assert "etc" not in call.args[0]
+
+    def test_search_pattern_with_null_rejected(self, client):
+        tunnel = _tunnel_with_grep(0, "")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "a\x00b"},
             )
         assert r.status_code == 400
 
-    def test_too_large_returns_413(self, client):
-        # 2 MiB > default 1 MiB cap
-        tunnel = self._tunnel_with_file(size=2 * 1024 * 1024, body=b"x" * 100)
+    def test_search_missing_pattern_returns_422(self, client):
+        tunnel = _tunnel_with_grep(0, "")
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
-            r = client.get(
-                "/api/v1/builds/B1/file",
-                params={"path": "big.bin"},
-            )
-        assert r.status_code == 413
+            r = client.get("/api/v1/builds/B1/files/search")
+        assert r.status_code == 422
 
-    def test_unauthorized(self, client):
-        tunnel = MagicMock()
-        tunnel.run_remote = AsyncMock(return_value=(0, "", ""))
+    def test_search_unauthorized(self, client):
+        tunnel = _tunnel_with_grep(0, "")
         lb, tun, auth, env = _patches(
             tunnel,
             authorize_raises=HTTPException(status_code=401, detail="no"),
         )
         with lb, tun, auth, env:
             r = client.get(
-                "/api/v1/builds/B1/file",
-                params={"path": "log.txt"},
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "x"},
             )
         assert r.status_code == 401
-
-    def test_missing_path_returns_422(self, client):
-        tunnel = MagicMock()
-        tunnel.run_remote = AsyncMock(return_value=(0, "", ""))
-        lb, tun, auth, env = _patches(tunnel)
-        with lb, tun, auth, env:
-            r = client.get("/api/v1/builds/B1/file")
-        assert r.status_code == 422
 
 
 # -------------------------------------------------------------- /file/download
