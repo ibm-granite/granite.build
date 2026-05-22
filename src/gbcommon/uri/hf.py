@@ -279,7 +279,7 @@ class HfURI(URI):
         if not space_name:
             return ""
         name = f"{_GB_RG_SPACE_NAME_PREFIX}{space_name}"
-        if GB_ENVIRONMENT and GB_ENVIRONMENT.upper() not in ("PROD", ""):
+        if GB_ENVIRONMENT and GB_ENVIRONMENT.upper() not in ("PROD", "STANDALONE", ""):
             name = f"{name}-{GB_ENVIRONMENT.lower()}"
         logger.debug(
             "Resolved resource group name '%s' from space '%s' (env=%s)",

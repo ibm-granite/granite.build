@@ -814,6 +814,10 @@ class TestSpaceNameToResourceGroupName:
         monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "DEV")
         assert HfURI.space_name_to_resource_group_name("public") == "gbspace-public-dev"
 
+    def test_standalone_no_suffix(self, monkeypatch):
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STANDALONE")
+        assert HfURI.space_name_to_resource_group_name("public") == "gbspace-public"
+
     def test_empty_space_name_returns_empty(self, monkeypatch):
         monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STAGING")
         assert HfURI.space_name_to_resource_group_name("") == ""

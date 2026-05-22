@@ -131,7 +131,7 @@ class TestHFResourceGroupEndpoint:
             patch(
                 "gbserver.api.artifacts.HfURI.resolve_resource_group_id_for_org",
                 return_value="staging-id",
-            ),
+            ) as mock_resolve,
         ):
             resp = client.get(
                 "/hf/resource-group",
@@ -145,3 +145,8 @@ class TestHFResourceGroupEndpoint:
         data = resp.json()
         assert data["resource_group_name"] == "gbspace-public-staging"
         assert data["resource_group_id"] == "staging-id"
+        mock_resolve.assert_called_once_with(
+            token="fake-token",
+            organization="ibm-research",
+            resource_group_name="gbspace-public-staging",
+        )

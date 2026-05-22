@@ -89,7 +89,7 @@ class Hfstore(Assetstore):
             token = self.secrets[token_key] or None
         else:
             token = os.getenv(token_key, None)
-            # Fall back to GBSERVER_HF_TOKEN if token_key is not set
+            # Fall back to get_hf_token() if token_key is not set
             if token is None:
                 token = get_hf_token()
 

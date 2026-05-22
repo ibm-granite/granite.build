@@ -169,10 +169,6 @@ GBSERVER_RAISE_BUILD_EXCEPTIONS = (
 # Hugging Face Hub Configuration
 ENV_VAR_HF_TOKEN = ENV_VAR_PREFIX + "_HF_TOKEN"
 
-# Hugging Face Hub default values from environment
-GBSERVER_HF_TOKEN = os.getenv(ENV_VAR_HF_TOKEN, os.getenv("HF_TOKEN", None))
-
-
 def get_hf_token() -> str | None:
     # Reads env var lazily — important when the env is set after initial import (e.g. test fixtures).
     return os.getenv(ENV_VAR_HF_TOKEN, os.getenv("HF_TOKEN", None))
