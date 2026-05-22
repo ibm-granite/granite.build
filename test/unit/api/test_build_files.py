@@ -381,6 +381,133 @@ class TestListFilesPattern:
         for call in tunnel.run_remote.await_args_list:
             assert "a\nb" not in call.args[0]
 
+    def test_pattern_regex_flag(self, client):
+        tunnel = _tunnel_with_grep(0, "a.log\n")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": ".", "pattern": r"\.log$", "regex": "true"},
+            )
+        assert r.status_code == 200, r.text
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        assert any("grep -E --" in c for c in cmds)
+        assert not any("grep -F --" in c for c in cmds)
+
+
+# --------------------------------------------------------------- /files (stat)
+
+
+def _tunnel_with_find_printf(
+    rc: int, stdout: str, *, readlink_target: str | None = None
+):
+    """Mock tunnel for the stat=true find -printf branch of /files."""
+    tunnel = MagicMock()
+
+    async def run_remote(cmd, raise_on_error=True):
+        if cmd.startswith("readlink -f"):
+            target = cmd.split("--", 1)[1].strip().strip("'\"")
+            return (0, (readlink_target or target) + "\n", "")
+        if "find " in cmd and "-printf" in cmd:
+            return (rc, stdout, "")
+        return (0, "", "")
+
+    tunnel.run_remote = AsyncMock(side_effect=run_remote)
+    return tunnel
+
+
+class TestListFilesStat:
+    def test_stat_returns_file_entries(self, client):
+        # find -printf '%P\t%y\t%s\t%T@\n' output. -mindepth 1 -maxdepth 1
+        # under build root.
+        out = (
+            "a.log\tf\t1234\t1700000000.0\n"
+            "sub\td\t4096\t1700000100.5\n"
+            "ln\tl\t10\t1700000200.0\n"
+        )
+        tunnel = _tunnel_with_find_printf(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"stat": "true"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body == [
+            {"path": "a.log", "type": "file", "size": 1234, "mtime": 1700000000},
+            {"path": "ln", "type": "symlink", "size": 10, "mtime": 1700000200},
+            {"path": "sub", "type": "dir", "size": 4096, "mtime": 1700000100},
+        ]
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        # find -mindepth 1 -maxdepth 1 -printf …
+        assert any("-mindepth 1" in c and "-maxdepth 1" in c for c in cmds)
+        assert any("-printf" in c for c in cmds)
+
+    def test_stat_recursive_omits_maxdepth(self, client):
+        out = (
+            "a.log\tf\t1\t1700000000\n"
+            "sub/nested.log\tf\t2\t1700000001\n"
+        )
+        tunnel = _tunnel_with_find_printf(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"stat": "true", "recursive": "true"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert [e["path"] for e in body] == ["a.log", "sub/nested.log"]
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        assert any(
+            "-mindepth 1" in c and "-maxdepth 1" not in c and "-printf" in c
+            for c in cmds
+        )
+
+    def test_stat_with_pattern_filters_in_python(self, client):
+        out = (
+            "a.log\tf\t1\t1700000000\n"
+            "b.txt\tf\t2\t1700000001\n"
+            "c.log\tf\t3\t1700000002\n"
+        )
+        tunnel = _tunnel_with_find_printf(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"stat": "true", "pattern": ".log"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert [e["path"] for e in body] == ["a.log", "c.log"]
+
+    def test_stat_with_regex_pattern(self, client):
+        out = (
+            "a.log\tf\t1\t1700000000\n"
+            "b.txt\tf\t2\t1700000001\n"
+        )
+        tunnel = _tunnel_with_find_printf(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"stat": "true", "pattern": r"\.log$", "regex": "true"},
+            )
+        assert r.status_code == 200, r.text
+        assert [e["path"] for e in r.json()] == ["a.log"]
+
+    def test_stat_invalid_regex_returns_400(self, client):
+        out = "a.log\tf\t1\t1700000000\n"
+        tunnel = _tunnel_with_find_printf(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"stat": "true", "pattern": "[bad", "regex": "true"},
+            )
+        assert r.status_code == 400
+
 
 # --------------------------------------------------------------- /files/search
 
@@ -400,10 +527,15 @@ class TestSearchFiles:
             )
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body == [
+        # Strip optional fields for the equality check; covered separately.
+        slim = [
+            {"path": h["path"], "line": h["line"], "text": h["text"]} for h in body
+        ]
+        assert slim == [
             {"path": "a.txt", "line": 1, "text": "hello world"},
             {"path": "sub/b.txt", "line": 42, "text": "world!"},
         ]
+        assert all(h["is_match"] for h in body)
         cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
         # grep -r -n -I -H -F flags must all be present.
         assert any("grep -r -n -I -H -F" in c and "head -n" in c for c in cmds)
@@ -448,7 +580,8 @@ class TestSearchFiles:
         assert len(body[0]["text"]) == 512
 
     def test_search_text_with_colons_preserved(self, client):
-        # Match text contains its own ':' — split must use maxsplit=2.
+        # Match text contains its own ':' — parser must keep the rest of
+        # the line intact after the lineno.
         out = "/ws/llm-build-B1/a.yaml:7:key: value: nested\n"
         tunnel = _tunnel_with_grep(0, out)
         lb, tun, auth, env = _patches(tunnel)
@@ -459,7 +592,11 @@ class TestSearchFiles:
             )
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body == [{"path": "a.yaml", "line": 7, "text": "key: value: nested"}]
+        assert len(body) == 1
+        assert body[0]["path"] == "a.yaml"
+        assert body[0]["line"] == 7
+        assert body[0]["text"] == "key: value: nested"
+        assert body[0]["is_match"] is True
 
     def test_search_path_traversal_rejected(self, client):
         tunnel = _tunnel_with_grep(0, "")
@@ -502,6 +639,148 @@ class TestSearchFiles:
                 params={"pattern": "x"},
             )
         assert r.status_code == 401
+
+    def test_search_path_with_hyphen_digit_hyphen_segments(self, client):
+        # Filenames frequently contain "-<digits>-" substrings (UUIDs, run
+        # IDs). The parser must anchor on the rightmost <sep>\d+<sep>, not
+        # the leftmost — otherwise it splits inside the path and reports a
+        # truncated path with the wrong lineno.
+        out = (
+            "/ws/llm-build-B1/run-1234-abcd/file.txt:42:hit line\n"
+            "/ws/llm-build-B1/a-9-b-7-c.log-100-context line\n"
+        )
+        tunnel = _tunnel_with_grep(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "x", "before": 1, "after": 1},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body) == 2
+        # Match line: full path preserved, lineno is the trailing digit run.
+        assert body[0]["path"] == "run-1234-abcd/file.txt"
+        assert body[0]["line"] == 42
+        assert body[0]["text"] == "hit line"
+        assert body[0]["is_match"] is True
+        # Context line: path with multiple "-<digits>-" segments preserved.
+        assert body[1]["path"] == "a-9-b-7-c.log"
+        assert body[1]["line"] == 100
+        assert body[1]["text"] == "context line"
+        assert body[1]["is_match"] is False
+
+    def test_search_with_context_before_after(self, client):
+        # grep -B1 -A1 output: context lines use ":" between path/lineno is
+        # NOT used — they use "-". Match line uses ":". Two distinct hit
+        # groups separated by "--".
+        out = (
+            "/ws/llm-build-B1/a.log-9-warmup\n"
+            "/ws/llm-build-B1/a.log:10:Traceback\n"
+            "/ws/llm-build-B1/a.log-11-  File ...\n"
+            "--\n"
+            "/ws/llm-build-B1/a.log-99-...\n"
+            "/ws/llm-build-B1/a.log:100:Traceback\n"
+            "/ws/llm-build-B1/a.log-101-end\n"
+        )
+        tunnel = _tunnel_with_grep(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "Traceback", "before": 1, "after": 1},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Expect 6 entries (2 matches + 4 context), -- separator skipped.
+        assert len(body) == 6
+        matches = [h for h in body if h["is_match"]]
+        contexts = [h for h in body if not h["is_match"]]
+        assert len(matches) == 2 and len(contexts) == 4
+        assert all(h["path"] == "a.log" for h in body)
+        # The grep flags include -B 1 and -A 1.
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        assert any("-B 1" in c and "-A 1" in c for c in cmds)
+
+    def test_search_context_max_capped(self, client):
+        tunnel = _tunnel_with_grep(0, "")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "x", "before": 9999},
+            )
+        # Pydantic Query(le=BUILD_FILES_GREP_MAX_CONTEXT) -> 422.
+        assert r.status_code == 422
+
+    def test_search_regex_flag(self, client):
+        tunnel = _tunnel_with_grep(0, "/ws/llm-build-B1/a.log:1:OOMKilled\n")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": r"\bOOMKilled\b", "regex": "true"},
+            )
+        assert r.status_code == 200, r.text
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        # -E flag, no -F flag.
+        assert any("grep -r -n -I -H -E" in c for c in cmds)
+        assert not any("grep -r -n -I -H -F" in c for c in cmds)
+
+    def test_search_stat_metadata(self, client):
+        tunnel = MagicMock()
+
+        async def run_remote(cmd, raise_on_error=True):
+            if cmd.startswith("readlink -f"):
+                target = cmd.split("--", 1)[1].strip().strip("'\"")
+                return (0, target + "\n", "")
+            if "grep -r" in cmd:
+                return (0, "/ws/llm-build-B1/a.log:1:hit\n", "")
+            if cmd.startswith("stat -c"):
+                # Single batched stat call for the one distinct hit file.
+                return (
+                    0,
+                    "/ws/llm-build-B1/a.log\t1234\t1700000000\n",
+                    "",
+                )
+            return (0, "", "")
+
+        tunnel.run_remote = AsyncMock(side_effect=run_remote)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "hit", "stat": "true"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body == [
+            {
+                "path": "a.log",
+                "line": 1,
+                "text": "hit",
+                "is_match": True,
+                "size": 1234,
+                "mtime": 1700000000,
+            }
+        ]
+
+    def test_search_stat_false_omits_metadata_fields(self, client):
+        # Defaults still serialize size/mtime as None — existing callers
+        # see them as nulls (or ignore unknown fields) but no breakage.
+        out = "/ws/llm-build-B1/a.txt:1:hello\n"
+        tunnel = _tunnel_with_grep(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "hello"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body[0]["is_match"] is True
+        assert body[0]["size"] is None
+        assert body[0]["mtime"] is None
 
 
 # -------------------------------------------------------------- /file/download
@@ -633,6 +912,161 @@ class TestDownloadFile:
         assert 'filename="rapport-?.txt"' in cd
         # RFC 5987 form: percent-encoded UTF-8.
         assert "filename*=UTF-8''rapport-%C3%A9.txt" in cd
+
+
+# ----------------------------------------------------- /file/download peek mode
+
+
+def _tunnel_for_peek(
+    peek_stdout: str,
+    *,
+    is_dir: bool = False,
+    size: int = 100,
+    peek_rc: int = 0,
+    peek_stderr: str = "",
+):
+    """Mock tunnel for /file/download peek mode.
+
+    ``readlink -f`` echoes its arg. ``stat -c '%s\\t%F'`` returns size and
+    type. Any pipefail+head/tail/sed pipeline returns ``peek_stdout``.
+    """
+    tunnel = MagicMock()
+
+    async def run_remote(cmd, raise_on_error=True):
+        if cmd.startswith("readlink -f"):
+            target = cmd.split("--", 1)[1].strip().strip("'\"")
+            return (0, target + "\n", "")
+        if cmd.startswith("stat -c '%s"):
+            kind = "directory" if is_dir else "regular file"
+            return (0, f"{size}\t{kind}\n", "")
+        if "set -o pipefail" in cmd and (
+            "head -n" in cmd or "tail -n" in cmd or "sed -n" in cmd
+        ):
+            return (peek_rc, peek_stdout, peek_stderr)
+        return (0, "", "")
+
+    tunnel.run_remote = AsyncMock(side_effect=run_remote)
+    return tunnel
+
+
+class TestDownloadPeek:
+    def test_peek_head_returns_text_plain(self, client):
+        tunnel = _tunnel_for_peek("line1\nline2\nline3\n")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "stderr.log", "head": 3},
+            )
+        assert r.status_code == 200, r.text
+        assert r.text == "line1\nline2\nline3\n"
+        assert r.headers["content-type"].startswith("text/plain")
+        assert "content-disposition" not in r.headers
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        assert any("head -n 3" in c and "head -c " in c for c in cmds)
+
+    def test_peek_tail_returns_text_plain(self, client):
+        tunnel = _tunnel_for_peek("end1\nend2\n")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "stderr.log", "tail": 200},
+            )
+        assert r.status_code == 200, r.text
+        assert r.text == "end1\nend2\n"
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        assert any("tail -n 200" in c for c in cmds)
+
+    def test_peek_range_uses_sed(self, client):
+        tunnel = _tunnel_for_peek("middle\n")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "stderr.log", "range": "5-7"},
+            )
+        assert r.status_code == 200, r.text
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        assert any("sed -n " in c and "5,7p" in c for c in cmds)
+
+    def test_peek_skips_size_cap(self, client):
+        # 50 GiB file — way over BUILD_FILES_DOWNLOAD_MAX_BYTES (1 GiB).
+        # Peek mode should still succeed because the cap doesn't apply.
+        tunnel = _tunnel_for_peek("tail content\n", size=50 * 1024**3)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "huge.log", "tail": 100},
+            )
+        assert r.status_code == 200, r.text
+        assert r.text == "tail content\n"
+
+    def test_peek_pipefail_sigpipe_treated_as_success(self, client):
+        # head -c truncates the producer mid-stream → SIGPIPE → rc=141
+        # under pipefail. We must still return the truncated bytes as 200.
+        tunnel = _tunnel_for_peek("partial\n", peek_rc=141)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "log", "head": 100},
+            )
+        assert r.status_code == 200, r.text
+        assert r.text == "partial\n"
+
+    def test_peek_directory_returns_400(self, client):
+        tunnel = _tunnel_for_peek("", is_dir=True)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "subdir", "head": 10},
+            )
+        assert r.status_code == 400
+
+    def test_peek_mutual_exclusion_head_tail(self, client):
+        tunnel = _tunnel_for_peek("")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "log", "head": 10, "tail": 10},
+            )
+        assert r.status_code == 400
+
+    def test_peek_range_malformed_returns_422(self, client):
+        # Pydantic Query(pattern=...) -> 422 before we reach the handler.
+        tunnel = _tunnel_for_peek("")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "log", "range": "abc"},
+            )
+        assert r.status_code == 422
+
+    def test_peek_range_inverted_returns_400(self, client):
+        tunnel = _tunnel_for_peek("")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "log", "range": "10-5"},
+            )
+        assert r.status_code == 400
+
+    def test_peek_head_param_capped_at_max(self, client):
+        # ge=1, le=BUILD_FILES_PEEK_MAX_LINES (10000) → 422.
+        tunnel = _tunnel_for_peek("")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "log", "head": 999999},
+            )
+        assert r.status_code == 422
 
 
 # ------------------------------------------------------- _resolve_lsf_config

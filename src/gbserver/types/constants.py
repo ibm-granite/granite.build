@@ -196,6 +196,43 @@ BUILD_FILES_GREP_LINE_MAX_BYTES = int(
     os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_GREP_LINE_MAX_BYTES, "512")
 )
 
+ENV_VAR_GBSERVER_BUILD_FILES_GREP_MAX_CONTEXT = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_GREP_MAX_CONTEXT"
+)
+
+# Default: 50-line cap on each of `before` / `after` context on grep search.
+BUILD_FILES_GREP_MAX_CONTEXT = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_GREP_MAX_CONTEXT, "50")
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_PEEK_MAX_LINES = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_PEEK_MAX_LINES"
+)
+
+# Default: 10000-line cap per direction on /file/download peek (head/tail).
+BUILD_FILES_PEEK_MAX_LINES = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_PEEK_MAX_LINES, "10000")
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_PEEK_MAX_BYTES = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_PEEK_MAX_BYTES"
+)
+
+# Default: 256 KiB cap on output bytes returned by /file/download peek mode.
+BUILD_FILES_PEEK_MAX_BYTES = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_PEEK_MAX_BYTES, str(256 * 1024))
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_STAT_BATCH_MAX = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_STAT_BATCH_MAX"
+)
+
+# Default: 500 distinct files per batched stat call (keeps argv well under
+# typical ARG_MAX). Used by /files/search?stat=true.
+BUILD_FILES_STAT_BATCH_MAX = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_STAT_BATCH_MAX, "500")
+)
+
 ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT = (
     ENV_VAR_PREFIX + "_DEFAULT_GH_REQUEST_TIMEOUT"
 )
