@@ -435,10 +435,16 @@ def resolve_hf_resource_group(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="space_name must not be empty",
         )
-    hfuri = HfURI.from_parts(owner=organization, repo="__lookup__")
+    token = get_hf_token()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="HF token is not configured on the server",
+        )
     try:
-        resolved_id = hfuri.resolve_resource_group_id(
-            token=get_hf_token(),
+        resolved_id = HfURI.resolve_resource_group_id_for_org(
+            token=token,
+            organization=organization,
             resource_group_name=rg_name,
         )
     except ValueError as exc:

@@ -28,10 +28,13 @@ client = TestClient(artifacts_api)
 
 class TestHFResourceGroupEndpoint:
     def test_resolve_success(self):
-        with patch("gbserver.api.artifacts.HfURI.from_parts") as mock_from_parts:
-            mock_uri = mock_from_parts.return_value
-            mock_uri.resolve_resource_group_id.return_value = "prod-id-123"
-
+        with (
+            patch("gbserver.api.artifacts.get_hf_token", return_value="fake-token"),
+            patch(
+                "gbserver.api.artifacts.HfURI.resolve_resource_group_id_for_org",
+                return_value="prod-id-123",
+            ),
+        ):
             resp = client.get(
                 "/hf/resource-group",
                 params={
@@ -46,10 +49,13 @@ class TestHFResourceGroupEndpoint:
         assert "gbspace-public" in data["resource_group_name"]
 
     def test_resolve_not_found(self):
-        with patch("gbserver.api.artifacts.HfURI.from_parts") as mock_from_parts:
-            mock_uri = mock_from_parts.return_value
-            mock_uri.resolve_resource_group_id.return_value = None
-
+        with (
+            patch("gbserver.api.artifacts.get_hf_token", return_value="fake-token"),
+            patch(
+                "gbserver.api.artifacts.HfURI.resolve_resource_group_id_for_org",
+                return_value=None,
+            ),
+        ):
             resp = client.get(
                 "/hf/resource-group",
                 params={
@@ -62,12 +68,13 @@ class TestHFResourceGroupEndpoint:
         assert "not found" in resp.json()["detail"].lower()
 
     def test_resolve_value_error(self):
-        with patch("gbserver.api.artifacts.HfURI.from_parts") as mock_from_parts:
-            mock_uri = mock_from_parts.return_value
-            mock_uri.resolve_resource_group_id.side_effect = ValueError(
-                "Could not resolve resource group id"
-            )
-
+        with (
+            patch("gbserver.api.artifacts.get_hf_token", return_value="fake-token"),
+            patch(
+                "gbserver.api.artifacts.HfURI.resolve_resource_group_id_for_org",
+                side_effect=ValueError("Could not resolve resource group id"),
+            ),
+        ):
             resp = client.get(
                 "/hf/resource-group",
                 params={
@@ -104,12 +111,28 @@ class TestHFResourceGroupEndpoint:
         assert resp.status_code == 400
         assert "empty" in resp.json()["detail"].lower()
 
+    def test_missing_token_returns_503(self):
+        with patch("gbserver.api.artifacts.get_hf_token", return_value=None):
+            resp = client.get(
+                "/hf/resource-group",
+                params={
+                    "space_name": "public",
+                    "organization": "ibm-research",
+                },
+            )
+
+        assert resp.status_code == 503
+        assert "not configured" in resp.json()["detail"].lower()
+
     def test_staging_env_uses_suffixed_name(self, monkeypatch):
         monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STAGING")
-        with patch("gbserver.api.artifacts.HfURI.from_parts") as mock_from_parts:
-            mock_uri = mock_from_parts.return_value
-            mock_uri.resolve_resource_group_id.return_value = "staging-id"
-
+        with (
+            patch("gbserver.api.artifacts.get_hf_token", return_value="fake-token"),
+            patch(
+                "gbserver.api.artifacts.HfURI.resolve_resource_group_id_for_org",
+                return_value="staging-id",
+            ),
+        ):
             resp = client.get(
                 "/hf/resource-group",
                 params={
