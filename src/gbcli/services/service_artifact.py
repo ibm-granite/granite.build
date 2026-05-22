@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, TypedDict
@@ -12,7 +13,6 @@ from gbcli.utils.gbconstants import (
     GB_DMF_USE_CLASSIC_LOADER,
     GBSERVER_ARTIFACT_API,
     HF_ORGANIZATION_DEFAULT,
-    HF_RESOURCE_GROUP_ID_DEFAULT,
     HF_REVISION_DEFAULT,
     LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
     LAKEHOUSE_FILESET_TABLE_NAME,
@@ -59,6 +59,9 @@ from gbcli.utils.utils import (
 
 if TYPE_CHECKING:
     from lakehouse.core import CopyAssetStatus
+
+
+logger = logging.getLogger(__name__)
 
 
 class ArtifactCopyResult(TypedDict):
@@ -304,10 +307,13 @@ def upload_to_hf(
     callback=None,
 ):
     org = hf_organization or HF_ORGANIZATION_DEFAULT
-    group_id = resource_group_id or HF_RESOURCE_GROUP_ID_DEFAULT
     if not org:
         raise Exception(
             "Error: No HuggingFace organization configured. Use --hf-organization or set hf_organization in the environment config."
+        )
+    if not resource_group_id:
+        raise Exception(
+            "Error: No HuggingFace resource group id provided. Pass resource_group_id explicitly or resolve it via lookup_hf_resource_group_id."
         )
     repo_id = f"{org}/{artifact_name}"
     artifact_type_map = {
@@ -319,7 +325,7 @@ def upload_to_hf(
     hf_type = artifact_type_map.get(type, "dataset")
     registry = HFRegistry(
         hf_token=hf_token,
-        resource_group_id=group_id,
+        resource_group_id=resource_group_id,
         organization=org,
     )
     return registry.upload_artifact(
@@ -360,6 +366,35 @@ def get_artifact_uri(github_token: str, artifact_uri: str, callback=None):
                 f"Error downloading file: URI has no matching artifacts."
             )
         raise Exception(f"Error downloading file: {e}")
+
+
+def lookup_hf_resource_group_id(
+    github_token: str,
+    space_name: str,
+    organization: str,
+    callback=None,
+) -> Optional[str]:
+    """Resolve an HF Enterprise resource group id via gbserver."""
+    if not space_name or not organization:
+        return None
+    url = f"{GBSERVER_ARTIFACT_API}hf/resource-group"
+    try:
+        response = gb_server_request(
+            user_token=github_token,
+            url=url,
+            http_method="get",
+            body=None,
+            params={"space_name": space_name, "organization": organization},
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to look up HF resource group id for space=%s organization=%s: %s",
+            space_name,
+            organization,
+            e,
+        )
+        return None
+    return response.get("resource_group_id") if response else None
 
 
 def get_model_lh(
@@ -714,9 +749,6 @@ def register_artifact_hf(
 
     if hf_organization is None:
         hf_organization = HF_ORGANIZATION_DEFAULT
-
-    if resource_group_id is None:
-        resource_group_id = HF_RESOURCE_GROUP_ID_DEFAULT
 
     payload = {
         "space_name": space_name,

@@ -46,9 +46,9 @@ class HFRegistry:
         self.resource_group_id = resource_group_id
         self.organization = organization
         logger.info(
-            "HFRegistry initialized",
-            resource_group_id=resource_group_id,
-            organization=organization,
+            "HFRegistry initialized: resource_group_id=%s organization=%s",
+            resource_group_id,
+            organization,
         )
 
     def upload_artifact(
@@ -93,11 +93,11 @@ class HFRegistry:
             )
         try:
             logger.info(
-                "uploading_to_hf",
-                repo_id=repo_id,
-                artifact_type=artifact_type,
-                local_path=str(local),
-                exist_ok=exist_ok,
+                "uploading_to_hf: repo_id=%s artifact_type=%s local_path=%s exist_ok=%s",
+                repo_id,
+                artifact_type,
+                str(local),
+                exist_ok,
             )
 
             if artifact_type == "bucket":
@@ -108,18 +108,20 @@ class HFRegistry:
                     exist_ok=exist_ok,
                 )
                 logger.info(
-                    "bucket_created_or_exists", bucket_id=repo_id, exist_ok=exist_ok
+                    "bucket_created_or_exists: bucket_id=%s exist_ok=%s",
+                    repo_id,
+                    exist_ok,
                 )
 
                 if local.is_file():
                     self.api.batch_bucket_files(
                         bucket_id=repo_id, add=[(str(local), local.name)]
                     )
-                    logger.info("bucket_file_uploaded", file=local.name)
+                    logger.info("bucket_file_uploaded: file=%s", local.name)
                 else:
                     bucket_hf_path = f"hf://buckets/{repo_id}"
                     self.api.sync_bucket(source=str(local), dest=bucket_hf_path)
-                    logger.info("bucket_folder_uploaded", folder=str(local))
+                    logger.info("bucket_folder_uploaded: folder=%s", str(local))
             else:
                 # Create repo if it doesn't exist
                 repo_url = self.api.create_repo(
@@ -130,7 +132,9 @@ class HFRegistry:
                     resource_group_id=self.resource_group_id,
                 )
                 logger.info(
-                    "repo_created_or_exists", repo_url=repo_url, exist_ok=exist_ok
+                    "repo_created_or_exists: repo_url=%s exist_ok=%s",
+                    repo_url,
+                    exist_ok,
                 )
 
                 # Ensure model card exists before uploading (for models only)
@@ -148,7 +152,9 @@ class HFRegistry:
                         commit_message=commit_message or f"Upload {local.name}",
                         revision=revision,
                     )
-                    logger.info("file_uploaded", file=local.name, revision=revision)
+                    logger.info(
+                        "file_uploaded: file=%s revision=%s", local.name, revision
+                    )
                 else:
                     # Directory upload with exclusions for .DS_Store and hidden files
                     self.api.upload_folder(
