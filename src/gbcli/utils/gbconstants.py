@@ -37,7 +37,7 @@ ENVIRONMENT_CONFIGS = {
         "server_log_application_name": "granite-build-prod",
         "branch_assets": "gbspace-config",
         "branch_space": "gbspace-config",
-        "hf_organization": "ibm-granite",
+        "hf_organization": "ibm-research",
         "feature_flags": {
             "gbserver_build_events": getenv_boolean(
                 "GBSERVER_BUILD_EVENTS", True
@@ -61,7 +61,7 @@ ENVIRONMENT_CONFIGS = {
         "server_log_application_name": "granite-build-prod",
         "branch_assets": "gbspace-config",
         "branch_space": "gbspace-config",
-        "hf_organization": "ibm-granite",
+        "hf_organization": "ibm-research",
         "feature_flags": {
             "gbserver_build_events": getenv_boolean(
                 "GBSERVER_BUILD_EVENTS", True
@@ -85,7 +85,7 @@ ENVIRONMENT_CONFIGS = {
         "server_log_application_name": "llm-build-prod",
         "branch_assets": "gbspace-config",
         "branch_space": "gbspace-config",
-        "hf_organization": "ibm-granite",
+        "hf_organization": "ibm-research",
         "feature_flags": {
             "gbserver_build_events": getenv_boolean(
                 "GBSERVER_BUILD_EVENTS", True
@@ -109,7 +109,7 @@ ENVIRONMENT_CONFIGS = {
         "server_log_application_name": "llm-build-prod",
         "branch_assets": "gbspace-config",
         "branch_space": "gbspace-config",
-        "hf_organization": "ibm-granite",
+        "hf_organization": "ibm-research",
         "feature_flags": {
             "gbserver_build_events": getenv_boolean(
                 "GBSERVER_BUILD_EVENTS", True
