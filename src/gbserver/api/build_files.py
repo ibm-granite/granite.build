@@ -17,8 +17,8 @@
 """REST endpoints for inspecting an LSF build's remote-file outputs.
 
 Three endpoints, registered on the shared builds_api:
-  - GET /builds/{id}/files          — single-level listing
-  - GET /builds/{id}/file           — file contents (base64, capped small)
+  - GET /builds/{id}/files          — directory listing (optional substring filter)
+  - GET /builds/{id}/files/search   — recursive content grep
   - GET /builds/{id}/file/download  — streamed file bytes (capped large)
 
 Path resolution: ``path`` is relative to the build root
@@ -30,11 +30,10 @@ resolve_and_check_real_path() before it hits a shell or SFTP call — do
 not bypass those helpers.
 """
 
-import base64
 import shlex
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import AsyncIterator, List, cast
+from typing import AsyncIterator, List, Optional, cast
 from urllib.parse import quote
 
 from fastapi import HTTPException, Query, Request, status
@@ -54,8 +53,9 @@ from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.constants import (
-    BUILD_FILES_CONTENT_MAX_BYTES,
     BUILD_FILES_DOWNLOAD_MAX_BYTES,
+    BUILD_FILES_GREP_LINE_MAX_BYTES,
+    BUILD_FILES_GREP_MAX_HITS,
     BUILD_FILES_LIST_MAX_ENTRIES,
 )
 from gbserver.utils.logger import get_logger
@@ -66,10 +66,11 @@ logger = get_logger(__name__)
 # --------------------------------------------------------------------- models
 
 
-class FileContentResponse(BaseModel):
+class GrepHit(BaseModel):
     path: str
-    """Path relative to the build root."""
-    content_base64: str
+    """Path of the matching file, relative to the build root."""
+    line: int
+    text: str
 
 
 # --------------------------------------------------------------------- helpers
@@ -96,29 +97,64 @@ def _pick_environment_uri(build: StoredBuild) -> str:
     return target.environment_uri
 
 
-# ---------------------------------------------------------------------- /files
+def _reject_pattern_control_chars(pattern: str) -> None:
+    """Reject patterns with chars that break shell quoting or grep -F semantics.
+
+    `shlex.quote` makes the pattern safe for the shell, and `grep -F`
+    treats it as a literal — but newlines split into separate patterns
+    and NULs terminate strings in C-level libraries, so we still 400 on
+    those.
+    """
+    if any(c in pattern for c in ("\x00", "\n", "\r")):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "pattern contains illegal characters",
+        )
+
+
+def _no_match_or_500(rc: int, stdout: str, stderr: str, what: str) -> List[str]:
+    """Translate a `... | grep ... | head` exit code into hits or HTTPException.
+
+    grep exits 1 when there are no matches — that's not an error here,
+    return []. rc>=2 is a real failure (or a stage before grep failed
+    under pipefail).
+    """
+    if rc == 0:
+        return [ln for ln in (stdout or "").splitlines() if ln]
+    if rc == 1 and not stdout:
+        return []
+    err = (stderr or "").lower()
+    if "no such file" in err or "cannot access" in err:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
+    raise HTTPException(
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+        f"{what} failed: {stderr.strip() or 'unknown error'}",
+    )
+
+
+# ---------------------------------------------------------------- /files/search
 
 
 @builds_api.get(
-    "/{build_id}/files",
-    response_model=List[str],
+    "/{build_id}/files/search",
+    response_model=List[GrepHit],
 )
-async def list_files(
+async def search_files(
     request: Request,
     build_id: str,
+    pattern: str = Query(..., min_length=1, max_length=512),
     path: str = Query(".", min_length=1),
-    recursive: bool = Query(False),
-) -> List[str]:
-    """List entries under the resolved path, returning paths relative to
-    the build root, sorted lexicographically. Includes both files and
-    directories (no trailing slash) and dotfiles.
+    ignore_case: bool = Query(False),
+) -> List[GrepHit]:
+    """Recursively grep for ``pattern`` (literal substring) under ``path``.
 
-    With ``recursive=true`` the subtree is walked (capped at
-    ``_FIND_MAX_ENTRIES`` entries). Symlinks are listed as their own
-    entries; their targets are not followed. Use ``GET /file`` to read a
-    single symlink's target — that path goes through ``readlink -f`` and
-    is rejected if it leaves the build root.
+    Skips binary files (``-I``). Caps total hits at
+    ``BUILD_FILES_GREP_MAX_HITS`` and truncates each matching line to
+    ``BUILD_FILES_GREP_LINE_MAX_BYTES`` bytes. Returns ``[]`` when the
+    pattern doesn't match anything.
     """
+    _reject_pattern_control_chars(pattern)
+
     build = lookup_build(build_id)
     authorize_build_access(request, build)
     environment_uri = _pick_environment_uri(build)
@@ -132,60 +168,79 @@ async def list_files(
         real = await resolve_and_check_real_path(tunnel, build_root, candidate)
 
         logger.info(
-            "[build-files] list build=%s recursive=%s",
+            "[build-files] search build=%s ignore_case=%s",
             build_id,
-            recursive,
+            ignore_case,
         )
-        logger.debug("[build-files] list real=%s build_root=%s", real, build_root)
 
-        quoted = shlex.quote(str(real))
-        if recursive:
-            # pipefail so find's rc propagates through head; without it
-            # head's success would mask a failed find.
-            cmd = (
-                f"set -o pipefail; "
-                f"find {quoted} -mindepth 1 "
-                f"| head -n {BUILD_FILES_LIST_MAX_ENTRIES}"
-            )
-        else:
-            cmd = f"ls -1A -- {quoted}"
+        flags = "-r -n -I -H -F"
+        if ignore_case:
+            flags += " -i"
+        # Trailing slash on the search root so a single-file path still
+        # gets a filename in the output. pipefail propagates grep's rc
+        # past head.
+        cmd = (
+            f"set -o pipefail; "
+            f"grep {flags} -- {shlex.quote(pattern)} {shlex.quote(str(real))}/ "
+            f"| head -n {BUILD_FILES_GREP_MAX_HITS}"
+        )
 
         rc, stdout, stderr = await tunnel.run_remote(cmd, raise_on_error=False)
-        if rc != 0:
-            err = (stderr or "").lower()
-            if "no such file" in err or "cannot access" in err:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
-            raise HTTPException(
-                status.HTTP_500_INTERNAL_SERVER_ERROR,
-                f"listing failed: {stderr.strip() or 'unknown error'}",
-            )
+        lines = _no_match_or_500(rc, stdout or "", stderr or "", "search")
 
-        lines = [ln for ln in (stdout or "").splitlines() if ln]
-        if recursive:
-            # find emits absolute paths.
-            rels = [str(PurePosixPath(ln).relative_to(build_root)) for ln in lines]
-        else:
-            # ls -1A emits bare names rooted at `real`.
-            rels = [str((real / name).relative_to(build_root)) for name in lines]
-        rels.sort()
-        return rels
+        hits: List[GrepHit] = []
+        for ln in lines:
+            # grep -H -n output: <path>:<lineno>:<text>
+            parts = ln.split(":", 2)
+            if len(parts) < 3:
+                continue
+            abs_path, lineno_s, text = parts
+            try:
+                lineno = int(lineno_s)
+            except ValueError:
+                continue
+            try:
+                rel = str(PurePosixPath(abs_path).relative_to(build_root))
+            except ValueError:
+                # Shouldn't happen — `real` is under build_root and grep
+                # only descends from there — but skip rather than leak.
+                continue
+            if len(text) > BUILD_FILES_GREP_LINE_MAX_BYTES:
+                text = text[:BUILD_FILES_GREP_LINE_MAX_BYTES]
+            hits.append(GrepHit(path=rel, line=lineno, text=text))
+        return hits
 
 
-# ----------------------------------------------------------------------- /file
+# ---------------------------------------------------------------------- /files
 
 
 @builds_api.get(
-    "/{build_id}/file",
-    response_model=FileContentResponse,
+    "/{build_id}/files",
+    response_model=List[str],
 )
-async def get_file(
+async def list_files(
     request: Request,
     build_id: str,
-    path: str = Query(..., min_length=1),
-) -> FileContentResponse:
-    """Return a file's bytes base64-encoded, with its path relative to
-    the build root.
+    path: str = Query(".", min_length=1),
+    recursive: bool = Query(False),
+    pattern: Optional[str] = Query(None, min_length=1, max_length=256),
+) -> List[str]:
+    """List entries under the resolved path, returning paths relative to
+    the build root, sorted lexicographically. Includes both files and
+    directories (no trailing slash) and dotfiles.
+
+    With ``recursive=true`` the subtree is walked (capped at
+    ``BUILD_FILES_LIST_MAX_ENTRIES`` entries). Symlinks are listed as
+    their own entries; their targets are not followed.
+
+    With ``pattern`` set, the listing is filtered server-side by literal
+    substring (``grep -F``) — equivalent to ``find … | grep -F pattern``
+    or ``ls … | grep -F pattern``. Returns ``[]`` when the pattern
+    doesn't match anything.
     """
+    if pattern is not None:
+        _reject_pattern_control_chars(pattern)
+
     build = lookup_build(build_id)
     authorize_build_access(request, build)
     environment_uri = _pick_environment_uri(build)
@@ -198,35 +253,57 @@ async def get_file(
         candidate = validate_subpath(build_root, path)
         real = await resolve_and_check_real_path(tunnel, build_root, candidate)
 
-        size, is_dir = await _remote_stat(tunnel, real)
-        if is_dir:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                "file endpoint requires a file, not a directory",
-            )
-        if size > BUILD_FILES_CONTENT_MAX_BYTES:
-            raise HTTPException(
-                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                {
-                    "message": "file exceeds content cap",
-                    "size": size,
-                    "cap": BUILD_FILES_CONTENT_MAX_BYTES,
-                },
-            )
-
-        sftp = await tunnel.start_sftp()
-        try:
-            # encoding=None makes read() return bytes; the asyncssh stub uses
-            # AnyStr so mypy can't narrow the return type — cast explicitly.
-            async with sftp.open(str(real), "rb", encoding=None) as fh:
-                raw = cast(bytes, await fh.read())
-        finally:
-            sftp.exit()
-
-        return FileContentResponse(
-            path=str(real.relative_to(build_root)),
-            content_base64=base64.b64encode(raw).decode("ascii"),
+        logger.info(
+            "[build-files] list build=%s recursive=%s filtered=%s",
+            build_id,
+            recursive,
+            pattern is not None,
         )
+        logger.debug("[build-files] list real=%s build_root=%s", real, build_root)
+
+        quoted = shlex.quote(str(real))
+        if recursive:
+            base = f"find {quoted} -mindepth 1"
+        else:
+            base = f"ls -1A -- {quoted}"
+
+        # pipefail in both branches so a failing producer (e.g. ls
+        # permission denied) propagates past grep/head instead of being
+        # masked by their success.
+        if pattern is not None:
+            cmd = (
+                f"set -o pipefail; {base} "
+                f"| grep -F -- {shlex.quote(pattern)} "
+                f"| head -n {BUILD_FILES_LIST_MAX_ENTRIES}"
+            )
+        elif recursive:
+            cmd = f"set -o pipefail; {base} | head -n {BUILD_FILES_LIST_MAX_ENTRIES}"
+        else:
+            cmd = base
+
+        rc, stdout, stderr = await tunnel.run_remote(cmd, raise_on_error=False)
+
+        if pattern is not None:
+            lines = _no_match_or_500(rc, stdout or "", stderr or "", "listing")
+        else:
+            if rc != 0:
+                err = (stderr or "").lower()
+                if "no such file" in err or "cannot access" in err:
+                    raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    f"listing failed: {stderr.strip() or 'unknown error'}",
+                )
+            lines = [ln for ln in (stdout or "").splitlines() if ln]
+
+        if recursive:
+            # find emits absolute paths.
+            rels = [str(PurePosixPath(ln).relative_to(build_root)) for ln in lines]
+        else:
+            # ls -1A emits bare names rooted at `real`.
+            rels = [str((real / name).relative_to(build_root)) for name in lines]
+        rels.sort()
+        return rels
 
 
 # ------------------------------------------------------------- /file/download

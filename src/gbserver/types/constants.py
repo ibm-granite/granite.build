@@ -160,15 +160,6 @@ ENV_VAR_LSF_LOGIN_NODE_ROTATION = ENV_VAR_PREFIX + "_LSF_LOGIN_NODE_ROTATION"
 # Build-files REST API caps. SSH connection params are resolved
 # per-request from the target's environment.yaml (via
 # Environment.load_environment_config), not env vars.
-ENV_VAR_GBSERVER_BUILD_FILES_CONTENT_MAX_BYTES = (
-    ENV_VAR_PREFIX + "_BUILD_FILES_CONTENT_MAX_BYTES"
-)
-
-# Default: 1 MiB cap on file contents returned inline.
-BUILD_FILES_CONTENT_MAX_BYTES = int(
-    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_CONTENT_MAX_BYTES, str(1 * 1024 * 1024))
-)
-
 ENV_VAR_GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES = (
     ENV_VAR_PREFIX + "_BUILD_FILES_DOWNLOAD_MAX_BYTES"
 )
@@ -185,6 +176,24 @@ ENV_VAR_GBSERVER_BUILD_FILES_LIST_MAX_ENTRIES = (
 # Default: 10000 entries returned by a recursive directory listing.
 BUILD_FILES_LIST_MAX_ENTRIES = int(
     os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_LIST_MAX_ENTRIES, "10000")
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_GREP_MAX_HITS = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_GREP_MAX_HITS"
+)
+
+# Default: 5000 hits cap on the recursive content-grep endpoint.
+BUILD_FILES_GREP_MAX_HITS = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_GREP_MAX_HITS, "5000")
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_GREP_LINE_MAX_BYTES = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_GREP_LINE_MAX_BYTES"
+)
+
+# Default: 512-byte cap on each matching line returned by grep search.
+BUILD_FILES_GREP_LINE_MAX_BYTES = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_GREP_LINE_MAX_BYTES, "512")
 )
 
 ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT = (
