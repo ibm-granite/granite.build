@@ -14,7 +14,10 @@ from tqdm import tqdm
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
 from gbcli.commands.common_options import common_options
-from gbcli.services.service_artifact import ArtifactURIError
+from gbcli.services.service_artifact import (
+    ArtifactURIError,
+    lookup_hf_resource_group_id,
+)
 from gbcli.utils.checksum import calculate_checksum_
 from gbcli.utils.gbconstants import (
     ARTIFACT_LINEAGE_DEFAULT_HEADERS,
@@ -22,7 +25,7 @@ from gbcli.utils.gbconstants import (
     ARTIFACT_LIST_HEADERS,
     CLIPBOARD_CHAR,
     DEFAULT_CHECKSUM_CONCURRENCY,
-    HF_RESOURCE_GROUP_ID_DEFAULT,
+    HF_ORGANIZATION_DEFAULT,
     LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
     LAKEHOUSE_FILESET_TABLE_NAME,
     LAKEHOUSE_MODEL_SHARED_TABLE,
@@ -35,6 +38,7 @@ from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.lh_auth import AuthException
 from gbcli.utils.lh_fileset import get_fileset_subforlder
 from gbcli.utils.lh_model import get_model_subforlder
+from gbcli.utils.spaceutil import resolve_space
 from gbcli.utils.utils import (
     check_runnable_browser,
     combine_tags,
@@ -52,7 +56,10 @@ from gbcli.utils.utils import (
     validate_tags,
 )
 from gbcli.utils.versionutil import check_current_and_latest_versions
-from gbcommon.utils.hf_utils import convert_hf_uri_to_url, parse_hf_uri
+from gbcommon.utils.hf_utils import (
+    convert_hf_uri_to_url,
+    parse_hf_uri,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +165,7 @@ def cli(ctx):
 @click.option(
     "--resource-group-id",
     default=None,
-    help="Resource group ID (defaults to HF_RESOURCE_GROUP_ID from settings).",
+    help="Resource group ID. If omitted, resolved from the GB space name via the HF Enterprise API.",
 )
 @click.option(
     "--store",
@@ -244,10 +251,6 @@ def push(
             err=True,
         )
         ctx.exit(1)  # Exit with a non-zero status
-
-    # Apply default resource_group_id if not provided
-    if not resource_group_id:
-        resource_group_id = HF_RESOURCE_GROUP_ID_DEFAULT
 
     if (
         type == "model" or type == "fileset" or type == "dataset" or type == "bucket"
@@ -469,6 +472,39 @@ def push(
                 return
             if not quiet:
                 click.echo(f"HuggingFace token obtained successfully!")
+
+            # Resolve resource group id from the GB space name when not given.
+            if not resource_group_id:
+                org = hf_organization or HF_ORGANIZATION_DEFAULT
+                resolved_space_name = space
+                if not resolved_space_name:
+                    global_space = resolve_space(
+                        artifact_client.github_token, space, callback=echo_callback
+                    )
+                    if global_space is not None:
+                        resolved_space_name = global_space.get("name")
+                if not resolved_space_name:
+                    click.echo(
+                        "❌ Could not determine GB space name to resolve the "
+                        "HuggingFace resource group id. Pass --space, set a "
+                        "default space, or pass --resource-group-id explicitly.",
+                        err=True,
+                    )
+                    sys.exit(1)
+                resource_group_id = lookup_hf_resource_group_id(
+                    github_token=artifact_client.github_token,
+                    space_name=resolved_space_name,
+                    organization=org,
+                )
+                if not resource_group_id:
+                    click.echo(
+                        f"❌ Could not resolve HuggingFace resource group id for "
+                        f"space '{resolved_space_name}' in organization '{org}'. "
+                        f"Pass --resource-group-id explicitly, or ensure the "
+                        f"resource group exists.",
+                        err=True,
+                    )
+                    sys.exit(1)
 
         checksum = None
         existing_registration = None
