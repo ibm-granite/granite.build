@@ -68,7 +68,6 @@ deployments:
     - GBSERVER_WANDB_API_KEY
     - GBSERVER_WANDB_ENTITY
     # OpenLineage / WandB ---
-    - GBSERVER_HF_TOKEN
   restServer:
     enable: true
     # enable: false

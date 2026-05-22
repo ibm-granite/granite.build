@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, TypedDict
@@ -58,6 +59,9 @@ from gbcli.utils.utils import (
 
 if TYPE_CHECKING:
     from lakehouse.core import CopyAssetStatus
+
+
+logger = logging.getLogger(__name__)
 
 
 class ArtifactCopyResult(TypedDict):
@@ -307,6 +311,10 @@ def upload_to_hf(
         raise Exception(
             "Error: No HuggingFace organization configured. Use --hf-organization or set hf_organization in the environment config."
         )
+    if not resource_group_id:
+        raise Exception(
+            "Error: No HuggingFace resource group id provided. Pass resource_group_id explicitly or resolve it via lookup_hf_resource_group_id."
+        )
     repo_id = f"{org}/{artifact_name}"
     artifact_type_map = {
         "model": "model",
@@ -378,7 +386,13 @@ def lookup_hf_resource_group_id(
             body=None,
             params={"space_name": space_name, "organization": organization},
         )
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "Failed to look up HF resource group id for space=%s organization=%s: %s",
+            space_name,
+            organization,
+            e,
+        )
         return None
     return response.get("resource_group_id") if response else None
 

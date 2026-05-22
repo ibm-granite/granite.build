@@ -38,6 +38,7 @@ from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.lh_auth import AuthException
 from gbcli.utils.lh_fileset import get_fileset_subforlder
 from gbcli.utils.lh_model import get_model_subforlder
+from gbcli.utils.spaceutil import resolve_space
 from gbcli.utils.utils import (
     check_runnable_browser,
     combine_tags,
@@ -477,13 +478,19 @@ def push(
                 org = hf_organization or HF_ORGANIZATION_DEFAULT
                 resolved_space_name = space
                 if not resolved_space_name:
-                    from gbcli.utils.spaceutil import resolve_space
-
                     global_space = resolve_space(
                         artifact_client.github_token, space, callback=echo_callback
                     )
                     if global_space is not None:
                         resolved_space_name = global_space.get("name")
+                if not resolved_space_name:
+                    click.echo(
+                        "❌ Could not determine GB space name to resolve the "
+                        "HuggingFace resource group id. Pass --space, set a "
+                        "default space, or pass --resource-group-id explicitly.",
+                        err=True,
+                    )
+                    sys.exit(1)
                 resource_group_id = lookup_hf_resource_group_id(
                     github_token=artifact_client.github_token,
                     space_name=resolved_space_name,
@@ -497,7 +504,7 @@ def push(
                         f"resource group exists.",
                         err=True,
                     )
-                    ctx.exit(1)
+                    sys.exit(1)
 
         checksum = None
         existing_registration = None

@@ -1,10 +1,7 @@
 """General utility functions."""
 
-import logging
-from typing import Literal, Optional
+from typing import Literal
 from urllib.parse import urlparse
-
-logger = logging.getLogger(__name__)
 
 _ARTIFACT_TYPE_TO_SEGMENT: dict[str, str] = {
     "model": "models",
