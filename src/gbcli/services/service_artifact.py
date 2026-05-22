@@ -360,6 +360,29 @@ def get_artifact_uri(github_token: str, artifact_uri: str, callback=None):
         raise Exception(f"Error downloading file: {e}")
 
 
+def lookup_hf_resource_group_id(
+    github_token: str,
+    space_name: str,
+    organization: str,
+    callback=None,
+) -> Optional[str]:
+    """Resolve an HF Enterprise resource group id via gbserver."""
+    if not space_name or not organization:
+        return None
+    url = f"{GBSERVER_ARTIFACT_API}hf/resource-group"
+    try:
+        response = gb_server_request(
+            user_token=github_token,
+            url=url,
+            http_method="get",
+            body=None,
+            params={"space_name": space_name, "organization": organization},
+        )
+    except Exception:
+        return None
+    return response.get("resource_group_id") if response else None
+
+
 def get_model_lh(
     github_token: str,
     lh_token: str,

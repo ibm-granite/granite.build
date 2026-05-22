@@ -14,7 +14,10 @@ from tqdm import tqdm
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
 from gbcli.commands.common_options import common_options
-from gbcli.services.service_artifact import ArtifactURIError
+from gbcli.services.service_artifact import (
+    ArtifactURIError,
+    lookup_hf_resource_group_id,
+)
 from gbcli.utils.checksum import calculate_checksum_
 from gbcli.utils.gbconstants import (
     ARTIFACT_LINEAGE_DEFAULT_HEADERS,
@@ -52,10 +55,8 @@ from gbcli.utils.utils import (
     validate_tags,
 )
 from gbcli.utils.versionutil import check_current_and_latest_versions
-from gbcommon.uri.hf import HfURI
 from gbcommon.utils.hf_utils import (
     convert_hf_uri_to_url,
-    lookup_hf_resource_group_id,
     parse_hf_uri,
 )
 
@@ -483,19 +484,17 @@ def push(
                     )
                     if global_space is not None:
                         resolved_space_name = global_space.get("name")
-                rg_name = HfURI.space_name_to_resource_group_name(resolved_space_name)
                 resource_group_id = lookup_hf_resource_group_id(
+                    github_token=artifact_client.github_token,
+                    space_name=resolved_space_name,
                     organization=org,
-                    resource_group_name=rg_name,
-                    token=hf_token,
                 )
                 if not resource_group_id:
                     click.echo(
                         f"❌ Could not resolve HuggingFace resource group id for "
-                        f"space '{resolved_space_name}' (resource group name '{rg_name}') in "
-                        f"organization '{org}'. Pass --resource-group-id "
-                        f"explicitly, or ensure the resource group exists and "
-                        f"your HF token has access to it.",
+                        f"space '{resolved_space_name}' in organization '{org}'. "
+                        f"Pass --resource-group-id explicitly, or ensure the "
+                        f"resource group exists.",
                         err=True,
                     )
                     ctx.exit(1)
