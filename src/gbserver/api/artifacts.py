@@ -45,6 +45,7 @@ from gbserver.types.constants import (
     ENV_URI_SCHEME,
     GB_ENVIRONMENT,
     LAKEHOUSE_ENVIRONMENT,
+    get_hf_token,
 )
 
 artifacts_api = FastAPI()
@@ -415,6 +416,51 @@ def __get_hf_decoded_uri_response(hf_uri: HfURI) -> DecodedHfURIResponse:
         metadata["hf_type"] = str(metadata["hf_type"])
     response = DecodedHfURIResponse(**metadata)
     return response
+
+
+class HFResourceGroupResponse(BaseModel):
+    resource_group_name: str
+    resource_group_id: str
+
+
+@artifacts_api.get("/hf/resource-group")
+def resolve_hf_resource_group(
+    space_name: str,
+    organization: str,
+) -> HFResourceGroupResponse:
+    """Resolve an HF Enterprise resource group name and ID from a space name."""
+    rg_name = HfURI.space_name_to_resource_group_name(space_name)
+    if not rg_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="space_name must not be empty",
+        )
+    token = get_hf_token()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="HF token is not configured on the server",
+        )
+    try:
+        resolved_id = HfURI.resolve_resource_group_id_for_org(
+            token=token,
+            organization=organization,
+            resource_group_name=rg_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+    if not resolved_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Resource group '{rg_name}' not found in organization '{organization}'",
+        )
+    return HFResourceGroupResponse(
+        resource_group_name=rg_name,
+        resource_group_id=resolved_id,
+    )
 
 
 @artifacts_api.get("/decode")

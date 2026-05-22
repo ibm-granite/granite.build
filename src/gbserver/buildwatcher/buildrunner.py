@@ -360,7 +360,19 @@ class BuildRunner(AbstractBuildRunner):
 
         try:
 
-            space = self.__get_build_space(stored_build)
+            try:
+                space = self.__get_build_space(stored_build)
+            except ValueError as e:
+                err_stack = traceback.format_exc()
+                logger.error("%s", err_stack)
+                self.__update_stored_build_status(
+                    status=Status.INVALID, failure_reason=str(err_stack)
+                )
+                self.build_message_logger.error(
+                    markdown=f"build `{build_id}` status `{self.stored_build.status}`, error: {e}"
+                )
+                return
+
             targets = stored_build.targets  # default: re-run all targets of the build
             force_fetch = True  # default: set to force fetch
 
