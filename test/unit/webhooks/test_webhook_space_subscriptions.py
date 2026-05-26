@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from gbserver.webhooks.api import webhooks_api
 from gbserver.webhooks.models import StoredWebhookSubscription
+from gbserver.webhooks.url_validator import WebhookURLError
 
 
 class TestSpaceWideSubscriptionAPI:
@@ -21,11 +22,14 @@ class TestSpaceWideSubscriptionAPI:
         """Create a fresh test client for each test."""
         self.client = TestClient(webhooks_api)
 
+    @patch("gbserver.webhooks.api.validate_webhook_url")
     @patch("gbserver.webhooks.api.get_webhook_storage")
     @patch("gbserver.webhooks.api.get_admin_storage")
-    def test_create_space_subscription(self, mock_admin, mock_get_storage):
+    def test_create_space_subscription(self, mock_admin, mock_get_storage, mock_validate):
         """POST to /spaces/{name}/subscriptions returns 201 with build_id=None."""
+        mock_validate.return_value = None
         mock_storage = MagicMock()
+        mock_storage.get_by_space.return_value = []
         mock_get_storage.return_value = mock_storage
 
         # Mock space exists
@@ -52,18 +56,22 @@ class TestSpaceWideSubscriptionAPI:
         assert data["build_id"] is None
         assert data["webhook_url"] == "https://dashboard.example.com/hooks"
         assert data["active"] is True
+        assert data["status"] == "pending"
+        assert data["scope"] == "space"
         assert data["created_by"] == "dashboard-service"
         # Secret must NEVER be returned
         assert "secret" not in data
         # Verify storage.add was called
         mock_storage.add.assert_called_once()
 
+    @patch("gbserver.webhooks.api.validate_webhook_url")
     @patch("gbserver.webhooks.api.get_webhook_storage")
     @patch("gbserver.webhooks.api.get_admin_storage")
     def test_create_space_subscription_space_not_found(
-        self, mock_admin, mock_get_storage
+        self, mock_admin, mock_get_storage, mock_validate
     ):
         """POST for nonexistent space returns 404."""
+        mock_validate.return_value = None
         mock_space_storage = MagicMock()
         mock_space_storage.get_by_where.return_value = []
         admin = MagicMock()
