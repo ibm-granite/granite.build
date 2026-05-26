@@ -72,9 +72,11 @@ Replaces the old `WebhookDispatcher` + `BatchBuffer` combination. One instance
 per active build, created lazily when the first event arrives.
 
 Responsibilities:
-- Query active subscriptions matching the build's space
+- Query active subscriptions matching the build (by `build_id`, `build_filter`, and space-wide)
+- Deduplicate subscriptions by UUID across all lookup paths
 - For each matching subscription, serialize the event into a `StoredWebhookEvent`
 - Persist the event to the `gb_webhook_events` table via the event storage layer
+- Periodically re-read subscriptions (every 50 events) to pick up late arrivals
 - No HTTP calls, no batching, no flushing — purely a DB write
 
 ### 3. Event Storage (`src/gbserver/webhooks/event_storage.py`)
@@ -88,10 +90,11 @@ delivery worker (Phase 2) picks them up.
 Pydantic model for `StoredWebhookEvent`:
 - `uuid` — event identifier
 - `subscription_id` — FK to the subscription
+- `build_id` — the build that produced this event
 - `event_type` — the build event type
-- `payload` — serialized event data (JSON)
-- `status` — `"pending"`, `"delivered"`, `"failed"`
-- `created_at` — timestamp
+- `payload` — serialized event data (JSON dict)
+- `delivered` — boolean, False until delivery worker marks it True
+- `created_time` — timestamp
 
 ### 5. URL Validator (`src/gbserver/webhooks/url_validator.py`)
 
@@ -103,12 +106,15 @@ SSRF protection layer. Validates webhook URLs before subscription creation:
 
 ### 6. URL Verification (`src/gbserver/webhooks/verification.py`)
 
-Ownership verification challenge. When a subscription is created:
+Ownership verification challenge. When a subscription is created via the REST API:
 1. Subscription starts in `"pending"` status
-2. A challenge token is sent to the webhook URL via GET request
-3. The endpoint must echo the token back in the response
+2. A challenge token is POSTed to the webhook URL with `X-GB-Event: verification` header
+3. The endpoint must respond with `{"challenge": "<token>"}` in the body
 4. On success, status transitions to `"active"`
 5. On failure, subscription remains `"pending"` (can be retried)
+
+Note: Auto-subscriptions via `--webhook-url` on build submission skip verification
+and are created directly with `status="active"` (user explicitly provided the URL).
 
 ### 7. Delivery (`src/gbserver/webhooks/delivery.py`)
 
@@ -180,8 +186,13 @@ Subscription creation now includes:
 
 ### 11. Auto-Subscribe on Build Submission (`src/gbserver/api/builds.py`)
 
-When a build is submitted with `webhook_url` parameter, a per-build subscription
-is automatically created via `_create_webhook_subscription()`.
+When a build is submitted with `webhook_url` parameter, a subscription is
+automatically created via `_create_webhook_subscription()`:
+- Created with `status="active"` (no verification needed — user provided the URL)
+- Uses `build_filter=build_id` (not `build_id` field) for per-build scoping
+- Created BEFORE the build is enqueued to prevent race with first event
+- Requires minimum 8-character secret; skips silently if too short
+- URL validation is applied (SSRF check); skips silently on failure
 
 ## Event Flow
 
@@ -228,17 +239,24 @@ python scripts/test-webhook-e2e.py
 ## File Map
 
 ```
-src/gbserver/webhooks/
+src/gbserver/webhooks/                    # Webhook-specific logic
 ├── __init__.py
-├── api.py              # FastAPI routes for subscription CRUD
-├── delivery.py         # HMAC signing + HTTP POST with retry (kept for Phase 2)
-├── event_models.py     # StoredWebhookEvent Pydantic model
-├── event_storage.py    # Event persistence storage layer (gb_webhook_events)
-├── event_writer.py     # WebhookEventWriter — persists events to DB
-├── log_scanner.py      # Regex-based log line scanning (kept for Phase 2)
-├── models.py           # StoredWebhookSubscription model (scope, status, build_filter)
-├── sql_storage.py      # PostgreSQL + SQLite subscription storage backends
-├── storage.py          # IWebhookStorage interface
-├── url_validator.py    # SSRF protection — blocks private IPs
-└── verification.py     # URL ownership verification challenge
+├── api.py                                # FastAPI routes for subscription CRUD
+├── delivery.py                           # HMAC signing + HTTP POST with retry (Phase 2)
+├── event_models.py                       # StoredWebhookEvent Pydantic model
+├── event_storage.py                      # Re-export from storage/ (backward compat)
+├── event_writer.py                       # WebhookEventWriter — persists events to DB
+├── log_scanner.py                        # Regex-based log line scanning (Phase 2)
+├── models.py                             # StoredWebhookSubscription model
+├── sql_storage.py                        # Re-export from storage/ (backward compat)
+├── storage.py                            # Re-export from storage/ (backward compat)
+├── url_validator.py                      # SSRF protection — blocks private IPs
+└── verification.py                       # URL ownership verification challenge
+
+src/gbserver/storage/                     # Canonical storage locations
+├── webhook_subscription_storage.py       # IWebhookStorage + BaseWebhookStorage
+├── webhook_event_storage.py              # IWebhookEventStorage + BaseWebhookEventStorage
+└── sql/
+    ├── webhook_subscription_storage.py   # SQLWebhookStorage + factory
+    └── webhook_event_storage.py          # SQLWebhookEventStorage + factory
 ```
