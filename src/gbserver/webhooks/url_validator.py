@@ -69,9 +69,7 @@ def validate_webhook_url(url: str, allow_http: bool = False) -> None:
         raise WebhookURLError(f"Invalid URL (no host): {url}")
 
     if hostname.lower() in BLOCKED_HOSTNAMES:
-        raise WebhookURLError(
-            f"Webhook URL blocked (private/blocked host): {hostname}"
-        )
+        raise WebhookURLError(f"Webhook URL blocked (private/blocked host): {hostname}")
 
     # Check if hostname is a literal IP address
     try:
@@ -96,7 +94,7 @@ def validate_webhook_url(url: str, allow_http: bool = False) -> None:
         raise WebhookURLError(f"DNS resolution returned no results for {hostname}")
 
     for addr_info in addr_infos:
-        ip_str = addr_info[4][0]
+        ip_str = str(addr_info[4][0])
         if _is_ip_blocked(ip_str):
             raise WebhookURLError(
                 f"Webhook URL blocked (private/blocked IP {ip_str} for host {hostname})"

@@ -30,7 +30,7 @@ import traceback
 from asyncio import Event, Queue
 from base64 import b64decode
 from pathlib import Path
-from typing import Callable, List, Optional, Self, Union
+from typing import Any, Callable, List, Optional, Self, Union
 
 from gbcommon.uri.git import GitURI
 from gbcommon.uri.uri import URI
@@ -149,7 +149,7 @@ class BuildRunner(AbstractBuildRunner):
             build, _BUILD_EVENT_SOURCE_NAME
         )  # To be recreated later.
         self.event_storage = get_admin_storage().event_storage
-        self._webhook_writer = None
+        self._webhook_writer: Optional[Any] = None
 
     def stop(self: Self) -> None:
         """Stop the building thread if it was started."""
