@@ -10,6 +10,7 @@ Routes:
     DELETE /{webhook_id} — Deactivate a subscription (owner only).
 """
 
+import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
@@ -19,12 +20,15 @@ from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.utils.logger import get_logger
 from gbserver.webhooks.models import WEBHOOK_MIN_FREQUENCY, StoredWebhookSubscription
 from gbserver.webhooks.storage import IWebhookStorage
+from gbserver.webhooks.url_validator import WebhookURLError, validate_webhook_url
 
 logger = get_logger(__name__)
 webhooks_api = FastAPI()
 
 # Module-level storage (lazily initialized)
 _webhook_storage: Optional[IWebhookStorage] = None  # pylint: disable=invalid-name
+
+WEBHOOKS_MAX_PER_SPACE = int(os.environ.get("GBSERVER_WEBHOOKS_MAX_PER_SPACE", "20"))
 
 
 def set_webhook_storage(storage: IWebhookStorage) -> None:
@@ -106,6 +110,9 @@ class WebhookResponse(BaseModel):
     frequency: int
     log_pattern: Optional[str]
     active: bool
+    status: str
+    scope: str
+    build_filter: Optional[str]
     created_by: str
     created_time: str
 
@@ -165,9 +172,23 @@ def _to_response(sub: StoredWebhookSubscription) -> WebhookResponse:
         frequency=sub.frequency,
         log_pattern=sub.log_pattern,
         active=sub.active,
+        status=sub.status,
+        scope=sub.scope,
+        build_filter=sub.build_filter,
         created_by=sub.created_by,
         created_time=sub.created_time.isoformat(),
     )
+
+
+def _check_rate_limit(storage: IWebhookStorage, space_name: str) -> None:
+    """Raise 429 if space has too many active subscriptions."""
+    existing = storage.get_by_space(space_name)
+    active_count = sum(1 for s in existing if s.active)
+    if active_count >= WEBHOOKS_MAX_PER_SPACE:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Maximum {WEBHOOKS_MAX_PER_SPACE} active subscriptions per space",
+        )
 
 
 # ── Routes ────────────────────────────────────────────────────────────────
@@ -211,6 +232,16 @@ def create_subscription(
             ),
         )
 
+    # Validate webhook URL (SSRF protection)
+    allow_http = os.environ.get("GBSERVER_WEBHOOKS_ALLOW_HTTP", "").lower() == "true"
+    try:
+        validate_webhook_url(body.webhook_url, allow_http=allow_http)
+    except WebhookURLError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid webhook URL: {e}",
+        ) from e
+
     # Verify build exists
     admin_storage = get_admin_storage()
     build = admin_storage.build_storage.get_by_uuid(build_id)
@@ -220,10 +251,15 @@ def create_subscription(
             detail=f"Build {build_id} not found",
         )
 
+    # Rate limit check
+    storage = get_webhook_storage()
+    _check_rate_limit(storage, build.space_name)
+
     # Create and persist subscription
     subscription = StoredWebhookSubscription(
         space_name=build.space_name,
         build_id=build_id,
+        build_filter=build_id,
         webhook_url=body.webhook_url,
         secret=body.secret,
         event_types=body.event_types,
@@ -232,9 +268,9 @@ def create_subscription(
         log_pattern=body.log_pattern,
         created_by=username,
         metadata=body.metadata,
+        status="pending",
     )
 
-    storage = get_webhook_storage()
     storage.add(subscription)
 
     logger.info(
@@ -321,6 +357,16 @@ def create_space_subscription(
             ),
         )
 
+    # Validate webhook URL (SSRF protection)
+    allow_http = os.environ.get("GBSERVER_WEBHOOKS_ALLOW_HTTP", "").lower() == "true"
+    try:
+        validate_webhook_url(body.webhook_url, allow_http=allow_http)
+    except WebhookURLError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid webhook URL: {e}",
+        ) from e
+
     # Verify space exists
     admin_storage = get_admin_storage()
     spaces = admin_storage.space_storage.get_by_where({"name": space_name})
@@ -329,6 +375,10 @@ def create_space_subscription(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Space {space_name} not found",
         )
+
+    # Rate limit check
+    storage = get_webhook_storage()
+    _check_rate_limit(storage, space_name)
 
     # Create and persist subscription (build_id=None = space-wide)
     subscription = StoredWebhookSubscription(
@@ -342,9 +392,9 @@ def create_space_subscription(
         log_pattern=body.log_pattern,
         created_by=username,
         metadata=body.metadata,
+        status="pending",
     )
 
-    storage = get_webhook_storage()
     storage.add(subscription)
 
     logger.info(
