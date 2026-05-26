@@ -18,20 +18,31 @@ notification system for developers working on the codebase.
 │                                           │ __dispatch_to_    │  │
 │                                           │   webhooks()      │  │
 │                                           │                   │  │
-│                                           │ Lazy-initializes  │  │
-│                                           │ WebhookDispatcher │  │
+│                                           │ Lazy-creates      │  │
+│                                           │ WebhookEventWriter│  │
 │                                           └────────┬──────────┘  │
 │                                                    │             │
 │  ┌─────────────────────────────────────────────────▼──────────┐  │
-│  │                  WebhookDispatcher                          │  │
-│  │                                                            │  │
-│  │  ┌────────────────┐     ┌──────────────┐                  │  │
-│  │  │ BatchBuffer    │     │ Delivery     │                  │  │
-│  │  │ (per-sub       │────▶│ (aiohttp     │────▶ Subscriber  │  │
-│  │  │  accumulator)  │     │  POST+HMAC)  │     Endpoint     │  │
-│  │  └────────────────┘     └──────────────┘                  │  │
-│  └────────────────────────────────────────────────────────────┘  │
+│  │                  WebhookEventWriter                          │  │
+│  │                                                             │  │
+│  │  1. Query active subscriptions (status="active")            │  │
+│  │  2. Match event against include/exclude filters             │  │
+│  │  3. Serialize event → StoredWebhookEvent                    │  │
+│  │  4. INSERT into gb_webhook_events table                     │  │
+│  │                                                             │  │
+│  │  (Fire-and-forget — no HTTP, no batching, no flushing)      │  │
+│  └─────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────┘
+
+                              │
+                              │ (Phase 2 — not yet implemented)
+                              ▼
+                ┌───────────────────────────┐
+                │   Delivery Worker         │
+                │   Reads pending events    │
+                │   Batches by subscription │
+                │   HMAC signs + HTTP POST  │
+                └───────────────────────────┘
 ```
 
 ## Key Components
@@ -43,36 +54,63 @@ DB as builds). Supports both PostgreSQL and SQLite backends.
 
 Key model: `StoredWebhookSubscription` in `webhooks/models.py`
 - `uuid` — subscription identifier
-- `build_id` — specific build (null for space-wide)
+- `scope` — `"space"` or `"server"` (replaces the old build_id=None heuristic)
+- `status` — lifecycle state: `"pending"` → `"active"` → `"suspended"` / `"disabled"`
 - `space_name` — space scope
+- `build_id` — legacy field (kept for backward compatibility)
+- `build_filter` — optional per-build filter on a space subscription
 - `webhook_url` — subscriber's HTTP endpoint
 - `secret` — HMAC shared secret
 - `event_types` — include filter (`["*"]` for all)
 - `excluded_types` — exclude filter (takes priority)
-- `frequency` — batch interval in seconds (min 15)
-- `log_pattern` — optional regex for log scanning
+- `frequency` — batch interval in seconds (min 15) — used by Phase 2 delivery worker
+- `log_pattern` — optional regex for log scanning — used by Phase 2
 
-### 2. Dispatcher (`src/gbserver/webhooks/dispatcher.py`)
+### 2. WebhookEventWriter (`src/gbserver/webhooks/event_writer.py`)
 
-One `WebhookDispatcher` instance per active build. Created lazily when the
-first event arrives. Holds a `BatchBuffer` and subscription registry.
+Replaces the old `WebhookDispatcher` + `BatchBuffer` combination. One instance
+per active build, created lazily when the first event arrives.
 
-- `start(subscriptions)` — register subscriptions for buffering
-- `accept_event(event)` — buffer event for matching subscriptions
-- `flush_all_ready()` — deliver batches where frequency elapsed
-- `flush_final()` — force-flush all on build completion
+Responsibilities:
+- Query active subscriptions matching the build's space
+- For each matching subscription, serialize the event into a `StoredWebhookEvent`
+- Persist the event to the `gb_webhook_events` table via the event storage layer
+- No HTTP calls, no batching, no flushing — purely a DB write
 
-### 3. Batch Buffer (`src/gbserver/webhooks/batch_buffer.py`)
+### 3. Event Storage (`src/gbserver/webhooks/event_storage.py`)
 
-Thread-safe in-memory accumulator. Tracks per-subscription:
-- Pending events list
-- Last flush timestamp
-- Configured frequency
+Persistence layer for webhook events. Writes `StoredWebhookEvent` records to the
+`gb_webhook_events` table. These records sit in `"pending"` state until a
+delivery worker (Phase 2) picks them up.
 
-`get_ready_subscriptions()` returns IDs where enough time has elapsed
-AND buffer is non-empty.
+### 4. Event Models (`src/gbserver/webhooks/event_models.py`)
 
-### 4. Delivery (`src/gbserver/webhooks/delivery.py`)
+Pydantic model for `StoredWebhookEvent`:
+- `uuid` — event identifier
+- `subscription_id` — FK to the subscription
+- `event_type` — the build event type
+- `payload` — serialized event data (JSON)
+- `status` — `"pending"`, `"delivered"`, `"failed"`
+- `created_at` — timestamp
+
+### 5. URL Validator (`src/gbserver/webhooks/url_validator.py`)
+
+SSRF protection layer. Validates webhook URLs before subscription creation:
+- Blocks private/reserved IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, etc.)
+- Blocks link-local and loopback addresses
+- Enforces HTTPS unless `GBSERVER_WEBHOOKS_ALLOW_HTTP=True`
+- Resolves DNS to check the actual IP (prevents DNS rebinding)
+
+### 6. URL Verification (`src/gbserver/webhooks/verification.py`)
+
+Ownership verification challenge. When a subscription is created:
+1. Subscription starts in `"pending"` status
+2. A challenge token is sent to the webhook URL via GET request
+3. The endpoint must echo the token back in the response
+4. On success, status transitions to `"active"`
+5. On failure, subscription remains `"pending"` (can be retried)
+
+### 7. Delivery (`src/gbserver/webhooks/delivery.py`)
 
 Handles the HTTP POST with:
 - JSON serialization of payload
@@ -80,29 +118,27 @@ Handles the HTTP POST with:
 - Retry with exponential backoff (5 attempts: 1s, 2s, 4s, 8s, 16s)
 - 10-second timeout per attempt
 
-Uses `aiohttp.ClientSession` for async HTTP.
+This module is kept for Phase 2 when the delivery worker is implemented.
 
-### 5. Integration Point (`src/gbserver/buildwatcher/buildrunner.py`)
+### 8. Integration Point (`src/gbserver/buildwatcher/buildrunner.py`)
 
-The webhook system hooks into the BuildRunner's event processing loop:
+The webhook system hooks into the BuildRunner's event processing loop via a
+single method:
 
 ```python
-# Line 746 — every event goes through dispatch
+# Every event goes through dispatch
 self.__dispatch_to_webhooks(event)
-
-# Line 598 — after each event, check for ready batches
-await self.__flush_webhooks()
-
-# Line 600 — on build completion, force-flush everything
-if build_finished:
-    await self.__flush_webhooks_final()
-
-# Line 610 — on timeout (every 5s), flush ready batches
-except TimeoutError:
-    await self.__flush_webhooks()
 ```
 
-### 6. API Endpoints (`src/gbserver/webhooks/api.py`)
+The method:
+1. Lazily creates a `WebhookEventWriter` on first event
+2. EventWriter queries active subscriptions (status="active")
+3. For each matching subscription, writes a `StoredWebhookEvent` to DB
+4. No flushing, no delivery, no HTTP calls — just a DB INSERT
+
+No periodic flush or final flush is needed — events are persisted immediately.
+
+### 9. API Endpoints (`src/gbserver/webhooks/api.py`)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -112,7 +148,37 @@ except TimeoutError:
 | GET | `/api/v1/webhooks/spaces/{space}/subscriptions` | List space-wide subscriptions |
 | DELETE | `/api/v1/webhooks/{webhook_id}` | Deactivate subscription |
 
-### 7. Auto-Subscribe on Build Submission (`src/gbserver/api/builds.py`)
+Subscription creation now includes:
+- URL validation (SSRF protection)
+- Rate limiting (max subscriptions per space/user)
+- Verification challenge dispatch
+- Scope assignment (`"space"` or `"server"`)
+
+### 10. Subscription Status Lifecycle
+
+```
+           ┌─────────────────────────────────────────┐
+           │                                         │
+  CREATE   │   VERIFY     ┌──────────┐              │
+    │      │     │        │          ▼              │
+    ▼      │     ▼        │    ┌───────────┐       │
+┌─────────┐│ ┌────────┐  │    │ suspended │       │
+│ pending │┼▶│ active │──┼───▶│           │───────┘
+└─────────┘│ └────────┘  │    └───────────┘  (re-verify)
+           │     │        │
+           │     ▼        │
+           │ ┌──────────┐ │
+           │ │ disabled │ │
+           │ └──────────┘ │
+           └─────────────────────────────────────────┘
+```
+
+- **pending** — created, awaiting URL verification challenge
+- **active** — verified, events are being persisted for this subscription
+- **suspended** — temporarily disabled (e.g., repeated delivery failures in Phase 2)
+- **disabled** — permanently deactivated by user or admin
+
+### 11. Auto-Subscribe on Build Submission (`src/gbserver/api/builds.py`)
 
 When a build is submitted with `webhook_url` parameter, a per-build subscription
 is automatically created via `_create_webhook_subscription()`.
@@ -122,35 +188,41 @@ is automatically created via `_create_webhook_subscription()`.
 1. Build framework emits `BuildEvent` → `event_q.put_nowait(event)`
 2. Worker task receives event → `__process_event(event)`
 3. Inside `__process_event`: `__dispatch_to_webhooks(event)` is called
-4. Dispatcher checks `event.type.is_internal_event()` — skips TERMINATE, NEWARTIFACT_IN_ENVIRONMENT
-5. For each registered subscription, checks include/exclude filters
-6. Buffers the serialized event data
-7. After processing, `__flush_webhooks()` checks `get_ready_subscriptions()`
-8. If ready: `flush_subscription()` → serialize payload → sign → POST
+4. EventWriter checks `event.type.is_internal_event()` — skips TERMINATE, NEWARTIFACT_IN_ENVIRONMENT
+5. EventWriter queries active subscriptions for this build's space
+6. For each matching subscription, checks include/exclude filters
+7. Serializes the event into a `StoredWebhookEvent`
+8. INSERTs the event into the `gb_webhook_events` table
+9. (Phase 2) Delivery worker reads pending events, batches by subscription, delivers via HTTP
 
 ## Configuration
 
-Controlled by `GBSERVER_WEBHOOKS_ENABLED` (default: `True`).
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GBSERVER_WEBHOOKS_ENABLED` | `True` | Master switch for the webhook system |
+| `GBSERVER_WEBHOOKS_ALLOW_HTTP` | `False` | Allow non-HTTPS webhook URLs (dev only) |
+| `GBSERVER_WEBHOOKS_MAX_PER_SPACE` | `20` | Max subscriptions per space |
+| `GBSERVER_WEBHOOKS_MAX_PER_USER` | `50` | Max subscriptions per user |
 
-The dispatcher is only created if subscriptions exist for the build. Zero
-overhead for builds without webhook subscribers.
+The EventWriter is only created if webhooks are enabled. Zero overhead for
+builds when the feature is disabled.
 
 ## Standalone Mode
 
 In standalone mode (`gbserver standalone`):
-- Uses SQLite for subscription storage
+- Uses SQLite for subscription and event storage
 - uvicorn configured with `loop="asyncio"` (not uvloop) to avoid macOS issues
 - The e2e test script (`scripts/test-webhook-e2e.py`) exercises the full flow
+  including event persistence verification
 
 ## Testing
 
 ```bash
-# Run the e2e test (starts local gbserver + webhook receiver)
-source .venv/bin/activate
-python scripts/test-webhook-e2e.py
-
 # Run unit tests for webhook components
-pytest -s test/gbserver_test/webhooks/
+pytest test/unit/webhooks/ -v
+
+# Run the e2e test (starts local gbserver, verifies event persistence)
+python scripts/test-webhook-e2e.py
 ```
 
 ## File Map
@@ -159,11 +231,14 @@ pytest -s test/gbserver_test/webhooks/
 src/gbserver/webhooks/
 ├── __init__.py
 ├── api.py              # FastAPI routes for subscription CRUD
-├── batch_buffer.py     # In-memory per-subscription event accumulator
-├── delivery.py         # HMAC signing + HTTP POST with retry
-├── dispatcher.py       # Orchestrates buffering and flushing per build
-├── log_scanner.py      # Regex-based log line scanning
-├── models.py           # StoredWebhookSubscription Pydantic model
-├── sql_storage.py      # PostgreSQL + SQLite storage backends
-└── storage.py          # IWebhookStorage interface
+├── delivery.py         # HMAC signing + HTTP POST with retry (kept for Phase 2)
+├── event_models.py     # StoredWebhookEvent Pydantic model
+├── event_storage.py    # Event persistence storage layer (gb_webhook_events)
+├── event_writer.py     # WebhookEventWriter — persists events to DB
+├── log_scanner.py      # Regex-based log line scanning (kept for Phase 2)
+├── models.py           # StoredWebhookSubscription model (scope, status, build_filter)
+├── sql_storage.py      # PostgreSQL + SQLite subscription storage backends
+├── storage.py          # IWebhookStorage interface
+├── url_validator.py    # SSRF protection — blocks private IPs
+└── verification.py     # URL ownership verification challenge
 ```
