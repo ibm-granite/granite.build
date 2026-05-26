@@ -332,6 +332,11 @@ def main():
     print(f"  Build final status:   {final_status}")
     print(f"  Events persisted:     {len(events)}")
 
+    if final_status == "timeout" and not events:
+        print()
+        print("  FAIL — Build timed out and no events were persisted!")
+        sys.exit(1)
+
     if events:
         event_types = set()
         for evt in events:
@@ -344,7 +349,8 @@ def main():
         print(f"  Event types seen:     {sorted(event_types)}")
         print(f"  All undelivered:      {all(not e.delivered for e in events)}")
 
-        if "STATUS_EVENT" in event_types:
+        event_types_upper = {t.upper() for t in event_types}
+        if "STATUS_EVENT" in event_types_upper:
             print()
             print("  SUCCESS — Webhook events persisted end-to-end!")
             print("  (Ready for Phase 2 delivery worker to pick up)")
