@@ -112,3 +112,56 @@ class TestStoredWebhookSubscription:
         assert sub.frequency == 5  # raw value stored as-is
         assert sub.effective_frequency() >= WEBHOOK_MIN_FREQUENCY
         assert sub.effective_frequency() == WEBHOOK_MIN_FREQUENCY
+
+
+class TestSubscriptionScopeAndStatus:
+    """Tests for scope/status fields added in Phase 1 redesign."""
+
+    def test_default_scope_is_space(self):
+        sub = StoredWebhookSubscription(
+            space_name="my-space",
+            webhook_url="https://example.com/hook",
+            secret="s",
+            created_by="user",
+        )
+        assert sub.scope == "space"
+
+    def test_server_scope(self):
+        sub = StoredWebhookSubscription(
+            space_name="",
+            scope="server",
+            webhook_url="https://example.com/hook",
+            secret="s",
+            created_by="user",
+        )
+        assert sub.scope == "server"
+
+    def test_default_status_is_pending(self):
+        sub = StoredWebhookSubscription(
+            space_name="my-space",
+            webhook_url="https://example.com/hook",
+            secret="s",
+            created_by="user",
+        )
+        assert sub.status == "pending"
+
+    def test_status_active(self):
+        sub = StoredWebhookSubscription(
+            space_name="my-space",
+            webhook_url="https://example.com/hook",
+            secret="s",
+            created_by="user",
+            status="active",
+        )
+        assert sub.status == "active"
+
+    def test_build_filter_field(self):
+        sub = StoredWebhookSubscription(
+            space_name="my-space",
+            webhook_url="https://example.com/hook",
+            secret="s",
+            created_by="user",
+            build_filter="build-123",
+        )
+        assert sub.build_filter == "build-123"
+        assert sub.build_id is None
