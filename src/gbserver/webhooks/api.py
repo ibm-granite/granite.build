@@ -19,6 +19,7 @@ from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.types.constants import GBSERVER_WEBHOOKS_ALLOW_HTTP, GBSERVER_WEBHOOKS_MAX_PER_SPACE
 from gbserver.utils.logger import get_logger
 from gbserver.webhooks.models import WEBHOOK_MIN_FREQUENCY, StoredWebhookSubscription
+from gbserver.webhooks.sql_storage import create_webhook_storage
 from gbserver.webhooks.storage import IWebhookStorage
 from gbserver.webhooks.url_validator import WebhookURLError, validate_webhook_url
 
@@ -51,8 +52,6 @@ def get_webhook_storage() -> IWebhookStorage:
     """
     global _webhook_storage  # pylint: disable=global-statement
     if _webhook_storage is None:
-        from gbserver.webhooks.sql_storage import create_webhook_storage
-
         _webhook_storage = create_webhook_storage()
     return _webhook_storage
 
