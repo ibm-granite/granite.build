@@ -142,7 +142,12 @@ def _no_match_or_500(rc: int, stdout: str, stderr: str, what: str) -> List[str]:
     under pipefail).
     """
     if rc == 0:
-        return [ln for ln in (stdout or "").splitlines() if ln]
+        # Split on '\n' only — not str.splitlines(), which also breaks on
+        # embedded '\r'. Source lines from tqdm progress bars and other
+        # \r-heavy output must stay intact so _GREP_LINE_RE parses the
+        # whole `path:line:text` triple as one record (not as fragments
+        # whose `:NNNN:` substrings get re-parsed as fake hits).
+        return [ln for ln in (stdout or "").split("\n") if ln]
     if rc == 1 and not stdout:
         return []
     err = (stderr or "").lower()
@@ -158,12 +163,23 @@ def _no_match_or_500(rc: int, stdout: str, stderr: str, what: str) -> List[str]:
 
 
 # grep -H output: <path><sep><lineno><sep><text>, where sep is ':' for
-# match lines and '-' for context lines (when -A/-B is set). Filenames
-# can themselves contain ':', '-', and even '-<digits>-' substrings
-# (UUIDs, run IDs, etc.), so we anchor on the *rightmost* <sep>\d+<sep>
-# — greedy `.+` backtracks until the lineno+text suffix matches, which
-# is the only unambiguous split point.
-_GREP_LINE_RE = re.compile(r"^(?P<path>.+)(?P<sep>[:\-])(?P<lineno>\d+)(?P=sep)(?P<text>.*)$")
+# match lines and '-' for context lines (when -A/-B is set). Parsing is
+# split into two strategies depending on the separator:
+#
+#   * Match lines (':'): we anchor on the FIRST ':<digits>:' that
+#     appears after the known absolute prefix (build_root). This stops
+#     a long matched source line whose content contains its own
+#     ":NNNN:" substring (e.g. pickled config dumps in training logs)
+#     from being re-parsed as a fake hit, with the inline content
+#     landing in `path` and the suffix in `text`. Filenames containing
+#     ':' are pathological and not handled.
+#   * Context lines ('-'): we anchor on the RIGHTMOST '-<digits>-' (the
+#     greedy `.+` strategy) because filenames frequently contain
+#     "-<digits>-" segments (UUIDs, run IDs) and the path needs to
+#     extend across them. Greedy matching backtracks to the unambiguous
+#     trailing '-<digits>-' boundary.
+_GREP_MATCH_RE = re.compile(r"^(?P<rel>.*?):(?P<lineno>\d+):(?P<text>.*)$")
+_GREP_CONTEXT_RE = re.compile(r"^(?P<path>.+)-(?P<lineno>\d+)-(?P<text>.*)$")
 
 
 def _parse_grep_line(
@@ -173,8 +189,29 @@ def _parse_grep_line(
 
     With ``-A``/``-B`` set, grep emits ``<path>-<lineno>-<text>`` for
     context lines and ``<path>:<lineno>:<text>`` for match lines.
+
+    Match lines are anchored against ``build_root`` (the known absolute
+    prefix) and split on the first ':<digits>:' after it, so embedded
+    ":NNNN:" substrings in the matched content can't masquerade as the
+    record boundary. Context lines fall back to greedy/rightmost split,
+    which preserves filenames containing "-<digits>-" segments.
     """
-    m = _GREP_LINE_RE.match(ln)
+    root_str = str(build_root)
+    # Match line: ':' separator. Anchor against the build_root prefix.
+    if ln.startswith(root_str):
+        suffix = ln[len(root_str):]
+        m = _GREP_MATCH_RE.match(suffix)
+        if m is not None:
+            try:
+                lineno = int(m.group("lineno"))
+            except ValueError:
+                return None
+            rel = m.group("rel").lstrip("/") or "."
+            return rel, lineno, m.group("text"), True
+
+    # Context line: '-' separator. Filenames legitimately contain
+    # "-<digits>-" segments, so use the rightmost-split fallback.
+    m = _GREP_CONTEXT_RE.match(ln)
     if m is None:
         return None
     abs_path = m.group("path")
@@ -185,11 +222,8 @@ def _parse_grep_line(
     try:
         rel = str(PurePosixPath(abs_path).relative_to(build_root))
     except ValueError:
-        # Shouldn't happen — `real` is under build_root and grep only
-        # descends from there — but skip rather than leak.
         return None
-    is_match = m.group("sep") == ":"
-    return rel, lineno, m.group("text"), is_match
+    return rel, lineno, m.group("text"), False
 
 
 async def _remote_stat_batch(
@@ -279,12 +313,14 @@ async def search_files(
             flags += f" -B {before}"
         if after:
             flags += f" -A {after}"
-        # Trailing slash on the search root so a single-file path still
-        # gets a filename in the output. pipefail propagates grep's rc
-        # past head.
+        # `-H` forces filenames in the output for both single-file and
+        # recursive targets, so we don't need a trailing slash hack on
+        # the search root. (A trailing '/' on a regular-file target made
+        # grep fail with "Not a directory" and surfaced as a 500.)
+        # pipefail propagates grep's rc past head.
         cmd = (
             f"set -o pipefail; "
-            f"grep {flags} -- {shlex.quote(pattern)} {shlex.quote(str(real))}/ "
+            f"grep {flags} -- {shlex.quote(pattern)} {shlex.quote(str(real))} "
             f"| head -n {BUILD_FILES_GREP_MAX_HITS}"
         )
 
@@ -300,6 +336,11 @@ async def search_files(
             if parsed is None:
                 continue
             rel, lineno, text, is_match = parsed
+            # Replace embedded '\r' (e.g. from tqdm progress bars) with a
+            # space so the rendered text is readable, then apply the byte
+            # cap on the cleaned-up string.
+            if "\r" in text:
+                text = text.replace("\r", " ")
             if len(text) > BUILD_FILES_GREP_LINE_MAX_BYTES:
                 text = text[:BUILD_FILES_GREP_LINE_MAX_BYTES]
             hits.append(

@@ -782,6 +782,85 @@ class TestSearchFiles:
         assert body[0]["size"] is None
         assert body[0]["mtime"] is None
 
+    def test_search_text_with_carriage_returns(self, client):
+        # tqdm-style progress bars rewrite a single source line many
+        # times with '\r'. The grep stdout for one such match is one line
+        # terminated by '\n', but the line itself contains embedded '\r'.
+        # Splitting that on '\r' shatters the record — the parsed `text`
+        # ends up empty or a meaningless prefix. We must split on '\n'
+        # only and replace '\r' with a space in the rendered text.
+        out = "/ws/llm-build-B1/job.log:532:before\rmiddle\rtrain_runtime: 1.364\n"
+        tunnel = _tunnel_with_grep(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "train_runtime"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body) == 1
+        assert body[0]["path"] == "job.log"
+        assert body[0]["line"] == 532
+        assert body[0]["is_match"] is True
+        # Real content survives, '\r' is replaced with spaces.
+        assert "train_runtime: 1.364" in body[0]["text"]
+        assert "\r" not in body[0]["text"]
+
+    def test_search_long_line_with_embedded_colons_not_corrupted(self, client):
+        # A single very long source line containing what looks like a
+        # `:NNNN:` triple in its body must not be re-split into a fake
+        # second hit. Bug symptom: `path` field contained inline
+        # `path:line:text` content because '\r'-splitting (or any other
+        # mid-line split) turned the chunk into an apparent grep record.
+        # Use a body that includes both an embedded '\r' (the realistic
+        # trigger) and a `:5849:` substring (the fake-record bait).
+        long_body = (
+            "output_values {'a': 1}" + ("\rprogress " * 50)
+            + " job.log:5849:more text " + ("x" * 4000)
+        )
+        out = f"/ws/llm-build-B1/job.log:18:{long_body}\n"
+        tunnel = _tunnel_with_grep(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "epoch"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Exactly one hit — no fake second record from the embedded
+        # `:5849:` substring.
+        assert len(body) == 1
+        # path field is the clean relative path, never inline content.
+        assert body[0]["path"] == "job.log"
+        assert ":" not in body[0]["path"]
+        assert body[0]["line"] == 18
+        # text is truncated by the byte cap, with no '\r' surviving.
+        assert len(body[0]["text"]) <= 512
+        assert "\r" not in body[0]["text"]
+
+    def test_search_does_not_append_trailing_slash(self, client):
+        # The grep command must not append a trailing '/' to the search
+        # root — that turned single-file `path=` requests into a 500
+        # ("grep: <file>/: Not a directory"). With -H, grep emits
+        # filenames for both file and directory targets without it.
+        tunnel = _tunnel_with_grep(0, "")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "x", "path": "outputs/job.log"},
+            )
+        assert r.status_code == 200, r.text
+        cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
+        grep_cmds = [c for c in cmds if "grep -r" in c]
+        assert grep_cmds, "expected at least one grep command"
+        for c in grep_cmds:
+            # The bug appended `<quoted_path>/ ` before the head pipe.
+            assert "/job.log/" not in c, c
+            assert "outputs/job.log/'" not in c, c
+
 
 # -------------------------------------------------------------- /file/download
 
