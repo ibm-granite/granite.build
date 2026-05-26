@@ -18,7 +18,7 @@ class SQLWebhookStorage(
     """PostgreSQL-backed webhook subscription storage."""
 
     def __init__(self, **kwargs) -> None:
-        kwargs["indexed_columns"] = ["build_id", "space_name", "active"]
+        kwargs["indexed_columns"] = ["build_id", "space_name", "active", "scope", "status"]
         kwargs["autoincr_column"] = "index"
         kwargs["default_pagination_sort_by_column"] = "index"
         super().__init__(**kwargs)

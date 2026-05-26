@@ -6,7 +6,7 @@ frequently to batch them, and the HMAC secret used for signing payloads.
 """
 
 import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import Field
 
@@ -54,6 +54,9 @@ class StoredWebhookSubscription(BaseStoredItem):
     log_pattern: Optional[str] = None
     created_by: str
     active: bool = True
+    scope: Literal["space", "server"] = "space"
+    status: Literal["pending", "active", "suspended", "disabled"] = "pending"
+    build_filter: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_time: datetime.datetime = Field(
         default_factory=get_utc_time, description="Time at which it was created"
