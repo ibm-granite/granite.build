@@ -2,7 +2,7 @@
 
 import pytest
 
-from gbserver.webhooks.url_validator import validate_webhook_url, WebhookURLError
+from gbserver.webhooks.url_validator import WebhookURLError, validate_webhook_url
 
 
 class TestURLValidator:

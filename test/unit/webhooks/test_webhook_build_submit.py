@@ -40,7 +40,7 @@ class TestBuildSubmitWithWebhook:
                     "space_name": "test-space",
                     "username": "testuser",
                     "webhook_url": "https://example.com/hook",
-                    "webhook_secret": "my-secret",
+                    "webhook_secret": "test-secret-key",
                 },
                 headers={"X-Forwarded-User": "testuser"},
             )

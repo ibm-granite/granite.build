@@ -62,7 +62,7 @@ class TestWebhookAPI:
             "/build-001/subscriptions",
             json={
                 "webhook_url": "https://example.com/hook",
-                "secret": "my-secret",
+                "secret": "test-secret-key",
                 "event_types": ["build.started", "build.completed"],
                 "frequency": 30,
             },
@@ -102,7 +102,7 @@ class TestWebhookAPI:
             "/build-001/subscriptions",
             json={
                 "webhook_url": "https://example.com/hook",
-                "secret": "my-secret",
+                "secret": "test-secret-key",
                 "frequency": 5,
             },
             headers={"X-Forwarded-User": "testuser"},
@@ -125,7 +125,7 @@ class TestWebhookAPI:
             "/build-001/subscriptions",
             json={
                 "webhook_url": "https://example.com/hook",
-                "secret": "my-secret",
+                "secret": "test-secret-key",
             },
             headers={"X-Forwarded-User": "testuser"},
         )
@@ -212,7 +212,7 @@ class TestWebhookAPI:
             "/build-001/subscriptions",
             json={
                 "webhook_url": "https://example.com/hook",
-                "secret": "my-secret",
+                "secret": "test-secret-key",
             },
         )
 
@@ -250,7 +250,7 @@ class TestWebhookAPI:
             "/build-001/subscriptions",
             json={
                 "webhook_url": "https://example.com/hook",
-                "secret": "my-secret",
+                "secret": "test-secret-key",
             },
             headers={"X-Forwarded-User": "testuser"},
         )
@@ -279,7 +279,7 @@ class TestWebhookAPI:
             "/build-001/subscriptions",
             json={
                 "webhook_url": "https://example.com/hook",
-                "secret": "my-secret",
+                "secret": "test-secret-key",
                 "log_pattern": "ERROR|WARN",
             },
             headers={"X-Forwarded-User": "testuser"},
@@ -307,7 +307,7 @@ class TestWebhookAPI:
             "/build-001/subscriptions",
             json={
                 "webhook_url": "https://10.0.0.1/hook",
-                "secret": "my-secret",
+                "secret": "test-secret-key",
             },
             headers={"X-Forwarded-User": "testuser"},
         )
@@ -338,7 +338,7 @@ class TestWebhookAPI:
             "/build-001/subscriptions",
             json={
                 "webhook_url": "https://example.com/hook",
-                "secret": "my-secret",
+                "secret": "test-secret-key",
             },
             headers={"X-Forwarded-User": "testuser"},
         )

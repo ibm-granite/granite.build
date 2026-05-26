@@ -296,14 +296,15 @@ def _create_webhook_subscription(
         return None
 
     try:
-        from gbserver.types.constants import GBSERVER_WEBHOOKS_ENABLED
+        from gbserver.types.constants import (
+            GBSERVER_WEBHOOKS_ALLOW_HTTP,
+            GBSERVER_WEBHOOKS_ENABLED,
+        )
 
         if not GBSERVER_WEBHOOKS_ENABLED:
             return None
 
         # Validate URL (best-effort — don't fail build submission)
-        import os
-
         from gbserver.webhooks.models import (
             WEBHOOK_MIN_FREQUENCY,
             StoredWebhookSubscription,
@@ -314,14 +315,20 @@ def _create_webhook_subscription(
             validate_webhook_url,
         )
 
-        allow_http = (
-            os.environ.get("GBSERVER_WEBHOOKS_ALLOW_HTTP", "").lower() == "true"
-        )
+        allow_http = GBSERVER_WEBHOOKS_ALLOW_HTTP
         try:
             validate_webhook_url(req.webhook_url, allow_http=allow_http)
         except WebhookURLError as e:
             logger.warning(
                 "Webhook URL validation failed for build %s: %s", stored_build.uuid, e
+            )
+            return None
+
+        # Require a meaningful secret for HMAC authentication
+        if not req.webhook_secret or len(req.webhook_secret) < 8:
+            logger.warning(
+                "Webhook secret too short (min 8 chars) for build %s, skipping subscription",
+                stored_build.uuid,
             )
             return None
 
@@ -333,7 +340,7 @@ def _create_webhook_subscription(
             scope="space",
             status="active",
             webhook_url=req.webhook_url,
-            secret=req.webhook_secret or "",
+            secret=req.webhook_secret,
             event_types=req.webhook_event_types or ["*"],
             frequency=max(
                 req.webhook_frequency or WEBHOOK_MIN_FREQUENCY,
