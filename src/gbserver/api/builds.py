@@ -304,11 +304,25 @@ def _create_webhook_subscription(
             StoredWebhookSubscription,
         )
         from gbserver.webhooks.sql_storage import create_webhook_storage
+        from gbserver.webhooks.url_validator import WebhookURLError, validate_webhook_url
+
+        # Validate URL (best-effort — don't fail build submission)
+        import os
+
+        allow_http = os.environ.get("GBSERVER_WEBHOOKS_ALLOW_HTTP", "").lower() == "true"
+        try:
+            validate_webhook_url(req.webhook_url, allow_http=allow_http)
+        except WebhookURLError as e:
+            logger.warning("Webhook URL validation failed for build %s: %s", stored_build.uuid, e)
+            return None
 
         webhook_storage = create_webhook_storage()
         subscription = StoredWebhookSubscription(
             space_name=stored_build.space_name,
             build_id=stored_build.uuid,
+            build_filter=stored_build.uuid,
+            scope="space",
+            status="pending",
             webhook_url=req.webhook_url,
             secret=req.webhook_secret or "",
             event_types=req.webhook_event_types or ["*"],
