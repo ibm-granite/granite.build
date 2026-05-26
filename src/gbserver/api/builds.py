@@ -43,9 +43,13 @@ from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.api.builds import BuildValidateRequestType
 from gbserver.types.auth import User
+from gbserver.types.constants import GBSERVER_WEBHOOKS_ALLOW_HTTP, GBSERVER_WEBHOOKS_ENABLED
 from gbserver.types.status import Status
 from gbserver.types.validation import GBValidationErrors
 from gbserver.utils.logger import get_logger
+from gbserver.webhooks.models import WEBHOOK_MIN_FREQUENCY, StoredWebhookSubscription
+from gbserver.webhooks.sql_storage import create_webhook_storage
+from gbserver.webhooks.url_validator import WebhookURLError, validate_webhook_url
 
 logger = get_logger(__name__)
 
@@ -296,25 +300,10 @@ def _create_webhook_subscription(
         return None
 
     try:
-        from gbserver.types.constants import (
-            GBSERVER_WEBHOOKS_ALLOW_HTTP,
-            GBSERVER_WEBHOOKS_ENABLED,
-        )
-
         if not GBSERVER_WEBHOOKS_ENABLED:
             return None
 
         # Validate URL (best-effort — don't fail build submission)
-        from gbserver.webhooks.models import (
-            WEBHOOK_MIN_FREQUENCY,
-            StoredWebhookSubscription,
-        )
-        from gbserver.webhooks.sql_storage import create_webhook_storage
-        from gbserver.webhooks.url_validator import (
-            WebhookURLError,
-            validate_webhook_url,
-        )
-
         allow_http = GBSERVER_WEBHOOKS_ALLOW_HTTP
         try:
             validate_webhook_url(req.webhook_url, allow_http=allow_http)
