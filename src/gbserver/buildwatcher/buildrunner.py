@@ -79,6 +79,7 @@ from gbserver.types.constants import (
     DEFAULT_ROOT_WORKSPACE_DIR,
     GBSERVER_GITHUB_TOKEN,
     GBSERVER_RAISE_BUILD_EXCEPTIONS,
+    GBSERVER_WEBHOOKS_ENABLED,
     STARTING_BUILD_MESSAGE,
     WORKSPACE_BUILDS_DIR,
 )
@@ -148,6 +149,7 @@ class BuildRunner(AbstractBuildRunner):
             build, _BUILD_EVENT_SOURCE_NAME
         )  # To be recreated later.
         self.event_storage = get_admin_storage().event_storage
+        self._webhook_writer = None
 
     def stop(self: Self) -> None:
         """Stop the building thread if it was started."""
@@ -595,9 +597,7 @@ class BuildRunner(AbstractBuildRunner):
                     "build %s got a new event: %s : %s", build_id, event.type, event
                 )
                 build_finished = self.__process_event(event=event)
-                await self.__flush_webhooks()
                 if build_finished:
-                    await self.__flush_webhooks_final()
                     logger.debug("build %s finished, exiting monitoring loop", build_id)
                     break
             # This is only available in Python 3.13
@@ -607,7 +607,6 @@ class BuildRunner(AbstractBuildRunner):
             #     break
             except TimeoutError:
                 logger.debug("event_q.get() timeout!")
-                await self.__flush_webhooks()
                 continue
             except Exception as e:
                 # TODO: do we need to exit the loop and mark the build as failed and cancel the build.
@@ -774,63 +773,30 @@ class BuildRunner(AbstractBuildRunner):
         return build_finished
 
     def __dispatch_to_webhooks(self: Self, event: BuildEvent) -> None:
-        """Buffer event for webhook subscribers if webhooks are enabled."""
-        from gbserver.types.constants import GBSERVER_WEBHOOKS_ENABLED
-
+        """Persist event to webhook storage for matching subscriptions."""
         if not GBSERVER_WEBHOOKS_ENABLED:
             return
 
         try:
-            if not hasattr(self, "_webhook_dispatcher"):
-                self._webhook_dispatcher = None
-                from gbserver.webhooks.dispatcher import WebhookDispatcher
-                from gbserver.webhooks.sql_storage import create_webhook_storage
+            if self._webhook_writer is None:
+                from gbserver.webhooks.event_writer import WebhookEventWriter
 
-                storage = create_webhook_storage()
-                # Get per-build subscriptions
-                subs = storage.get_active_for_build(self.stored_build.uuid)
-                # Also get space-wide subscriptions
-                space_subs = storage.get_active_for_space(
-                    self.stored_build.space_name
+                writer = WebhookEventWriter(
+                    build_id=self.stored_build.uuid,
+                    space_name=self.stored_build.space_name,
                 )
-                subs = subs + space_subs
-                if subs:
-                    self._webhook_dispatcher = WebhookDispatcher(
-                        webhook_storage=storage,
-                        build_id=self.stored_build.uuid,
-                        space_name=self.stored_build.space_name,
-                        build_name=self.stored_build.name,
-                        username=self.stored_build.username,
-                        build_start_time=self.stored_build.created_time.isoformat(),
-                    )
-                    self._webhook_dispatcher.start(subs)
-                    logger.info(
-                        "[BuildRunner] Webhook dispatcher initialized with %d subscription(s)",
-                        len(subs),
-                    )
+                subs = writer.start()
+                if not subs:
+                    return
+                self._webhook_writer = writer
+                logger.info(
+                    "[BuildRunner] Webhook writer initialized with %d subscription(s)",
+                    len(subs),
+                )
 
-            if self._webhook_dispatcher is not None:
-                self._webhook_dispatcher.accept_event(event)
+            self._webhook_writer.accept_event(event)
         except Exception as e:
-            logger.warning("[BuildRunner] Webhook dispatch error (non-fatal): %s", e)
-
-    async def __flush_webhooks(self: Self) -> None:
-        """Flush webhook batches that are ready (time interval elapsed)."""
-        if not hasattr(self, "_webhook_dispatcher") or self._webhook_dispatcher is None:
-            return
-        try:
-            await self._webhook_dispatcher.flush_all_ready()
-        except Exception as e:
-            logger.warning("[BuildRunner] Webhook flush error (non-fatal): %s", e)
-
-    async def __flush_webhooks_final(self: Self) -> None:
-        """Force-flush all webhook batches on build completion."""
-        if not hasattr(self, "_webhook_dispatcher") or self._webhook_dispatcher is None:
-            return
-        try:
-            await self._webhook_dispatcher.flush_final()
-        except Exception as e:
-            logger.warning("[BuildRunner] Webhook final flush error (non-fatal): %s", e)
+            logger.warning("[BuildRunner] Webhook persist error (non-fatal): %s", e)
 
     def __process_terminate_event(self: Self, event: BuildEvent) -> None:
         build_id = event.run_metadata.build_id
