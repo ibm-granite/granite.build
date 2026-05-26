@@ -125,6 +125,9 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
             "space_name": item.space_name,
             "build_id": item.build_id or "",
             "active": item.active,
+            "scope": item.scope,
+            "status": item.status,
+            "build_filter": item.build_filter or "",
             "created_by": item.created_by,
             CREATED_TIME_FIELD_NAME: item.created_time,
         }
@@ -143,6 +146,9 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
             secret="sample-secret",
             event_types=["*"],
             created_by="system",
+            scope="space",
+            status="active",
+            build_filter=None,
         )
 
     # ── Query methods ────────────────────────────────────────────────
