@@ -88,6 +88,7 @@ from gbserver.utils.archive import extract_archive
 from gbserver.utils.logger import get_logger
 from gbserver.utils.unwrap_errors import get_readable_error_message
 from gbserver.utils.utils import get_build_status_link
+from gbserver.webhooks.event_writer import WebhookEventWriter
 
 logger = get_logger(__name__)
 # How many times the monitoring interval between checks for cancellation
@@ -791,8 +792,6 @@ class BuildRunner(AbstractBuildRunner):
 
         try:
             if self._webhook_writer is None:
-                from gbserver.webhooks.event_writer import WebhookEventWriter
-
                 writer = WebhookEventWriter(
                     build_id=self.stored_build.uuid,
                     space_name=self.stored_build.space_name,

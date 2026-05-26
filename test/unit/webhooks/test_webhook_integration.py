@@ -159,7 +159,7 @@ class TestFinalizeDeactivation:
     """Tests that finalize_build_status deactivates webhook subscriptions."""
 
     @patch("gbserver.buildwatcher.build_utils.get_admin_storage")
-    @patch("gbserver.webhooks.sql_storage.create_webhook_storage")
+    @patch("gbserver.buildwatcher.build_utils.create_webhook_storage")
     @patch("gbserver.types.constants.GBSERVER_WEBHOOKS_ENABLED", True)
     def test_finalize_deactivates_subscriptions(self, mock_create_storage, mock_admin):
         """finalize_build_status deactivates webhook subscriptions for the build."""
