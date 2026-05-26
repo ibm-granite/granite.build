@@ -23,7 +23,9 @@ class TestSpaceWideSubscriptionAPI:
     @patch("gbserver.webhooks.api.validate_webhook_url")
     @patch("gbserver.webhooks.api.get_webhook_storage")
     @patch("gbserver.webhooks.api.get_admin_storage")
-    def test_create_space_subscription(self, mock_admin, mock_get_storage, mock_validate):
+    def test_create_space_subscription(
+        self, mock_admin, mock_get_storage, mock_validate
+    ):
         """POST to /spaces/{name}/subscriptions returns 201 with build_id=None."""
         mock_validate.return_value = None
         mock_storage = MagicMock()
@@ -80,7 +82,7 @@ class TestSpaceWideSubscriptionAPI:
             "/spaces/nonexistent/subscriptions",
             json={
                 "webhook_url": "https://x.com/hook",
-                "secret": "s",
+                "secret": "test-secret-key",
                 "event_types": ["*"],
             },
             headers={"X-Forwarded-User": "user"},
@@ -105,7 +107,7 @@ class TestSpaceWideSubscriptionAPI:
             "/spaces/my-space/subscriptions",
             json={
                 "webhook_url": "https://example.com/hook",
-                "secret": "my-secret",
+                "secret": "test-secret-key",
                 "frequency": 5,
             },
             headers={"X-Forwarded-User": "testuser"},

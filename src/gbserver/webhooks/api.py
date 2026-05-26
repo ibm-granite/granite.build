@@ -10,13 +10,13 @@ Routes:
     DELETE /{webhook_id} — Deactivate a subscription (owner only).
 """
 
-import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from gbserver.storage.singleton_storage import get_admin_storage
+from gbserver.types.constants import GBSERVER_WEBHOOKS_ALLOW_HTTP, GBSERVER_WEBHOOKS_MAX_PER_SPACE
 from gbserver.utils.logger import get_logger
 from gbserver.webhooks.models import WEBHOOK_MIN_FREQUENCY, StoredWebhookSubscription
 from gbserver.webhooks.storage import IWebhookStorage
@@ -27,8 +27,6 @@ webhooks_api = FastAPI()
 
 # Module-level storage (lazily initialized)
 _webhook_storage: Optional[IWebhookStorage] = None  # pylint: disable=invalid-name
-
-WEBHOOKS_MAX_PER_SPACE = int(os.environ.get("GBSERVER_WEBHOOKS_MAX_PER_SPACE", "20"))
 
 
 def set_webhook_storage(storage: IWebhookStorage) -> None:
@@ -184,10 +182,10 @@ def _check_rate_limit(storage: IWebhookStorage, space_name: str) -> None:
     """Raise 429 if space has too many active subscriptions."""
     existing = storage.get_by_space(space_name)
     active_count = sum(1 for s in existing if s.active)
-    if active_count >= WEBHOOKS_MAX_PER_SPACE:
+    if active_count >= GBSERVER_WEBHOOKS_MAX_PER_SPACE:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Maximum {WEBHOOKS_MAX_PER_SPACE} active subscriptions per space",
+            detail=f"Maximum {GBSERVER_WEBHOOKS_MAX_PER_SPACE} active subscriptions per space",
         )
 
 
@@ -233,7 +231,7 @@ def create_subscription(
         )
 
     # Validate webhook URL (SSRF protection)
-    allow_http = os.environ.get("GBSERVER_WEBHOOKS_ALLOW_HTTP", "").lower() == "true"
+    allow_http = GBSERVER_WEBHOOKS_ALLOW_HTTP
     try:
         validate_webhook_url(body.webhook_url, allow_http=allow_http)
     except WebhookURLError as e:
@@ -241,6 +239,13 @@ def create_subscription(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid webhook URL: {e}",
         ) from e
+
+    # Validate secret length
+    if len(body.secret) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Webhook secret must be at least 8 characters",
+        )
 
     # Verify build exists
     admin_storage = get_admin_storage()
@@ -358,7 +363,7 @@ def create_space_subscription(
         )
 
     # Validate webhook URL (SSRF protection)
-    allow_http = os.environ.get("GBSERVER_WEBHOOKS_ALLOW_HTTP", "").lower() == "true"
+    allow_http = GBSERVER_WEBHOOKS_ALLOW_HTTP
     try:
         validate_webhook_url(body.webhook_url, allow_http=allow_http)
     except WebhookURLError as e:
@@ -366,6 +371,13 @@ def create_space_subscription(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid webhook URL: {e}",
         ) from e
+
+    # Validate secret length
+    if len(body.secret) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Webhook secret must be at least 8 characters",
+        )
 
     # Verify space exists
     admin_storage = get_admin_storage()
