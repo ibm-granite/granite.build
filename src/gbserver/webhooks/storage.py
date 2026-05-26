@@ -38,6 +38,19 @@ class IWebhookStorage(IItemStorage[StoredWebhookSubscription]):
         """
         raise NotImplementedError
 
+    def get_active_for_build_filter(
+        self, build_filter: str
+    ) -> List[StoredWebhookSubscription]:
+        """Get active subscriptions with matching build_filter.
+
+        Args:
+            build_filter: The build_filter value to match.
+
+        Returns:
+            List of active subscriptions with the given build_filter.
+        """
+        raise NotImplementedError
+
     def get_by_space(self, space_name: str) -> List[StoredWebhookSubscription]:
         """Get all subscriptions belonging to a space.
 
@@ -169,6 +182,24 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
             result.extend(page)
         return result
 
+    def get_active_for_build_filter(
+        self, build_filter: str
+    ) -> List[StoredWebhookSubscription]:
+        """Get active subscriptions with matching build_filter.
+
+        Args:
+            build_filter: The build_filter value to match.
+
+        Returns:
+            List of active subscriptions with the given build_filter.
+        """
+        result: List[StoredWebhookSubscription] = []
+        for page in self.get_paged(
+            {"build_filter": build_filter, "active": True}, page_size=_PAGE_SIZE
+        ):
+            result.extend(page)
+        return result
+
     def get_active_for_space(self, space_name: str) -> List[StoredWebhookSubscription]:
         """Get active space-wide subscriptions (build_id is empty string = NULL).
 
@@ -218,6 +249,7 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
         """Deactivate all active subscriptions for a given build.
 
         Sets active=False on all active subscriptions scoped to the build.
+        Checks both build_id (legacy) and build_filter (new model).
 
         Args:
             build_id: The build ID whose subscriptions should be deactivated.
@@ -226,8 +258,16 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
             The number of subscriptions that were deactivated.
         """
         count = 0
+        # Deactivate by build_id (legacy)
         for page in self.get_paged(
             {"build_id": build_id, "active": True}, page_size=_PAGE_SIZE
+        ):
+            for item in page:
+                self.update_fields(item.uuid, {"active": False})
+                count += 1
+        # Also deactivate by build_filter (new model)
+        for page in self.get_paged(
+            {"build_filter": build_id, "active": True}, page_size=_PAGE_SIZE
         ):
             for item in page:
                 self.update_fields(item.uuid, {"active": False})

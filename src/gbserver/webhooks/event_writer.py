@@ -12,7 +12,10 @@ from typing import Any, Dict, List, Optional
 from gbserver.types.buildevent import BuildEvent, BuildEventStatusPayload
 from gbserver.utils.logger import get_logger
 from gbserver.webhooks.event_models import StoredWebhookEvent
-from gbserver.webhooks.event_storage import IWebhookEventStorage, create_webhook_event_storage
+from gbserver.webhooks.event_storage import (
+    IWebhookEventStorage,
+    create_webhook_event_storage,
+)
 from gbserver.webhooks.models import StoredWebhookSubscription
 from gbserver.webhooks.sql_storage import create_webhook_storage
 from gbserver.webhooks.storage import IWebhookStorage
@@ -32,12 +35,15 @@ class WebhookEventWriter:
         space_name: Space the build belongs to.
     """
 
+    _REFRESH_INTERVAL = 50  # Re-read subscriptions every N events
+
     def __init__(self, build_id: str, space_name: str) -> None:
         self.build_id = build_id
         self.space_name = space_name
         self._subscriptions: List[StoredWebhookSubscription] = []
         self._webhook_storage: Optional[IWebhookStorage] = None
         self._event_storage: Optional[IWebhookEventStorage] = None
+        self._events_since_refresh: int = 0
 
     def start(self) -> List[StoredWebhookSubscription]:
         """Query and register active subscriptions for this build.
@@ -48,13 +54,20 @@ class WebhookEventWriter:
         self._webhook_storage = create_webhook_storage()
         self._event_storage = create_webhook_event_storage()
 
-        # Get per-build subscriptions
+        # Get per-build subscriptions (legacy build_id + new build_filter)
         subs = self._webhook_storage.get_active_for_build(self.build_id)
+        filter_subs = self._webhook_storage.get_active_for_build_filter(self.build_id)
         # Get space-wide subscriptions
         space_subs = self._webhook_storage.get_active_for_space(self.space_name)
-        self._subscriptions = [
-            s for s in (subs + space_subs) if s.status == "active"
-        ]
+
+        # Deduplicate by UUID
+        seen: set = set()
+        all_subs: List[StoredWebhookSubscription] = []
+        for s in subs + filter_subs + space_subs:
+            if s.uuid not in seen and s.status == "active":
+                seen.add(s.uuid)
+                all_subs.append(s)
+        self._subscriptions = all_subs
 
         logger.info(
             "[WebhookEventWriter] Found %d active subscription(s) for build %s",
@@ -62,6 +75,23 @@ class WebhookEventWriter:
             self.build_id,
         )
         return self._subscriptions
+
+    def _refresh_subscriptions(self) -> None:
+        """Re-read active subscriptions from DB to pick up late arrivals."""
+        self._events_since_refresh = 0
+        if self._webhook_storage is None:
+            return
+        subs = self._webhook_storage.get_active_for_build(self.build_id)
+        filter_subs = self._webhook_storage.get_active_for_build_filter(self.build_id)
+        space_subs = self._webhook_storage.get_active_for_space(self.space_name)
+
+        seen: set = set()
+        all_subs: List[StoredWebhookSubscription] = []
+        for s in subs + filter_subs + space_subs:
+            if s.uuid not in seen and s.status == "active":
+                seen.add(s.uuid)
+                all_subs.append(s)
+        self._subscriptions = all_subs
 
     def accept_event(self, event: BuildEvent) -> None:
         """Persist event to DB for each matching subscription.
@@ -77,6 +107,11 @@ class WebhookEventWriter:
 
         if not self._subscriptions or self._event_storage is None:
             return
+
+        # Periodic refresh of subscription list
+        self._events_since_refresh += 1
+        if self._events_since_refresh >= self._REFRESH_INTERVAL:
+            self._refresh_subscriptions()
 
         event_type_name = event.type.value
         payload = self._serialize_event(event)

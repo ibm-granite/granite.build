@@ -31,6 +31,7 @@ class TestWebhookEventWriter:
         sub = self._make_subscription()
         mock_sub_storage = MagicMock()
         mock_sub_storage.get_active_for_build.return_value = [sub]
+        mock_sub_storage.get_active_for_build_filter.return_value = []
         mock_sub_storage.get_active_for_space.return_value = []
         mock_sub_factory.return_value = mock_sub_storage
         mock_evt_factory.return_value = MagicMock()
@@ -48,6 +49,7 @@ class TestWebhookEventWriter:
         sub = self._make_subscription()
         mock_sub_storage = MagicMock()
         mock_sub_storage.get_active_for_build.return_value = [sub]
+        mock_sub_storage.get_active_for_build_filter.return_value = []
         mock_sub_storage.get_active_for_space.return_value = []
         mock_sub_factory.return_value = mock_sub_storage
 
@@ -67,9 +69,7 @@ class TestWebhookEventWriter:
 
         event = BuildEvent(
             type=BuildEventType.STATUS_EVENT,
-            payload=BuildEventStatusPayload(
-                status=Status.RUNNING, msg="Build started"
-            ),
+            payload=BuildEventStatusPayload(status=Status.RUNNING, msg="Build started"),
             run_metadata=EntityRunMetadata(
                 build_id="build-001",
                 target_name="target-1",
@@ -97,6 +97,7 @@ class TestWebhookEventWriter:
         sub = self._make_subscription(event_types=["artifact_event"])
         mock_sub_storage = MagicMock()
         mock_sub_storage.get_active_for_build.return_value = [sub]
+        mock_sub_storage.get_active_for_build_filter.return_value = []
         mock_sub_storage.get_active_for_space.return_value = []
         mock_sub_factory.return_value = mock_sub_storage
 
@@ -117,9 +118,7 @@ class TestWebhookEventWriter:
         # STATUS_EVENT should be filtered out
         event = BuildEvent(
             type=BuildEventType.STATUS_EVENT,
-            payload=BuildEventStatusPayload(
-                status=Status.RUNNING, msg="Build started"
-            ),
+            payload=BuildEventStatusPayload(status=Status.RUNNING, msg="Build started"),
             run_metadata=EntityRunMetadata(
                 build_id="build-001",
                 target_name="target-1",
@@ -143,6 +142,7 @@ class TestWebhookEventWriter:
         pending_sub = self._make_subscription(status="pending")
         mock_sub_storage = MagicMock()
         mock_sub_storage.get_active_for_build.return_value = [active_sub, pending_sub]
+        mock_sub_storage.get_active_for_build_filter.return_value = []
         mock_sub_storage.get_active_for_space.return_value = []
         mock_sub_factory.return_value = mock_sub_storage
         mock_evt_factory.return_value = MagicMock()
