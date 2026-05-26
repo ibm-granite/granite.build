@@ -1,35 +1,32 @@
 #!/usr/bin/env python3
 """
-End-to-end test script for webhook push notifications.
+End-to-end test for webhook event persistence.
 
-This script:
-1. Starts a local HTTP server to receive webhook deliveries
-2. Starts a gbserver in standalone mode
-3. Submits a build with --webhook-url pointing to the local receiver
-4. Waits for batched webhook events to arrive
-5. Verifies HMAC signatures and prints events as they arrive
-6. Exits when the build completes (terminal status received)
+This script verifies that build events are persisted to the webhook
+event storage (write-ahead log) for later delivery by the Phase 2
+delivery worker.
+
+Flow:
+1. Starts gbserver in standalone mode (SQLite + thread-based builds)
+2. Creates an "active" webhook subscription via storage directly
+3. Submits a build
+4. Waits for the build to complete
+5. Queries the webhook event storage for persisted events
+6. Verifies events were written correctly
 
 Usage:
-    python scripts/test-webhook-e2e.py [--port 9999] [--build-dir PATH] [--timeout 120]
+    python scripts/test-webhook-e2e.py [--build-dir PATH] [--timeout 120]
 
 Requirements:
     - Activated venv with gbserver installed
-    - No external infrastructure needed (uses standalone mode with SQLite + bash env)
-
-Example:
-    source .venv/bin/activate
-    python scripts/test-webhook-e2e.py
+    - No external infrastructure needed (uses standalone mode with SQLite)
 """
 
 import os
 import sys
 
 # On macOS, the kqueue-based asyncio event loop in daemon threads can starve
-# unless stderr is connected to a pipe (logging writes from the BuildRunner
-# thread provide the I/O activity that keeps kqueue responsive). When running
-# interactively, redirect stderr through an internal pipe while still printing
-# to the terminal.
+# unless stderr is connected to a pipe.
 if sys.platform == "darwin" and sys.stderr.isatty():
     _stderr_r, _stderr_w = os.pipe()
     _original_stderr_fd = os.dup(2)
@@ -45,120 +42,35 @@ if sys.platform == "darwin" and sys.stderr.isatty():
                     tty.flush()
 
     import threading as _th
+
     _th.Thread(target=_stderr_pump, daemon=True).start()
 
 import argparse
 import asyncio
-import hashlib
-import hmac
-import json
-import random
-import signal
+import io
 import socket
 import threading
 import time
-from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, List, Optional
+import zipfile
+from base64 import b64encode
 
 # Force standard asyncio event loop policy BEFORE any gbserver imports.
 asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
-WEBHOOK_SECRET = f"test-secret-{random.randint(1000, 9999)}"
 TERMINAL_STATUSES = {"success", "failed", "cancelled"}
 
-# ─── Webhook Receiver ────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 
-class WebhookReceiver:
-    """Local HTTP server that receives and validates webhook deliveries."""
-
-    def __init__(self, port: int, secret: str):
-        self.port = port
-        self.secret = secret
-        self.deliveries: List[Dict[str, Any]] = []
-        self.build_finished = threading.Event()
-        self._server: Optional[HTTPServer] = None
-        self._thread: Optional[threading.Thread] = None
-
-    def start(self):
-        """Start the webhook receiver in a background thread."""
-        receiver = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                content_length = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(content_length)
-
-                # Verify HMAC signature
-                signature = self.headers.get("X-GB-Signature-256", "")
-                expected = "sha256=" + hmac.new(
-                    receiver.secret.encode(), body, hashlib.sha256
-                ).hexdigest()
-
-                if not hmac.compare_digest(signature, expected):
-                    print(f"  ❌ INVALID SIGNATURE (got {signature[:30]}...)")
-                    self.send_response(401)
-                    self.end_headers()
-                    return
-
-                payload = json.loads(body)
-                receiver.deliveries.append(payload)
-
-                delivery_id = payload.get("delivery_id", "?")[:8]
-                events = payload.get("events", [])
-                batch_size = self.headers.get("X-GB-Batch-Size", "?")
-
-                print(f"\n  ✅ Webhook received (delivery={delivery_id}..., events={batch_size})")
-                print(f"     Build: {payload.get('build_name')} | User: {payload.get('user')}")
-
-                for evt in events:
-                    evt_type = evt.get("event_type", "?")
-                    status = evt.get("status", "")
-                    target = evt.get("target_name", "")
-                    step = evt.get("step_name", "")
-                    msg = evt.get("message", {})
-                    if isinstance(msg, dict):
-                        msg_text = msg.get("text", "")
-                    else:
-                        msg_text = str(msg)
-
-                    line = f"     [{evt_type}]"
-                    if status:
-                        line += f" status={status}"
-                    if target:
-                        line += f" target={target}"
-                    if step:
-                        line += f" step={step}"
-                    if msg_text:
-                        line += f" — {msg_text}"
-                    print(line)
-
-                    # Check for terminal status
-                    if evt_type == "status_event" and status in TERMINAL_STATUSES:
-                        receiver.build_finished.set()
-
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b"OK")
-
-            def log_message(self, format, *args):
-                pass  # Suppress default logging
-
-        self._server = HTTPServer(("127.0.0.1", self.port), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        """Stop the webhook receiver."""
-        if self._server:
-            self._server.shutdown()
-
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.port}/webhook"
+def get_free_port() -> int:
+    """Find a free port on localhost."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
 
 # ─── gbserver Standalone Runner ──────────────────────────────────────────────
@@ -173,7 +85,6 @@ def start_gbserver(port: int, build_dir: str) -> threading.Thread:
 
     from gbserver.commands.command_standalone import _run_standalone
 
-
     started = threading.Event()
 
     def run():
@@ -187,13 +98,14 @@ def start_gbserver(port: int, build_dir: str) -> threading.Thread:
     thread.start()
 
     if not started.wait(timeout=30):
-        print("❌ gbserver failed to start within 30 seconds")
+        print("FAIL: gbserver failed to start within 30 seconds")
         sys.exit(1)
 
     # Wait for uvicorn to be fully ready
     for _ in range(40):
         try:
             import requests
+
             requests.get(f"http://127.0.0.1:{port}/api/v1", timeout=1)
             break
         except Exception:
@@ -202,23 +114,48 @@ def start_gbserver(port: int, build_dir: str) -> threading.Thread:
     return thread
 
 
+# ─── Subscription Creation ───────────────────────────────────────────────────
+
+
+def create_active_subscription(space_name: str) -> str:
+    """Create a space-wide webhook subscription directly via storage.
+
+    Bypasses URL validation by going directly to the storage layer.
+    Created with status="active" so the WebhookEventWriter picks it up.
+
+    Returns the subscription UUID.
+    """
+    from gbserver.webhooks.models import StoredWebhookSubscription
+    from gbserver.webhooks.sql_storage import create_webhook_storage
+
+    storage = create_webhook_storage()
+    subscription = StoredWebhookSubscription(
+        space_name=space_name,
+        build_id=None,
+        build_filter=None,
+        scope="space",
+        status="active",
+        active=True,
+        webhook_url="https://example.com/e2e-test-endpoint",
+        secret="e2e-test-secret",
+        event_types=["*"],
+        frequency=15,
+        created_by="e2e-test-user",
+    )
+    storage.add(subscription)
+    print(f"  Subscription ID: {subscription.uuid}")
+    print(f"  Scope:           space-wide (all builds in '{space_name}')")
+    print(f"  Status:          active")
+    return subscription.uuid
+
+
 # ─── Build Submission ────────────────────────────────────────────────────────
 
 
-def submit_build_with_webhook(
-    server_port: int,
-    build_dir: str,
-    webhook_url: str,
-    webhook_secret: str,
-) -> str:
-    """Submit a build via REST API with webhook_url for auto-subscription."""
-    import io
-    import zipfile
-    from base64 import b64encode
-
+def submit_build(server_port: int, build_dir: str) -> str:
+    """Submit a build via REST API. Returns build_id."""
     import requests
 
-    # Create build archive (zip the build directory)
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, dirs, files in os.walk(build_dir):
@@ -236,7 +173,7 @@ def submit_build_with_webhook(
     spaces = spaces_resp.json().get("spaces", [])
     space_name = spaces[0]["name"] if spaces else "standalone"
 
-    # Submit build with webhook
+    # Submit build (without webhook_url — subscription created directly)
     resp = requests.post(
         f"{base_url}/builds/",
         json={
@@ -244,173 +181,186 @@ def submit_build_with_webhook(
             "build_archive": build_archive,
             "space_name": space_name,
             "username": "e2e-test-user",
-            "webhook_url": webhook_url,
-            "webhook_secret": webhook_secret,
-            "webhook_frequency": 5,  # Fast for testing (will be clamped to 15s min)
         },
     )
 
     if resp.status_code != 200:
-        print(f"❌ Build submission failed: {resp.status_code} {resp.text}")
+        print(f"FAIL: Build submission failed: {resp.status_code} {resp.text}")
         sys.exit(1)
 
     data = resp.json()
     build_id = data["build_id"]
-    subscription_id = data.get("webhook_subscription_id")
-
     print(f"  Build ID: {build_id}")
-    print(f"  Webhook Subscription ID: {subscription_id}")
-
+    print(f"  Space:    {space_name}")
     return build_id
+
+
+# ─── Build Polling ───────────────────────────────────────────────────────────
+
+
+def wait_for_build(server_port: int, build_id: str, timeout: int) -> str:
+    """Poll build status until terminal. Returns final status."""
+    import requests
+
+    poll_interval = 3
+    elapsed = 0
+
+    while elapsed < timeout:
+        try:
+            r = requests.get(
+                f"http://127.0.0.1:{server_port}/api/v1/builds/{build_id}/status",
+                timeout=2,
+            )
+            data = r.json()
+            build_status = data.get("build", {}).get("status", "unknown")
+        except Exception as e:
+            build_status = f"error: {e}"
+
+        print(f"  [{elapsed:3d}s] Build status: {build_status}")
+
+        if build_status in TERMINAL_STATUSES:
+            return build_status
+
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+    return "timeout"
+
+
+# ─── Event Query ─────────────────────────────────────────────────────────────
+
+
+def query_persisted_events(subscription_id: str) -> list:
+    """Query the webhook event storage for events matching a subscription."""
+    from gbserver.webhooks.event_storage import create_webhook_event_storage
+
+    storage = create_webhook_event_storage()
+    events = storage.get_pending_for_subscription(subscription_id)
+    return events
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 
-def get_free_port() -> int:
-    """Find a free port on localhost."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="End-to-end test for webhook push notifications"
+        description="End-to-end test for webhook event persistence"
     )
     parser.add_argument(
-        "--port", type=int, default=None,
-        help="Port for webhook receiver (default: auto)",
-    )
-    parser.add_argument(
-        "--server-port", type=int, default=None,
+        "--server-port",
+        type=int,
+        default=None,
         help="Port for gbserver (default: auto)",
     )
     parser.add_argument(
-        "--build-dir", type=str,
+        "--build-dir",
+        type=str,
         default=os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "test-data", "e2e", "standalone", "standalone-quickstart",
+            "test-data",
+            "e2e",
+            "standalone",
+            "standalone-quickstart",
         ),
         help="Path to build directory (default: standalone-quickstart)",
     )
     parser.add_argument(
-        "--timeout", type=int, default=120,
+        "--timeout",
+        type=int,
+        default=120,
         help="Max seconds to wait for build completion (default: 120)",
     )
     args = parser.parse_args()
 
     # Clean stale SQLite DB to avoid leftover builds from previous runs
-    # interfering with this test (the BuildWatcher would try to run them).
     db_path = os.path.join(os.path.expanduser("~"), ".llmb", "llmb-server.db")
     for path in (db_path, f"{db_path}.lck"):
         if os.path.exists(path):
             os.remove(path)
 
-    webhook_port = args.port or get_free_port()
     server_port = args.server_port or get_free_port()
     build_dir = os.path.abspath(args.build_dir)
 
     print("=" * 60)
-    print("  Webhook Push Notifications — End-to-End Test")
+    print("  Webhook Event Persistence — End-to-End Test")
     print("=" * 60)
     print()
-    print(f"  Webhook receiver port: {webhook_port}")
-    print(f"  gbserver port:         {server_port}")
-    print(f"  Build directory:       {build_dir}")
-    print(f"  Webhook secret:        {WEBHOOK_SECRET}")
-    print(f"  Timeout:               {args.timeout}s")
+    print(f"  gbserver port:    {server_port}")
+    print(f"  Build directory:  {build_dir}")
+    print(f"  Timeout:          {args.timeout}s")
     print()
 
-    # Step 1: Start webhook receiver
-    print("▶ Starting webhook receiver...")
-    receiver = WebhookReceiver(port=webhook_port, secret=WEBHOOK_SECRET)
-    receiver.start()
-    print(f"  Listening at {receiver.url}")
-    print()
-
-
-    # Step 2: Start gbserver
-    print("▶ Starting gbserver (standalone mode)...")
+    # Step 1: Start gbserver
+    print("[1/5] Starting gbserver (standalone mode)...")
     start_gbserver(server_port, build_dir)
     print(f"  Server ready at http://127.0.0.1:{server_port}")
     print()
 
-    # Step 3: Submit build with webhook
-    print("▶ Submitting build with webhook subscription...")
-    build_id = submit_build_with_webhook(
-        server_port=server_port,
-        build_dir=build_dir,
-        webhook_url=receiver.url,
-        webhook_secret=WEBHOOK_SECRET,
+    # Step 2: Create active subscription BEFORE submitting build
+    # (avoids race condition where events fire before subscription exists)
+    print("[2/5] Creating active webhook subscription...")
+    import requests
+
+    spaces_resp = requests.get(
+        f"http://127.0.0.1:{server_port}/api/v1/spaces/spaces_for_user"
     )
+    spaces = spaces_resp.json().get("spaces", [])
+    space_name = spaces[0]["name"] if spaces else "standalone"
+    subscription_id = create_active_subscription(space_name)
     print()
 
-
-    # Step 4: Wait for events with status polling
-    print("▶ Waiting for webhook events...")
-    print("  (Events will appear below as they arrive)")
-    print("-" * 60)
-
-    import requests as _requests
-
-    poll_interval = 5
-    elapsed = 0
-    finished = False
-    while elapsed < args.timeout and not finished:
-        finished = receiver.build_finished.wait(timeout=poll_interval)
-        elapsed += poll_interval
-        if not finished:
-            try:
-                r = _requests.get(
-                    f"http://127.0.0.1:{server_port}/api/v1/builds/{build_id}/status",
-                    timeout=2,
-                )
-                data = r.json()
-                status = data.get("build", {}).get("status", "?")
-            except Exception as e:
-                status = f"error: {e}"
-            print(
-                f"  [{elapsed:3d}s] Build status: {status} | "
-                f"Deliveries so far: {len(receiver.deliveries)}"
-            )
-
-    print("-" * 60)
+    # Step 3: Submit build
+    print("[3/5] Submitting build...")
+    build_id = submit_build(server_port, build_dir)
     print()
 
-    # Step 5: Summary
-    total_events = sum(len(d.get("events", [])) for d in receiver.deliveries)
+    # Step 4: Wait for build to complete
+    print("[4/5] Waiting for build to complete...")
+    final_status = wait_for_build(server_port, build_id, args.timeout)
+    print()
+
+    # Step 5: Query persisted events
+    print("[5/5] Querying persisted webhook events...")
+    # Give a moment for any final events to be flushed
+    time.sleep(2)
+    events = query_persisted_events(subscription_id)
+
+    print()
     print("=" * 60)
     print("  Results")
     print("=" * 60)
-    print(f"  Deliveries received:  {len(receiver.deliveries)}")
-    print(f"  Total events:         {total_events}")
-    print(f"  Build completed:      {'yes' if finished else 'TIMEOUT'}")
-    print(f"  All signatures valid: yes (invalid would have been rejected)")
-    print()
+    print(f"  Build final status:   {final_status}")
+    print(f"  Events persisted:     {len(events)}")
 
-    if not finished:
-        print("  ⚠️  Build did not complete within timeout.")
-        print("  This may be normal if the build takes longer than expected.")
-        receiver.stop()
-        sys.exit(1)
+    if events:
+        event_types = set()
+        for evt in events:
+            event_types.add(evt.event_type)
+            print(
+                f"    [{evt.event_type}] build={evt.build_id[:8]}... "
+                f"delivered={evt.delivered}"
+            )
+        print()
+        print(f"  Event types seen:     {sorted(event_types)}")
+        print(f"  All undelivered:      {all(not e.delivered for e in events)}")
 
-    # Verify we got meaningful events
-    event_types = set()
-    for delivery in receiver.deliveries:
-        for evt in delivery.get("events", []):
-            event_types.add(evt.get("event_type"))
-
-    print(f"  Event types seen:     {sorted(event_types)}")
-
-    if "status_event" in event_types:
-        print("\n  ✅ SUCCESS — Webhook notifications working end-to-end!")
+        if "STATUS_EVENT" in event_types:
+            print()
+            print("  SUCCESS — Webhook events persisted end-to-end!")
+            print("  (Ready for Phase 2 delivery worker to pick up)")
+        else:
+            print()
+            print("  WARNING — No STATUS_EVENT found in persisted events.")
+            sys.exit(1)
     else:
-        print("\n  ⚠️  No status events received. Check logs.")
-
-    receiver.stop()
+        print()
+        print("  FAIL — No events were persisted!")
+        print()
+        print("  Possible causes:")
+        print("  - Subscription was not 'active' when events were processed")
+        print("  - Build completed before subscription was created")
+        print("  - WebhookEventWriter did not find the subscription")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
