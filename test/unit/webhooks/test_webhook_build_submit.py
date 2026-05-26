@@ -142,6 +142,46 @@ class TestBuildSubmitWithWebhook:
             # Subscription ID is None because creation failed
             assert data.get("webhook_subscription_id") is None
 
+    @patch("gbserver.api.builds.get_admin_storage")
+    @patch(
+        "gbserver.webhooks.url_validator.validate_webhook_url",
+        side_effect=__import__(
+            "gbserver.webhooks.url_validator", fromlist=["WebhookURLError"]
+        ).WebhookURLError("HTTPS required for webhook URLs"),
+    )
+    def test_submit_with_invalid_webhook_url_returns_no_subscription(
+        self, mock_validate, mock_admin
+    ):
+        """When webhook URL validation fails, no subscription is created."""
+        mock_space = MagicMock()
+        mock_space.name = "test-space"
+        mock_build_storage = MagicMock()
+        mock_build_storage.add.return_value = "build-uuid-invalid-url"
+        mock_space_storage = MagicMock()
+        mock_space_storage.get_by_name.return_value = mock_space
+        admin = MagicMock()
+        admin.space_storage = mock_space_storage
+        admin.build_storage = mock_build_storage
+        mock_admin.return_value = admin
+
+        with patch("gbserver.types.constants.GBSERVER_WEBHOOKS_ENABLED", True):
+            response = self.client.post(
+                "/",
+                json={
+                    "name": "test-build",
+                    "build_archive": "base64data",
+                    "space_name": "test-space",
+                    "username": "testuser",
+                    "webhook_url": "http://localhost/hook",
+                },
+                headers={"X-Forwarded-User": "testuser"},
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert "build_id" in data
+            # Subscription ID is None because URL validation failed
+            assert data.get("webhook_subscription_id") is None
+
     def test_build_submit_request_model_accepts_webhook_fields(self):
         """BuildSubmitRequest model accepts webhook fields."""
         req = BuildSubmitRequest(
