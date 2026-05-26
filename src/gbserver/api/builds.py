@@ -263,11 +263,13 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
         description=req.description,
         tags=req.tags,
     )
+
+    # Auto-create webhook subscription BEFORE enqueuing the build
+    # (ensures subscription exists when BuildRunner starts processing events)
+    webhook_subscription_id = _create_webhook_subscription(req, stored_build)
+
     result = build_storage.add(stored_build)
     logger.info("stored build with id: %s", result)
-
-    # Auto-create webhook subscription if webhook_url provided
-    webhook_subscription_id = _create_webhook_subscription(req, stored_build)
 
     return BuildSubmitResponse(
         build_id=stored_build.uuid,
@@ -299,30 +301,37 @@ def _create_webhook_subscription(
         if not GBSERVER_WEBHOOKS_ENABLED:
             return None
 
+        # Validate URL (best-effort — don't fail build submission)
+        import os
+
         from gbserver.webhooks.models import (
             WEBHOOK_MIN_FREQUENCY,
             StoredWebhookSubscription,
         )
         from gbserver.webhooks.sql_storage import create_webhook_storage
-        from gbserver.webhooks.url_validator import WebhookURLError, validate_webhook_url
+        from gbserver.webhooks.url_validator import (
+            WebhookURLError,
+            validate_webhook_url,
+        )
 
-        # Validate URL (best-effort — don't fail build submission)
-        import os
-
-        allow_http = os.environ.get("GBSERVER_WEBHOOKS_ALLOW_HTTP", "").lower() == "true"
+        allow_http = (
+            os.environ.get("GBSERVER_WEBHOOKS_ALLOW_HTTP", "").lower() == "true"
+        )
         try:
             validate_webhook_url(req.webhook_url, allow_http=allow_http)
         except WebhookURLError as e:
-            logger.warning("Webhook URL validation failed for build %s: %s", stored_build.uuid, e)
+            logger.warning(
+                "Webhook URL validation failed for build %s: %s", stored_build.uuid, e
+            )
             return None
 
         webhook_storage = create_webhook_storage()
         subscription = StoredWebhookSubscription(
             space_name=stored_build.space_name,
-            build_id=stored_build.uuid,
+            build_id=None,
             build_filter=stored_build.uuid,
             scope="space",
-            status="pending",
+            status="active",
             webhook_url=req.webhook_url,
             secret=req.webhook_secret or "",
             event_types=req.webhook_event_types or ["*"],
