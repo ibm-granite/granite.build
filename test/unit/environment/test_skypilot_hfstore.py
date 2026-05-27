@@ -174,6 +174,109 @@ class TestPullassetHfstore:
                 storeload_config=storeload_config,
             )
 
+    @pytest.mark.asyncio
+    async def test_uses_env_shared_workdir_when_no_cache_path(self, mock_hfuri):
+        """No cache_path on the store -> falls back to {shared_workdir}/hf_cache."""
+        from gbserver.environment.skypilot import Skypilot
+        from gbserver.types.environmentconfig import EnvironmentConfig
+
+        env = Skypilot(
+            event_q=asyncio.Queue(),
+            environment_config=EnvironmentConfig(
+                name="test-skypilot",
+                type="Skypilot",
+                config={
+                    "default_cloud": "slurm",
+                    "idle_minutes_to_autostop": 0,
+                    "shared_workdir": "/shared",
+                },
+            ),
+        )
+        assetstore = _hfstore_mock()
+        storeload_config = MagicMock()
+        storeload_config.mode = "hf_pull"
+        storeload_config.config = {}
+
+        binding_config, _ = await env.pullasset_hfstore(
+            uri=mock_hfuri,
+            assetstore=assetstore,
+            storeload_config=storeload_config,
+        )
+
+        assert binding_config["binding"]["path"] == str(
+            Path("/shared/hf_cache/myorg/myrepo/main")
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_cache_path_overrides_shared_workdir(self, mock_hfuri):
+        """Per-store cache_path wins over env shared_workdir when both are set."""
+        from gbserver.environment.skypilot import Skypilot
+        from gbserver.types.environmentconfig import EnvironmentConfig
+
+        env = Skypilot(
+            event_q=asyncio.Queue(),
+            environment_config=EnvironmentConfig(
+                name="test-skypilot",
+                type="Skypilot",
+                config={
+                    "default_cloud": "slurm",
+                    "idle_minutes_to_autostop": 0,
+                    "shared_workdir": "/shared",
+                },
+            ),
+        )
+        assetstore = _hfstore_mock()
+        storeload_config = MagicMock()
+        storeload_config.mode = "hf_pull"
+        storeload_config.config = {"cache_path": "/explicit/override"}
+
+        binding_config, _ = await env.pullasset_hfstore(
+            uri=mock_hfuri,
+            assetstore=assetstore,
+            storeload_config=storeload_config,
+        )
+
+        assert binding_config["binding"]["path"] == str(
+            Path("/explicit/override/myorg/myrepo/main")
+        )
+
+
+class TestGetHfCacheDir:
+    """Unit tests for the three-rung cache-path resolution chain."""
+
+    def test_explicit_cache_path_wins(self):
+        from gbserver.environment.local_assets import get_hf_cache_dir
+
+        cfg = MagicMock()
+        cfg.config = {"cache_path": "/explicit"}
+        assert (
+            get_hf_cache_dir(cfg, default_workdir="/shared") == "/explicit"
+        )
+
+    def test_default_workdir_used_when_no_cache_path(self):
+        from gbserver.environment.local_assets import get_hf_cache_dir
+
+        cfg = MagicMock()
+        cfg.config = {}
+        assert (
+            get_hf_cache_dir(cfg, default_workdir="/shared") == "/shared/hf_cache"
+        )
+
+    def test_falls_back_to_home_cache_when_neither_set(self):
+        from gbserver.environment.local_assets import get_hf_cache_dir
+
+        cfg = MagicMock()
+        cfg.config = {}
+        result = get_hf_cache_dir(cfg)
+        assert result.endswith(str(Path(".cache/gbserver/hf")))
+
+    def test_none_storeload_config_uses_default_workdir(self):
+        from gbserver.environment.local_assets import get_hf_cache_dir
+
+        assert (
+            get_hf_cache_dir(None, default_workdir="/shared") == "/shared/hf_cache"
+        )
+
 
 class TestPushassetHfstore:
     @pytest.mark.asyncio

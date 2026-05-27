@@ -196,6 +196,25 @@ config:
   zone: <zone>                      # Optional. Forwarded to `sky.Resources(zone=...)`
                                     # for steps that don't set `resources.zone`.
 
+  shared_workdir: <path>            # Optional. Path to a filesystem mounted on
+                                    # *every* worker the Skypilot env launches
+                                    # against. Used as the default base directory
+                                    # for gbserver-managed cross-step caches
+                                    # (currently the HF asset cache; other stores
+                                    # may follow). Each `sky launch` is a fresh
+                                    # allocation, so cross-step state requires a
+                                    # shared FS provisioned by the cluster admin —
+                                    # gbserver does not create or mount it.
+                                    # Examples per backend:
+                                    #   slurm:  /shared             (NFS / Lustre / GPFS)
+                                    #   k8s:    /mnt/shared         (RWX PVC)
+                                    #   aws:    /mnt/efs            (EFS / FSx)
+                                    #   gcp:    /mnt/filestore      (Filestore)
+                                    # When unset, gbserver-managed caches fall
+                                    # back to `~/.cache/gbserver/<store>` on the
+                                    # worker, which only works when consecutive
+                                    # steps land on the same machine.
+
 assetstores:
   - store_uri: space://assetstores/hf      # HuggingFace Hub asset store.
     load:
@@ -204,9 +223,17 @@ assetstores:
           step_uri: space://steps/hfpull_bash    # Optional override of the builtin
                                                   # hfpull_bash step URI. The default
                                                   # is the gbserver builtin.
-          cache_path: /tmp/hf_cache              # Local cache dir on the SkyPilot
-                                                  # node where pulled snapshots are
-                                                  # written. Required.
+          cache_path: /tmp/hf_cache              # Optional cache dir on the
+                                                  # SkyPilot worker where pulled
+                                                  # snapshots are written. When
+                                                  # unset, defaults to
+                                                  # `{shared_workdir}/hf_cache` if
+                                                  # the env declares a
+                                                  # `shared_workdir`, otherwise
+                                                  # `~/.cache/gbserver/hf` on the
+                                                  # worker. Set explicitly only to
+                                                  # override that default for this
+                                                  # one assetstore.
     push:
       - mode: hf_push
         config:
@@ -805,12 +832,16 @@ config:
   zone: normal
   idle_minutes_to_autostop: 0   # ignored on SLURM (autostop unsupported);
                                 # per-step `sky down` handles teardown.
+  shared_workdir: /shared       # Path shared across slurmctld/c1/c2 in the
+                                # local Docker fixture (the `slurm_shared_fs`
+                                # named volume). HF cache defaults to
+                                # /shared/hf_cache via this declaration —
+                                # no per-store `cache_path` override needed.
 assetstores:
   - store_uri: space://assetstores/hf
     load:
       - mode: hf_pull
         config:
-          cache_path: /tmp/hf_cache
           step_uri: space://steps/hfpull_bash
     push:
       - mode: hf_push

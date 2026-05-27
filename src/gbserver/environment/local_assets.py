@@ -13,12 +13,24 @@ from gbserver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def get_hf_cache_dir(storeload_config) -> str:
-    """Resolve the HF model cache directory from step config or the default path.
+def get_hf_cache_dir(
+    storeload_config, default_workdir: Optional[str] = None
+) -> str:
+    """Resolve the HF model cache directory from step config or a default path.
+
+    Resolution order:
+        1. ``storeload_config.config["cache_path"]`` if explicitly set.
+        2. ``{default_workdir}/hf_cache`` if a ``default_workdir`` is provided
+           (typically the Skypilot env's ``shared_workdir`` — a path mounted
+           on every worker).
+        3. ``~/.cache/gbserver/hf`` as a last-resort process-local default
+           (correct for single-host envs like Bash and Docker).
 
     Args:
-        storeload_config: StoreLoad config object (may be None).  If it carries
-            a ``config.cache_path`` entry that value is used directly.
+        storeload_config: StoreLoad config object (may be None).
+        default_workdir: Optional cross-worker shared filesystem root. When
+            provided and no explicit ``cache_path`` is set, the cache lands at
+            ``{default_workdir}/hf_cache``.
 
     Returns:
         Absolute path string to the HF cache directory.
@@ -30,6 +42,8 @@ def get_hf_cache_dir(storeload_config) -> str:
         and "cache_path" in storeload_config.config
     ):
         return storeload_config.config["cache_path"]
+    if default_workdir:
+        return os.path.join(default_workdir, "hf_cache")
     return os.path.join(os.path.expanduser("~"), ".cache", "gbserver", "hf")
 
 

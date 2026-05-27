@@ -487,7 +487,12 @@ class Skypilot(Environment):
             raise ValueError(f"unsupported storeload mode: {storeload_config.mode}")
 
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
-        cache_dir = Path(get_hf_cache_dir(storeload_config))
+        shared_workdir = (
+            self.config.config.get("shared_workdir") if self.config else None
+        )
+        cache_dir = Path(
+            get_hf_cache_dir(storeload_config, default_workdir=shared_workdir)
+        )
         binding_path = (
             cache_dir / hfuri.get_owner() / hfuri.get_repo() / hfuri.get_revision()
         )

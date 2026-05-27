@@ -5,12 +5,12 @@ config:
   idle_minutes_to_autostop: 0
   cluster: slurm-docker
   zone: normal
+  shared_workdir: /shared
 assetstores:
   - store_uri: space://assetstores/hf
     load:
       - mode: hf_pull
         config:
-          cache_path: /shared/hf_cache
           step_uri: space://steps/hfpull_bash
     push:
       - mode: hf_push
