@@ -269,6 +269,7 @@ class Skypilot(Environment):
         last_status = None
 
         while not stop_event.is_set():
+            status = None
             try:
                 request_id = sky.job_status(
                     cluster_name,
@@ -276,58 +277,62 @@ class Skypilot(Environment):
                 )
                 statuses = sky.get(request_id)
                 status = statuses.get(job_id) if statuses else None
+            except Exception as e:
+                logger.error(
+                    "Error polling SkyPilot job %s on %s: %s",
+                    job_id,
+                    cluster_name,
+                    e,
+                )
 
-                if status != last_status:
-                    logger.info(
-                        "SkyPilot job %s on %s status: %s -> %s (launch_id=%s)",
-                        job_id,
-                        cluster_name,
-                        last_status,
-                        status,
-                        launch_id,
+            if status != last_status:
+                logger.info(
+                    "SkyPilot job %s on %s status: %s -> %s (launch_id=%s)",
+                    job_id,
+                    cluster_name,
+                    last_status,
+                    status,
+                    launch_id,
+                )
+                if event_q and entityrun_metadata:
+                    from gbserver.types.buildevent import (
+                        BuildEvent,
+                        BuildEventMessagePayload,
+                        BuildEventType,
                     )
+
+                    event = BuildEvent(
+                        run_metadata=entityrun_metadata,
+                        type=BuildEventType.MESSAGE_EVENT,
+                        payload=BuildEventMessagePayload(
+                            msg=f"SkyPilot job {job_id} on {cluster_name}: {status}"
+                        ),
+                    )
+                    await event_q.put(event)
+                last_status = status
+
+            if status is not None and status.is_terminal():
+                logger.info(
+                    "SkyPilot job %s reached terminal status: %s",
+                    job_id,
+                    status,
+                )
+                if (
+                    event_log_parser_configs
+                    and event_q
+                    and entityrun_metadata
+                    and job_id is not None
+                ):
+                    await self._download_and_parse_logs(
+                        cluster_name=cluster_name,
+                        job_id=job_id,
+                        launch_id=launch_id,
+                        event_q=event_q,
+                        entityrun_metadata=entityrun_metadata,
+                        event_log_parser_configs=event_log_parser_configs,
+                    )
+                if str(status) != "JobStatus.SUCCEEDED":
                     if event_q and entityrun_metadata:
-                        from gbserver.types.buildevent import (
-                            BuildEvent,
-                            BuildEventMessagePayload,
-                            BuildEventType,
-                        )
-
-                        event = BuildEvent(
-                            run_metadata=entityrun_metadata,
-                            type=BuildEventType.MESSAGE_EVENT,
-                            payload=BuildEventMessagePayload(
-                                msg=f"SkyPilot job {job_id} on {cluster_name}: {status}"
-                            ),
-                        )
-                        await event_q.put(event)
-                    last_status = status
-
-                if status is not None and status.is_terminal():
-                    logger.info(
-                        "SkyPilot job %s reached terminal status: %s",
-                        job_id,
-                        status,
-                    )
-                    if (
-                        event_log_parser_configs
-                        and event_q
-                        and entityrun_metadata
-                        and job_id is not None
-                    ):
-                        await self._download_and_parse_logs(
-                            cluster_name=cluster_name,
-                            job_id=job_id,
-                            launch_id=launch_id,
-                            event_q=event_q,
-                            entityrun_metadata=entityrun_metadata,
-                            event_log_parser_configs=event_log_parser_configs,
-                        )
-                    if (
-                        event_q
-                        and entityrun_metadata
-                        and str(status) != "JobStatus.SUCCEEDED"
-                    ):
                         from gbserver.types.buildevent import (
                             BuildEvent,
                             BuildEventType,
@@ -343,15 +348,16 @@ class Skypilot(Environment):
                             ),
                         )
                         await event_q.put(fail_event)
-                    return
-
-            except Exception as e:
-                logger.error(
-                    "Error polling SkyPilot job %s on %s: %s",
-                    job_id,
-                    cluster_name,
-                    e,
-                )
+                    # Raise so the TaskGroup in TargetStepRun._run cancels the
+                    # launch task and Run.run() marks the step FAILED. Without
+                    # this, launch_skypilot returns successfully (it only waits
+                    # for provisioning, not job completion) and the step is
+                    # incorrectly recorded as SUCCESS while its workload failed.
+                    raise RuntimeError(
+                        f"SkyPilot job {job_id} on {cluster_name} ended in "
+                        f"{status} (launch_id={launch_id})"
+                    )
+                return
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
