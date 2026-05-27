@@ -574,12 +574,14 @@ class Skypilot(Environment):
             assetstore, Hfstore
         ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
         space_name = output_config.space_name if output_config else None
-        resource_group_id: Optional[str] = hfuri.resolve_resource_group_id(
-            token=assetstore._resolve_token(hfuri),
-            resource_group_id=hf_resource_group_id,
-            resource_group_name=hf_resource_group_name,
-            space_name=space_name,
-        )
+        if hf_resource_group_id:
+            resource_group_id: Optional[str] = hf_resource_group_id
+        else:
+            resource_group_id = hfuri.resolve_resource_group_id(
+                token=assetstore._resolve_token(hfuri),
+                resource_group_name=hf_resource_group_name,
+                space_name=space_name,
+            )
 
         hfpush_config = Hfstore.build_hfpush_step_config(
             hfuri=hfuri,
