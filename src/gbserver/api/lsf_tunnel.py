@@ -30,6 +30,7 @@ SSH key is pulled from the space's IBM Cloud Secret Manager group at
 request time.
 """
 
+import asyncio
 import os
 import random
 import shlex
@@ -44,7 +45,7 @@ from fastapi import HTTPException, status
 from gbserver.environment.environment import Environment
 from gbserver.types.constants import ENABLE_SSH_HOST_KEY_VERIFICATION
 from gbserver.utils.logger import get_logger
-from gbserver.utils.ssh_tunnel import SshTunnel
+from gbserver.utils.ssh_tunnel import SshTunnel, SshTunnelError
 
 logger = get_logger(__name__)
 
@@ -61,13 +62,13 @@ class LsfTunnelConfig:
     workspace_remote_dir: str
 
 
-def _pick_login_node(nodes: List[str]) -> str:
-    """Pick one login node at random.
+def _clean_login_nodes(nodes: List[str]) -> List[str]:
+    """Strip and drop empty entries from the configured login_nodes list.
 
-    v1 does no liveness check — asyncssh.connect will surface errors on
-    handshake. Reusing Lsf._get_reachable_ssh_node here would pull in the
-    Lsf instance's mutable state (self.unreachable_ssh_nodes, locks), so
-    we keep it simple.
+    Raises 503 if nothing usable remains. Reusing Lsf._get_reachable_ssh_node
+    would pull in the Lsf instance's mutable state (self.unreachable_ssh_nodes,
+    locks); the REST path keeps node selection per-request via the failover
+    loop in open_lsf_tunnel.
     """
     cleaned = [n.strip() for n in nodes if isinstance(n, str) and n.strip()]
     if not cleaned:
@@ -75,10 +76,10 @@ def _pick_login_node(nodes: List[str]) -> str:
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "no login nodes configured in environment.yaml",
         )
-    return random.choice(cleaned)
+    return cleaned
 
 
-def _resolve_lsf_config(environment_uri: str) -> tuple[List[str], str, str, str]:
+async def _resolve_lsf_config(environment_uri: str) -> tuple[List[str], str, str, str]:
     """Load environment.yaml for `environment_uri` and return Lsf SSH params.
 
     Returns (login_nodes, username, ssh_key_secret_name, workspace_remote_dir).
@@ -86,7 +87,13 @@ def _resolve_lsf_config(environment_uri: str) -> tuple[List[str], str, str, str]
     field is missing from environment.yaml.
     """
     try:
-        env_config, _asset = Environment.load_environment_config(environment_uri)
+        # Offloaded: load_environment_config syncs the environment Asset, which
+        # may hit git/HTTP. The DB calls elsewhere in this module run inline
+        # (matching the rest of the api/ package) — only the network-bound
+        # work goes through to_thread.
+        env_config, _asset = await asyncio.to_thread(
+            Environment.load_environment_config, environment_uri
+        )
     except Exception as e:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -124,7 +131,7 @@ def _resolve_lsf_config(environment_uri: str) -> tuple[List[str], str, str, str]
     return login_nodes, username, ssh_key_secret_name, workspace_remote_dir
 
 
-def _fetch_ssh_key_for_space(space_name: str, secret_name: str) -> str:
+async def _fetch_ssh_key_for_space(space_name: str, secret_name: str) -> str:
     """Fetch the SSH private key for `space_name` from IBM Cloud Secret Manager.
 
     Uses IbmcloudSpaceSecretManager (non-admin), which merges secrets
@@ -149,20 +156,29 @@ def _fetch_ssh_key_for_space(space_name: str, secret_name: str) -> str:
 
     from gbserver.storage.singleton_storage import get_admin_storage
 
+    # Local DB lookup — runs inline (matches codebase convention, see builds.py).
     stored_space = get_admin_storage().space_storage.get_by_name(space_name)
     if stored_space is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"space {space_name!r} not found"
         )
 
-    manager = IbmcloudSpaceSecretManager(uri=stored_space.git_repo_uri)
-    if not manager.secret_groups:
+    # Offloaded: IbmcloudSpaceSecretManager construction enumerates groups and
+    # get_space_secrets() makes blocking HTTPS calls to IBM Cloud Secret Manager.
+    def _fetch() -> tuple[List[str], Optional[str]]:
+        manager = IbmcloudSpaceSecretManager(uri=stored_space.git_repo_uri)
+        groups = list(manager.secret_groups or [])
+        if not groups:
+            return groups, None
+        secrets = manager.get_space_secrets() or {}
+        return groups, secrets.get(secret_name)
+
+    groups, key_material = await asyncio.to_thread(_fetch)
+    if not groups:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"no secret groups resolved for space {space_name!r}",
         )
-    secrets = manager.get_space_secrets() or {}
-    key_material = secrets.get(secret_name)
     if not key_material:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
@@ -198,29 +214,50 @@ async def open_lsf_tunnel(
     closed and the private-key tempfile is unlinked, including cancellation
     paths.
     """
-    login_nodes, username, key_secret_name, workspace_remote_dir = _resolve_lsf_config(
-        environment_uri
+    login_nodes, username, key_secret_name, workspace_remote_dir = (
+        await _resolve_lsf_config(environment_uri)
     )
 
-    login_node = _pick_login_node(login_nodes)
-    key_material = _fetch_ssh_key_for_space(space_name, key_secret_name)
+    candidates = _clean_login_nodes(login_nodes)
+    # Shuffle so concurrent requests don't all probe the same node first.
+    random.shuffle(candidates)
+    key_material = await _fetch_ssh_key_for_space(space_name, key_secret_name)
     key_file_path: Optional[str] = None
     tunnel: Optional[SshTunnel] = None
     try:
         key_file_path = _write_key_file(key_material)
-        logger.info(
-            "[build-files] opening tunnel: space=%s node=%s key_file=%s",
-            space_name,
-            login_node,
-            key_file_path,
-        )
-        tunnel = SshTunnel(
-            host=login_node,
-            username=username,
-            key_file=key_file_path,
-            host_key_verification=ENABLE_SSH_HOST_KEY_VERIFICATION,
-        )
-        await tunnel.open()
+        last_err: Optional[Exception] = None
+        for node in candidates:
+            attempt = SshTunnel(
+                host=node,
+                username=username,
+                key_file=key_file_path,
+                host_key_verification=ENABLE_SSH_HOST_KEY_VERIFICATION,
+            )
+            logger.info(
+                "[build-files] opening tunnel: space=%s node=%s key_file=%s",
+                space_name,
+                node,
+                key_file_path,
+            )
+            try:
+                await attempt.open()
+            except SshTunnelError as e:
+                # SshTunnel.open() already calls close() on partial failure
+                # (ssh_tunnel.py:140-145), so no half-open state to clean up.
+                last_err = e
+                logger.warning(
+                    "[build-files] tunnel open failed on node %s: %s", node, e
+                )
+                continue
+            tunnel = attempt
+            break
+        if tunnel is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                f"no reachable login nodes among {candidates}: "
+                f"{last_err if last_err else 'unknown error'}",
+            )
         # Canonicalize workspace_remote_dir once per request so every
         # downstream build_root is fully dereferenced. Without this, a
         # symlinked parent of the workspace could let validate_subpath's

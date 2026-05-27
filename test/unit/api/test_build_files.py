@@ -1186,7 +1186,8 @@ class TestDownloadPeek:
 class TestResolveLsfConfig:
     """Direct unit tests for the env-config -> SSH params resolver."""
 
-    def test_non_lsf_environment_returns_400(self):
+    @pytest.mark.asyncio
+    async def test_non_lsf_environment_returns_400(self):
         from gbserver.api import lsf_tunnel
         from gbserver.types.environmentconfig import EnvironmentConfig
 
@@ -1197,11 +1198,12 @@ class TestResolveLsfConfig:
             return_value=(env_config, MagicMock()),
         ):
             with pytest.raises(HTTPException) as ei:
-                lsf_tunnel._resolve_lsf_config("space://environments/kube")
+                await lsf_tunnel._resolve_lsf_config("space://environments/kube")
         assert ei.value.status_code == 400
         assert "Lsf" in str(ei.value.detail)
 
-    def test_lsf_returns_fields(self):
+    @pytest.mark.asyncio
+    async def test_lsf_returns_fields(self):
         from gbserver.api import lsf_tunnel
         from gbserver.types.environmentconfig import EnvironmentConfig
 
@@ -1222,7 +1224,7 @@ class TestResolveLsfConfig:
             "load_environment_config",
             return_value=(env_config, MagicMock()),
         ):
-            login_nodes, username, key, ws = lsf_tunnel._resolve_lsf_config(
+            login_nodes, username, key, ws = await lsf_tunnel._resolve_lsf_config(
                 "space://environments/bluevela"
             )
         assert login_nodes == ["node-a", "node-b"]
@@ -1230,7 +1232,8 @@ class TestResolveLsfConfig:
         assert key == "key-secret"
         assert ws == "/ws"
 
-    def test_missing_field_returns_503(self):
+    @pytest.mark.asyncio
+    async def test_missing_field_returns_503(self):
         from gbserver.api import lsf_tunnel
         from gbserver.types.environmentconfig import EnvironmentConfig
 
@@ -1251,8 +1254,136 @@ class TestResolveLsfConfig:
             return_value=(env_config, MagicMock()),
         ):
             with pytest.raises(HTTPException) as ei:
-                lsf_tunnel._resolve_lsf_config("space://environments/bluevela")
+                await lsf_tunnel._resolve_lsf_config("space://environments/bluevela")
         assert ei.value.status_code == 503
         detail = str(ei.value.detail)
         assert "login_node_username" in detail
         assert "login_node_ssh_key" in detail
+
+
+# ----------------------------------------------------- open_lsf_tunnel failover
+
+
+class TestOpenLsfTunnelFailover:
+    """Failover tests: open_lsf_tunnel retries the next login node when
+    SshTunnel.open() raises SshTunnelError, and surfaces 503 only when
+    every node fails."""
+
+    @staticmethod
+    def _patch_resolvers(login_nodes):
+        """Stub _resolve_lsf_config + _fetch_ssh_key_for_space + _write_key_file
+        so the test focuses on the retry loop only."""
+        from gbserver.api import lsf_tunnel
+
+        resolve = patch.object(
+            lsf_tunnel,
+            "_resolve_lsf_config",
+            new=AsyncMock(return_value=(login_nodes, "u", "secret", "/ws")),
+        )
+        fetch = patch.object(
+            lsf_tunnel,
+            "_fetch_ssh_key_for_space",
+            new=AsyncMock(return_value="KEY"),
+        )
+        write = patch.object(
+            lsf_tunnel, "_write_key_file", return_value="/tmp/fake.key"
+        )
+        unlink = patch("os.unlink")
+        return resolve, fetch, write, unlink
+
+    @pytest.mark.asyncio
+    async def test_single_node_open_failure_returns_503(self):
+        from gbserver.api import lsf_tunnel
+        from gbserver.utils.ssh_tunnel import SshTunnelError
+
+        resolve, fetch, write, unlink = self._patch_resolvers(["node-a"])
+
+        constructed = []
+
+        def make_tunnel(**kwargs):
+            t = MagicMock()
+            t.open = AsyncMock(side_effect=SshTunnelError("connect refused"))
+            t.close = AsyncMock()
+            constructed.append((kwargs["host"], t))
+            return t
+
+        with resolve, fetch, write, unlink, patch.object(
+            lsf_tunnel, "SshTunnel", side_effect=make_tunnel
+        ):
+            with pytest.raises(HTTPException) as ei:
+                async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
+                    pass
+
+        assert ei.value.status_code == 503
+        assert "node-a" in str(ei.value.detail)
+        assert [host for host, _ in constructed] == ["node-a"]
+
+    @pytest.mark.asyncio
+    async def test_first_fails_second_succeeds(self):
+        from gbserver.api import lsf_tunnel
+        from gbserver.utils.ssh_tunnel import SshTunnelError
+
+        resolve, fetch, write, unlink = self._patch_resolvers(["node-a", "node-b"])
+
+        # Force a deterministic order so we can assert which node served.
+        shuffle_noop = patch("random.shuffle", side_effect=lambda lst: None)
+
+        opened_hosts = []
+
+        def make_tunnel(**kwargs):
+            t = MagicMock()
+            host = kwargs["host"]
+            if host == "node-a":
+                t.open = AsyncMock(side_effect=SshTunnelError("down"))
+            else:
+                t.open = AsyncMock(return_value=None)
+
+                async def _run_remote(cmd, raise_on_error=True):
+                    # readlink -f canonicalization step
+                    return (0, "/ws\n", "")
+
+                t.run_remote = AsyncMock(side_effect=_run_remote)
+            t.close = AsyncMock()
+            opened_hosts.append(host)
+            return t
+
+        with resolve, fetch, write, unlink, shuffle_noop, patch.object(
+            lsf_tunnel, "SshTunnel", side_effect=make_tunnel
+        ):
+            async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x") as (
+                tunnel,
+                cfg,
+            ):
+                assert cfg.workspace_remote_dir == "/ws"
+                assert tunnel is not None
+
+        # Both nodes were tried; node-b is the one that yielded.
+        assert opened_hosts == ["node-a", "node-b"]
+
+    @pytest.mark.asyncio
+    async def test_all_nodes_fail_returns_503_with_list(self):
+        from gbserver.api import lsf_tunnel
+        from gbserver.utils.ssh_tunnel import SshTunnelError
+
+        resolve, fetch, write, unlink = self._patch_resolvers(
+            ["node-a", "node-b", "node-c"]
+        )
+
+        def make_tunnel(**kwargs):
+            t = MagicMock()
+            t.open = AsyncMock(side_effect=SshTunnelError(f"fail {kwargs['host']}"))
+            t.close = AsyncMock()
+            return t
+
+        with resolve, fetch, write, unlink, patch.object(
+            lsf_tunnel, "SshTunnel", side_effect=make_tunnel
+        ):
+            with pytest.raises(HTTPException) as ei:
+                async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
+                    pass
+
+        assert ei.value.status_code == 503
+        detail = str(ei.value.detail)
+        assert "node-a" in detail
+        assert "node-b" in detail
+        assert "node-c" in detail

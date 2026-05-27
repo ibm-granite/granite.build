@@ -24,7 +24,7 @@ pass through validate_subpath(). Do not concatenate user-supplied segments
 onto the build root yourself.
 """
 
-import os
+import posixpath
 import shlex
 from pathlib import PurePosixPath
 from typing import Optional
@@ -80,9 +80,9 @@ def validate_subpath(
             status.HTTP_400_BAD_REQUEST, "path must be relative to the build root"
         )
 
-    # os.path.normpath handles ../ collapsing on posix when run on any OS,
-    # since our inputs are always posix-style. Re-join and re-check.
-    normalized = os.path.normpath(raw)
+    # posixpath.normpath collapses '../' against POSIX rules regardless of host
+    # platform; remote paths are always POSIX. Re-join and re-check.
+    normalized = posixpath.normpath(raw)
     if normalized.startswith("..") or normalized == "..":
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "path traversal above build root rejected"
