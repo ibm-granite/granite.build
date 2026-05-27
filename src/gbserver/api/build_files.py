@@ -148,7 +148,12 @@ def _no_match_or_500(rc: int, stdout: str, stderr: str, what: str) -> List[str]:
         # whole `path:line:text` triple as one record (not as fragments
         # whose `:NNNN:` substrings get re-parsed as fake hits).
         return [ln for ln in (stdout or "").split("\n") if ln]
-    if rc == 1 and not stdout:
+    if rc == 1 and not stdout and not stderr:
+        # grep's "no matches" contract: rc=1 with empty stdout AND empty
+        # stderr. Any pipeline-stage failure under `set -o pipefail` (head
+        # crash, I/O error, permission denied not caught by the substring
+        # heuristics below) writes something to stderr — fall through so
+        # those surface as 500 instead of being masked as "no hits."
         return []
     err = (stderr or "").lower()
     if "no such file" in err or "cannot access" in err:
@@ -584,8 +589,9 @@ async def _list_files_stat(
 async def _stream_sftp_file(tunnel, remote_path: str) -> AsyncIterator[bytes]:
     """Yield chunks of a remote file via SFTP, closing the client on exit."""
     chunk_size = 256 * 1024
-    sftp = await tunnel.start_sftp()
+    sftp = None
     try:
+        sftp = await tunnel.start_sftp()
         async with sftp.open(remote_path, "rb", encoding=None) as fh:
             while True:
                 chunk = await fh.read(chunk_size)
@@ -593,7 +599,8 @@ async def _stream_sftp_file(tunnel, remote_path: str) -> AsyncIterator[bytes]:
                     return
                 yield chunk
     finally:
-        sftp.exit()
+        if sftp is not None:
+            sftp.exit()
 
 
 def _content_disposition(filename: str) -> str:

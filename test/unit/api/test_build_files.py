@@ -551,6 +551,20 @@ class TestSearchFiles:
         assert r.status_code == 200, r.text
         assert r.json() == []
 
+    def test_search_grep_failure_with_stderr_is_500(self, client):
+        # rc=1 with non-empty stderr is NOT "no matches" — it's a pipeline
+        # failure under pipefail (e.g. head crash, I/O error). Must surface
+        # as 500 instead of being masked as an empty result list.
+        tunnel = _tunnel_with_grep(1, "", "head: I/O error")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "x"},
+            )
+        assert r.status_code == 500, r.text
+        assert "I/O error" in r.text
+
     def test_search_ignore_case_passes_flag(self, client):
         tunnel = _tunnel_with_grep(0, "/ws/llm-build-B1/a.txt:1:HELLO\n")
         lb, tun, auth, env = _patches(tunnel)
@@ -991,6 +1005,24 @@ class TestDownloadFile:
         assert 'filename="rapport-?.txt"' in cd
         # RFC 5987 form: percent-encoded UTF-8.
         assert "filename*=UTF-8''rapport-%C3%A9.txt" in cd
+
+    @pytest.mark.asyncio
+    async def test_stream_sftp_file_closes_client_on_open_failure(self):
+        # If sftp.open() raises after start_sftp() succeeds (e.g. file
+        # vanished between the size check and the stream open, or
+        # permission denied), the SFTP client must still be closed.
+        # Exercised at the helper level because TestClient's streaming
+        # error propagation differs from a real ASGI server.
+        tunnel = MagicMock()
+        sftp = MagicMock()
+        sftp.open = MagicMock(side_effect=OSError("permission denied"))
+        sftp.exit = MagicMock(return_value=None)
+        tunnel.start_sftp = AsyncMock(return_value=sftp)
+
+        gen = build_files_mod._stream_sftp_file(tunnel, "/ws/log.txt")
+        with pytest.raises(OSError):
+            await gen.__anext__()
+        sftp.exit.assert_called_once()
 
 
 # ----------------------------------------------------- /file/download peek mode
