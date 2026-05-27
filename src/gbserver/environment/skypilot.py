@@ -207,7 +207,8 @@ class Skypilot(Environment):
             # (including 0) fails provisioning with "Slurm does not support
             # autostop." Per-step `sky down` cleanup handles teardown anyway,
             # so force None on SLURM regardless of the user's config.
-            autostop = None if str(infra).split("/", 1)[0] == "slurm" else idle_minutes
+            cloud_for_infra = (str(infra).split("/", 1)[0] or "").lower()
+            autostop = None if cloud_for_infra == "slurm" else idle_minutes
 
             # Launch and wait for provisioning
             request_id = sky.launch(
@@ -270,6 +271,7 @@ class Skypilot(Environment):
 
         while not stop_event.is_set():
             status = None
+            poll_failed = False
             try:
                 request_id = sky.job_status(
                     cluster_name,
@@ -284,8 +286,11 @@ class Skypilot(Environment):
                     cluster_name,
                     e,
                 )
+                poll_failed = True
 
-            if status != last_status:
+            # Skip change-detection on poll failures so a transient error
+            # doesn't emit a spurious RUNNING -> None -> RUNNING flap event.
+            if not poll_failed and status != last_status:
                 logger.info(
                     "SkyPilot job %s on %s status: %s -> %s (launch_id=%s)",
                     job_id,

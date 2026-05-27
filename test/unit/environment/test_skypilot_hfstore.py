@@ -249,18 +249,14 @@ class TestGetHfCacheDir:
 
         cfg = MagicMock()
         cfg.config = {"cache_path": "/explicit"}
-        assert (
-            get_hf_cache_dir(cfg, default_workdir="/shared") == "/explicit"
-        )
+        assert get_hf_cache_dir(cfg, default_workdir="/shared") == "/explicit"
 
     def test_default_workdir_used_when_no_cache_path(self):
         from gbserver.environment.local_assets import get_hf_cache_dir
 
         cfg = MagicMock()
         cfg.config = {}
-        assert (
-            get_hf_cache_dir(cfg, default_workdir="/shared") == "/shared/hf_cache"
-        )
+        assert get_hf_cache_dir(cfg, default_workdir="/shared") == "/shared/hf_cache"
 
     def test_falls_back_to_home_cache_when_neither_set(self):
         from gbserver.environment.local_assets import get_hf_cache_dir
@@ -273,9 +269,7 @@ class TestGetHfCacheDir:
     def test_none_storeload_config_uses_default_workdir(self):
         from gbserver.environment.local_assets import get_hf_cache_dir
 
-        assert (
-            get_hf_cache_dir(None, default_workdir="/shared") == "/shared/hf_cache"
-        )
+        assert get_hf_cache_dir(None, default_workdir="/shared") == "/shared/hf_cache"
 
 
 class TestPushassetHfstore:

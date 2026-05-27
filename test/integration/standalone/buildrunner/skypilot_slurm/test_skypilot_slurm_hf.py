@@ -31,12 +31,12 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("kubernetes_asyncio")
+from integration.environment.test_skypilot_slurm_e2e import (
+    _slurm_cluster_reachable,
+)
 from libgbtest.buildrunner.buildtest import (
     AbstractYamlBuildRunnerTest,
     get_test_data_dir_for,
-)
-from integration.environment.test_skypilot_slurm_e2e import (
-    _slurm_cluster_reachable,
 )
 
 pytestmark = pytest.mark.skypilot_integration

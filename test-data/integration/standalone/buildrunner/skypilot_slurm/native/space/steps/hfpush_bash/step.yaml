@@ -58,20 +58,21 @@ environment_configs:
                 exit 1
             fi
 
-            # Jinja renders Python None as the literal string "None" — treat
-            # both that and an empty value as "not set".
-            if [ -z "${HF_RESOURCE_GROUP_ID}" ] || [ "${HF_RESOURCE_GROUP_ID}" = "None" ]; then
-                echo 'HF_RESOURCE_GROUP_ID is not set; configure hf.resource_group_id or hf.resource_group_name on the push config' >&2
-                exit 1
-            fi
-
             HF_VISIBILITY="public"
             if [ "${HF_PRIVATE}" = "True" ]; then
                 HF_VISIBILITY="private"
             fi
 
-            CREATE_BODY=$(printf '{"name":"%s","organization":"%s","type":"%s","visibility":"%s","resourceGroupId":"%s"}' \
-                "${HF_REPO_NAME}" "${HF_OWNER}" "${HF_TYPE}" "${HF_VISIBILITY}" "${HF_RESOURCE_GROUP_ID}")
+            # Treat both "" and the literal "None" (jinja-rendered Python None)
+            # as "no resource group" — callers whose resource_group_id is unset
+            # otherwise produce a literal "None" string and HF rejects it.
+            if [ -n "${HF_RESOURCE_GROUP_ID}" ] && [ "${HF_RESOURCE_GROUP_ID}" != "None" ]; then
+                CREATE_BODY=$(printf '{"name":"%s","organization":"%s","type":"%s","visibility":"%s","resourceGroupId":"%s"}' \
+                    "${HF_REPO_NAME}" "${HF_OWNER}" "${HF_TYPE}" "${HF_VISIBILITY}" "${HF_RESOURCE_GROUP_ID}")
+            else
+                CREATE_BODY=$(printf '{"name":"%s","organization":"%s","type":"%s","visibility":"%s"}' \
+                    "${HF_REPO_NAME}" "${HF_OWNER}" "${HF_TYPE}" "${HF_VISIBILITY}")
+            fi
 
             echo "Creating HF repo ${HF_REPO} (resource_group_id=${HF_RESOURCE_GROUP_ID:-<none>})"
             CREATE_RESP=$(mktemp)

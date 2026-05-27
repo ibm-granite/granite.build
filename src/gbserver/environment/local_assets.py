@@ -13,9 +13,7 @@ from gbserver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def get_hf_cache_dir(
-    storeload_config, default_workdir: Optional[str] = None
-) -> str:
+def get_hf_cache_dir(storeload_config, default_workdir: Optional[str] = None) -> str:
     """Resolve the HF model cache directory from step config or a default path.
 
     Resolution order:
