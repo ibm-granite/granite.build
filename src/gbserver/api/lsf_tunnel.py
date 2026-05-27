@@ -32,6 +32,7 @@ request time.
 
 import os
 import random
+import shlex
 import stat
 import tempfile
 from contextlib import asynccontextmanager
@@ -220,7 +221,23 @@ async def open_lsf_tunnel(
             host_key_verification=ENABLE_SSH_HOST_KEY_VERIFICATION,
         )
         await tunnel.open()
-        yield tunnel, LsfTunnelConfig(workspace_remote_dir=workspace_remote_dir)
+        # Canonicalize workspace_remote_dir once per request so every
+        # downstream build_root is fully dereferenced. Without this, a
+        # symlinked parent of the workspace could let validate_subpath's
+        # lexical containment check disagree with readlink-based checks
+        # downstream.
+        rc, stdout, stderr = await tunnel.run_remote(
+            f"readlink -f -- {shlex.quote(workspace_remote_dir)}",
+            raise_on_error=False,
+        )
+        canonical_workspace = (stdout or "").strip()
+        if rc != 0 or not canonical_workspace:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                f"failed to canonicalize workspace_remote_dir "
+                f"{workspace_remote_dir!r}: {stderr.strip() or 'unknown error'}",
+            )
+        yield tunnel, LsfTunnelConfig(workspace_remote_dir=canonical_workspace)
     finally:
         if tunnel is not None:
             try:
