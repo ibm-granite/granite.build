@@ -16,10 +16,10 @@ granite.build:
           config:
             bash_config:
               command: >-
-                mkdir -p /tmp/gb-outputs;
-                file=/tmp/gb-outputs/foo1a.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
-                file=/tmp/gb-outputs/foo1b.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
-                file=/tmp/gb-outputs/foo2.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model2 LLMB_ARTIFACT_PATH:$file"
+                mkdir -p /shared/gb-outputs;
+                file=/shared/gb-outputs/foo1a.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
+                file=/shared/gb-outputs/foo1b.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
+                file=/shared/gb-outputs/foo2.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model2 LLMB_ARTIFACT_PATH:$file"
             compute_config:
               num_gpus_per_node: 0
               total_memory_per_node: 1Gi
