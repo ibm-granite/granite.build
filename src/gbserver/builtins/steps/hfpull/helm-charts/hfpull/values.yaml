@@ -11,5 +11,5 @@ k8s:
     HF_TOKEN:
       valueFrom:
         secretKeyRef:
-          name: {{ setup_config.space.secret }}
+          name: "{{ setup_config.get('space', {}).get('secret', '') }}"
           key: {{ config.hfpull_config.token_secretname | default("HF_TOKEN") }}

@@ -203,11 +203,17 @@ class Skypilot(Environment):
                 res_config,
             )
 
+            # SLURM does not support autostop; passing any non-None value
+            # (including 0) fails provisioning with "Slurm does not support
+            # autostop." Per-step `sky down` cleanup handles teardown anyway,
+            # so force None on SLURM regardless of the user's config.
+            autostop = None if str(infra).split("/", 1)[0] == "slurm" else idle_minutes
+
             # Launch and wait for provisioning
             request_id = sky.launch(
                 task,
                 cluster_name=cluster_name,
-                idle_minutes_to_autostop=idle_minutes or None,
+                idle_minutes_to_autostop=autostop,
             )
             job_id, handle = sky.stream_and_get(request_id)
 
@@ -435,8 +441,8 @@ class Skypilot(Environment):
                 launch_id,
             )
             request_id = sky.down(cluster_name, purge=True)
-            sky.get(request_id)
-            logger.info("Torn down SkyPilot cluster %s", cluster_name)
+            res = sky.get(request_id)
+            logger.info("Torn down SkyPilot cluster %s, res=%s", cluster_name, res)
         except Exception as e:
             logger.error("Failed to tear down SkyPilot cluster %s: %s", cluster_name, e)
         finally:
@@ -472,9 +478,7 @@ class Skypilot(Environment):
             None,
             "hf_pull",
         ):
-            raise ValueError(
-                f"unsupported storeload mode: {storeload_config.mode}"
-            )
+            raise ValueError(f"unsupported storeload mode: {storeload_config.mode}")
 
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
         cache_dir = Path(get_hf_cache_dir(storeload_config))
@@ -544,8 +548,6 @@ class Skypilot(Environment):
         ), f"expected 'path' to be in the binding, actual: {binding}"
         binding_path = binding["path"]
 
-        space_name = output_config.space_name if output_config else None
-
         hf_resource_group_id = None
         hf_resource_group_name = None
         hf_private = True
@@ -560,14 +562,13 @@ class Skypilot(Environment):
         assert isinstance(
             assetstore, Hfstore
         ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
-        if hf_resource_group_id:
-            resource_group_id: Optional[str] = hf_resource_group_id
-        else:
-            resource_group_id = hfuri.resolve_resource_group_id(
-                token=assetstore._resolve_token(hfuri),
-                resource_group_name=hf_resource_group_name,
-                space_name=space_name,
-            )
+        space_name = output_config.space_name if output_config else None
+        resource_group_id: Optional[str] = hfuri.resolve_resource_group_id(
+            token=assetstore._resolve_token(hfuri),
+            resource_group_id=hf_resource_group_id,
+            resource_group_name=hf_resource_group_name,
+            space_name=space_name,
+        )
 
         hfpush_config = Hfstore.build_hfpush_step_config(
             hfuri=hfuri,

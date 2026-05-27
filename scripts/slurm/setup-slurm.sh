@@ -28,6 +28,15 @@ log()  { printf "\033[32m[SLURM]\033[0m %s\n" "$*"; }
 warn() { printf "\033[33m[SLURM]\033[0m %s\n" "$*" >&2; }
 err()  { printf "\033[31m[SLURM]\033[0m %s\n" "$*" >&2; exit 1; }
 
+# Portable in-place sed (BSD on macOS requires the empty-string suffix).
+sed_i() {
+    if sed --version 2>/dev/null | grep -q GNU; then
+        sed -i "$@"
+    else
+        sed -i '' "$@"
+    fi
+}
+
 detect_docker() {
     if [ -n "${DOCKER:-}" ]; then
         echo "$DOCKER"
@@ -75,8 +84,8 @@ if [ "${SLURM_NO_GPU:-0}" = "1" ] || ! nvidia-smi -L >/dev/null 2>&1; then
     cat > "$SCRIPT_DIR/gres.conf" <<'GRESEOF'
 # No GPU resources available
 GRESEOF
-    sed -i 's/^NodeName=c1.*/NodeName=c1 CPUs=2 RealMemory=1024 State=UNKNOWN/' "$SCRIPT_DIR/slurm.conf"
-    sed -i '/^GresTypes=/d' "$SCRIPT_DIR/slurm.conf"
+    sed_i 's/^NodeName=c1.*/NodeName=c1 CPUs=2 RealMemory=1024 State=UNKNOWN/' "$SCRIPT_DIR/slurm.conf"
+    sed_i '/^GresTypes=/d' "$SCRIPT_DIR/slurm.conf"
 else
     HAS_GPU=true
     log "GPU detected — enabling GPU passthrough on c1."
@@ -85,9 +94,12 @@ else
     cat > "$SCRIPT_DIR/gres.conf" <<'GRESEOF'
 AutoDetect=nvidia
 GRESEOF
-    sed -i 's/^NodeName=c1.*/NodeName=c1 CPUs=2 RealMemory=1024 Gres=gpu:1 State=UNKNOWN/' "$SCRIPT_DIR/slurm.conf"
+    sed_i 's/^NodeName=c1.*/NodeName=c1 CPUs=2 RealMemory=1024 Gres=gpu:1 State=UNKNOWN/' "$SCRIPT_DIR/slurm.conf"
     if ! grep -q '^GresTypes=' "$SCRIPT_DIR/slurm.conf"; then
-        sed -i '/^# ---- Compute nodes/i GresTypes=gpu\n' "$SCRIPT_DIR/slurm.conf"
+        # Portable insert-before (BSD sed's `i\` syntax differs from GNU); use awk.
+        awk '/^# ---- Compute nodes/ && !x { print "GresTypes=gpu\n"; x=1 } { print }' \
+            "$SCRIPT_DIR/slurm.conf" > "$SCRIPT_DIR/slurm.conf.tmp" \
+            && mv "$SCRIPT_DIR/slurm.conf.tmp" "$SCRIPT_DIR/slurm.conf"
     fi
 fi
 
@@ -191,7 +203,7 @@ mkdir -p "$(dirname "$SLURM_SSH_CONFIG")"
 touch "$SLURM_SSH_CONFIG"
 
 # Remove existing slurm-docker block if present
-sed -i "/$MARKER_BEGIN/,/$MARKER_END/d" "$SLURM_SSH_CONFIG"
+sed_i "/$MARKER_BEGIN/,/$MARKER_END/d" "$SLURM_SSH_CONFIG"
 
 # Append the managed block
 cat >> "$SLURM_SSH_CONFIG" <<SSHEOF

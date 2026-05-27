@@ -36,6 +36,15 @@ done
 log()  { printf "\033[32m[SLURM]\033[0m %s\n" "$*"; }
 warn() { printf "\033[33m[SLURM]\033[0m %s\n" "$*" >&2; }
 
+# Portable in-place sed (BSD on macOS requires the empty-string suffix).
+sed_i() {
+    if sed --version 2>/dev/null | grep -q GNU; then
+        sed -i "$@"
+    else
+        sed -i '' "$@"
+    fi
+}
+
 detect_docker() {
     if [ -n "${DOCKER:-}" ]; then
         echo "$DOCKER"
@@ -77,7 +86,7 @@ MARKER_END="# END slurm-docker"
 
 if [ -f "$SLURM_SSH_CONFIG" ] && grep -q "$MARKER_BEGIN" "$SLURM_SSH_CONFIG"; then
     log "Removing slurm-docker entry from $SLURM_SSH_CONFIG"
-    sed -i "/$MARKER_BEGIN/,/$MARKER_END/d" "$SLURM_SSH_CONFIG"
+    sed_i "/$MARKER_BEGIN/,/$MARKER_END/d" "$SLURM_SSH_CONFIG"
 fi
 
 # ---- Step 3: Clean up SSH key (if --all) ----

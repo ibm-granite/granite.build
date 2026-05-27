@@ -1,0 +1,79 @@
+name: hfpull_bash
+version: 1.0.0
+type: upload
+config:
+  retry_enabled_default: true
+  retry_transparently_default: true
+  gb:
+    step_contents_in_env: false
+  workload:
+    cwd: "."
+  hfpull_config:
+    path: <path>
+    uri: <uri>
+    hf:
+      type: model
+      owner: ""
+      repo: ""
+      revision: ""
+  compute_config:
+    total_memory_per_node: 10Gi
+
+# Bare-node variant of hfpull for Skypilot+slurm clusters that lack the Pyxis
+# SPANK plugin (which is required for `image_id: docker:...`).  Runs directly
+# on the launcher host; the host must have python/pip available so the setup
+# block can install huggingface_hub[cli].
+environment_configs:
+  Skypilot:
+    default_launcher: hfpull
+    launchers:
+      hfpull:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          resources:
+            cpus: "1+"
+          setup: |
+            pip install --no-cache-dir 'huggingface_hub[cli]'
+          run: |
+            echo 'hfpull start'
+
+            HF_DEST='{{ config.hfpull_config.path }}'
+            HF_URI='{{ config.hfpull_config.uri }}'
+            HF_REPO='{{ config.hfpull_config.owner }}/{{ config.hfpull_config.repo }}'
+            HF_REVISION='{{ config.hfpull_config.revision }}'
+            HF_TYPE='{{ config.hfpull_config.hf.type }}'
+
+            if [ -z "${HF_TOKEN:-}" ]; then
+                echo 'HF_TOKEN is not set' >&2
+                exit 1
+            fi
+
+            REVISION_FLAG=""
+            if [ -n "${HF_REVISION}" ]; then
+                REVISION_FLAG="--revision ${HF_REVISION}"
+            fi
+
+            REPO_TYPE_FLAG=""
+            if [ -n "${HF_TYPE}" ]; then
+                REPO_TYPE_FLAG="--repo-type ${HF_TYPE}"
+            fi
+
+            mkdir -p "${HF_DEST}"
+            echo "Pulling HF URI: ${HF_URI} to path ${HF_DEST}"
+            hf download "${HF_REPO}" --local-dir "${HF_DEST}" ${REVISION_FLAG} ${REPO_TYPE_FLAG}
+
+            MY_EXIT_CODE=$?
+            if [ "${MY_EXIT_CODE}" != "0" ]; then
+                echo "hfpull failed, exit code: ${MY_EXIT_CODE}" >&2
+                exit 1
+            fi
+
+            echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
+            echo 'hfpull end'
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 15

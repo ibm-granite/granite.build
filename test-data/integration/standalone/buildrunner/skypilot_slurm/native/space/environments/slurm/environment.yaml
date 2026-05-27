@@ -1,0 +1,18 @@
+name: slurm-local
+type: Skypilot
+config:
+  default_cloud: slurm
+  idle_minutes_to_autostop: 0
+  cluster: slurm-docker
+  zone: normal
+assetstores:
+  - store_uri: space://assetstores/hf
+    load:
+      - mode: hf_pull
+        config:
+          cache_path: /tmp/hf_cache
+          step_uri: space://steps/hfpull_bash
+    push:
+      - mode: hf_push
+        config:
+          step_uri: space://steps/hfpush_bash

@@ -5,6 +5,7 @@ Auto-skips if the cluster is not reachable via SSH.
 """
 
 import asyncio
+import os
 import subprocess
 import uuid
 
@@ -20,11 +21,13 @@ pytestmark = [pytest.mark.skypilot_integration, pytest.mark.asyncio]
 def _slurm_cluster_reachable() -> bool:
     """Check if the Docker SLURM cluster is reachable via SSH."""
     try:
+        # ssh does not expand ~ in -F; expand it here so subprocess gets an absolute path.
+        ssh_config = os.path.expanduser("~/.slurm/config")
         result = subprocess.run(
             [
                 "ssh",
                 "-F",
-                "~/.slurm/config",
+                ssh_config,
                 "-o",
                 "ConnectTimeout=3",
                 "slurm-docker",

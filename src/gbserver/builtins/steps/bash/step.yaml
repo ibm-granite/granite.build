@@ -1,0 +1,44 @@
+name: bash
+version: 1.0.0
+type: exec
+config:
+  bash_config:
+    command: ""    # bash command to execute on the launcher node
+  compute_config:
+    num_gpus_per_node: 0
+    total_memory_per_node: 4Gi
+
+environment_configs:
+  Skypilot:
+    default_launcher: bash
+    launchers:
+      bash:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Intentionally no image_id — runs on the bare launcher node so the
+          # Pyxis SPANK plugin is not required (the local Docker SLURM
+          # cluster from `make slurm-setup` does not have it).
+          resources:
+            cpus: "1+"
+          run: |
+            {{ config.bash_config.command }}
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 5
+          event_configs:
+            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              is_json: false
+              event_fields:
+                - field_name: binding_id
+                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                - field_name: path
+                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  is_data: true
+                - field_name: binding
+                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                  is_json: true
