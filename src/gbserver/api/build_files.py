@@ -138,15 +138,16 @@ def _no_match_or_500(rc: int, stdout: str, stderr: str, what: str) -> List[str]:
     """Translate a `... | grep ... | head` exit code into hits or HTTPException.
 
     grep exits 1 when there are no matches — that's not an error here,
-    return []. rc>=2 is a real failure (or a stage before grep failed
-    under pipefail).
+    return []. rc=141 is SIGPIPE: head closed its stdin after the cap was
+    reached and the producer died with EPIPE; the truncated stdout is
+    still the result we want. rc>=2 is a real failure (or a stage before
+    grep failed under pipefail).
     """
-    if rc == 0:
+    if rc in (0, 141):
         # Split on '\n' only — not str.splitlines(), which also breaks on
         # embedded '\r'. Source lines from tqdm progress bars and other
-        # \r-heavy output must stay intact so _GREP_LINE_RE parses the
-        # whole `path:line:text` triple as one record (not as fragments
-        # whose `:NNNN:` substrings get re-parsed as fake hits).
+        # \r-heavy output must stay intact so the parser sees the whole
+        # record, not fragments.
         return [ln for ln in (stdout or "").split("\n") if ln]
     if rc == 1 and not stdout and not stderr:
         # grep's "no matches" contract: rc=1 with empty stdout AND empty
@@ -167,68 +168,38 @@ def _no_match_or_500(rc: int, stdout: str, stderr: str, what: str) -> List[str]:
 # ---------------------------------------------------------------- /files/search
 
 
-# grep -H output: <path><sep><lineno><sep><text>, where sep is ':' for
-# match lines and '-' for context lines (when -A/-B is set). Parsing is
-# split into two strategies depending on the separator:
-#
-#   * Match lines (':'): we anchor on the FIRST ':<digits>:' that
-#     appears after the known absolute prefix (build_root). This stops
-#     a long matched source line whose content contains its own
-#     ":NNNN:" substring (e.g. pickled config dumps in training logs)
-#     from being re-parsed as a fake hit, with the inline content
-#     landing in `path` and the suffix in `text`. Filenames containing
-#     ':' are pathological and not handled.
-#   * Context lines ('-'): we anchor on the RIGHTMOST '-<digits>-' (the
-#     greedy `.+` strategy) because filenames frequently contain
-#     "-<digits>-" segments (UUIDs, run IDs) and the path needs to
-#     extend across them. Greedy matching backtracks to the unambiguous
-#     trailing '-<digits>-' boundary.
-_GREP_MATCH_RE = re.compile(r"^(?P<rel>.*?):(?P<lineno>\d+):(?P<text>.*)$")
-_GREP_CONTEXT_RE = re.compile(r"^(?P<path>.+)-(?P<lineno>\d+)-(?P<text>.*)$")
+# grep -Z output: <abs_path>\0<lineno><sep><text>, where sep is ':' for
+# match lines and '-' for context lines (when -A/-B is set). The NUL
+# byte unambiguously delimits the path from the rest, so filenames may
+# contain ':' or '-<digits>-' and matched text may contain ':<digits>:'
+# without confusing the parser.
+_GREP_Z_RE = re.compile(r"^(?P<lineno>\d+)(?P<sep>[:\-])(?P<text>.*)$")
 
 
 def _parse_grep_line(
     ln: str, build_root: PurePosixPath
 ) -> Optional[Tuple[str, int, str, bool]]:
-    """Parse one line of ``grep -H -n`` output into (rel_path, lineno, text, is_match).
+    """Parse one line of ``grep -Z -n`` output into (rel_path, lineno, text, is_match).
 
-    With ``-A``/``-B`` set, grep emits ``<path>-<lineno>-<text>`` for
-    context lines and ``<path>:<lineno>:<text>`` for match lines.
-
-    Match lines are anchored against ``build_root`` (the known absolute
-    prefix) and split on the first ':<digits>:' after it, so embedded
-    ":NNNN:" substrings in the matched content can't masquerade as the
-    record boundary. Context lines fall back to greedy/rightmost split,
-    which preserves filenames containing "-<digits>-" segments.
+    Format: ``<abs_path>\\0<lineno><sep><text>``. ``sep`` is ``':'`` for
+    match lines and ``'-'`` for context lines (when ``-A``/``-B`` is set).
+    Returns None for lines that don't fit the format (including grep's
+    ``--`` group separator, which has no NUL).
     """
-    root_str = str(build_root)
-    # Match line: ':' separator. Anchor against the build_root prefix.
-    if ln.startswith(root_str):
-        suffix = ln[len(root_str):]
-        m = _GREP_MATCH_RE.match(suffix)
-        if m is not None:
-            try:
-                lineno = int(m.group("lineno"))
-            except ValueError:
-                return None
-            rel = m.group("rel").lstrip("/") or "."
-            return rel, lineno, m.group("text"), True
-
-    # Context line: '-' separator. Filenames legitimately contain
-    # "-<digits>-" segments, so use the rightmost-split fallback.
-    m = _GREP_CONTEXT_RE.match(ln)
+    nul = ln.find("\x00")
+    if nul < 0:
+        return None
+    abs_path = ln[:nul]
+    m = _GREP_Z_RE.match(ln[nul + 1 :])
     if m is None:
         return None
-    abs_path = m.group("path")
-    try:
-        lineno = int(m.group("lineno"))
-    except ValueError:
-        return None
+    lineno = int(m.group("lineno"))
+    is_match = m.group("sep") == ":"
     try:
         rel = str(PurePosixPath(abs_path).relative_to(build_root))
     except ValueError:
         return None
-    return rel, lineno, m.group("text"), False
+    return rel, lineno, m.group("text"), is_match
 
 
 async def _remote_stat_batch(
@@ -310,7 +281,10 @@ async def search_files(
             stat,
         )
 
-        flags = "-r -n -I -H"
+        # -Z emits a NUL after the filename instead of the ':' / '-'
+        # separator, so embedded ':<digits>:' or '-<digits>-' in the
+        # matched/context text can't masquerade as the record boundary.
+        flags = "-r -n -I -H -Z"
         flags += " -E" if regex else " -F"
         if ignore_case:
             flags += " -i"
@@ -349,9 +323,7 @@ async def search_files(
                 text = text.replace("\r", " ")
             if len(text) > BUILD_FILES_GREP_LINE_MAX_BYTES:
                 text = text[:BUILD_FILES_GREP_LINE_MAX_BYTES]
-            hits.append(
-                GrepHit(path=rel, line=lineno, text=text, is_match=is_match)
-            )
+            hits.append(GrepHit(path=rel, line=lineno, text=text, is_match=is_match))
 
         if stat and hits:
             distinct_rels: List[str] = []
@@ -498,7 +470,9 @@ async def list_files(
         if pattern is not None:
             lines = _no_match_or_500(rc, stdout or "", stderr or "", "listing")
         else:
-            if rc != 0:
+            # rc=141 is SIGPIPE under pipefail: head closed stdin after the
+            # cap; the truncated stdout is still the result we want.
+            if rc not in (0, 141):
                 err = (stderr or "").lower()
                 if "no such file" in err or "cannot access" in err:
                     raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
@@ -543,7 +517,9 @@ async def _list_files_stat(
         f"| head -n {BUILD_FILES_LIST_MAX_ENTRIES}"
     )
     rc, stdout, stderr = await tunnel.run_remote(cmd, raise_on_error=False)
-    if rc != 0:
+    # rc=141 is SIGPIPE under pipefail: head closed stdin after the cap;
+    # the truncated stdout is still the result we want.
+    if rc not in (0, 141):
         err = (stderr or "").lower()
         if "no such file" in err or "cannot access" in err:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
@@ -587,17 +563,27 @@ async def _list_files_stat(
 # ------------------------------------------------------------- /file/download
 
 
-async def _stream_sftp_file(tunnel, remote_path: str) -> AsyncIterator[bytes]:
-    """Yield chunks of a remote file via SFTP, closing the client on exit."""
+async def _stream_sftp_file(
+    tunnel, remote_path: str, max_bytes: int
+) -> AsyncIterator[bytes]:
+    """Yield up to ``max_bytes`` of a remote file via SFTP.
+
+    Caps the streamed length so it matches the ``Content-Length`` derived
+    from a prior stat: a file appended-to during the stream won't push
+    bytes past the declared length, and a file truncated mid-stream just
+    yields what's there.
+    """
     chunk_size = 256 * 1024
     sftp = None
+    yielded = 0
     try:
         sftp = await tunnel.start_sftp()
         async with sftp.open(remote_path, "rb", encoding=None) as fh:
-            while True:
-                chunk = await fh.read(chunk_size)
+            while yielded < max_bytes:
+                chunk = await fh.read(min(chunk_size, max_bytes - yielded))
                 if not chunk:
                     return
+                yielded += len(chunk)
                 yield chunk
     finally:
         if sftp is not None:
@@ -674,9 +660,7 @@ async def _peek_text(
         # than scanning the rest of a huge file.
         start, end = args
         producer = f"sed -n {shlex.quote(f'{start},{end}p;{end}q')} -- {quoted}"
-    cmd = (
-        f"set -o pipefail; {producer} | head -c {BUILD_FILES_PEEK_MAX_BYTES}"
-    )
+    cmd = f"set -o pipefail; {producer} | head -c {BUILD_FILES_PEEK_MAX_BYTES}"
     rc, stdout, stderr = await tunnel.run_remote(cmd, raise_on_error=False)
     # head -c truncating its input causes the producer to die with
     # SIGPIPE → rc=141 under pipefail; that's success here.
@@ -700,9 +684,7 @@ async def download_file(
     path: str = Query(..., min_length=1),
     head: Optional[int] = Query(None, ge=1, le=BUILD_FILES_PEEK_MAX_LINES),
     tail: Optional[int] = Query(None, ge=1, le=BUILD_FILES_PEEK_MAX_LINES),
-    range_: Optional[str] = Query(
-        None, alias="range", pattern=r"^\d+-\d+$"
-    ),
+    range_: Optional[str] = Query(None, alias="range", pattern=r"^\d+-\d+$"),
 ) -> Response:
     """Download or peek at a remote file.
 
@@ -788,7 +770,7 @@ async def download_file(
 
         async def body() -> AsyncIterator[bytes]:
             try:
-                async for chunk in _stream_sftp_file(tunnel, str(real)):
+                async for chunk in _stream_sftp_file(tunnel, str(real), size):
                     yield chunk
             finally:
                 await ctx.__aexit__(None, None, None)

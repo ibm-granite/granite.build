@@ -288,6 +288,30 @@ class TestListFiles:
             )
         assert r.status_code == 404
 
+    def test_recursive_rc_141_returns_truncated(self, client):
+        # head closed stdin -> find dies with SIGPIPE -> rc=141 under
+        # pipefail. The truncated stdout is the result we want.
+        find_out = "/ws/llm-build-B1/a.txt\n" "/ws/llm-build-B1/sub/nested.log\n"
+        tunnel = MagicMock()
+
+        async def run_remote(cmd, raise_on_error=True):
+            if cmd.startswith("readlink -f"):
+                target = cmd.split("--", 1)[1].strip().strip("'\"")
+                return (0, target + "\n", "")
+            if "find " in cmd:
+                return (141, find_out, "find: write error")
+            return (0, "", "")
+
+        tunnel.run_remote = AsyncMock(side_effect=run_remote)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": ".", "recursive": "true"},
+            )
+        assert r.status_code == 200, r.text
+        assert sorted(r.json()) == ["a.txt", "sub/nested.log"]
+
 
 # ----------------------------------------------------- /files (pattern filter)
 
@@ -394,6 +418,19 @@ class TestListFilesPattern:
         assert any("grep -E --" in c for c in cmds)
         assert not any("grep -F --" in c for c in cmds)
 
+    def test_pattern_rc_141_returns_truncated(self, client):
+        # head closed stdin -> grep dies with SIGPIPE -> rc=141 under
+        # pipefail. The truncated stdout is the result we want.
+        tunnel = _tunnel_with_grep(141, "a.log\nb.log\n", "grep: write error")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"path": ".", "pattern": ".log"},
+            )
+        assert r.status_code == 200, r.text
+        assert sorted(r.json()) == ["a.log", "b.log"]
+
 
 # --------------------------------------------------------------- /files (stat)
 
@@ -445,10 +482,7 @@ class TestListFilesStat:
         assert any("-printf" in c for c in cmds)
 
     def test_stat_recursive_omits_maxdepth(self, client):
-        out = (
-            "a.log\tf\t1\t1700000000\n"
-            "sub/nested.log\tf\t2\t1700000001\n"
-        )
+        out = "a.log\tf\t1\t1700000000\n" "sub/nested.log\tf\t2\t1700000001\n"
         tunnel = _tunnel_with_find_printf(0, out)
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
@@ -483,10 +517,7 @@ class TestListFilesStat:
         assert [e["path"] for e in body] == ["a.log", "c.log"]
 
     def test_stat_with_regex_pattern(self, client):
-        out = (
-            "a.log\tf\t1\t1700000000\n"
-            "b.txt\tf\t2\t1700000001\n"
-        )
+        out = "a.log\tf\t1\t1700000000\n" "b.txt\tf\t2\t1700000001\n"
         tunnel = _tunnel_with_find_printf(0, out)
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
@@ -508,6 +539,20 @@ class TestListFilesStat:
             )
         assert r.status_code == 400
 
+    def test_stat_rc_141_returns_truncated(self, client):
+        # head closed stdin -> find dies with SIGPIPE -> rc=141 under
+        # pipefail. The truncated stdout is the result we want.
+        out = "a.log\tf\t1\t1700000000\n" "b.log\tf\t2\t1700000001\n"
+        tunnel = _tunnel_with_find_printf(141, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files",
+                params={"stat": "true"},
+            )
+        assert r.status_code == 200, r.text
+        assert [e["path"] for e in r.json()] == ["a.log", "b.log"]
+
 
 # --------------------------------------------------------------- /files/search
 
@@ -515,8 +560,8 @@ class TestListFilesStat:
 class TestSearchFiles:
     def test_search_returns_hits(self, client):
         out = (
-            "/ws/llm-build-B1/a.txt:1:hello world\n"
-            "/ws/llm-build-B1/sub/b.txt:42:world!\n"
+            "/ws/llm-build-B1/a.txt\x001:hello world\n"
+            "/ws/llm-build-B1/sub/b.txt\x0042:world!\n"
         )
         tunnel = _tunnel_with_grep(0, out)
         lb, tun, auth, env = _patches(tunnel)
@@ -528,17 +573,15 @@ class TestSearchFiles:
         assert r.status_code == 200, r.text
         body = r.json()
         # Strip optional fields for the equality check; covered separately.
-        slim = [
-            {"path": h["path"], "line": h["line"], "text": h["text"]} for h in body
-        ]
+        slim = [{"path": h["path"], "line": h["line"], "text": h["text"]} for h in body]
         assert slim == [
             {"path": "a.txt", "line": 1, "text": "hello world"},
             {"path": "sub/b.txt", "line": 42, "text": "world!"},
         ]
         assert all(h["is_match"] for h in body)
         cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
-        # grep -r -n -I -H -F flags must all be present.
-        assert any("grep -r -n -I -H -F" in c and "head -n" in c for c in cmds)
+        # grep -r -n -I -H -Z -F flags must all be present.
+        assert any("grep -r -n -I -H -Z -F" in c and "head -n" in c for c in cmds)
 
     def test_search_no_matches_returns_empty(self, client):
         tunnel = _tunnel_with_grep(1, "", "")
@@ -566,7 +609,7 @@ class TestSearchFiles:
         assert "I/O error" in r.text
 
     def test_search_ignore_case_passes_flag(self, client):
-        tunnel = _tunnel_with_grep(0, "/ws/llm-build-B1/a.txt:1:HELLO\n")
+        tunnel = _tunnel_with_grep(0, "/ws/llm-build-B1/a.txt\x001:HELLO\n")
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
             r = client.get(
@@ -575,11 +618,11 @@ class TestSearchFiles:
             )
         assert r.status_code == 200, r.text
         cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
-        assert any("grep -r -n -I -H -F -i" in c for c in cmds)
+        assert any("grep -r -n -I -H -Z -F -i" in c for c in cmds)
 
     def test_search_long_text_truncated(self, client):
         long_text = "x" * 2000
-        out = f"/ws/llm-build-B1/a.txt:1:{long_text}\n"
+        out = f"/ws/llm-build-B1/a.txt\x001:{long_text}\n"
         tunnel = _tunnel_with_grep(0, out)
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
@@ -596,7 +639,7 @@ class TestSearchFiles:
     def test_search_text_with_colons_preserved(self, client):
         # Match text contains its own ':' — parser must keep the rest of
         # the line intact after the lineno.
-        out = "/ws/llm-build-B1/a.yaml:7:key: value: nested\n"
+        out = "/ws/llm-build-B1/a.yaml\x007:key: value: nested\n"
         tunnel = _tunnel_with_grep(0, out)
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
@@ -656,12 +699,11 @@ class TestSearchFiles:
 
     def test_search_path_with_hyphen_digit_hyphen_segments(self, client):
         # Filenames frequently contain "-<digits>-" substrings (UUIDs, run
-        # IDs). The parser must anchor on the rightmost <sep>\d+<sep>, not
-        # the leftmost — otherwise it splits inside the path and reports a
-        # truncated path with the wrong lineno.
+        # IDs). With grep -Z the path is NUL-delimited, so '-<digits>-'
+        # inside the path or the text never confuses the parser.
         out = (
-            "/ws/llm-build-B1/run-1234-abcd/file.txt:42:hit line\n"
-            "/ws/llm-build-B1/a-9-b-7-c.log-100-context line\n"
+            "/ws/llm-build-B1/run-1234-abcd/file.txt\x0042:hit line\n"
+            "/ws/llm-build-B1/a-9-b-7-c.log\x00100-context line\n"
         )
         tunnel = _tunnel_with_grep(0, out)
         lb, tun, auth, env = _patches(tunnel)
@@ -685,17 +727,17 @@ class TestSearchFiles:
         assert body[1]["is_match"] is False
 
     def test_search_with_context_before_after(self, client):
-        # grep -B1 -A1 output: context lines use ":" between path/lineno is
-        # NOT used — they use "-". Match line uses ":". Two distinct hit
-        # groups separated by "--".
+        # grep -Z -B1 -A1 output: <path>\0<lineno><sep><text>, sep=':' for
+        # match lines, '-' for context. Two distinct hit groups separated
+        # by "--".
         out = (
-            "/ws/llm-build-B1/a.log-9-warmup\n"
-            "/ws/llm-build-B1/a.log:10:Traceback\n"
-            "/ws/llm-build-B1/a.log-11-  File ...\n"
+            "/ws/llm-build-B1/a.log\x009-warmup\n"
+            "/ws/llm-build-B1/a.log\x0010:Traceback\n"
+            "/ws/llm-build-B1/a.log\x0011-  File ...\n"
             "--\n"
-            "/ws/llm-build-B1/a.log-99-...\n"
-            "/ws/llm-build-B1/a.log:100:Traceback\n"
-            "/ws/llm-build-B1/a.log-101-end\n"
+            "/ws/llm-build-B1/a.log\x0099-...\n"
+            "/ws/llm-build-B1/a.log\x00100:Traceback\n"
+            "/ws/llm-build-B1/a.log\x00101-end\n"
         )
         tunnel = _tunnel_with_grep(0, out)
         lb, tun, auth, env = _patches(tunnel)
@@ -728,7 +770,7 @@ class TestSearchFiles:
         assert r.status_code == 422
 
     def test_search_regex_flag(self, client):
-        tunnel = _tunnel_with_grep(0, "/ws/llm-build-B1/a.log:1:OOMKilled\n")
+        tunnel = _tunnel_with_grep(0, "/ws/llm-build-B1/a.log\x001:OOMKilled\n")
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
             r = client.get(
@@ -738,8 +780,8 @@ class TestSearchFiles:
         assert r.status_code == 200, r.text
         cmds = [call.args[0] for call in tunnel.run_remote.await_args_list]
         # -E flag, no -F flag.
-        assert any("grep -r -n -I -H -E" in c for c in cmds)
-        assert not any("grep -r -n -I -H -F" in c for c in cmds)
+        assert any("grep -r -n -I -H -Z -E" in c for c in cmds)
+        assert not any("grep -r -n -I -H -Z -F" in c for c in cmds)
 
     def test_search_stat_metadata(self, client):
         tunnel = MagicMock()
@@ -749,7 +791,7 @@ class TestSearchFiles:
                 target = cmd.split("--", 1)[1].strip().strip("'\"")
                 return (0, target + "\n", "")
             if "grep -r" in cmd:
-                return (0, "/ws/llm-build-B1/a.log:1:hit\n", "")
+                return (0, "/ws/llm-build-B1/a.log\x001:hit\n", "")
             if cmd.startswith("stat -c"):
                 # Single batched stat call for the one distinct hit file.
                 return (
@@ -782,7 +824,7 @@ class TestSearchFiles:
     def test_search_stat_false_omits_metadata_fields(self, client):
         # Defaults still serialize size/mtime as None — existing callers
         # see them as nulls (or ignore unknown fields) but no breakage.
-        out = "/ws/llm-build-B1/a.txt:1:hello\n"
+        out = "/ws/llm-build-B1/a.txt\x001:hello\n"
         tunnel = _tunnel_with_grep(0, out)
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
@@ -803,7 +845,7 @@ class TestSearchFiles:
         # Splitting that on '\r' shatters the record — the parsed `text`
         # ends up empty or a meaningless prefix. We must split on '\n'
         # only and replace '\r' with a space in the rendered text.
-        out = "/ws/llm-build-B1/job.log:532:before\rmiddle\rtrain_runtime: 1.364\n"
+        out = "/ws/llm-build-B1/job.log\x00532:before\rmiddle\rtrain_runtime: 1.364\n"
         tunnel = _tunnel_with_grep(0, out)
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
@@ -824,16 +866,17 @@ class TestSearchFiles:
     def test_search_long_line_with_embedded_colons_not_corrupted(self, client):
         # A single very long source line containing what looks like a
         # `:NNNN:` triple in its body must not be re-split into a fake
-        # second hit. Bug symptom: `path` field contained inline
-        # `path:line:text` content because '\r'-splitting (or any other
-        # mid-line split) turned the chunk into an apparent grep record.
+        # second hit. With grep -Z the path is NUL-delimited, so embedded
+        # ':<digits>:' in the text can't masquerade as a record boundary.
         # Use a body that includes both an embedded '\r' (the realistic
         # trigger) and a `:5849:` substring (the fake-record bait).
         long_body = (
-            "output_values {'a': 1}" + ("\rprogress " * 50)
-            + " job.log:5849:more text " + ("x" * 4000)
+            "output_values {'a': 1}"
+            + ("\rprogress " * 50)
+            + " job.log:5849:more text "
+            + ("x" * 4000)
         )
-        out = f"/ws/llm-build-B1/job.log:18:{long_body}\n"
+        out = f"/ws/llm-build-B1/job.log\x0018:{long_body}\n"
         tunnel = _tunnel_with_grep(0, out)
         lb, tun, auth, env = _patches(tunnel)
         with lb, tun, auth, env:
@@ -853,6 +896,67 @@ class TestSearchFiles:
         # text is truncated by the byte cap, with no '\r' surviving.
         assert len(body[0]["text"]) <= 512
         assert "\r" not in body[0]["text"]
+
+    def test_search_rc_141_returns_truncated_hits(self, client):
+        # head closes its stdin after the cap is reached -> grep dies with
+        # SIGPIPE -> rc=141 under pipefail. The truncated stdout is the
+        # result we want; do NOT 500.
+        out = "/ws/llm-build-B1/a.txt\x001:hit1\n" "/ws/llm-build-B1/b.txt\x002:hit2\n"
+        tunnel = _tunnel_with_grep(141, out, "grep: write error: Broken pipe")
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "hit"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert [h["path"] for h in body] == ["a.txt", "b.txt"]
+        assert all(h["is_match"] for h in body)
+
+    def test_search_context_line_with_embedded_colons_classified_as_context(
+        self, client
+    ):
+        # Regression: with old ':' parsing, a context line whose text
+        # contained ':<digits>:' (e.g. a Python traceback "File 'x.py':100:")
+        # was misclassified as a match line with the wrong path/lineno.
+        # NUL-delimited path makes this unambiguous.
+        out = "/ws/llm-build-B1/foo.py\x0042-error :100: detail\n"
+        tunnel = _tunnel_with_grep(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "x", "before": 1},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body) == 1
+        assert body[0]["path"] == "foo.py"
+        assert body[0]["line"] == 42
+        assert body[0]["text"] == "error :100: detail"
+        assert body[0]["is_match"] is False
+
+    def test_search_context_line_with_embedded_dash_digit_dash(self, client):
+        # Regression: with the old greedy regex, a context line whose text
+        # contained '-<digits>-' (UUIDs, ISO dates, port numbers) was
+        # split at the rightmost dash-digit-dash, returning the wrong
+        # lineno and a truncated text. NUL-delimited path eliminates this.
+        out = "/ws/llm-build-B1/foo.log\x0042-Connecting to host-1234-prod\n"
+        tunnel = _tunnel_with_grep(0, out)
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/files/search",
+                params={"pattern": "x", "before": 1},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body) == 1
+        assert body[0]["path"] == "foo.log"
+        assert body[0]["line"] == 42
+        assert body[0]["text"] == "Connecting to host-1234-prod"
+        assert body[0]["is_match"] is False
 
     def test_search_does_not_append_trailing_slash(self, client):
         # The grep command must not append a trailing '/' to the search
@@ -939,6 +1043,52 @@ class TestDownloadFile:
             )
         assert r.status_code == 413
 
+    def test_download_caps_at_declared_size(self, client):
+        # Live-log race: the file grew from 100 bytes (at stat time) to 200
+        # bytes by the time we started reading. _stream_sftp_file must cap
+        # the streamed bytes at `size` so the response body exactly matches
+        # the declared Content-Length.
+        tunnel = MagicMock()
+
+        async def run_remote(cmd, raise_on_error=True):
+            if cmd.startswith("readlink -f"):
+                target = cmd.split("--", 1)[1].strip().strip("'\"")
+                return (0, target + "\n", "")
+            if cmd.startswith("stat -c"):
+                return (0, "100\tregular file\n", "")
+            return (0, "", "")
+
+        tunnel.run_remote = AsyncMock(side_effect=run_remote)
+
+        sftp = MagicMock()
+        fh = MagicMock()
+
+        # The handler asks for `min(chunk_size, max_bytes - yielded)` bytes;
+        # honor the request so we exercise the cap (instead of the mock
+        # returning whatever it wants regardless of size).
+        async def fake_read(n):
+            return b"a" * n
+
+        fh.read = AsyncMock(side_effect=fake_read)
+        fh.__aenter__ = AsyncMock(return_value=fh)
+        fh.__aexit__ = AsyncMock(return_value=None)
+        sftp.open = MagicMock(return_value=fh)
+        sftp.exit = MagicMock(return_value=None)
+        tunnel.start_sftp = AsyncMock(return_value=sftp)
+
+        lb, tun, auth, env = _patches(tunnel)
+        with lb, tun, auth, env:
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "growing.log"},
+            )
+        assert r.status_code == 200, r.text
+        # Body length matches the declared Content-Length exactly, even
+        # though the underlying file would have produced unbounded bytes.
+        assert len(r.content) == 100
+        assert r.content == b"a" * 100
+        assert r.headers["content-length"] == "100"
+
     def test_download_path_traversal_rejected(self, client):
         tunnel = self._tunnel_with_file(size=10, body=b"x" * 10)
         lb, tun, auth, env = _patches(tunnel)
@@ -1019,7 +1169,7 @@ class TestDownloadFile:
         sftp.exit = MagicMock(return_value=None)
         tunnel.start_sftp = AsyncMock(return_value=sftp)
 
-        gen = build_files_mod._stream_sftp_file(tunnel, "/ws/log.txt")
+        gen = build_files_mod._stream_sftp_file(tunnel, "/ws/log.txt", 1024)
         with pytest.raises(OSError):
             await gen.__anext__()
         sftp.exit.assert_called_once()
@@ -1307,8 +1457,12 @@ class TestOpenLsfTunnelFailover:
             constructed.append((kwargs["host"], t))
             return t
 
-        with resolve, fetch, write, unlink, patch.object(
-            lsf_tunnel, "SshTunnel", side_effect=make_tunnel
+        with (
+            resolve,
+            fetch,
+            write,
+            unlink,
+            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
         ):
             with pytest.raises(HTTPException) as ei:
                 async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
@@ -1347,8 +1501,13 @@ class TestOpenLsfTunnelFailover:
             opened_hosts.append(host)
             return t
 
-        with resolve, fetch, write, unlink, shuffle_noop, patch.object(
-            lsf_tunnel, "SshTunnel", side_effect=make_tunnel
+        with (
+            resolve,
+            fetch,
+            write,
+            unlink,
+            shuffle_noop,
+            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
         ):
             async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x") as (
                 tunnel,
@@ -1375,8 +1534,12 @@ class TestOpenLsfTunnelFailover:
             t.close = AsyncMock()
             return t
 
-        with resolve, fetch, write, unlink, patch.object(
-            lsf_tunnel, "SshTunnel", side_effect=make_tunnel
+        with (
+            resolve,
+            fetch,
+            write,
+            unlink,
+            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
         ):
             with pytest.raises(HTTPException) as ei:
                 async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
