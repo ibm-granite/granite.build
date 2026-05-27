@@ -10,7 +10,7 @@ assetstores:
     load:
       - mode: hf_pull
         config:
-          cache_path: /tmp/hf_cache
+          cache_path: /shared/hf_cache
           step_uri: space://steps/hfpull_bash
     push:
       - mode: hf_push
