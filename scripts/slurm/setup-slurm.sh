@@ -78,6 +78,10 @@ fi
 COMPOSE_FILES="-f $SCRIPT_DIR/docker-compose.yml"
 HAS_GPU=false
 
+# Materialize a fresh slurm.conf from the tracked template each run.
+# All sed/awk mutations below operate on this generated (gitignored) file.
+cp "$SCRIPT_DIR/slurm.conf.template" "$SCRIPT_DIR/slurm.conf"
+
 if [ "${SLURM_NO_GPU:-0}" = "1" ] || ! nvidia-smi -L >/dev/null 2>&1; then
     log "No GPU detected (or SLURM_NO_GPU=1) — CPU-only cluster."
     # CPU-only: empty gres.conf, no GPU in node definitions
