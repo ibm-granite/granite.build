@@ -339,6 +339,7 @@ async def search_files(
                 continue
             parsed = _parse_grep_line(ln, build_root)
             if parsed is None:
+                logger.debug("[build-files] dropped unparseable grep line: %r", ln)
                 continue
             rel, lineno, text, is_match = parsed
             # Replace embedded '\r' (e.g. from tqdm progress bars) with a
@@ -773,11 +774,8 @@ async def download_file(
         if size > BUILD_FILES_DOWNLOAD_MAX_BYTES:
             raise HTTPException(
                 status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                {
-                    "message": "file exceeds download cap",
-                    "size": size,
-                    "cap": BUILD_FILES_DOWNLOAD_MAX_BYTES,
-                },
+                f"file exceeds download cap: size={size} "
+                f"cap={BUILD_FILES_DOWNLOAD_MAX_BYTES}",
             )
 
         logger.info(
