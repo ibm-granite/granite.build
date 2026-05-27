@@ -36,6 +36,7 @@ from huggingface_hub import (
 from gbcommon.types.testing import is_hf_mocked
 from gbcommon.uri.uri import URI
 from gbserver.types.artifact import ArtifactType
+from gbserver.types.constants import GB_ENVIRONMENT
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -265,6 +266,10 @@ class HfURI(URI):
         By convention, GB space names are prefixed with ``_GB_RG_SPACE_NAME_PREFIX``
         to form the resource group name used in HuggingFace Enterprise.
 
+        For non-production environments (STAGING, DEV), a lowercase environment
+        suffix is appended to differentiate resource groups within the same HF
+        organization (e.g. ``gbspace-public-staging``).
+
         Args:
             space_name: The GB space name to convert.
 
@@ -273,7 +278,16 @@ class HfURI(URI):
         """
         if not space_name:
             return ""
-        return f"{_GB_RG_SPACE_NAME_PREFIX}{space_name}"
+        name = f"{_GB_RG_SPACE_NAME_PREFIX}{space_name}"
+        if GB_ENVIRONMENT and GB_ENVIRONMENT.upper() not in ("PROD", "STANDALONE", ""):
+            name = f"{name}-{GB_ENVIRONMENT.lower()}"
+        logger.debug(
+            "Resolved resource group name '%s' from space '%s' (env=%s)",
+            name,
+            space_name,
+            GB_ENVIRONMENT,
+        )
+        return name
 
     def get_artifact_type(self) -> ArtifactType:
         """Return the artifact type based on the HF resource type encoded in the URI.
@@ -691,14 +705,19 @@ class HfURI(URI):
         except Exception as e:
             logger.warning("Could not clean HF cache for %s: %s", repo_id, e)
 
-    def resolve_resource_group_id(
-        self: Self,
+    @classmethod
+    def resolve_resource_group_id_for_org(
+        cls,
         token: Optional[str],
+        organization: str,
         resource_group_id: Optional[str] = None,
         resource_group_name: Optional[str] = None,
         space_name: Optional[str] = None,
+        host: str = HF_HOST,
     ) -> Optional[str]:
         """Resolve an HF Enterprise resource group id from id, name, or space.
+
+        Class-level entry point that does not require an ``HfURI`` instance.
 
         Handles the full ``space_name -> resource_group_name -> resource_group_id``
         flow in one place.  Any combination of inputs is accepted as long as
@@ -718,11 +737,13 @@ class HfURI(URI):
             token: HF auth token used to build the temporary ``HfApi``.  May be
                 ``None`` for anonymous lookups, though Enterprise resource
                 groups typically require authentication.
+            organization: HF organization namespace.
             resource_group_id: Explicit resource group id (e.g. from
                 build.yaml ``store_push.config.hf.resource_group_id``).
             resource_group_name: Explicit resource group name.
             space_name: GB space name; converted to a resource group name via
                 :meth:`space_name_to_resource_group_name`.
+            host: HF host (defaults to ``huggingface.co``).
 
         Returns:
             The resolved resource group id, or ``None`` when no inputs were
@@ -735,7 +756,7 @@ class HfURI(URI):
         if not resource_group_id and not resource_group_name and not space_name:
             return None
         derived_name = (
-            self.space_name_to_resource_group_name(space_name) if space_name else None
+            cls.space_name_to_resource_group_name(space_name) if space_name else None
         )
         if resource_group_name and derived_name and derived_name != resource_group_name:
             raise ValueError(
@@ -744,27 +765,53 @@ class HfURI(URI):
             )
         effective_name = resource_group_name or derived_name
         if effective_name is None:
-            # Only resource_group_id was supplied; trust it.
             return resource_group_id
-        p = self._parts()
-        endpoint = f"https://{p.host}" if p.host != HF_HOST else None
+        endpoint = f"https://{host}" if host != HF_HOST else None
         api = HfApi(endpoint=endpoint, token=token)
-        resolved_id = self._resolve_resource_group_id(api, p.owner, effective_name)
+        resolved_id = cls._resolve_resource_group_id(api, organization, effective_name)
         if not resolved_id:
             raise ValueError(
                 f"Could not resolve resource group id for '{effective_name}' "
-                f"in organization '{p.owner}'"
+                f"in organization '{organization}'"
             )
         if resource_group_id and resource_group_id != resolved_id:
             raise ValueError(
                 f"resource group id '{resource_group_id}' does not match the "
                 f"id '{resolved_id}' resolved from '{effective_name}' in "
-                f"organization '{p.owner}'"
+                f"organization '{organization}'"
             )
+        logger.info(
+            "Resolved resource group id '%s' for name '%s' in org '%s'",
+            resolved_id,
+            effective_name,
+            organization,
+        )
         return resolved_id
 
+    def resolve_resource_group_id(
+        self: Self,
+        token: Optional[str],
+        resource_group_id: Optional[str] = None,
+        resource_group_name: Optional[str] = None,
+        space_name: Optional[str] = None,
+    ) -> Optional[str]:
+        """Instance-level convenience wrapper around :meth:`resolve_resource_group_id_for_org`.
+
+        Extracts *organization* and *host* from this URI's parts.
+        """
+        p = self._parts()
+        return self.resolve_resource_group_id_for_org(
+            token=token,
+            organization=p.owner,
+            resource_group_id=resource_group_id,
+            resource_group_name=resource_group_name,
+            space_name=space_name,
+            host=p.host,
+        )
+
+    @classmethod
     def _resolve_resource_group_id(
-        self, api: HfApi, organization: str, name: str
+        cls, api: HfApi, organization: str, name: str
     ) -> Optional[str]:
         """Look up a resource group ID by name within the given organization.
 

@@ -9,13 +9,3 @@ k8s:
         secretKeyRef:
           name: "{{ setup_config.get('space', {}).get('secret', '') }}"
           key: {{ config.hfpush_config.token_secretname | default("HF_TOKEN") }}
-    HF_ORGANIZATION:
-      valueFrom:
-        secretKeyRef:
-          name: "{{ setup_config.get('space', {}).get('secret', '') }}"
-          key: {{ config.hfpush_config.organization_secretname | default("HF_ORGANIZATION") }}
-    HF_RESOURCE_GROUP_ID:
-      valueFrom:
-        secretKeyRef:
-          name: "{{ setup_config.get('space', {}).get('secret', '') }}"
-          key: {{ config.hfpush_config.resource_group_secretname | default("HF_RESOURCE_GROUP_ID") }}
