@@ -15,7 +15,7 @@ class TestWebhookStorage:
     @classmethod
     def setup_class(cls):
         """Create a single SQLWebhookStorage instance for all tests in this class."""
-        from gbserver.webhooks.sql_storage import SQLWebhookStorage
+        from gbserver.storage.sql.webhook_subscription_storage import SQLWebhookStorage
 
         # Use a unique table name to avoid conflicts with other test runs
         cls.table_name = f"test_whsub_{uuid.uuid4().hex[:8]}"

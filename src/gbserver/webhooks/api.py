@@ -19,8 +19,8 @@ from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.types.constants import GBSERVER_WEBHOOKS_ALLOW_HTTP, GBSERVER_WEBHOOKS_MAX_PER_SPACE
 from gbserver.utils.logger import get_logger
 from gbserver.webhooks.models import WEBHOOK_MIN_FREQUENCY, StoredWebhookSubscription
-from gbserver.webhooks.sql_storage import create_webhook_storage
-from gbserver.webhooks.storage import IWebhookStorage
+from gbserver.storage.sql.webhook_subscription_storage import create_webhook_storage
+from gbserver.storage.webhook_subscription_storage import IWebhookStorage
 from gbserver.webhooks.url_validator import WebhookURLError, validate_webhook_url
 
 logger = get_logger(__name__)

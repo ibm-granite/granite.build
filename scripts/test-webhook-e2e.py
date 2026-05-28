@@ -126,7 +126,7 @@ def create_active_subscription(space_name: str) -> str:
     Returns the subscription UUID.
     """
     from gbserver.webhooks.models import StoredWebhookSubscription
-    from gbserver.webhooks.sql_storage import create_webhook_storage
+    from gbserver.storage.sql.webhook_subscription_storage import create_webhook_storage
 
     storage = create_webhook_storage()
     subscription = StoredWebhookSubscription(
@@ -232,7 +232,7 @@ def wait_for_build(server_port: int, build_id: str, timeout: int) -> str:
 
 def query_persisted_events(subscription_id: str) -> list:
     """Query the webhook event storage for events matching a subscription."""
-    from gbserver.webhooks.event_storage import create_webhook_event_storage
+    from gbserver.storage.sql.webhook_event_storage import create_webhook_event_storage
 
     storage = create_webhook_event_storage()
     events = storage.get_pending_for_subscription(subscription_id)

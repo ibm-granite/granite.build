@@ -15,7 +15,7 @@ class TestBuildSubmitWithWebhook:
         self.client = TestClient(builds_api)
 
     @patch("gbserver.api.builds.get_admin_storage")
-    @patch("gbserver.webhooks.sql_storage.SQLWebhookStorage.add")
+    @patch("gbserver.storage.sql.webhook_subscription_storage.SQLWebhookStorage.add")
     def test_submit_with_webhook_url_creates_subscription(
         self, mock_ws_add, mock_admin
     ):
@@ -109,7 +109,7 @@ class TestBuildSubmitWithWebhook:
             assert data.get("webhook_subscription_id") is None
 
     @patch("gbserver.api.builds.get_admin_storage")
-    @patch("gbserver.webhooks.sql_storage.SQLWebhookStorage.add")
+    @patch("gbserver.storage.sql.webhook_subscription_storage.SQLWebhookStorage.add")
     def test_submit_webhook_failure_does_not_block_build(self, mock_ws_add, mock_admin):
         """If webhook subscription creation fails, the build is still created."""
         mock_space = MagicMock()
