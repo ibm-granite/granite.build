@@ -47,20 +47,19 @@ notification system for developers working on the codebase.
 
 ## Key Components
 
-### 1. Subscription Storage (`src/gbserver/webhooks/sql_storage.py`)
+### 1. Subscription Storage (`src/gbserver/storage/webhook_subscription_storage.py`)
 
 Webhook subscriptions are stored in the `gb_webhook_subscriptions` table (same
 DB as builds). Supports both PostgreSQL and SQLite backends.
+SQL implementations in `src/gbserver/storage/sql/webhook_subscription_storage.py`.
 
 Key model: `StoredWebhookSubscription` in `webhooks/models.py`
 - `uuid` — subscription identifier
-- `scope` — `"space"` or `"server"` (replaces the old build_id=None heuristic)
 - `status` — lifecycle state: `"pending"` → `"active"` → `"suspended"` / `"disabled"`
 - `space_name` — space scope
-- `build_id` — legacy field (kept for backward compatibility)
-- `build_filter` — optional per-build filter on a space subscription
+- `build_filter` — optional per-build filter (`None` = space-wide, UUID = per-build)
 - `webhook_url` — subscriber's HTTP endpoint
-- `secret` — HMAC shared secret
+- `secret` — HMAC shared secret (minimum 8 characters)
 - `event_types` — include filter (`["*"]` for all)
 - `excluded_types` — exclude filter (takes priority)
 - `frequency` — batch interval in seconds (min 15) — used by Phase 2 delivery worker
@@ -72,18 +71,19 @@ Replaces the old `WebhookDispatcher` + `BatchBuffer` combination. One instance
 per active build, created lazily when the first event arrives.
 
 Responsibilities:
-- Query active subscriptions matching the build (by `build_id`, `build_filter`, and space-wide)
+- Query active subscriptions matching the build (by `build_filter` and space-wide)
 - Deduplicate subscriptions by UUID across all lookup paths
 - For each matching subscription, serialize the event into a `StoredWebhookEvent`
 - Persist the event to the `gb_webhook_events` table via the event storage layer
 - Periodically re-read subscriptions (every 50 events) to pick up late arrivals
 - No HTTP calls, no batching, no flushing — purely a DB write
 
-### 3. Event Storage (`src/gbserver/webhooks/event_storage.py`)
+### 3. Event Storage (`src/gbserver/storage/webhook_event_storage.py`)
 
 Persistence layer for webhook events. Writes `StoredWebhookEvent` records to the
-`gb_webhook_events` table. These records sit in `"pending"` state until a
-delivery worker (Phase 2) picks them up.
+`gb_webhook_events` table. SQL implementations in
+`src/gbserver/storage/sql/webhook_event_storage.py`. These records sit in
+`"pending"` state until a delivery worker (Phase 2) picks them up.
 
 ### 4. Event Models (`src/gbserver/webhooks/event_models.py`)
 
@@ -116,17 +116,7 @@ Ownership verification challenge. When a subscription is created via the REST AP
 Note: Auto-subscriptions via `--webhook-url` on build submission skip verification
 and are created directly with `status="active"` (user explicitly provided the URL).
 
-### 7. Delivery (`src/gbserver/webhooks/delivery.py`)
-
-Handles the HTTP POST with:
-- JSON serialization of payload
-- HMAC-SHA256 signing (`X-GB-Signature-256`)
-- Retry with exponential backoff (5 attempts: 1s, 2s, 4s, 8s, 16s)
-- 10-second timeout per attempt
-
-This module is kept for Phase 2 when the delivery worker is implemented.
-
-### 8. Integration Point (`src/gbserver/buildwatcher/buildrunner.py`)
+### 7. Integration Point (`src/gbserver/buildwatcher/buildrunner.py`)
 
 The webhook system hooks into the BuildRunner's event processing loop via a
 single method:
@@ -144,23 +134,23 @@ The method:
 
 No periodic flush or final flush is needed — events are persisted immediately.
 
-### 9. API Endpoints (`src/gbserver/webhooks/api.py`)
+### 8. API Endpoints (`src/gbserver/api/webhooks.py`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/webhooks/{build_id}/subscriptions` | Create per-build subscription |
-| GET | `/api/v1/webhooks/{build_id}/subscriptions` | List per-build subscriptions |
-| POST | `/api/v1/webhooks/spaces/{space}/subscriptions` | Create space-wide subscription |
-| GET | `/api/v1/webhooks/spaces/{space}/subscriptions` | List space-wide subscriptions |
+| POST | `/api/v1/webhooks/spaces/{space}/subscriptions` | Create subscription (space-wide or per-build via `build_filter`) |
+| GET | `/api/v1/webhooks/spaces/{space}/subscriptions` | List subscriptions (optional `?build_filter=` query) |
 | DELETE | `/api/v1/webhooks/{webhook_id}` | Deactivate subscription |
 
-Subscription creation now includes:
-- URL validation (SSRF protection)
-- Rate limiting (max subscriptions per space/user)
-- Verification challenge dispatch
-- Scope assignment (`"space"` or `"server"`)
+The router uses `include_router()` (not `mount()`) so `AuthMiddleware` applies.
+Auth is via `request.state.data["user"].login`.
 
-### 10. Subscription Status Lifecycle
+Subscription creation includes:
+- URL validation (SSRF protection)
+- Rate limiting (max subscriptions per space)
+- Secret length enforcement (minimum 8 characters)
+
+### 9. Subscription Status Lifecycle
 
 ```
            ┌─────────────────────────────────────────┐
@@ -184,15 +174,16 @@ Subscription creation now includes:
 - **suspended** — temporarily disabled (e.g., repeated delivery failures in Phase 2)
 - **disabled** — permanently deactivated by user or admin
 
-### 11. Auto-Subscribe on Build Submission (`src/gbserver/api/builds.py`)
+### 10. Auto-Subscribe on Build Submission (`src/gbserver/api/builds.py`)
 
 When a build is submitted with `webhook_url` parameter, a subscription is
 automatically created via `_create_webhook_subscription()`:
 - Created with `status="active"` (no verification needed — user provided the URL)
-- Uses `build_filter=build_id` (not `build_id` field) for per-build scoping
+- Uses `build_filter=build_id` for per-build scoping
 - Created BEFORE the build is enqueued to prevent race with first event
-- Requires minimum 8-character secret; skips silently if too short
-- URL validation is applied (SSRF check); skips silently on failure
+- Requires minimum 8-character secret
+- URL validation is applied (SSRF check)
+- Returns `webhook_warning` in response if subscription creation is skipped
 
 ## Event Flow
 
@@ -239,21 +230,18 @@ python scripts/test-webhook-e2e.py
 ## File Map
 
 ```
+src/gbserver/api/
+└── webhooks.py                           # APIRouter for subscription CRUD
+
 src/gbserver/webhooks/                    # Webhook-specific logic
 ├── __init__.py
-├── api.py                                # FastAPI routes for subscription CRUD
-├── delivery.py                           # HMAC signing + HTTP POST with retry (Phase 2)
 ├── event_models.py                       # StoredWebhookEvent Pydantic model
-├── event_storage.py                      # Re-export from storage/ (backward compat)
 ├── event_writer.py                       # WebhookEventWriter — persists events to DB
-├── log_scanner.py                        # Regex-based log line scanning (Phase 2)
 ├── models.py                             # StoredWebhookSubscription model
-├── sql_storage.py                        # Re-export from storage/ (backward compat)
-├── storage.py                            # Re-export from storage/ (backward compat)
 ├── url_validator.py                      # SSRF protection — blocks private IPs
 └── verification.py                       # URL ownership verification challenge
 
-src/gbserver/storage/                     # Canonical storage locations
+src/gbserver/storage/                     # Storage layer
 ├── webhook_subscription_storage.py       # IWebhookStorage + BaseWebhookStorage
 ├── webhook_event_storage.py              # IWebhookEventStorage + BaseWebhookEventStorage
 └── sql/
