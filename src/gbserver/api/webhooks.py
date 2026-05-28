@@ -1,14 +1,20 @@
-"""APIRouter for webhook subscription management.
+#!/usr/bin/env python3
 
-Provides endpoints to create, list, and delete webhook subscriptions
-scoped to spaces (with optional build_filter). Subscriptions allow
-external systems to receive push notifications about build lifecycle events.
+# Copyright LLM.build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-Routes:
-    POST /spaces/{space_name}/subscriptions — Create a new subscription.
-    GET /spaces/{space_name}/subscriptions — List active subscriptions for a space.
-    DELETE /{webhook_id} — Deactivate a subscription (owner only).
-"""
+"""APIRouter for webhook subscription management."""
 
 from typing import Any, Dict, List, Optional
 
@@ -267,6 +273,8 @@ def create_space_subscription(
         log_pattern=body.log_pattern,
         created_by=username,
         metadata=body.metadata,
+        # Starts as "pending" — Phase 2 verification challenge will
+        # transition to "active" before events are delivered.
         status="pending",
     )
 
