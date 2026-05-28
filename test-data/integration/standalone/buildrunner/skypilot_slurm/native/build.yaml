@@ -16,9 +16,9 @@ granite.build:
           config:
             bash_config:
               command: >-
-                file=$GB_BUILD_WORKDIR/foo1a.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
-                file=$GB_BUILD_WORKDIR/foo1b.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
-                file=$GB_BUILD_WORKDIR/foo2; cp -r {{ bindings.input_model.binding.path }} $file; echo "LLMB_ARTIFACT_ID:output_model2 LLMB_ARTIFACT_PATH:$file"
+                file=foo1a.json; touch $file;                 echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
+                file=foo1b.json; touch $file;                 echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
+                file={{ bindings.input_model.binding.path }}; echo "LLMB_ARTIFACT_ID:output_model2 LLMB_ARTIFACT_PATH:$file"
             compute_config:
               num_gpus_per_node: 0
               total_memory_per_node: 1Gi
