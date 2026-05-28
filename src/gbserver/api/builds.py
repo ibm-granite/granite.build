@@ -96,6 +96,7 @@ class BuildSubmitResponse(BaseModel):
 
     build_id: str
     webhook_subscription_id: Optional[str] = None
+    webhook_warning: Optional[str] = None
 
 
 class BuildValidateRequest(BaseModel):
@@ -270,7 +271,7 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
 
     # Auto-create webhook subscription BEFORE enqueuing the build
     # (ensures subscription exists when BuildRunner starts processing events)
-    webhook_subscription_id = _create_webhook_subscription(req, stored_build)
+    webhook_subscription_id, webhook_warning = _create_webhook_subscription(req, stored_build)
 
     result = build_storage.add(stored_build)
     logger.info("stored build with id: %s", result)
@@ -278,12 +279,13 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
     return BuildSubmitResponse(
         build_id=stored_build.uuid,
         webhook_subscription_id=webhook_subscription_id,
+        webhook_warning=webhook_warning,
     )
 
 
 def _create_webhook_subscription(
     req: BuildSubmitRequest, stored_build: StoredBuild
-) -> Optional[str]:
+) -> Tuple[Optional[str], Optional[str]]:
     """Create a webhook subscription for a build if webhook_url is provided.
 
     This is a best-effort operation: if subscription creation fails, the
@@ -294,14 +296,16 @@ def _create_webhook_subscription(
         stored_build: The persisted build record.
 
     Returns:
-        The UUID of the created subscription, or None if not created.
+        A tuple of (subscription_uuid, warning_message). The warning is None
+        on success and contains a human-readable reason when subscription
+        creation is skipped or fails.
     """
     if not req.webhook_url:
-        return None
+        return None, None
 
     try:
         if not GBSERVER_WEBHOOKS_ENABLED:
-            return None
+            return None, "Webhooks are disabled on this server"
 
         # Validate URL (best-effort — don't fail build submission)
         allow_http = GBSERVER_WEBHOOKS_ALLOW_HTTP
@@ -311,7 +315,7 @@ def _create_webhook_subscription(
             logger.warning(
                 "Webhook URL validation failed for build %s: %s", stored_build.uuid, e
             )
-            return None
+            return None, f"Webhook URL validation failed: {e}"
 
         # Require a meaningful secret for HMAC authentication
         if not req.webhook_secret or len(req.webhook_secret) < 8:
@@ -319,7 +323,7 @@ def _create_webhook_subscription(
                 "Webhook secret too short (min 8 chars) for build %s, skipping subscription",
                 stored_build.uuid,
             )
-            return None
+            return None, "Webhook secret must be at least 8 characters"
 
         webhook_storage = create_webhook_storage()
         subscription = StoredWebhookSubscription(
@@ -341,10 +345,10 @@ def _create_webhook_subscription(
             subscription.uuid,
             stored_build.uuid,
         )
-        return subscription.uuid
+        return subscription.uuid, None
     except Exception as e:
         logger.warning("Failed to create webhook subscription: %s", e)
-        return None
+        return None, f"Webhook subscription creation failed: {e}"
 
 
 @builds_api.post("/validate")

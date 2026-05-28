@@ -31,7 +31,7 @@ class TestBuildSubmitWithWebhook:
         admin.build_storage = mock_build_storage
         mock_admin.return_value = admin
 
-        with patch("gbserver.types.constants.GBSERVER_WEBHOOKS_ENABLED", True):
+        with patch("gbserver.api.builds.GBSERVER_WEBHOOKS_ENABLED", True):
             response = self.client.post(
                 "/",
                 json={
@@ -48,6 +48,7 @@ class TestBuildSubmitWithWebhook:
             data = response.json()
             assert "build_id" in data
             assert data.get("webhook_subscription_id") is not None
+            assert data.get("webhook_warning") is None
             mock_ws_add.assert_called_once()
 
     @patch("gbserver.api.builds.get_admin_storage")
@@ -77,6 +78,7 @@ class TestBuildSubmitWithWebhook:
         assert response.status_code == 200
         data = response.json()
         assert data.get("webhook_subscription_id") is None
+        assert data.get("webhook_warning") is None
 
     @patch("gbserver.api.builds.get_admin_storage")
     def test_submit_with_webhook_url_but_webhooks_disabled(self, mock_admin):
@@ -92,7 +94,7 @@ class TestBuildSubmitWithWebhook:
         admin.build_storage = mock_build_storage
         mock_admin.return_value = admin
 
-        with patch("gbserver.types.constants.GBSERVER_WEBHOOKS_ENABLED", False):
+        with patch("gbserver.api.builds.GBSERVER_WEBHOOKS_ENABLED", False):
             response = self.client.post(
                 "/",
                 json={
@@ -107,6 +109,7 @@ class TestBuildSubmitWithWebhook:
             assert response.status_code == 200
             data = response.json()
             assert data.get("webhook_subscription_id") is None
+            assert data.get("webhook_warning") == "Webhooks are disabled on this server"
 
     @patch("gbserver.api.builds.get_admin_storage")
     @patch("gbserver.storage.sql.webhook_subscription_storage.SQLWebhookStorage.add")
@@ -124,7 +127,7 @@ class TestBuildSubmitWithWebhook:
         mock_admin.return_value = admin
         mock_ws_add.side_effect = RuntimeError("DB connection lost")
 
-        with patch("gbserver.types.constants.GBSERVER_WEBHOOKS_ENABLED", True):
+        with patch("gbserver.api.builds.GBSERVER_WEBHOOKS_ENABLED", True):
             response = self.client.post(
                 "/",
                 json={
@@ -133,6 +136,7 @@ class TestBuildSubmitWithWebhook:
                     "space_name": "test-space",
                     "username": "testuser",
                     "webhook_url": "https://example.com/hook",
+                    "webhook_secret": "valid-secret-key",
                 },
                 headers={"X-Forwarded-User": "testuser"},
             )
@@ -141,10 +145,11 @@ class TestBuildSubmitWithWebhook:
             assert "build_id" in data
             # Subscription ID is None because creation failed
             assert data.get("webhook_subscription_id") is None
+            assert "DB connection lost" in data.get("webhook_warning", "")
 
     @patch("gbserver.api.builds.get_admin_storage")
     @patch(
-        "gbserver.webhooks.url_validator.validate_webhook_url",
+        "gbserver.api.builds.validate_webhook_url",
         side_effect=__import__(
             "gbserver.webhooks.url_validator", fromlist=["WebhookURLError"]
         ).WebhookURLError("HTTPS required for webhook URLs"),
@@ -164,7 +169,7 @@ class TestBuildSubmitWithWebhook:
         admin.build_storage = mock_build_storage
         mock_admin.return_value = admin
 
-        with patch("gbserver.types.constants.GBSERVER_WEBHOOKS_ENABLED", True):
+        with patch("gbserver.api.builds.GBSERVER_WEBHOOKS_ENABLED", True):
             response = self.client.post(
                 "/",
                 json={
@@ -173,6 +178,7 @@ class TestBuildSubmitWithWebhook:
                     "space_name": "test-space",
                     "username": "testuser",
                     "webhook_url": "http://localhost/hook",
+                    "webhook_secret": "valid-secret-key",
                 },
                 headers={"X-Forwarded-User": "testuser"},
             )
@@ -181,6 +187,7 @@ class TestBuildSubmitWithWebhook:
             assert "build_id" in data
             # Subscription ID is None because URL validation failed
             assert data.get("webhook_subscription_id") is None
+            assert "Webhook URL validation failed" in data.get("webhook_warning", "")
 
     def test_build_submit_request_model_accepts_webhook_fields(self):
         """BuildSubmitRequest model accepts webhook fields."""
@@ -216,8 +223,50 @@ class TestBuildSubmitWithWebhook:
         """BuildSubmitResponse includes optional webhook_subscription_id."""
         resp = BuildSubmitResponse(build_id="abc-123")
         assert resp.webhook_subscription_id is None
+        assert resp.webhook_warning is None
 
         resp_with = BuildSubmitResponse(
             build_id="abc-123", webhook_subscription_id="sub-456"
         )
         assert resp_with.webhook_subscription_id == "sub-456"
+
+    def test_build_submit_response_model_includes_webhook_warning(self):
+        """BuildSubmitResponse includes optional webhook_warning."""
+        resp = BuildSubmitResponse(
+            build_id="abc-123", webhook_warning="Webhooks are disabled on this server"
+        )
+        assert resp.webhook_warning == "Webhooks are disabled on this server"
+        assert resp.webhook_subscription_id is None
+
+    @patch("gbserver.api.builds.get_admin_storage")
+    def test_submit_with_short_secret_returns_warning(self, mock_admin):
+        """When webhook secret is too short, a warning is returned."""
+        mock_space = MagicMock()
+        mock_space.name = "test-space"
+        mock_build_storage = MagicMock()
+        mock_build_storage.add.return_value = "build-uuid-short-secret"
+        mock_space_storage = MagicMock()
+        mock_space_storage.get_by_name.return_value = mock_space
+        admin = MagicMock()
+        admin.space_storage = mock_space_storage
+        admin.build_storage = mock_build_storage
+        mock_admin.return_value = admin
+
+        with patch("gbserver.api.builds.GBSERVER_WEBHOOKS_ENABLED", True):
+            response = self.client.post(
+                "/",
+                json={
+                    "name": "test-build",
+                    "build_archive": "base64data",
+                    "space_name": "test-space",
+                    "username": "testuser",
+                    "webhook_url": "https://example.com/hook",
+                    "webhook_secret": "short",
+                },
+                headers={"X-Forwarded-User": "testuser"},
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert "build_id" in data
+            assert data.get("webhook_subscription_id") is None
+            assert data.get("webhook_warning") == "Webhook secret must be at least 8 characters"
