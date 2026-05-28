@@ -6,7 +6,7 @@ frequently to batch them, and the HMAC secret used for signing payloads.
 """
 
 import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import Field
 
@@ -27,10 +27,12 @@ class StoredWebhookSubscription(BaseStoredItem):
     (and optionally a specific build) to a webhook endpoint that will
     receive batched event notifications.
 
+    Scoping is controlled solely by build_filter:
+    - build_filter=None/empty: space-wide (receives events for ALL builds)
+    - build_filter=<UUID>: per-build (receives events only for that build)
+
     Args:
         space_name: The space this subscription belongs to.
-        build_id: Optional build ID to scope notifications to a single build.
-            None means space-wide (all builds in the space).
         webhook_url: The URL to POST event payloads to.
         secret: HMAC signing key used to sign outgoing payloads.
         event_types: List of event type strings to include. ["*"] means all.
@@ -39,13 +41,13 @@ class StoredWebhookSubscription(BaseStoredItem):
         log_pattern: Optional regex pattern for log line scanning.
         created_by: Username of the subscription creator.
         active: Whether this subscription is currently active.
+        build_filter: Optional build UUID to scope to a single build.
         metadata: Arbitrary metadata dict (stored as JSONB).
         created_time: Timestamp when the subscription was created.
         updated_time: Timestamp of last modification.
     """
 
     space_name: str
-    build_id: Optional[str] = None
     webhook_url: str
     secret: str
     event_types: List[str] = Field(default_factory=lambda: ["*"])
@@ -54,8 +56,7 @@ class StoredWebhookSubscription(BaseStoredItem):
     log_pattern: Optional[str] = None
     created_by: str
     active: bool = True
-    scope: Literal["space", "server"] = "space"
-    status: Literal["pending", "active", "suspended", "disabled"] = "pending"
+    status: str = "pending"
     build_filter: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_time: datetime.datetime = Field(

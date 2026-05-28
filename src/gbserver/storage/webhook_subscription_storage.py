@@ -27,17 +27,6 @@ class IWebhookStorage(IItemStorage[StoredWebhookSubscription]):
     finding active subscriptions and managing subscription lifecycle.
     """
 
-    def get_active_for_build(self, build_id: str) -> List[StoredWebhookSubscription]:
-        """Get all active subscriptions scoped to a specific build.
-
-        Args:
-            build_id: The build ID to filter by.
-
-        Returns:
-            List of active subscriptions for the given build.
-        """
-        raise NotImplementedError
-
     def get_active_for_build_filter(
         self, build_filter: str
     ) -> List[StoredWebhookSubscription]:
@@ -63,16 +52,16 @@ class IWebhookStorage(IItemStorage[StoredWebhookSubscription]):
         raise NotImplementedError
 
     def get_active_for_space(self, space_name: str) -> List[StoredWebhookSubscription]:
-        """Get active space-wide subscriptions (build_id is empty/None).
+        """Get active space-wide subscriptions (build_filter is empty/None).
 
-        Space-wide subscriptions are those where build_id is not set,
+        Space-wide subscriptions are those where build_filter is not set,
         meaning they receive events for ALL builds in the space.
 
         Args:
             space_name: The space to find subscriptions for.
 
         Returns:
-            List of active subscriptions where build_id is empty (space-wide).
+            List of active subscriptions where build_filter is empty (space-wide).
         """
         raise NotImplementedError
 
@@ -89,8 +78,8 @@ class IWebhookStorage(IItemStorage[StoredWebhookSubscription]):
     def deactivate_for_build(self, build_id: str) -> int:
         """Deactivate all active subscriptions for a given build.
 
-        Sets active=False on all active subscriptions scoped to the build.
-        Useful for cleanup when a build completes or is cancelled.
+        Sets active=False on all active subscriptions whose build_filter
+        matches the given build ID.
 
         Args:
             build_id: The build ID whose subscriptions should be deactivated.
@@ -123,7 +112,7 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
 
         Exposes key fields for querying:
         - space_name: For filtering by space
-        - build_id: For filtering by build (empty string if None)
+        - build_filter: For filtering by build (empty string if None)
         - active: For filtering active vs inactive subscriptions
         - created_by: For audit and ownership queries
         - created_time: For time-based queries
@@ -136,9 +125,7 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
         """
         return {
             "space_name": item.space_name,
-            "build_id": item.build_id or "",
             "active": item.active,
-            "scope": item.scope,
             "status": item.status,
             "build_filter": item.build_filter or "",
             "created_by": item.created_by,
@@ -154,33 +141,15 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
         """
         return StoredWebhookSubscription(
             space_name="sample-space",
-            build_id="build-sample-001",
             webhook_url="https://example.com/webhook",
             secret="sample-secret",
             event_types=["*"],
             created_by="system",
-            scope="space",
             status="active",
             build_filter=None,
         )
 
     # ── Query methods ────────────────────────────────────────────────
-
-    def get_active_for_build(self, build_id: str) -> List[StoredWebhookSubscription]:
-        """Get all active subscriptions scoped to a specific build.
-
-        Args:
-            build_id: The build ID to filter by.
-
-        Returns:
-            List of active subscriptions for the given build.
-        """
-        result: List[StoredWebhookSubscription] = []
-        for page in self.get_paged(
-            {"build_id": build_id, "active": True}, page_size=_PAGE_SIZE
-        ):
-            result.extend(page)
-        return result
 
     def get_active_for_build_filter(
         self, build_filter: str
@@ -201,9 +170,9 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
         return result
 
     def get_active_for_space(self, space_name: str) -> List[StoredWebhookSubscription]:
-        """Get active space-wide subscriptions (build_id is empty string = NULL).
+        """Get active space-wide subscriptions (build_filter is empty string = None).
 
-        Space-wide subscriptions have build_id stored as empty string (the
+        Space-wide subscriptions have build_filter stored as empty string (the
         storage layer maps None to "" in _get_column_values). Only active
         subscriptions are returned.
 
@@ -215,7 +184,7 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
         """
         result: List[StoredWebhookSubscription] = []
         for page in self.get_paged(
-            {"space_name": space_name, "build_id": "", "active": True},
+            {"space_name": space_name, "build_filter": "", "active": True},
             page_size=_PAGE_SIZE,
         ):
             result.extend(page)
@@ -248,8 +217,8 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
     def deactivate_for_build(self, build_id: str) -> int:
         """Deactivate all active subscriptions for a given build.
 
-        Sets active=False on all active subscriptions scoped to the build.
-        Checks both build_id (legacy) and build_filter (new model).
+        Sets active=False on all active subscriptions whose build_filter
+        matches the given build ID.
 
         Args:
             build_id: The build ID whose subscriptions should be deactivated.
@@ -258,14 +227,6 @@ class BaseWebhookStorage(  # pylint: disable=abstract-method
             The number of subscriptions that were deactivated.
         """
         count = 0
-        # Deactivate by build_id (legacy)
-        for page in self.get_paged(
-            {"build_id": build_id, "active": True}, page_size=_PAGE_SIZE
-        ):
-            for item in page:
-                self.update_fields(item.uuid, {"active": False})
-                count += 1
-        # Also deactivate by build_filter (new model)
         for page in self.get_paged(
             {"build_filter": build_id, "active": True}, page_size=_PAGE_SIZE
         ):

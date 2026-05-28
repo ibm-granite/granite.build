@@ -13,13 +13,12 @@ class TestWebhookEventWriter:
     def _make_subscription(self, **overrides) -> StoredWebhookSubscription:
         defaults = {
             "space_name": "test-space",
-            "build_id": "build-001",
+            "build_filter": "build-001",
             "webhook_url": "https://example.com/hook",
             "secret": "s",
             "created_by": "user",
             "event_types": ["*"],
             "status": "active",
-            "scope": "space",
         }
         defaults.update(overrides)
         return StoredWebhookSubscription(**defaults)
@@ -30,8 +29,7 @@ class TestWebhookEventWriter:
         """start() queries active subscriptions for the build."""
         sub = self._make_subscription()
         mock_sub_storage = MagicMock()
-        mock_sub_storage.get_active_for_build.return_value = [sub]
-        mock_sub_storage.get_active_for_build_filter.return_value = []
+        mock_sub_storage.get_active_for_build_filter.return_value = [sub]
         mock_sub_storage.get_active_for_space.return_value = []
         mock_sub_factory.return_value = mock_sub_storage
         mock_evt_factory.return_value = MagicMock()
@@ -48,8 +46,7 @@ class TestWebhookEventWriter:
         """accept_event() writes a StoredWebhookEvent per matching subscription."""
         sub = self._make_subscription()
         mock_sub_storage = MagicMock()
-        mock_sub_storage.get_active_for_build.return_value = [sub]
-        mock_sub_storage.get_active_for_build_filter.return_value = []
+        mock_sub_storage.get_active_for_build_filter.return_value = [sub]
         mock_sub_storage.get_active_for_space.return_value = []
         mock_sub_factory.return_value = mock_sub_storage
 
@@ -96,8 +93,7 @@ class TestWebhookEventWriter:
         """accept_event() respects subscription event_types filter."""
         sub = self._make_subscription(event_types=["artifact_event"])
         mock_sub_storage = MagicMock()
-        mock_sub_storage.get_active_for_build.return_value = [sub]
-        mock_sub_storage.get_active_for_build_filter.return_value = []
+        mock_sub_storage.get_active_for_build_filter.return_value = [sub]
         mock_sub_storage.get_active_for_space.return_value = []
         mock_sub_factory.return_value = mock_sub_storage
 
@@ -141,8 +137,7 @@ class TestWebhookEventWriter:
         active_sub = self._make_subscription(status="active")
         pending_sub = self._make_subscription(status="pending")
         mock_sub_storage = MagicMock()
-        mock_sub_storage.get_active_for_build.return_value = [active_sub, pending_sub]
-        mock_sub_storage.get_active_for_build_filter.return_value = []
+        mock_sub_storage.get_active_for_build_filter.return_value = [active_sub, pending_sub]
         mock_sub_storage.get_active_for_space.return_value = []
         mock_sub_factory.return_value = mock_sub_storage
         mock_evt_factory.return_value = MagicMock()
@@ -219,17 +214,14 @@ class TestBuildRunnerDispatch:
         """WebhookEventWriter finds subscriptions via build_filter and persists events."""
         sub = StoredWebhookSubscription(
             space_name="test-space",
-            build_id=None,
             build_filter="build-001",
             webhook_url="https://example.com/hook",
             secret="test-secret-key",
             created_by="user",
             event_types=["*"],
             status="active",
-            scope="space",
         )
         mock_sub_storage = MagicMock()
-        mock_sub_storage.get_active_for_build.return_value = []
         mock_sub_storage.get_active_for_build_filter.return_value = [sub]
         mock_sub_storage.get_active_for_space.return_value = []
         mock_sub_factory.return_value = mock_sub_storage
@@ -280,18 +272,15 @@ class TestBuildRunnerDispatch:
         """WebhookEventWriter deduplicates subscriptions found via multiple lookup paths."""
         sub = StoredWebhookSubscription(
             space_name="test-space",
-            build_id="build-001",
             build_filter="build-001",
             webhook_url="https://example.com/hook",
             secret="test-secret-key",
             created_by="user",
             event_types=["*"],
             status="active",
-            scope="space",
         )
         # Same subscription returned from multiple lookups
         mock_sub_storage = MagicMock()
-        mock_sub_storage.get_active_for_build.return_value = [sub]
         mock_sub_storage.get_active_for_build_filter.return_value = [sub]
         mock_sub_storage.get_active_for_space.return_value = [sub]
         mock_sub_factory.return_value = mock_sub_storage

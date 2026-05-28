@@ -324,9 +324,7 @@ def _create_webhook_subscription(
         webhook_storage = create_webhook_storage()
         subscription = StoredWebhookSubscription(
             space_name=stored_build.space_name,
-            build_id=None,
             build_filter=stored_build.uuid,
-            scope="space",
             status="active",
             webhook_url=req.webhook_url,
             secret=req.webhook_secret,

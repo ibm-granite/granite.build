@@ -86,20 +86,20 @@ class WebhookResponse(BaseModel):
 
     Args:
         id: Unique subscription identifier.
-        build_id: The build this subscription is scoped to.
-        space_name: The space owning the build.
+        space_name: The space owning the subscription.
         webhook_url: The delivery endpoint URL.
         event_types: Subscribed event types.
         excluded_types: Excluded event types.
         frequency: Batch flush interval in seconds.
         log_pattern: Optional regex for log line scanning.
         active: Whether the subscription is currently active.
+        status: Subscription lifecycle status.
+        build_filter: Optional build UUID for per-build scoping.
         created_by: Username of the creator.
         created_time: ISO timestamp of creation.
     """
 
     id: str
-    build_id: Optional[str]
     space_name: str
     webhook_url: str
     event_types: List[str]
@@ -108,7 +108,6 @@ class WebhookResponse(BaseModel):
     log_pattern: Optional[str]
     active: bool
     status: str
-    scope: str
     build_filter: Optional[str]
     created_by: str
     created_time: str
@@ -161,7 +160,6 @@ def _to_response(sub: StoredWebhookSubscription) -> WebhookResponse:
     """
     return WebhookResponse(
         id=sub.uuid,
-        build_id=sub.build_id,
         space_name=sub.space_name,
         webhook_url=sub.webhook_url,
         event_types=sub.event_types,
@@ -170,7 +168,6 @@ def _to_response(sub: StoredWebhookSubscription) -> WebhookResponse:
         log_pattern=sub.log_pattern,
         active=sub.active,
         status=sub.status,
-        scope=sub.scope,
         build_filter=sub.build_filter,
         created_by=sub.created_by,
         created_time=sub.created_time.isoformat(),
@@ -262,7 +259,6 @@ def create_subscription(
     # Create and persist subscription
     subscription = StoredWebhookSubscription(
         space_name=build.space_name,
-        build_id=build_id,
         build_filter=build_id,
         webhook_url=body.webhook_url,
         secret=body.secret,
@@ -317,7 +313,7 @@ def list_subscriptions(build_id: str, request: Request) -> ListWebhooksResponse:
         )
 
     storage = get_webhook_storage()
-    subscriptions = storage.get_active_for_build(build_id)
+    subscriptions = storage.get_active_for_build_filter(build_id)
 
     return ListWebhooksResponse(
         subscriptions=[_to_response(sub) for sub in subscriptions]
@@ -391,10 +387,9 @@ def create_space_subscription(
     storage = get_webhook_storage()
     _check_rate_limit(storage, space_name)
 
-    # Create and persist subscription (build_id=None = space-wide)
+    # Create and persist subscription (build_filter=None = space-wide)
     subscription = StoredWebhookSubscription(
         space_name=space_name,
-        build_id=None,
         webhook_url=body.webhook_url,
         secret=body.secret,
         event_types=body.event_types,

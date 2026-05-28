@@ -52,8 +52,7 @@ class WebhookEventWriter:
         self._webhook_storage = create_webhook_storage()
         self._event_storage = create_webhook_event_storage()
 
-        # Get per-build subscriptions (legacy build_id + new build_filter)
-        subs = self._webhook_storage.get_active_for_build(self.build_id)
+        # Get per-build subscriptions (by build_filter)
         filter_subs = self._webhook_storage.get_active_for_build_filter(self.build_id)
         # Get space-wide subscriptions
         space_subs = self._webhook_storage.get_active_for_space(self.space_name)
@@ -61,7 +60,7 @@ class WebhookEventWriter:
         # Deduplicate by UUID
         seen: set = set()
         all_subs: List[StoredWebhookSubscription] = []
-        for s in subs + filter_subs + space_subs:
+        for s in filter_subs + space_subs:
             if s.uuid not in seen and s.status == "active":
                 seen.add(s.uuid)
                 all_subs.append(s)
@@ -79,13 +78,12 @@ class WebhookEventWriter:
         self._events_since_refresh = 0
         if self._webhook_storage is None:
             return
-        subs = self._webhook_storage.get_active_for_build(self.build_id)
         filter_subs = self._webhook_storage.get_active_for_build_filter(self.build_id)
         space_subs = self._webhook_storage.get_active_for_space(self.space_name)
 
         seen: set = set()
         all_subs: List[StoredWebhookSubscription] = []
-        for s in subs + filter_subs + space_subs:
+        for s in filter_subs + space_subs:
             if s.uuid not in seen and s.status == "active":
                 seen.add(s.uuid)
                 all_subs.append(s)

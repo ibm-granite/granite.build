@@ -31,7 +31,7 @@ class TestWebhookAPI:
         """
         defaults = {
             "space_name": "test-space",
-            "build_id": "build-001",
+            "build_filter": "build-001",
             "webhook_url": "https://example.com/hook",
             "secret": "super-secret-key",
             "event_types": ["*"],
@@ -72,14 +72,13 @@ class TestWebhookAPI:
         assert response.status_code == 201
         data = response.json()
         assert "id" in data
-        assert data["build_id"] == "build-001"
+        assert data["build_filter"] == "build-001"
         assert data["space_name"] == "test-space"
         assert data["webhook_url"] == "https://example.com/hook"
         assert data["event_types"] == ["build.started", "build.completed"]
         assert data["frequency"] == 30
         assert data["active"] is True
         assert data["status"] == "pending"
-        assert data["scope"] == "space"
         assert data["created_by"] == "testuser"
         assert "created_time" in data
         # Secret must NEVER be returned
@@ -142,7 +141,7 @@ class TestWebhookAPI:
 
         sub = self._make_subscription()
         mock_storage = MagicMock()
-        mock_storage.get_active_for_build.return_value = [sub]
+        mock_storage.get_active_for_build_filter.return_value = [sub]
         mock_get_storage.return_value = mock_storage
 
         response = self.client.get(
