@@ -1,16 +1,50 @@
-"""Tests for Phase 2: space-wide webhook subscriptions.
+"""Tests for space-wide webhook subscriptions.
 
-Covers the API endpoints for creating and listing space-wide subscriptions.
+Covers the API endpoints for creating and listing space-wide subscriptions
+using the consolidated APIRouter.
 """
 
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from gbserver.webhooks.api import webhooks_api
+from gbserver.api.webhooks import webhooks_router
 from gbserver.webhooks.models import StoredWebhookSubscription
 from gbserver.webhooks.url_validator import WebhookURLError
+
+
+class _FakeAuthMiddleware(BaseHTTPMiddleware):
+    """Middleware that mimics AuthMiddleware by reading X-Forwarded-User."""
+
+    async def dispatch(self, request, call_next):
+        from gbserver.types.auth import User
+
+        username = request.headers.get("X-Forwarded-User")
+        if not username:
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+        user = User(
+            login=username,
+            id=0,
+            url="",
+            html_url="",
+            name=username,
+            email=f"{username}@test",
+        )
+        request.state.data = {"user": user}
+        return await call_next(request)
+
+
+def _make_test_app():
+    """Create a minimal test app with the webhooks router."""
+    app = FastAPI()
+    app.add_middleware(_FakeAuthMiddleware)
+    app.include_router(webhooks_router, prefix="/api/v1")
+    return app
 
 
 class TestSpaceWideSubscriptionAPI:
@@ -18,11 +52,11 @@ class TestSpaceWideSubscriptionAPI:
 
     def setup_method(self):
         """Create a fresh test client for each test."""
-        self.client = TestClient(webhooks_api)
+        self.client = TestClient(_make_test_app())
 
-    @patch("gbserver.webhooks.api.validate_webhook_url")
-    @patch("gbserver.webhooks.api.get_webhook_storage")
-    @patch("gbserver.webhooks.api.get_admin_storage")
+    @patch("gbserver.api.webhooks.validate_webhook_url")
+    @patch("gbserver.api.webhooks._get_storage")
+    @patch("gbserver.api.webhooks.get_admin_storage")
     def test_create_space_subscription(
         self, mock_admin, mock_get_storage, mock_validate
     ):
@@ -40,7 +74,7 @@ class TestSpaceWideSubscriptionAPI:
         mock_admin.return_value = admin
 
         response = self.client.post(
-            "/spaces/my-space/subscriptions",
+            "/api/v1/webhooks/spaces/my-space/subscriptions",
             json={
                 "webhook_url": "https://dashboard.example.com/hooks",
                 "secret": "dashboard-secret",
@@ -63,9 +97,9 @@ class TestSpaceWideSubscriptionAPI:
         # Verify storage.add was called
         mock_storage.add.assert_called_once()
 
-    @patch("gbserver.webhooks.api.validate_webhook_url")
-    @patch("gbserver.webhooks.api.get_webhook_storage")
-    @patch("gbserver.webhooks.api.get_admin_storage")
+    @patch("gbserver.api.webhooks.validate_webhook_url")
+    @patch("gbserver.api.webhooks._get_storage")
+    @patch("gbserver.api.webhooks.get_admin_storage")
     def test_create_space_subscription_space_not_found(
         self, mock_admin, mock_get_storage, mock_validate
     ):
@@ -78,7 +112,7 @@ class TestSpaceWideSubscriptionAPI:
         mock_admin.return_value = admin
 
         response = self.client.post(
-            "/spaces/nonexistent/subscriptions",
+            "/api/v1/webhooks/spaces/nonexistent/subscriptions",
             json={
                 "webhook_url": "https://x.com/hook",
                 "secret": "test-secret-key",
@@ -90,8 +124,8 @@ class TestSpaceWideSubscriptionAPI:
         assert response.status_code == 404
         assert "nonexistent" in response.json()["detail"]
 
-    @patch("gbserver.webhooks.api.get_webhook_storage")
-    @patch("gbserver.webhooks.api.get_admin_storage")
+    @patch("gbserver.api.webhooks._get_storage")
+    @patch("gbserver.api.webhooks.get_admin_storage")
     def test_create_space_subscription_enforces_min_frequency(
         self, mock_admin, mock_get_storage
     ):
@@ -103,7 +137,7 @@ class TestSpaceWideSubscriptionAPI:
         mock_admin.return_value = admin
 
         response = self.client.post(
-            "/spaces/my-space/subscriptions",
+            "/api/v1/webhooks/spaces/my-space/subscriptions",
             json={
                 "webhook_url": "https://example.com/hook",
                 "secret": "test-secret-key",
@@ -118,7 +152,7 @@ class TestSpaceWideSubscriptionAPI:
     def test_create_space_subscription_no_auth(self):
         """POST without auth header returns 401."""
         response = self.client.post(
-            "/spaces/my-space/subscriptions",
+            "/api/v1/webhooks/spaces/my-space/subscriptions",
             json={
                 "webhook_url": "https://example.com/hook",
                 "secret": "s",
@@ -128,7 +162,7 @@ class TestSpaceWideSubscriptionAPI:
 
         assert response.status_code == 401
 
-    @patch("gbserver.webhooks.api.get_webhook_storage")
+    @patch("gbserver.api.webhooks._get_storage")
     def test_list_space_subscriptions(self, mock_get_storage):
         """GET returns list of active space-wide subscriptions."""
         mock_storage = MagicMock()
@@ -143,7 +177,7 @@ class TestSpaceWideSubscriptionAPI:
         mock_get_storage.return_value = mock_storage
 
         response = self.client.get(
-            "/spaces/my-space/subscriptions",
+            "/api/v1/webhooks/spaces/my-space/subscriptions",
             headers={"X-Forwarded-User": "user"},
         )
 
@@ -158,7 +192,7 @@ class TestSpaceWideSubscriptionAPI:
         # Secret must NEVER be returned
         assert "secret" not in data["subscriptions"][0]
 
-    @patch("gbserver.webhooks.api.get_webhook_storage")
+    @patch("gbserver.api.webhooks._get_storage")
     def test_list_space_subscriptions_empty(self, mock_get_storage):
         """GET returns empty list when no space-wide subscriptions exist."""
         mock_storage = MagicMock()
@@ -166,7 +200,7 @@ class TestSpaceWideSubscriptionAPI:
         mock_get_storage.return_value = mock_storage
 
         response = self.client.get(
-            "/spaces/my-space/subscriptions",
+            "/api/v1/webhooks/spaces/my-space/subscriptions",
             headers={"X-Forwarded-User": "user"},
         )
 
@@ -176,6 +210,8 @@ class TestSpaceWideSubscriptionAPI:
 
     def test_list_space_subscriptions_no_auth(self):
         """GET without auth header returns 401."""
-        response = self.client.get("/spaces/my-space/subscriptions")
+        response = self.client.get(
+            "/api/v1/webhooks/spaces/my-space/subscriptions"
+        )
 
         assert response.status_code == 401

@@ -1,59 +1,43 @@
-"""FastAPI routes for webhook subscription management.
+"""APIRouter for webhook subscription management.
 
 Provides endpoints to create, list, and delete webhook subscriptions
-scoped to specific builds. Subscriptions allow external systems to
-receive push notifications about build lifecycle events.
+scoped to spaces (with optional build_filter). Subscriptions allow
+external systems to receive push notifications about build lifecycle events.
 
 Routes:
-    POST /{build_id}/subscriptions — Create a new subscription.
-    GET /{build_id}/subscriptions — List active subscriptions for a build.
+    POST /spaces/{space_name}/subscriptions — Create a new subscription.
+    GET /spaces/{space_name}/subscriptions — List active subscriptions for a space.
     DELETE /{webhook_id} — Deactivate a subscription (owner only).
 """
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 
 from gbserver.storage.singleton_storage import get_admin_storage
+from gbserver.storage.sql.webhook_subscription_storage import create_webhook_storage
+from gbserver.storage.webhook_subscription_storage import IWebhookStorage
 from gbserver.types.constants import GBSERVER_WEBHOOKS_ALLOW_HTTP, GBSERVER_WEBHOOKS_MAX_PER_SPACE
 from gbserver.utils.logger import get_logger
 from gbserver.webhooks.models import WEBHOOK_MIN_FREQUENCY, StoredWebhookSubscription
-from gbserver.storage.sql.webhook_subscription_storage import create_webhook_storage
-from gbserver.storage.webhook_subscription_storage import IWebhookStorage
 from gbserver.webhooks.url_validator import WebhookURLError, validate_webhook_url
 
 logger = get_logger(__name__)
-webhooks_api = FastAPI()
 
-# Module-level storage (lazily initialized)
-_webhook_storage: Optional[IWebhookStorage] = None  # pylint: disable=invalid-name
+webhooks_router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
-def set_webhook_storage(storage: IWebhookStorage) -> None:
-    """Set the module-level webhook storage instance.
-
-    Used during application startup or in tests to inject the storage backend.
-
-    Args:
-        storage: An IWebhookStorage implementation.
-    """
-    global _webhook_storage  # pylint: disable=global-statement
-    _webhook_storage = storage
+# ── Storage Helper ────────────────────────────────────────────────────────
 
 
-def get_webhook_storage() -> IWebhookStorage:
-    """Get the module-level webhook storage instance.
-
-    Lazily initializes using the configured storage backend if not set.
+def _get_storage() -> IWebhookStorage:
+    """Create and return a webhook storage instance.
 
     Returns:
-        The configured IWebhookStorage implementation.
+        An IWebhookStorage implementation.
     """
-    global _webhook_storage  # pylint: disable=global-statement
-    if _webhook_storage is None:
-        _webhook_storage = create_webhook_storage()
-    return _webhook_storage
+    return create_webhook_storage()
 
 
 # ── Request / Response Models ─────────────────────────────────────────────
@@ -69,6 +53,7 @@ class CreateWebhookRequest(BaseModel):
         excluded_types: Event types to always exclude.
         frequency: Batch flush interval in seconds.
         log_pattern: Optional regex for log line scanning.
+        build_filter: Optional build UUID to scope subscription to a single build.
         metadata: Arbitrary metadata dict.
     """
 
@@ -78,6 +63,7 @@ class CreateWebhookRequest(BaseModel):
     excluded_types: List[str] = []
     frequency: int = 30
     log_pattern: Optional[str] = None
+    build_filter: Optional[str] = None
     metadata: Dict[str, Any] = {}
 
 
@@ -92,9 +78,9 @@ class WebhookResponse(BaseModel):
         excluded_types: Excluded event types.
         frequency: Batch flush interval in seconds.
         log_pattern: Optional regex for log line scanning.
+        build_filter: Optional build UUID for per-build scoping.
         active: Whether the subscription is currently active.
         status: Subscription lifecycle status.
-        build_filter: Optional build UUID for per-build scoping.
         created_by: Username of the creator.
         created_time: ISO timestamp of creation.
     """
@@ -106,9 +92,9 @@ class WebhookResponse(BaseModel):
     excluded_types: List[str]
     frequency: int
     log_pattern: Optional[str]
+    build_filter: Optional[str]
     active: bool
     status: str
-    build_filter: Optional[str]
     created_by: str
     created_time: str
 
@@ -127,24 +113,28 @@ class ListWebhooksResponse(BaseModel):
 
 
 def _get_username(request: Request) -> str:
-    """Extract the authenticated username from the request.
+    """Extract the authenticated username from request.state.data.
+
+    AuthMiddleware sets request.state.data = {"user": User(...)} after
+    validating the token. This helper reads the username from that state.
 
     Args:
         request: The incoming FastAPI request.
 
     Returns:
-        The username from the X-Forwarded-User header.
+        The username string (User.login).
 
     Raises:
-        HTTPException: 401 if the header is missing or empty.
+        HTTPException: 401 if auth state is missing.
     """
-    username = request.headers.get("X-Forwarded-User")
-    if not username:
+    try:
+        user = request.state.data["user"]
+        return user.login
+    except (AttributeError, KeyError, TypeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Forwarded-User header",
+            detail="Authentication required",
         )
-    return username
 
 
 def _to_response(sub: StoredWebhookSubscription) -> WebhookResponse:
@@ -188,139 +178,7 @@ def _check_rate_limit(storage: IWebhookStorage, space_name: str) -> None:
 # ── Routes ────────────────────────────────────────────────────────────────
 
 
-@webhooks_api.post(
-    "/{build_id}/subscriptions",
-    status_code=status.HTTP_201_CREATED,
-    response_model=WebhookResponse,
-)
-def create_subscription(
-    build_id: str, body: CreateWebhookRequest, request: Request
-) -> WebhookResponse:
-    """Create a new webhook subscription for a build.
-
-    Validates the authenticated user, checks that the build exists,
-    enforces the minimum frequency constraint, then persists the
-    subscription.
-
-    Args:
-        build_id: The build ID to subscribe to.
-        body: The subscription creation request body.
-        request: The incoming FastAPI request (for auth headers).
-
-    Returns:
-        WebhookResponse with the created subscription details.
-
-    Raises:
-        HTTPException: 401 if unauthenticated, 400 if frequency too low,
-            404 if build not found.
-    """
-    username = _get_username(request)
-
-    # Validate frequency
-    if body.frequency < WEBHOOK_MIN_FREQUENCY:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Frequency must be at minimum {WEBHOOK_MIN_FREQUENCY} seconds. "
-                f"Got {body.frequency}."
-            ),
-        )
-
-    # Validate webhook URL (SSRF protection)
-    allow_http = GBSERVER_WEBHOOKS_ALLOW_HTTP
-    try:
-        validate_webhook_url(body.webhook_url, allow_http=allow_http)
-    except WebhookURLError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid webhook URL: {e}",
-        ) from e
-
-    # Validate secret length
-    if len(body.secret) < 8:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Webhook secret must be at least 8 characters",
-        )
-
-    # Verify build exists
-    admin_storage = get_admin_storage()
-    build = admin_storage.build_storage.get_by_uuid(build_id)
-    if build is None or isinstance(build, list):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Build {build_id} not found",
-        )
-
-    # Rate limit check
-    storage = get_webhook_storage()
-    _check_rate_limit(storage, build.space_name)
-
-    # Create and persist subscription
-    subscription = StoredWebhookSubscription(
-        space_name=build.space_name,
-        build_filter=build_id,
-        webhook_url=body.webhook_url,
-        secret=body.secret,
-        event_types=body.event_types,
-        excluded_types=body.excluded_types,
-        frequency=body.frequency,
-        log_pattern=body.log_pattern,
-        created_by=username,
-        metadata=body.metadata,
-        status="pending",
-    )
-
-    storage.add(subscription)
-
-    logger.info(
-        "Created webhook subscription %s for build %s by user %s",
-        subscription.uuid,
-        build_id,
-        username,
-    )
-
-    return _to_response(subscription)
-
-
-@webhooks_api.get(
-    "/{build_id}/subscriptions",
-    status_code=status.HTTP_200_OK,
-    response_model=ListWebhooksResponse,
-)
-def list_subscriptions(build_id: str, request: Request) -> ListWebhooksResponse:
-    """List active webhook subscriptions for a build.
-
-    Args:
-        build_id: The build ID to list subscriptions for.
-        request: The incoming FastAPI request (for auth headers).
-
-    Returns:
-        ListWebhooksResponse containing active subscriptions.
-
-    Raises:
-        HTTPException: 401 if unauthenticated, 404 if build not found.
-    """
-    _get_username(request)
-
-    # Verify build exists
-    admin_storage = get_admin_storage()
-    build = admin_storage.build_storage.get_by_uuid(build_id)
-    if build is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Build {build_id} not found",
-        )
-
-    storage = get_webhook_storage()
-    subscriptions = storage.get_active_for_build_filter(build_id)
-
-    return ListWebhooksResponse(
-        subscriptions=[_to_response(sub) for sub in subscriptions]
-    )
-
-
-@webhooks_api.post(
+@webhooks_router.post(
     "/spaces/{space_name}/subscriptions",
     status_code=status.HTTP_201_CREATED,
     response_model=WebhookResponse,
@@ -328,22 +186,23 @@ def list_subscriptions(build_id: str, request: Request) -> ListWebhooksResponse:
 def create_space_subscription(
     space_name: str, body: CreateWebhookRequest, request: Request
 ) -> WebhookResponse:
-    """Create a space-wide webhook subscription.
+    """Create a webhook subscription for a space.
 
-    Space-wide subscriptions receive events for ALL builds in the space,
-    useful for monitoring dashboards or aggregate notification systems.
+    Creates a subscription scoped to the given space. If build_filter is
+    provided in the request body, the subscription is further scoped to
+    only that build within the space.
 
     Args:
         space_name: The space to subscribe to.
         body: The subscription creation request body.
-        request: The incoming FastAPI request (for auth headers).
+        request: The incoming FastAPI request (for auth state).
 
     Returns:
         WebhookResponse with the created subscription details.
 
     Raises:
-        HTTPException: 401 if unauthenticated, 400 if frequency too low,
-            404 if space not found.
+        HTTPException: 401 if unauthenticated, 400 if frequency too low or
+            invalid URL, 404 if space/build not found, 429 if rate limited.
     """
     username = _get_username(request)
 
@@ -383,13 +242,23 @@ def create_space_subscription(
             detail=f"Space {space_name} not found",
         )
 
+    # If build_filter provided, verify that build exists
+    if body.build_filter:
+        build = admin_storage.build_storage.get_by_uuid(body.build_filter)
+        if build is None or isinstance(build, list):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Build {body.build_filter} not found",
+            )
+
     # Rate limit check
-    storage = get_webhook_storage()
+    storage = _get_storage()
     _check_rate_limit(storage, space_name)
 
-    # Create and persist subscription (build_filter=None = space-wide)
+    # Create and persist subscription
     subscription = StoredWebhookSubscription(
         space_name=space_name,
+        build_filter=body.build_filter,
         webhook_url=body.webhook_url,
         secret=body.secret,
         event_types=body.event_types,
@@ -404,44 +273,57 @@ def create_space_subscription(
     storage.add(subscription)
 
     logger.info(
-        "Created space-wide webhook subscription %s for space %s by user %s",
+        "Created webhook subscription %s for space %s (build_filter=%s) by user %s",
         subscription.uuid,
         space_name,
+        body.build_filter,
         username,
     )
 
     return _to_response(subscription)
 
 
-@webhooks_api.get(
+@webhooks_router.get(
     "/spaces/{space_name}/subscriptions",
     status_code=status.HTTP_200_OK,
     response_model=ListWebhooksResponse,
 )
-def list_space_subscriptions(space_name: str, request: Request) -> ListWebhooksResponse:
-    """List active space-wide webhook subscriptions.
+def list_space_subscriptions(
+    space_name: str,
+    request: Request,
+    build_filter: Optional[str] = Query(default=None),
+) -> ListWebhooksResponse:
+    """List active webhook subscriptions for a space.
+
+    If build_filter query param is provided, returns only subscriptions
+    matching that build filter. Otherwise returns all active subscriptions
+    for the space.
 
     Args:
         space_name: The space to list subscriptions for.
-        request: The incoming FastAPI request (for auth headers).
+        request: The incoming FastAPI request (for auth state).
+        build_filter: Optional build UUID to filter by.
 
     Returns:
-        ListWebhooksResponse containing active space-wide subscriptions.
+        ListWebhooksResponse containing active subscriptions.
 
     Raises:
         HTTPException: 401 if unauthenticated.
     """
     _get_username(request)
 
-    storage = get_webhook_storage()
-    subscriptions = storage.get_active_for_space(space_name)
+    storage = _get_storage()
+    if build_filter:
+        subscriptions = storage.get_active_for_build_filter(build_filter)
+    else:
+        subscriptions = storage.get_active_for_space(space_name)
 
     return ListWebhooksResponse(
         subscriptions=[_to_response(sub) for sub in subscriptions]
     )
 
 
-@webhooks_api.delete(
+@webhooks_router.delete(
     "/{webhook_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
@@ -452,7 +334,7 @@ def delete_subscription(webhook_id: str, request: Request) -> Response:
 
     Args:
         webhook_id: The UUID of the subscription to deactivate.
-        request: The incoming FastAPI request (for auth headers).
+        request: The incoming FastAPI request (for auth state).
 
     Returns:
         Empty 204 response on success.
@@ -463,7 +345,7 @@ def delete_subscription(webhook_id: str, request: Request) -> Response:
     """
     username = _get_username(request)
 
-    storage = get_webhook_storage()
+    storage = _get_storage()
     subscription = storage.get_by_uuid(webhook_id)
     if subscription is None or isinstance(subscription, list):
         raise HTTPException(

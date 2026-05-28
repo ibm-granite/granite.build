@@ -33,7 +33,7 @@ from gbserver.types.constants import (
     API_BASE_PATH,
     GBSERVER_GIT_COMMIT,
 )
-from gbserver.webhooks.api import webhooks_api
+from gbserver.api.webhooks import webhooks_router
 
 
 def get_app() -> FastAPI:
@@ -67,4 +67,4 @@ root_api.mount(f"{API_BASE_PATH}/logs", logs_api)
 root_api.mount(f"{API_BASE_PATH}/node-health", node_health_api)
 root_api.mount(f"{API_BASE_PATH}/secrets", secrets_api)
 root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
-root_api.mount(f"{API_BASE_PATH}/webhooks", webhooks_api)
+root_api.include_router(webhooks_router, prefix=API_BASE_PATH)
