@@ -26,7 +26,7 @@ class TestSpaceWideSubscriptionAPI:
     def test_create_space_subscription(
         self, mock_admin, mock_get_storage, mock_validate
     ):
-        """POST to /spaces/{name}/subscriptions returns 201 with build_id=None."""
+        """POST to /spaces/{name}/subscriptions returns 201 with build_filter=None."""
         mock_validate.return_value = None
         mock_storage = MagicMock()
         mock_storage.get_by_space.return_value = []
@@ -53,11 +53,10 @@ class TestSpaceWideSubscriptionAPI:
         assert response.status_code == 201
         data = response.json()
         assert data["space_name"] == "my-space"
-        assert data["build_id"] is None
+        assert data["build_filter"] is None
         assert data["webhook_url"] == "https://dashboard.example.com/hooks"
         assert data["active"] is True
         assert data["status"] == "pending"
-        assert data["scope"] == "space"
         assert data["created_by"] == "dashboard-service"
         # Secret must NEVER be returned
         assert "secret" not in data
@@ -135,7 +134,6 @@ class TestSpaceWideSubscriptionAPI:
         mock_storage = MagicMock()
         sub = StoredWebhookSubscription(
             space_name="my-space",
-            build_id=None,
             webhook_url="https://dashboard.example.com/hooks",
             secret="s",
             event_types=["*"],
@@ -152,7 +150,7 @@ class TestSpaceWideSubscriptionAPI:
         assert response.status_code == 200
         data = response.json()
         assert len(data["subscriptions"]) == 1
-        assert data["subscriptions"][0]["build_id"] is None
+        assert data["subscriptions"][0]["build_filter"] is None
         assert data["subscriptions"][0]["space_name"] == "my-space"
         assert data["subscriptions"][0]["webhook_url"] == (
             "https://dashboard.example.com/hooks"

@@ -22,10 +22,9 @@ class SQLWebhookStorage(
 
     def __init__(self, **kwargs) -> None:
         kwargs["indexed_columns"] = [
-            "build_id",
+            "build_filter",
             "space_name",
             "active",
-            "scope",
             "status",
         ]
         kwargs["autoincr_column"] = "index"

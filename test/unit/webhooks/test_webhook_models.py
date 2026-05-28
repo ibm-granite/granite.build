@@ -23,7 +23,7 @@ class TestStoredWebhookSubscription:
 
         assert sub.uuid is not None and len(sub.uuid) > 0
         assert sub.space_name == "test-space"
-        assert sub.build_id is None
+        assert sub.build_filter is None
         assert sub.webhook_url == "https://example.com/hook"
         assert sub.secret == "my-secret-key"
         assert sub.event_types == ["*"]
@@ -41,7 +41,7 @@ class TestStoredWebhookSubscription:
         now = datetime.datetime.now(datetime.timezone.utc)
         sub = StoredWebhookSubscription(
             space_name="prod-space",
-            build_id="build-123",
+            build_filter="build-123",
             webhook_url="https://hooks.example.com/notify",
             secret="super-secret",
             event_types=["STATUS_EVENT", "ARTIFACT_EVENT"],
@@ -56,7 +56,7 @@ class TestStoredWebhookSubscription:
         )
 
         assert sub.space_name == "prod-space"
-        assert sub.build_id == "build-123"
+        assert sub.build_filter == "build-123"
         assert sub.webhook_url == "https://hooks.example.com/notify"
         assert sub.secret == "super-secret"
         assert sub.event_types == ["STATUS_EVENT", "ARTIFACT_EVENT"]
@@ -114,27 +114,8 @@ class TestStoredWebhookSubscription:
         assert sub.effective_frequency() == WEBHOOK_MIN_FREQUENCY
 
 
-class TestSubscriptionScopeAndStatus:
-    """Tests for scope/status fields added in Phase 1 redesign."""
-
-    def test_default_scope_is_space(self):
-        sub = StoredWebhookSubscription(
-            space_name="my-space",
-            webhook_url="https://example.com/hook",
-            secret="s",
-            created_by="user",
-        )
-        assert sub.scope == "space"
-
-    def test_server_scope(self):
-        sub = StoredWebhookSubscription(
-            space_name="",
-            scope="server",
-            webhook_url="https://example.com/hook",
-            secret="s",
-            created_by="user",
-        )
-        assert sub.scope == "server"
+class TestSubscriptionStatusAndBuildFilter:
+    """Tests for status and build_filter fields."""
 
     def test_default_status_is_pending(self):
         sub = StoredWebhookSubscription(
@@ -155,7 +136,16 @@ class TestSubscriptionScopeAndStatus:
         )
         assert sub.status == "active"
 
-    def test_build_filter_field(self):
+    def test_build_filter_none_means_space_wide(self):
+        sub = StoredWebhookSubscription(
+            space_name="my-space",
+            webhook_url="https://example.com/hook",
+            secret="s",
+            created_by="user",
+        )
+        assert sub.build_filter is None
+
+    def test_build_filter_with_uuid_means_per_build(self):
         sub = StoredWebhookSubscription(
             space_name="my-space",
             webhook_url="https://example.com/hook",
@@ -164,4 +154,3 @@ class TestSubscriptionScopeAndStatus:
             build_filter="build-123",
         )
         assert sub.build_filter == "build-123"
-        assert sub.build_id is None
