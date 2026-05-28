@@ -16,5 +16,4 @@ target_expectations:
 # without cloning from GitHub.
 space_uri: ./space
 simulate_step_failure: false
-timeout_minutes: 10 
-
+timeout_minutes: 10 # Seems sufficient on mac running local slurm cluster
