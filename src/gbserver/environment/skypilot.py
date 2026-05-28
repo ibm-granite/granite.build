@@ -18,6 +18,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.types.buildconfig import BuildTargetStepConfig
+from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.utils.logger import get_logger
 
@@ -65,6 +66,7 @@ class Skypilot(Environment):
     ) -> None:
         self._cluster_names: Dict[str, str] = {}  # launch_id -> cluster_name
         self._job_ids: Dict[str, int] = {}  # launch_id -> sky job_id
+        self._setup_workdirs: Dict[str, str] = {}  # setup_id -> per-run workdir
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -88,6 +90,83 @@ class Skypilot(Environment):
     def _cluster_name_for(launch_id: str) -> str:
         """Generate a unique cluster name from a launch_id."""
         return f"gb-{launch_id[:12]}"
+
+    async def setup_skypilot(
+        self: Self,
+        setup_id: str,
+        runmetadata: EntityRunMetadata,
+        **kwargs,
+    ) -> Dict:
+        """Compute the per-run workdir path and publish it to step launches.
+
+        When the env config defines ``shared_workdir``, derive a path under
+        ``${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/`` and
+        return it as ``setup_config.skypilot.build_workdir`` so
+        ``launch_skypilot`` can export ``GB_BUILD_WORKDIR`` and ``cd`` into
+        it. The path is also stashed on ``self._setup_workdirs`` so
+        ``teardown_skypilot`` can locate it (``runmetadata`` is not
+        forwarded to teardown).
+
+        :param setup_id: Setup identifier minted by ``Environment.setup``.
+        :param runmetadata: Run metadata injected by ``Run._add_to_run_kwargs``.
+        :returns: Setup config dict (empty when ``shared_workdir`` is unset).
+        """
+        shared_workdir = (
+            self.config.config.get("shared_workdir") if self.config else None
+        )
+        if not shared_workdir:
+            return {}
+        workdir = os.path.join(
+            shared_workdir,
+            "builds",
+            runmetadata.build_id or "",
+            "runs",
+            runmetadata.targetrun_id or "",
+        )
+        self._setup_workdirs[setup_id] = workdir
+        logger.info(
+            "setup_skypilot: per-run workdir for setup_id=%s -> %s",
+            setup_id,
+            workdir,
+        )
+        return {"skypilot": {"build_workdir": workdir}}
+
+    async def teardown_skypilot(self: Self, setup_id: str, **kwargs) -> None:
+        """Remove the per-run workdir provisioned by ``setup_skypilot``.
+
+        Submits a one-shot ``sky launch`` whose run script ``rm -rf``s the
+        per-run workdir. Failures are logged and swallowed — a stale
+        workdir is not worth failing the build for, and the build has
+        already finished by the time teardown runs.
+
+        :param setup_id: Setup identifier originally returned to
+            ``Environment.setup``; used to look up the stashed path.
+        """
+        workdir = self._setup_workdirs.pop(setup_id, None)
+        if not workdir:
+            return
+        _require_skypilot()
+        cluster_name = self._cluster_name_for(f"td-{setup_id}")
+        logger.info(
+            "teardown_skypilot: removing per-run workdir %s (setup_id=%s)",
+            workdir,
+            setup_id,
+        )
+        try:
+            task = sky.Task(
+                name=cluster_name,
+                run=f'rm -rf "{workdir}"',
+                resources=sky.Resources(infra=self._get_cloud()),
+            )
+            request_id = sky.launch(
+                task,
+                cluster_name=cluster_name,
+                idle_minutes_to_autostop=0,
+                down=True,
+            )
+            sky.stream_and_get(request_id)
+        except Exception as e:  # don't fail the build for cleanup
+            logger.warning("teardown_skypilot rm -rf %s failed: %s", workdir, e)
 
     async def launch_skypilot(
         self: Self,
@@ -152,12 +231,37 @@ class Skypilot(Environment):
                 env_vars["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
             if run_metadata.get("build_id"):
                 env_vars["GB_BUILD_ID"] = run_metadata["build_id"]
+            # Expose the env-level shared workdir so steps can stage cross-step
+            # state under a path that is mounted on every worker.
+            shared_workdir = (
+                self.config.config.get("shared_workdir") if self.config else None
+            )
+            if shared_workdir:
+                env_vars["GB_SHARED_WORKDIR"] = shared_workdir
+
+            # Per-run workdir provisioned by setup_skypilot. When present,
+            # export it as GB_BUILD_WORKDIR and make it the initial CWD of
+            # the run script so step authors can write outputs with
+            # relative paths and get implicit per-run isolation.
+            build_workdir = (
+                kwargs.get("setup_config", {}).get("skypilot", {}).get("build_workdir")
+            )
+            if build_workdir:
+                env_vars["GB_BUILD_WORKDIR"] = build_workdir
+
+            run_script = launcher_config.get("run", "")
+            if build_workdir:
+                run_script = (
+                    'mkdir -p "$GB_BUILD_WORKDIR"\n'
+                    'cd "$GB_BUILD_WORKDIR"\n'
+                    f"{run_script}"
+                )
 
             # Build sky.Task
             task = sky.Task(
                 name=cluster_name,
                 setup=launcher_config.get("setup") or None,
-                run=launcher_config.get("run", ""),
+                run=run_script,
                 envs=env_vars if env_vars else None,
                 resources=resources,
             )

@@ -214,6 +214,22 @@ config:
                                     # back to `~/.cache/gbserver/<store>` on the
                                     # worker, which only works when consecutive
                                     # steps land on the same machine.
+                                    # When set, the same path is also exported to
+                                    # every step's `run` command as the
+                                    # `GB_SHARED_WORKDIR` environment variable, so
+                                    # step yamls can stage cross-step state
+                                    # without hard-coding the cluster path
+                                    # (e.g. `mkdir -p "$GB_SHARED_WORKDIR/outputs"`).
+                                    # gbserver also provisions a per-target-run
+                                    # subdir under
+                                    #   ${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/
+                                    # which is exported as `GB_BUILD_WORKDIR` and
+                                    # set as the *initial CWD* of every step's
+                                    # `run` command — step authors can write
+                                    # outputs with relative paths and get implicit
+                                    # per-run isolation. The dir is created lazily
+                                    # before the first step runs and `rm -rf`'d at
+                                    # target-run teardown. Retries get a fresh dir.
 
 assetstores:
   - store_uri: space://assetstores/hf      # HuggingFace Hub asset store.
