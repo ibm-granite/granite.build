@@ -9,16 +9,14 @@ batching and HTTP delivery.
 import uuid as uuid_mod
 from typing import Any, Dict, List, Optional
 
+from gbserver.storage.sql.webhook_event_storage import create_webhook_event_storage
+from gbserver.storage.sql.webhook_subscription_storage import create_webhook_storage
+from gbserver.storage.webhook_event_storage import IWebhookEventStorage
+from gbserver.storage.webhook_subscription_storage import IWebhookStorage
 from gbserver.types.buildevent import BuildEvent, BuildEventStatusPayload
 from gbserver.utils.logger import get_logger
 from gbserver.webhooks.event_models import StoredWebhookEvent
-from gbserver.webhooks.event_storage import (
-    IWebhookEventStorage,
-    create_webhook_event_storage,
-)
 from gbserver.webhooks.models import StoredWebhookSubscription
-from gbserver.webhooks.sql_storage import create_webhook_storage
-from gbserver.webhooks.storage import IWebhookStorage
 
 logger = get_logger(__name__)
 

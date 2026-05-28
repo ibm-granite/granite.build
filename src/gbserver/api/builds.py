@@ -48,7 +48,7 @@ from gbserver.types.status import Status
 from gbserver.types.validation import GBValidationErrors
 from gbserver.utils.logger import get_logger
 from gbserver.webhooks.models import WEBHOOK_MIN_FREQUENCY, StoredWebhookSubscription
-from gbserver.webhooks.sql_storage import create_webhook_storage
+from gbserver.storage.sql.webhook_subscription_storage import create_webhook_storage
 from gbserver.webhooks.url_validator import WebhookURLError, validate_webhook_url
 
 logger = get_logger(__name__)

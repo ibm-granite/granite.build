@@ -10,7 +10,7 @@ class TestWebhookEventStorage:
 
     @classmethod
     def setup_class(cls):
-        from gbserver.webhooks.event_storage import SQLWebhookEventStorage
+        from gbserver.storage.sql.webhook_event_storage import SQLWebhookEventStorage
 
         cls.table_name = f"test_whevt_{uuid.uuid4().hex[:8]}"
         cls.storage = SQLWebhookEventStorage(table_name=cls.table_name)

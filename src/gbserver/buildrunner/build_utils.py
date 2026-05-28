@@ -32,7 +32,7 @@ from gbserver.types.constants import GBSERVER_WEBHOOKS_ENABLED
 from gbserver.types.metrics import Metric, MetricMetadata, MetricName
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
-from gbserver.webhooks.sql_storage import create_webhook_storage
+from gbserver.storage.sql.webhook_subscription_storage import create_webhook_storage
 
 logger = get_logger(__name__)
 

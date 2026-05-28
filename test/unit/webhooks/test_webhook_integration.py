@@ -186,7 +186,7 @@ class TestFinalizeDeactivation:
         mock_wh_storage.deactivate_for_build.assert_called_once_with("build-001")
 
     @patch("gbserver.buildwatcher.build_utils.get_admin_storage")
-    @patch("gbserver.webhooks.sql_storage.create_webhook_storage")
+    @patch("gbserver.storage.sql.webhook_subscription_storage.create_webhook_storage")
     @patch("gbserver.types.constants.GBSERVER_WEBHOOKS_ENABLED", False)
     def test_finalize_skips_when_webhooks_disabled(
         self, mock_create_storage, mock_admin
