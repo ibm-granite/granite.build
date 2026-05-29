@@ -197,6 +197,14 @@ automatically created via `_create_webhook_subscription()`:
 8. INSERTs the event into the `gb_webhook_events` table
 9. (Phase 2) Delivery worker reads pending events, batches by subscription, delivers via HTTP
 
+## Phase 2 — Planned Features
+
+- **Delivery worker** — separate process/CLI command (`gbserver webhook-worker`) that polls pending events and delivers via HTTP with HMAC signing and retry
+- **`username_filter`** — optional field on subscriptions to receive events only for builds submitted by a specific user (avoids needing per-build subscriptions when multiple users share a space)
+- **Delivery audit log** — `gb_webhook_deliveries` table tracking attempt history, status codes, response times
+- **Auto-suspend** — after N consecutive delivery failures, auto-suspend the subscription
+- **Log pattern scanning** — regex matching on build log lines to generate LOG_EVENTs
+
 ## Configuration
 
 | Variable | Default | Description |
