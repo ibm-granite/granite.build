@@ -78,9 +78,10 @@ environment_configs:
             cpus: "2+"
             memory: "4+"
           run: |
-            set -e
+            set -euo pipefail
+            trap 'EC=$?; echo "s3push failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
             echo 's3push start'
-            if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
               echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set (inject via K8s secret in pod_config)" >&2
               exit 1
             fi
@@ -108,9 +109,10 @@ environment_configs:
             cpus: "2+"
             memory: "4+"
           run: |
-            set -e
+            set -euo pipefail
+            trap 'EC=$?; echo "s3push failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
             echo 's3push start'
-            if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
               echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set (inject via K8s secret in pod_config)" >&2
               exit 1
             fi

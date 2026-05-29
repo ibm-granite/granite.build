@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+trap 'EC=$?; echo "${LLMB_LSF_JOB_NAME:-s3push}: s3push failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
+
 # ===============================================
 echo 's3push start'
 
@@ -14,12 +17,12 @@ echo "LLMB_LSF_OUTPUT_DIR ${LLMB_LSF_OUTPUT_DIR}"
 
 # --------------------------------------------------------------------------
 
-if [[ -z "$AWS_ACCESS_KEY_ID" ]]; then
+if [[ -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
     echo 'AWS_ACCESS_KEY_ID is not set'
     exit 1
 fi
 
-if [[ -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+if [[ -z "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
     echo 'AWS_SECRET_ACCESS_KEY is not set'
     exit 1
 fi
@@ -33,12 +36,6 @@ ENDPOINT_FLAG=""
 {%- endif %}
 
 aws s3 sync "{{ local_path }}" "{{ s3_uri }}" $ENDPOINT_FLAG
-
-MY_EXIT_CODE=$?
-if [[ "${MY_EXIT_CODE}" != '0' ]]; then
-    echo "s3push failed with exit code: ${MY_EXIT_CODE}"
-    exit 1
-fi
 
 echo "Pushed local path: {{ local_path }} to S3 URI: {{ s3_uri }}"
 

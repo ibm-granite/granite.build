@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+trap 'EC=$?; echo "${LLMB_LSF_JOB_NAME:-lhpush}: lhpush failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
+
 # ===============================================
 echo 'lhpush start'
 
@@ -19,7 +22,7 @@ export LAKEHOUSE_ENVIRONMENT='{{ lh_env }}'
 export LAKEHOUSE_REUSE_ASPERA_DAEMON=True
 {%- endif %}
 
-if [[ -z "$LAKEHOUSE_TOKEN" ]]; then
+if [[ -z "${LAKEHOUSE_TOKEN:-}" ]]; then
     echo 'LAKEHOUSE_TOKEN is not set'
     exit 1
 fi
@@ -183,12 +186,6 @@ echo 'Unsupported data type for lhpush: "{{ lh_type }}"'; exit 1
 {%- endif %}
 
 # --------------------------------------------------------------------------
-
-MY_EXIT_CODE=$?
-if [[ "${MY_EXIT_CODE}" != '0' ]]; then
-    echo "${LLMB_LSF_JOB_NAME}: dmf push failed, exit code: ${MY_EXIT_CODE}"
-    exit 1
-fi
 
 echo 'Pushed URI: {{ lhp.uri }} from path {{ lh_path }}'
 

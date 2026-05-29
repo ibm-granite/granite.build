@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+trap 'EC=$?; echo "${LLMB_LSF_JOB_NAME:-hfpush}: hfpush failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
+
 # ===============================================
 echo 'hfpush start'
 
@@ -18,7 +21,7 @@ HF_TYPE='{{ hfp.hf.type }}'
 HF_RESOURCE_GROUP_ID='{{ hfp.hf.resource_group_id }}'
 BINDING_ID='{{ hfp.binding_id }}'
 
-if [[ -z "$HF_TOKEN" ]]; then
+if [[ -z "${HF_TOKEN:-}" ]]; then
     echo 'HF_TOKEN is not set'
     exit 1
 fi
@@ -102,12 +105,6 @@ echo hf upload "${HF_REPO}" "${HF_SOURCE}" ${REVISION_FLAG} ${PRIVATE_FLAG} ${RE
 hf upload "${HF_REPO}" "${HF_SOURCE}" ${REVISION_FLAG} ${PRIVATE_FLAG} ${REPO_TYPE_FLAG}
 
 # --------------------------------------------------------------------------
-
-MY_EXIT_CODE=$?
-if [[ "${MY_EXIT_CODE}" != '0' ]]; then
-    echo "${LLMB_LSF_JOB_NAME}: hfpush failed, exit code: ${MY_EXIT_CODE}"
-    exit 1
-fi
 
 echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
 

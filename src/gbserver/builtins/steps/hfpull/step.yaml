@@ -57,6 +57,8 @@ environment_configs:
           setup: |
             pip install --no-cache-dir 'huggingface_hub[cli]'
           run: |
+            set -euo pipefail
+            trap 'EC=$?; echo "hfpull failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
             echo 'hfpull start'
 
             HF_DEST='{{ config.hfpull_config.path }}'
@@ -83,12 +85,6 @@ environment_configs:
             mkdir -p "${HF_DEST}"
             echo "Pulling HF URI: ${HF_URI} to path ${HF_DEST}"
             hf download "${HF_REPO}" --local-dir "${HF_DEST}" ${REVISION_FLAG} ${REPO_TYPE_FLAG}
-
-            MY_EXIT_CODE=$?
-            if [ "${MY_EXIT_CODE}" != "0" ]; then
-                echo "hfpull failed, exit code: ${MY_EXIT_CODE}" >&2
-                exit 1
-            fi
 
             echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
             echo 'hfpull end'

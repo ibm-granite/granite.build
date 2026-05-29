@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+trap 'EC=$?; echo "${LLMB_LSF_JOB_NAME:-hfpull}: hfpull failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
+
 # ===============================================
 echo 'hfpull start'
 
@@ -13,7 +16,7 @@ HF_REPO='{{ hfp.owner }}/{{ hfp.repo }}'
 HF_REVISION='{{ hfp.revision }}'
 HF_TYPE='{{ hfp.hf.type }}'
 
-if [[ -z "$HF_TOKEN" ]]; then
+if [[ -z "${HF_TOKEN:-}" ]]; then
     echo 'HF_TOKEN is not set'
     exit 1
 fi
@@ -57,12 +60,6 @@ echo hf download "${HF_REPO}" --local-dir "${HF_DEST}" ${REVISION_FLAG} ${REPO_T
 hf download "${HF_REPO}" --local-dir "${HF_DEST}" ${REVISION_FLAG} ${REPO_TYPE_FLAG}
 
 # --------------------------------------------------------------------------
-
-MY_EXIT_CODE=$?
-if [[ "${MY_EXIT_CODE}" != '0' ]]; then
-    echo "${LLMB_LSF_JOB_NAME}: hfpull failed, exit code: ${MY_EXIT_CODE}"
-    exit 1
-fi
 
 echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
 

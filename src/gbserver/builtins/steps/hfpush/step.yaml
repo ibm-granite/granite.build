@@ -84,6 +84,8 @@ environment_configs:
             pip install --no-cache-dir 'huggingface_hub[cli]'
             apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
           run: |
+            set -euo pipefail
+            trap 'EC=$?; echo "hfpush failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
             echo 'hfpush start'
 
             HF_SOURCE='{{ config.hfpush_config.path }}'
@@ -155,12 +157,6 @@ environment_configs:
             fi
 
             hf upload "${HF_REPO}" "${HF_SOURCE}" ${REVISION_FLAG} ${PRIVATE_FLAG} ${REPO_TYPE_FLAG}
-
-            MY_EXIT_CODE=$?
-            if [ "${MY_EXIT_CODE}" != "0" ]; then
-                echo "hfpush failed, exit code: ${MY_EXIT_CODE}" >&2
-                exit 1
-            fi
 
             echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
             echo 'hfpush end'

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+trap 'EC=$?; echo "s3pull failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
+
 # ===============================================
 echo 's3pull start'
 
@@ -11,12 +14,12 @@ echo 's3pull start'
 # --------------------------------------------------------------------------
 # Validate required environment variables
 
-if [[ -z "$AWS_ACCESS_KEY_ID" ]]; then
+if [[ -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
     echo 'AWS_ACCESS_KEY_ID is not set'
     exit 1
 fi
 
-if [[ -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+if [[ -z "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
     echo 'AWS_SECRET_ACCESS_KEY is not set'
     exit 1
 fi
@@ -33,12 +36,6 @@ ENDPOINT_FLAG=""
 {%- endif %}
 
 aws s3 sync "{{ s3_uri }}" "{{ local_path }}" $ENDPOINT_FLAG
-
-MY_EXIT_CODE=$?
-if [[ "${MY_EXIT_CODE}" != '0' ]]; then
-    echo "s3pull failed with exit code: ${MY_EXIT_CODE}"
-    exit 1
-fi
 
 echo "Pulled S3 URI: {{ s3_uri }} to local path: {{ local_path }}"
 
