@@ -24,8 +24,9 @@ config:
     total_memory_per_node: 10Gi
 
 # Bare-node variant of hfpush for Skypilot+slurm clusters that lack the Pyxis
-# SPANK plugin.  The launcher host must have python/pip and curl available;
-# pip installs huggingface_hub[cli] in setup.
+# SPANK plugin.  The launcher host must have python/pip available; pip installs
+# huggingface_hub[cli] in setup, and the run script uses huggingface_hub's
+# Python API for the create_repo call (no curl dependency on the host).
 environment_configs:
   Skypilot:
     default_launcher: hfpush
@@ -48,11 +49,11 @@ environment_configs:
             HF_URI='{{ config.hfpush_config.uri }}'
             HF_OWNER='{{ config.hfpush_config.owner }}'
             HF_REPO_NAME='{{ config.hfpush_config.repo }}'
-            HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"
+            export HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"
             HF_REVISION='{{ config.hfpush_config.revision }}'
-            HF_PRIVATE='{{ config.hfpush_config.private }}'
-            HF_TYPE='{{ config.hfpush_config.hf.type }}'
-            HF_RESOURCE_GROUP_ID='{{ config.hfpush_config.hf.resource_group_id }}'
+            export HF_PRIVATE='{{ config.hfpush_config.private }}'
+            export HF_TYPE='{{ config.hfpush_config.hf.type }}'
+            export HF_RESOURCE_GROUP_ID='{{ config.hfpush_config.hf.resource_group_id }}'
             BINDING_ID='{{ config.hfpush_config.binding_id }}'
 
             if [ -z "${HF_TOKEN:-}" ]; then
@@ -60,38 +61,22 @@ environment_configs:
                 exit 1
             fi
 
-            HF_VISIBILITY="public"
-            if [ "${HF_PRIVATE}" = "True" ]; then
-                HF_VISIBILITY="private"
-            fi
-
-            # Treat both "" and the literal "None" (jinja-rendered Python None)
-            # as "no resource group" — callers whose resource_group_id is unset
-            # otherwise produce a literal "None" string and HF rejects it.
-            if [ -n "${HF_RESOURCE_GROUP_ID}" ] && [ "${HF_RESOURCE_GROUP_ID}" != "None" ]; then
-                CREATE_BODY=$(printf '{"name":"%s","organization":"%s","type":"%s","visibility":"%s","resourceGroupId":"%s"}' \
-                    "${HF_REPO_NAME}" "${HF_OWNER}" "${HF_TYPE}" "${HF_VISIBILITY}" "${HF_RESOURCE_GROUP_ID}")
-            else
-                CREATE_BODY=$(printf '{"name":"%s","organization":"%s","type":"%s","visibility":"%s"}' \
-                    "${HF_REPO_NAME}" "${HF_OWNER}" "${HF_TYPE}" "${HF_VISIBILITY}")
-            fi
-
+            # Bare-node hosts may not have curl; use the already-installed
+            # huggingface_hub Python API instead. Single-quoted heredoc
+            # disables bash expansion — python reads everything from env.
             echo "Creating HF repo ${HF_REPO} (resource_group_id=${HF_RESOURCE_GROUP_ID:-<none>})"
-            CREATE_RESP=$(mktemp)
-            HTTP_CODE=$(curl -sS -o "${CREATE_RESP}" -w "%{http_code}" \
-                -X POST \
-                -H "Authorization: Bearer ${HF_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -d "${CREATE_BODY}" \
-                https://huggingface.co/api/repos/create)
-
-            if [ "${HTTP_CODE}" != "200" ] && [ "${HTTP_CODE}" != "409" ]; then
-                echo "HF create_repo failed: HTTP ${HTTP_CODE}"
-                cat "${CREATE_RESP}"
-                rm -f "${CREATE_RESP}"
-                exit 1
-            fi
-            rm -f "${CREATE_RESP}"
+            python - <<'PY'
+            import os
+            from huggingface_hub import HfApi
+            rg = os.environ.get("HF_RESOURCE_GROUP_ID") or ""
+            HfApi(token=os.environ["HF_TOKEN"]).create_repo(
+                repo_id=os.environ["HF_REPO"],
+                repo_type=os.environ["HF_TYPE"] or "model",
+                private=os.environ.get("HF_PRIVATE", "True") == "True",
+                resource_group_id=(rg if rg and rg != "None" else None),
+                exist_ok=True,
+            )
+            PY
 
             echo "Pushing HF URI: ${HF_URI} from path ${HF_SOURCE}"
 
