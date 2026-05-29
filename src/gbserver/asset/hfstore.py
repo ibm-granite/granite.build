@@ -79,7 +79,7 @@ class Hfstore(Assetstore):
         assert isinstance(uri, HfURI)
         return uri.get_artifact_type()
 
-    def _resolve_token(self, uri) -> Optional[str]:
+    def resolve_token(self, uri) -> Optional[str]:
         metadata = self.get_metadata(uri)
         token_key = metadata["token_secretname"]
 

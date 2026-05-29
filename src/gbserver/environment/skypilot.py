@@ -610,7 +610,7 @@ class Skypilot(Environment):
             hfuri=hfuri,
             binding_path=str(binding_path),
         )
-        hf_token = assetstore._resolve_token(hfuri) or ""
+        hf_token = assetstore.resolve_token(hfuri) or ""
 
         hfpull_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI
         if (
@@ -687,7 +687,7 @@ class Skypilot(Environment):
             resource_group_id: Optional[str] = hf_resource_group_id
         else:
             resource_group_id = hfuri.resolve_resource_group_id(
-                token=assetstore._resolve_token(hfuri),
+                token=assetstore.resolve_token(hfuri),
                 resource_group_name=hf_resource_group_name,
                 space_name=space_name,
             )
@@ -712,7 +712,7 @@ class Skypilot(Environment):
         ):
             hfpush_config["hf"].update(output_config.store_push.config["hf"])
 
-        hf_token = assetstore._resolve_token(hfuri) or ""
+        hf_token = assetstore.resolve_token(hfuri) or ""
 
         hfpush_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI
         if (

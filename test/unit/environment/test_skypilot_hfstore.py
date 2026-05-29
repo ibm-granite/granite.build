@@ -42,7 +42,7 @@ def _hfstore_mock(token: str = "tok-abc"):
     from gbserver.asset.hfstore import Hfstore
 
     store = MagicMock(spec=Hfstore)
-    store._resolve_token.return_value = token
+    store.resolve_token.return_value = token
     return store
 
 
