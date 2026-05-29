@@ -455,6 +455,8 @@ puts in `envs`:
 | `GB_SKYPILOT_CLUSTER_NAME` | `gb-<launch_id_prefix>` — the actual SkyPilot cluster name |
 | `GB_TARGETRUN_ID`          | The enclosing target run id, when present         |
 | `GB_BUILD_ID`              | The build id, when present                        |
+| `GB_SHARED_WORKDIR`        | The env-level `shared_workdir` path (when set on the environment.yaml) — same path on every worker, suitable for cross-step state |
+| `GB_BUILD_WORKDIR`         | Per-target-run subdir `${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/` (when `shared_workdir` is set). Created lazily, also set as the **initial CWD** of the run script, and `rm -rf`'d on target-run teardown. Retries get a fresh dir. |
 | `<env secrets>`            | All secrets resolved from the env's `secret_refs` |
 
 **Monitoring & artifact events: timing caveat**
