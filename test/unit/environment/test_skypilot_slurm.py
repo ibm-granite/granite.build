@@ -355,18 +355,13 @@ class TestSkypilotRetry:
         assert stashed["retry_enabled"] is True
         assert stashed["retry_transparently"] is False
 
-    def test_get_default_retry_strategies_returns_two_classes(self, slurm_env):
-        """Skypilot ships NCCLError + FileNotFound as defaults."""
-        from gbserver.resilience.strategies.file_not_found import (
-            FileNotFoundRetryStrategy,
-        )
-        from gbserver.resilience.strategies.nccl_error import NCCLErrorRetryStrategy
+    def test_get_default_retry_strategies_returns_any_failure(self, slurm_env):
+        """Skypilot ships AnyFailureRetryStrategy as the sole default."""
+        from gbserver.resilience.strategies.any_failure import AnyFailureRetryStrategy
 
         strategies = slurm_env._get_default_retry_strategies()
-        types = [type(s) for s in strategies]
-        assert NCCLErrorRetryStrategy in types
-        assert FileNotFoundRetryStrategy in types
-        assert len(strategies) == 2
+        assert len(strategies) == 1
+        assert isinstance(strategies[0], AnyFailureRetryStrategy)
 
     @pytest.mark.asyncio
     async def test_retry_workload_cleans_relaunches_and_signals(self, slurm_env):

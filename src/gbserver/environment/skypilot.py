@@ -690,18 +690,21 @@ class Skypilot(Environment):
     def _get_default_retry_strategies(self: Self) -> List["RetryStrategy"]:
         """Return Skypilot's default retry strategies.
 
-        Both strategies inspect ``BuildEvent`` payload text and have
-        ``accepts_object_types = False`` — they fire only when the user's
-        log-parser config emits matching ``MESSAGE_EVENT`` payloads, so
-        they're safe to ship on by default.
+        Skypilot ships ``AnyFailureRetryStrategy`` as the sole default —
+        any failure event (a ``WORKLOAD_STATUS_EVENT`` with
+        ``status=FAILED`` or a ``MESSAGE_EVENT`` whose body reports
+        ``state=Failed``) triggers a retry, up to ``max_retries``.
+        Cause-specific strategies (NCCL, FileNotFound, …) are still
+        opt-in via ``retry.strategies`` in environment.yaml; the broad
+        default fits Skypilot's typical failure modes (cloud capacity
+        flakes, transient distributed-training crashes, preempted spot
+        VMs) where finer signals are rarely available without custom
+        log parsers.
         """
-        # Local imports to avoid circular dependencies at module load.
-        from gbserver.resilience.strategies.file_not_found import (
-            FileNotFoundRetryStrategy,
-        )
-        from gbserver.resilience.strategies.nccl_error import NCCLErrorRetryStrategy
+        # Local import to avoid circular dependencies at module load.
+        from gbserver.resilience.strategies.any_failure import AnyFailureRetryStrategy
 
-        return [NCCLErrorRetryStrategy(), FileNotFoundRetryStrategy()]
+        return [AnyFailureRetryStrategy()]
 
     def _get_retry_test_scenario(self: Self) -> Optional[str]:
         """Scenario name used by ``_inject_event_to_trigger_retry_when_testing``.
@@ -709,9 +712,10 @@ class Skypilot(Environment):
         Returning a non-None value lets integration tests with
         ``simulate_step_failure: true`` (env var
         ``GBTEST_SIMULATE_FAILURE_SCENARIO=true``) inject a synthetic
-        failure event matching one of the default strategies, exercising
-        the full retry path without an actual workload crash. ``nccl_error``
-        is paired with the default ``NCCLErrorRetryStrategy``.
+        failure event, exercising the full retry path without an
+        actual workload crash. Any scenario works for the default
+        ``AnyFailureRetryStrategy`` since every canned payload in
+        ``simulate.py`` is a ``MESSAGE_EVENT`` with ``state="Failed"``.
         """
         return "nccl_error"
 
