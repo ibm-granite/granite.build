@@ -4,6 +4,8 @@
 
 Build orchestration for LLM pipelines. Define multi-step model workflows in YAML — download, fine-tune, evaluate, and deploy — and run them locally or on cloud infrastructure.
 
+_This repository is currently in alpha. The code and documentation are under active development and may change frequently as we work to improve usability and reliability. Contributions and feedback are welcome, but please be aware that breaking changes may occur._
+
 ## What is Granite.Build?
 
 Granite.Build orchestrates LLM build pipelines. You describe your workflow in a `build.yaml` file — which models to download, how to fine-tune them, what evaluations to run — and Granite.Build executes each step in the environment you choose: a local Docker container, a Kubernetes cluster, a cloud GPU instance, or a plain bash process on your laptop.
