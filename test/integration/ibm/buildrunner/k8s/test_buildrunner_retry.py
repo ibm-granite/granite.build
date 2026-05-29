@@ -16,7 +16,7 @@ from libgbtest.constants import (
     extended_testing_only,
 )
 
-from gbserver.buildwatcher.buildrunner import BuildRunner
+from gbserver.buildrunner.buildrunner import BuildRunner
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status

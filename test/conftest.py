@@ -522,9 +522,9 @@ def _mock_github_api(request):
     mock_cls = MagicMock(return_value=instance)
     with (
         patch("gbserver.github.myghapi.MyGHApi", mock_cls),
-        patch("gbserver.buildwatcher.build_setup.MyGHApi", mock_cls),
-        patch("gbserver.buildwatcher.buildrunner.MyGHApi", mock_cls),
-        patch("gbserver.buildwatcher.buildlogger.MyGHApi", mock_cls),
+        patch("gbserver.buildrunner.build_setup.MyGHApi", mock_cls),
+        patch("gbserver.buildrunner.buildrunner.MyGHApi", mock_cls),
+        patch("gbserver.buildrunner.buildlogger.MyGHApi", mock_cls),
     ):
         yield instance
 
@@ -684,7 +684,7 @@ def _mock_lineage(request):
         patch("gbserver.lineage.jobstats.get_lineage_store", return_value=mock_store),
         patch("gbserver.api.artifacts.get_lineage_store", return_value=mock_store),
         patch(
-            "gbserver.buildwatcher.buildrunner.get_lineage_store",
+            "gbserver.buildrunner.buildrunner.get_lineage_store",
             return_value=mock_store,
         ),
         patch(

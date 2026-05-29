@@ -32,12 +32,12 @@ import yaml
 from requests import Timeout
 from tqdm import tqdm
 
-from gbserver.buildwatcher.buildlogger import (
+from gbserver.buildrunner.buildlogger import (
     BuildEventMessageLogger,
     BuildMultiMessageLogger,
     BuildPRLogger,
 )
-from gbserver.buildwatcher.validators.check_build_artifacts import (
+from gbserver.buildrunner.validators.check_build_artifacts import (
     check_build_input_artifacts_registered,
 )
 from gbserver.github.myghapi import MyGHApi

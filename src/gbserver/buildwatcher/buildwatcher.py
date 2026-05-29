@@ -29,14 +29,14 @@ from typing import Dict, List, Optional, Self, Tuple, cast
 from git import Repo
 from tqdm import tqdm
 
-from gbserver.buildwatcher.abstractbuildrunner import AbstractBuildRunner
-from gbserver.buildwatcher.build_setup import BuildSetup
-from gbserver.buildwatcher.build_utils import (
+from gbserver.buildrunner.abstractbuildrunner import AbstractBuildRunner
+from gbserver.buildrunner.build_setup import BuildSetup
+from gbserver.buildrunner.build_utils import (
     push_failed_status_update_metric,
     update_stored_build_status,
 )
-from gbserver.buildwatcher.buildrunner import BuildRunner
-from gbserver.buildwatcher.buildrunnerprocess import BuildRunnerProcess
+from gbserver.buildrunner.buildrunner import BuildRunner
+from gbserver.buildrunner.buildrunnerprocess import BuildRunnerProcess
 from gbserver.metrics.metrics_client import (
     push_metrics,
 )
@@ -762,7 +762,7 @@ class BuildWatcher:
                 "Build runner type %s not recognized. Using job type", runner_type
             )
         self.__warn_space_uri_not_supported(runner_type)
-        from gbserver.buildwatcher.buildrunnerjob import BuildRunnerJob
+        from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
 
         return BuildRunnerJob(
             build=build,

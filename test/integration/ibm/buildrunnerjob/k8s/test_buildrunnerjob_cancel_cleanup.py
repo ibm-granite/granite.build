@@ -31,7 +31,7 @@ class TestBuildRunnerJobCancelCleanup:
     @pytest.mark.asyncio
     async def test_cancel_deletes_job_and_pod(self):
         """When is_stop_requested exits the monitoring loop, __delete_job_and_pod_with_retry must be called."""
-        from gbserver.buildwatcher.buildrunnerjob import BuildRunnerJob
+        from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
 
         # Create a mock StoredBuild
         stored_build = MagicMock()
@@ -78,11 +78,11 @@ class TestBuildRunnerJobCancelCleanup:
 
             with (
                 patch(
-                    "gbserver.buildwatcher.buildrunnerjob.get_admin_storage",
+                    "gbserver.buildrunnerjob.buildrunnerjob.get_admin_storage",
                     return_value=mock_admin_storage,
                 ),
                 patch(
-                    "gbserver.buildwatcher.buildrunnerjob.AtomicApiClient"
+                    "gbserver.buildrunnerjob.buildrunnerjob.AtomicApiClient"
                 ) as mock_api_cls,
             ):
                 # Set up the async context manager for the API client
@@ -92,7 +92,7 @@ class TestBuildRunnerJobCancelCleanup:
                 mock_api.__aexit__ = AsyncMock(return_value=False)
 
                 with patch(
-                    "gbserver.buildwatcher.buildrunnerjob.client.BatchV1Api",
+                    "gbserver.buildrunnerjob.buildrunnerjob.client.BatchV1Api",
                     return_value=mock_batchv1,
                 ):
                     await runner._BuildRunnerJob__start_job()

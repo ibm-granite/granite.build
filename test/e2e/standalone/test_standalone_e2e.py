@@ -126,7 +126,7 @@ class TestStandaloneE2E:
             )
 
             # Run via BuildRunner with space_uri (no PR creation, no GitHub token needed)
-            from gbserver.buildwatcher.buildrunner import BuildRunner
+            from gbserver.buildrunner.buildrunner import BuildRunner
 
             runner = BuildRunner(
                 build=stored_build,

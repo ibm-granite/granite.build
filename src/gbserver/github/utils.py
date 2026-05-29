@@ -18,7 +18,7 @@
 Utils for posting comments to PRs
 """
 
-from gbserver.buildwatcher.buildlogger import (
+from gbserver.buildrunner.buildlogger import (
     AbstractBuildLogger,
 )
 from gbserver.storage.stored_build import StoredBuild
