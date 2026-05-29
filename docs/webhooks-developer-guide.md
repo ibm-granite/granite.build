@@ -204,6 +204,10 @@ automatically created via `_create_webhook_subscription()`:
 - **Delivery audit log** — `gb_webhook_deliveries` table tracking attempt history, status codes, response times
 - **Auto-suspend** — after N consecutive delivery failures, auto-suspend the subscription
 - **Log pattern scanning** — regex matching on build log lines to generate LOG_EVENTs
+- **Non-blocking persistence** — current Phase 1 design does synchronous DB INSERTs inline with the build event loop, adding load to the shared build DB (one INSERT per subscription per event). At scale this can slow build event processing. Options:
+  - Batch INSERTs: buffer N events in memory, flush in one multi-row INSERT
+  - Async queue: background thread handles INSERTs, build never blocks (trade-off: events in queue lost on crash)
+  - Message queue: write to RabbitMQ (existing `messaging/` infra) instead of DB, let delivery worker persist
 
 ## Configuration
 
