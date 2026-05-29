@@ -3,10 +3,10 @@
 #
 # This script:
 #   1. Generates an SSH key pair for passwordless access to the login node
-#   2. Starts the Docker SLURM cluster (slurmctld, c1, c2, mysql, slurmdbd)
+#   2. Starts the Docker SLURM cluster (slurmctld, c1..c4, mysql, slurmdbd)
 #   3. Verifies SSH connectivity to slurmctld
 #   4. Configures ~/.sky/config.yaml so SkyPilot discovers the SLURM cluster
-#   5. Verifies the cluster is healthy (sinfo shows 2 compute nodes)
+#   5. Verifies the cluster is healthy (sinfo shows 4 compute nodes)
 #
 # Usage:
 #   bash scripts/slurm/setup-slurm.sh
@@ -27,6 +27,15 @@ SSH_KEY_PATH="${HOME}/.ssh/slurm_docker_key"
 log()  { printf "\033[32m[SLURM]\033[0m %s\n" "$*"; }
 warn() { printf "\033[33m[SLURM]\033[0m %s\n" "$*" >&2; }
 err()  { printf "\033[31m[SLURM]\033[0m %s\n" "$*" >&2; exit 1; }
+
+# Portable in-place sed (BSD on macOS requires the empty-string suffix).
+sed_i() {
+    if sed --version 2>/dev/null | grep -q GNU; then
+        sed -i "$@"
+    else
+        sed -i '' "$@"
+    fi
+}
 
 detect_docker() {
     if [ -n "${DOCKER:-}" ]; then
@@ -69,14 +78,18 @@ fi
 COMPOSE_FILES="-f $SCRIPT_DIR/docker-compose.yml"
 HAS_GPU=false
 
+# Materialize a fresh slurm.conf from the tracked template each run.
+# All sed/awk mutations below operate on this generated (gitignored) file.
+cp "$SCRIPT_DIR/slurm.conf.template" "$SCRIPT_DIR/slurm.conf"
+
 if [ "${SLURM_NO_GPU:-0}" = "1" ] || ! nvidia-smi -L >/dev/null 2>&1; then
     log "No GPU detected (or SLURM_NO_GPU=1) — CPU-only cluster."
     # CPU-only: empty gres.conf, no GPU in node definitions
     cat > "$SCRIPT_DIR/gres.conf" <<'GRESEOF'
 # No GPU resources available
 GRESEOF
-    sed -i 's/^NodeName=c1.*/NodeName=c1 CPUs=2 RealMemory=1024 State=UNKNOWN/' "$SCRIPT_DIR/slurm.conf"
-    sed -i '/^GresTypes=/d' "$SCRIPT_DIR/slurm.conf"
+    sed_i 's/^NodeName=c1.*/NodeName=c1 CPUs=2 RealMemory=1024 State=UNKNOWN/' "$SCRIPT_DIR/slurm.conf"
+    sed_i '/^GresTypes=/d' "$SCRIPT_DIR/slurm.conf"
 else
     HAS_GPU=true
     log "GPU detected — enabling GPU passthrough on c1."
@@ -85,9 +98,12 @@ else
     cat > "$SCRIPT_DIR/gres.conf" <<'GRESEOF'
 AutoDetect=nvidia
 GRESEOF
-    sed -i 's/^NodeName=c1.*/NodeName=c1 CPUs=2 RealMemory=1024 Gres=gpu:1 State=UNKNOWN/' "$SCRIPT_DIR/slurm.conf"
+    sed_i 's/^NodeName=c1.*/NodeName=c1 CPUs=2 RealMemory=1024 Gres=gpu:1 State=UNKNOWN/' "$SCRIPT_DIR/slurm.conf"
     if ! grep -q '^GresTypes=' "$SCRIPT_DIR/slurm.conf"; then
-        sed -i '/^# ---- Compute nodes/i GresTypes=gpu\n' "$SCRIPT_DIR/slurm.conf"
+        # Portable insert-before (BSD sed's `i\` syntax differs from GNU); use awk.
+        awk '/^# ---- Compute nodes/ && !x { print "GresTypes=gpu\n"; x=1 } { print }' \
+            "$SCRIPT_DIR/slurm.conf" > "$SCRIPT_DIR/slurm.conf.tmp" \
+            && mv "$SCRIPT_DIR/slurm.conf.tmp" "$SCRIPT_DIR/slurm.conf"
     fi
 fi
 
@@ -105,7 +121,7 @@ timeout=240
 elapsed=0
 while true; do
     node_count=$($DOCKER_CMD exec slurm-slurmctld sinfo --noheader -N 2>/dev/null | wc -l || echo 0)
-    if [ "$node_count" -ge 2 ]; then
+    if [ "$node_count" -ge 4 ]; then
         break
     fi
     sleep 5
@@ -115,11 +131,11 @@ while true; do
         $COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" --project-name slurm-dev ps
         warn "slurmctld logs:"
         $DOCKER_CMD logs slurm-slurmctld 2>&1 | tail -20
-        warn "c1 logs:"
-        $DOCKER_CMD logs slurm-c1 2>&1 | tail -10
-        warn "c2 logs:"
-        $DOCKER_CMD logs slurm-c2 2>&1 | tail -10
-        err "Cluster not ready. Expected 2 compute nodes but found $node_count."
+        for node in slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
+            warn "${node} logs:"
+            $DOCKER_CMD logs "$node" 2>&1 | tail -10
+        done
+        err "Cluster not ready. Expected 4 compute nodes but found $node_count."
     fi
 done
 log "SLURM cluster is ready with $node_count compute nodes."
@@ -129,7 +145,7 @@ log "SLURM cluster is ready with $node_count compute nodes."
 # for running setup commands after SLURM job allocation.
 
 log "Installing rsync in SLURM containers..."
-for node in slurm-slurmctld slurm-c1 slurm-c2; do
+for node in slurm-slurmctld slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
     if ! $DOCKER_CMD exec "$node" which rsync &>/dev/null; then
         $DOCKER_CMD exec "$node" dnf install -y -q rsync 2>/dev/null
     fi
@@ -137,7 +153,7 @@ done
 log "rsync installed."
 
 log "Starting sshd on compute nodes..."
-for node in slurm-c1 slurm-c2; do
+for node in slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
     $DOCKER_CMD exec "$node" bash -c '
         ssh-keygen -A 2>/dev/null
         mkdir -p /root/.ssh && chmod 700 /root/.ssh
@@ -191,7 +207,7 @@ mkdir -p "$(dirname "$SLURM_SSH_CONFIG")"
 touch "$SLURM_SSH_CONFIG"
 
 # Remove existing slurm-docker block if present
-sed -i "/$MARKER_BEGIN/,/$MARKER_END/d" "$SLURM_SSH_CONFIG"
+sed_i "/$MARKER_BEGIN/,/$MARKER_END/d" "$SLURM_SSH_CONFIG"
 
 # Append the managed block
 cat >> "$SLURM_SSH_CONFIG" <<SSHEOF
@@ -215,8 +231,8 @@ NODE_COUNT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -i "$SSH_KEY_PATH" -p "$SLURM_SSH_PORT" root@localhost \
     sinfo --noheader -N 2>/dev/null | wc -l)
 
-if [ "$NODE_COUNT" -lt 2 ]; then
-    warn "Expected 2 compute nodes but found $NODE_COUNT. Cluster may still be starting."
+if [ "$NODE_COUNT" -lt 4 ]; then
+    warn "Expected 4 compute nodes but found $NODE_COUNT. Cluster may still be starting."
     warn "Run: ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@localhost sinfo"
 else
     log "SLURM cluster is ready: $NODE_COUNT compute nodes."

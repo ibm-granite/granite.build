@@ -2248,7 +2248,7 @@ class K8s(Environment):
             resource_group_id: Optional[str] = hf_resource_group_id
         else:
             resource_group_id = hfuri.resolve_resource_group_id(
-                token=assetstore._resolve_token(hfuri),
+                token=assetstore.resolve_token(hfuri),
                 resource_group_name=hf_resource_group_name,
                 space_name=space_name,
             )

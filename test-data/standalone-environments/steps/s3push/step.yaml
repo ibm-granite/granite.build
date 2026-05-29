@@ -20,7 +20,8 @@ environment_configs:
           setup: |
             pip install boto3
           run: |
-            set -e
+            set -euo pipefail
+            trap 'EC=$?; echo "s3push failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
             echo 's3push start'
             python3 -c "
             import boto3, os, sys

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+set -euo pipefail
+trap 'EC=$?; rm -f "${tmpconf:-}"; if [[ $EC -ne 0 ]]; then echo "${LLMB_LSF_JOB_NAME:-cosrclone}: cosrclone failed at line $LINENO, exit code: $EC" >&2; fi; exit $EC' EXIT
+
 # ===============================================
 echo 'cosrclone start'
 
@@ -16,8 +20,8 @@ cat <<EOF > ${tmpconf}
 [{{ bucket_name }}]
 type = s3
 provider = IBMCOS
-access_key_id = $COS_ACCESS_KEY_ID
-secret_access_key = $COS_SECRET_ACCESS_KEY
+access_key_id = ${COS_ACCESS_KEY_ID:-}
+secret_access_key = ${COS_SECRET_ACCESS_KEY:-}
 region = {{ cfg.cos.config.cos_region | default("us-east") }}
 endpoint = {{ cfg.cos.config.cos_endpoint | default("s3.us-east.cloud-object-storage.appdomain.cloud") }}
 EOF
@@ -29,15 +33,6 @@ else
     echo "Pulling from COS to cluster: {{ bucket_name }}:{{ cos_uri_bucket_path }} -> {{ path }}"
     rclone copy -P "{{ bucket_name }}:{{ cos_uri_bucket_path }}" "{{ path }}" --config "${tmpconf}"
 fi
-
-MY_EXIT_CODE=$?
-rm -f "${tmpconf}"
-
-if [[ "${MY_EXIT_CODE}" != "0" ]]; then
-    echo "rclone failed, exit code: ${MY_EXIT_CODE}"
-    exit 1
-fi
-
 
 if [[ "{{ is_push | lower }}" == "true" ]]; then
     echo 'Pushed URI: {{ cos_uri_bucket_path }} for binding {{ binding_id }}'

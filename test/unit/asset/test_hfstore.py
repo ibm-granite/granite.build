@@ -44,3 +44,49 @@ class TestHfstoreRelpath:
         uri = HfURI.from_parts(owner="org", repo="my-dataset", hf_type=HfType.DATASET)
         store = Hfstore(uri)
         assert store.get_relpath(uri) == "org/my-dataset/main"
+
+
+class TestHfstoreStepConfigEndpoint:
+    """The step config dicts include an `endpoint` key derived from the
+    URI host so step.yaml jinja templates and bash exports can pick it
+    up uniformly."""
+
+    def test_hfpush_step_config_default_host(self):
+        uri = HfURI.from_parts(owner="org", repo="my-model", hf_type=HfType.MODEL)
+        cfg = Hfstore.build_hfpush_step_config(
+            hfuri=uri,
+            binding_path="/tmp/x",
+            binding_id="b-1",
+            hf_private=True,
+        )
+        assert cfg["endpoint"] == "https://huggingface.co"
+
+    def test_hfpush_step_config_custom_host(self):
+        uri = HfURI.from_parts(
+            owner="org",
+            repo="my-model",
+            hf_type=HfType.MODEL,
+            host="my-enterprise.example.com",
+        )
+        cfg = Hfstore.build_hfpush_step_config(
+            hfuri=uri,
+            binding_path="/tmp/x",
+            binding_id="b-1",
+            hf_private=True,
+        )
+        assert cfg["endpoint"] == "https://my-enterprise.example.com"
+
+    def test_hfpull_step_config_default_host(self):
+        uri = HfURI.from_parts(owner="org", repo="my-model", hf_type=HfType.MODEL)
+        cfg = Hfstore.build_hfpull_step_config(hfuri=uri, binding_path="/tmp/x")
+        assert cfg["endpoint"] == "https://huggingface.co"
+
+    def test_hfpull_step_config_custom_host(self):
+        uri = HfURI.from_parts(
+            owner="org",
+            repo="my-model",
+            hf_type=HfType.MODEL,
+            host="my-enterprise.example.com",
+        )
+        cfg = Hfstore.build_hfpull_step_config(hfuri=uri, binding_path="/tmp/x")
+        assert cfg["endpoint"] == "https://my-enterprise.example.com"

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+trap 'EC=$?; echo "${LLMB_LSF_JOB_NAME:-hfpush}: hfpush failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
+
 # ===============================================
 echo 'hfpush start'
 
@@ -9,6 +12,7 @@ echo 'hfpush start'
 
 HF_SOURCE='{{ hfp.path }}'
 HF_URI='{{ hfp.uri }}'
+export HF_ENDPOINT='{{ hfp.endpoint }}'
 HF_OWNER='{{ hfp.owner }}'
 HF_REPO_NAME='{{ hfp.repo }}'
 HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"
@@ -18,7 +22,7 @@ HF_TYPE='{{ hfp.hf.type }}'
 HF_RESOURCE_GROUP_ID='{{ hfp.hf.resource_group_id }}'
 BINDING_ID='{{ hfp.binding_id }}'
 
-if [[ -z "$HF_TOKEN" ]]; then
+if [[ -z "${HF_TOKEN:-}" ]]; then
     echo 'HF_TOKEN is not set'
     exit 1
 fi
@@ -69,7 +73,7 @@ HTTP_CODE=$(curl -sS -o "${CREATE_RESP}" -w "%{http_code}" \
     -H "Authorization: Bearer ${HF_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "${CREATE_BODY}" \
-    https://huggingface.co/api/repos/create)
+    "${HF_ENDPOINT}/api/repos/create")
 
 if [[ "${HTTP_CODE}" != "200" && "${HTTP_CODE}" != "409" ]]; then
     echo "HF create_repo failed: HTTP ${HTTP_CODE}"
@@ -102,12 +106,6 @@ echo hf upload "${HF_REPO}" "${HF_SOURCE}" ${REVISION_FLAG} ${PRIVATE_FLAG} ${RE
 hf upload "${HF_REPO}" "${HF_SOURCE}" ${REVISION_FLAG} ${PRIVATE_FLAG} ${REPO_TYPE_FLAG}
 
 # --------------------------------------------------------------------------
-
-MY_EXIT_CODE=$?
-if [[ "${MY_EXIT_CODE}" != '0' ]]; then
-    echo "${LLMB_LSF_JOB_NAME}: hfpush failed, exit code: ${MY_EXIT_CODE}"
-    exit 1
-fi
 
 echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
 

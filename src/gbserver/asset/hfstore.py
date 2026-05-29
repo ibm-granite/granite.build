@@ -79,7 +79,7 @@ class Hfstore(Assetstore):
         assert isinstance(uri, HfURI)
         return uri.get_artifact_type()
 
-    def _resolve_token(self, uri) -> Optional[str]:
+    def resolve_token(self, uri) -> Optional[str]:
         metadata = self.get_metadata(uri)
         token_key = metadata["token_secretname"]
 
@@ -129,6 +129,7 @@ class Hfstore(Assetstore):
         return {
             "path": binding_path,
             "uri": str(hfuri),
+            "endpoint": f"https://{hfuri.get_host()}",
             "owner": hfuri.get_owner(),
             "repo": hfuri.get_repo(),
             "revision": hfuri.get_revision(),
@@ -165,6 +166,7 @@ class Hfstore(Assetstore):
         return {
             "path": binding_path,
             "uri": str(hfuri),
+            "endpoint": f"https://{hfuri.get_host()}",
             "owner": hfuri.get_owner(),
             "repo": hfuri.get_repo(),
             "revision": hfuri.get_revision(),

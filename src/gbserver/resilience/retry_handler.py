@@ -83,6 +83,7 @@ def build_retry_strategies_from_config(
         ]
     """
     from gbserver.resilience.strategies import (
+        AnyFailureRetryStrategy,
         AsperaRetryStrategy,
         FileNotFoundRetryStrategy,
         LsfTransientErrorRetryStrategy,
@@ -116,6 +117,7 @@ def build_retry_strategies_from_config(
         "FileNotFound": FileNotFoundRetryStrategy,
         "LsfTransientError": LsfTransientErrorRetryStrategy,
         "AsperaFailure": AsperaRetryStrategy,
+        "AnyFailure": AnyFailureRetryStrategy,
     }
 
     for strategy_config in config:

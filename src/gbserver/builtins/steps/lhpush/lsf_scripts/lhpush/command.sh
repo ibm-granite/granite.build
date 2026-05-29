@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+trap 'EC=$?; echo "${LLMB_LSF_JOB_NAME:-lhpush}: lhpush failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
+
 # ===============================================
 echo 'lhpush start'
 
@@ -19,7 +22,7 @@ export LAKEHOUSE_ENVIRONMENT='{{ lh_env }}'
 export LAKEHOUSE_REUSE_ASPERA_DAEMON=True
 {%- endif %}
 
-if [[ -z "$LAKEHOUSE_TOKEN" ]]; then
+if [[ -z "${LAKEHOUSE_TOKEN:-}" ]]; then
     echo 'LAKEHOUSE_TOKEN is not set'
     exit 1
 fi
@@ -104,7 +107,11 @@ echo 'Pushing a full checkpoint...'
 path="{{ lh_path }}"; echo "Finding model_size from $path";
 model_size=$(if ls $path/*.safetensors >/dev/null 2>&1; then python -c "import sys,glob,torch;from safetensors.torch import load_file;size=sum([sum([torch.numel(tensor) for _,tensor in list(load_file(model_file).items())]) for model_file in glob.glob(f'{sys.argv[1]}/*.safetensors')]);print(f'{size/1000**3:.1f}b')" $path; else python -c "import sys,glob,torch;size=sum([sum([torch.numel(tensor) for _,tensor in list(torch.load(model_file).items())]) for model_file in glob.glob(f'{sys.argv[1]}/*-of-*.bin')]);print(f'{size/1000**3:.1f}b')" $path; fi); echo "model_size=$model_size";
 config_path="{{ lh_path }}/config.json";
-model_type=$(cat $config_path | grep 'model_type' | sed "s/.*: \([^,]*\).*/\\1/"); echo "model_type=$model_type";
+# `grep` returns 1 when no match; under `set -eo pipefail` that aborts the
+# script. `|| true` lets the variable land empty so downstream defaults can
+# apply (or the pre-existing empty-arg behavior is preserved). Same pattern
+# at the LoRA-adapter parsing lines below.
+model_type=$(cat $config_path | grep 'model_type' | sed "s/.*: \([^,]*\).*/\\1/" || true); echo "model_type=$model_type";
 # -----------------------------------
 echo dmf model push {{ use_aspera_flag }} --overwrite --namespace {{ lh_namespace }} --dir {{ lh_path }} --table {{ lh_table_name }} --type "$model_type" --size "$model_size" --variant fine-tuned --revision "$model_revision" {{ open_flag }} {{ lh_model_label }}
 dmf model push {{ use_aspera_flag }} --overwrite --namespace {{ lh_namespace }} --dir {{ lh_path }} --table {{ lh_table_name }} --type "$model_type" --size "$model_size" --variant fine-tuned --revision "$model_revision" {{ open_flag }} {{ lh_model_label }}
@@ -114,16 +121,16 @@ else
 # LoRA adapter checkpoint
 echo 'Pushing a LoRA adapter checkpoint'
 config_path="{{ lh_path }}/adapter_config.json";
-base_model_name_or_path=$(cat $config_path | grep base_model_name_or_path | sed "s/.*: \([^,]*\).*/\\1/"); echo "base_model_name_or_path=$base_model_name_or_path";
+base_model_name_or_path=$(cat $config_path | grep base_model_name_or_path | sed "s/.*: \([^,]*\).*/\\1/" || true); echo "base_model_name_or_path=$base_model_name_or_path";
 base_model_name_or_path=$(echo $base_model_name_or_path | sed "s|/\"$|\"|"); echo "base_model_name_or_path=$base_model_name_or_path";
 base_model=$(echo $base_model_name_or_path | sed -E "s|.*models/([^/]*).*/([^/]*)/(.*)\"$|\"\\1/\\2.\\3\"|"); echo "base_model=$base_model";
 if [[ -z "$base_model" ]]; then base_model="unk"; fi;
 base_config="$(echo $base_model_name_or_path | sed 's/^.\(.*\).$/\1/')/config.json";
-model_type=$(cat $base_config | grep model_type | sed "s/.*: \([^,]*\).*/\\1/"); echo "model_type=$model_type";
+model_type=$(cat $base_config | grep model_type | sed "s/.*: \([^,]*\).*/\\1/" || true); echo "model_type=$model_type";
 if [[ -z "$model_type" ]]; then model_type="unk"; fi;
-peft_type=$(cat $config_path | grep peft_type | sed "s/.*: \([^,]*\).*/\\1/"); echo "peft_type=$peft_type";
+peft_type=$(cat $config_path | grep peft_type | sed "s/.*: \([^,]*\).*/\\1/" || true); echo "peft_type=$peft_type";
 if [[ -z "$peft_type" ]]; then peft_type="fine-tuned"; fi;
-rank=$(cat $config_path | grep '"r"' | sed "s/.*: \([^,]*\).*/\\1/"); echo "rank=$rank";
+rank=$(cat $config_path | grep '"r"' | sed "s/.*: \([^,]*\).*/\\1/" || true); echo "rank=$rank";
 if [ -z "$rank" ]; then rank="unk"; fi;
 # -----------------------------------
 echo dmf model push {{ use_aspera_flag }} --overwrite --namespace {{ lh_namespace }} --dir {{ lh_path }} --table {{ lh_table_name }} --type "$model_type" --size "$rank" --variant "$peft_type" --base-model "$base_model" --revision "$model_revision" {{ open_flag }} {{ lh_model_label }}
@@ -183,12 +190,6 @@ echo 'Unsupported data type for lhpush: "{{ lh_type }}"'; exit 1
 {%- endif %}
 
 # --------------------------------------------------------------------------
-
-MY_EXIT_CODE=$?
-if [[ "${MY_EXIT_CODE}" != '0' ]]; then
-    echo "${LLMB_LSF_JOB_NAME}: dmf push failed, exit code: ${MY_EXIT_CODE}"
-    exit 1
-fi
 
 echo 'Pushed URI: {{ lhp.uri }} from path {{ lh_path }}'
 

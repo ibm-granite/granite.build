@@ -4,10 +4,10 @@
 # The entrypoint handles munge, SSH, and service startup automatically.
 #
 # Containers:
-#   mysql     - MariaDB for SLURM accounting
-#   slurmdbd  - SLURM database daemon
-#   slurmctld - SLURM controller + login node (SSH target for SkyPilot)
-#   c1, c2    - Compute nodes with virtual GPU GRES
+#   mysql        - MariaDB for SLURM accounting
+#   slurmdbd     - SLURM database daemon
+#   slurmctld    - SLURM controller + login node (SSH target for SkyPilot)
+#   c1..c4       - Compute nodes (c1 carries virtual GPU GRES when available)
 #
 # Required env vars for SSH access (set by setup-slurm.sh):
 #   SSH_AUTHORIZED_KEYS - path to public key file mounted into slurmctld
@@ -128,6 +128,66 @@ services:
     command: ["slurmd", "-Dvvv"]
     hostname: c2
     container_name: slurm-c2
+    privileged: true
+    environment:
+      SSH_ENABLE: "true"
+    volumes:
+      - etc_munge:/etc/munge
+      - ./slurm.conf:/etc/slurm/slurm.conf
+      - ./slurmdbd.conf:/etc/slurm/slurmdbd.conf
+      - ./gres.conf:/etc/slurm/gres.conf
+      - slurm_shared_fs:/shared
+      - slurm_home:/root
+      - var_log_slurm:/var/log/slurm
+      - ${SSH_AUTHORIZED_KEYS:-/dev/null}:/tmp/authorized_keys_host:ro
+    depends_on:
+      slurmctld:
+        condition: service_healthy
+    networks:
+      - slurm-net
+    healthcheck:
+      test: ["CMD-SHELL", "pidof slurmd"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  c3:
+    image: giovtorres/slurm-docker-cluster:${SLURM_VERSION:-25.11.4}
+    init: true
+    command: ["slurmd", "-Dvvv"]
+    hostname: c3
+    container_name: slurm-c3
+    privileged: true
+    environment:
+      SSH_ENABLE: "true"
+    volumes:
+      - etc_munge:/etc/munge
+      - ./slurm.conf:/etc/slurm/slurm.conf
+      - ./slurmdbd.conf:/etc/slurm/slurmdbd.conf
+      - ./gres.conf:/etc/slurm/gres.conf
+      - slurm_shared_fs:/shared
+      - slurm_home:/root
+      - var_log_slurm:/var/log/slurm
+      - ${SSH_AUTHORIZED_KEYS:-/dev/null}:/tmp/authorized_keys_host:ro
+    depends_on:
+      slurmctld:
+        condition: service_healthy
+    networks:
+      - slurm-net
+    healthcheck:
+      test: ["CMD-SHELL", "pidof slurmd"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  c4:
+    image: giovtorres/slurm-docker-cluster:${SLURM_VERSION:-25.11.4}
+    init: true
+    command: ["slurmd", "-Dvvv"]
+    hostname: c4
+    container_name: slurm-c4
     privileged: true
     environment:
       SSH_ENABLE: "true"

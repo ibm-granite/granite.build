@@ -1,0 +1,19 @@
+# YAML-driven spec for test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_slurm_hf.py.
+# Mirrors test-data/integration/standalone/buildrunner/docker/docker-hf/buildtest.yaml.
+targets:
+  - image-run
+target_expectations:
+  - target_name: image-run
+    # step_count = 1 hfpull (one HF input) + 1 bash + 3 hfpush (output_model1
+    # emits 2 artifacts -> 2 hfpush, output_model2 emits 1 -> 1 hfpush).
+    # Pull/push step counts come from inputs/outputs in build.yaml: each HF
+    # input adds one hfpull step, each emitted artifact adds one hfpush step.
+    step_count: 5
+    input_artifact_count: 1
+    output_artifact_count: 2
+    jobstats_count: 3
+# Use the local sibling space dir so the BuildRunner resolves space:// URIs
+# without cloning from GitHub.
+space_uri: ./space
+simulate_step_failure: true
+timeout_minutes: 10 # Seems sufficient on mac running local slurm cluster

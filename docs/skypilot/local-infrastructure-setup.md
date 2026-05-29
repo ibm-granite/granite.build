@@ -239,3 +239,19 @@ The `mc` CLI runs inside the container. If it fails, verify MinIO is healthy:
 ```bash
 curl -sf http://localhost:9000/minio/health/ready && echo OK
 ```
+
+## Configuration Reference
+
+For the full list of fields supported in a Skypilot `environment.yaml`, the
+per-step `step.yaml` `environment_configs.Skypilot.*` block, and the
+`build.yaml` step `config:` fields the SkyPilot launcher reads, see the
+Skypilot sections of
+[`docs/environment-yaml-config.md`](../environment-yaml-config.md):
+
+- [`Skypilot` environment config](../environment-yaml-config.md#skypilot-environment-config)
+- [Skypilot launcher and monitor types](../environment-yaml-config.md#skypilot-launcher-and-monitor-types)
+- [Skypilot-specific top-level config fields](../environment-yaml-config.md#skypilot-specific-top-level-config-fields)
+- [Annotated Skypilot example (bare-host SLURM)](../environment-yaml-config.md#skypilot-environmentyaml-bare-host-slurm)
+
+The bare-host SLURM example documented there matches the cluster you bring
+up with `make slurm-setup`.

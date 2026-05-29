@@ -221,7 +221,7 @@ class TestMonitorSkypilotMonitor:
 
         mock_status_succeeded = MagicMock()
         mock_status_succeeded.is_terminal.return_value = True
-        mock_status_succeeded.__str__ = lambda s: "SUCCEEDED"
+        mock_status_succeeded.__str__ = lambda s: "JobStatus.SUCCEEDED"
 
         mock_sky = MagicMock()
         call_count = [0]
@@ -493,7 +493,7 @@ def _make_terminal_sky_mock():
 
     mock_status_succeeded = MagicMock()
     mock_status_succeeded.is_terminal.return_value = True
-    mock_status_succeeded.__str__ = lambda s: "SUCCEEDED"
+    mock_status_succeeded.__str__ = lambda s: "JobStatus.SUCCEEDED"
 
     mock_sky.job_status = MagicMock(return_value="req-status-terminal")
     mock_sky.get = MagicMock(return_value={42: mock_status_succeeded})
