@@ -9,6 +9,7 @@ require it unless a Skypilot environment is actually configured.
 import asyncio
 import glob
 import os
+import shlex
 import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Union
@@ -161,7 +162,7 @@ class Skypilot(Environment):
         try:
             task = sky.Task(
                 name=cluster_name,
-                run=f'rm -rf "{workdir}"',
+                run=f"rm -rf {shlex.quote(workdir)}",
                 resources=sky.Resources(infra=self._get_cloud()),
             )
             request_id = sky.launch(

@@ -307,9 +307,38 @@ class TestBuildWorkdir:
 
         mock_sky.Task.assert_called_once()
         task_kwargs = mock_sky.Task.call_args[1]
-        assert task_kwargs["run"] == 'rm -rf "/shared/builds/b/runs/r"'
+        # shlex.quote leaves shell-safe paths unquoted (no special chars).
+        assert task_kwargs["run"] == "rm -rf /shared/builds/b/runs/r"
         mock_sky.launch.assert_called_once()
         assert "setup-td" not in slurm_env._setup_workdirs
+
+    @pytest.mark.asyncio
+    async def test_teardown_skypilot_escapes_unsafe_path(self, slurm_env):
+        """A workdir containing shell-meta chars (quotes, semicolons) must
+        be shlex-quoted so the `rm -rf` command can't be hijacked. The
+        sentinel `; rm -rf /;` here would be a shell injection if the path
+        were naively interpolated as f'rm -rf "{workdir}"'."""
+        unsafe = '/shared/foo"; rm -rf /;"'
+        slurm_env._setup_workdirs["setup-unsafe"] = unsafe
+        mock_sky = _mock_sky()
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            await slurm_env.teardown_skypilot(setup_id="setup-unsafe")
+
+        run = mock_sky.Task.call_args[1]["run"]
+        # shlex.quote single-quotes the whole token; the embedded `"` and
+        # `;` survive verbatim inside the single quotes — no breakout.
+        import shlex
+
+        assert run == f"rm -rf {shlex.quote(unsafe)}"
+        # And the rendered command should be a single rm token followed by
+        # a single quoted argument — the second `;` should be inside, not
+        # outside, the quoted token.
+        assert run.startswith("rm -rf '")
+        assert run.endswith("'")
 
     @pytest.mark.asyncio
     async def test_teardown_skypilot_noop_when_no_stashed_workdir(self, slurm_env):
