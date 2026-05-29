@@ -122,7 +122,7 @@ environment_configs:
           event_configs:
           - event_type: ARTIFACT_PUSHED_EVENT
             line_regex: "Pushed HF URI:\\s.+"
-            is_json: False
+            is_json: false
             event_fields:
               - field_name: uri
                 field_regex: "hf://[^\\s]+"
