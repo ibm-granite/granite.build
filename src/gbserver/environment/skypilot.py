@@ -620,6 +620,7 @@ class Skypilot(Environment):
         finally:
             self._cluster_names.pop(launch_id, None)
             self._job_ids.pop(launch_id, None)
+            self.launch_kwargs.pop(launch_id, None)
 
     async def retry_workload(
         self: Self,
