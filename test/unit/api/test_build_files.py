@@ -1358,7 +1358,7 @@ class TestResolveLsfConfig:
         from gbserver.types.environmentconfig import EnvironmentConfig
 
         env_config = EnvironmentConfig(
-            name="bluevela",
+            name="test-cluster",
             type="Lsf",
             config={
                 "workspace": {"remote_dir": "/ws"},
@@ -1375,7 +1375,7 @@ class TestResolveLsfConfig:
             return_value=(env_config, MagicMock()),
         ):
             login_nodes, username, key, ws = await lsf_tunnel._resolve_lsf_config(
-                "space://environments/bluevela"
+                "space://environments/test-cluster"
             )
         assert login_nodes == ["node-a", "node-b"]
         assert username == "ci-user"
@@ -1388,7 +1388,7 @@ class TestResolveLsfConfig:
         from gbserver.types.environmentconfig import EnvironmentConfig
 
         env_config = EnvironmentConfig(
-            name="bluevela",
+            name="test-cluster",
             type="Lsf",
             config={
                 "workspace": {"remote_dir": "/ws"},
@@ -1404,7 +1404,7 @@ class TestResolveLsfConfig:
             return_value=(env_config, MagicMock()),
         ):
             with pytest.raises(HTTPException) as ei:
-                await lsf_tunnel._resolve_lsf_config("space://environments/bluevela")
+                await lsf_tunnel._resolve_lsf_config("space://environments/test-cluster")
         assert ei.value.status_code == 503
         detail = str(ei.value.detail)
         assert "login_node_username" in detail
