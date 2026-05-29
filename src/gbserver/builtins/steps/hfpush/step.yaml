@@ -76,13 +76,20 @@ environment_configs:
         monitors:
         - skypilot_monitor
         config:
-          image_id: "docker:python:3.11-slim"
+          # No image_id: runs on the SkyPilot launcher host directly. The host
+          # must have python/pip available; setup pip-installs huggingface_hub
+          # so the run script can use the Python API for create_repo (no curl,
+          # no apt-get, no docker container required).
           resources:
-            cpus: "2+"
-            memory: "4+"
+            # No `memory:` spec: SLURM clusters with the default
+            # `SelectTypeParameters=CR_Core` reject memory requests
+            # ("does not track memory as a consumable resource"). Cloud
+            # SkyPilot allocators pick reasonable memory based on CPU
+            # alone; users who need a floor can override via
+            # `launcher_config.resources` in their build.yaml.
+            cpus: "1+"
           setup: |
             pip install --no-cache-dir 'huggingface_hub[cli]'
-            apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
           run: |
             set -euo pipefail
             trap 'EC=$?; echo "hfpush failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
@@ -93,11 +100,11 @@ environment_configs:
             export HF_ENDPOINT='{{ config.hfpush_config.endpoint }}'
             HF_OWNER='{{ config.hfpush_config.owner }}'
             HF_REPO_NAME='{{ config.hfpush_config.repo }}'
-            HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"
+            export HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"
             HF_REVISION='{{ config.hfpush_config.revision }}'
-            HF_PRIVATE='{{ config.hfpush_config.private }}'
-            HF_TYPE='{{ config.hfpush_config.hf.type }}'
-            HF_RESOURCE_GROUP_ID='{{ config.hfpush_config.hf.resource_group_id }}'
+            export HF_PRIVATE='{{ config.hfpush_config.private }}'
+            export HF_TYPE='{{ config.hfpush_config.hf.type }}'
+            export HF_RESOURCE_GROUP_ID='{{ config.hfpush_config.hf.resource_group_id }}'
             BINDING_ID='{{ config.hfpush_config.binding_id }}'
 
             if [ -z "${HF_TOKEN:-}" ]; then
@@ -105,40 +112,24 @@ environment_configs:
                 exit 1
             fi
 
-            # Create the HF repo (idempotent).  `hf upload` cannot attach a
-            # resource_group_id, so we POST to /api/repos/create ourselves.
-            HF_VISIBILITY="public"
-            if [ "${HF_PRIVATE}" = "True" ]; then
-                HF_VISIBILITY="private"
-            fi
-
-            # Treat both "" and the literal "None" (jinja-rendered Python None)
-            # as "no resource group" — callers whose resource_group_id is unset
-            # otherwise produce a literal "None" string and HF rejects it.
-            if [ -n "${HF_RESOURCE_GROUP_ID}" ] && [ "${HF_RESOURCE_GROUP_ID}" != "None" ]; then
-                CREATE_BODY=$(printf '{"name":"%s","organization":"%s","type":"%s","visibility":"%s","resourceGroupId":"%s"}' \
-                    "${HF_REPO_NAME}" "${HF_OWNER}" "${HF_TYPE}" "${HF_VISIBILITY}" "${HF_RESOURCE_GROUP_ID}")
-            else
-                CREATE_BODY=$(printf '{"name":"%s","organization":"%s","type":"%s","visibility":"%s"}' \
-                    "${HF_REPO_NAME}" "${HF_OWNER}" "${HF_TYPE}" "${HF_VISIBILITY}")
-            fi
-
+            # Create the HF repo (idempotent) via the huggingface_hub Python
+            # API. `hf upload` cannot attach a resource_group_id, so we
+            # explicitly call create_repo with exist_ok=True. Single-quoted
+            # heredoc disables bash expansion — python reads everything from
+            # os.environ.
             echo "Creating HF repo ${HF_REPO} (resource_group_id=${HF_RESOURCE_GROUP_ID:-<none>})"
-            CREATE_RESP=$(mktemp)
-            HTTP_CODE=$(curl -sS -o "${CREATE_RESP}" -w "%{http_code}" \
-                -X POST \
-                -H "Authorization: Bearer ${HF_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -d "${CREATE_BODY}" \
-                "${HF_ENDPOINT}/api/repos/create")
-
-            if [ "${HTTP_CODE}" != "200" ] && [ "${HTTP_CODE}" != "409" ]; then
-                echo "HF create_repo failed: HTTP ${HTTP_CODE}"
-                cat "${CREATE_RESP}"
-                rm -f "${CREATE_RESP}"
-                exit 1
-            fi
-            rm -f "${CREATE_RESP}"
+            python - <<'PY'
+            import os
+            from huggingface_hub import HfApi
+            rg = os.environ.get("HF_RESOURCE_GROUP_ID") or ""
+            HfApi(token=os.environ["HF_TOKEN"]).create_repo(
+                repo_id=os.environ["HF_REPO"],
+                repo_type=os.environ["HF_TYPE"] or "model",
+                private=os.environ.get("HF_PRIVATE", "True") == "True",
+                resource_group_id=(rg if rg and rg != "None" else None),
+                exist_ok=True,
+            )
+            PY
 
             echo "Pushing HF URI: ${HF_URI} from path ${HF_SOURCE}"
 

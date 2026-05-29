@@ -3,10 +3,10 @@
 #
 # This script:
 #   1. Generates an SSH key pair for passwordless access to the login node
-#   2. Starts the Docker SLURM cluster (slurmctld, c1, c2, mysql, slurmdbd)
+#   2. Starts the Docker SLURM cluster (slurmctld, c1..c4, mysql, slurmdbd)
 #   3. Verifies SSH connectivity to slurmctld
 #   4. Configures ~/.sky/config.yaml so SkyPilot discovers the SLURM cluster
-#   5. Verifies the cluster is healthy (sinfo shows 2 compute nodes)
+#   5. Verifies the cluster is healthy (sinfo shows 4 compute nodes)
 #
 # Usage:
 #   bash scripts/slurm/setup-slurm.sh
@@ -121,7 +121,7 @@ timeout=240
 elapsed=0
 while true; do
     node_count=$($DOCKER_CMD exec slurm-slurmctld sinfo --noheader -N 2>/dev/null | wc -l || echo 0)
-    if [ "$node_count" -ge 2 ]; then
+    if [ "$node_count" -ge 4 ]; then
         break
     fi
     sleep 5
@@ -131,11 +131,11 @@ while true; do
         $COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" --project-name slurm-dev ps
         warn "slurmctld logs:"
         $DOCKER_CMD logs slurm-slurmctld 2>&1 | tail -20
-        warn "c1 logs:"
-        $DOCKER_CMD logs slurm-c1 2>&1 | tail -10
-        warn "c2 logs:"
-        $DOCKER_CMD logs slurm-c2 2>&1 | tail -10
-        err "Cluster not ready. Expected 2 compute nodes but found $node_count."
+        for node in slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
+            warn "${node} logs:"
+            $DOCKER_CMD logs "$node" 2>&1 | tail -10
+        done
+        err "Cluster not ready. Expected 4 compute nodes but found $node_count."
     fi
 done
 log "SLURM cluster is ready with $node_count compute nodes."
@@ -145,7 +145,7 @@ log "SLURM cluster is ready with $node_count compute nodes."
 # for running setup commands after SLURM job allocation.
 
 log "Installing rsync in SLURM containers..."
-for node in slurm-slurmctld slurm-c1 slurm-c2; do
+for node in slurm-slurmctld slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
     if ! $DOCKER_CMD exec "$node" which rsync &>/dev/null; then
         $DOCKER_CMD exec "$node" dnf install -y -q rsync 2>/dev/null
     fi
@@ -153,7 +153,7 @@ done
 log "rsync installed."
 
 log "Starting sshd on compute nodes..."
-for node in slurm-c1 slurm-c2; do
+for node in slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
     $DOCKER_CMD exec "$node" bash -c '
         ssh-keygen -A 2>/dev/null
         mkdir -p /root/.ssh && chmod 700 /root/.ssh
@@ -231,8 +231,8 @@ NODE_COUNT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -i "$SSH_KEY_PATH" -p "$SLURM_SSH_PORT" root@localhost \
     sinfo --noheader -N 2>/dev/null | wc -l)
 
-if [ "$NODE_COUNT" -lt 2 ]; then
-    warn "Expected 2 compute nodes but found $NODE_COUNT. Cluster may still be starting."
+if [ "$NODE_COUNT" -lt 4 ]; then
+    warn "Expected 4 compute nodes but found $NODE_COUNT. Cluster may still be starting."
     warn "Run: ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@localhost sinfo"
 else
     log "SLURM cluster is ready: $NODE_COUNT compute nodes."

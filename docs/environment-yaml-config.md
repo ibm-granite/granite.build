@@ -236,9 +236,12 @@ assetstores:
     load:
       - mode: hf_pull                       # The only supported load mode.
         config:
-          step_uri: space://steps/hfpull_bash    # Optional override of the builtin
-                                                  # hfpull_bash step URI. The default
-                                                  # is the gbserver builtin.
+          step_uri: space://steps/my_hfpull      # Optional override of the builtin
+                                                  # hfpull step URI. The default is
+                                                  # the gbserver builtin (which
+                                                  # works for SkyPilot bare-node
+                                                  # SLURM/cloud setups out of the
+                                                  # box).
           cache_path: /tmp/hf_cache              # Optional cache dir on the
                                                   # SkyPilot worker where pulled
                                                   # snapshots are written. When
@@ -253,7 +256,8 @@ assetstores:
     push:
       - mode: hf_push
         config:
-          step_uri: space://steps/hfpush_bash    # Optional override.
+          step_uri: space://steps/my_hfpush      # Optional override of the builtin
+                                                  # hfpush step URI.
 
   - store_uri: space://assetstores/cos     # IBM COS / S3-compatible store.
     load: [...]
@@ -857,12 +861,8 @@ assetstores:
   - store_uri: space://assetstores/hf
     load:
       - mode: hf_pull
-        config:
-          step_uri: space://steps/hfpull_bash
     push:
       - mode: hf_push
-        config:
-          step_uri: space://steps/hfpush_bash
 ```
 
 ### `step.yaml` for a Skypilot bash step (no Pyxis)
@@ -945,12 +945,13 @@ granite.build:
 
 Per-step lifecycle for this build:
 
-1. `pullasset_hfstore` queues the `hfpull_bash` step on its own SkyPilot
+1. `pullasset_hfstore` queues the builtin `hfpull` step on its own SkyPilot
    cluster, which runs `hf download` into `/tmp/hf_cache/...`.
 2. The `bash` step runs on a fresh SkyPilot cluster, emits the
    `LLMB_ARTIFACT_ID:` line, and exits.
-3. `pushasset_hfstore` queues `hfpush_bash` on a third SkyPilot cluster to
-   create the HF repo (`POST /api/repos/create`) and `hf upload` the file.
+3. `pushasset_hfstore` queues the builtin `hfpush` on a third SkyPilot
+   cluster: it calls `huggingface_hub.HfApi.create_repo(..., exist_ok=True)`
+   to ensure the HF repo exists, then `hf upload`'s the file.
 
 Each step's cluster is torn down by `cleanup_skypilot()` once its
 `skypilot_monitor` sees a terminal job status. On a SLURM backend the

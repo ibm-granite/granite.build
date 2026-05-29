@@ -11,9 +11,6 @@ assetstores:
     load:
       - mode: hf_pull
         config:
-          step_uri: space://steps/hfpull_bash
           cache_path: /shared/hf_cache
     push:
       - mode: hf_push
-        config:
-          step_uri: space://steps/hfpush_bash

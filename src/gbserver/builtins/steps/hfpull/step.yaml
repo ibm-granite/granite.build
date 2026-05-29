@@ -50,10 +50,17 @@ environment_configs:
         monitors:
         - skypilot_monitor
         config:
-          image_id: "docker:python:3.11-slim"
+          # No image_id: runs on the SkyPilot launcher host directly. The host
+          # must have python/pip available; setup pip-installs huggingface_hub
+          # so `hf download` is on PATH (no docker container required).
           resources:
-            cpus: "2+"
-            memory: "4+"
+            # No `memory:` spec: SLURM clusters with the default
+            # `SelectTypeParameters=CR_Core` reject memory requests
+            # ("does not track memory as a consumable resource"). Cloud
+            # SkyPilot allocators pick reasonable memory based on CPU
+            # alone; users who need a floor can override via
+            # `launcher_config.resources` in their build.yaml.
+            cpus: "1+"
           setup: |
             pip install --no-cache-dir 'huggingface_hub[cli]'
           run: |
