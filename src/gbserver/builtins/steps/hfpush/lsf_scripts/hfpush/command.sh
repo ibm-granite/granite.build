@@ -12,6 +12,7 @@ echo 'hfpush start'
 
 HF_SOURCE='{{ hfp.path }}'
 HF_URI='{{ hfp.uri }}'
+export HF_ENDPOINT='{{ hfp.endpoint }}'
 HF_OWNER='{{ hfp.owner }}'
 HF_REPO_NAME='{{ hfp.repo }}'
 HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"
@@ -72,7 +73,7 @@ HTTP_CODE=$(curl -sS -o "${CREATE_RESP}" -w "%{http_code}" \
     -H "Authorization: Bearer ${HF_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "${CREATE_BODY}" \
-    https://huggingface.co/api/repos/create)
+    "${HF_ENDPOINT}/api/repos/create")
 
 if [[ "${HTTP_CODE}" != "200" && "${HTTP_CODE}" != "409" ]]; then
     echo "HF create_repo failed: HTTP ${HTTP_CODE}"

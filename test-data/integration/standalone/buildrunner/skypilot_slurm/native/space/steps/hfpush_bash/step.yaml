@@ -47,6 +47,7 @@ environment_configs:
 
             HF_SOURCE='{{ config.hfpush_config.path }}'
             HF_URI='{{ config.hfpush_config.uri }}'
+            export HF_ENDPOINT='{{ config.hfpush_config.endpoint }}'
             HF_OWNER='{{ config.hfpush_config.owner }}'
             HF_REPO_NAME='{{ config.hfpush_config.repo }}'
             export HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"

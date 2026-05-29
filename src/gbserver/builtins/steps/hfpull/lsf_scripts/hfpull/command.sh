@@ -12,6 +12,7 @@ echo 'hfpull start'
 
 HF_DEST='{{ hfp.path }}'
 HF_URI='{{ hfp.uri }}'
+export HF_ENDPOINT='{{ hfp.endpoint }}'
 HF_REPO='{{ hfp.owner }}/{{ hfp.repo }}'
 HF_REVISION='{{ hfp.revision }}'
 HF_TYPE='{{ hfp.hf.type }}'

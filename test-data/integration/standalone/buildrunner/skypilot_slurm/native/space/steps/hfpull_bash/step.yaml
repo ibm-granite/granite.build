@@ -43,6 +43,7 @@ environment_configs:
 
             HF_DEST='{{ config.hfpull_config.path }}'
             HF_URI='{{ config.hfpull_config.uri }}'
+            export HF_ENDPOINT='{{ config.hfpull_config.endpoint }}'
             HF_REPO='{{ config.hfpull_config.owner }}/{{ config.hfpull_config.repo }}'
             HF_REVISION='{{ config.hfpull_config.revision }}'
             HF_TYPE='{{ config.hfpull_config.hf.type }}'

@@ -90,6 +90,7 @@ environment_configs:
 
             HF_SOURCE='{{ config.hfpush_config.path }}'
             HF_URI='{{ config.hfpush_config.uri }}'
+            export HF_ENDPOINT='{{ config.hfpush_config.endpoint }}'
             HF_OWNER='{{ config.hfpush_config.owner }}'
             HF_REPO_NAME='{{ config.hfpush_config.repo }}'
             HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"
@@ -129,7 +130,7 @@ environment_configs:
                 -H "Authorization: Bearer ${HF_TOKEN}" \
                 -H "Content-Type: application/json" \
                 -d "${CREATE_BODY}" \
-                https://huggingface.co/api/repos/create)
+                "${HF_ENDPOINT}/api/repos/create")
 
             if [ "${HTTP_CODE}" != "200" ] && [ "${HTTP_CODE}" != "409" ]; then
                 echo "HF create_repo failed: HTTP ${HTTP_CODE}"

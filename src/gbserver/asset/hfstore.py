@@ -129,6 +129,7 @@ class Hfstore(Assetstore):
         return {
             "path": binding_path,
             "uri": str(hfuri),
+            "endpoint": f"https://{hfuri.get_host()}",
             "owner": hfuri.get_owner(),
             "repo": hfuri.get_repo(),
             "revision": hfuri.get_revision(),
@@ -165,6 +166,7 @@ class Hfstore(Assetstore):
         return {
             "path": binding_path,
             "uri": str(hfuri),
+            "endpoint": f"https://{hfuri.get_host()}",
             "owner": hfuri.get_owner(),
             "repo": hfuri.get_repo(),
             "revision": hfuri.get_revision(),
