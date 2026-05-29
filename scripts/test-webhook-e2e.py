@@ -131,9 +131,7 @@ def create_active_subscription(space_name: str) -> str:
     storage = create_webhook_storage()
     subscription = StoredWebhookSubscription(
         space_name=space_name,
-        build_id=None,
         build_filter=None,
-        scope="space",
         status="active",
         active=True,
         webhook_url="https://example.com/e2e-test-endpoint",
@@ -144,7 +142,7 @@ def create_active_subscription(space_name: str) -> str:
     )
     storage.add(subscription)
     print(f"  Subscription ID: {subscription.uuid}")
-    print(f"  Scope:           space-wide (all builds in '{space_name}')")
+    print(f"  Filter:          space-wide (all builds in '{space_name}')")
     print(f"  Status:          active")
     return subscription.uuid
 
