@@ -15,5 +15,5 @@ target_expectations:
 # Use the local sibling space dir so the BuildRunner resolves space:// URIs
 # without cloning from GitHub.
 space_uri: ./space
-simulate_step_failure: false
+simulate_step_failure: true
 timeout_minutes: 10 # Seems sufficient on mac running local slurm cluster

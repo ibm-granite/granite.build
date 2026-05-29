@@ -11,7 +11,7 @@ import glob
 import os
 import urllib.parse
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Self, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Union
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -21,6 +21,9 @@ from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from gbserver.resilience.retry_handler import RetryStrategy
 
 logger = get_logger(__name__)
 
@@ -67,6 +70,9 @@ class Skypilot(Environment):
         self._cluster_names: Dict[str, str] = {}  # launch_id -> cluster_name
         self._job_ids: Dict[str, int] = {}  # launch_id -> sky job_id
         self._setup_workdirs: Dict[str, str] = {}  # setup_id -> per-run workdir
+        # launch_id -> kwargs replayed by retry_workload
+        self.launch_kwargs: Dict[str, Dict] = {}
+        self._skypilot_retry_complete_events: Dict[str, asyncio.Event] = {}
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -182,6 +188,16 @@ class Skypilot(Environment):
         """
         try:
             _require_skypilot()
+
+            # Stash kwargs so retry_workload can replay this launch.
+            self.launch_kwargs[launch_id] = {
+                "launcher_config": kwargs.get("launcher_config"),
+                "config": kwargs.get("config"),
+                "run_metadata": kwargs.get("run_metadata"),
+                "setup_config": kwargs.get("setup_config"),
+                "retry_enabled": kwargs.get("retry_enabled"),
+                "retry_transparently": kwargs.get("retry_transparently"),
+            }
 
             launcher_config = kwargs.get("launcher_config", {}) or {}
             config = kwargs.get("config", {}) or {}
@@ -348,14 +364,64 @@ class Skypilot(Environment):
         event_configs: Optional[List] = None,
         **kwargs,
     ) -> None:
-        """Monitor a SkyPilot job by polling sky.job_status().
+        """Monitor a SkyPilot job through the shared retry framework.
 
-        Polls the job status at intervals, translates SkyPilot JobStatus
-        to BuildEvent objects, and puts them on event_q. Exits when the
-        job reaches a terminal state or when stop_event is set.
+        Wraps ``_poll_skypilot_job`` in ``_with_retry_handler`` so terminal
+        FAILED events are routed to ``RetryHandler``, which either calls
+        ``retry_workload`` (cleanup + relaunch + sets the per-launch
+        retry-complete event) or raises ``WorkloadFailedException`` to
+        propagate failure.
         """
         _require_skypilot()
+        retry_complete_event = asyncio.Event()
+        self._skypilot_retry_complete_events[launch_id] = retry_complete_event
 
+        enabled, retry_transparently = self._get_step_retry_config(
+            self.launch_kwargs.get(launch_id, {})
+        )
+
+        async with self._with_retry_handler(
+            launch_id,
+            event_q,
+            build_id,
+            enabled=enabled,
+            entityrun_metadata=entityrun_metadata,
+            retry_transparently=retry_transparently,
+        ) as monitor_queue:
+            try:
+                while True:
+                    retry_complete_event.clear()
+                    await self._poll_skypilot_job(
+                        launch_id=launch_id,
+                        event_q=monitor_queue,
+                        entityrun_metadata=entityrun_metadata,
+                        event_configs=event_configs,
+                        **kwargs,
+                    )
+                    if retry_complete_event.is_set():
+                        # retry_workload re-launched and set this event;
+                        # loop to poll the fresh cluster_name/job_id.
+                        continue
+                    return
+            finally:
+                self._skypilot_retry_complete_events.pop(launch_id, None)
+
+    async def _poll_skypilot_job(
+        self: Self,
+        launch_id: str,
+        event_q: Optional[asyncio.Queue] = None,
+        entityrun_metadata=None,
+        event_configs: Optional[List] = None,
+        **kwargs,
+    ) -> None:
+        """Poll ``sky.job_status`` for one launch attempt, emit events.
+
+        Returns when the job reaches a terminal state or ``stop_event``
+        is set. Emits a ``WORKLOAD_STATUS_EVENT(FAILED)`` on a non-success
+        terminal state but does NOT raise — the upstream
+        ``_with_retry_handler`` interprets the FAILED event and decides
+        between retry and final-failure propagation.
+        """
         event_log_parser_configs = []
         if event_configs is not None:
             event_log_parser_configs = [
@@ -457,15 +523,6 @@ class Skypilot(Environment):
                             ),
                         )
                         await event_q.put(fail_event)
-                    # Raise so the TaskGroup in TargetStepRun._run cancels the
-                    # launch task and Run.run() marks the step FAILED. Without
-                    # this, launch_skypilot returns successfully (it only waits
-                    # for provisioning, not job completion) and the step is
-                    # incorrectly recorded as SUCCESS while its workload failed.
-                    raise RuntimeError(
-                        f"SkyPilot job {job_id} on {cluster_name} ended in "
-                        f"{status} (launch_id={launch_id})"
-                    )
                 return
 
             try:
@@ -563,6 +620,100 @@ class Skypilot(Environment):
         finally:
             self._cluster_names.pop(launch_id, None)
             self._job_ids.pop(launch_id, None)
+
+    async def retry_workload(
+        self: Self,
+        launch_id: str,
+        nodes_to_avoid: Optional[List[str]] = None,
+        **kwargs,
+    ) -> None:
+        """Retry a failed Skypilot workload via tear-down + relaunch.
+
+        Called by ``RetryHandler`` when a strategy decides the failure is
+        retriable. Stops the polling loop, takes the cluster down, and
+        re-invokes ``launch_skypilot`` with the kwargs stashed during
+        the first launch. Sets ``_skypilot_retry_complete_events[launch_id]``
+        so ``monitor_skypilot_monitor``'s outer loop runs another
+        iteration against the fresh cluster.
+
+        :param launch_id: The launch identifier to retry.
+        :param nodes_to_avoid: Currently logged-and-ignored — Skypilot
+            has no portable per-launch node-exclusion knob.
+        :raises Exception: Re-raises any failure from the relaunch.
+        """
+        original_kwargs = self.launch_kwargs.get(launch_id, {})
+        cluster_name = self._cluster_names.get(launch_id, launch_id)
+        if nodes_to_avoid:
+            logger.info(
+                "retry_workload: nodes_to_avoid=%s ignored for launch_id=%s "
+                "(no portable Skypilot node-exclusion knob)",
+                nodes_to_avoid,
+                launch_id,
+            )
+
+        msg = (
+            f"⚠️ Skypilot error on cluster {cluster_name} "
+            f"(launch_id={launch_id}), retrying..."
+        )
+        self._send_message(msg=msg, **original_kwargs)
+
+        # Stop the polling loop cleanly before sky down.
+        self._get_launch_stopped_event(launch_id).set()
+
+        try:
+            await self.cleanup_skypilot(launch_id=launch_id)
+        except Exception as e:
+            logger.warning(
+                "retry_workload cleanup_skypilot failed for %s: %s", launch_id, e
+            )
+
+        # Reset the stop event so the next polling iteration runs.
+        self._get_launch_stopped_event(launch_id).clear()
+        # Re-arm the launch-ready gate so launch_skypilot's release_monitors
+        # call has a fresh event to set.
+        self._get_launch_ready_event(launch_id)
+
+        try:
+            await self.launch_skypilot(launch_id, **original_kwargs)
+        except Exception as launch_error:
+            logger.error(
+                "retry_workload could not relaunch launch_id=%s: %s",
+                launch_id,
+                launch_error,
+            )
+            raise
+
+        retry_event = self._skypilot_retry_complete_events.get(launch_id)
+        if retry_event is not None:
+            retry_event.set()
+
+    def _get_default_retry_strategies(self: Self) -> List["RetryStrategy"]:
+        """Return Skypilot's default retry strategies.
+
+        Both strategies inspect ``BuildEvent`` payload text and have
+        ``accepts_object_types = False`` — they fire only when the user's
+        log-parser config emits matching ``MESSAGE_EVENT`` payloads, so
+        they're safe to ship on by default.
+        """
+        # Local imports to avoid circular dependencies at module load.
+        from gbserver.resilience.strategies.file_not_found import (
+            FileNotFoundRetryStrategy,
+        )
+        from gbserver.resilience.strategies.nccl_error import NCCLErrorRetryStrategy
+
+        return [NCCLErrorRetryStrategy(), FileNotFoundRetryStrategy()]
+
+    def _get_retry_test_scenario(self: Self) -> Optional[str]:
+        """Scenario name used by ``_inject_event_to_trigger_retry_when_testing``.
+
+        Returning a non-None value lets integration tests with
+        ``simulate_step_failure: true`` (env var
+        ``GBTEST_SIMULATE_FAILURE_SCENARIO=true``) inject a synthetic
+        failure event matching one of the default strategies, exercising
+        the full retry path without an actual workload crash. ``nccl_error``
+        is paired with the default ``NCCLErrorRetryStrategy``.
+        """
+        return "nccl_error"
 
     async def pullasset_hfstore(
         self: Self,

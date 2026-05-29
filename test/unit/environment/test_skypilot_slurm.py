@@ -222,13 +222,9 @@ class TestBuildWorkdir:
                 },
             ),
         )
-        runmetadata = EntityRunMetadata(
-            build_id="b-123", targetrun_id="tr-456"
-        )
+        runmetadata = EntityRunMetadata(build_id="b-123", targetrun_id="tr-456")
 
-        result = await env.setup_skypilot(
-            setup_id="setup-1", runmetadata=runmetadata
-        )
+        result = await env.setup_skypilot(setup_id="setup-1", runmetadata=runmetadata)
 
         expected = "/shared/builds/b-123/runs/tr-456"
         assert result == {"skypilot": {"build_workdir": expected}}
@@ -239,9 +235,7 @@ class TestBuildWorkdir:
         self, slurm_env
     ):
         """No shared_workdir -> setup_skypilot is a no-op returning {}."""
-        runmetadata = EntityRunMetadata(
-            build_id="b-1", targetrun_id="tr-1"
-        )
+        runmetadata = EntityRunMetadata(build_id="b-1", targetrun_id="tr-1")
         result = await slurm_env.setup_skypilot(
             setup_id="setup-2", runmetadata=runmetadata
         )
@@ -265,16 +259,11 @@ class TestBuildWorkdir:
                 launch_id="bw-1",
                 launcher_config={"run": "hostname", "resources": {}},
                 config={},
-                setup_config={
-                    "skypilot": {"build_workdir": "/shared/builds/b/runs/r"}
-                },
+                setup_config={"skypilot": {"build_workdir": "/shared/builds/b/runs/r"}},
             )
 
         task_kwargs = mock_sky.Task.call_args[1]
-        assert (
-            task_kwargs["envs"]["GB_BUILD_WORKDIR"]
-            == "/shared/builds/b/runs/r"
-        )
+        assert task_kwargs["envs"]["GB_BUILD_WORKDIR"] == "/shared/builds/b/runs/r"
         run_script = task_kwargs["run"]
         assert run_script.startswith(
             'mkdir -p "$GB_BUILD_WORKDIR"\ncd "$GB_BUILD_WORKDIR"\n'
@@ -282,9 +271,7 @@ class TestBuildWorkdir:
         assert run_script.endswith("hostname")
 
     @pytest.mark.asyncio
-    async def test_launch_skypilot_skips_workdir_wiring_when_unset(
-        self, slurm_env
-    ):
+    async def test_launch_skypilot_skips_workdir_wiring_when_unset(self, slurm_env):
         """No build_workdir in setup_config -> run script is unchanged
         and GB_BUILD_WORKDIR is not exported."""
         mock_sky = _mock_sky()
@@ -325,9 +312,7 @@ class TestBuildWorkdir:
         assert "setup-td" not in slurm_env._setup_workdirs
 
     @pytest.mark.asyncio
-    async def test_teardown_skypilot_noop_when_no_stashed_workdir(
-        self, slurm_env
-    ):
+    async def test_teardown_skypilot_noop_when_no_stashed_workdir(self, slurm_env):
         """teardown_skypilot is a no-op when setup_id was not provisioned."""
         mock_sky = _mock_sky()
 
@@ -339,3 +324,122 @@ class TestBuildWorkdir:
 
         mock_sky.Task.assert_not_called()
         mock_sky.launch.assert_not_called()
+
+
+class TestSkypilotRetry:
+    @pytest.mark.asyncio
+    async def test_launch_skypilot_stashes_kwargs_for_replay(self, slurm_env):
+        """launch_skypilot must populate launch_kwargs[launch_id] so
+        retry_workload can replay the same args."""
+        mock_sky = _mock_sky()
+        launcher_config = {"run": "hostname", "resources": {"cloud": "slurm"}}
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            slurm_env._get_launch_ready_event("retry-1")
+            await slurm_env.launch_skypilot(
+                launch_id="retry-1",
+                launcher_config=launcher_config,
+                config={"foo": "bar"},
+                run_metadata={"build_id": "b-1"},
+                retry_enabled=True,
+                retry_transparently=False,
+            )
+
+        stashed = slurm_env.launch_kwargs["retry-1"]
+        assert stashed["launcher_config"] == launcher_config
+        assert stashed["config"] == {"foo": "bar"}
+        assert stashed["run_metadata"] == {"build_id": "b-1"}
+        assert stashed["retry_enabled"] is True
+        assert stashed["retry_transparently"] is False
+
+    def test_get_default_retry_strategies_returns_two_classes(self, slurm_env):
+        """Skypilot ships NCCLError + FileNotFound as defaults."""
+        from gbserver.resilience.strategies.file_not_found import (
+            FileNotFoundRetryStrategy,
+        )
+        from gbserver.resilience.strategies.nccl_error import NCCLErrorRetryStrategy
+
+        strategies = slurm_env._get_default_retry_strategies()
+        types = [type(s) for s in strategies]
+        assert NCCLErrorRetryStrategy in types
+        assert FileNotFoundRetryStrategy in types
+        assert len(strategies) == 2
+
+    @pytest.mark.asyncio
+    async def test_retry_workload_cleans_relaunches_and_signals(self, slurm_env):
+        """retry_workload calls cleanup_skypilot, then launch_skypilot with the
+        stashed kwargs, and sets the per-launch retry-complete event."""
+        slurm_env.launch_kwargs["retry-2"] = {
+            "launcher_config": {"run": "echo", "resources": {}},
+            "config": {},
+            "run_metadata": None,
+            "setup_config": None,
+            "retry_enabled": True,
+            "retry_transparently": None,
+        }
+        slurm_env._cluster_names["retry-2"] = "gb-retry-2"
+        retry_event = asyncio.Event()
+        slurm_env._skypilot_retry_complete_events["retry-2"] = retry_event
+
+        cleanup_calls: list = []
+        relaunch_calls: list = []
+
+        async def fake_cleanup(launch_id, **_):
+            cleanup_calls.append(launch_id)
+            slurm_env._cluster_names.pop(launch_id, None)
+
+        async def fake_launch(launch_id, **kw):
+            relaunch_calls.append((launch_id, kw))
+            slurm_env._cluster_names[launch_id] = f"gb-{launch_id}-new"
+
+        with (
+            patch.object(slurm_env, "cleanup_skypilot", fake_cleanup),
+            patch.object(slurm_env, "launch_skypilot", fake_launch),
+        ):
+            await slurm_env.retry_workload(
+                launch_id="retry-2", nodes_to_avoid=["bad-node"]
+            )
+
+        assert cleanup_calls == ["retry-2"]
+        assert len(relaunch_calls) == 1
+        assert relaunch_calls[0][0] == "retry-2"
+        # The stashed kwargs are forwarded verbatim (modulo missing keys
+        # filtered by launch_skypilot's `kwargs.get` calls).
+        assert relaunch_calls[0][1]["launcher_config"] == {
+            "run": "echo",
+            "resources": {},
+        }
+        assert retry_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_retry_workload_propagates_relaunch_failure(self, slurm_env):
+        """If launch_skypilot raises during retry, retry_workload re-raises
+        and the retry-complete event is NOT set."""
+        slurm_env.launch_kwargs["retry-3"] = {
+            "launcher_config": {"run": "echo"},
+            "config": {},
+            "run_metadata": None,
+            "setup_config": None,
+            "retry_enabled": True,
+            "retry_transparently": None,
+        }
+        retry_event = asyncio.Event()
+        slurm_env._skypilot_retry_complete_events["retry-3"] = retry_event
+
+        async def fake_cleanup(launch_id, **_):
+            pass
+
+        async def fake_launch(*_args, **_kw):
+            raise RuntimeError("boom")
+
+        with (
+            patch.object(slurm_env, "cleanup_skypilot", fake_cleanup),
+            patch.object(slurm_env, "launch_skypilot", fake_launch),
+        ):
+            with pytest.raises(RuntimeError, match="boom"):
+                await slurm_env.retry_workload(launch_id="retry-3")
+
+        assert not retry_event.is_set()

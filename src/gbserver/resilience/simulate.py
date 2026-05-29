@@ -80,6 +80,12 @@ _PAYLOADS: dict[str, str] = {
             "pod_placement": {"sim-pod-0": "sim-node-1"},
         }
     ),
+    # NOTE: The "message" string must match one of NCCLErrorRetryStrategy's
+    # regex patterns (see strategies/nccl_error.py NCCL_ERROR_PATTERNS), or
+    # the strategy votes "no retry" and the synthetic event passes through
+    # without firing retry_workload. The strategy scans `event.payload.msg`
+    # as a flat string — JSON structure doesn't matter, only that the regex
+    # matches somewhere in the JSON-serialized message body.
     "nccl_error": json.dumps(
         {
             "state": "Failed",
@@ -88,7 +94,7 @@ _PAYLOADS: dict[str, str] = {
                 {
                     "object_type": "AppWrapper",
                     "reason": "Unhealthy",
-                    "message": "NCCL error ncclRemoteError: A call failed possibly due to a network error",
+                    "message": "RuntimeError: NCCL Error 3: internal error",
                     "object_name": "sim-appwrapper",
                 }
             ],
