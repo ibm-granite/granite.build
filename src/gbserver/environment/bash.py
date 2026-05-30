@@ -51,11 +51,11 @@ class Bash(Environment):
     Used to run bash scripts.
     """
 
-    launched_processes: Dict[str, Process]
+    _launched_processes: Dict[str, Process]
     env: dict[str, Any]
 
     def __init__(self: Self, event_q: asyncio.Queue, **kwargs) -> None:
-        self.launched_processes = {}
+        self._launched_processes = {}
         self.env = {}
         super().__init__(event_q=event_q, **kwargs)
 
@@ -166,7 +166,7 @@ class Bash(Environment):
                 cwd=cwd,  # type: ignore[arg-type]
                 env=env,
             )
-            self.launched_processes[launch_id] = process
+            self._launched_processes[launch_id] = process
             self._release_monitors(launch_id)
         except FileNotFoundError as fe:
             # logger.error("Command not found: %s", command_list)
@@ -193,7 +193,7 @@ class Bash(Environment):
         assert event_q is not None, "the event_q is None"
         assert entityrun_metadata is not None, "the entityrun_metadata is None"
         await self._monitor_logs_of_async_subprocess_all(
-            self.launched_processes[launch_id],
+            self._launched_processes[launch_id],
             event_q,
             event_log_parser_configs,
             entityrun_metadata,

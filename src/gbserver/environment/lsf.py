@@ -146,14 +146,14 @@ class Lsf(Environment):
             **kwargs,
         )
 
-        self.launched_jobs: Dict[str, str] = {}
+        self._launched_jobs: Dict[str, str] = {}
         # self.created_setup_files: Dict[str, str] = {}
         self.key_file_path: Optional[str] = None
         self.log_paths: Dict[str, str] = {}
         # for existing llmb-lite jobs, launch id -> {'jobid': 'xxxx'}
-        self.existing_jobids: Dict[str, ExistingBsubJobs] = {}
+        self._existing_jobids: Dict[str, ExistingBsubJobs] = {}
         # Store launch kwargs for retry capability
-        self.launch_kwargs: Dict[str, Dict] = {}
+        self._launch_kwargs: Dict[str, Dict] = {}
         # Coordination for RetryHandler-driven retries: signal monitor_bsub_monitor
         self._lsf_retry_complete_events: Dict[str, asyncio.Event] = {}
         # Launch asset dirs to delete at teardown, after all pipeline steps finish.
@@ -266,8 +266,8 @@ class Lsf(Environment):
         Called by RetryHandler when LsfTransientErrorRetryStrategy triggers.
         Re-launches the job and signals monitor_bsub_monitor via the coordination event.
         """
-        original_kwargs = self.launch_kwargs.get(launch_id, {})
-        job_id = self.launched_jobs.get(launch_id, launch_id)
+        original_kwargs = self._launch_kwargs.get(launch_id, {})
+        job_id = self._launched_jobs.get(launch_id, launch_id)
 
         msg = f"⚠️ LSF error: JobID={job_id}. Retrying..."
         self._send_message(msg=msg, **original_kwargs)
@@ -606,13 +606,13 @@ class Lsf(Environment):
         existing_jobid = config_lsf_bsub.jobid
         if existing_jobid != "":
             logger.warning("there is an existing LSF job: %s", config_lsf_bsub)
-            self.existing_jobids[launch_id] = ExistingBsubJobs(job_id=existing_jobid)
+            self._existing_jobids[launch_id] = ExistingBsubJobs(job_id=existing_jobid)
             log_path = config_lsf_bsub.log_path
             assert (
                 log_path != ""
             ), f"invalid config_lsf_bsub.log_path: {step_config_section}"
             self._set_log_path(launch_id=launch_id, log_path=log_path)
-            self.launched_jobs[launch_id] = existing_jobid
+            self._launched_jobs[launch_id] = existing_jobid
             self._release_monitors(launch_id)
             msg = f"⚡ LSF job has already been launched with JobID={existing_jobid}"
             self._send_message(msg=msg, **kwargs)
@@ -693,10 +693,10 @@ class Lsf(Environment):
             job_id_match = re.search(r"Job <(\d+)> is submitted", stdout)
             if job_id_match:
                 job_id = job_id_match.group(1)
-                self.launched_jobs[launch_id] = job_id
+                self._launched_jobs[launch_id] = job_id
                 self._release_monitors(launch_id)
                 # Store launch kwargs for retry capability
-                self.launch_kwargs[launch_id] = {
+                self._launch_kwargs[launch_id] = {
                     "targetsteprun_asset_dir": targetsteprun_asset_dir,
                     **kwargs,
                 }
@@ -854,7 +854,7 @@ class Lsf(Environment):
         )
 
         enabled, retry_transparently = self._get_step_retry_config(
-            self.launch_kwargs.get(launch_id, {}),
+            self._launch_kwargs.get(launch_id, {}),
         )
         async with self._with_retry_handler(
             launch_id,
@@ -881,7 +881,7 @@ class Lsf(Environment):
                     stop_event = self._get_launch_stopped_event(
                         launch_id=current_launch_id
                     )
-                    job_id = self.launched_jobs[current_launch_id]
+                    job_id = self._launched_jobs[current_launch_id]
                     log_file_path = self._get_log_path(launch_id=current_launch_id)
 
                     log_stream_source: Optional[LogStreamSource] = None
@@ -1791,13 +1791,13 @@ class Lsf(Environment):
 
     async def _bkill(self: Self, launch_id: str, **kwargs) -> None:
         """Kill the LSF job associated with launch_id via bkill."""
-        job_id = self.launched_jobs.get(launch_id)
+        job_id = self._launched_jobs.get(launch_id)
         if not job_id:
             logger.warning("no jobid found for launch_id %s", launch_id)
             return
 
-        if launch_id in self.existing_jobids:
-            t1 = self.existing_jobids[launch_id]
+        if launch_id in self._existing_jobids:
+            t1 = self._existing_jobids[launch_id]
             assert (
                 job_id == t1.job_id
             ), f"launch_id {launch_id}: job id mismatch, current {job_id} stored {t1.job_id}"
