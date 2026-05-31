@@ -6,6 +6,21 @@ Build orchestration for LLM pipelines. Define multi-step model workflows in YAML
 
 _This repository is currently in alpha. The code and documentation are under active development and may change frequently as we work to improve usability and reliability. Contributions and feedback are welcome, but please be aware that breaking changes may occur._
 
+## Contents
+
+- [What is Granite.Build?](#what-is-granitebuild)
+- [Quick start](#quick-start)
+- [Example `build.yaml`](#example-buildyaml)
+- [Repository layout](#repository-layout)
+- [Features](#features)
+- [Supported environments](#supported-environments)
+- [CLI](#cli)
+- [REST API](#rest-api)
+- [Documentation](#documentation)
+- [Try the demos](#try-the-demos)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## What is Granite.Build?
 
 Granite.Build orchestrates LLM build pipelines. You describe your workflow in a `build.yaml` file — which models to download, how to fine-tune them, what evaluations to run — and Granite.Build executes each step in the environment you choose: a local Docker container, a Kubernetes cluster, a cloud GPU instance, or a plain bash process on your laptop.
@@ -40,12 +55,43 @@ build.yaml ──→ gb build start ──→ gbserver REST API
 
 The **BuildWatcher** polls storage for pending builds and creates a **BuildRunner** for each one. The runner walks the target graph, resolving dependencies and launching steps through the configured **Environment** (Docker, Kubernetes, Bash, RunPod, or SkyPilot). Each step can pull inputs from and push outputs to **artifact stores** selected by URI scheme (`hf://`, `file://`, `git://`, `cos://`).
 
-### Example build.yaml
+## Quick start
+
+Five commands to a running build, using the bundled `standalone-quickstart` sample.
+
+```bash
+# 1. Clone and enter the repo
+git clone https://github.com/ibm-granite/granite.build.git
+cd granite.build
+
+# 2. Create the venv and install (no Artifactory or cloud creds needed)
+make standalone-venv PYTHON=python3.13
+source .venv/bin/activate
+
+# 3. Start the standalone server, pointed at the bundled sample space
+gbserver standalone --space-dir samples/standalone/standalone-quickstart
+
+# 4. In another terminal, activate the venv and submit the sample build
+source .venv/bin/activate
+export GB_ENVIRONMENT=STANDALONE
+gb build start -f samples/standalone/standalone-quickstart/build.yaml
+
+# 5. Watch progress
+gb build status <build-id>
+gb build log <build-id>
+```
+
+The sample runs a single step in a local bash process — no Docker required. To switch backends, edit the `environment_uri` line in
+[`samples/standalone/standalone-quickstart/build.yaml`](samples/standalone/standalone-quickstart/build.yaml); the file has `bash`, `docker`, `runpod`, and `skypilot` options pre-commented.
+
+For a longer walkthrough of the same path, see [`docs/getting-started.md`](docs/getting-started.md).
+
+## Example `build.yaml`
 
 A minimal pipeline that runs a single step in a Docker container:
 
 ```yaml
-granite.build:
+llm.build:                   # alias: granite.build (both keys are accepted)
   name: my-build
   targets:
     download:
@@ -63,7 +109,7 @@ granite.build:
 A multi-target pipeline chains stages through bindings:
 
 ```yaml
-granite.build:
+llm.build:
   name: tune-and-eval
   targets:
     download:
@@ -88,16 +134,23 @@ granite.build:
         - step_uri: space://steps/eval
 ```
 
-## Repository Layout
+For the full schema, see [`docs/users/build-yaml-reference.md`](docs/users/build-yaml-reference.md).
 
-| Directory | Description |
-|-----------|-------------|
-| `src/gbserver/` | Build orchestration server (REST API, build engine, storage) |
-| `src/gbcli/` | CLI client for interacting with gbserver |
-| `src/gbcommon/` | Shared types and utilities |
-| `test/` | Test suites for all components |
-| `samples/` | Sample build configs, environments, and steps |
-| `scripts/` | Helper scripts including the standalone demo |
+## Repository layout
+
+| Path | Description |
+|------|-------------|
+| `src/gbserver/` | Build orchestration server (REST API, build engine, storage). |
+| `src/gbcli/` | CLI client (`gb`) for interacting with gbserver. |
+| `src/gbcommon/` | Shared types and utilities. |
+| `docs/` | User, operator, and contributor docs — start at [`docs/README.md`](docs/README.md). |
+| `samples/` | Sample build configs, environments, and steps. The [`standalone-quickstart`](samples/standalone/standalone-quickstart/) is the canonical first build. |
+| `examples/` | Worked examples for specific scenarios. |
+| `assets/` | Reusable templates referenced from builds. |
+| `test/` | Test suites for all components. |
+| `scripts/` | Helper scripts including the standalone and SLURM demos. |
+| `k8s/` | Helm charts for production Kubernetes deployment. |
+| `Makefile` | `make standalone-venv`, `make demo-venv`, `make image`, format/lint targets. |
 
 ## Features
 
@@ -109,173 +162,7 @@ granite.build:
 - **Standalone mode** — SQLite + thread-based execution, no external services needed
 - **Lineage tracking** — records data provenance of builds, targets, and artifacts
 
-## Standalone Setup Guide
-
-### Prerequisites
-
-- Python 3.11+ (3.12 or 3.13 recommended)
-- Docker or Podman with a running daemon (for container-based steps)
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/ibm-granite/granite.build.git
-cd granite.build
-
-# Create a virtual environment and install
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[standalone,thirdparty]"
-```
-
-This installs both the server (`gbserver`) and the CLI client (`gb`) with standalone (SQLite + NATS) and third-party (Docker, SkyPilot, W&B) execution support.
-
-### Starting the server
-
-```bash
-gbserver standalone --space-dir ./my-builds
-```
-
-This starts the REST API on port 8080 and the build watcher in a single process. The `--space-dir` flag points to a directory containing your build configurations, environments, and steps.
-
-### Using the CLI
-
-With the server running, use `gb` to manage builds:
-
-```bash
-# Submit a build
-gb build start build.yaml
-
-# List all builds
-gb build list
-
-# Get build details
-gb build get <build-id>
-
-# Cancel a running build
-gb build cancel <build-id>
-
-# View artifacts
-gb artifact list <build-id>
-```
-
-Run `gb --help` for the full command reference.
-
-## Running the Demo
-
-The repository includes an end-to-end demo that runs TRL fine-tuning and unitxt evaluation in Docker containers.
-
-### Prerequisites
-
-- Docker or Podman with a running daemon
-- For macOS with Podman: the VM needs at least 4 GB of RAM (`podman machine set --memory 4096`)
-
-### Setup
-
-```bash
-make demo-venv PYTHON=python3.13
-source .venv/bin/activate
-```
-
-### Run
-
-```bash
-# Run both TRL fine-tuning and unitxt evaluation
-bash scripts/demo-standalone.sh
-
-# TRL fine-tuning only
-bash scripts/demo-standalone.sh --trl-only
-
-# unitxt evaluation only (lighter, good for low-memory systems)
-bash scripts/demo-standalone.sh --unitxt-only
-
-# Force CPU mode (skip GPU auto-detection)
-GBSERVER_DEMO_CPU=1 bash scripts/demo-standalone.sh
-```
-
-The demo starts a standalone server, builds a container image (on first run), submits the builds, and streams progress to the terminal.
-
-### SLURM Demo (via SkyPilot)
-
-Runs the same TRL fine-tuning workload on a local Docker-based SLURM cluster via SkyPilot, with artifact push to MinIO (S3-compatible object storage).
-
-#### Prerequisites
-
-- Docker (or Podman) with a running daemon
-- Python 3.11+ (3.12 or 3.13 recommended)
-- No cloud credentials needed — everything runs locally
-
-#### Setup (from scratch)
-
-```bash
-# 1. Create virtual environment with SkyPilot support
-make g4os-skypilot-venv PYTHON=python3.13
-source .venv/bin/activate
-
-# 2. Start MinIO (S3-compatible artifact store)
-make minio-setup
-
-# 3. Start the Docker SLURM cluster (slurmctld + 2 compute nodes)
-#    This also connects MinIO to the SLURM network
-make slurm-setup
-
-# 4. Verify SkyPilot sees the SLURM cluster
-sky check slurm
-```
-
-#### Run
-
-```bash
-# Run both TRL fine-tuning and unitxt evaluation on SLURM
-bash scripts/demo-slurm.sh
-
-# TRL fine-tuning only
-bash scripts/demo-slurm.sh --trl-only
-
-# unitxt evaluation only
-bash scripts/demo-slurm.sh --unitxt-only
-```
-
-The demo submits builds that run on the SLURM cluster via SkyPilot. When training completes, an `s3push` step automatically uploads the checkpoint to MinIO. First run takes 5-10 minutes (SkyPilot installs dependencies on the SLURM nodes).
-
-#### Verify artifacts in MinIO
-
-```bash
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
-
-# Fine-tuning checkpoint
-aws --endpoint-url http://localhost:9000 s3 ls s3://gb-checkpoints/outputs/trl-finetune/ --recursive
-
-# Evaluation results
-aws --endpoint-url http://localhost:9000 s3 ls s3://gb-checkpoints/outputs/unitxt-eval/ --recursive
-```
-
-#### Teardown
-
-```bash
-make slurm-teardown
-make minio-teardown
-```
-
-#### How it works
-
-```
-build.yaml ──→ gbserver ──→ SkyPilot ──→ SLURM (sbatch)
-                                              │
-                                    TRL trains on compute node
-                                              │
-                                    Artifact signal emitted
-                                              │
-                              pushasset_cosstore auto-queues s3push
-                                              │
-                                    s3push uploads to MinIO
-                                              │
-                                    Build completes SUCCESS
-```
-
-## Supported Environments
+## Supported environments
 
 | Environment | Platform | GPU Support | Status |
 |-------------|----------|-------------|--------|
@@ -286,49 +173,59 @@ build.yaml ──→ gbserver ──→ SkyPilot ──→ SLURM (sbatch)
 | RunPod | Cloud | Yes | Beta |
 | SkyPilot / AWS | Cloud | Yes | Beta |
 
-## CLI Reference
+## CLI
 
-### gb (client)
-
-The CLI client is available as multiple equivalent entry points: `gb`, `gbcli`, `llmbuild`, `llmb`, `lamb`.
+The CLI client is available as multiple equivalent entry points: `gb`, `gbcli`, `llmbuild`, `llmb`, `lamb`. The test harness ships as `gbtest`, and the server ships as `gbserver`.
 
 ```
-gb build       Build management (start, list, get, cancel, delete)
-gb model       Model operations
-gb artifact    Artifact management
-gb step        Step operations
-gb space       Space management
-gb template    Template operations
-gb auth        Authentication
-gb secret      Secret management
-gb admin       Administrative commands
-gb version     Show version
+gb               # client (build, artifact, space, secret, model, ...)
+gbserver         # server (standalone, rest-server, build-watch, build, ...)
+gbtest           # YAML-driven build assertions for tests
 ```
 
-### gbserver (server)
+Run `gb --help` or `gbserver --help` for top-level usage. Common flows:
 
+```bash
+gb build start -f build.yaml      # submit a build
+gb build list                     # list recent builds
+gb build status <build-id>        # show build state and per-step status
+gb build log <build-id>           # stream logs
+gb build cancel <build-id>        # cancel a running build
+gb artifact list                  # list artifacts
 ```
-gbserver standalone   Start all-in-one server (API + build watcher)
-gbserver rest-server  Start only the REST API
-gbserver build-watch  Start only the build watcher
-gbserver build        Run a build directly
+
+For the full subcommand reference, see [`docs/users/cli-reference.md`](docs/users/cli-reference.md).
+
+## REST API
+
+The REST API is available at `/api/v1` when the server is running. Start with `gbserver standalone` or `gbserver rest-server` and visit `http://localhost:8080/docs` for the interactive OpenAPI documentation. Authentication options (GitHub, IBMid, API key) are documented in [`docs/operators/multi-provider-authentication.md`](docs/operators/multi-provider-authentication.md).
+
+## Documentation
+
+The [`docs/`](docs/) directory has complete reference material. Three reading paths from the [docs index](docs/README.md):
+
+- **Writing a build** → [`build.yaml` reference](docs/users/build-yaml-reference.md), [CLI reference](docs/users/cli-reference.md), [HuggingFace push](docs/users/hf-push.md), [features](docs/features/) (retry, target reuse, lineage, gbtest).
+- **Running gbserver** → [`environment.yaml` reference](docs/operators/environment-yaml-config.md), [setup scripts](docs/operators/setup/), [SkyPilot Kubernetes setup](docs/operators/setup/skypilot-kubernetes-setup.md), [troubleshooting](docs/operators/troubleshooting.md).
+- **Changing gbserver** → [architecture diagram](docs/architecture/arch-diagram.md), [environment classes](docs/architecture/environment-classes.md), in-progress design notes under [`docs/superpowers/`](docs/superpowers/).
+
+## Try the demos
+
+End-to-end demos with TRL fine-tuning and unitxt evaluation. Each runs locally and tears down cleanly. Full setup instructions in [`docs/demos.md`](docs/demos.md).
+
+```bash
+# Standalone Docker — fine-tune + eval in containers on this machine
+make demo-venv PYTHON=python3.13 && source .venv/bin/activate
+bash scripts/demo-standalone.sh
+
+# SLURM via SkyPilot — same workload on a local Docker SLURM cluster, with MinIO push
+make g4os-skypilot-venv PYTHON=python3.13 && source .venv/bin/activate
+make minio-setup && make slurm-setup
+bash scripts/demo-slurm.sh
 ```
-
-## API
-
-The REST API is available at `/api/v1` when the server is running. Start with `gbserver standalone` or `gbserver rest-server` and visit `http://localhost:8080/docs` for the interactive OpenAPI documentation.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and pull request guidelines.
-
-## Code of Conduct
-
-This project follows the [Contributor Covenant v2.1](CODE_OF_CONDUCT.md).
-
-## Security
-
-To report a vulnerability, see [SECURITY.md](SECURITY.md).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, code style, and pull request guidelines. This project follows the [Contributor Covenant v2.1](CODE_OF_CONDUCT.md). To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 
 ## License
 

@@ -14,6 +14,7 @@ You're authoring a `build.yaml`, picking environments, and submitting builds wit
 - [CLI reference](users/cli-reference.md) — `gb` subcommands
 - [HuggingFace push](users/hf-push.md) — `hf://` URIs and `store_push`
 - [Bring your own image](users/bring-your-own-image.md) — custom container images
+- [Try the demos](demos.md) — TRL fine-tuning and unitxt evaluation, standalone or on SLURM
 - Working examples live in [`samples/`](../samples/) and [`examples/`](../examples/)
 
 Cross-cutting features you'll reach for:
