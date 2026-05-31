@@ -196,7 +196,7 @@ class K8s(Environment):
         )
         dmf = {} if self.config is None else self.config.config.get("dmf", {})
         self.dmf_use_aspera = dmf.get("use_aspera", K8S_USE_ASPERA)
-        self.__seen_pods: Set[str] = set()
+        self._seen_pods: Set[str] = set()
         self.kube_config: Optional[str] = None
         self.kube_context: Optional[str] = None
         self.ssl_verification: Optional[bool] = True
@@ -1753,7 +1753,7 @@ class K8s(Environment):
                             "Pod %s failed, removing from _seen_pods", pod_name
                         )
                         try:
-                            self.__seen_pods.remove(pod_name)
+                            self._seen_pods.remove(pod_name)
                         except KeyError as ke:
                             logger.error(
                                 "Failed to remove %s from _seen_pods: %s",
@@ -1768,7 +1768,7 @@ class K8s(Environment):
                         # remove pod from the _seen_pods set, so that, if a pod starts with
                         # exact same name, we can bring it back in the set of monitored pods
                         try:
-                            self.__seen_pods.remove(pod_name)
+                            self._seen_pods.remove(pod_name)
                         except KeyError as ke:
                             logger.error(
                                 "- Failed to remove %s from _seen_pods: %s",
@@ -1804,7 +1804,7 @@ class K8s(Environment):
                         # remove pod from the _seen_pods set, so that, if a pod starts with
                         # exact same name, we can bring it back in the set of monitored pods
                         try:
-                            self.__seen_pods.remove(pod_name)
+                            self._seen_pods.remove(pod_name)
                         except KeyError as ke:
                             logger.error(
                                 "failed to remove %s from _seen_pods: %s", pod_name, ke
@@ -1950,7 +1950,7 @@ class K8s(Environment):
             appwrapper_status = await self.get_appwrapper_status(api, appwrapper_name)
             pods = await self.get_helm_pods(api, appwrapper_name)
 
-            new_pods = [pod for pod in pods if pod not in self.__seen_pods]
+            new_pods = [pod for pod in pods if pod not in self._seen_pods]
 
             # If no active pods, and appwrapper status not 'Running', terminate monitoring
             if len(new_pods) == 0:
@@ -1991,7 +1991,7 @@ class K8s(Environment):
 
             # Handle new and restarted pods
             for pod in new_pods:
-                self.__seen_pods.add(pod)
+                self._seen_pods.add(pod)
                 await pods_queue.put(pod)
 
             await asyncio.sleep(5)  # Recheck every 5 seconds
