@@ -126,7 +126,7 @@ class Lsf(Environment):
     that use bsub to submit jobs.
     """
 
-    log_paths: Dict[str, str]  # launch_id -> output directory
+    _log_paths: Dict[str, str]  # launch_id -> output directory
 
     def __init__(
         self: Self,
@@ -148,8 +148,8 @@ class Lsf(Environment):
 
         self._launched_jobs: Dict[str, str] = {}
         # self.created_setup_files: Dict[str, str] = {}
-        self.key_file_path: Optional[str] = None
-        self.log_paths: Dict[str, str] = {}
+        self._key_file_path: Optional[str] = None
+        self._log_paths: Dict[str, str] = {}
         # for existing llmb-lite jobs, launch id -> {'jobid': 'xxxx'}
         self._existing_jobids: Dict[str, ExistingBsubJobs] = {}
         # Store launch kwargs for retry capability
@@ -337,7 +337,7 @@ class Lsf(Environment):
 
     async def _get_reachable_ssh_node(self: Self) -> str:
         """Try all of our nodes until we find one that we can ssh to."""
-        assert self.key_file_path, "Must be provided"
+        assert self._key_file_path, "Must be provided"
         tried_nodes = []
         reset_enabled = True
         async with self.node_search_lock:
@@ -729,11 +729,11 @@ class Lsf(Environment):
             }
         else:
             self.__setup_ssh(setup_id=setup_id, space_secrets=space_secrets)
-            assert self.key_file_path
+            assert self._key_file_path
             # await self.__preload_unreachable_ssh_nodes()
             await self._open_ssh_tunnel(setup_id)
             return {
-                "ssh_key_file": self.key_file_path,
+                "ssh_key_file": self._key_file_path,
                 "space_secrets": space_secrets,
                 "space": {"secret": ""},
             }
@@ -750,9 +750,9 @@ class Lsf(Environment):
             raise ValueError(
                 f"setup_id: {setup_id} invalid ssh_key named {ssh_key_secret_name} in space_secrets"
             )
-        self.key_file_path = self._create_ssh_key_file(setup_id)
-        # self.created_setup_files[self._get_ssh_key(setup_id)] = self.key_file_path # file removed in teardown method
-        logger.info("setup_id: %s SSH key written to %s", setup_id, self.key_file_path)
+        self._key_file_path = self._create_ssh_key_file(setup_id)
+        # self.created_setup_files[self._get_ssh_key(setup_id)] = self._key_file_path # file removed in teardown method
+        logger.info("setup_id: %s SSH key written to %s", setup_id, self._key_file_path)
 
     async def _open_ssh_tunnel(
         self: Self,
@@ -766,7 +766,7 @@ class Lsf(Environment):
         self._ssh_tunnel = SshTunnel(
             host=login_node,
             username=self.username,
-            key_file=self.key_file_path,
+            key_file=self._key_file_path,
             host_key_verification=self.ssh_host_key_verification,
             port_forwards=[(0, login_node, self.ssh_port)],
             max_sessions=self.ssh_max_sessions,
@@ -805,8 +805,8 @@ class Lsf(Environment):
         if ssh_tunnel is not None:
             await ssh_tunnel.close()
             self._ssh_tunnel = None
-        key_file_path = self.key_file_path
-        self.key_file_path = None
+        key_file_path = self._key_file_path
+        self._key_file_path = None
         if key_file_path and os.path.exists(key_file_path):
             temp_dir = os.path.dirname(key_file_path)
             try:
@@ -887,7 +887,7 @@ class Lsf(Environment):
                     log_stream_source: Optional[LogStreamSource] = None
                     if self.use_ssh:
                         ssh_opts = self.ssh_no_verification_flags()
-                        key_file_path = self.key_file_path
+                        key_file_path = self._key_file_path
                         if key_file_path:
                             ssh_opts.extend(["-i", key_file_path])
                         host = await self._get_reachable_ssh_node()
@@ -1580,7 +1580,7 @@ class Lsf(Environment):
             List[str]: list of command tokens (beginning with ssh) to execute the ssh command.
                 For example, ssh -i <key file path> someuser@somehost.
         """
-        key_file_path = self.key_file_path
+        key_file_path = self._key_file_path
         assert key_file_path
         ssh_cmd = ["ssh"]
         ssh_cmd.extend(["-p", str(self.ssh_port)])
@@ -1611,7 +1611,7 @@ class Lsf(Environment):
             List of command tokens for the SCP invocation.
         """
         scp_cmd = ["scp", "-r"]
-        key_file_path = self.key_file_path
+        key_file_path = self._key_file_path
         assert key_file_path, "SSH key file path is not set"
         scp_cmd.extend(["-i", key_file_path])
         scp_cmd.extend(self.ssh_no_verification_flags())
@@ -1643,7 +1643,7 @@ class Lsf(Environment):
             "-chavzP",
             "--stats",
         ]
-        key_file_path = self.key_file_path
+        key_file_path = self._key_file_path
         ssh_t1 = self.ssh_no_verification_flags()
         ssh_t2 = cmd_safe_join(ssh_t1)
         rsync_ssh = f"ssh -i {key_file_path} {ssh_t2}"
@@ -1763,7 +1763,7 @@ class Lsf(Environment):
         """Set the output directory for a specific launch ID"""
         if log_path != "":
             logger.info("setting launch_id %s -> log path %s", launch_id, log_path)
-            self.log_paths[launch_id] = log_path
+            self._log_paths[launch_id] = log_path
             return log_path
         logger.info(
             "computing log_path from config: %s and final_asset_dir: %s",
@@ -1782,12 +1782,12 @@ class Lsf(Environment):
         assert output_dir != "", f"invalid output_dir: {output_dir}"
         log_path = str(Path(output_dir) / "job.log")
         logger.info("setting launch_id %s -> computed log path %s", launch_id, log_path)
-        self.log_paths[launch_id] = log_path
+        self._log_paths[launch_id] = log_path
         return log_path
 
     def _get_log_path(self: Self, launch_id: str) -> str:
         """Get the output directory for a specific launch ID"""
-        return self.log_paths[launch_id]
+        return self._log_paths[launch_id]
 
     async def _bkill(self: Self, launch_id: str, **kwargs) -> None:
         """Kill the LSF job associated with launch_id via bkill."""
