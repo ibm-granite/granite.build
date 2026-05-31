@@ -17,12 +17,12 @@ This build template runs a Sage LLM evaluation on a SkyPilot environment. Evalua
 1. **HuggingFace token** — required for model downloads:
    ```bash
    export HF_TOKEN=hf_xxxxx
-   bash docs/setup/create-hf-secret.sh
+   bash docs/operators/setup/create-hf-secret.sh
    ```
 2. **GitHub Enterprise token** — required for sage to clone IBM-internal repos at runtime:
    ```bash
    export GHE_TOKEN=ghp_xxxxx
-   bash docs/setup/create-ghe-secret.sh
+   bash docs/operators/setup/create-ghe-secret.sh
    ```
 3. **S3/COS bucket** for evaluation results.
 4. **AWS/COS credentials** as environment variables:
@@ -60,4 +60,4 @@ gbserver build run-and-monitor assets/templates/Sage_Skypilot \
 
 ## Setup Reference
 
-See [SkyPilot Kubernetes Setup](../../docs/setup/skypilot-kubernetes-setup.md) for cluster configuration, image pull secrets, and SkyPilot API server deployment.
+See [SkyPilot Kubernetes Setup](../../docs/operators/setup/skypilot-kubernetes-setup.md) for cluster configuration, image pull secrets, and SkyPilot API server deployment.

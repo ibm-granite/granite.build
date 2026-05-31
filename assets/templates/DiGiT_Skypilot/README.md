@@ -58,4 +58,4 @@ gbserver build run-and-monitor assets/templates/DiGiT_Skypilot \
 
 ## Setup Reference
 
-See [SkyPilot Kubernetes Setup](../../docs/setup/skypilot-kubernetes-setup.md) for cluster configuration, image pull secrets, and SkyPilot API server deployment.
+See [SkyPilot Kubernetes Setup](../../docs/operators/setup/skypilot-kubernetes-setup.md) for cluster configuration, image pull secrets, and SkyPilot API server deployment.

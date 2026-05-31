@@ -124,7 +124,7 @@ settings in `environment.yaml` (see [Relationship with `environment.yaml`](#rela
 | `"hfstore"` | Push the output artifact to HuggingFace Hub. This is the only supported mode. |
 
 If `store_push` is absent the environment-level push configuration from `environment.yaml`
-is used instead (see [environment-yaml-config.md](environment-yaml-config.md)).
+is used instead (see [environment-yaml-config.md](../operators/environment-yaml-config.md)).
 
 #### `config.hf`
 
@@ -235,7 +235,7 @@ environment value.
 
 ## Related
 
-- [environment-yaml-config.md](environment-yaml-config.md) — environment-level asset store push configuration
+- [environment-yaml-config.md](../operators/environment-yaml-config.md) — environment-level asset store push configuration
 - `src/gbcommon/uri/hf.py` — `HfURI` URI parser and `resolve_resource_group_id`
 - `src/gbserver/asset/hfstore.py` — `Hfstore.build_hfpush_step_config` — builds the step config dict
 - `src/gbserver/types/buildconfig.py` — `BuildTargetOutputPushConfig`, `BuildTargetOutputConfig`

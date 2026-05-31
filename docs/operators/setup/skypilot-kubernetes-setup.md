@@ -270,7 +270,7 @@ The script is idempotent — safe to re-run. Existing resources are skipped.
 ### 1. Copy and Edit the Environment File
 
 ```bash
-cp docs/setup/skypilot-setup.env.template .env.skypilot
+cp docs/operators/setup/skypilot-setup.env.template .env.skypilot
 ```
 
 Edit `.env.skypilot` and fill in your credentials. At minimum you need:
@@ -285,7 +285,7 @@ For managed SkyPilot mode, set `SKYPILOT_MANAGED_ENABLED=true`.
 
 ```bash
 source .env.skypilot
-bash docs/setup/setup-skypilot.sh
+bash docs/operators/setup/setup-skypilot.sh
 ```
 
 The script will print `[CREATE]` for new resources and `[SKIP]` for existing ones.
@@ -494,4 +494,4 @@ If automatic labeling fails or doesn't apply all labels:
 - [Kubernetes Documentation](https://kubernetes.io/docs/)
 - [OpenShift Documentation](https://docs.openshift.com/)
 - [NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/overview.html)
-- [gbserver Environment Configuration](../README.md)
+- [gbserver Environment Configuration](../environment-yaml-config.md)

@@ -839,9 +839,9 @@ environment_configs:
 ### Skypilot `environment.yaml` (bare-host SLURM)
 
 This is the pattern used by the
-[`skypilot_slurm` integration test](../test/integration/standalone/buildrunner/skypilot_slurm/)
+[`skypilot_slurm` integration test](../../test/integration/standalone/buildrunner/skypilot_slurm/)
 against the local Docker SLURM cluster from
-[`docs/skypilot/local-infrastructure-setup.md`](skypilot/local-infrastructure-setup.md).
+[`docs/operators/skypilot-local-infrastructure.md`](skypilot-local-infrastructure.md).
 No `image_id` is set on the launchers because the local cluster has no Pyxis
 SPANK plugin.
 
