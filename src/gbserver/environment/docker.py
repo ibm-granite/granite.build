@@ -133,7 +133,9 @@ class Docker(Environment):
         **kwargs,
     ) -> None:
         self._launched_containers: Dict[str, str] = {}  # launch_id -> container_id
-        self._launched_workspaces: Dict[str, str] = {}  # launch_id -> host workspace dir
+        self._launched_workspaces: Dict[str, str] = (
+            {}
+        )  # launch_id -> host workspace dir
         self._extra_volumes: Dict[str, Dict] = {}
         self._docker_module = None  # cached docker module
         self._docker_client = None  # cached Docker client

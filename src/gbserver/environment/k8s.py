@@ -1749,7 +1749,9 @@ class K8s(Environment):
                         phase,
                     )
                     if phase in ["Failed", "Error"]:
-                        logger.error("Pod %s failed, removing from _seen_pods", pod_name)
+                        logger.error(
+                            "Pod %s failed, removing from _seen_pods", pod_name
+                        )
                         try:
                             self.__seen_pods.remove(pod_name)
                         except KeyError as ke:
