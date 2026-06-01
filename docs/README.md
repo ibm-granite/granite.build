@@ -50,8 +50,6 @@ Planned (not yet written): a narrative architecture tour, a build-object-model
 reference (`Build`/`Target`/`Step` lifecycles), and design docs for the asset
 stores, storage layer, API layer, messaging, and resilience modules.
 
-In-progress design and implementation notes live under [`superpowers/`](superpowers/).
-
 ## Other
 
 - [Dependency licenses](compliance/dependency-licenses.md) — Apache 2.0 audit

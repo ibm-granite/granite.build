@@ -206,7 +206,7 @@ The [`docs/`](docs/) directory has complete reference material. Three reading pa
 
 - **Writing a build** → [`build.yaml` reference](docs/users/build-yaml-reference.md), [CLI reference](docs/users/cli-reference.md), [HuggingFace push](docs/users/hf-push.md), [features](docs/features/) (retry, target reuse, lineage, gbtest).
 - **Running gbserver** → [`environment.yaml` reference](docs/operators/environment-yaml-config.md), [setup scripts](docs/operators/setup/), [SkyPilot Kubernetes setup](docs/operators/setup/skypilot-kubernetes-setup.md), [troubleshooting](docs/operators/troubleshooting.md).
-- **Changing gbserver** → [architecture diagram](docs/architecture/arch-diagram.md), [environment classes](docs/architecture/environment-classes.md), in-progress design notes under [`docs/superpowers/`](docs/superpowers/).
+- **Changing gbserver** → [architecture diagram](docs/architecture/arch-diagram.md), [environment classes](docs/architecture/environment-classes.md).
 
 ## Try the demos
 
