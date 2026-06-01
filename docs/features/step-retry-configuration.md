@@ -62,7 +62,7 @@ A build can override either setting for any individual step:
 targets:
   my-target:
     steps:
-      - step_uri: file://path/to/my-step
+      - step_uri: space://steps/my-step
         retry_enabled: true          # overrides retry_enabled_default from step.yaml
         retry_transparently: false  # overrides retry_transparently_default from step.yaml
 ```
@@ -114,7 +114,7 @@ The server uses the default (`GBSERVER_ENABLE_STEP_RETRY=true`). The build.yaml 
 targets:
   fine-tune:
     steps:
-      - step_uri: file://steps/my-training-step
+      - step_uri: space://steps/my-training-step
 ```
 
 `gbstep` has `retry_enabled_default: false`, so retries are **disabled**. A pod eviction will
@@ -131,7 +131,7 @@ The same setup, but the build explicitly enables retry for this run:
 targets:
   fine-tune:
     steps:
-      - step_uri: file://steps/my-training-step
+      - step_uri: space://steps/my-training-step
         retry_enabled: true
 ```
 
@@ -146,7 +146,7 @@ Retries are **enabled** for this step, regardless of the `gbstep` default.
 targets:
   upload:
     steps:
-      - step_uri: lh://steps/s3push
+      - step_uri: space://steps/s3push
         config:
           s3push_config:
             local_path: /output
@@ -166,7 +166,7 @@ artifact events from re-runs are filtered automatically.
 targets:
   upload:
     steps:
-      - step_uri: lh://steps/s3push
+      - step_uri: space://steps/s3push
         retry_enabled: false
         config:
           s3push_config:
@@ -187,7 +187,7 @@ A step is retried but produces non-idempotent artifact events that should all be
 targets:
   upload:
     steps:
-      - step_uri: file://steps/my-step
+      - step_uri: space://steps/my-step
         retry_enabled: true
         retry_transparently: false
 ```

@@ -73,17 +73,17 @@ assetstores:
     load:
       - mode: dmf_pull              # Supported modes: dmf_pull (default for LH in K8s)
         config:
-          step_uri: lh://steps/lhpull   # Optional: override the lhpull built-in step URI
+          step_uri: space://steps/lhpull   # Optional: override the lhpull built-in step URI
     push:
       - mode: dmf_push
         config:
-          step_uri: lh://steps/lhpush
+          step_uri: space://steps/lhpush
 
   - store_uri: cos://my-bucket      # IBM COS store URI
     load:
       - mode: cos_rclone
         config:
-          step_uri: lh://steps/cosrclone
+          step_uri: space://steps/cosrclone
     push:
       - mode: cos_rclone
 
@@ -142,11 +142,11 @@ assetstores:
           cache_path: /gpfs/cache/lh    # Required. Path on the cluster where LH data is
                                         # cached after dmf_pull.
           use_aspera: false             # Optional. Use Aspera for transfer. Default: false.
-          step_uri: lh://steps/lhpull  # Optional: override the lhpull step URI.
+          step_uri: space://steps/lhpull  # Optional: override the lhpull step URI.
     push:
       - mode: dmf_push
         config:
-          step_uri: lh://steps/lhpush
+          step_uri: space://steps/lhpush
 
   - store_uri: cos://my-bucket
     load:
