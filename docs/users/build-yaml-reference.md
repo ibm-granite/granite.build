@@ -103,7 +103,7 @@ outputs:
   model:
     uri: hf://huggingface.co/my-org/my-model
     store_push:
-      mode: hfstore
+      mode: hf_push 
       config:
         hf:
           private: false

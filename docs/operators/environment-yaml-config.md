@@ -80,6 +80,8 @@ assetstores:
   - store_uri: hf://huggingface.co/my-org/my-model # HuggingFace store URI
     load:
       - mode: hf_pull
+    push:
+      - mode: hf_push
 ```
 
 ---
@@ -143,6 +145,8 @@ assetstores:
         config:
           cache_path: /gpfs/cache/cos   # Required. Path on the cluster where COS data
                                         # is downloaded.
+    push:
+      - mode: cos_push
 ```
 
 ---

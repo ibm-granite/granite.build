@@ -219,8 +219,10 @@ The environment asset store may also declare a `push` block under `assetstores`:
 ```yaml
 assetstores:
   - store_uri: hf://huggingface.co/my-org
+    load:
+      - mode: hf_pull
     push:
-      - mode: hfstore
+      - mode: hf_push 
         config:
           hf:
             private: true
