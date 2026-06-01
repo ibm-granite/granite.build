@@ -130,7 +130,7 @@ Cloud execution via SkyPilot. Supports AWS (EC2 direct) or Kubernetes backends.
 
 **AWS (default):** Requires AWS credentials at `~/.aws/credentials`.
 
-**Kubernetes:** Edit `environments/skypilot/environment.yaml` and change `default_cloud` from `aws` to `kubernetes`. Requires kubeconfig at `~/.kube/config`. See `docs/setup/skypilot-kubernetes-setup.md` for K8s cluster setup.
+**Kubernetes:** Edit `environments/skypilot/environment.yaml` and change `default_cloud` from `aws` to `kubernetes`. Requires kubeconfig at `~/.kube/config`. See `docs/operators/setup/skypilot-kubernetes-setup.md` for K8s cluster setup.
 
 ```yaml
 environment_uri: space://environments/skypilot

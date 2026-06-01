@@ -69,27 +69,19 @@ config:
                                     # Default: /gb-read-write.
 
 assetstores:
-  - store_uri: lh://my-namespace    # Lakehouse store URI
-    load:
-      - mode: dmf_pull              # Supported modes: dmf_pull (default for LH in K8s)
-        config:
-          step_uri: lh://steps/lhpull   # Optional: override the lhpull built-in step URI
-    push:
-      - mode: dmf_push
-        config:
-          step_uri: lh://steps/lhpush
-
   - store_uri: cos://my-bucket      # IBM COS store URI
     load:
       - mode: cos_rclone
         config:
-          step_uri: lh://steps/cosrclone
+          step_uri: space://steps/cosrclone
     push:
       - mode: cos_rclone
 
-  - store_uri: hf://my-org/my-model # HuggingFace store URI
+  - store_uri: hf://huggingface.co/my-org/my-model # HuggingFace store URI
     load:
       - mode: hf_pull
+    push:
+      - mode: hf_push
 ```
 
 ---
@@ -135,18 +127,17 @@ config:
       - type: LsfTransientError     # LsfTransientErrorRetryStrategy.
 
 assetstores:
-  - store_uri: lh://my-namespace
+  - store_uri: hf://huggingface.co/my-org
     load:
-      - mode: dmf_pull              # Injects a lhpull built-in step before the main job.
+      - mode: hf_pull               # Injects an hfpull built-in step before the main job.
         config:
-          cache_path: /gpfs/cache/lh    # Required. Path on the cluster where LH data is
-                                        # cached after dmf_pull.
-          use_aspera: false             # Optional. Use Aspera for transfer. Default: false.
-          step_uri: lh://steps/lhpull  # Optional: override the lhpull step URI.
+          cache_path: /gpfs/cache/hf    # Required. Path on the cluster where HF data is
+                                        # cached after hf_pull.
+          step_uri: space://steps/hfpull  # Optional: override the hfpull step URI.
     push:
-      - mode: dmf_push
+      - mode: hf_push
         config:
-          step_uri: lh://steps/lhpush
+          step_uri: space://steps/hfpush
 
   - store_uri: cos://my-bucket
     load:
@@ -154,6 +145,8 @@ assetstores:
         config:
           cache_path: /gpfs/cache/cos   # Required. Path on the cluster where COS data
                                         # is downloaded.
+    push:
+      - mode: cos_push
 ```
 
 ---
@@ -685,11 +678,11 @@ config:
     enabled: true
     max_retries: 3
 assetstores:
-  - store_uri: lh://granite_dot_build.public
+  - store_uri: hf://huggingface.co/my-org
     load:
-      - mode: dmf_pull
+      - mode: hf_pull
     push:
-      - mode: dmf_push
+      - mode: hf_push
   - store_uri: cos://my-cos-bucket
     load:
       - mode: cos_rclone
@@ -722,13 +715,13 @@ config:
     enabled: true
     max_retries: 3
 assetstores:
-  - store_uri: lh://granite_dot_build.public
+  - store_uri: hf://huggingface.co/my-org
     load:
-      - mode: dmf_pull
+      - mode: hf_pull
         config:
-          cache_path: /gpfs/cache/lakehouse
+          cache_path: /gpfs/cache/hf
     push:
-      - mode: dmf_push
+      - mode: hf_push
 ```
 
 ### `step.yaml` for a K8s training step
@@ -839,9 +832,9 @@ environment_configs:
 ### Skypilot `environment.yaml` (bare-host SLURM)
 
 This is the pattern used by the
-[`skypilot_slurm` integration test](../test/integration/standalone/buildrunner/skypilot_slurm/)
+[`skypilot_slurm` integration test](../../test/integration/standalone/buildrunner/skypilot_slurm/)
 against the local Docker SLURM cluster from
-[`docs/skypilot/local-infrastructure-setup.md`](skypilot/local-infrastructure-setup.md).
+[`docs/operators/skypilot-local-infrastructure.md`](skypilot-local-infrastructure.md).
 No `image_id` is set on the launchers because the local cluster has no Pyxis
 SPANK plugin.
 
@@ -928,7 +921,7 @@ granite.build:
       environment_uri: space://environments/slurm
       inputs:
         input_model:
-          uri: hf:///datasets/ibm-research/some-dataset
+          uri: hf://huggingface.co/datasets/ibm-research/some-dataset
       outputs:
         output_model:
           uri: hf://huggingface.co/datasets/my-org/out_{{ binding.path | short_hash }}

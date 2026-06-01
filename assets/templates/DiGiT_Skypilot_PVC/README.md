@@ -73,5 +73,5 @@ Edit `build.yaml` and change `environment_uri` from `space://environments/skypil
 
 ## See Also
 
-- [SkyPilot Kubernetes Setup](../../docs/setup/skypilot-kubernetes-setup.md)
+- [SkyPilot Kubernetes Setup](../../docs/operators/setup/skypilot-kubernetes-setup.md)
 - [DiGiT Skypilot S3 Template](../DiGiT_Skypilot/) — S3 file_mounts variant

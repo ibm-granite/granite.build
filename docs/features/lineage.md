@@ -137,7 +137,7 @@ Each artifact becomes an OpenLineage `Dataset` with:
 - `name` = artifact name (or UUID if unnamed)
 - `facets` = `{artifact_id, artifact_uri, artifact_type}`
 
-Supported artifact types for lineage: model, dataset, fileset, table, bucket. HuggingFace buckets (`hf:///buckets/org/name`) are logged with `type="bucket"` in W&B.
+Supported artifact types for lineage: model, dataset, fileset, table, bucket. HuggingFace buckets (`hf://huggingface.co/buckets/org/name`) are logged with `type="bucket"` in W&B.
 
 ### Configuration
 

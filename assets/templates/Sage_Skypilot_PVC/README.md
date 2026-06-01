@@ -14,13 +14,13 @@ Runs a Sage LLM evaluation on SkyPilot using a PersistentVolumeClaim (PVC) for o
 1. **HuggingFace token** — required for model downloads:
    ```bash
    export HF_TOKEN=hf_xxxxx
-   bash docs/setup/create-hf-secret.sh
+   bash docs/operators/setup/create-hf-secret.sh
    ```
 
 2. **GitHub Enterprise token** — required for sage to clone IBM-internal repos at runtime:
    ```bash
    export GHE_TOKEN=ghp_xxxxx
-   bash docs/setup/create-ghe-secret.sh
+   bash docs/operators/setup/create-ghe-secret.sh
    ```
 
 3. **PVC and secrets configured in `~/.sky/config.yaml`** — The cluster-level SkyPilot config must mount the PVC at `/gb-data` and inject credentials from K8s secrets:
@@ -76,5 +76,5 @@ Edit `build.yaml` and change `environment_uri` from `space://environments/skypil
 
 ## See Also
 
-- [SkyPilot Kubernetes Setup](../../docs/setup/skypilot-kubernetes-setup.md)
+- [SkyPilot Kubernetes Setup](../../docs/operators/setup/skypilot-kubernetes-setup.md)
 - [Sage Skypilot S3 Template](../Sage_Skypilot/) — S3 file_mounts variant
