@@ -46,7 +46,7 @@ targets:
     environment_uri: space://environments/docker
     inputs:
       model:
-        uri: hf://ibm-granite/granite-3.3-2b-instruct
+        uri: hf://huggingface.co/ibm-granite/granite-3.3-2b-instruct
     outputs:
       model:
         uri: file:workspace/model
@@ -75,7 +75,7 @@ not both.
 ```yaml
 inputs:
   base-model:
-    uri: hf://ibm-granite/granite-3.3-2b-instruct      # direct: from outside
+    uri: hf://huggingface.co/ibm-granite/granite-3.3-2b-instruct      # direct: from outside
   training-data:
     binding: synthdata.dataset                          # bound: another target's output
 ```
@@ -101,7 +101,7 @@ outputs:
   checkpoint:
     uri: file:workspace/checkpoint
   model:
-    uri: hf://my-org/my-model
+    uri: hf://huggingface.co/my-org/my-model
     store_push:
       mode: hfstore
       config:

@@ -87,7 +87,7 @@ assetstores:
     push:
       - mode: cos_rclone
 
-  - store_uri: hf://my-org/my-model # HuggingFace store URI
+  - store_uri: hf://huggingface.co/my-org/my-model # HuggingFace store URI
     load:
       - mode: hf_pull
 ```
@@ -928,7 +928,7 @@ granite.build:
       environment_uri: space://environments/slurm
       inputs:
         input_model:
-          uri: hf:///datasets/ibm-research/some-dataset
+          uri: hf://huggingface.co/datasets/ibm-research/some-dataset
       outputs:
         output_model:
           uri: hf://huggingface.co/datasets/my-org/out_{{ binding.path | short_hash }}

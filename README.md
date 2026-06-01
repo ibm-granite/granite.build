@@ -98,7 +98,7 @@ llm.build:                   # alias: granite.build (both keys are accepted)
       environment_uri: space://environments/docker
       inputs:
         model:
-          uri: hf://ibm-granite/granite-3.3-2b-instruct
+          uri: hf://huggingface.co/ibm-granite/granite-3.3-2b-instruct
       outputs:
         model:
           uri: file:workspace/model
