@@ -61,7 +61,7 @@ URIs in `build.yaml` can use Jinja expressions against the build context:
 ```yaml
 outputs:
   download_file:
-    uri: hf:///datasets/my-org/run-{{ binding.path | short_hash }}
+    uri: hf://huggingface.co/datasets/my-org/run-{{ binding.path | short_hash }}
 ```
 
 `binding`, `run_metadata`, and the space variables are available. The rendered URI
@@ -79,7 +79,7 @@ llm.build:
     publish_dataset:
       outputs:
         out:
-          uri: hf:///datasets/my-org/my-dataset-{{ binding.path | short_hash }}
+          uri: hf://huggingface.co/datasets/my-org/my-dataset-{{ binding.path | short_hash }}
       steps:
         - step_uri: space://steps/download
           config: { ... }
@@ -102,7 +102,7 @@ llm.build:
     <target-name>:
       outputs:
         <output-name>:
-          uri: hf:///datasets/<org>/<repo>
+          uri: hf://huggingface.co/datasets/<org>/<repo>
           store_push:                # <-- optional, omit when defaults suffice
             mode: "hfstore"
             config:
@@ -173,7 +173,7 @@ both the K8s and LSF push paths before the step is dispatched.
 ```yaml
 outputs:
   download_file:
-    uri: hf:///datasets/my-org/my-dataset-{{ binding.path | short_hash }}
+    uri: hf://huggingface.co/datasets/my-org/my-dataset-{{ binding.path | short_hash }}
     store_push:
       mode: "hfstore"
       config:
@@ -186,7 +186,7 @@ outputs:
 ```yaml
 outputs:
   tuned_model:
-    uri: hf:///my-org/tuned-model-{{ binding.path | short_hash }}
+    uri: hf://huggingface.co/my-org/tuned-model-{{ binding.path | short_hash }}
     store_push:
       mode: "hfstore"
       config:
@@ -202,7 +202,7 @@ call at push time:
 ```yaml
 outputs:
   tuned_model:
-    uri: hf:///my-org/tuned-model-{{ binding.path | short_hash }}
+    uri: hf://huggingface.co/my-org/tuned-model-{{ binding.path | short_hash }}
     store_push:
       mode: "hfstore"
       config:
@@ -218,7 +218,7 @@ The environment asset store may also declare a `push` block under `assetstores`:
 
 ```yaml
 assetstores:
-  - store_uri: hf://my-org
+  - store_uri: hf://huggingface.co/my-org
     push:
       - mode: hfstore
         config:
