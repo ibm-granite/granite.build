@@ -90,8 +90,8 @@ from gbcli.services.service_version import get_gbserver_version
 from gbcli.utils.gbconstants import (
     USER_NOT_LOGGED_IN_ERROR_MESSAGE,
     hf_token,
-    is_standalone,
 )
+from gbcommon.types.gbenvconfig import is_standalone
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gh_auth import get_user
 

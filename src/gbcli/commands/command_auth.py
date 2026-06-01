@@ -9,7 +9,8 @@ from requests.exceptions import ConnectionError
 
 from gbcli.client import GBClient
 from gbcli.utils.click_utils import FileOrStringParamType
-from gbcli.utils.gbconstants import PROJECT_NAME, is_standalone
+from gbcli.utils.gbconstants import PROJECT_NAME
+from gbcommon.types.gbenvconfig import is_standalone
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.utils import check_runnable_browser
 from gbcommon.types.constants import get_gh_credentials_section

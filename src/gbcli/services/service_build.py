@@ -47,9 +47,8 @@ from gbcli.utils.gbconstants import (
     USER_NOT_LOGGED_IN_ERROR_MESSAGE,
     VPN_CONNECTION_ERROR_MESSAGE,
     gb_environment,
-    gb_environment_config,
-    is_standalone,
 )
+from gbcommon.types.gbenvconfig import gb_environment_config, is_standalone
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gbserver import (
     cancel_build,
@@ -208,7 +207,7 @@ def build_init(
 
     else:
         # from a template
-        branch_name = gb_environment_config()["branch_space"]
+        branch_name = gb_environment_config().space_config_branch_name
         if space:
             template_repo = resolved_space.get("git_repo_uri")
         elif template_repo != None:
@@ -228,7 +227,7 @@ def build_init(
                     branch_name = template_repo_split[1]
         else:
             template_repo = ASSETS_REPO_URL
-            branch_name = gb_environment_config()["branch_assets"]
+            branch_name = gb_environment_config().branch_assets
 
         if callback:
             time.sleep(1)
@@ -282,7 +281,7 @@ def build_start(
     validation_type: str = "static",
 ) -> str:
 
-    gbserver_build_update = gb_environment_config()["feature_flags"][
+    gbserver_build_update = gb_environment_config().feature_flags[
         "gbserver_build_update"
     ]
     if gbserver_build_update == False:
@@ -891,7 +890,7 @@ def build_list(
 
     gbserver_username = None if list_all else username
 
-    gbserver_build_update = gb_environment_config()["feature_flags"][
+    gbserver_build_update = gb_environment_config().feature_flags[
         "gbserver_build_update"
     ]
     if gbserver_build_update == False:
@@ -1178,7 +1177,7 @@ def build_log(
         )
 
     application_name = (
-        gb_environment_config()["server_log_application_name"] if runner else None
+        gb_environment_config().server_log_application_name if runner else None
     )
 
     if not all or follow:
@@ -1298,7 +1297,7 @@ def build_status(
     result_format: str,
     callback=None,
 ) -> List[Any]:
-    gbserver_build_events = gb_environment_config()["feature_flags"][
+    gbserver_build_events = gb_environment_config().feature_flags[
         "gbserver_build_events"
     ]
 
@@ -1654,7 +1653,7 @@ def build_monitor(
     id_format: Optional[str] = None,
     callback=None,
 ) -> Tuple[Any, List[Any], List[Any], List[Any]]:
-    gbserver_build_events = gb_environment_config()["feature_flags"][
+    gbserver_build_events = gb_environment_config().feature_flags[
         "gbserver_build_events"
     ]
 
@@ -2870,7 +2869,7 @@ def update_build(
     if append and tags is not None and len(tags) == 0:
         raise ValueError("--append cannot be used with empty tags")
 
-    gbserver_build_update = gb_environment_config()["feature_flags"][
+    gbserver_build_update = gb_environment_config().feature_flags[
         "gbserver_build_update"
     ]
     if gbserver_build_update == False:

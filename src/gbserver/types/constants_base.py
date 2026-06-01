@@ -18,14 +18,8 @@
 
 import os
 
-
-def getenv_boolean(envname: str, default: bool = False) -> bool:
-    """Evaluate the environment variable and return as a boolean value"""
-    value = os.getenv(envname)
-    if value is None:
-        return default
-    value_normalized = str(value).lower()
-    return value_normalized not in ["false", "null", "undefined", "no", "0", ""]
+from gbcommon.types.gbenvconfig import DEFAULT_GB_ENVIRONMENT  # noqa: F401
+from gbcommon.types.gbenvconfig import getenv_boolean  # noqa: F401
 
 
 ENV_VAR_PREFIX = "GBSERVER"
@@ -40,7 +34,6 @@ ENV_VAR_GBSERVER_BACKEND_SERVER_NAMESPACE_DEV = (
     ENV_VAR_PREFIX + "_BACKEND_SERVER_NAMESPACE_DEV"
 )
 
-DEFAULT_GB_ENVIRONMENT = "PROD"
 BACKEND_SERVER_NAMESPACE_PROD = os.getenv(
     ENV_VAR_GBSERVER_BACKEND_SERVER_NAMESPACE_PROD, "llm-build-prod"
 )

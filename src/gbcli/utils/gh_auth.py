@@ -117,7 +117,7 @@ def get_token_using_device_code(
 def get_user(token: str) -> UserInfoResponse:
     import os
 
-    from gbcli.utils.gbconstants import is_standalone
+    from gbcommon.types.gbenvconfig import is_standalone
     from gbcli.utils.gbcredentials import GBCredentials
 
     if is_standalone():

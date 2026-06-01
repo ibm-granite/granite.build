@@ -8,213 +8,27 @@ import sys
 from sys import platform
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN, is_public_github
+from gbcommon.types.gbenvconfig import (
+    gb_env_normalize,
+    gb_environment_config,
+    getenv_boolean,
+)
 
 logger = logging.getLogger(__name__)
 
 PROJECT_NAME = "LLM.build"
 
 
-def getenv_boolean(envname: str, default: bool = False) -> bool:
-    """Evaluate the environment variable and return as a boolean value"""
-    value = os.getenv(envname)
-    if value is None:
-        return default
-    value_normalized = str(value).lower()
-    return not value_normalized in ["false", "null", "undefined", "no", "0", ""]
-
-
 # environments
 GB_ENVIRONMENT_DEFAULT = "PROD"
-ENVIRONMENT_CONFIGS = {
-    "PROD_OLD": {
-        "env": "PROD_OLD",
-        "lakehouse_environment": "PROD",
-        "gbserver_host": "https://granite-build-prod.bx.cloud9.ibm.com",
-        "default_space": "public",
-        "dmf_ui": "https://ui.dmf.vpc-int.res.ibm.com",
-        "config_spaces": "gb.spaces",
-        "config_profile": "gb.spaces.profiles",
-        "server_log_application_name": "granite-build-prod",
-        "branch_assets": "gbspace-config",
-        "branch_space": "gbspace-config",
-        "hf_organization": "ibm-research",
-        "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean(
-                "GBSERVER_BUILD_UPDATE", True
-            ),  # Default false
-        },
-    },
-    "PROD_INTERNAL_OLD": {
-        "env": "PROD_INTERNAL_OLD",
-        "lakehouse_environment": "PROD",
-        "gbserver_host": "https://granite-build-prod.ris3-int-dal12-ocp-9ca4d14d48413d18ce61b80811ba4308-0000.us-south.containers.appdomain.cloud",
-        "default_space": "public",
-        "dmf_ui": "https://ui.dmf.vpc-int.res.ibm.com",
-        "config_spaces": "gb.spaces",
-        "config_profile": "gb.spaces.profiles",
-        "server_log_application_name": "granite-build-prod",
-        "branch_assets": "gbspace-config",
-        "branch_space": "gbspace-config",
-        "hf_organization": "ibm-research",
-        "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean(
-                "GBSERVER_BUILD_UPDATE", True
-            ),  # Default false
-        },
-    },
-    "PROD": {
-        "env": "PROD",
-        "lakehouse_environment": "PROD",
-        "gbserver_host": "https://api.llm-build-prod.vpc-int.res.ibm.com",
-        "default_space": "public",
-        "dmf_ui": "https://ui.dmf.vpc-int.res.ibm.com",
-        "config_spaces": "gb.spaces",
-        "config_profile": "gb.spaces.profiles",
-        "server_log_application_name": "llm-build-prod",
-        "branch_assets": "gbspace-config",
-        "branch_space": "gbspace-config",
-        "hf_organization": "ibm-research",
-        "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean(
-                "GBSERVER_BUILD_UPDATE", True
-            ),  # Default false
-        },
-    },
-    "PROD_INTERNAL": {
-        "env": "PROD_INTERNAL",
-        "lakehouse_environment": "PROD",
-        "gbserver_host": "https://api.llm-build-prod.vpc-int.res.ibm.com",
-        "default_space": "public",
-        "dmf_ui": "https://ui.dmf.vpc-int.res.ibm.com",
-        "config_spaces": "gb.spaces",
-        "config_profile": "gb.spaces.profiles",
-        "server_log_application_name": "llm-build-prod",
-        "branch_assets": "gbspace-config",
-        "branch_space": "gbspace-config",
-        "hf_organization": "ibm-research",
-        "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean(
-                "GBSERVER_BUILD_UPDATE", True
-            ),  # Default false
-        },
-    },
-    "STAGING": {
-        "env": "STAGING",
-        "lakehouse_environment": "STAGING",
-        "gbserver_host": "https://api.llm-build-staging.vpc-int.res.ibm.com",
-        "default_space": "public",
-        "dmf_ui": "https://ui.dmf-staging.vpc-int.res.ibm.com",
-        "config_spaces": "staging.gb.spaces",
-        "config_profile": "staging.gb.spaces.profiles",
-        "server_log_application_name": "llm-build-staging",
-        "branch_assets": "gbspace-config-dev",
-        "branch_space": "gbspace-config",
-        "hf_organization": "ibm-research",
-        "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),
-        },
-    },
-    "DEV": {
-        "env": "DEV",
-        "lakehouse_environment": "STAGING",
-        "gbserver_host": "https://api.llm-build-dev.vpc-int.res.ibm.com",
-        "default_space": "public",
-        "dmf_ui": "https://ui2.dmf-staging.vpc-int.res.ibm.com",
-        "config_spaces": "dev.gb.spaces",
-        "config_profile": "dev.gb.spaces.profiles",
-        "server_log_application_name": "llm-build-dev",
-        "branch_assets": "gbspace-config-dev",
-        "branch_space": "gbspace-config",
-        "hf_organization": "ibm-research",
-        "feature_flags": {
-            "gbserver_build_events": getenv_boolean(
-                "GBSERVER_BUILD_EVENTS", True
-            ),  # Default false
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),  # Default false
-            "gbserver_build_update": getenv_boolean(
-                "GBSERVER_BUILD_UPDATE", True
-            ),  # Default false
-        },
-    },
-    "STANDALONE": {
-        "env": "STANDALONE",
-        "lakehouse_environment": "",
-        "gbserver_host": os.environ.get("GBSERVER_HOST", "http://localhost:8080"),
-        "default_space": "standalone",
-        "dmf_ui": "",
-        "config_spaces": "",
-        "config_profile": "",
-        "server_log_application_name": "gbserver-standalone",
-        "branch_assets": "",
-        "branch_space": "",
-        "branch_builds": "",
-        "hf_organization": "ibm-research",
-        "feature_flags": {
-            "build_start_via_github": False,
-            "gbserver_build_events": True,
-            "gbserver_artifact_filter": False,
-            "gbserver_build_update": True,
-        },
-    },
-}
 
 
 def gb_env_formating(value: str, type: str) -> str:
-    if value:
-        if value.lower() == "prod" or value.lower() == "production":
-            return "PROD"
-        elif value.lower() == "prod_internal" or value.lower() == "production_internal":
-            return "PROD_INTERNAL"
-        elif value.lower() == "staging":
-            return "STAGING"
-        elif value.lower() == "dev" or value.lower() == "development":
-            return "DEV"
-        elif value.lower() == "prod_old" or value.lower() == "production_old":
-            return "PROD_OLD"
-        elif (
-            value.lower() == "prod_internal_old"
-            or value.lower() == "production_internal_old"
-        ):
-            return "PROD_INTERNAL_OLD"
-        elif value.lower() == "standalone" or value.lower() == "local":
-            return "STANDALONE"
-
-        else:
-            sys.exit(f"Error: {type} has invalid value '{value}'")
-
-    return None
+    """Normalize env name with sys.exit on invalid input (CLI behavior)."""
+    try:
+        return gb_env_normalize(value, type)
+    except ValueError as e:
+        sys.exit(str(e))
 
 
 def gb_environment() -> str:
@@ -234,19 +48,8 @@ def hf_token() -> str:
     return HF_TOKEN
 
 
-def gb_environment_config(gb_env=None):
-    if gb_env is None:
-        gb_env = gb_environment()
-    return ENVIRONMENT_CONFIGS[gb_env]
-
-
-def is_standalone() -> bool:
-    return gb_environment() == "STANDALONE"
-
-
 # HuggingFace defaults
-HF_ORGANIZATION_DEFAULT = gb_environment_config().get("hf_organization", "ibm-research")
-
+HF_ORGANIZATION_DEFAULT = gb_environment_config().hf_organization or "ibm-research"
 
 # gbcli
 _GBCLI_REPO_ORG = "ibm-granite" if is_public_github() else "granite-dot-build"
@@ -312,14 +115,13 @@ RITS_TEMP = 1.0
 RITS_TOP_P = 0.7
 
 # Lakehouse
-LAKEHOUSE_ENVIRONMENT = gb_environment_config()["lakehouse_environment"]
+LAKEHOUSE_ENVIRONMENT = gb_environment_config().lakehouse_environment
 LAKEHOUSE_NAMESPACE = "granite_dot_build.public"
 LAKEHOUSE_MODEL_SHARED_TABLE = "model_shared"
 LAKEHOUSE_MODEL_TABLE = "model"
 LAKEHOUSE_FILESET_SHARED_TABLE_NAME = "fileset_shared"
 LAKEHOUSE_FILESET_TABLE_NAME = "fileset"
 REVISION_DEFAULT = "granite-dot-build"
-LAKEHOUSE_FILESET_TABLE_NAME = "fileset"
 HF_REVISION_DEFAULT = "main"
 GB_DMF_USE_CLASSIC_LOADER = getenv_boolean(
     "GB_DMF_USE_CLASSIC_LOADER", False
@@ -329,7 +131,7 @@ GB_DMF_LOADER_SIZE_LIMIT = 1073741824  # 1GB limit
 
 # GBServer
 GBSERVER_INSTANCE = os.environ.get(
-    "GBSERVER_HOST", gb_environment_config()["gbserver_host"]
+    "GBSERVER_HOST", gb_environment_config().gbserver_host
 )
 GBSERVER_BUILD_API = f"{GBSERVER_INSTANCE}/api/v1/builds/"
 GBSERVER_ARTIFACT_API = f"{GBSERVER_INSTANCE}/api/v1/artifacts/"
@@ -362,7 +164,7 @@ For any help on how to use each option in more details see `llmb artifact push -
 
 
 # DMF
-DMF_URL = gb_environment_config()["dmf_ui"]
+DMF_URL = gb_environment_config().dmf_ui
 
 # for tabulate
 ARTIFACT_LINEAGE_DEFAULT_HEADERS = [
@@ -398,20 +200,6 @@ ARTIFACT_LINEAGE_FULL_HEADERS = [
     "JOB_OUTPUT_STATS",
 ]
 
-# ARTIFACT_LIST_HEADERS = [
-#     "UUID",
-#     "NAME",
-#     "URI",
-#     "TYPE",
-#     "CREATED_BY_BUILD_ID",
-#     "CREATED_BY_STEP_ID",
-#     "SPACE_NAME",
-#     "USERNAME",
-#     "LINEAGE_HASH",
-#     "CREATED_AT",
-#     "METADATA",
-#     "TAGS",
-# ]
 ARTIFACT_LIST_HEADERS = [
     "UUID",
     "NAME",
@@ -480,9 +268,6 @@ SECRET_SPACE_ADMIN_ERROR = "Only space admin can perform this operation. Run 'll
 
 # time delta for comparison against saved timestamp
 SPACE_TIMESTAMP_DELTA_HOURS = 2
-
-# HuggingFace Organization
-HF_ORGANIZATION_DEFAULT = gb_environment_config().get("hf_organization", "")
 
 
 def to_int(value: str, type: str) -> str:

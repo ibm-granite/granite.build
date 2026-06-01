@@ -10,8 +10,8 @@ from gbcli.utils.gbconstants import (
     STEP_FILENAME,
     STEP_README_FILENAME,
     STEPS_REPO_FOLDER,
-    gb_environment_config,
 )
+from gbcommon.types.gbenvconfig import gb_environment_config
 from gbcli.utils.gh_clone import download_repo_file, list_repo_tree
 from gbcli.utils.spaceutil import resolve_space
 from gbcli.utils.utils import parse_markdown_str, remove_suffix
@@ -33,7 +33,7 @@ def list_steps(
     callback=None,
 ) -> List[Any]:
 
-    branch_name = gb_environment_config()["branch_space"]
+    branch_name = gb_environment_config().space_config_branch_name
     if space:
         s = resolve_space(github_token, space, callback)
         step_repo = s["git_repo_uri"] if s is not None else None
@@ -55,7 +55,7 @@ def list_steps(
                 branch_name = step_repo_split[1]
     else:
         step_repo = ASSETS_REPO_URL
-        branch_name = gb_environment_config()["branch_assets"]
+        branch_name = gb_environment_config().branch_assets
 
     if callback is not None:
         callback(
@@ -146,7 +146,7 @@ def describe_step(
     space: Optional[str] = None,
     callback=None,
 ) -> Any:
-    branch_name = gb_environment_config()["branch_space"]
+    branch_name = gb_environment_config().space_config_branch_name
     if space:
         s = resolve_space(github_token, space, callback)
         step_repo = s["git_repo_uri"] if s is not None else None
@@ -168,7 +168,7 @@ def describe_step(
                 branch_name = step_repo_split[1]
     else:
         step_repo = ASSETS_REPO_URL
-        branch_name = gb_environment_config()["branch_assets"]
+        branch_name = gb_environment_config().branch_assets
 
     steps_org, steps_name = step_repo.split("/")[3:]
     steps_name = remove_suffix(steps_name, ".git")

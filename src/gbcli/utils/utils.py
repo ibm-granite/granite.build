@@ -42,8 +42,8 @@ from gbcli.utils.gbconstants import (
     GBSERVER_ARTIFACT_API,
     SPACE_REPO_NAME,
     SPACE_REPO_ORG,
-    gb_environment_config,
 )
+from gbcommon.types.gbenvconfig import gb_environment_config
 from gbcli.utils.gbserver import get_artifacts, make_gbserver_call
 from gbcli.utils.gh_auth import get_user
 from gbcli.utils.spaceutil import resolve_space
@@ -344,7 +344,7 @@ def decode_uri(
 def compare_env_uri(uri: str):
     return (
         uri.split("/")[2],
-        str(gb_environment_config()["lakehouse_environment"]).lower(),
+        str(gb_environment_config().lakehouse_environment).lower(),
     )
 
 
@@ -628,7 +628,7 @@ def get_artifact_uuid(github_token: str, uri: str, callback=None):
 def get_build_lineage_url(build_id: str):
     url = f"{DMF_URL}/gb/builds/{build_id}"
 
-    if gb_environment_config()["env"] == "DEV":
+    if gb_environment_config().env == "DEV":
         url = url + "?gb_environment=DEV"
 
     return url

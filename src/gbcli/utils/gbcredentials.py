@@ -10,7 +10,8 @@ from requests.exceptions import ConnectionError
 from toml import TomlDecodeError
 
 from gbcli.utils.cli_config import get_local_gb_config
-from gbcli.utils.gbconstants import USER_NOT_LOGGED_IN_ERROR_MESSAGE, is_standalone
+from gbcli.utils.gbconstants import USER_NOT_LOGGED_IN_ERROR_MESSAGE
+from gbcommon.types.gbenvconfig import is_standalone
 from gbcommon.types.constants import get_gh_api_base, get_gh_credentials_section
 
 logger = logging.getLogger(__name__)

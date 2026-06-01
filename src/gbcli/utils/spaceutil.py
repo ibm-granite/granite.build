@@ -4,9 +4,8 @@ from datetime import datetime, timedelta
 from gbcli.utils.gbconstants import (
     SPACE_TIMESTAMP_DELTA_HOURS,
     gb_environment,
-    gb_environment_config,
-    is_standalone,
 )
+from gbcommon.types.gbenvconfig import gb_environment_config, is_standalone
 from gbcli.utils.gbcredentials import (
     ConfigLockException,
     GBConfig,
@@ -75,7 +74,7 @@ def resolve_space(github_token: str, space=None, callback=None):
     # Resolve space by name without going through the profile layer.
     if is_standalone():
         space_name = (
-            gb_environment_config()["default_space"]
+            gb_environment_config().default_space
             if (not space or space == "default")
             else space
         )
@@ -92,7 +91,7 @@ def resolve_space(github_token: str, space=None, callback=None):
             )
         return found_space
 
-    config_profile_name = gb_environment_config()["config_profile"]
+    config_profile_name = gb_environment_config().config_profile
     if config_profile_name:
         gbconfig = GBConfig()
         config_profile = gbconfig.get_section(config_profile_name)
@@ -169,7 +168,7 @@ def save_new_spaces(remote_spaces, callback=None):
     # Saving the remote space list in the config file
     gbconfig = GBConfig()
 
-    space_section = gb_environment_config()["config_spaces"]
+    space_section = gb_environment_config().config_spaces
     gbconfig.set(
         "expiration_timestamp",
         expiration_timestamp,
@@ -207,7 +206,7 @@ def get_spaces(github_token: str, callback=None):
 
     try:
         gbconfig = GBConfig()
-        config_spaces_name = gb_environment_config()["config_spaces"]
+        config_spaces_name = gb_environment_config().config_spaces
         spaces = gbconfig.get("spaces", config_spaces_name)
         expiration_timestamp = gbconfig.get("expiration_timestamp", config_spaces_name)
         if not spaces:
@@ -236,7 +235,7 @@ def get_profile(profile_name="default"):
     try:
         format_profile_check()
         gbconfig = GBConfig()
-        config_profile_name = gb_environment_config()["config_profile"]
+        config_profile_name = gb_environment_config().config_profile
         profile_arr = gbconfig.get_section(config_profile_name)
         profile = next(
             (profile for profile in profile_arr if profile.get("name") == profile_name),
@@ -255,7 +254,7 @@ def save_profile(space_key: str, space_name: str, profile_name="default"):
     format_profile_check()
     profile_space = "profiles"
     gbconfig = GBConfig()
-    config_spaces = gb_environment_config()["config_spaces"]
+    config_spaces = gb_environment_config().config_spaces
     space_profiles = gbconfig.get(profile_space, config_spaces)
     for profile in space_profiles:
         if profile.get("name") == profile_name:
@@ -269,7 +268,7 @@ def save_profile(space_key: str, space_name: str, profile_name="default"):
 def format_profile_check():
     profile_space = "profiles"
     gbconfig = GBConfig()
-    config_section = gb_environment_config()["config_spaces"]
+    config_section = gb_environment_config().config_spaces
     space_profiles = gbconfig.get(profile_space, config_section)
 
     # confirm if existing_space_profiles is an array or does not exist

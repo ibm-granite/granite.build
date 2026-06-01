@@ -8,8 +8,8 @@ from gbcli.utils.gbconstants import (
     BUILD_LOGALL_PAGE_SIZE,
     GBSERVER_BUILD_API,
     PROJECT_NAME,
-    gb_environment_config,
 )
+from gbcommon.types.gbenvconfig import gb_environment_config
 from gbcli.utils.gbserver import get_builds, make_gbserver_call
 from gbcli.utils.log_query import run_logquery
 from gbcli.utils.spaceutil import resolve_space
@@ -91,7 +91,7 @@ def server_log(
             },
         )
 
-    application_name = gb_environment_config()["server_log_application_name"]
+    application_name = gb_environment_config().server_log_application_name
 
     if not all or follow:
         if all:

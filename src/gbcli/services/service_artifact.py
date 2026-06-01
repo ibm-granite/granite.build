@@ -22,8 +22,8 @@ from gbcli.utils.gbconstants import (
     REVISION_DEFAULT,
     SPACE_DEFAULT_NAME,
     USER_NOT_LOGGED_IN_ERROR_MESSAGE,
-    gb_environment_config,
 )
+from gbcommon.types.gbenvconfig import gb_environment_config
 from gbcli.utils.gbserver import (
     archive_artifact,
     gb_server_request,
@@ -818,7 +818,7 @@ def register_artifact_gbserver_hf(
     if not github_token:
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
 
-    env = env if env else str(gb_environment_config()["lakehouse_environment"]).lower()
+    env = env if env else str(gb_environment_config().lakehouse_environment).lower()
 
     if revision is None:
         revision = HF_REVISION_DEFAULT
@@ -879,7 +879,7 @@ def register_artifact_gbserver(
     lh_env = (
         lh_env
         if lh_env
-        else str(gb_environment_config()["lakehouse_environment"]).lower()
+        else str(gb_environment_config().lakehouse_environment).lower()
     )
 
     if namespace is None:
@@ -1028,7 +1028,7 @@ def artifact_list(
         )
 
     gbserver_username = None if list_all else username
-    gbserver_artifact_filter = gb_environment_config()["feature_flags"][
+    gbserver_artifact_filter = gb_environment_config().feature_flags[
         "gbserver_artifact_filter"
     ]
     if gbserver_artifact_filter:

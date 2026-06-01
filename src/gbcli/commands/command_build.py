@@ -34,8 +34,8 @@ from gbcli.utils.gbconstants import (
     CLIPBOARD_CHAR,
     DMF_URL,
     PROJECT_NAME,
-    is_standalone,
 )
+from gbcommon.types.gbenvconfig import is_standalone
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.lh_auth import AuthException
 from gbcli.utils.utils import (

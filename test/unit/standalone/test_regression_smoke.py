@@ -271,7 +271,7 @@ class TestEnvironmentConfig:
         assert config.default_sql_schema == "standalone"
         assert config.default_pod_namespace == "default"
         assert config.lakehouse_environment == ""
-        assert config.dmf_instance == ""
+        assert config.dmf_ui == ""
 
 
 # ---------------------------------------------------------------------------
