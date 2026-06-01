@@ -103,7 +103,7 @@ llm.build:                   # alias: granite.build (both keys are accepted)
         model:
           uri: file:workspace/model
       steps:
-        - step_uri: space://steps/hfpull
+        - step_uri: space://steps/somestep
 ```
 
 A multi-target pipeline chains stages through bindings:
@@ -117,7 +117,7 @@ llm.build:
       outputs:
         model: { uri: file:workspace/model }
       steps:
-        - step_uri: space://steps/hfpull
+        - step_uri: space://steps/somestep
     fine-tune:
       environment_uri: space://environments/docker
       inputs:

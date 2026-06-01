@@ -51,7 +51,7 @@ targets:
       model:
         uri: file:workspace/model
     steps:
-      - step_uri: space://steps/hfpull
+      - step_uri: space://steps/somestep
 ```
 
 | Field            | Type                       | Required | Default | Notes |
