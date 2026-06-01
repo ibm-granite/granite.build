@@ -23,6 +23,7 @@ Cross-cutting features you'll reach for:
 - [Step retry](features/step-retry-configuration.md) — retry a single step within one build
 - [`gbtest`](features/gbtest.md) — YAML-driven assertions for your builds
 - [Retry overview](features/retry.md) — how build- and step-level retry fit together
+- [Lineage tracking](features/lineage.md) — DMF Lakehouse and OpenLineage/W&B backends for build provenance
 
 ### I'm running gbserver
 
