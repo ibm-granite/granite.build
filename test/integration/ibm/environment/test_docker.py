@@ -62,7 +62,7 @@ class TestDockerInit:
         event_q = asyncio.Queue()
         env = Docker(event_q=event_q)
         assert env.type == "Docker"
-        assert env.launched_containers == {}
+        assert env._launched_containers == {}
 
     def test_has_launch_types(self):
         from gbserver.environment.docker import Docker
@@ -132,8 +132,8 @@ class TestLaunchDocker:
                 step={"name": "train"},
             )
 
-        assert launch_id in docker_env.launched_containers
-        assert docker_env.launched_containers[launch_id] == "container-abc123"
+        assert launch_id in docker_env._launched_containers
+        assert docker_env._launched_containers[launch_id] == "container-abc123"
         assert docker_env._get_launch_ready_event(launch_id).is_set()
         mock_docker.from_env.return_value.containers.run.assert_called_once()
 
@@ -257,7 +257,7 @@ class TestMonitorDockerLog:
         )
         env = Docker(event_q=event_q, environment_config=config)
         launch_id = "monitor-test-001"
-        env.launched_containers[launch_id] = "container-mon-123"
+        env._launched_containers[launch_id] = "container-mon-123"
         env._release_monitors(launch_id)
         return env, launch_id, event_q
 
@@ -319,7 +319,7 @@ class TestMonitorDockerLog:
     @pytest.mark.asyncio
     async def test_monitor_no_container_returns(self, docker_env_with_container):
         env, launch_id, event_q = docker_env_with_container
-        env.launched_containers.pop(launch_id)
+        env._launched_containers.pop(launch_id)
 
         await env.monitor_docker_log(
             launch_id=launch_id,
@@ -338,7 +338,7 @@ class TestCleanupDocker:
         config = EnvironmentConfig(name="test-docker", type="Docker", config={})
         env = Docker(event_q=event_q, environment_config=config)
         launch_id = "cleanup-test-001"
-        env.launched_containers[launch_id] = "container-clean-456"
+        env._launched_containers[launch_id] = "container-clean-456"
         return env, launch_id
 
     @pytest.mark.asyncio
@@ -355,7 +355,7 @@ class TestCleanupDocker:
 
         mock_container.stop.assert_called_once_with(timeout=30)
         mock_container.remove.assert_called_once_with(force=True)
-        assert launch_id not in env.launched_containers
+        assert launch_id not in env._launched_containers
 
     @pytest.mark.asyncio
     async def test_cleanup_sets_stop_event(self, docker_env_with_container):
@@ -396,7 +396,7 @@ class TestCleanupDocker:
         ):
             await env.cleanup_docker(launch_id=launch_id)
 
-        assert launch_id not in env.launched_containers
+        assert launch_id not in env._launched_containers
 
 
 class TestDockerImportGuard:

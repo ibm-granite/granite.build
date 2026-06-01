@@ -433,8 +433,8 @@ class Environment(ABC):
 
         Args:
             launch_params_for_id: The full params dict for this launch_id
-                                  (``self.launch_params[launch_id]`` or
-                                  ``self.launch_kwargs[launch_id]``).
+                                  (``self._launch_params[launch_id]`` or
+                                  ``self._launch_kwargs[launch_id]``).
 
         Returns:
             ``(enabled, retry_transparently)`` — the resolved retry enabled flag

@@ -51,12 +51,12 @@ class Bash(Environment):
     Used to run bash scripts.
     """
 
-    launched_processes: Dict[str, Process]
-    env: dict[str, Any]
+    _launched_processes: Dict[str, Process]
+    _env: dict[str, Any]
 
     def __init__(self: Self, event_q: asyncio.Queue, **kwargs) -> None:
-        self.launched_processes = {}
-        self.env = {}
+        self._launched_processes = {}
+        self._env = {}
         super().__init__(event_q=event_q, **kwargs)
 
     async def setup_nohup(self: Self, **kwargs):
@@ -66,7 +66,7 @@ class Bash(Environment):
             value_str = (
                 str(value).encode("utf-8", "ignore").decode("unicode_escape")
             )  # Decode escaped sequences safely
-            self.env[key_str] = value_str
+            self._env[key_str] = value_str
 
     async def launch_nohup(
         self: Self,
@@ -99,7 +99,7 @@ class Bash(Environment):
             for key, value in config_env.items():
                 key_str = str(key).strip()
                 expanded_value = os.path.expandvars(str(value))
-                self.env[key_str] = str(expanded_value)
+                self._env[key_str] = str(expanded_value)
             launcher_config = kwargs.get("launcher_config", {}) or {}
             cwd = None
             working_dir = launcher_config.get("working_dir")
@@ -124,7 +124,7 @@ class Bash(Environment):
                 cwd = Path(".").resolve()
                 logger.info("Falling back to current working directory: %s", cwd)
 
-            env = {**self.env, **launcher_config.get("env", {})}
+            env = {**self._env, **launcher_config.get("env", {})}
             logger.debug(f"launch_nohup() called with launch_id={launch_id}")
             logger.debug(f"launcher_config = {launcher_config}")
             step_name = kwargs.get("step", {}).get("name", "")
@@ -166,7 +166,7 @@ class Bash(Environment):
                 cwd=cwd,  # type: ignore[arg-type]
                 env=env,
             )
-            self.launched_processes[launch_id] = process
+            self._launched_processes[launch_id] = process
             self._release_monitors(launch_id)
         except FileNotFoundError as fe:
             # logger.error("Command not found: %s", command_list)
@@ -193,7 +193,7 @@ class Bash(Environment):
         assert event_q is not None, "the event_q is None"
         assert entityrun_metadata is not None, "the entityrun_metadata is None"
         await self._monitor_logs_of_async_subprocess_all(
-            self.launched_processes[launch_id],
+            self._launched_processes[launch_id],
             event_q,
             event_log_parser_configs,
             entityrun_metadata,

@@ -22,8 +22,8 @@ from typing import Optional
 import click
 
 from gbserver.asset.assetstore import Assetstore
-from gbserver.buildwatcher.build_utils import finalize_build_status
-from gbserver.buildwatcher.buildrunner import BuildRunner
+from gbserver.buildrunner.build_utils import finalize_build_status
+from gbserver.buildrunner.buildrunner import BuildRunner
 from gbserver.commands.utils import MutexOption
 from gbserver.storage import singleton_storage
 from gbserver.storage.stored_build import StoredBuild

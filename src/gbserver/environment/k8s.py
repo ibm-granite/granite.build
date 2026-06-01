@@ -171,10 +171,10 @@ class K8s(Environment):
         node_health_tracker: Optional["NodeHealthTracker"] = None,
         **kwargs,
     ) -> None:
-        self.launched_releases: Dict[str, str] = {}
-        self.created_setup_secrets: Dict[str, str] = {}
-        self.launch_params: Dict[str, Dict] = {}  # Store launch params for retry
-        self.monitors: Dict[str, "AppWrapperMonitor"] = (
+        self._launched_releases: Dict[str, str] = {}
+        self._created_setup_secrets: Dict[str, str] = {}
+        self._launch_params: Dict[str, Dict] = {}  # Store launch params for retry
+        self._monitors: Dict[str, "AppWrapperMonitor"] = (
             {}
         )  # Store monitor instances for retry
         # Lazily retrieve the process-wide singleton if not explicitly passed
@@ -196,7 +196,7 @@ class K8s(Environment):
         )
         dmf = {} if self.config is None else self.config.config.get("dmf", {})
         self.dmf_use_aspera = dmf.get("use_aspera", K8S_USE_ASPERA)
-        self.seen_pods: Set[str] = set()
+        self._seen_pods: Set[str] = set()
         self.kube_config: Optional[str] = None
         self.kube_context: Optional[str] = None
         self.ssl_verification: Optional[bool] = True
@@ -355,7 +355,7 @@ class K8s(Environment):
                                 "retrying because secret creation failed, error: %s", se
                             )
                             await asyncio.sleep(1)
-                    self.created_setup_secrets[setup_id] = setup_id_hash
+                    self._created_setup_secrets[setup_id] = setup_id_hash
                     logger.info(
                         "Secret '%s' created successfully in namespace '%s'",
                         setup_id_hash,
@@ -368,9 +368,9 @@ class K8s(Environment):
         return {"space": {"secret": setup_id_hash}}
 
     async def teardown_helm(self: Self, setup_id: str):
-        if setup_id not in self.created_setup_secrets:
+        if setup_id not in self._created_setup_secrets:
             return
-        setup_id_hash = self.created_setup_secrets[setup_id]
+        setup_id_hash = self._created_setup_secrets[setup_id]
         async with await AtomicApiClient.create_api_client(
             kube_config_string=self.kube_config,
             kube_context=self.kube_context,
@@ -850,9 +850,9 @@ class K8s(Environment):
                         # ---------------
                     raise ValueError("helm install failed:") from e
         finally:
-            self.launched_releases[launch_id] = release_name
+            self._launched_releases[launch_id] = release_name
             # Store launch params for potential retry
-            self.launch_params[launch_id] = {
+            self._launch_params[launch_id] = {
                 "targetsteprun_asset_dir": targetsteprun_asset_dir,
                 "launcher_config": launcher_config,
                 "config": config,
@@ -890,7 +890,7 @@ class K8s(Environment):
                     )
 
                 merged_step_folder_path = merged_dir_path
-                appwrapper_name = self.launched_releases[launch_id]
+                appwrapper_name = self._launched_releases[launch_id]
                 assert self.config is not None, "K8s environment config is None"
                 namespace = self.config.config["namespace"]
 
@@ -966,9 +966,9 @@ class K8s(Environment):
         Performs helm uninstall with retry, then removes any orphaned RayClusters
         that may survive the uninstall.
         """
-        if launch_id not in self.launched_releases:
+        if launch_id not in self._launched_releases:
             return
-        release_name = self.launched_releases[launch_id]
+        release_name = self._launched_releases[launch_id]
         if release_name is None or release_name == "":
             return
 
@@ -1244,20 +1244,20 @@ class K8s(Environment):
         )
 
         # Get the original launch parameters
-        if launch_id not in self.launch_params:
+        if launch_id not in self._launch_params:
             raise ValueError(
                 f"[K8s launch_id {launch_id}] Cannot retry: launch parameters not found"
             )
 
         # Pause the monitor while we stop and restart the pod (see reset() below)
-        if launch_id in self.monitors:
-            self.monitors[launch_id].pause()
+        if launch_id in self._monitors:
+            self._monitors[launch_id].pause()
             logger.info(
                 "[K8s launch_id %s] Paused AppWrapperMonitor before helm uninstall",
                 launch_id,
             )
 
-        original_params = self.launch_params[launch_id].copy()
+        original_params = self._launch_params[launch_id].copy()
 
         # Step 1: Uninstall the current release
         try:
@@ -1275,7 +1275,7 @@ class K8s(Environment):
             # Continue with reinstall anyway, as the release might already be gone
 
         # Step 2: Wait for the AppWrapper to be fully deleted before reinstalling.
-        release_name = self.launched_releases.get(launch_id, "")
+        release_name = self._launched_releases.get(launch_id, "")
         await self._wait_for_appwrapper_deletion(launch_id, release_name)
 
         # Step 3: Add node anti-affinity configuration if nodes to avoid are specified
@@ -1332,8 +1332,8 @@ class K8s(Environment):
             )
 
             # Reset the AppWrapperMonitor state for the new workload
-            if launch_id in self.monitors:
-                self.monitors[launch_id].unpause()
+            if launch_id in self._monitors:
+                self._monitors[launch_id].unpause()
                 logger.info(
                     "[K8s launch_id %s] Unpaused AppWrapperMonitor for new workload",
                     launch_id,
@@ -1384,10 +1384,10 @@ class K8s(Environment):
         from gbserver.monitoring.rabbitmq_events_monitor import RabbitMQEventMonitor
 
         stop_event = self._get_launch_stopped_event(launch_id=launch_id)
-        release_name = self.launched_releases[launch_id]
+        release_name = self._launched_releases[launch_id]
 
         retry_enabled, retry_transparently = self._get_step_retry_config(
-            self.launch_params.get(launch_id, {}),
+            self._launch_params.get(launch_id, {}),
         )
         logger.info(
             "Starting sidecar monitoring for %s launch_id %s (retry: %s)",
@@ -1426,7 +1426,7 @@ class K8s(Environment):
                 stop_event=stop_event,
             )
             # Store monitor reference for retry access
-            self.monitors[launch_id] = appwrapper_monitor
+            self._monitors[launch_id] = appwrapper_monitor
             # Create RabbitMQ-based launch monitor with stop_event for termination
             rabbitmq_event_monitor = RabbitMQEventMonitor(
                 messaging_config=self.messaging_config,
@@ -1471,7 +1471,7 @@ class K8s(Environment):
         stop_event = self._get_launch_stopped_event(launch_id=launch_id)
         logger.info(
             "Starting event monitoring for %s launch_id %s",
-            self.launched_releases[launch_id],
+            self._launched_releases[launch_id],
             launch_id,
         )
         assert self.messaging_config is not None, "self.messaging_config is None"
@@ -1493,7 +1493,7 @@ class K8s(Environment):
 
         logger.info(
             "Event monitoring finished for %s, launch id = %s",
-            self.launched_releases[launch_id],
+            self._launched_releases[launch_id],
             launch_id,
         )
 
@@ -1528,11 +1528,11 @@ class K8s(Environment):
         """
         from gbserver.monitoring.appwrapper_monitor import AppWrapperMonitor
 
-        appwrapper_name = self.launched_releases[launch_id]
+        appwrapper_name = self._launched_releases[launch_id]
         stop_event = self._get_launch_stopped_event(launch_id=launch_id)
 
         retry_enabled, _ = self._get_step_retry_config(
-            self.launch_params.get(launch_id, {}),
+            self._launch_params.get(launch_id, {}),
         )
         logger.info(
             "Starting appwrapper monitoring for %s, launch_id %s (retry: %s)",
@@ -1603,7 +1603,7 @@ class K8s(Environment):
                             build_id,
                             launch_id,
                             pods_queue,
-                            self.launched_releases[launch_id],
+                            self._launched_releases[launch_id],
                         )
                     ),
                     asyncio.create_task(
@@ -1717,8 +1717,8 @@ class K8s(Environment):
                     # The monitored pod is usually still in the `Running` state when the stream ends
                     # Wait before exiting to find out what state was the pod in when it stopped running
                     # If the pod is in a `Failed` state, it is going to restart with the same name
-                    # and needs to be removed from the `seen_pods` set. If all other cases, do not
-                    # remove the pod from the `seen_pods` set; otherwise it will replay the entire log
+                    # and needs to be removed from the `_seen_pods` set. If all other cases, do not
+                    # remove the pod from the `_seen_pods` set; otherwise it will replay the entire log
                     phase = "Running"
                     running_count = 0
                     while phase == "Running":
@@ -1749,12 +1749,14 @@ class K8s(Environment):
                         phase,
                     )
                     if phase in ["Failed", "Error"]:
-                        logger.error("Pod %s failed, removing from seen_pods", pod_name)
+                        logger.error(
+                            "Pod %s failed, removing from _seen_pods", pod_name
+                        )
                         try:
-                            self.seen_pods.remove(pod_name)
+                            self._seen_pods.remove(pod_name)
                         except KeyError as ke:
                             logger.error(
-                                "Failed to remove %s from seen_pods: %s",
+                                "Failed to remove %s from _seen_pods: %s",
                                 pod_name,
                                 ke,
                             )
@@ -1763,13 +1765,13 @@ class K8s(Environment):
                     logger.error("- Error streaming logs for pod %s: %s", pod_name, ex)
                     line_counter = current_line_counter
                     if ex.reason == "Not Found" or ex.status == 404:
-                        # remove pod from the seen_pods set, so that, if a pod starts with
+                        # remove pod from the _seen_pods set, so that, if a pod starts with
                         # exact same name, we can bring it back in the set of monitored pods
                         try:
-                            self.seen_pods.remove(pod_name)
+                            self._seen_pods.remove(pod_name)
                         except KeyError as ke:
                             logger.error(
-                                "- Failed to remove %s from seen_pods: %s",
+                                "- Failed to remove %s from _seen_pods: %s",
                                 pod_name,
                                 ke,
                             )
@@ -1799,13 +1801,13 @@ class K8s(Environment):
                     )
                 except client.ApiException as ex:
                     if ex.reason == "Not Found" or ex.status == 404:
-                        # remove pod from the seen_pods set, so that, if a pod starts with
+                        # remove pod from the _seen_pods set, so that, if a pod starts with
                         # exact same name, we can bring it back in the set of monitored pods
                         try:
-                            self.seen_pods.remove(pod_name)
+                            self._seen_pods.remove(pod_name)
                         except KeyError as ke:
                             logger.error(
-                                "failed to remove %s from seen_pods: %s", pod_name, ke
+                                "failed to remove %s from _seen_pods: %s", pod_name, ke
                             )
                         logger.info("Stopped monitoring for shutdown pod %s", pod_name)
                         break
@@ -1948,7 +1950,7 @@ class K8s(Environment):
             appwrapper_status = await self.get_appwrapper_status(api, appwrapper_name)
             pods = await self.get_helm_pods(api, appwrapper_name)
 
-            new_pods = [pod for pod in pods if pod not in self.seen_pods]
+            new_pods = [pod for pod in pods if pod not in self._seen_pods]
 
             # If no active pods, and appwrapper status not 'Running', terminate monitoring
             if len(new_pods) == 0:
@@ -1989,7 +1991,7 @@ class K8s(Environment):
 
             # Handle new and restarted pods
             for pod in new_pods:
-                self.seen_pods.add(pod)
+                self._seen_pods.add(pod)
                 await pods_queue.put(pod)
 
             await asyncio.sleep(5)  # Recheck every 5 seconds
@@ -2463,9 +2465,9 @@ async def log_main() -> None:
         namespace=namespace, event_q=queue, environment_config=environment_config
     )
     k8s_monitor._get_launch_ready_event(launch_id).set()
-    k8s_monitor.launched_releases[launch_id] = launch_id
+    k8s_monitor._launched_releases[launch_id] = launch_id
     k8s_monitor._get_launch_ready_event(launch_id_1).set()
-    k8s_monitor.launched_releases[launch_id_1] = launch_id_1
+    k8s_monitor._launched_releases[launch_id_1] = launch_id_1
     event_configs: List[EventLogLineParserConfig] = []
     data = {"event_type": "ARTIFACT_EVENT", "line_regex": "{.*}$", "event_fields": []}
     event_config: EventLogLineParserConfig = EventLogLineParserConfig(**data)
@@ -2538,7 +2540,7 @@ async def log_main_multiple_instances() -> None:
         kube_context=kube_context_1,
     )
     k8s_monitor_1._get_launch_ready_event(launch_id_1).set()
-    k8s_monitor_1.launched_releases[launch_id_1] = launch_id_1
+    k8s_monitor_1._launched_releases[launch_id_1] = launch_id_1
 
     environment_config_2 = EnvironmentConfig.from_yaml(
         Path(env_cfg_file_2), context=None
@@ -2551,7 +2553,7 @@ async def log_main_multiple_instances() -> None:
         kube_context=kube_context_2,
     )
     k8s_monitor_2._get_launch_ready_event(launch_id_2).set()
-    k8s_monitor_2.launched_releases[launch_id_2] = launch_id_2
+    k8s_monitor_2._launched_releases[launch_id_2] = launch_id_2
 
     tasks = [
         asyncio.create_task(
@@ -2609,7 +2611,7 @@ async def log_watch_multiple_clusters() -> None:
         kube_context=kube_context_1,
     )
     k8s_monitor_1._get_launch_ready_event(launch_id_1).set()
-    k8s_monitor_1.launched_releases[launch_id_1] = launch_id_1
+    k8s_monitor_1._launched_releases[launch_id_1] = launch_id_1
 
     environment_config_2 = EnvironmentConfig.from_yaml(
         Path(env_cfg_file_2), context=None
@@ -2622,7 +2624,7 @@ async def log_watch_multiple_clusters() -> None:
         kube_context=kube_context_2,
     )
     k8s_monitor_2._get_launch_ready_event(launch_id_2).set()
-    k8s_monitor_2.launched_releases[launch_id_2] = launch_id_2
+    k8s_monitor_2._launched_releases[launch_id_2] = launch_id_2
 
     event_configs: List[EventLogLineParserConfig] = []
     data = {"event_type": "ARTIFACT_EVENT", "line_regex": "{.*}$", "event_fields": []}

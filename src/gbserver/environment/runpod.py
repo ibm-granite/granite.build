@@ -76,7 +76,7 @@ class Runpod(Environment):
         secrets: Optional[Dict] = None,
         **kwargs,
     ) -> None:
-        self.launched_pods: Dict[str, str] = {}  # launch_id -> pod_id
+        self._launched_pods: Dict[str, str] = {}  # launch_id -> pod_id
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -202,7 +202,7 @@ class Runpod(Environment):
             )
 
             pod_id = pod.id if hasattr(pod, "id") else pod["id"]
-            self.launched_pods[launch_id] = pod_id
+            self._launched_pods[launch_id] = pod_id
             logger.info("Created RunPod pod: id=%s launch_id=%s", pod_id, launch_id)
 
             # Poll until pod is running
@@ -262,7 +262,7 @@ class Runpod(Environment):
         runpod = _import_runpod()
         runpod.api_key = self._get_api_key()
 
-        pod_id = self.launched_pods.get(launch_id)
+        pod_id = self._launched_pods.get(launch_id)
         if not pod_id:
             logger.error("No pod_id for launch_id %s", launch_id)
             return
@@ -329,7 +329,7 @@ class Runpod(Environment):
 
         self._monitoring_cleanup(launch_id=launch_id)
 
-        pod_id = self.launched_pods.get(launch_id)
+        pod_id = self._launched_pods.get(launch_id)
         if not pod_id:
             logger.warning("No pod to cleanup for launch_id %s", launch_id)
             return
@@ -343,4 +343,4 @@ class Runpod(Environment):
         except Exception as e:
             logger.error("Failed to terminate RunPod pod %s: %s", pod_id, e)
         finally:
-            self.launched_pods.pop(launch_id, None)
+            self._launched_pods.pop(launch_id, None)

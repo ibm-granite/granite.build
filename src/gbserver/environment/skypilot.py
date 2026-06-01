@@ -72,7 +72,7 @@ class Skypilot(Environment):
         self._job_ids: Dict[str, int] = {}  # launch_id -> sky job_id
         self._setup_workdirs: Dict[str, str] = {}  # setup_id -> per-run workdir
         # launch_id -> kwargs replayed by retry_workload
-        self.launch_kwargs: Dict[str, Dict] = {}
+        self._launch_kwargs: Dict[str, Dict] = {}
         self._skypilot_retry_complete_events: Dict[str, asyncio.Event] = {}
         super().__init__(
             event_q=event_q,
@@ -191,7 +191,7 @@ class Skypilot(Environment):
             _require_skypilot()
 
             # Stash kwargs so retry_workload can replay this launch.
-            self.launch_kwargs[launch_id] = {
+            self._launch_kwargs[launch_id] = {
                 "launcher_config": kwargs.get("launcher_config"),
                 "config": kwargs.get("config"),
                 "run_metadata": kwargs.get("run_metadata"),
@@ -378,7 +378,7 @@ class Skypilot(Environment):
         self._skypilot_retry_complete_events[launch_id] = retry_complete_event
 
         enabled, retry_transparently = self._get_step_retry_config(
-            self.launch_kwargs.get(launch_id, {})
+            self._launch_kwargs.get(launch_id, {})
         )
 
         async with self._with_retry_handler(
@@ -621,7 +621,7 @@ class Skypilot(Environment):
         finally:
             self._cluster_names.pop(launch_id, None)
             self._job_ids.pop(launch_id, None)
-            self.launch_kwargs.pop(launch_id, None)
+            self._launch_kwargs.pop(launch_id, None)
 
     async def retry_workload(
         self: Self,
@@ -643,7 +643,7 @@ class Skypilot(Environment):
             has no portable per-launch node-exclusion knob.
         :raises Exception: Re-raises any failure from the relaunch.
         """
-        original_kwargs = self.launch_kwargs.get(launch_id, {})
+        original_kwargs = self._launch_kwargs.get(launch_id, {})
         cluster_name = self._cluster_names.get(launch_id, launch_id)
         if nodes_to_avoid:
             logger.info(

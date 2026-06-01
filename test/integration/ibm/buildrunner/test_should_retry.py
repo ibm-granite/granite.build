@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from gbserver.buildwatcher.buildrunner import BuildRunner
+from gbserver.buildrunner.buildrunner import BuildRunner
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.status import Status
 

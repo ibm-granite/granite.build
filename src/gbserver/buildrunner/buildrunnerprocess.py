@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Self, Union
 
-from gbserver.buildwatcher.abstractbuildrunner import AbstractBuildRunner
+from gbserver.buildrunner.abstractbuildrunner import AbstractBuildRunner
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.constants import (
     DEFAULT_GH_API_ENDPOINT,

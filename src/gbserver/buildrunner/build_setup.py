@@ -31,8 +31,8 @@ from tqdm import tqdm
 
 from gbcommon.uri.git import GitURI
 from gbserver.build.space import Space
-from gbserver.buildwatcher.buildlogger import get_message_logger
-from gbserver.buildwatcher.validation import BuildValidation
+from gbserver.buildrunner.buildlogger import get_message_logger
+from gbserver.buildrunner.validation import BuildValidation
 from gbserver.github.myghapi import MyGHApi
 from gbserver.github.utils import post_validated_build_message
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage

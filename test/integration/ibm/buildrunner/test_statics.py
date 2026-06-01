@@ -1,7 +1,7 @@
 import pytest
 
 from gbcommon.uri.lh import DEFAULT_FILESET_VERSION, DEFAULT_MODEL_REVISION
-from gbserver.buildwatcher.buildrunner import BuildRunner
+from gbserver.buildrunner.buildrunner import BuildRunner
 
 pytestmark = pytest.mark.ibm
 
