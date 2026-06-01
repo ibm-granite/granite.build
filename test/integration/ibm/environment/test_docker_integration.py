@@ -59,7 +59,7 @@ class TestDockerIntegration:
             step={"name": "echo"},
         )
 
-        assert launch_id in env.launched_containers
+        assert launch_id in env._launched_containers
 
         await env.monitor_docker_log(
             launch_id=launch_id,
@@ -74,7 +74,7 @@ class TestDockerIntegration:
         assert any("hello-gbserver" in msg for msg in log_messages)
 
         await env.cleanup_docker(launch_id=launch_id)
-        assert launch_id not in env.launched_containers
+        assert launch_id not in env._launched_containers
 
     @pytest.mark.asyncio
     async def test_bind_mount_data_flow(self):

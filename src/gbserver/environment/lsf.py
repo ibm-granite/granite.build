@@ -126,7 +126,7 @@ class Lsf(Environment):
     that use bsub to submit jobs.
     """
 
-    log_paths: Dict[str, str]  # launch_id -> output directory
+    _log_paths: Dict[str, str]  # launch_id -> output directory
 
     def __init__(
         self: Self,
@@ -146,14 +146,14 @@ class Lsf(Environment):
             **kwargs,
         )
 
-        self.launched_jobs: Dict[str, str] = {}
+        self._launched_jobs: Dict[str, str] = {}
         # self.created_setup_files: Dict[str, str] = {}
-        self.key_file_path: Optional[str] = None
-        self.log_paths: Dict[str, str] = {}
+        self._key_file_path: Optional[str] = None
+        self._log_paths: Dict[str, str] = {}
         # for existing llmb-lite jobs, launch id -> {'jobid': 'xxxx'}
-        self.existing_jobids: Dict[str, ExistingBsubJobs] = {}
+        self._existing_jobids: Dict[str, ExistingBsubJobs] = {}
         # Store launch kwargs for retry capability
-        self.launch_kwargs: Dict[str, Dict] = {}
+        self._launch_kwargs: Dict[str, Dict] = {}
         # Coordination for RetryHandler-driven retries: signal monitor_bsub_monitor
         self._lsf_retry_complete_events: Dict[str, asyncio.Event] = {}
         # Launch asset dirs to delete at teardown, after all pipeline steps finish.
@@ -266,8 +266,8 @@ class Lsf(Environment):
         Called by RetryHandler when LsfTransientErrorRetryStrategy triggers.
         Re-launches the job and signals monitor_bsub_monitor via the coordination event.
         """
-        original_kwargs = self.launch_kwargs.get(launch_id, {})
-        job_id = self.launched_jobs.get(launch_id, launch_id)
+        original_kwargs = self._launch_kwargs.get(launch_id, {})
+        job_id = self._launched_jobs.get(launch_id, launch_id)
 
         msg = f"⚠️ LSF error: JobID={job_id}. Retrying..."
         self._send_message(msg=msg, **original_kwargs)
@@ -337,7 +337,7 @@ class Lsf(Environment):
 
     async def _get_reachable_ssh_node(self: Self) -> str:
         """Try all of our nodes until we find one that we can ssh to."""
-        assert self.key_file_path, "Must be provided"
+        assert self._key_file_path, "Must be provided"
         tried_nodes = []
         reset_enabled = True
         async with self.node_search_lock:
@@ -606,13 +606,13 @@ class Lsf(Environment):
         existing_jobid = config_lsf_bsub.jobid
         if existing_jobid != "":
             logger.warning("there is an existing LSF job: %s", config_lsf_bsub)
-            self.existing_jobids[launch_id] = ExistingBsubJobs(job_id=existing_jobid)
+            self._existing_jobids[launch_id] = ExistingBsubJobs(job_id=existing_jobid)
             log_path = config_lsf_bsub.log_path
             assert (
                 log_path != ""
             ), f"invalid config_lsf_bsub.log_path: {step_config_section}"
             self._set_log_path(launch_id=launch_id, log_path=log_path)
-            self.launched_jobs[launch_id] = existing_jobid
+            self._launched_jobs[launch_id] = existing_jobid
             self._release_monitors(launch_id)
             msg = f"⚡ LSF job has already been launched with JobID={existing_jobid}"
             self._send_message(msg=msg, **kwargs)
@@ -693,10 +693,10 @@ class Lsf(Environment):
             job_id_match = re.search(r"Job <(\d+)> is submitted", stdout)
             if job_id_match:
                 job_id = job_id_match.group(1)
-                self.launched_jobs[launch_id] = job_id
+                self._launched_jobs[launch_id] = job_id
                 self._release_monitors(launch_id)
                 # Store launch kwargs for retry capability
-                self.launch_kwargs[launch_id] = {
+                self._launch_kwargs[launch_id] = {
                     "targetsteprun_asset_dir": targetsteprun_asset_dir,
                     **kwargs,
                 }
@@ -729,11 +729,11 @@ class Lsf(Environment):
             }
         else:
             self.__setup_ssh(setup_id=setup_id, space_secrets=space_secrets)
-            assert self.key_file_path
+            assert self._key_file_path
             # await self.__preload_unreachable_ssh_nodes()
             await self._open_ssh_tunnel(setup_id)
             return {
-                "ssh_key_file": self.key_file_path,
+                "ssh_key_file": self._key_file_path,
                 "space_secrets": space_secrets,
                 "space": {"secret": ""},
             }
@@ -750,9 +750,9 @@ class Lsf(Environment):
             raise ValueError(
                 f"setup_id: {setup_id} invalid ssh_key named {ssh_key_secret_name} in space_secrets"
             )
-        self.key_file_path = self._create_ssh_key_file(setup_id)
-        # self.created_setup_files[self._get_ssh_key(setup_id)] = self.key_file_path # file removed in teardown method
-        logger.info("setup_id: %s SSH key written to %s", setup_id, self.key_file_path)
+        self._key_file_path = self._create_ssh_key_file(setup_id)
+        # self.created_setup_files[self._get_ssh_key(setup_id)] = self._key_file_path # file removed in teardown method
+        logger.info("setup_id: %s SSH key written to %s", setup_id, self._key_file_path)
 
     async def _open_ssh_tunnel(
         self: Self,
@@ -766,7 +766,7 @@ class Lsf(Environment):
         self._ssh_tunnel = SshTunnel(
             host=login_node,
             username=self.username,
-            key_file=self.key_file_path,
+            key_file=self._key_file_path,
             host_key_verification=self.ssh_host_key_verification,
             port_forwards=[(0, login_node, self.ssh_port)],
             max_sessions=self.ssh_max_sessions,
@@ -805,8 +805,8 @@ class Lsf(Environment):
         if ssh_tunnel is not None:
             await ssh_tunnel.close()
             self._ssh_tunnel = None
-        key_file_path = self.key_file_path
-        self.key_file_path = None
+        key_file_path = self._key_file_path
+        self._key_file_path = None
         if key_file_path and os.path.exists(key_file_path):
             temp_dir = os.path.dirname(key_file_path)
             try:
@@ -854,7 +854,7 @@ class Lsf(Environment):
         )
 
         enabled, retry_transparently = self._get_step_retry_config(
-            self.launch_kwargs.get(launch_id, {}),
+            self._launch_kwargs.get(launch_id, {}),
         )
         async with self._with_retry_handler(
             launch_id,
@@ -881,13 +881,13 @@ class Lsf(Environment):
                     stop_event = self._get_launch_stopped_event(
                         launch_id=current_launch_id
                     )
-                    job_id = self.launched_jobs[current_launch_id]
-                    log_file_path = self._get_log_path(launch_id=current_launch_id)
+                    job_id = self._launched_jobs[current_launch_id]
+                    log_file_path = self.get_log_path(launch_id=current_launch_id)
 
                     log_stream_source: Optional[LogStreamSource] = None
                     if self.use_ssh:
                         ssh_opts = self.ssh_no_verification_flags()
-                        key_file_path = self.key_file_path
+                        key_file_path = self._key_file_path
                         if key_file_path:
                             ssh_opts.extend(["-i", key_file_path])
                         host = await self._get_reachable_ssh_node()
@@ -1580,7 +1580,7 @@ class Lsf(Environment):
             List[str]: list of command tokens (beginning with ssh) to execute the ssh command.
                 For example, ssh -i <key file path> someuser@somehost.
         """
-        key_file_path = self.key_file_path
+        key_file_path = self._key_file_path
         assert key_file_path
         ssh_cmd = ["ssh"]
         ssh_cmd.extend(["-p", str(self.ssh_port)])
@@ -1611,7 +1611,7 @@ class Lsf(Environment):
             List of command tokens for the SCP invocation.
         """
         scp_cmd = ["scp", "-r"]
-        key_file_path = self.key_file_path
+        key_file_path = self._key_file_path
         assert key_file_path, "SSH key file path is not set"
         scp_cmd.extend(["-i", key_file_path])
         scp_cmd.extend(self.ssh_no_verification_flags())
@@ -1643,7 +1643,7 @@ class Lsf(Environment):
             "-chavzP",
             "--stats",
         ]
-        key_file_path = self.key_file_path
+        key_file_path = self._key_file_path
         ssh_t1 = self.ssh_no_verification_flags()
         ssh_t2 = cmd_safe_join(ssh_t1)
         rsync_ssh = f"ssh -i {key_file_path} {ssh_t2}"
@@ -1763,7 +1763,7 @@ class Lsf(Environment):
         """Set the output directory for a specific launch ID"""
         if log_path != "":
             logger.info("setting launch_id %s -> log path %s", launch_id, log_path)
-            self.log_paths[launch_id] = log_path
+            self._log_paths[launch_id] = log_path
             return log_path
         logger.info(
             "computing log_path from config: %s and final_asset_dir: %s",
@@ -1782,22 +1782,36 @@ class Lsf(Environment):
         assert output_dir != "", f"invalid output_dir: {output_dir}"
         log_path = str(Path(output_dir) / "job.log")
         logger.info("setting launch_id %s -> computed log path %s", launch_id, log_path)
-        self.log_paths[launch_id] = log_path
+        self._log_paths[launch_id] = log_path
         return log_path
 
-    def _get_log_path(self: Self, launch_id: str) -> str:
-        """Get the output directory for a specific launch ID"""
-        return self.log_paths[launch_id]
+    def get_log_path(self: Self, launch_id: str, default: Optional[str] = None) -> str:
+        """Get the log path for a specific launch ID.
+
+        Args:
+            launch_id: The launch ID to look up.
+            default: Value to return if launch_id is not present. If None
+                (the default), KeyError is raised on a missing launch_id.
+
+        Returns:
+            The log path string, or `default` when launch_id is not present.
+
+        Raises:
+            KeyError: If launch_id is not present and `default` is None.
+        """
+        if default is None:
+            return self._log_paths[launch_id]
+        return self._log_paths.get(launch_id, default)
 
     async def _bkill(self: Self, launch_id: str, **kwargs) -> None:
         """Kill the LSF job associated with launch_id via bkill."""
-        job_id = self.launched_jobs.get(launch_id)
+        job_id = self._launched_jobs.get(launch_id)
         if not job_id:
             logger.warning("no jobid found for launch_id %s", launch_id)
             return
 
-        if launch_id in self.existing_jobids:
-            t1 = self.existing_jobids[launch_id]
+        if launch_id in self._existing_jobids:
+            t1 = self._existing_jobids[launch_id]
             assert (
                 job_id == t1.job_id
             ), f"launch_id {launch_id}: job id mismatch, current {job_id} stored {t1.job_id}"

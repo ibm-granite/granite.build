@@ -26,7 +26,7 @@ class TestRunpodInit:
         event_q = asyncio.Queue()
         env = Runpod(event_q=event_q)
         assert env.type == "Runpod"
-        assert env.launched_pods == {}
+        assert env._launched_pods == {}
 
     def test_has_launch_types(self):
         from gbserver.environment.runpod import Runpod
@@ -107,8 +107,8 @@ class TestLaunchRunpod:
                 step={"name": "train"},
             )
 
-        assert launch_id in runpod_env.launched_pods
-        assert runpod_env.launched_pods[launch_id] == "pod-abc123"
+        assert launch_id in runpod_env._launched_pods
+        assert runpod_env._launched_pods[launch_id] == "pod-abc123"
         assert runpod_env._get_launch_ready_event(launch_id).is_set()
         mock_runpod.create_pod.assert_called_once()
 
@@ -194,7 +194,7 @@ class TestMonitorPodStatus:
             secrets={"RUNPOD_API_KEY": "test-key"},
         )
         launch_id = "monitor-test-001"
-        env.launched_pods[launch_id] = "pod-mon-123"
+        env._launched_pods[launch_id] = "pod-mon-123"
         env._release_monitors(launch_id)
         return env, launch_id, event_q
 
@@ -274,7 +274,7 @@ class TestCleanupRunpod:
             secrets={"RUNPOD_API_KEY": "test-key"},
         )
         launch_id = "cleanup-test-001"
-        env.launched_pods[launch_id] = "pod-clean-456"
+        env._launched_pods[launch_id] = "pod-clean-456"
         return env, launch_id
 
     @pytest.mark.asyncio
@@ -288,7 +288,7 @@ class TestCleanupRunpod:
             await env.cleanup_runpod(launch_id=launch_id)
 
         mock_runpod.terminate_pod.assert_called_once_with("pod-clean-456")
-        assert launch_id not in env.launched_pods
+        assert launch_id not in env._launched_pods
 
     @pytest.mark.asyncio
     async def test_cleanup_sets_stop_event(self, runpod_env_with_pod):

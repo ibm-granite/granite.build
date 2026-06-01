@@ -271,9 +271,9 @@ class LSFBsubMonitor(MonitorBase):
             logger.error("[LSFBsubMonitor %s] %s", self.launch_id, error_message)
 
             # Check for transient LSF errors that should trigger a retry
-            # Compute fallback path from log_paths in case bjobs fails
+            # Compute fallback path from log paths in case bjobs fails
             fallback_path = None
-            log_path = self.lsf.log_paths.get(self.launch_id, "")
+            log_path = self.lsf.get_log_path(self.launch_id, default="")
             if log_path:
                 fallback_path = str(Path(log_path).parent / JOB_LOG_STDOUT_FILENAME)
             try:

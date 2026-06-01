@@ -31,8 +31,8 @@ from gbserver.api.utils import (
     is_super_admin,
     split_tags,
 )
+from gbserver.buildrunner.validation import BuildValidation
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
-from gbserver.buildwatcher.validation import BuildValidation
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage

@@ -61,8 +61,8 @@ from gbcommon.types.testing import (
     enable_hf_mocks,
 )
 from gbcommon.uri.uri import URI
-from gbserver.buildwatcher.buildrunner import BuildRunner
-from gbserver.buildwatcher.buildrunnerjob import BuildRunnerJob
+from gbserver.buildrunner.buildrunner import BuildRunner
+from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
 from gbserver.github.myghapi import MyGHApi
 from gbserver.lineage.jobstats import get_lineage_store, reset_lineage_store

@@ -35,8 +35,8 @@ from gbcommon.types.testing import (
     ENV_VAR_GBTEST_MOCK_HF_CALLS,
     get_exported_gbtest_env_vars,
 )
-from gbserver.buildwatcher.abstractbuildrunner import AbstractBuildRunner
-from gbserver.buildwatcher.build_utils import finalize_build_status
+from gbserver.buildrunner.abstractbuildrunner import AbstractBuildRunner
+from gbserver.buildrunner.build_utils import finalize_build_status
 from gbserver.environment.k8s import AtomicApiClient
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild

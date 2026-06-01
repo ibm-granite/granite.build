@@ -39,14 +39,14 @@ from gbserver.build.build import Build
 from gbserver.build.buildrun import BuildRun
 from gbserver.build.run import RunFailed
 from gbserver.build.space import Space
-from gbserver.buildwatcher.abstractbuildrunner import AbstractBuildRunner
-from gbserver.buildwatcher.build_setup import BuildSetup
-from gbserver.buildwatcher.build_utils import (
+from gbserver.buildrunner.abstractbuildrunner import AbstractBuildRunner
+from gbserver.buildrunner.build_setup import BuildSetup
+from gbserver.buildrunner.build_utils import (
     finalize_build_status,
     push_failed_status_update_metric,
     update_stored_build_status,
 )
-from gbserver.buildwatcher.buildlogger import (
+from gbserver.buildrunner.buildlogger import (
     get_message_logger,
 )
 from gbserver.github.myghapi import MyGHApi

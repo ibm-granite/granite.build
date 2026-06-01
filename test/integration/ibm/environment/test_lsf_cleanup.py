@@ -30,8 +30,8 @@ def _make_lsf(use_ssh: bool = True) -> Lsf:
         lsf = Lsf.__new__(Lsf)
     # Set minimum required attributes
     lsf.use_ssh = use_ssh
-    lsf.launched_jobs = {}
-    lsf.existing_jobids = {}
+    lsf._launched_jobs = {}
+    lsf._existing_jobids = {}
     lsf._ssh_tunnel = AsyncMock() if use_ssh else None
     lsf._send_message = MagicMock()
     lsf._dispatch_event = MagicMock()
@@ -45,7 +45,7 @@ class TestCleanupBsub:
     async def test_successful_bkill_reports_killed(self: Self) -> None:
         """When bkill succeeds (rc=0), should report 'Killed LSF job'."""
         lsf = _make_lsf(use_ssh=True)
-        lsf.launched_jobs["launch-1"] = "12345"
+        lsf._launched_jobs["launch-1"] = "12345"
         lsf._ssh_tunnel.run_remote = AsyncMock(
             return_value=(0, "Job <12345> is being terminated\n", "")
         )
@@ -66,7 +66,7 @@ class TestCleanupBsub:
     async def test_failed_bkill_reports_failure(self: Self) -> None:
         """When bkill fails (rc!=0), should report failure, not success."""
         lsf = _make_lsf(use_ssh=True)
-        lsf.launched_jobs["launch-1"] = "12345"
+        lsf._launched_jobs["launch-1"] = "12345"
         lsf._ssh_tunnel.run_remote = AsyncMock(
             return_value=(255, "", "Permission denied")
         )
@@ -88,7 +88,7 @@ class TestCleanupBsub:
     async def test_job_already_finished_no_message(self: Self) -> None:
         """When bkill says 'Job has already finished', no message sent."""
         lsf = _make_lsf(use_ssh=True)
-        lsf.launched_jobs["launch-1"] = "12345"
+        lsf._launched_jobs["launch-1"] = "12345"
         lsf._ssh_tunnel.run_remote = AsyncMock(
             return_value=(255, "", "Job <12345>: Job has already finished")
         )
@@ -104,7 +104,7 @@ class TestCleanupBsub:
     async def test_retries_on_timeout(self: Self) -> None:
         """Should retry bkill up to 3 times on TimeoutError, then succeed."""
         lsf = _make_lsf(use_ssh=True)
-        lsf.launched_jobs["launch-1"] = "12345"
+        lsf._launched_jobs["launch-1"] = "12345"
         lsf._ssh_tunnel.run_remote = AsyncMock(
             side_effect=[
                 TimeoutError("ssh timed out"),
@@ -129,7 +129,7 @@ class TestCleanupBsub:
     async def test_timeout_exhausts_retries(self: Self) -> None:
         """After 3 timeout failures, should raise TimeoutError."""
         lsf = _make_lsf(use_ssh=True)
-        lsf.launched_jobs["launch-1"] = "12345"
+        lsf._launched_jobs["launch-1"] = "12345"
         lsf._ssh_tunnel.run_remote = AsyncMock(
             side_effect=TimeoutError("ssh timed out")
         )

@@ -15,7 +15,7 @@ def k8s_env():
     from gbserver.environment.k8s import K8s
 
     k8s = K8s.__new__(K8s)
-    k8s.launched_releases = {"launch-1": "release-1"}
+    k8s._launched_releases = {"launch-1": "release-1"}
     k8s.kube_config = None
     k8s.kube_context = None
     k8s.ssl_verification = True

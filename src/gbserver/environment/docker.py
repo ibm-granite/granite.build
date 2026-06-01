@@ -132,8 +132,10 @@ class Docker(Environment):
         secrets: Optional[Dict] = None,
         **kwargs,
     ) -> None:
-        self.launched_containers: Dict[str, str] = {}  # launch_id -> container_id
-        self.launched_workspaces: Dict[str, str] = {}  # launch_id -> host workspace dir
+        self._launched_containers: Dict[str, str] = {}  # launch_id -> container_id
+        self._launched_workspaces: Dict[str, str] = (
+            {}
+        )  # launch_id -> host workspace dir
         self._extra_volumes: Dict[str, Dict] = {}
         self._docker_module = None  # cached docker module
         self._docker_client = None  # cached Docker client
@@ -466,9 +468,9 @@ class Docker(Environment):
                 **resource_kwargs,
             )
 
-            self.launched_containers[launch_id] = container.id
+            self._launched_containers[launch_id] = container.id
             if targetsteprun_asset_dir:
-                self.launched_workspaces[launch_id] = str(targetsteprun_asset_dir)
+                self._launched_workspaces[launch_id] = str(targetsteprun_asset_dir)
             logger.info(
                 "Created Docker container: id=%s launch_id=%s",
                 container.id,
@@ -499,7 +501,7 @@ class Docker(Environment):
         the 'generator already executing' race condition that occurs when
         asyncio.wait_for timeouts overlap with run_in_executor(next(gen)).
         """
-        container_id = self.launched_containers.get(launch_id)
+        container_id = self._launched_containers.get(launch_id)
         if not container_id:
             logger.warning("No container_id for launch_id %s, returning", launch_id)
             self._get_launch_stopped_event(launch_id).set()
@@ -655,7 +657,7 @@ class Docker(Environment):
 
         self._monitoring_cleanup(launch_id=launch_id)
 
-        container_id = self.launched_containers.get(launch_id)
+        container_id = self._launched_containers.get(launch_id)
         if not container_id:
             logger.warning("No container to cleanup for launch_id %s", launch_id)
             return
@@ -677,8 +679,8 @@ class Docker(Environment):
         except Exception as e:
             logger.error("Failed to cleanup Docker container %s: %s", container_id, e)
         finally:
-            self.launched_containers.pop(launch_id, None)
-            self.launched_workspaces.pop(launch_id, None)
+            self._launched_containers.pop(launch_id, None)
+            self._launched_workspaces.pop(launch_id, None)
 
     # ------------------------------------------------------------------
     # pushasset_filestore
@@ -709,7 +711,7 @@ class Docker(Environment):
         # Translate container path (/gb-workspace/...) to host path
         if source_path.startswith("/gb-workspace"):
             workspace_dir = None
-            for _lid, wdir in self.launched_workspaces.items():
+            for _lid, wdir in self._launched_workspaces.items():
                 workspace_dir = wdir
             if workspace_dir is None:
                 logger.warning(

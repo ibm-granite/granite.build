@@ -358,7 +358,7 @@ class TestBuildWorkdir:
 class TestSkypilotRetry:
     @pytest.mark.asyncio
     async def test_launch_skypilot_stashes_kwargs_for_replay(self, slurm_env):
-        """launch_skypilot must populate launch_kwargs[launch_id] so
+        """launch_skypilot must populate _launch_kwargs[launch_id] so
         retry_workload can replay the same args."""
         mock_sky = _mock_sky()
         launcher_config = {"run": "hostname", "resources": {"cloud": "slurm"}}
@@ -377,7 +377,7 @@ class TestSkypilotRetry:
                 retry_transparently=False,
             )
 
-        stashed = slurm_env.launch_kwargs["retry-1"]
+        stashed = slurm_env._launch_kwargs["retry-1"]
         assert stashed["launcher_config"] == launcher_config
         assert stashed["config"] == {"foo": "bar"}
         assert stashed["run_metadata"] == {"build_id": "b-1"}
@@ -396,7 +396,7 @@ class TestSkypilotRetry:
     async def test_retry_workload_cleans_relaunches_and_signals(self, slurm_env):
         """retry_workload calls cleanup_skypilot, then launch_skypilot with the
         stashed kwargs, and sets the per-launch retry-complete event."""
-        slurm_env.launch_kwargs["retry-2"] = {
+        slurm_env._launch_kwargs["retry-2"] = {
             "launcher_config": {"run": "echo", "resources": {}},
             "config": {},
             "run_metadata": None,
@@ -442,7 +442,7 @@ class TestSkypilotRetry:
     async def test_retry_workload_propagates_relaunch_failure(self, slurm_env):
         """If launch_skypilot raises during retry, retry_workload re-raises
         and the retry-complete event is NOT set."""
-        slurm_env.launch_kwargs["retry-3"] = {
+        slurm_env._launch_kwargs["retry-3"] = {
             "launcher_config": {"run": "echo"},
             "config": {},
             "run_metadata": None,

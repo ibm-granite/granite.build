@@ -33,7 +33,7 @@ class TestRayClusterCleanup:
         """After helm uninstall, _delete_rayclusters_for_release should be called."""
         with patch.object(K8s, "__init__", lambda self, *a, **kw: None):
             k8s = K8s.__new__(K8s)
-            k8s.launched_releases = {"launch-1": "gb-test-release"}
+            k8s._launched_releases = {"launch-1": "gb-test-release"}
             k8s.kube_config = None
             k8s.kube_context = None
             k8s.ssl_verification = True
