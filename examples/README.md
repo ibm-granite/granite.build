@@ -38,13 +38,17 @@ gb build get <build-id>
 ```bash
 export GBSERVER_METADATA_STORAGE=sqlite
 export GBSERVER_DEFAULT_BUILDRUNNER_TYPE=process
-export GB_ENVIRONMENT=DEV
+export GB_ENVIRONMENT=STANDALONE
 
 # TRL fine-tuning
-gbserver build-runner --build-config test-data/standalone-environments/builds/docker-trl.yaml
+gbserver build run \
+  --space-config-uri "file://$(pwd)/test-data/standalone-environments" \
+  test-data/standalone-environments/builds/docker-trl.yaml
 
 # unitxt evaluation
-gbserver build-runner --build-config test-data/standalone-environments/builds/docker-unitxt.yaml
+gbserver build run \
+  --space-config-uri "file://$(pwd)/test-data/standalone-environments" \
+  test-data/standalone-environments/builds/docker-unitxt.yaml
 ```
 
 ### Run via pytest
@@ -88,11 +92,13 @@ A single-step build that cats a text file. Good for verifying your install.
 
 ```bash
 # Direct execution (no server needed)
-gbserver build run --build-dir examples/minimal-build
+gbserver build run \
+  --space-config-uri "file://$(pwd)/examples/minimal-build" \
+  examples/minimal-build
 
 # Via gbcli (requires a running gbserver)
-gbserver standalone --space-dir /tmp/gb-space &
-gb build start examples/minimal-build/build.yaml
+gbserver standalone --space-dir examples/minimal-build &
+gb build start -f examples/minimal-build/build.yaml
 gb build list
 ```
 

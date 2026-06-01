@@ -15,7 +15,7 @@ fills in the *why* and points to the right reference docs.
 ## Install
 
 ```bash
-git clone https://github.com/ibm-granite/granite.build.git
+git clone git@github.com:ibm-granite/granite.build.git
 cd granite.build
 
 python3 -m venv .venv
@@ -25,14 +25,22 @@ pip install -e ".[standalone,thirdparty]"
 
 This installs both the server (`gbserver`) and the CLI client (`gb`).
 
+The repo is private; clone over SSH (the HTTPS URL above will fail unless you
+have HTTPS credentials configured for github.com).
+
 ## Run the server
 
 ```bash
+export GBSERVER_API_KEY="my-secret-key"
 gbserver standalone --space-dir samples/standalone/standalone-quickstart
 ```
 
 The server listens on port 8080. It uses SQLite for metadata and runs builds in
 threads, so no Kubernetes or PostgreSQL is required.
+
+`GBSERVER_API_KEY` is the shared secret the `gb` client will use to
+authenticate against the server in the next step. Use any value, as long as
+it matches between the two terminals.
 
 The `--space-dir` flag points at a directory that contains your build's
 *environments*, *steps*, and *asset stores*. The
@@ -45,7 +53,9 @@ is laid out.
 In a second terminal:
 
 ```bash
+source .venv/bin/activate
 export GB_ENVIRONMENT=STANDALONE
+export GBSERVER_API_KEY="my-secret-key"
 gb build start -f samples/standalone/standalone-quickstart/build.yaml
 ```
 

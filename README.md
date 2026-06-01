@@ -60,8 +60,8 @@ The **BuildWatcher** polls storage for pending builds and creates a **BuildRunne
 Five commands to a running build, using the bundled `standalone-quickstart` sample.
 
 ```bash
-# 1. Clone and enter the repo
-git clone https://github.com/ibm-granite/granite.build.git
+# 1. Clone and enter the repo (use SSH; the repo is private)
+git clone git@github.com:ibm-granite/granite.build.git
 cd granite.build
 
 # 2. Create the venv and install (no Artifactory or cloud creds needed)
@@ -69,11 +69,13 @@ make standalone-venv PYTHON=python3.13
 source .venv/bin/activate
 
 # 3. Start the standalone server, pointed at the bundled sample space
+export GBSERVER_API_KEY="my-secret-key"
 gbserver standalone --space-dir samples/standalone/standalone-quickstart
 
 # 4. In another terminal, activate the venv and submit the sample build
 source .venv/bin/activate
 export GB_ENVIRONMENT=STANDALONE
+export GBSERVER_API_KEY="my-secret-key"
 gb build start -f samples/standalone/standalone-quickstart/build.yaml
 
 # 5. Watch progress
