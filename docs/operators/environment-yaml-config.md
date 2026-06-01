@@ -69,16 +69,6 @@ config:
                                     # Default: /gb-read-write.
 
 assetstores:
-  - store_uri: lh://my-namespace    # Lakehouse store URI
-    load:
-      - mode: dmf_pull              # Supported modes: dmf_pull (default for LH in K8s)
-        config:
-          step_uri: space://steps/lhpull   # Optional: override the lhpull built-in step URI
-    push:
-      - mode: dmf_push
-        config:
-          step_uri: space://steps/lhpush
-
   - store_uri: cos://my-bucket      # IBM COS store URI
     load:
       - mode: cos_rclone
@@ -135,18 +125,17 @@ config:
       - type: LsfTransientError     # LsfTransientErrorRetryStrategy.
 
 assetstores:
-  - store_uri: lh://my-namespace
+  - store_uri: hf://huggingface.co/my-org
     load:
-      - mode: dmf_pull              # Injects a lhpull built-in step before the main job.
+      - mode: hf_pull               # Injects an hfpull built-in step before the main job.
         config:
-          cache_path: /gpfs/cache/lh    # Required. Path on the cluster where LH data is
-                                        # cached after dmf_pull.
-          use_aspera: false             # Optional. Use Aspera for transfer. Default: false.
-          step_uri: space://steps/lhpull  # Optional: override the lhpull step URI.
+          cache_path: /gpfs/cache/hf    # Required. Path on the cluster where HF data is
+                                        # cached after hf_pull.
+          step_uri: space://steps/hfpull  # Optional: override the hfpull step URI.
     push:
-      - mode: dmf_push
+      - mode: hf_push
         config:
-          step_uri: space://steps/lhpush
+          step_uri: space://steps/hfpush
 
   - store_uri: cos://my-bucket
     load:
@@ -685,11 +674,11 @@ config:
     enabled: true
     max_retries: 3
 assetstores:
-  - store_uri: lh://granite_dot_build.public
+  - store_uri: hf://huggingface.co/my-org
     load:
-      - mode: dmf_pull
+      - mode: hf_pull
     push:
-      - mode: dmf_push
+      - mode: hf_push
   - store_uri: cos://my-cos-bucket
     load:
       - mode: cos_rclone
@@ -722,13 +711,13 @@ config:
     enabled: true
     max_retries: 3
 assetstores:
-  - store_uri: lh://granite_dot_build.public
+  - store_uri: hf://huggingface.co/my-org
     load:
-      - mode: dmf_pull
+      - mode: hf_pull
         config:
-          cache_path: /gpfs/cache/lakehouse
+          cache_path: /gpfs/cache/hf
     push:
-      - mode: dmf_push
+      - mode: hf_push
 ```
 
 ### `step.yaml` for a K8s training step

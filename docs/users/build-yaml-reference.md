@@ -111,7 +111,7 @@ outputs:
 
 | Field             | Type    | Required | Default | Notes |
 |-------------------|---------|----------|---------|-------|
-| `uri`             | string  | no       | —       | Output URI. Supports Jinja templating, e.g. `lh://prod/.../{{ run_metadata.targetsteprun_id \| short_hash }}`. |
+| `uri`             | string  | no       | —       | Output URI. Supports Jinja templating, e.g. `hf://huggingface.co/datasets/.../{{ run_metadata.targetsteprun_id \| short_hash }}`. |
 | `store_push`      | object  | no       | —       | Push to a remote store after the step writes the artifact. See [`hf-push.md`](hf-push.md) for the HF case. |
 | `event_selectors` | list    | no       | `[]`    | Event-payload matchers used by downstream `inputs.event` triggers. |
 
@@ -260,7 +260,7 @@ Example:
 environment_uri: space://environments/{{ space.variables.DEFAULT_CPU_ENVIRONMENT }}
 outputs:
   data:
-    uri: lh://prod/granite_dot_build.public/tables/synth_data_{{ run_metadata.targetsteprun_id | short_hash }}
+    uri: hf://huggingface.co/datasets/my-org/synth_data_{{ run_metadata.targetsteprun_id | short_hash }}
 ```
 
 ## Worked examples
