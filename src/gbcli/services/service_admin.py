@@ -9,7 +9,6 @@ from gbcli.utils.gbconstants import (
     GBSERVER_BUILD_API,
     PROJECT_NAME,
 )
-from gbcommon.types.gbenvconfig import gb_environment_config
 from gbcli.utils.gbserver import get_builds, make_gbserver_call
 from gbcli.utils.log_query import run_logquery
 from gbcli.utils.spaceutil import resolve_space
@@ -19,6 +18,7 @@ from gbcli.utils.utils import (
     convert_milliseconds_to_seconds,
     get_current_epoch,
 )
+from gbcommon.types.gbenvconfig import gb_environment_config
 
 logger = logging.getLogger(__name__)
 

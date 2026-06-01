@@ -10,11 +10,11 @@ from gbcli.utils.gbconstants import (
     BUILD_FILENAME,
     TEMPLATES_REPO_FOLDER,
 )
-from gbcommon.types.gbenvconfig import gb_environment_config
 from gbcli.utils.gh_clone import download_repo_file, list_repo_tree
 from gbcli.utils.spaceutil import resolve_space
 from gbcli.utils.utils import remove_suffix
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN
+from gbcommon.types.gbenvconfig import gb_environment_config
 
 logger = logging.getLogger(__name__)
 

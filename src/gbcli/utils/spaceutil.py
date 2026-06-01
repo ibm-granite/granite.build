@@ -5,12 +5,12 @@ from gbcli.utils.gbconstants import (
     SPACE_TIMESTAMP_DELTA_HOURS,
     gb_environment,
 )
-from gbcommon.types.gbenvconfig import gb_environment_config, is_standalone
 from gbcli.utils.gbcredentials import (
     ConfigLockException,
     GBConfig,
 )
 from gbcli.utils.gbserver import get_remote_spaces
+from gbcommon.types.gbenvconfig import gb_environment_config, is_standalone
 
 logger = logging.getLogger(__name__)
 

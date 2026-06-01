@@ -35,7 +35,6 @@ from gbcli.utils.gbconstants import (
     DMF_URL,
     PROJECT_NAME,
 )
-from gbcommon.types.gbenvconfig import is_standalone
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.lh_auth import AuthException
 from gbcli.utils.utils import (
@@ -54,6 +53,7 @@ from gbcli.utils.utils import (
     validate_tags,
 )
 from gbcli.utils.versionutil import check_current_and_latest_versions
+from gbcommon.types.gbenvconfig import is_standalone
 
 logger = logging.getLogger(__name__)
 

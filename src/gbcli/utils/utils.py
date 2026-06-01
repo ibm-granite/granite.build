@@ -43,11 +43,11 @@ from gbcli.utils.gbconstants import (
     SPACE_REPO_NAME,
     SPACE_REPO_ORG,
 )
-from gbcommon.types.gbenvconfig import gb_environment_config
 from gbcli.utils.gbserver import get_artifacts, make_gbserver_call
 from gbcli.utils.gh_auth import get_user
 from gbcli.utils.spaceutil import resolve_space
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN
+from gbcommon.types.gbenvconfig import gb_environment_config
 from gbcommon.uri.lh import LhURI
 from gbcommon.uri.uri import URI
 

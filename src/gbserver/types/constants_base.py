@@ -21,7 +21,6 @@ import os
 from gbcommon.types.gbenvconfig import DEFAULT_GB_ENVIRONMENT  # noqa: F401
 from gbcommon.types.gbenvconfig import getenv_boolean  # noqa: F401
 
-
 ENV_VAR_PREFIX = "GBSERVER"
 
 ENV_VAR_GBSERVER_BACKEND_SERVER_NAMESPACE_PROD = (

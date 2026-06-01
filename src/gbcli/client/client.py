@@ -91,9 +91,9 @@ from gbcli.utils.gbconstants import (
     USER_NOT_LOGGED_IN_ERROR_MESSAGE,
     hf_token,
 )
-from gbcommon.types.gbenvconfig import is_standalone
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gh_auth import get_user
+from gbcommon.types.gbenvconfig import is_standalone
 
 
 class GBClient:

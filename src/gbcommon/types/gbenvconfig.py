@@ -117,7 +117,9 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         hf_organization="ibm-research",
         feature_flags={
             "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),
-            "gbserver_artifact_filter": getenv_boolean("GBSERVER_ARTIFACT_FILTER", True),
+            "gbserver_artifact_filter": getenv_boolean(
+                "GBSERVER_ARTIFACT_FILTER", True
+            ),
             "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),
         },
         # gbserver
@@ -125,7 +127,9 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         public_space_git_uri=f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gbspace-public",
         public_space_lh_subnamespace="public",
         buildwatcher_deployment_yaml="k8s/dep-build-runner.yaml",
-        default_pod_namespace=os.getenv("GBSERVER_BACKEND_SERVER_NAMESPACE_PROD", "llm-build-prod"),
+        default_pod_namespace=os.getenv(
+            "GBSERVER_BACKEND_SERVER_NAMESPACE_PROD", "llm-build-prod"
+        ),
         default_sql_schema="granite_dot_build_prod",
     ),
     "STAGING": GBEnvConfig(
@@ -143,7 +147,9 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         hf_organization="ibm-research",
         feature_flags={
             "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),
-            "gbserver_artifact_filter": getenv_boolean("GBSERVER_ARTIFACT_FILTER", True),
+            "gbserver_artifact_filter": getenv_boolean(
+                "GBSERVER_ARTIFACT_FILTER", True
+            ),
             "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),
         },
         # gbserver
@@ -151,7 +157,9 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         public_space_git_uri=f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gb-test",
         public_space_lh_subnamespace="public",
         buildwatcher_deployment_yaml="k8s/dep-build-runner.yaml",
-        default_pod_namespace=os.getenv("GBSERVER_BACKEND_SERVER_NAMESPACE_STAGING", "llm-build-staging"),
+        default_pod_namespace=os.getenv(
+            "GBSERVER_BACKEND_SERVER_NAMESPACE_STAGING", "llm-build-staging"
+        ),
         default_sql_schema="granite_dot_build_staging",
     ),
     "DEV": GBEnvConfig(
@@ -169,7 +177,9 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         hf_organization="ibm-research",
         feature_flags={
             "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),
-            "gbserver_artifact_filter": getenv_boolean("GBSERVER_ARTIFACT_FILTER", True),
+            "gbserver_artifact_filter": getenv_boolean(
+                "GBSERVER_ARTIFACT_FILTER", True
+            ),
             "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),
         },
         # gbserver
@@ -177,7 +187,9 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         public_space_git_uri=f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gbspace-public-dev",
         public_space_lh_subnamespace="public_dev",
         buildwatcher_deployment_yaml="k8s/dep-build-runner.yaml",
-        default_pod_namespace=os.getenv("GBSERVER_BACKEND_SERVER_NAMESPACE_DEV", "llm-build-dev"),
+        default_pod_namespace=os.getenv(
+            "GBSERVER_BACKEND_SERVER_NAMESPACE_DEV", "llm-build-dev"
+        ),
         default_sql_schema="granite_dot_build_dev",
     ),
     "STANDALONE": GBEnvConfig(
@@ -243,7 +255,9 @@ def gb_environment_config(gb_env: Optional[str] = None) -> GBEnvConfig:
         gb_env = gb_environment()
     if gb_env not in _GB_ENVIRONMENT_CONFIGS:
         valid_keys = list(_GB_ENVIRONMENT_CONFIGS.keys())
-        raise ValueError(f"unknown GB environment: {gb_env}, expected one of {valid_keys}")
+        raise ValueError(
+            f"unknown GB environment: {gb_env}, expected one of {valid_keys}"
+        )
     return _GB_ENVIRONMENT_CONFIGS[gb_env]
 
 

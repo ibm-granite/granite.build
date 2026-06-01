@@ -23,7 +23,6 @@ from gbcli.utils.gbconstants import (
     SPACE_DEFAULT_NAME,
     USER_NOT_LOGGED_IN_ERROR_MESSAGE,
 )
-from gbcommon.types.gbenvconfig import gb_environment_config
 from gbcli.utils.gbserver import (
     archive_artifact,
     gb_server_request,
@@ -56,6 +55,7 @@ from gbcli.utils.utils import (
     read_lines,
     remove_suffix,
 )
+from gbcommon.types.gbenvconfig import gb_environment_config
 
 if TYPE_CHECKING:
     from lakehouse.core import CopyAssetStatus
@@ -877,9 +877,7 @@ def register_artifact_gbserver(
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
 
     lh_env = (
-        lh_env
-        if lh_env
-        else str(gb_environment_config().lakehouse_environment).lower()
+        lh_env if lh_env else str(gb_environment_config().lakehouse_environment).lower()
     )
 
     if namespace is None:

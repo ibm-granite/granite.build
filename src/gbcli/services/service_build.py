@@ -48,7 +48,6 @@ from gbcli.utils.gbconstants import (
     VPN_CONNECTION_ERROR_MESSAGE,
     gb_environment,
 )
-from gbcommon.types.gbenvconfig import gb_environment_config, is_standalone
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gbserver import (
     cancel_build,
@@ -90,6 +89,7 @@ from gbcli.utils.utils import (
 )
 from gbcommon.types.buildconfig import BuildConfig
 from gbcommon.types.constants import BUILD_YAML_BASE_KEYS, DEFAULT_GH_DOMAIN
+from gbcommon.types.gbenvconfig import gb_environment_config, is_standalone
 
 logger = logging.getLogger(__name__)
 
