@@ -135,7 +135,7 @@ target/step state at the moment the assertion fired.
   watcher, build runner. Requires admin auth.
 - For SQL-storage debugging: connect to the gbserver Postgres directly and
   read `gb_builds`, `gb_targets`, `gb_steps`, `gb_artifacts`.
-- For SQLite (standalone): the database file is at `<space-dir>/.gb/state.sqlite`.
+- For SQLite (standalone): the database file is at `~/.llmb/llmb-server.db`.
 - Runner-environment specifics:
   - K8s: `kubectl logs -n <ns> <pod>` for the launcher pod.
   - SkyPilot: `sky logs <cluster>`.
