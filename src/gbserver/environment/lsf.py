@@ -882,7 +882,7 @@ class Lsf(Environment):
                         launch_id=current_launch_id
                     )
                     job_id = self._launched_jobs[current_launch_id]
-                    log_file_path = self._get_log_path(launch_id=current_launch_id)
+                    log_file_path = self.get_log_path(launch_id=current_launch_id)
 
                     log_stream_source: Optional[LogStreamSource] = None
                     if self.use_ssh:
@@ -1785,9 +1785,23 @@ class Lsf(Environment):
         self._log_paths[launch_id] = log_path
         return log_path
 
-    def _get_log_path(self: Self, launch_id: str) -> str:
-        """Get the output directory for a specific launch ID"""
-        return self._log_paths[launch_id]
+    def get_log_path(self: Self, launch_id: str, default: Optional[str] = None) -> str:
+        """Get the log path for a specific launch ID.
+
+        Args:
+            launch_id: The launch ID to look up.
+            default: Value to return if launch_id is not present. If None
+                (the default), KeyError is raised on a missing launch_id.
+
+        Returns:
+            The log path string, or `default` when launch_id is not present.
+
+        Raises:
+            KeyError: If launch_id is not present and `default` is None.
+        """
+        if default is None:
+            return self._log_paths[launch_id]
+        return self._log_paths.get(launch_id, default)
 
     async def _bkill(self: Self, launch_id: str, **kwargs) -> None:
         """Kill the LSF job associated with launch_id via bkill."""
