@@ -28,11 +28,9 @@ from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.storage.target_run_storage import IStoredTargetRunStorage
-from gbserver.types.constants import GBSERVER_WEBHOOKS_ENABLED
 from gbserver.types.metrics import Metric, MetricMetadata, MetricName
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
-from gbserver.storage.sql.webhook_subscription_storage import create_webhook_storage
 
 logger = get_logger(__name__)
 
@@ -118,20 +116,6 @@ def finalize_build_status(
     if not build.status.is_finished():
         build = update_stored_build_status(build.uuid, status, failure_reason)
         logger.info("Build %s finalized with status %s", build_id, status)
-
-    # Deactivate webhook subscriptions for completed builds
-    try:
-        if GBSERVER_WEBHOOKS_ENABLED:
-            webhook_storage = create_webhook_storage()
-            count = webhook_storage.deactivate_for_build(build_id)
-            if count > 0:
-                logger.info(
-                    "Deactivated %d webhook subscription(s) for completed build %s",
-                    count,
-                    build_id,
-                )
-    except Exception as e:
-        logger.warning("Failed to deactivate webhook subscriptions: %s", e)
 
     return build
 

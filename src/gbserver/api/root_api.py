@@ -33,7 +33,7 @@ from gbserver.types.constants import (
     GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GIT_COMMIT,
 )
-from gbserver.api.webhooks import webhooks_router
+
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -70,7 +70,6 @@ root_api.mount(f"{API_BASE_PATH}/logs", logs_api)
 root_api.mount(f"{API_BASE_PATH}/node-health", node_health_api)
 root_api.mount(f"{API_BASE_PATH}/secrets", secrets_api)
 root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
-root_api.include_router(webhooks_router, prefix=API_BASE_PATH)
 
 
 @root_api.on_event("startup")

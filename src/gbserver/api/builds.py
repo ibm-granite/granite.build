@@ -43,13 +43,9 @@ from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.api.builds import BuildValidateRequestType
 from gbserver.types.auth import User
-from gbserver.types.constants import GBSERVER_WEBHOOKS_ALLOW_HTTP, GBSERVER_WEBHOOKS_ENABLED
 from gbserver.types.status import Status
 from gbserver.types.validation import GBValidationErrors
 from gbserver.utils.logger import get_logger
-from gbserver.webhooks.models import WEBHOOK_MIN_FREQUENCY, StoredWebhookSubscription
-from gbserver.storage.sql.webhook_subscription_storage import create_webhook_storage
-from gbserver.webhooks.url_validator import WebhookURLError, validate_webhook_url
 
 logger = get_logger(__name__)
 
@@ -75,10 +71,6 @@ class BuildSubmitRequest(BaseModel):
     targets: Optional[List[str]] = None
     description: Optional[str] = ""
     tags: Optional[List[str]] = None
-    webhook_url: Optional[str] = None
-    webhook_secret: Optional[str] = None
-    webhook_event_types: Optional[List[str]] = None
-    webhook_frequency: Optional[int] = None
 
     @model_validator(mode="after")
     def validate_space(self: Self) -> Self:
@@ -95,8 +87,6 @@ class BuildSubmitResponse(BaseModel):
     """Response to a build submission."""
 
     build_id: str
-    webhook_subscription_id: Optional[str] = None
-    webhook_warning: Optional[str] = None
 
 
 class BuildValidateRequest(BaseModel):
@@ -269,86 +259,12 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
         tags=req.tags,
     )
 
-    # Auto-create webhook subscription BEFORE enqueuing the build
-    # (ensures subscription exists when BuildRunner starts processing events)
-    webhook_subscription_id, webhook_warning = _create_webhook_subscription(req, stored_build)
-
     result = build_storage.add(stored_build)
     logger.info("stored build with id: %s", result)
 
     return BuildSubmitResponse(
         build_id=stored_build.uuid,
-        webhook_subscription_id=webhook_subscription_id,
-        webhook_warning=webhook_warning,
     )
-
-
-def _create_webhook_subscription(
-    req: BuildSubmitRequest, stored_build: StoredBuild
-) -> Tuple[Optional[str], Optional[str]]:
-    """Create a webhook subscription for a build if webhook_url is provided.
-
-    This is a best-effort operation: if subscription creation fails, the
-    build is still considered successfully submitted.
-
-    Args:
-        req: The original build submission request containing webhook fields.
-        stored_build: The persisted build record.
-
-    Returns:
-        A tuple of (subscription_uuid, warning_message). The warning is None
-        on success and contains a human-readable reason when subscription
-        creation is skipped or fails.
-    """
-    if not req.webhook_url:
-        return None, None
-
-    try:
-        if not GBSERVER_WEBHOOKS_ENABLED:
-            return None, "Webhooks are disabled on this server"
-
-        # Validate URL (best-effort — don't fail build submission)
-        allow_http = GBSERVER_WEBHOOKS_ALLOW_HTTP
-        try:
-            validate_webhook_url(req.webhook_url, allow_http=allow_http)
-        except WebhookURLError as e:
-            logger.warning(
-                "Webhook URL validation failed for build %s: %s", stored_build.uuid, e
-            )
-            return None, f"Webhook URL validation failed: {e}"
-
-        # Require a meaningful secret for HMAC authentication
-        if not req.webhook_secret or len(req.webhook_secret) < 8:
-            logger.warning(
-                "Webhook secret too short (min 8 chars) for build %s, skipping subscription",
-                stored_build.uuid,
-            )
-            return None, "Webhook secret must be at least 8 characters"
-
-        webhook_storage = create_webhook_storage()
-        subscription = StoredWebhookSubscription(
-            space_name=stored_build.space_name,
-            build_filter=stored_build.uuid,
-            status="active",
-            webhook_url=req.webhook_url,
-            secret=req.webhook_secret,
-            event_types=req.webhook_event_types or ["*"],
-            frequency=max(
-                req.webhook_frequency or WEBHOOK_MIN_FREQUENCY,
-                WEBHOOK_MIN_FREQUENCY,
-            ),
-            created_by=req.username,
-        )
-        webhook_storage.add(subscription)
-        logger.info(
-            "Auto-created webhook subscription %s for build %s",
-            subscription.uuid,
-            stored_build.uuid,
-        )
-        return subscription.uuid, None
-    except Exception as e:
-        logger.warning("Failed to create webhook subscription: %s", e)
-        return None, f"Webhook subscription creation failed: {e}"
 
 
 @builds_api.post("/validate")
