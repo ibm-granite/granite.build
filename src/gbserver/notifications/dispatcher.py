@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from gbserver.notifications.adapter import NotificationAdapter
 from gbserver.notifications.config import load_notification_config
+from gbserver.notifications.ntfy_adapter import NtfyAdapter
 from gbserver.notifications.telegram_adapter import TelegramAdapter
 from gbserver.types.buildevent import BuildEvent
 
@@ -57,6 +58,14 @@ class StandaloneDispatcher:
                 )
                 return None
             return TelegramAdapter(bot_token=bot_token, chat_id=chat_id)
+
+        if adapter_type == "ntfy":
+            topic = entry.get("topic", "")
+            server = entry.get("server", "https://ntfy.sh")
+            if not topic:
+                logger.warning("Ntfy adapter config missing topic, skipping")
+                return None
+            return NtfyAdapter(topic=topic, server=server)
 
         logger.warning("Unknown notification adapter type: %s", adapter_type)
         return None
