@@ -204,3 +204,6 @@ report.xml
 
 # WandB
 wandb/
+
+# Local documentation references
+rabbitmq-event-notifications-user-guide.mdx
