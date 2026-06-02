@@ -23,6 +23,7 @@ Exchange name: build-events
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, Optional
 
 from gbserver.messaging.messaging_base import Address
@@ -49,6 +50,7 @@ class BuildEventPublisher:
 
     def __init__(self, rabbitmq: RabbitMQBase) -> None:
         self._rabbitmq = rabbitmq
+        self._publish_lock = asyncio.Lock()
 
     @classmethod
     def from_env(
@@ -100,30 +102,32 @@ class BuildEventPublisher:
         # The Address for this particular publish uses queue="build.<build_id>"
         # so that Address.rk(suffix=event_type) produces "build.<build_id>.<event_type>"
         # We temporarily override the address on the rabbitmq instance for this publish.
-        original_addr = self._rabbitmq.addr
-        publish_addr = Address(
-            exchange=EXCHANGE_NAME,
-            queue=f"build.{build_id}",
-            routing_key=None,
-        )
-        try:
-            self._rabbitmq.addr = publish_addr  # type: ignore[misc]
-            await self._rabbitmq.publish(payload=payload, suffix=event_type)
-            logger.info(
-                "Published event type=%s build_id=%s routing_key=%s",
-                event_type,
-                build_id,
-                publish_addr.rk(event_type),
+        # A lock is required because the address swap is not coroutine-safe.
+        async with self._publish_lock:
+            original_addr = self._rabbitmq.addr
+            publish_addr = Address(
+                exchange=EXCHANGE_NAME,
+                queue=f"build.{build_id}",
+                routing_key=None,
             )
-        except Exception as exc:
-            logger.warning(
-                "Failed to publish event type=%s build_id=%s: %s",
-                event_type,
-                build_id,
-                exc,
-            )
-        finally:
-            self._rabbitmq.addr = original_addr  # type: ignore[misc]
+            try:
+                self._rabbitmq.addr = publish_addr  # type: ignore[misc]
+                await self._rabbitmq.publish(payload=payload, suffix=event_type)
+                logger.info(
+                    "Published event type=%s build_id=%s routing_key=%s",
+                    event_type,
+                    build_id,
+                    publish_addr.rk(event_type),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to publish event type=%s build_id=%s: %s",
+                    event_type,
+                    build_id,
+                    exc,
+                )
+            finally:
+                self._rabbitmq.addr = original_addr  # type: ignore[misc]
 
     @staticmethod
     def _serialize_event(event: BuildEvent) -> Dict[str, Any]:
@@ -131,7 +135,7 @@ class BuildEventPublisher:
         Serialize a BuildEvent to a JSON-compatible dict suitable for publishing.
         """
         payload: Dict[str, Any] = {
-            "build_id": event.run_metadata.build_id or "",
+            "build_id": event.run_metadata.build_id or "unknown",
             "event_type": event.type.value,
             "timestamp": event.timestamp.isoformat(),
             "target_name": event.run_metadata.target_name or "",

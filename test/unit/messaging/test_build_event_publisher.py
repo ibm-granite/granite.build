@@ -230,7 +230,7 @@ class TestBuildEventPublisher:
         mock_rabbitmq.publish.assert_called_once()
         call_kwargs = mock_rabbitmq.publish.call_args
         payload = call_kwargs.kwargs.get("payload") or call_kwargs[0][0]
-        assert payload["build_id"] == ""
+        assert payload["build_id"] == "unknown"
 
     @pytest.mark.asyncio
     async def test_setup_delegates_to_rabbitmq(self, publisher, mock_rabbitmq):
@@ -287,7 +287,7 @@ class TestSerializeEvent:
 
         result = BuildEventPublisher._serialize_event(event)
 
-        assert result["build_id"] == ""
+        assert result["build_id"] == "unknown"
         assert result["event_type"] == "workload_status_event"
         assert result["target_name"] == ""
         assert result["step_name"] == ""
