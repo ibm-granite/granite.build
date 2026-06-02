@@ -23,8 +23,6 @@ from gbserver.notifications.adapter import NotificationAdapter
 from gbserver.notifications.config import load_notification_config
 from gbserver.notifications.email_adapter import EmailAdapter
 from gbserver.notifications.macos_adapter import MacOSAdapter
-from gbserver.notifications.ntfy_adapter import NtfyAdapter
-from gbserver.notifications.telegram_adapter import TelegramAdapter
 from gbserver.types.buildevent import BuildEvent
 
 logger = logging.getLogger(__name__)
@@ -50,24 +48,6 @@ class StandaloneDispatcher:
     def _create_adapter(self, entry: Dict[str, Any]) -> Optional[NotificationAdapter]:
         """Create an adapter instance based on the entry's 'type' field."""
         adapter_type = entry.get("type")
-
-        if adapter_type == "telegram":
-            bot_token = entry.get("bot_token")
-            chat_id = entry.get("chat_id")
-            if not bot_token or not chat_id:
-                logger.warning(
-                    "Telegram adapter config missing bot_token or chat_id, skipping"
-                )
-                return None
-            return TelegramAdapter(bot_token=bot_token, chat_id=chat_id)
-
-        if adapter_type == "ntfy":
-            topic = entry.get("topic", "")
-            server = entry.get("server", "https://ntfy.sh")
-            if not topic:
-                logger.warning("Ntfy adapter config missing topic, skipping")
-                return None
-            return NtfyAdapter(topic=topic, server=server)
 
         if adapter_type == "email":
             to = entry.get("to", "")

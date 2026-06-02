@@ -51,9 +51,8 @@ class TestStandaloneDispatcher:
         config_file = tmp_path / "notifications.yaml"
         config_file.write_text(
             "notifications:\n"
-            "  - type: telegram\n"
-            "    bot_token: fake-token\n"
-            "    chat_id: '12345'\n"
+            "  - type: macos\n"
+            "    sound: default\n"
             "    events: [status_event]\n"
         )
 
@@ -74,9 +73,8 @@ class TestStandaloneDispatcher:
         config_file = tmp_path / "notifications.yaml"
         config_file.write_text(
             "notifications:\n"
-            "  - type: telegram\n"
-            "    bot_token: fake-token\n"
-            "    chat_id: '12345'\n"
+            "  - type: macos\n"
+            "    sound: default\n"
             "    events: [status_event]\n"
         )
 
@@ -95,9 +93,8 @@ class TestStandaloneDispatcher:
         config_file = tmp_path / "notifications.yaml"
         config_file.write_text(
             "notifications:\n"
-            "  - type: telegram\n"
-            "    bot_token: fake-token\n"
-            "    chat_id: '12345'\n"
+            "  - type: macos\n"
+            "    sound: default\n"
             "    events: [status_event]\n"
         )
 
@@ -117,9 +114,8 @@ class TestStandaloneDispatcher:
         config_file = tmp_path / "notifications.yaml"
         config_file.write_text(
             "notifications:\n"
-            "  - type: telegram\n"
-            "    bot_token: fake-token\n"
-            "    chat_id: '12345'\n"
+            "  - type: macos\n"
+            "    sound: default\n"
             "    events: ['*']\n"
         )
 
