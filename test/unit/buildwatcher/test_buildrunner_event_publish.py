@@ -186,7 +186,6 @@ class TestDispatchToEventBusWiring:
 
         runner = MagicMock(spec=BuildRunner)
         runner._event_publisher = None
-        runner._webhook_writer = None
 
         event = _make_status_event()
 
@@ -194,8 +193,6 @@ class TestDispatchToEventBusWiring:
         with patch(
             "gbserver.buildwatcher.buildrunner.asyncio.ensure_future"
         ) as mock_ensure_future, patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_WEBHOOKS_ENABLED", False
-        ), patch(
             "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             True,
         ):

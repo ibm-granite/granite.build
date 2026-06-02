@@ -81,7 +81,7 @@ from gbserver.types.constants import (
     GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GITHUB_TOKEN,
     GBSERVER_RAISE_BUILD_EXCEPTIONS,
-    GBSERVER_WEBHOOKS_ENABLED,
+
     STARTING_BUILD_MESSAGE,
     WORKSPACE_BUILDS_DIR,
 )
@@ -90,7 +90,6 @@ from gbserver.utils.archive import extract_archive
 from gbserver.utils.logger import get_logger
 from gbserver.utils.unwrap_errors import get_readable_error_message
 from gbserver.utils.utils import get_build_status_link
-from gbserver.webhooks.event_writer import WebhookEventWriter
 
 logger = get_logger(__name__)
 # How many times the monitoring interval between checks for cancellation
@@ -152,7 +151,7 @@ class BuildRunner(AbstractBuildRunner):
             build, _BUILD_EVENT_SOURCE_NAME
         )  # To be recreated later.
         self.event_storage = get_admin_storage().event_storage
-        self._webhook_writer: Optional[Any] = None
+
         self._event_publisher: Optional[Any] = None
         self._standalone_dispatcher: Optional[Any] = None
 
@@ -758,9 +757,6 @@ class BuildRunner(AbstractBuildRunner):
         # Add the BuildEvent to the history of events for this build
         self.event_storage.add(StoredEvent(build_event=event))
 
-        # Dispatch to webhook subscribers
-        self.__dispatch_to_webhooks(event)
-
         # Dispatch to RabbitMQ event bus (fire-and-forget async task)
         asyncio.ensure_future(self.__dispatch_to_event_bus(event))
 
@@ -794,30 +790,6 @@ class BuildRunner(AbstractBuildRunner):
             logger.error("unsupported event type: %s", event)
         logger.debug("BuildRunner.process_event end")
         return build_finished
-
-    def __dispatch_to_webhooks(self: Self, event: BuildEvent) -> None:
-        """Persist event to webhook storage for matching subscriptions."""
-        if not GBSERVER_WEBHOOKS_ENABLED:
-            return
-
-        try:
-            if self._webhook_writer is None:
-                writer = WebhookEventWriter(
-                    build_id=self.stored_build.uuid,
-                    space_name=self.stored_build.space_name,
-                )
-                subs = writer.start()
-                if not subs:
-                    return
-                self._webhook_writer = writer
-                logger.info(
-                    "[BuildRunner] Webhook writer initialized with %d subscription(s)",
-                    len(subs),
-                )
-
-            self._webhook_writer.accept_event(event)
-        except Exception as e:
-            logger.warning("[BuildRunner] Webhook persist error (non-fatal): %s", e)
 
     async def __dispatch_to_event_bus(self: Self, event: BuildEvent) -> None:
         """Publish event to RabbitMQ exchange for push-based consumers."""
