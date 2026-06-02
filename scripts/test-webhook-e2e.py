@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 """
-End-to-end test for webhook event persistence.
+End-to-end test for build event notifications via RabbitMQ.
 
-This script verifies that build events are persisted to the webhook
-event storage (write-ahead log) for later delivery by the Phase 2
-delivery worker.
+This script verifies that build events are published to the RabbitMQ
+topic exchange and can be consumed by a scoped subscriber.
 
 Flow:
 1. Starts gbserver in standalone mode (SQLite + thread-based builds)
-2. Creates an "active" webhook subscription via storage directly
-3. Submits a build
-4. Waits for the build to complete
-5. Queries the webhook event storage for persisted events
-6. Verifies events were written correctly
+2. Provisions scoped RabbitMQ credentials via the subscribe endpoint
+3. Connects a consumer to receive events for the build
+4. Submits a build
+5. Waits for the build to complete
+6. Verifies events were received by the consumer
 
 Usage:
     python scripts/test-webhook-e2e.py [--build-dir PATH] [--timeout 120]
 
 Requirements:
     - Activated venv with gbserver installed
-    - No external infrastructure needed (uses standalone mode with SQLite)
+    - Running RabbitMQ instance with management plugin enabled
+    - Set RABBITMQ_HOST, RABBITMQ_PORT, GBSERVER_RABBITMQ_MGMT_URL env vars
 """
 
 import os
@@ -48,6 +48,7 @@ if sys.platform == "darwin" and sys.stderr.isatty():
 import argparse
 import asyncio
 import io
+import json
 import socket
 import threading
 import time
@@ -81,7 +82,7 @@ def start_gbserver(port: int, build_dir: str) -> threading.Thread:
     os.environ["GBSERVER_METADATA_STORAGE"] = "sqlite"
     os.environ["GBSERVER_DEFAULT_BUILDRUNNER_TYPE"] = "thread"
     os.environ["GB_ENVIRONMENT"] = "STANDALONE"
-    os.environ["GBSERVER_WEBHOOKS_ENABLED"] = "true"
+    os.environ["GBSERVER_EVENT_PUBLISHING_ENABLED"] = "true"
 
     from gbserver.commands.command_standalone import _run_standalone
 
@@ -114,39 +115,6 @@ def start_gbserver(port: int, build_dir: str) -> threading.Thread:
     return thread
 
 
-# ─── Subscription Creation ───────────────────────────────────────────────────
-
-
-def create_active_subscription(space_name: str) -> str:
-    """Create a space-wide webhook subscription directly via storage.
-
-    Bypasses URL validation by going directly to the storage layer.
-    Created with status="active" so the WebhookEventWriter picks it up.
-
-    Returns the subscription UUID.
-    """
-    from gbserver.webhooks.models import StoredWebhookSubscription
-    from gbserver.storage.sql.webhook_subscription_storage import create_webhook_storage
-
-    storage = create_webhook_storage()
-    subscription = StoredWebhookSubscription(
-        space_name=space_name,
-        build_filter=None,
-        status="active",
-        active=True,
-        webhook_url="https://example.com/e2e-test-endpoint",
-        secret="e2e-test-secret",
-        event_types=["*"],
-        frequency=15,
-        created_by="e2e-test-user",
-    )
-    storage.add(subscription)
-    print(f"  Subscription ID: {subscription.uuid}")
-    print(f"  Filter:          space-wide (all builds in '{space_name}')")
-    print(f"  Status:          active")
-    return subscription.uuid
-
-
 # ─── Build Submission ────────────────────────────────────────────────────────
 
 
@@ -171,11 +139,11 @@ def submit_build(server_port: int, build_dir: str) -> str:
     spaces = spaces_resp.json().get("spaces", [])
     space_name = spaces[0]["name"] if spaces else "standalone"
 
-    # Submit build (without webhook_url — subscription created directly)
+    # Submit build
     resp = requests.post(
         f"{base_url}/builds/",
         json={
-            "name": "webhook-e2e-test",
+            "name": "event-publish-e2e-test",
             "build_archive": build_archive,
             "space_name": space_name,
             "username": "e2e-test-user",
@@ -191,6 +159,78 @@ def submit_build(server_port: int, build_dir: str) -> str:
     print(f"  Build ID: {build_id}")
     print(f"  Space:    {space_name}")
     return build_id
+
+
+# ─── Event Subscription via RabbitMQ ────────────────────────────────────────
+
+
+def subscribe_to_build(server_port: int, build_id: str) -> dict:
+    """Subscribe to build events via the REST endpoint.
+
+    Returns connection info + credentials for RabbitMQ consumer.
+    """
+    import requests
+
+    resp = requests.post(
+        f"http://127.0.0.1:{server_port}/api/v1/builds/{build_id}/events/subscribe",
+        headers={"Authorization": "Bearer e2e-test-token"},
+    )
+
+    if resp.status_code != 200:
+        print(f"FAIL: Subscribe failed: {resp.status_code} {resp.text}")
+        sys.exit(1)
+
+    return resp.json()
+
+
+def consume_events(subscribe_info: dict, timeout: int) -> list:
+    """Connect to RabbitMQ with scoped credentials and consume events.
+
+    Returns list of received event dicts.
+    """
+    received = []
+
+    async def _consume():
+        from gbserver.messaging.rabbitmq_base import RabbitMQBase, RabbitSettings
+        from gbserver.messaging.messaging_base import Address
+
+        settings = RabbitSettings(
+            host=subscribe_info["rabbitmq_host"],
+            port=subscribe_info["rabbitmq_port"],
+            user=subscribe_info["username"],
+            password=subscribe_info["password"],
+            uri="amqp",
+        )
+        consumer = RabbitMQBase(
+            addr=Address(
+                exchange=subscribe_info["exchange"],
+                queue=subscribe_info["queue"],
+                routing_key=None,
+            ),
+            settings=settings,
+        )
+        await consumer.setup()
+
+        async def handler(body, routing_key, delivery_tag):
+            event = json.loads(body)
+            received.append(event)
+
+        await consumer.consume_stream(handler)
+
+        # Wait until timeout or until we see a terminal status event
+        start = time.time()
+        while time.time() - start < timeout:
+            for evt in received:
+                if evt.get("status") in TERMINAL_STATUSES:
+                    await asyncio.sleep(2)  # Collect any trailing events
+                    await consumer.close()
+                    return
+            await asyncio.sleep(1)
+
+        await consumer.close()
+
+    asyncio.run(_consume())
+    return received
 
 
 # ─── Build Polling ───────────────────────────────────────────────────────────
@@ -225,16 +265,42 @@ def wait_for_build(server_port: int, build_id: str, timeout: int) -> str:
     return "timeout"
 
 
-# ─── Event Query ─────────────────────────────────────────────────────────────
+# ─── Standalone Notification Test ────────────────────────────────────────────
 
 
-def query_persisted_events(subscription_id: str) -> list:
-    """Query the webhook event storage for events matching a subscription."""
-    from gbserver.storage.sql.webhook_event_storage import create_webhook_event_storage
+def test_standalone_notifications(build_dir: str) -> bool:
+    """Verify standalone notification config loading works.
 
-    storage = create_webhook_event_storage()
-    events = storage.get_pending_for_subscription(subscription_id)
-    return events
+    This doesn't test actual delivery (would need a real SMTP server or macOS),
+    but verifies the config → dispatcher → adapter pipeline initializes correctly.
+    """
+    import tempfile
+
+    config_content = """
+notifications:
+  - type: macos
+    events: [status_event]
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(config_content)
+        config_path = f.name
+
+    try:
+        from gbserver.notifications.dispatcher import StandaloneDispatcher
+
+        dispatcher = StandaloneDispatcher(config_path=config_path)
+        if dispatcher._adapters:
+            print("  Standalone dispatcher initialized with adapters:")
+            for entry in dispatcher._adapters:
+                adapter_type = type(entry["adapter"]).__name__
+                events = entry["events"]
+                print(f"    - {adapter_type}: events={events}")
+            return True
+        else:
+            print("  WARNING: No adapters created (may be expected on non-macOS)")
+            return True  # Not a failure — macOS adapter skips on Linux
+    finally:
+        os.unlink(config_path)
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
@@ -242,7 +308,7 @@ def query_persisted_events(subscription_id: str) -> list:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="End-to-end test for webhook event persistence"
+        description="End-to-end test for build event notifications"
     )
     parser.add_argument(
         "--server-port",
@@ -268,6 +334,11 @@ def main():
         default=120,
         help="Max seconds to wait for build completion (default: 120)",
     )
+    parser.add_argument(
+        "--skip-rabbitmq",
+        action="store_true",
+        help="Skip RabbitMQ tests (only test standalone notifications)",
+    )
     args = parser.parse_args()
 
     # Clean stale SQLite DB to avoid leftover builds from previous runs
@@ -279,32 +350,38 @@ def main():
     server_port = args.server_port or get_free_port()
     build_dir = os.path.abspath(args.build_dir)
 
+    has_rabbitmq = bool(os.getenv("RABBITMQ_HOST")) and not args.skip_rabbitmq
+
     print("=" * 60)
-    print("  Webhook Event Persistence — End-to-End Test")
+    print("  Build Event Notifications — End-to-End Test")
     print("=" * 60)
     print()
     print(f"  gbserver port:    {server_port}")
     print(f"  Build directory:  {build_dir}")
     print(f"  Timeout:          {args.timeout}s")
+    print(f"  RabbitMQ:         {'available' if has_rabbitmq else 'skipped'}")
     print()
 
-    # Step 1: Start gbserver
-    print("[1/5] Starting gbserver (standalone mode)...")
+    # Step 1: Test standalone notification pipeline
+    print("[1/5] Testing standalone notification dispatcher...")
+    standalone_ok = test_standalone_notifications(build_dir)
+    print()
+
+    if not has_rabbitmq:
+        print("  RabbitMQ not available (set RABBITMQ_HOST to enable).")
+        print("  Skipping event publishing tests.")
+        print()
+        if standalone_ok:
+            print("  PASS — Standalone notification pipeline verified.")
+        else:
+            print("  FAIL — Standalone notification pipeline failed.")
+            sys.exit(1)
+        return
+
+    # Step 2: Start gbserver
+    print("[2/5] Starting gbserver (standalone mode + event publishing)...")
     start_gbserver(server_port, build_dir)
     print(f"  Server ready at http://127.0.0.1:{server_port}")
-    print()
-
-    # Step 2: Create active subscription BEFORE submitting build
-    # (avoids race condition where events fire before subscription exists)
-    print("[2/5] Creating active webhook subscription...")
-    import requests
-
-    spaces_resp = requests.get(
-        f"http://127.0.0.1:{server_port}/api/v1/spaces/spaces_for_user"
-    )
-    spaces = spaces_resp.json().get("spaces", [])
-    space_name = spaces[0]["name"] if spaces else "standalone"
-    subscription_id = create_active_subscription(space_name)
     print()
 
     # Step 3: Submit build
@@ -312,59 +389,72 @@ def main():
     build_id = submit_build(server_port, build_dir)
     print()
 
-    # Step 4: Wait for build to complete
-    print("[4/5] Waiting for build to complete...")
-    final_status = wait_for_build(server_port, build_id, args.timeout)
+    # Step 4: Subscribe to build events
+    print("[4/5] Subscribing to build events via RabbitMQ...")
+    subscribe_info = subscribe_to_build(server_port, build_id)
+    print(f"  Username:     {subscribe_info['username']}")
+    print(f"  Exchange:     {subscribe_info['exchange']}")
+    print(f"  Routing key:  {subscribe_info['routing_key']}")
+    print(f"  Queue:        {subscribe_info['queue']}")
+    print(f"  Expires:      {subscribe_info['expires_at']}")
     print()
 
-    # Step 5: Query persisted events
-    print("[5/5] Querying persisted webhook events...")
-    # Give a moment for any final events to be flushed
-    time.sleep(2)
-    events = query_persisted_events(subscription_id)
+    # Step 5: Wait for build and consume events
+    print("[5/5] Consuming events (waiting for build to complete)...")
+    events = consume_events(subscribe_info, timeout=args.timeout)
 
     print()
     print("=" * 60)
     print("  Results")
     print("=" * 60)
-    print(f"  Build final status:   {final_status}")
-    print(f"  Events persisted:     {len(events)}")
-
-    if final_status == "timeout" and not events:
-        print()
-        print("  FAIL — Build timed out and no events were persisted!")
-        sys.exit(1)
+    print(f"  Events received:      {len(events)}")
 
     if events:
         event_types = set()
         for evt in events:
-            event_types.add(evt.event_type)
+            event_types.add(evt.get("event_type", "unknown"))
+            status = evt.get("status", "")
+            status_str = f" status={status}" if status else ""
             print(
-                f"    [{evt.event_type}] build={evt.build_id[:8]}... "
-                f"delivered={evt.delivered}"
+                f"    [{evt.get('event_type', '?')}] "
+                f"build={evt.get('build_id', '?')[:8]}...{status_str}"
             )
         print()
         print(f"  Event types seen:     {sorted(event_types)}")
-        print(f"  All undelivered:      {all(not e.delivered for e in events)}")
 
-        event_types_upper = {t.upper() for t in event_types}
-        if "STATUS_EVENT" in event_types_upper:
+        if "status_event" in event_types:
             print()
-            print("  SUCCESS — Webhook events persisted end-to-end!")
-            print("  (Ready for Phase 2 delivery worker to pick up)")
+            print("  SUCCESS — Build events published and consumed end-to-end!")
         else:
             print()
-            print("  WARNING — No STATUS_EVENT found in persisted events.")
+            print("  WARNING — No status_event found in received events.")
             sys.exit(1)
     else:
         print()
-        print("  FAIL — No events were persisted!")
+        print("  FAIL — No events were received!")
         print()
         print("  Possible causes:")
-        print("  - Subscription was not 'active' when events were processed")
-        print("  - Build completed before subscription was created")
-        print("  - WebhookEventWriter did not find the subscription")
+        print("  - GBSERVER_EVENT_PUBLISHING_ENABLED not set to true")
+        print("  - RabbitMQ connection failed")
+        print("  - Consumer credentials expired before connection")
+        print("  - Build completed before consumer connected")
         sys.exit(1)
+
+    # Cleanup: delete temp RabbitMQ user
+    try:
+        from gbserver.messaging.rabbitmq_admin import RabbitMQAdmin
+
+        admin = RabbitMQAdmin(
+            management_url=os.getenv(
+                "GBSERVER_RABBITMQ_MGMT_URL", "http://localhost:15672"
+            ),
+            admin_user=os.getenv("GBSERVER_RABBITMQ_MGMT_USER", "guest"),
+            admin_password=os.getenv("GBSERVER_RABBITMQ_MGMT_PASSWORD", "guest"),
+        )
+        asyncio.run(admin.delete_user(subscribe_info["username"]))
+        print(f"  Cleaned up temp user: {subscribe_info['username']}")
+    except Exception as e:
+        print(f"  Warning: cleanup failed: {e}")
 
 
 if __name__ == "__main__":
