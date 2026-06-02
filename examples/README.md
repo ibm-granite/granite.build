@@ -33,24 +33,6 @@ gb build list
 gb build get <build-id>
 ```
 
-### Run via gbserver CLI (no server needed)
-
-```bash
-export GBSERVER_METADATA_STORAGE=sqlite
-export GBSERVER_DEFAULT_BUILDRUNNER_TYPE=process
-export GB_ENVIRONMENT=STANDALONE
-
-# TRL fine-tuning
-gbserver build run \
-  --space-config-uri "file://$(pwd)/test-data/standalone-environments" \
-  test-data/standalone-environments/builds/docker-trl.yaml
-
-# unitxt evaluation
-gbserver build run \
-  --space-config-uri "file://$(pwd)/test-data/standalone-environments" \
-  test-data/standalone-environments/builds/docker-unitxt.yaml
-```
-
 ### Run via pytest
 
 ```bash
@@ -91,7 +73,10 @@ gb build start samples/standalone/standalone-quickstart/build.yaml
 A single-step build that cats a text file. Good for verifying your install.
 
 ```bash
-# Direct execution (no server needed)
+# Direct execution (no server needed). The positional argument is a build
+# DIRECTORY (one containing build.yaml), not a path to the YAML file.
+# --space-config-uri tells gbserver where to resolve space:// URIs from —
+# here we point it at the same directory because the example is self-contained.
 gbserver build run \
   --space-config-uri "file://$(pwd)/examples/minimal-build" \
   examples/minimal-build
@@ -102,4 +87,7 @@ gb build start -f examples/minimal-build/build.yaml
 gb build list
 ```
 
-See [examples/minimal-build/](minimal-build/) for details.
+See [examples/minimal-build/](minimal-build/) for details. For a fully
+self-contained example with all the space / environment / step files
+already wired up, see
+[`samples/tests/local_hello_world_full/`](../samples/tests/local_hello_world_full/).
