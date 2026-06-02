@@ -1404,7 +1404,9 @@ class TestResolveLsfConfig:
             return_value=(env_config, MagicMock()),
         ):
             with pytest.raises(HTTPException) as ei:
-                await lsf_tunnel._resolve_lsf_config("space://environments/test-cluster")
+                await lsf_tunnel._resolve_lsf_config(
+                    "space://environments/test-cluster"
+                )
         assert ei.value.status_code == 503
         detail = str(ei.value.detail)
         assert "login_node_username" in detail
