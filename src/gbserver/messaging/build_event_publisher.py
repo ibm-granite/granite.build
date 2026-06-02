@@ -32,11 +32,10 @@ from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventStatusPayload,
 )
+from gbserver.types.constants import GBSERVER_BUILD_EVENTS_EXCHANGE
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-EXCHANGE_NAME = "build-events"
 
 
 class BuildEventPublisher:
@@ -62,7 +61,7 @@ class BuildEventPublisher:
         The exchange is always 'build-events'; queue and routing_key are set per-publish.
         """
         rabbitmq = RabbitMQBase.from_env_and_args(
-            exchange_name=EXCHANGE_NAME,
+            exchange_name=GBSERVER_BUILD_EVENTS_EXCHANGE,
             queue_name="build",
             routing_key=None,
             messaging_secret=messaging_secret,
@@ -106,7 +105,7 @@ class BuildEventPublisher:
         async with self._publish_lock:
             original_addr = self._rabbitmq.addr
             publish_addr = Address(
-                exchange=EXCHANGE_NAME,
+                exchange=GBSERVER_BUILD_EVENTS_EXCHANGE,
                 queue=f"build.{build_id}",
                 routing_key=None,
             )

@@ -25,9 +25,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gbserver.messaging.build_event_publisher import (
-    EXCHANGE_NAME,
     BuildEventPublisher,
 )
+from gbserver.types.constants import GBSERVER_BUILD_EVENTS_EXCHANGE
 from gbserver.messaging.messaging_base import Address
 from gbserver.types.buildevent import (
     BuildEvent,
@@ -43,7 +43,7 @@ from gbserver.types.status import Status
 def mock_rabbitmq():
     """Create a mock RabbitMQBase instance."""
     mock = MagicMock()
-    mock.addr = Address(exchange=EXCHANGE_NAME, queue="build", routing_key=None)
+    mock.addr = Address(exchange=GBSERVER_BUILD_EVENTS_EXCHANGE, queue="build", routing_key=None)
     mock.setup = AsyncMock()
     mock.close = AsyncMock()
     mock.publish = AsyncMock()
@@ -186,7 +186,7 @@ class TestBuildEventPublisher:
 
         # After publish, the original addr should be restored
         assert mock_rabbitmq.addr == Address(
-            exchange=EXCHANGE_NAME, queue="build", routing_key=None
+            exchange=GBSERVER_BUILD_EVENTS_EXCHANGE, queue="build", routing_key=None
         )
 
     @pytest.mark.asyncio
