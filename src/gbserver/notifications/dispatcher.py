@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional
 
 from gbserver.notifications.adapter import NotificationAdapter
 from gbserver.notifications.config import load_notification_config
+from gbserver.notifications.email_adapter import EmailAdapter
+from gbserver.notifications.macos_adapter import MacOSAdapter
 from gbserver.notifications.ntfy_adapter import NtfyAdapter
 from gbserver.notifications.telegram_adapter import TelegramAdapter
 from gbserver.types.buildevent import BuildEvent
@@ -66,6 +68,25 @@ class StandaloneDispatcher:
                 logger.warning("Ntfy adapter config missing topic, skipping")
                 return None
             return NtfyAdapter(topic=topic, server=server)
+
+        if adapter_type == "email":
+            to = entry.get("to", "")
+            if not to:
+                logger.warning("Email adapter config missing 'to' address, skipping")
+                return None
+            return EmailAdapter(
+                to=to,
+                smtp_host=entry.get("smtp_host", "localhost"),
+                smtp_port=int(entry.get("smtp_port", 587)),
+                smtp_user=entry.get("smtp_user", ""),
+                smtp_password=entry.get("smtp_password", ""),
+                from_addr=entry.get("from_addr", ""),
+                use_tls=entry.get("use_tls", True),
+            )
+
+        if adapter_type == "macos":
+            sound = entry.get("sound", "default")
+            return MacOSAdapter(sound=sound)
 
         logger.warning("Unknown notification adapter type: %s", adapter_type)
         return None
