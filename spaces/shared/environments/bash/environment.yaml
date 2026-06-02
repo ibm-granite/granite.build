@@ -1,0 +1,4 @@
+name: bash
+type: Bash
+config:
+assetstores: []
