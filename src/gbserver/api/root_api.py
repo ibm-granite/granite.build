@@ -15,6 +15,8 @@
 # limitations under the License.
 
 
+import asyncio
+
 from fastapi import FastAPI
 
 from gbserver.api import (  # noqa: F401  registers routes on builds_api
@@ -31,9 +33,13 @@ from gbserver.api.secrets import secrets_api
 from gbserver.api.spaces import spaces_api
 from gbserver.types.constants import (
     API_BASE_PATH,
+    GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GIT_COMMIT,
 )
 from gbserver.api.webhooks import webhooks_router
+from gbserver.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_app() -> FastAPI:
@@ -68,3 +74,13 @@ root_api.mount(f"{API_BASE_PATH}/node-health", node_health_api)
 root_api.mount(f"{API_BASE_PATH}/secrets", secrets_api)
 root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
 root_api.include_router(webhooks_router, prefix=API_BASE_PATH)
+
+
+@root_api.on_event("startup")
+async def _start_background_tasks():
+    """Launch background tasks that run for the lifetime of the server."""
+    if GBSERVER_EVENT_PUBLISHING_ENABLED:
+        from gbserver.messaging.credential_cleanup import start_cleanup_loop
+
+        logger.info("Event publishing enabled — starting credential cleanup task")
+        asyncio.create_task(start_cleanup_loop())
