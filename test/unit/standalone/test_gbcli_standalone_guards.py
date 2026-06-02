@@ -37,6 +37,7 @@ GUARDED_COMMANDS = [
     ("gbcli.commands.command_template", "template", ["list"]),
     ("gbcli.commands.command_step", "step", ["list"]),
     ("gbcli.commands.command_artifact", "artifact", ["list"]),
+    ("gbcli.commands.command_model", "model", ["list"]),
 ]
 
 
