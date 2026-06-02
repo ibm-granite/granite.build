@@ -224,6 +224,115 @@ t+60s   Cleanup task deletes the expired temp user
 5. **Standalone is self-contained** — no infrastructure dependencies for local use.
    Config is a YAML file, delivery is direct.
 
+## Getting Started (after cloning the repo)
+
+### Standalone Mode (no RabbitMQ needed)
+
+For local development and testing, standalone notifications work without any
+infrastructure. Just create a config file:
+
+```bash
+mkdir -p ~/.gbserver
+cat > ~/.gbserver/notifications.yaml << 'EOF'
+notifications:
+  - type: macos
+    events: [status_event]
+EOF
+```
+
+Run a build with `GB_ENVIRONMENT=STANDALONE` and you'll get macOS notifications
+on status changes.
+
+### Adding Email Notifications
+
+To receive email notifications, you need SMTP credentials. Add them as
+environment variables (never in the YAML file):
+
+```bash
+# Example: Gmail with App Password
+export SMTP_USER="you@gmail.com"
+export SMTP_PASSWORD="xxxx xxxx xxxx xxxx"  # App Password from Google Account settings
+```
+
+Then update your config:
+
+```yaml
+# ~/.gbserver/notifications.yaml
+notifications:
+  - type: macos
+    events: [status_event]
+
+  - type: email
+    to: "you@gmail.com"
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    smtp_user_env: "SMTP_USER"
+    smtp_password_env: "SMTP_PASSWORD"
+    use_tls: true
+    events: [status_event]
+```
+
+#### SMTP Settings for Common Providers
+
+| Provider | smtp_host | smtp_port | use_tls | Notes |
+|----------|-----------|-----------|---------|-------|
+| Gmail | `smtp.gmail.com` | 587 | true | Requires App Password (2FA must be enabled) |
+| Outlook/M365 | `smtp.office365.com` | 587 | true | Requires App Password |
+| IBM internal | `smtp.ibm.com` | 25 | false | May not require auth on corporate network |
+| SendGrid | `smtp.sendgrid.net` | 587 | true | Username is literal `"apikey"`, password is API key |
+
+#### Getting an App Password (Gmail)
+
+1. Enable 2-Factor Authentication: https://myaccount.google.com/security
+2. Create App Password: https://myaccount.google.com/apppasswords
+3. Select "Mail" → copy the 16-character password
+4. Use this as `SMTP_PASSWORD` (not your Google login password)
+
+#### Getting an App Password (Outlook/M365)
+
+1. Enable 2FA: https://account.microsoft.com/security
+2. Create App Password in Security settings
+3. Use this as `SMTP_PASSWORD`
+
+### Clustered Mode (with RabbitMQ)
+
+For full event publishing to RabbitMQ, you need:
+
+1. A running RabbitMQ instance with the management plugin enabled
+2. Set environment variables:
+
+```bash
+export RABBITMQ_HOST="localhost"
+export RABBITMQ_PORT="5672"
+export RABBITMQ_USERNAME="guest"
+export RABBITMQ_PASSWORD="guest"
+export GBSERVER_EVENT_PUBLISHING_ENABLED="true"
+export GBSERVER_RABBITMQ_MGMT_URL="http://localhost:15672"
+export GBSERVER_RABBITMQ_MGMT_USER="guest"
+export GBSERVER_RABBITMQ_MGMT_PASSWORD="guest"
+```
+
+#### Running RabbitMQ Locally (Docker)
+
+```bash
+docker run -d --name rabbitmq \
+  -p 5672:5672 \
+  -p 15672:15672 \
+  rabbitmq:3-management
+```
+
+Management UI: http://localhost:15672 (guest/guest)
+
+#### Verifying the Setup
+
+```bash
+# Check RabbitMQ is reachable
+curl -s http://localhost:15672/api/overview -u guest:guest | jq .cluster_name
+
+# Run the e2e test
+python scripts/test-webhook-e2e.py
+```
+
 ## Testing
 
 ```bash
