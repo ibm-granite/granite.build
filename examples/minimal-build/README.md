@@ -1,37 +1,13 @@
 # Minimal Build Example
 
-A minimal build configuration that runs a single step (cat a text file) in the local bash environment. Use this to verify your installation works end-to-end.
+A single-step `build.yaml` that cats a text file, intended as a "smallest possible config" reference.
 
-`build.yaml` references shared environment, step, and data definitions under [`samples/`](../../samples/). For a fully self-contained example with its own `environments/`, `steps/`, and `assetstores/` directories, see [`samples/tests/local_hello_world_full/`](../../samples/tests/local_hello_world_full/).
+> **Status:** the config parses and validates, but does not yet run end-to-end. Its `environment_uri` points at [`samples/environments/local/`](../../samples/environments/local/), which has no assetstore declared, so the build fails resolving the input URI at execution time. Tracked in #59.
+>
+> For a working example with environment + step + assetstore files all wired up, see [`samples/tests/local_hello_world_full/`](../../samples/tests/local_hello_world_full/).
 
 ## Prerequisites
 
 ```bash
 pip install -e ".[standalone]"
-```
-
-## Run with gbserver directly (no server needed)
-
-```bash
-gbserver build run \
-  --space-config-uri "file://$(pwd)/examples/minimal-build" \
-  examples/minimal-build
-```
-
-## Run with gbcli (requires a running server)
-
-Start the server in one terminal:
-
-```bash
-export GBSERVER_API_KEY="my-secret-key"
-gbserver standalone --space-dir examples/minimal-build
-```
-
-Submit the build from another terminal:
-
-```bash
-export GB_ENVIRONMENT=STANDALONE
-export GBSERVER_API_KEY="my-secret-key"
-gb build start -f examples/minimal-build/build.yaml
-gb build list
 ```

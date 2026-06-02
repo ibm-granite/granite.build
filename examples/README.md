@@ -70,24 +70,11 @@ gb build start samples/standalone/standalone-quickstart/build.yaml
 
 ## 3. Minimal hello-world (local bash, no GPU)
 
-A single-step build that cats a text file. Good for verifying your install.
+A single-step `build.yaml` that cats a text file. The config parses and
+validates, but does not yet run end-to-end because its `samples/`-based
+environment is missing an assetstore wiring (tracked in #59).
 
-```bash
-# Direct execution (no server needed). The positional argument is a build
-# DIRECTORY (one containing build.yaml), not a path to the YAML file.
-# --space-config-uri tells gbserver where to resolve space:// URIs from —
-# here we point it at the same directory because the example is self-contained.
-gbserver build run \
-  --space-config-uri "file://$(pwd)/examples/minimal-build" \
-  examples/minimal-build
-
-# Via gbcli (requires a running gbserver)
-gbserver standalone --space-dir examples/minimal-build &
-gb build start -f examples/minimal-build/build.yaml
-gb build list
-```
-
-See [examples/minimal-build/](minimal-build/) for details. For a fully
-self-contained example with all the space / environment / step files
+For a fully self-contained example with the space / environment / step files
 already wired up, see
 [`samples/tests/local_hello_world_full/`](../samples/tests/local_hello_world_full/).
+See also [`examples/minimal-build/`](minimal-build/).
