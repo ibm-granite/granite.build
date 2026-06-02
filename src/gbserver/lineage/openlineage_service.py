@@ -55,11 +55,44 @@ class LineageService(ABC):
         pass
 
 
+class NoopLineageService(LineageService):
+
+    def emit_event(self, event: Dict) -> None:
+        pass
+
+    def search_lineage_by_tags(
+        self, tags: List[str], limit: int = 10, offset: int = 0
+    ) -> Tuple[int, List[Dict]]:
+        return 0, []
+
+    def count_events_by_tags(
+        self, tags: List[str], required_tags: Optional[List[str]] = None
+    ) -> int:
+        return 0
+
+    def count_runs_by_tags(
+        self, tags: List[str], required_tags: Optional[List[str]] = None
+    ) -> int:
+        return 0
+
+    def get_artifact_graph(
+        self,
+        artifact_name: Optional[str] = None,
+        artifact_url: Optional[str] = None,
+        artifact_type: Optional[str] = None,
+        max_depth: int = 10,
+        direction: str = "downstream",
+    ) -> Optional[Dict]:
+        return None
+
+
 class LineageServiceFactory:
     _registry: Dict[str, Type[LineageService]] = {}
 
     @staticmethod
     def create(service_type: str) -> LineageService:
+        if service_type == "none":
+            return NoopLineageService()
         if not LineageServiceFactory._registry:
             from gbserver.lineage.wandb_service import WandBLineageService
 

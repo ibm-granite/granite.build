@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Implementation Notes — Fix #60: Skip wandb in standalone mode</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 48em; margin: 2em auto; line-height: 1.5; }
+  h1 { font-size: 1.4em; }
+  h2 { font-size: 1.1em; margin-top: 1.5em; border-bottom: 1px solid #ccc; padding-bottom: 0.3em; }
+  dl { margin-left: 1em; }
+  dt { font-weight: bold; margin-top: 0.8em; }
+  dd { margin-left: 1.5em; }
+  code { background: #f4f4f4; padding: 0.1em 0.3em; border-radius: 3px; }
+  .file { color: #555; font-style: italic; }
+</style>
+</head>
+<body>
+<h1>Implementation Notes — Fix #60: Skip wandb in standalone mode</h1>
+<p><strong>Date:</strong> 2026-06-01<br>
+<strong>Branch:</strong> fix/standalone-skip-wandb<br>
+<strong>Issue:</strong> <a href="https://github.com/ibm-granite/granite.build/issues/60">#60</a></p>
+
+<h2>Design Decisions</h2>
+<dl>
+  <dt>Provider value <code>"none"</code> as the opt-out mechanism</dt>
+  <dd>The spec says "skip wandb in standalone mode." Rather than hard-coding a standalone check at every call site, we use the existing <code>GBSERVER_LINEAGE_PROVIDER</code> env var and default it to <code>"none"</code> in standalone mode. This keeps the opt-out explicit and reusable — any user in any environment can set <code>GBSERVER_LINEAGE_PROVIDER=none</code> to disable lineage without needing standalone mode.</dd>
+
+  <dt>Noop class placement</dt>
+  <dd><code>NoopLineageService</code> is in <code>openlineage_service.py</code> (next to the abstract base and factory — small enough to keep inline). <code>NoopLineageStore</code> lives in its own file <code>noop_jobstats.py</code>, mirroring the pattern of <code>wandb_jobstats.py</code> as a separate backend implementation file.</dd>
+</dl>
+
+<h2>Deviations</h2>
+<dl>
+  <dt>Replaced raw <code>os.getenv("GB_ENVIRONMENT", "").upper() == "STANDALONE"</code> with <code>is_standalone()</code></dt>
+  <dd>Applied to <code>constants.py</code>, <code>cloud_logquery_server.py</code>, and <code>cloud_logquery.py</code>. These were pre-existing occurrences unrelated to the wandb fix, but cleaned up for consistency since <code>gbcommon.types.gbenvconfig.is_standalone()</code> already exists and is used throughout <code>gbcli</code>. Removed now-unused <code>import os</code> from the two logquery files.</dd>
+</dl>
+
+<h2>Tradeoffs</h2>
+<dl>
+  <dt>NoopLineageService in-module vs. separate file</dt>
+  <dd><strong>Chosen:</strong> <code>NoopLineageService</code> stays in <code>openlineage_service.py</code> since it's purely method stubs with no imports beyond what's already there. <code>NoopLineageStore</code> gets its own <code>noop_jobstats.py</code> (per user preference and symmetry with <code>wandb_jobstats.py</code>).</dd>
+
+  <dt>Guarding at factory/accessor level vs. guarding at each call site</dt>
+  <dd><strong>Chosen:</strong> factory/accessor returns noop. <strong>Alternative:</strong> wrap each <code>get_lineage_store()</code> call in <code>if not standalone</code>. Rejected because it scatters the concern across buildrunner.py, api/lineage.py, and api/artifacts.py, and would need updating every time a new call site appears.</dd>
+
+  <dt><code>setdefault</code> in STANDALONE block vs. conditional default in the constant definition</dt>
+  <dd><strong>Chosen:</strong> <code>setdefault</code> in the existing STANDALONE block at the top of constants.py. This is consistent with how <code>METADATA_STORAGE</code> and <code>BUILDRUNNER_TYPE</code> are already defaulted for standalone. A user who explicitly sets <code>GBSERVER_LINEAGE_PROVIDER=wandb</code> in standalone mode still gets wandb (they must then supply the API key).</dd>
+</dl>
+
+<h2>Open Questions</h2>
+<dl>
+  <dt>Should the lineage REST API endpoints return 503/404 when provider is <code>"none"</code>?</dt>
+  <dd>Currently the noop service returns empty results (0 counts, empty search, null graphs). An alternative would be to raise an HTTP error indicating lineage is not configured. I went with silent noops for consistency with the buildrunner path (which already catches and logs exceptions). Let me know if you'd prefer explicit errors on the API endpoints.</dd>
+</dl>
+
+</body>
+</html>

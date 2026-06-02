@@ -18,12 +18,12 @@
 # export INGESTION_API_KEY=`ibmcloud iam api-key-create logs-ingestion --output json | jq -r '.apikey'`
 # export IAM_TOKEN=`ibmcloud iam oauth-tokens --output json | jq -r '.iam_token'`
 
-import os
 import time
 from typing import Optional, Self
 
 import requests
 
+from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.types.constants import (
     FETCH_CLOUD_LOGS_MAX_RETRIES,
     FETCH_CLOUD_LOGS_PR_MAX_CHARS,
@@ -168,7 +168,7 @@ def get_log_manager():
     global _LOG_MANAGER
     if _LOG_MANAGER is not None:
         return _LOG_MANAGER
-    if os.getenv("GB_ENVIRONMENT", "").upper() == "STANDALONE":
+    if is_standalone():
         from gbserver.utils.local_logquery import LocalLogQueryAPI
 
         _LOG_MANAGER = LocalLogQueryAPI()

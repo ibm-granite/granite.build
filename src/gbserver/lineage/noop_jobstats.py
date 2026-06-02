@@ -14,84 +14,59 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Abstract interface for lineage storage and singleton accessor.
-"""
-
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
+from gbserver.lineage.jobstats import ILineageStore
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 
 
-class ILineageStore(ABC):
-    """Abstract interface for lineage storage backends."""
+class NoopLineageStore(ILineageStore):
+    """Noop lineage store for external lineage providers (e.g. wandb).
 
-    @abstractmethod
+    The internal Granite.Build admin storage still persists sufficient
+    information to recover the full build lineage, which can be extracted
+    and persisted to an external provider later.
+    """
+
     def add_jobstats_for_build(
         self, storage: SingletonAdminStorage, build_id: str
-    ) -> None: ...
+    ) -> None:
+        pass
 
-    @abstractmethod
     def add_jobstats_for_build_target(
         self, storage: SingletonAdminStorage, build_id: str, target_id: str
-    ) -> None: ...
+    ) -> None:
+        pass
 
-    @abstractmethod
     def add_jobstats_for_original_artifact(
         self, artifact: ArtifactRegistration, sources: list[ArtifactRegistration]
-    ) -> None: ...
+    ) -> None:
+        pass
 
-    @abstractmethod
     def create_jobstats_for_target(
         self,
         storage: SingletonAdminStorage,
         targetrun: StoredTargetRun,
         build: Optional[StoredBuild] = None,
-    ) -> Tuple: ...
+    ) -> Tuple:
+        return [], {}
 
-    @abstractmethod
     def create_jobstats_for_original_artifact(
         self, artifact: ArtifactRegistration, sources: list[ArtifactRegistration]
-    ): ...
+    ):
+        return {}
 
-    @abstractmethod
     def count_release_ids(
         self, release_id: str, target_id: Optional[str] = None
-    ) -> int: ...
+    ) -> int:
+        return 0
 
-    @abstractmethod
     def does_release_id_exist(
         self, release_id: str, expected_count: int, target_id: Optional[str] = None
-    ) -> bool: ...
-
-
-__JOBSTATS_STORAGE: Optional[ILineageStore] = None
-
-
-def reset_lineage_store() -> None:
-    """Reset the singleton so the next call to get_lineage_store() re-creates it."""
-    global __JOBSTATS_STORAGE
-    __JOBSTATS_STORAGE = None
-
-
-def get_lineage_store() -> ILineageStore:
-    """Get a singleton instance of the lineage storage backend."""
-    global __JOBSTATS_STORAGE
-    if __JOBSTATS_STORAGE is None:
-        from gbserver.types.constants import GBSERVER_LINEAGE_PROVIDER
-
-        if GBSERVER_LINEAGE_PROVIDER == "none":
-            from gbserver.lineage.noop_jobstats import NoopLineageStore
-
-            __JOBSTATS_STORAGE = NoopLineageStore()
-        else:
-            from gbserver.lineage.wandb_jobstats import WandBLineageStore
-
-            __JOBSTATS_STORAGE = WandBLineageStore()
-    return __JOBSTATS_STORAGE
+    ) -> bool:
+        return False

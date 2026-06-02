@@ -23,6 +23,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN, get_gh_api_base
+from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.types.constants_base import (
     ENV_VAR_IBMID_AUTHORIZE_URL,
     ENV_VAR_IBMID_CALLBACK_URL,
@@ -276,11 +277,12 @@ GBSERVER_GIT_COMMIT = os.getenv(ENV_VAR_PREFIX + "_GIT_COMMIT", "")
 # Standalone defaults — when GB_ENVIRONMENT=STANDALONE, fill in env vars
 # that other constants below will read. Uses setdefault() so explicit user
 # overrides are preserved.
-if os.getenv("GB_ENVIRONMENT", "").upper() == "STANDALONE":
+if is_standalone():
     for _k, _v in {
         ENV_VAR_METADATA_STORAGE: "sqlite",
         ENV_VAR_DEFAULT_BUILDRUNNER_TYPE: "thread",
         ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS": "true",
+        ENV_VAR_PREFIX + "_LINEAGE_PROVIDER": "none",
     }.items():
         os.environ.setdefault(_k, _v)
 
