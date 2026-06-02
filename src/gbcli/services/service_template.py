@@ -9,12 +9,12 @@ from gbcli.utils.gbconstants import (
     ASSETS_REPO_URL,
     BUILD_FILENAME,
     TEMPLATES_REPO_FOLDER,
-    gb_environment_config,
 )
 from gbcli.utils.gh_clone import download_repo_file, list_repo_tree
 from gbcli.utils.spaceutil import resolve_space
 from gbcli.utils.utils import remove_suffix
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN
+from gbcommon.types.gbenvconfig import gb_environment_config
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +38,9 @@ def list_templates(
                 )
             return None
         template_repo = global_space.get("git_repo_uri")
-        branch_name = gb_environment_config()["branch_space"]
+        branch_name = gb_environment_config().space_config_branch_name
     elif template_repo != None:
-        branch_name = gb_environment_config()["branch_space"]
+        branch_name = gb_environment_config().space_config_branch_name
         if "@" in template_repo:
             template_repo_split = template_repo.split("@", 1)
             template_repo = template_repo_split[0]
@@ -48,7 +48,7 @@ def list_templates(
                 branch_name = template_repo_split[1]
     else:
         template_repo = ASSETS_REPO_URL
-        branch_name = gb_environment_config()["branch_assets"]
+        branch_name = gb_environment_config().branch_assets
 
     if callback is not None:
         callback(
@@ -112,9 +112,9 @@ def describe_template(
                 )
             return None
         template_repo = global_space.get("git_repo_uri")
-        branch_name = gb_environment_config()["branch_space"]
+        branch_name = gb_environment_config().space_config_branch_name
     elif template_repo != None:
-        branch_name = gb_environment_config()["branch_space"]
+        branch_name = gb_environment_config().space_config_branch_name
         if "@" in template_repo:
             template_repo_split = template_repo.split("@", 1)
             template_repo = template_repo_split[0]
@@ -122,7 +122,7 @@ def describe_template(
                 branch_name = template_repo_split[1]
     else:
         template_repo = ASSETS_REPO_URL
-        branch_name = gb_environment_config()["branch_assets"]
+        branch_name = gb_environment_config().branch_assets
 
     assets_org, assets_name = template_repo.split("/")[3:]
     assets_name = remove_suffix(assets_name, ".git")

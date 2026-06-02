@@ -8,8 +8,8 @@ from requests.exceptions import ConnectionError
 from gbcli.utils.gbconstants import (
     GBSERVER_SPACES_API,
     VPN_CONNECTION_ERROR_MESSAGE,
-    is_standalone,
 )
+from gbcommon.types.gbenvconfig import is_standalone
 
 logger = logging.getLogger(__name__)
 
