@@ -1,262 +1,259 @@
-# Webhook Push Notifications — Developer Guide
+# Build Event Notifications — Developer Guide
 
-This document explains the internal architecture of gbserver's webhook push
+This document explains the internal architecture of gbserver's build event
 notification system for developers working on the codebase.
 
-## Architecture
+## Architecture Overview
+
+gbserver publishes build events to a RabbitMQ topic exchange. Consumers
+subscribe directly to RabbitMQ using short-lived, scoped credentials
+provisioned by a REST endpoint. In standalone mode (no RabbitMQ), events
+are delivered directly via platform-native adapters (macOS notifications,
+email).
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        BuildRunner Thread                         │
-│                                                                   │
-│  ┌──────────────┐    ┌──────────────┐    ┌───────────────────┐  │
-│  │  Build Task  │───▶│  Event Queue │───▶│   Worker Task     │  │
-│  │ (run_and_wait)│    │ (asyncio.Q)  │    │ (__worker_task)   │  │
-│  └──────────────┘    └──────────────┘    └────────┬──────────┘  │
-│                                                    │             │
-│                                           ┌────────▼──────────┐  │
-│                                           │ __dispatch_to_    │  │
-│                                           │   webhooks()      │  │
-│                                           │                   │  │
-│                                           │ Lazy-creates      │  │
-│                                           │ WebhookEventWriter│  │
-│                                           └────────┬──────────┘  │
-│                                                    │             │
-│  ┌─────────────────────────────────────────────────▼──────────┐  │
-│  │                  WebhookEventWriter                          │  │
-│  │                                                             │  │
-│  │  1. Query active subscriptions (status="active")            │  │
-│  │  2. Match event against include/exclude filters             │  │
-│  │  3. Serialize event → StoredWebhookEvent                    │  │
-│  │  4. INSERT into gb_webhook_events table                     │  │
-│  │                                                             │  │
-│  │  (Fire-and-forget — no HTTP, no batching, no flushing)      │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-
-                              │
-                              │ (Phase 2 — not yet implemented)
-                              ▼
-                ┌───────────────────────────┐
-                │   Delivery Worker         │
-                │   Reads pending events    │
-                │   Batches by subscription │
-                │   HMAC signs + HTTP POST  │
-                └───────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        BuildRunner Thread                             │
+│                                                                       │
+│  ┌──────────────┐    ┌──────────────┐    ┌───────────────────────┐  │
+│  │  Build Task  │───▶│  Event Queue │───▶│     Worker Task       │  │
+│  │ (run_and_wait)│    │ (asyncio.Q)  │    │   (__worker_task)     │  │
+│  └──────────────┘    └──────────────┘    └──────────┬────────────┘  │
+│                                                      │               │
+│                                         ┌────────────┼────────────┐  │
+│                                         │            │            │  │
+│                                         ▼            ▼            │  │
+│                              ┌────────────────┐ ┌──────────────┐  │  │
+│                              │ Event Bus      │ │ Standalone   │  │  │
+│                              │ (RabbitMQ)     │ │ Notifications│  │  │
+│                              │                │ │ (macOS/email)│  │  │
+│                              │ Publishes to   │ │              │  │  │
+│                              │ topic exchange │ │ Direct       │  │  │
+│                              │ build.<id>.    │ │ delivery via │  │  │
+│                              │ <event_type>   │ │ adapters     │  │  │
+│                              └───────┬────────┘ └──────────────┘  │  │
+│                                      │                            │  │
+└──────────────────────────────────────┼────────────────────────────┘  │
+                                       │                               │
+                                       ▼                               │
+                          ┌─────────────────────────┐                  │
+                          │   RabbitMQ Topic Exchange │                  │
+                          │   "build-events"          │                  │
+                          └──────────┬────────────────┘                  │
+                                     │                                   │
+                    ┌────────────────┼────────────────┐                 │
+                    │                │                │                  │
+                    ▼                ▼                ▼                  │
+           ┌──────────────┐ ┌──────────────┐ ┌──────────────┐          │
+           │  User CLI    │ │  Dashboard   │ │  Off-shelf   │          │
+           │  (temp queue)│ │  (durable q) │ │  tool        │          │
+           └──────────────┘ └──────────────┘ └──────────────┘          │
 ```
 
 ## Key Components
 
-### 1. Subscription Storage (`src/gbserver/storage/webhook_subscription_storage.py`)
+### 1. BuildEventPublisher (`src/gbserver/messaging/build_event_publisher.py`)
 
-Webhook subscriptions are stored in the `gb_webhook_subscriptions` table (same
-DB as builds). Supports both PostgreSQL and SQLite backends.
-SQL implementations in `src/gbserver/storage/sql/webhook_subscription_storage.py`.
+Publishes `BuildEvent` objects to the RabbitMQ topic exchange.
 
-Key model: `StoredWebhookSubscription` in `webhooks/models.py`
-- `uuid` — subscription identifier
-- `status` — lifecycle state: `"pending"` → `"active"` → `"suspended"` / `"disabled"`
-- `space_name` — space scope
-- `build_filter` — optional per-build filter (`None` = space-wide, UUID = per-build)
-- `webhook_url` — subscriber's HTTP endpoint
-- `secret` — HMAC shared secret (minimum 8 characters)
-- `event_types` — include filter (`["*"]` for all)
-- `excluded_types` — exclude filter (takes priority)
-- `frequency` — batch interval in seconds (min 15) — used by Phase 2 delivery worker
-- `log_pattern` — optional regex for log scanning — used by Phase 2
+- Exchange: `build-events` (configurable via `GBSERVER_BUILD_EVENTS_EXCHANGE`)
+- Routing key format: `build.<build_id>.<event_type>`
+- Skips internal events (TERMINATE, NEWARTIFACT_IN_ENVIRONMENT, NEW_MULTIARTIFACT)
+- Thread-safe: uses `asyncio.Lock` to serialize concurrent publishes
+- Serializes events to JSON: `{build_id, event_type, timestamp, target_name, step_name, source, status, message}`
 
-### 2. WebhookEventWriter (`src/gbserver/webhooks/event_writer.py`)
+### 2. RabbitMQ Admin (`src/gbserver/messaging/rabbitmq_admin.py`)
 
-Replaces the old `WebhookDispatcher` + `BatchBuffer` combination. One instance
-per active build, created lazily when the first event arrives.
+Client for the RabbitMQ Management HTTP API. Provisions and cleans up
+temporary users for event consumers.
 
-Responsibilities:
-- Query active subscriptions matching the build (by `build_filter` and space-wide)
-- Deduplicate subscriptions by UUID across all lookup paths
-- For each matching subscription, serialize the event into a `StoredWebhookEvent`
-- Persist the event to the `gb_webhook_events` table via the event storage layer
-- Periodically re-read subscriptions (every 50 events) to pick up late arrivals
-- No HTTP calls, no batching, no flushing — purely a DB write
+Methods:
+- `create_scoped_user(build_id, exchange, ttl_seconds)` — creates a temp user with read-only permissions scoped to `build.<build_id>.*`
+- `cleanup_expired_users()` — deletes expired temp users (runs on background loop)
+- `delete_user(username)` — deletes a specific user
 
-### 3. Event Storage (`src/gbserver/storage/webhook_event_storage.py`)
+Username format: `tmp-build-{build_id[:8]}-{random_6}`
 
-Persistence layer for webhook events. Writes `StoredWebhookEvent` records to the
-`gb_webhook_events` table. SQL implementations in
-`src/gbserver/storage/sql/webhook_event_storage.py`. These records sit in
-`"pending"` state until a delivery worker (Phase 2) picks them up.
+### 3. Subscribe Endpoint (`src/gbserver/api/event_subscribe.py`)
 
-### 4. Event Models (`src/gbserver/webhooks/event_models.py`)
+```
+POST /api/v1/builds/{build_id}/events/subscribe
+Authorization: Bearer <token>
 
-Pydantic model for `StoredWebhookEvent`:
-- `uuid` — event identifier
-- `subscription_id` — FK to the subscription
-- `build_id` — the build that produced this event
-- `event_type` — the build event type
-- `payload` — serialized event data (JSON dict)
-- `delivered` — boolean, False until delivery worker marks it True
-- `created_time` — timestamp
+Response:
+{
+  "rabbitmq_host": "...",
+  "rabbitmq_port": 5671,
+  "username": "tmp-build-abc12345-xK9f",
+  "password": "<short-lived>",
+  "exchange": "build-events",
+  "routing_key": "build.abc12345-full-uuid.#",
+  "queue": "events.abc12345-full-uuid.xK9f",
+  "expires_at": "2026-06-02T18:30:00+00:00"
+}
+```
 
-### 5. URL Validator (`src/gbserver/webhooks/url_validator.py`)
+- Authenticates caller via existing auth middleware
+- Verifies build exists
+- Provisions scoped RabbitMQ credentials via `RabbitMQAdmin`
+- Returns connection info for the consumer
 
-SSRF protection layer. Validates webhook URLs before subscription creation:
-- Blocks private/reserved IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, etc.)
-- Blocks link-local and loopback addresses
-- Enforces HTTPS unless `GBSERVER_WEBHOOKS_ALLOW_HTTP=True`
-- Resolves DNS to check the actual IP (prevents DNS rebinding)
+### 4. Credential Cleanup (`src/gbserver/messaging/credential_cleanup.py`)
 
-### 6. URL Verification (`src/gbserver/webhooks/verification.py`)
+Background task that runs in the REST server process:
+- Polls RabbitMQ Management API every 60 seconds
+- Deletes temp users with expired TTL
+- Started automatically on server startup when event publishing is enabled
 
-Ownership verification challenge. When a subscription is created via the REST API:
-1. Subscription starts in `"pending"` status
-2. A challenge token is POSTed to the webhook URL with `X-GB-Event: verification` header
-3. The endpoint must respond with `{"challenge": "<token>"}` in the body
-4. On success, status transitions to `"active"`
-5. On failure, subscription remains `"pending"` (can be retried)
+### 5. Standalone Notifications (`src/gbserver/notifications/`)
 
-Note: Auto-subscriptions via `--webhook-url` on build submission skip verification
-and are created directly with `status="active"` (user explicitly provided the URL).
+For standalone mode (no RabbitMQ), events are delivered directly to the
+user via platform-native adapters.
 
-### 7. Integration Point (`src/gbserver/buildwatcher/buildrunner.py`)
+| Adapter | File | Target |
+|---------|------|--------|
+| macOS | `macos_adapter.py` | Notification Center via `osascript` |
+| Email | `email_adapter.py` | SMTP to any email address |
 
-The webhook system hooks into the BuildRunner's event processing loop via a
-single method:
+Configuration: `~/.gbserver/notifications.yaml`
+
+```yaml
+notifications:
+  - type: macos
+    events: [status_event]
+
+  - type: email
+    to: "user@example.com"
+    smtp_host: "smtp.example.com"
+    smtp_port: 587
+    smtp_user_env: "SMTP_USER"
+    smtp_password_env: "SMTP_PASSWORD"
+    events: [status_event]
+```
+
+The `StandaloneDispatcher` loads config, creates adapters, and routes
+events to matching adapters based on the `events` filter list.
+
+### 6. Integration Point (`src/gbserver/buildwatcher/buildrunner.py`)
+
+Two dispatch methods fire for every event (via `asyncio.ensure_future`):
 
 ```python
-# Every event goes through dispatch
-self.__dispatch_to_webhooks(event)
+# Publishes to RabbitMQ (when GBSERVER_EVENT_PUBLISHING_ENABLED=true)
+asyncio.ensure_future(self.__dispatch_to_event_bus(event))
+
+# Delivers locally (when GB_ENVIRONMENT=STANDALONE and no RabbitMQ)
+asyncio.ensure_future(self.__dispatch_standalone_notification(event))
 ```
 
-The method:
-1. Lazily creates a `WebhookEventWriter` on first event
-2. EventWriter queries active subscriptions (status="active")
-3. For each matching subscription, writes a `StoredWebhookEvent` to DB
-4. No flushing, no delivery, no HTTP calls — just a DB INSERT
-
-No periodic flush or final flush is needed — events are persisted immediately.
-
-### 8. API Endpoints (`src/gbserver/api/webhooks.py`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/webhooks/spaces/{space}/subscriptions` | Create subscription (space-wide or per-build via `build_filter`) |
-| GET | `/api/v1/webhooks/spaces/{space}/subscriptions` | List subscriptions (optional `?build_filter=` query) |
-| DELETE | `/api/v1/webhooks/{webhook_id}` | Deactivate subscription |
-
-The router uses `include_router()` (not `mount()`) so `AuthMiddleware` applies.
-Auth is via `request.state.data["user"].login`.
-
-Subscription creation includes:
-- URL validation (SSRF protection)
-- Rate limiting (max subscriptions per space)
-- Secret length enforcement (minimum 8 characters)
-
-### 9. Subscription Status Lifecycle
-
-```
-           ┌─────────────────────────────────────────┐
-           │                                         │
-  CREATE   │   VERIFY     ┌──────────┐              │
-    │      │     │        │          ▼              │
-    ▼      │     ▼        │    ┌───────────┐       │
-┌─────────┐│ ┌────────┐  │    │ suspended │       │
-│ pending │┼▶│ active │──┼───▶│           │───────┘
-└─────────┘│ └────────┘  │    └───────────┘  (re-verify)
-           │     │        │
-           │     ▼        │
-           │ ┌──────────┐ │
-           │ │ disabled │ │
-           │ └──────────┘ │
-           └─────────────────────────────────────────┘
-```
-
-- **pending** — created, awaiting URL verification challenge
-- **active** — verified, events are being persisted for this subscription
-- **suspended** — temporarily disabled (e.g., repeated delivery failures in Phase 2)
-- **disabled** — permanently deactivated by user or admin
-
-### 10. Auto-Subscribe on Build Submission (`src/gbserver/api/builds.py`)
-
-When a build is submitted with `webhook_url` parameter, a subscription is
-automatically created via `_create_webhook_subscription()`:
-- Created with `status="active"` (no verification needed — user provided the URL)
-- Uses `build_filter=build_id` for per-build scoping
-- Created BEFORE the build is enqueued to prevent race with first event
-- Requires minimum 8-character secret
-- URL validation is applied (SSRF check)
-- Returns `webhook_warning` in response if subscription creation is skipped
+Both are fire-and-forget, non-blocking, non-fatal on error.
 
 ## Event Flow
 
+### Clustered Mode (with RabbitMQ)
+
 1. Build framework emits `BuildEvent` → `event_q.put_nowait(event)`
 2. Worker task receives event → `__process_event(event)`
-3. Inside `__process_event`: `__dispatch_to_webhooks(event)` is called
-4. EventWriter checks `event.type.is_internal_event()` — skips TERMINATE, NEWARTIFACT_IN_ENVIRONMENT
-5. EventWriter queries active subscriptions for this build's space
-6. For each matching subscription, checks include/exclude filters
-7. Serializes the event into a `StoredWebhookEvent`
-8. INSERTs the event into the `gb_webhook_events` table
-9. (Phase 2) Delivery worker reads pending events, batches by subscription, delivers via HTTP
+3. `__dispatch_to_event_bus(event)` is scheduled via `asyncio.ensure_future`
+4. `BuildEventPublisher` checks `event.type.is_internal_event()` — skips internal events
+5. Event is serialized to JSON dict
+6. Published to `build-events` exchange with routing key `build.<build_id>.<event_type>`
+7. RabbitMQ routes to all bound queues matching the routing key pattern
+8. Consumers receive the event in real-time
 
-## Phase 2 — Planned Features
+### Standalone Mode (no RabbitMQ)
 
-- **Delivery worker** — separate process/CLI command (`gbserver webhook-worker`) that polls pending events and delivers via HTTP with HMAC signing and retry
-- **`username_filter`** — optional field on subscriptions to receive events only for builds submitted by a specific user (avoids needing per-build subscriptions when multiple users share a space)
-- **Delivery audit log** — `gb_webhook_deliveries` table tracking attempt history, status codes, response times
-- **Auto-suspend** — after N consecutive delivery failures, auto-suspend the subscription
-- **Log pattern scanning** — regex matching on build log lines to generate LOG_EVENTs
-- **Non-blocking persistence** — current Phase 1 design does synchronous DB INSERTs inline with the build event loop, adding load to the shared build DB (one INSERT per subscription per event). At scale this can slow build event processing. Options:
-  - Batch INSERTs: buffer N events in memory, flush in one multi-row INSERT
-  - Async queue: background thread handles INSERTs, build never blocks (trade-off: events in queue lost on crash)
-  - Message queue: write to RabbitMQ (existing `messaging/` infra) instead of DB, let delivery worker persist
+1. Same event flow through steps 1-2
+2. `__dispatch_standalone_notification(event)` is scheduled
+3. `StandaloneDispatcher` loads config (lazy init on first call)
+4. Filters by event type against each adapter's `events` list
+5. Matching adapters call `deliver(event)` — shows macOS notification or sends email
+
+## Credential Lifecycle
+
+RabbitMQ checks credentials at connection time only. Once connected,
+the AMQP connection persists regardless of credential expiry.
+
+```
+t=0s    Client calls POST /events/subscribe → gets credentials (TTL: 60s)
+t=2s    Client connects to RabbitMQ (credentials valid) ✓
+t=60s   Credentials expire — no NEW connections possible
+t=???   Events still flowing on existing connection ✓
+t=end   Client disconnects → queue auto-deletes
+t+60s   Cleanup task deletes the expired temp user
+```
+
+## Routing Key Patterns
+
+| Consumer | Binding | Receives |
+|----------|---------|----------|
+| Single build subscriber | `build.abc123.#` | All events for one build |
+| Status-only subscriber | `build.abc123.status_event` | Only status changes |
+| Dashboard (all builds) | `build.#` | Everything |
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GBSERVER_WEBHOOKS_ENABLED` | `True` | Master switch for the webhook system |
-| `GBSERVER_WEBHOOKS_ALLOW_HTTP` | `False` | Allow non-HTTPS webhook URLs (dev only) |
-| `GBSERVER_WEBHOOKS_MAX_PER_SPACE` | `20` | Max subscriptions per space |
-| `GBSERVER_WEBHOOKS_MAX_PER_USER` | `50` | Max subscriptions per user |
+| `GBSERVER_EVENT_PUBLISHING_ENABLED` | `false` | Enable RabbitMQ event publishing |
+| `GBSERVER_BUILD_EVENTS_EXCHANGE` | `build-events` | Topic exchange name |
+| `GBSERVER_RABBITMQ_MGMT_URL` | `http://localhost:15672` | Management API URL |
+| `GBSERVER_RABBITMQ_MGMT_USER` | `guest` | Management API user |
+| `GBSERVER_RABBITMQ_MGMT_PASSWORD` | `guest` | Management API password |
+| `GBSERVER_EVENT_SUBSCRIBE_TTL` | `60` | Credential TTL in seconds |
+| `RABBITMQ_HOST` | `localhost` | RabbitMQ broker host |
+| `RABBITMQ_PORT` | `5672` | RabbitMQ broker port |
+| `RABBITMQ_USERNAME` | `guest` | RabbitMQ publish credentials |
+| `RABBITMQ_PASSWORD` | `guest` | RabbitMQ publish credentials |
 
-The EventWriter is only created if webhooks are enabled. Zero overhead for
-builds when the feature is disabled.
+## Design Principles
 
-## Standalone Mode
+1. **gbserver owns nothing about subscriptions** — RabbitMQ manages queue bindings,
+   consumer lifecycle, and message routing. No subscription tables in our DB.
 
-In standalone mode (`gbserver standalone`):
-- Uses SQLite for subscription and event storage
-- uvicorn configured with `loop="asyncio"` (not uvloop) to avoid macOS issues
-- The e2e test script (`scripts/test-webhook-e2e.py`) exercises the full flow
-  including event persistence verification
+2. **Scoped credentials** — each temp user can only read events for the specific
+   build they subscribed to. Compromised credentials can't read other builds.
+
+3. **Non-blocking** — event publishing is fire-and-forget. RabbitMQ failures never
+   affect build execution.
+
+4. **No webhook delivery code** — external HTTP consumers (Slack, PagerDuty) are
+   handled by off-the-shelf tools (Svix, n8n, etc.) that consume from RabbitMQ.
+   We don't own delivery logic.
+
+5. **Standalone is self-contained** — no infrastructure dependencies for local use.
+   Config is a YAML file, delivery is direct.
 
 ## Testing
 
 ```bash
-# Run unit tests for webhook components
-pytest test/unit/webhooks/ -v
+# Unit tests for event publishing, admin client, adapters
+pytest test/unit/messaging/ test/unit/notifications/ test/unit/buildwatcher/ -v
 
-# Run the e2e test (starts local gbserver, verifies event persistence)
-python scripts/test-webhook-e2e.py
+# Integration test (requires running RabbitMQ)
+RABBITMQ_HOST=localhost pytest test/integration/messaging/test_event_subscribe_e2e.py -v
+
+# E2E script (standalone mode + optional RabbitMQ)
+python scripts/test-webhook-e2e.py [--skip-rabbitmq]
 ```
 
 ## File Map
 
 ```
+src/gbserver/messaging/
+├── build_event_publisher.py     # Publishes events to RabbitMQ exchange
+├── rabbitmq_admin.py            # RabbitMQ Management API client
+├── credential_cleanup.py        # Background cleanup of expired temp users
+├── messaging_base.py            # Abstract messaging interface
+└── rabbitmq_base.py             # aio-pika RabbitMQ implementation
+
 src/gbserver/api/
-└── webhooks.py                           # APIRouter for subscription CRUD
+└── event_subscribe.py           # POST /builds/{id}/events/subscribe
 
-src/gbserver/webhooks/                    # Webhook-specific logic
-├── __init__.py
-├── event_models.py                       # StoredWebhookEvent Pydantic model
-├── event_writer.py                       # WebhookEventWriter — persists events to DB
-├── models.py                             # StoredWebhookSubscription model
-├── url_validator.py                      # SSRF protection — blocks private IPs
-└── verification.py                       # URL ownership verification challenge
-
-src/gbserver/storage/                     # Storage layer
-├── webhook_subscription_storage.py       # IWebhookStorage + BaseWebhookStorage
-├── webhook_event_storage.py              # IWebhookEventStorage + BaseWebhookEventStorage
-└── sql/
-    ├── webhook_subscription_storage.py   # SQLWebhookStorage + factory
-    └── webhook_event_storage.py          # SQLWebhookEventStorage + factory
+src/gbserver/notifications/      # Standalone mode notifications
+├── adapter.py                   # NotificationAdapter base class
+├── email_adapter.py             # SMTP email delivery
+├── macos_adapter.py             # macOS Notification Center
+├── config.py                    # YAML config loader
+└── dispatcher.py                # Routes events to matching adapters
 ```
