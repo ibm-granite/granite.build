@@ -30,7 +30,6 @@ from gbserver.types.constants import (
     GB_JOB_STATS_DETAIL_REGISTERED_ARTIFACT_JOB_NAME,
     GB_JOB_STATS_DETAIL_REGISTERED_ARTIFACT_TYPE,
     GB_JOB_STATS_DETAIL_TYPE,
-    GBSERVER_LINEAGE_PROVIDER,
 )
 from gbserver.types.status import Status
 
@@ -167,9 +166,7 @@ def _add_jobstats_mirror_fields(event: dict) -> None:
 class WandBLineageStore(ILineageStore):
 
     def __init__(self) -> None:
-        self._service: LineageService = LineageServiceFactory.create(
-            GBSERVER_LINEAGE_PROVIDER
-        )
+        self._service: LineageService = LineageServiceFactory.create("wandb")
 
     def _build_events_for_target(
         self,
