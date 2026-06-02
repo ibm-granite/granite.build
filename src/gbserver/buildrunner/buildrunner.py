@@ -77,6 +77,7 @@ from gbserver.types.constants import (
     DEFAULT_DIR_PERMS,
     DEFAULT_GH_API_ENDPOINT,
     DEFAULT_ROOT_WORKSPACE_DIR,
+    GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GITHUB_TOKEN,
     GBSERVER_RAISE_BUILD_EXCEPTIONS,
     GBSERVER_WEBHOOKS_ENABLED,
@@ -151,6 +152,7 @@ class BuildRunner(AbstractBuildRunner):
         )  # To be recreated later.
         self.event_storage = get_admin_storage().event_storage
         self._webhook_writer: Optional[Any] = None
+        self._event_publisher: Optional[Any] = None
 
     def stop(self: Self) -> None:
         """Stop the building thread if it was started."""
@@ -757,6 +759,9 @@ class BuildRunner(AbstractBuildRunner):
         # Dispatch to webhook subscribers
         self.__dispatch_to_webhooks(event)
 
+        # Dispatch to RabbitMQ event bus (fire-and-forget async task)
+        asyncio.ensure_future(self.__dispatch_to_event_bus(event))
+
         if event.type in (
             BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT,
             BuildEventType.NEW_MULTIARTIFACT_IN_ENVIRONMENT_EVENT,
@@ -808,6 +813,28 @@ class BuildRunner(AbstractBuildRunner):
             self._webhook_writer.accept_event(event)
         except Exception as e:
             logger.warning("[BuildRunner] Webhook persist error (non-fatal): %s", e)
+
+    async def __dispatch_to_event_bus(self: Self, event: BuildEvent) -> None:
+        """Publish event to RabbitMQ exchange for push-based consumers."""
+        if not GBSERVER_EVENT_PUBLISHING_ENABLED:
+            return
+
+        try:
+            if self._event_publisher is None:
+                from gbserver.messaging.build_event_publisher import (
+                    BuildEventPublisher,
+                )
+
+                publisher = BuildEventPublisher.from_env()
+                await publisher.setup()
+                self._event_publisher = publisher
+                logger.info("[BuildRunner] Event publisher initialized")
+
+            await self._event_publisher.publish_event(event)
+        except Exception as e:
+            logger.warning(
+                "[BuildRunner] Event bus publish error (non-fatal): %s", e
+            )
 
     def __process_terminate_event(self: Self, event: BuildEvent) -> None:
         build_id = event.run_metadata.build_id
