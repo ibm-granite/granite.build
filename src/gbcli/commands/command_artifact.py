@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
-from gbcli.commands.common_options import common_options
+from gbcli.commands.common_options import common_options, exit_if_standalone
 from gbcli.services.service_artifact import (
     ArtifactURIError,
     lookup_hf_resource_group_id,
@@ -69,7 +69,8 @@ logger = logging.getLogger(__name__)
 def cli(ctx):
     """Work with artifacts"""
     ctx.ensure_object(dict)  # Ensures `ctx.obj` is a dictionary
-    pass
+    if ctx.invoked_subcommand is not None:
+        exit_if_standalone("artifact")
 
 
 @cli.command()

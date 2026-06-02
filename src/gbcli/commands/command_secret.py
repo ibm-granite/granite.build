@@ -8,7 +8,7 @@ from tabulate import tabulate
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.commands.common_options import common_options
+from gbcli.commands.common_options import common_options, exit_if_standalone
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.versionutil import check_current_and_latest_versions
@@ -18,7 +18,8 @@ from gbcli.utils.versionutil import check_current_and_latest_versions
 @click.pass_context
 def cli(ctx):
     """Work with secrets"""
-    pass
+    if ctx.invoked_subcommand is not None:
+        exit_if_standalone("secret")
 
 
 @cli.command()
