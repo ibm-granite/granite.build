@@ -489,13 +489,15 @@ g4os-skypilot-venv:
 
 $(VENVDIR): pyproject.toml 
 	$(MAKE) .check-build-env
-	rm -rf $(VENVDIR) 
-	$(PYTHON) -m venv $(VENVDIR) 
+	rm -rf $(VENVDIR)
+	$(PYTHON) -m venv $(VENVDIR)
 	echo '[global]' > $(VENVDIR)/pip.conf
 	#echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-engineering-team-pypi-local/simple" >> $(VENVDIR)/pip.conf
-	echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf
+	if [ -z "$(SKIP_ARTIFACTORY_CHECK)" ]; then \
+		echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf; \
+	fi
 	source $(VENVDIR)/bin/activate; 	\
-  	${PIP} install --upgrade pip;		\
+	${PIP} install --upgrade pip;		\
 	${PIP} install -e '$(VENV_INSTALL_TARGET)';	\
 	#${PIP} install pytest pytest-cov pytest-asyncio pytest-xdist coverage # Why are these not in the [dev] part of pyproject.toml
 
