@@ -57,7 +57,7 @@ class TestDispatchToEventBus:
     @pytest.mark.asyncio
     async def test_dispatch_disabled_returns_immediately(self):
         """When GBSERVER_EVENT_PUBLISHING_ENABLED is False, dispatch is a no-op."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         runner._event_publisher = None
@@ -65,7 +65,7 @@ class TestDispatchToEventBus:
         event = _make_status_event()
 
         with patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             False,
         ):
             # Call the unbound method directly
@@ -77,7 +77,7 @@ class TestDispatchToEventBus:
     @pytest.mark.asyncio
     async def test_dispatch_enabled_initializes_publisher_on_first_call(self):
         """When enabled, first call creates and sets up the publisher."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         runner._event_publisher = None
@@ -89,7 +89,7 @@ class TestDispatchToEventBus:
         event = _make_status_event()
 
         with patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             True,
         ), patch(
             "gbserver.messaging.build_event_publisher.BuildEventPublisher.from_env",
@@ -104,7 +104,7 @@ class TestDispatchToEventBus:
     @pytest.mark.asyncio
     async def test_dispatch_reuses_existing_publisher(self):
         """On subsequent calls, the existing publisher is reused (no re-init)."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         mock_publisher = AsyncMock()
@@ -114,7 +114,7 @@ class TestDispatchToEventBus:
         event = _make_status_event()
 
         with patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             True,
         ):
             await BuildRunner._BuildRunner__dispatch_to_event_bus(runner, event)
@@ -126,7 +126,7 @@ class TestDispatchToEventBus:
     @pytest.mark.asyncio
     async def test_dispatch_swallows_publish_error(self):
         """Publish errors are logged as warnings, not raised."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         mock_publisher = AsyncMock()
@@ -138,7 +138,7 @@ class TestDispatchToEventBus:
         event = _make_status_event()
 
         with patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             True,
         ):
             # Should NOT raise
@@ -149,7 +149,7 @@ class TestDispatchToEventBus:
     @pytest.mark.asyncio
     async def test_dispatch_swallows_setup_error(self):
         """If publisher.setup() fails, error is caught and logged."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         runner._event_publisher = None
@@ -161,7 +161,7 @@ class TestDispatchToEventBus:
         event = _make_status_event()
 
         with patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             True,
         ), patch(
             "gbserver.messaging.build_event_publisher.BuildEventPublisher.from_env",
@@ -182,7 +182,7 @@ class TestDispatchToEventBusWiring:
     @pytest.mark.asyncio
     async def test_process_event_schedules_event_bus_dispatch(self):
         """Verify that __process_event schedules __dispatch_to_event_bus."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         runner._event_publisher = None
@@ -191,9 +191,9 @@ class TestDispatchToEventBusWiring:
 
         # We patch asyncio.ensure_future at the module level to verify it's called
         with patch(
-            "gbserver.buildwatcher.buildrunner.asyncio.ensure_future"
+            "gbserver.buildrunner.buildrunner.asyncio.ensure_future"
         ) as mock_ensure_future, patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             True,
         ):
             # Set up minimal mocks for __process_event to work

@@ -56,7 +56,7 @@ class TestDispatchStandaloneNotification:
     @pytest.mark.asyncio
     async def test_dispatch_noop_when_not_standalone(self):
         """When GB_ENVIRONMENT is not STANDALONE, dispatch is a no-op."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         runner._standalone_dispatcher = None
@@ -64,10 +64,10 @@ class TestDispatchStandaloneNotification:
         event = _make_status_event()
 
         with patch(
-            "gbserver.buildwatcher.buildrunner.GB_ENVIRONMENT",
+            "gbserver.buildrunner.buildrunner.GB_ENVIRONMENT",
             "PROD",
         ), patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             False,
         ):
             await BuildRunner._BuildRunner__dispatch_standalone_notification(
@@ -80,7 +80,7 @@ class TestDispatchStandaloneNotification:
     @pytest.mark.asyncio
     async def test_dispatch_noop_when_event_publishing_enabled(self):
         """When GBSERVER_EVENT_PUBLISHING_ENABLED is True, dispatch is a no-op."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         runner._standalone_dispatcher = None
@@ -88,10 +88,10 @@ class TestDispatchStandaloneNotification:
         event = _make_status_event()
 
         with patch(
-            "gbserver.buildwatcher.buildrunner.GB_ENVIRONMENT",
+            "gbserver.buildrunner.buildrunner.GB_ENVIRONMENT",
             "STANDALONE",
         ), patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             True,
         ):
             await BuildRunner._BuildRunner__dispatch_standalone_notification(
@@ -104,7 +104,7 @@ class TestDispatchStandaloneNotification:
     @pytest.mark.asyncio
     async def test_dispatch_calls_standalone_dispatcher(self):
         """When STANDALONE + publishing disabled, dispatches via StandaloneDispatcher."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         runner._standalone_dispatcher = None
@@ -115,10 +115,10 @@ class TestDispatchStandaloneNotification:
         event = _make_status_event()
 
         with patch(
-            "gbserver.buildwatcher.buildrunner.GB_ENVIRONMENT",
+            "gbserver.buildrunner.buildrunner.GB_ENVIRONMENT",
             "STANDALONE",
         ), patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             False,
         ), patch(
             "gbserver.notifications.dispatcher.StandaloneDispatcher",
@@ -134,7 +134,7 @@ class TestDispatchStandaloneNotification:
     @pytest.mark.asyncio
     async def test_dispatch_reuses_existing_dispatcher(self):
         """On subsequent calls, the existing dispatcher is reused."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         mock_dispatcher = AsyncMock()
@@ -144,10 +144,10 @@ class TestDispatchStandaloneNotification:
         event = _make_status_event()
 
         with patch(
-            "gbserver.buildwatcher.buildrunner.GB_ENVIRONMENT",
+            "gbserver.buildrunner.buildrunner.GB_ENVIRONMENT",
             "STANDALONE",
         ), patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             False,
         ):
             await BuildRunner._BuildRunner__dispatch_standalone_notification(
@@ -159,7 +159,7 @@ class TestDispatchStandaloneNotification:
     @pytest.mark.asyncio
     async def test_dispatch_swallows_errors(self):
         """Errors from the dispatcher are caught and do not propagate."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         mock_dispatcher = AsyncMock()
@@ -171,10 +171,10 @@ class TestDispatchStandaloneNotification:
         event = _make_status_event()
 
         with patch(
-            "gbserver.buildwatcher.buildrunner.GB_ENVIRONMENT",
+            "gbserver.buildrunner.buildrunner.GB_ENVIRONMENT",
             "STANDALONE",
         ), patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             False,
         ):
             # Should NOT raise
@@ -187,7 +187,7 @@ class TestDispatchStandaloneNotification:
     @pytest.mark.asyncio
     async def test_dispatch_swallows_init_error(self):
         """If StandaloneDispatcher() init fails, error is caught."""
-        from gbserver.buildwatcher.buildrunner import BuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
         runner = MagicMock(spec=BuildRunner)
         runner._standalone_dispatcher = None
@@ -195,10 +195,10 @@ class TestDispatchStandaloneNotification:
         event = _make_status_event()
 
         with patch(
-            "gbserver.buildwatcher.buildrunner.GB_ENVIRONMENT",
+            "gbserver.buildrunner.buildrunner.GB_ENVIRONMENT",
             "STANDALONE",
         ), patch(
-            "gbserver.buildwatcher.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
+            "gbserver.buildrunner.buildrunner.GBSERVER_EVENT_PUBLISHING_ENABLED",
             False,
         ), patch(
             "gbserver.notifications.dispatcher.StandaloneDispatcher",
