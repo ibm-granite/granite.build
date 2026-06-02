@@ -36,11 +36,6 @@ make cicd-merge-test  # extended test set (GBTEST_ENABLE_EXTENDED_TESTS=true)
 
 ### Formatting and Linting
 ```shell
-# Format and lint only files changed vs dev branch (use before PRs)
-make xformat    # runs isort + black on changed .py files
-make xcheck     # runs pylint + mypy, filters output to changed files
-
-# Format/lint entire codebase
 make format        # isort + black on everything
 make staticcheck   # pylint + mypy on src/gbserver/
 ```
