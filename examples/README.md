@@ -23,28 +23,14 @@ Submit builds from another terminal:
 
 ```bash
 # TRL fine-tuning (downloads granite-4.0-350m, fine-tunes in Docker)
-gb build start test-data/standalone-environments/builds/docker-trl.yaml
+gb build start -f test-data/standalone-environments/builds/docker-trl.yaml
 
 # unitxt evaluation (downloads granite-4.0-350m, evaluates in Docker)
-gb build start test-data/standalone-environments/builds/docker-unitxt.yaml
+gb build start -f test-data/standalone-environments/builds/docker-unitxt.yaml
 
 # Monitor
 gb build list
 gb build get <build-id>
-```
-
-### Run via gbserver CLI (no server needed)
-
-```bash
-export GBSERVER_METADATA_STORAGE=sqlite
-export GBSERVER_DEFAULT_BUILDRUNNER_TYPE=process
-export GB_ENVIRONMENT=DEV
-
-# TRL fine-tuning
-gbserver build-runner --build-config test-data/standalone-environments/builds/docker-trl.yaml
-
-# unitxt evaluation
-gbserver build-runner --build-config test-data/standalone-environments/builds/docker-unitxt.yaml
 ```
 
 ### Run via pytest
@@ -79,21 +65,16 @@ The [standalone quickstart](../samples/standalone/standalone-quickstart/) suppor
 
 ```bash
 gbserver standalone --space-dir samples/standalone/standalone-quickstart
-gb build start samples/standalone/standalone-quickstart/build.yaml
+gb build start -f samples/standalone/standalone-quickstart/build.yaml
 ```
 
 ## 3. Minimal hello-world (local bash, no GPU)
 
-A single-step build that cats a text file. Good for verifying your install.
+A single-step `build.yaml` that cats a text file. The config parses and
+validates, but does not yet run end-to-end because its `samples/`-based
+environment is missing an assetstore wiring (tracked in #59).
 
-```bash
-# Direct execution (no server needed)
-gbserver build run --build-dir examples/minimal-build
-
-# Via gbcli (requires a running gbserver)
-gbserver standalone --space-dir /tmp/gb-space &
-gb build start examples/minimal-build/build.yaml
-gb build list
-```
-
-See [examples/minimal-build/](minimal-build/) for details.
+For a fully self-contained example with the space / environment / step files
+already wired up, see
+[`samples/tests/local_hello_world_full/`](../samples/tests/local_hello_world_full/).
+See also [`examples/minimal-build/`](minimal-build/).

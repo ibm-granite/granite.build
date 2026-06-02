@@ -1,7 +1,7 @@
 name: cat
 version: v1
 type: custom
-config:
+config: {}
 
 environment_configs:
   Bash:

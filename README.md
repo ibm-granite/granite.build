@@ -60,8 +60,8 @@ The **BuildWatcher** polls storage for pending builds and creates a **BuildRunne
 Five commands to a running build, using the bundled `standalone-quickstart` sample.
 
 ```bash
-# 1. Clone and enter the repo
-git clone https://github.com/ibm-granite/granite.build.git
+# 1. Clone and enter the repo (use SSH; the repo is private)
+git clone git@github.com:ibm-granite/granite.build.git
 cd granite.build
 
 # 2. Create the venv and install (no Artifactory or cloud creds needed)
@@ -83,6 +83,12 @@ gb build log <build-id>
 
 The sample runs a single step in a local bash process — no Docker required. To switch backends, edit the `environment_uri` line in
 [`samples/standalone/standalone-quickstart/build.yaml`](samples/standalone/standalone-quickstart/build.yaml); the file has `bash`, `docker`, `runpod`, and `skypilot` options pre-commented.
+
+> **Auth note (skip for localhost):** when the client and server are both on the same host, `gbserver` allows unauthenticated access from `127.0.0.1` / `::1` and the quickstart above just works. If you're running `gbserver` on a remote box (or hitting auth errors), set a shared secret in both terminals before running steps 3 and 4:
+>
+> ```bash
+> export GBSERVER_API_KEY="my-secret-key"   # same value in both terminals
+> ```
 
 For a longer walkthrough of the same path, see [`docs/getting-started.md`](docs/getting-started.md).
 

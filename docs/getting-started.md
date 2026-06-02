@@ -15,7 +15,7 @@ fills in the *why* and points to the right reference docs.
 ## Install
 
 ```bash
-git clone https://github.com/ibm-granite/granite.build.git
+git clone git@github.com:ibm-granite/granite.build.git
 cd granite.build
 
 python3 -m venv .venv
@@ -24,6 +24,9 @@ pip install -e ".[standalone,thirdparty]"
 ```
 
 This installs both the server (`gbserver`) and the CLI client (`gb`).
+
+The repo is private; clone over SSH (the HTTPS URL above will fail unless you
+have HTTPS credentials configured for github.com).
 
 ## Run the server
 
@@ -40,11 +43,22 @@ The `--space-dir` flag points at a directory that contains your build's
 directory is the canonical example — read its `space.yaml` to see how a space
 is laid out.
 
+> **Auth note (skip for localhost):** `gbserver` allows unauthenticated access
+> from `127.0.0.1` / `::1` when `GBSERVER_API_KEY` is unset, so this localhost
+> walkthrough just works. If you're running `gbserver` on a remote box, or
+> the client and server are on different hosts, set a shared secret in both
+> terminals before starting the server and submitting the build:
+>
+> ```bash
+> export GBSERVER_API_KEY="my-secret-key"   # same value in both terminals
+> ```
+
 ## Submit a build
 
 In a second terminal:
 
 ```bash
+source .venv/bin/activate
 export GB_ENVIRONMENT=STANDALONE
 gb build start -f samples/standalone/standalone-quickstart/build.yaml
 ```
