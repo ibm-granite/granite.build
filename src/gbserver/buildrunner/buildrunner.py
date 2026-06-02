@@ -77,6 +77,7 @@ from gbserver.types.constants import (
     DEFAULT_DIR_PERMS,
     DEFAULT_GH_API_ENDPOINT,
     DEFAULT_ROOT_WORKSPACE_DIR,
+    GB_ENVIRONMENT,
     GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GITHUB_TOKEN,
     GBSERVER_RAISE_BUILD_EXCEPTIONS,
@@ -153,6 +154,7 @@ class BuildRunner(AbstractBuildRunner):
         self.event_storage = get_admin_storage().event_storage
         self._webhook_writer: Optional[Any] = None
         self._event_publisher: Optional[Any] = None
+        self._standalone_dispatcher: Optional[Any] = None
 
     def stop(self: Self) -> None:
         """Stop the building thread if it was started."""
@@ -762,6 +764,9 @@ class BuildRunner(AbstractBuildRunner):
         # Dispatch to RabbitMQ event bus (fire-and-forget async task)
         asyncio.ensure_future(self.__dispatch_to_event_bus(event))
 
+        # Dispatch standalone notification (fire-and-forget async task)
+        asyncio.ensure_future(self.__dispatch_standalone_notification(event))
+
         if event.type in (
             BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT,
             BuildEventType.NEW_MULTIARTIFACT_IN_ENVIRONMENT_EVENT,
@@ -834,6 +839,29 @@ class BuildRunner(AbstractBuildRunner):
         except Exception as e:
             logger.warning(
                 "[BuildRunner] Event bus publish error (non-fatal): %s", e
+            )
+
+    async def __dispatch_standalone_notification(
+        self: Self, event: BuildEvent
+    ) -> None:
+        """Dispatch event via StandaloneDispatcher for non-RabbitMQ environments."""
+        if GB_ENVIRONMENT != "STANDALONE":
+            return
+
+        if GBSERVER_EVENT_PUBLISHING_ENABLED:
+            return
+
+        try:
+            if self._standalone_dispatcher is None:
+                from gbserver.notifications.dispatcher import StandaloneDispatcher
+
+                self._standalone_dispatcher = StandaloneDispatcher()
+                logger.info("[BuildRunner] Standalone dispatcher initialized")
+
+            await self._standalone_dispatcher.dispatch(event)
+        except Exception as e:
+            logger.warning(
+                "[BuildRunner] Standalone notification error (non-fatal): %s", e
             )
 
     def __process_terminate_event(self: Self, event: BuildEvent) -> None:
