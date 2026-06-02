@@ -23,10 +23,10 @@ Submit builds from another terminal:
 
 ```bash
 # TRL fine-tuning (downloads granite-4.0-350m, fine-tunes in Docker)
-gb build start test-data/standalone-environments/builds/docker-trl.yaml
+gb build start -f test-data/standalone-environments/builds/docker-trl.yaml
 
 # unitxt evaluation (downloads granite-4.0-350m, evaluates in Docker)
-gb build start test-data/standalone-environments/builds/docker-unitxt.yaml
+gb build start -f test-data/standalone-environments/builds/docker-unitxt.yaml
 
 # Monitor
 gb build list
@@ -65,7 +65,7 @@ The [standalone quickstart](../samples/standalone/standalone-quickstart/) suppor
 
 ```bash
 gbserver standalone --space-dir samples/standalone/standalone-quickstart
-gb build start samples/standalone/standalone-quickstart/build.yaml
+gb build start -f samples/standalone/standalone-quickstart/build.yaml
 ```
 
 ## 3. Minimal hello-world (local bash, no GPU)
