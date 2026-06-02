@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """
-Delete Hugging Face repositories in an organization whose names match a regex.
+Delete Hugging Face repositories in an organization whose names match a regex,
+optionally filtering by HF Enterprise resource group.
 
 Usage:
     # Dry run (default) — lists repos that would be deleted
-    python scripts/delete_hf_test_repos.py
+    python scripts/rm_hf_repos.py
 
     # Actually delete
-    python scripts/delete_hf_test_repos.py --execute
+    python scripts/rm_hf_repos.py --execute
 
     # Target datasets instead of models
-    python scripts/delete_hf_test_repos.py --repo-type dataset --execute
+    python scripts/rm_hf_repos.py --repo-type dataset --execute
 
     # Custom regex pattern
-    python scripts/delete_hf_test_repos.py --pattern '^test_' --execute
+    python scripts/rm_hf_repos.py --pattern '^test_' --execute
+
+    # Only delete repos in specific resource groups
+    python scripts/rm_hf_repos.py --resource-group gbspace-public-staging gbspace-public-dev --execute
 
     # Use a specific token
-    python scripts/delete_hf_test_repos.py --token hf_xxx --execute
+    python scripts/rm_hf_repos.py --token hf_xxx --execute
 
 Requires:
     HF_TOKEN env var or --token argument with write access to the org.
@@ -33,6 +37,7 @@ from huggingface_hub.utils import HfHubHTTPError
 ORG = "ibm-research"
 DEFAULT_PATTERN = "^test_dl"
 REPO_TYPES = ("model", "dataset", "space")
+DEFAULT_RESOURCE_GROUPS = ["gbspace-public-staging", "gbspace-public-dev"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,7 +45,7 @@ def parse_args() -> argparse.Namespace:
 
     Returns:
         Parsed arguments with `org`, `pattern`, `token`, `repo_type`,
-        `execute`, and `yes` fields.
+        `resource_group`, `execute`, and `yes` fields.
 
     Raises:
         SystemExit: If --pattern is not a valid regular expression.
@@ -68,7 +73,19 @@ def parse_args() -> argparse.Namespace:
         dest="repo_type",
         choices=REPO_TYPES,
         default="dataset",
-        help="Repository type to target (default: model)",
+        help="Repository type to target (default: dataset)",
+    )
+    parser.add_argument(
+        "--resource-group",
+        dest="resource_groups",
+        nargs="+",
+        default=DEFAULT_RESOURCE_GROUPS,
+        metavar="NAME",
+        help=(
+            "Only delete repos belonging to these resource groups "
+            f"(default: {' '.join(DEFAULT_RESOURCE_GROUPS)}). "
+            "Pass --resource-group '*' to disable filtering."
+        ),
     )
     parser.add_argument(
         "--execute",
@@ -92,26 +109,46 @@ def parse_args() -> argparse.Namespace:
 
 
 def list_matching_repos(
-    api: HfApi, repo_type: str, org: str, pattern: str
-) -> list[str]:
-    """Return repo IDs in org of the given type whose name matches pattern.
+    api: HfApi,
+    repo_type: str,
+    org: str,
+    pattern: str,
+    resource_groups: list[str] | None,
+) -> list[tuple[str, str]]:
+    """Return repo IDs in org of the given type whose name matches pattern and resource group filter.
 
     Args:
         api: Authenticated HfApi instance.
         repo_type: One of 'model', 'dataset', or 'space'.
         org: Hugging Face organization name.
         pattern: Regex pattern matched against the bare repo name (not the full ID).
+        resource_groups: List of allowed resource group names. None means no filtering.
 
     Returns:
-        List of full repo IDs (e.g. 'ibm-research/test_dl_foo').
+        List of (repo_id, resource_group_name) tuples.
     """
     list_fn = {
-        "model": lambda: api.list_models(author=org),
-        "dataset": lambda: api.list_datasets(author=org),
-        "space": lambda: api.list_spaces(author=org),
+        "model": lambda: api.list_models(author=org, expand=["resourceGroup"]),
+        "dataset": lambda: api.list_datasets(author=org, expand=["resourceGroup"]),
+        "space": lambda: api.list_spaces(author=org, expand=["resourceGroup"]),
     }[repo_type]
     compiled = re.compile(pattern)
-    return [r.id for r in list_fn() if compiled.search(r.id.split("/")[-1])]
+
+    results = []
+    for r in list_fn():
+        name = r.id.split("/")[-1]
+        if not compiled.search(name):
+            continue
+
+        rg = getattr(r, "resource_group", None) or {}
+        rg_name = rg.get("name", "")
+
+        if resource_groups is not None and rg_name not in resource_groups:
+            continue
+
+        results.append((r.id, rg_name))
+
+    return results
 
 
 def delete_repos(api: HfApi, repo_ids: list[str], repo_type: str) -> None:
@@ -139,18 +176,30 @@ def main() -> None:
 
     api = HfApi(token=args.token)
 
-    print(
-        f"Fetching {args.repo_type} repos in '{args.org}' matching '{args.pattern}' ..."
+    # '*' disables resource group filtering
+    resource_groups = None if args.resource_groups == ["*"] else args.resource_groups
+
+    rg_desc = (
+        "any resource group"
+        if resource_groups is None
+        else f"resource groups: {resource_groups}"
     )
-    matching = list_matching_repos(api, args.repo_type, args.org, args.pattern)
+    print(
+        f"Fetching {args.repo_type} repos in '{args.org}' matching '{args.pattern}' "
+        f"({rg_desc}) ..."
+    )
+    matching = list_matching_repos(
+        api, args.repo_type, args.org, args.pattern, resource_groups
+    )
 
     if not matching:
         print("No matching repositories found.")
         return
 
     print(f"\nFound {len(matching)} matching repo(s):")
-    for repo_id in matching:
-        print(f"  {repo_id}")
+    for repo_id, rg_name in matching:
+        rg_label = f" [{rg_name}]" if rg_name else " [no resource group]"
+        print(f"  {repo_id}{rg_label}")
 
     if not args.execute:
         print("\nDry run — no repos deleted. Pass --execute to delete.")
@@ -163,7 +212,7 @@ def main() -> None:
             return
 
     print("\nDeleting ...")
-    delete_repos(api, matching, args.repo_type)
+    delete_repos(api, [repo_id for repo_id, _ in matching], args.repo_type)
     print("Done.")
 
 
