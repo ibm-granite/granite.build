@@ -407,8 +407,10 @@ clean::
 	rm -rf src/*egg-info
 
 .check-build-env:
-	@if [ -z "$(ARTIFACTORY_USER)" ] || [ -z "$(ARTIFACTORY_API_KEY)" ]; then echo "You must set ARTIFACTORY_USER and ARTIFACTORY_API_KEY env vars"; false ; fi
-	@echo "Artifactory checks passed."
+	@if [ -z "$(SKIP_ARTIFACTORY_CHECK)" ]; then \
+		if [ -z "$(ARTIFACTORY_USER)" ] || [ -z "$(ARTIFACTORY_API_KEY)" ]; then echo "You must set ARTIFACTORY_USER and ARTIFACTORY_API_KEY env vars"; false ; fi; \
+		echo "Artifactory checks passed."; \
+	fi
 
 .check-test-env: .check-lakehouse-env .check-oc-login check-github-token
 
@@ -469,12 +471,12 @@ cicd-venv:
 .PHONY: standalone-venv
 standalone-venv:
 	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='.[standalone,dev]' $(VENVDIR)
+	$(MAKE) VENV_INSTALL_TARGET='.[standalone,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
 
 .PHONY: demo-venv
 demo-venv:
 	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='.[standalone,docker,dev]' $(VENVDIR)
+	$(MAKE) VENV_INSTALL_TARGET='.[standalone,docker,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
 
 .PHONY: g4os-skypilot-venv
 g4os-skypilot-venv:
@@ -487,13 +489,15 @@ g4os-skypilot-venv:
 
 $(VENVDIR): pyproject.toml 
 	$(MAKE) .check-build-env
-	rm -rf $(VENVDIR) 
-	$(PYTHON) -m venv $(VENVDIR) 
+	rm -rf $(VENVDIR)
+	$(PYTHON) -m venv $(VENVDIR)
 	echo '[global]' > $(VENVDIR)/pip.conf
 	#echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-engineering-team-pypi-local/simple" >> $(VENVDIR)/pip.conf
-	echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf
+	if [ -z "$(SKIP_ARTIFACTORY_CHECK)" ]; then \
+		echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf; \
+	fi
 	source $(VENVDIR)/bin/activate; 	\
-  	${PIP} install --upgrade pip;		\
+	${PIP} install --upgrade pip;		\
 	${PIP} install -e '$(VENV_INSTALL_TARGET)';	\
 	#${PIP} install pytest pytest-cov pytest-asyncio pytest-xdist coverage # Why are these not in the [dev] part of pyproject.toml
 
