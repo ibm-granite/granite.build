@@ -1,0 +1,139 @@
+name: openinstruct-sft
+version: 1.0.0
+type: training
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  sft_config:
+    model_path: ""
+    tokenized_data_path: ""
+    chat_template_path: "/proj/granite-build/g4os/chat_template.jinja"
+    output_dir: "/proj/granite-build/g4os/sft/checkpoints"
+    num_epochs: 3
+    per_device_train_batch_size: 8
+    gradient_accumulation_steps: 4
+    learning_rate: "1e-5"
+    lr_scheduler_type: "linear"
+    warmup_ratio: "0.03"
+    weight_decay: "0.0"
+    clip_grad_norm: "1.0"
+    max_seq_len: 8192
+    mixed_precision: "bf16"
+    seed: 123
+    reduce_loss: "sum"
+    checkpointing_steps: "epoch"
+    keep_last_n_checkpoints: 5
+    logging_steps: 1
+outputs:
+  optional:
+    checkpoint:
+      type: model
+
+environment_configs:
+  Skypilot:
+    default_launcher: sft
+    launchers:
+      sft:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/open-instruct-tuning:0.1.0-conda"
+          resources:
+            accelerators: "H100:8"
+            zone: "normal"
+          run: |
+            set -e
+            echo "=== Open Instruct SFT Training on $(hostname) ==="
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+            MODEL_PATH="{{ config.sft_config.model_path }}"
+            DATASET_DIR="{{ config.sft_config.tokenized_data_path }}"
+            CHAT_TEMPLATE_PATH="{{ config.sft_config.chat_template_path }}"
+            OUTPUT_DIR="{{ config.sft_config.output_dir }}"
+
+            if [ ! -f "$DATASET_DIR/state.json" ]; then
+              echo "ERROR: Dataset not found at $DATASET_DIR"
+              exit 1
+            fi
+
+            export PYTHONPATH="/stage"
+            export OMP_NUM_THREADS=1
+            export CUDA_DEVICE_ORDER="PCI_BUS_ID"
+            export CUDA_MODULE_LOADING="LAZY"
+            export CUDA_DEVICE_MAX_CONNECTIONS=1
+            export TORCHINDUCTOR_REORDER_FOR_PEAK_MEMORY=1
+
+            TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+            RUN_OUTPUT_DIR="$OUTPUT_DIR/v0-$(date +%Y%m%d)-${TIMESTAMP}"
+            mkdir -p "$OUTPUT_DIR"
+
+            echo "=== Starting SFT training ==="
+            echo "  Model:   $MODEL_PATH"
+            echo "  Dataset: $DATASET_DIR"
+            echo "  Output:  $RUN_OUTPUT_DIR"
+            echo "  Epochs:  {{ config.sft_config.num_epochs }}"
+            echo "  GPUs:    8"
+
+            cd /stage
+            accelerate launch \
+              --mixed_precision {{ config.sft_config.mixed_precision }} \
+              --num_machines 1 \
+              --num_processes 8 \
+              --machine_rank 0 \
+              --main_process_ip localhost \
+              --main_process_port ${MASTER_PORT:-29500} \
+              --config_file /stage/configs/fsdp_accelerate_mamba.yaml \
+              open_instruct/finetune.py \
+              --model_name_or_path "$MODEL_PATH" \
+              --per_device_train_batch_size {{ config.sft_config.per_device_train_batch_size }} \
+              --gradient_accumulation_steps {{ config.sft_config.gradient_accumulation_steps }} \
+              --learning_rate {{ config.sft_config.learning_rate }} \
+              --lr_scheduler_type {{ config.sft_config.lr_scheduler_type }} \
+              --warmup_ratio {{ config.sft_config.warmup_ratio }} \
+              --weight_decay {{ config.sft_config.weight_decay }} \
+              --num_train_epochs {{ config.sft_config.num_epochs }} \
+              --output_dir "$RUN_OUTPUT_DIR" \
+              --logging_steps {{ config.sft_config.logging_steps }} \
+              --reduce_loss {{ config.sft_config.reduce_loss }} \
+              --tokenized_data "$DATASET_DIR" \
+              --keep_last_n_checkpoints {{ config.sft_config.keep_last_n_checkpoints }} \
+              --checkpointing_steps {{ config.sft_config.checkpointing_steps }} \
+              --exp_name "gb-sft_${TIMESTAMP}" \
+              --seed {{ config.sft_config.seed }} \
+              --clip_grad_norm {{ config.sft_config.clip_grad_norm }} \
+              --max_seq_len {{ config.sft_config.max_seq_len }} \
+              --hf_dir "${RUN_OUTPUT_DIR}-hf" \
+              --use_flash_attn \
+              --gradient_checkpointing \
+              --use_fast \
+              --padfree \
+              --no_push_to_hub \
+              --no_try_launch_beaker_eval_jobs \
+              --chat_template "$CHAT_TEMPLATE_PATH"
+
+            echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:${RUN_OUTPUT_DIR}"
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "Step:\\s\\d+"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+              - field_name: message
+                field_regex: "Step:.+"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true
