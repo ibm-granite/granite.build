@@ -8,15 +8,18 @@ from tabulate import tabulate
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.commands.common_options import common_options, unsupported_in_standalone
+from gbcli.commands.common_options import (
+    common_options,
+    pass_context_and_reject_standalone,
+)
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
 @click.group("secret")
-@unsupported_in_standalone("secret")
-def cli():
+@pass_context_and_reject_standalone
+def cli(ctx):
     """Work with secrets"""
 
 

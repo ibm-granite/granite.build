@@ -27,7 +27,7 @@ from click.testing import CliRunner
 
 # Assert against result.output (combined stdout+stderr): CliRunner mixes the streams by
 # default on Click 8.1.x, where accessing result.stderr raises.
-WARNING_FRAGMENT = "'--refresh' is not supported in standalone mode"
+WARNING_FRAGMENT = "'--refresh' is currently not supported in standalone mode"
 
 
 def _space_cli():

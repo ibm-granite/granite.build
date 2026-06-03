@@ -8,7 +8,10 @@ from tqdm import tqdm
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.commands.common_options import common_options
+from gbcli.commands.common_options import (
+    common_options,
+    pass_context_and_reject_standalone,
+)
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME, SPACE_LIST_HEADERS
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.spaceutil import get_spaces
@@ -67,7 +70,7 @@ def list(
         # also corrupt ~/.gbcli/config because the standalone config has no spaces
         # section). Block the flag with a clear message instead.
         click.echo(
-            "⚠️  Warning: '--refresh' is not supported in standalone mode "
+            "❌ Error: '--refresh' is currently not supported in standalone mode "
             "(spaces are always fetched fresh from the local gbserver).",
             err=True,
         )
@@ -156,7 +159,7 @@ def list(
 
 
 @cli.command()
-@click.pass_context
+@pass_context_and_reject_standalone("space set")
 @click.argument("space_name", required=True)
 @click.option(
     "--default",

@@ -2885,7 +2885,10 @@ def update_build(
             )
 
     username = get_user(github_token).login
-    if not username or not github_token:
+    # In standalone mode an empty token is legitimate (the local gbserver allows
+    # localhost access when no GBSERVER_API_KEY is configured), so only require a
+    # non-empty token outside standalone mode.
+    if not username or (not github_token and not is_standalone()):
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
 
     gbserver_artifact = update_build_gserver(
