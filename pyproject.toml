@@ -78,7 +78,7 @@ standalone = [
 thirdparty = [
     "docker>=7.0.0",
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
-    "skypilot[kubernetes,slurm]>=0.12.1",
+    "skypilot[kubernetes,slurm] @ git+https://github.com/cmadam/skypilot.git@feature/lsf-cloud",
     "wandb",
 ]
 # Tier 3: IBM-specific — requires IBM infrastructure (cloud, cluster, Artifactory)
@@ -94,7 +94,7 @@ ibm = [
     "kubernetes_asyncio>=35.0.1",	# Avoids missing watch import created in kubernetes==36.0.0
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg2-binary",
-    "skypilot[kubernetes,slurm]>=0.12.1",
+    "skypilot[kubernetes,slurm] @ git+https://github.com/cmadam/skypilot.git@feature/lsf-cloud",
 ]
 # All optional dependencies
 all = [

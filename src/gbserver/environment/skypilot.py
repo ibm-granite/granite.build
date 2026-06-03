@@ -324,12 +324,15 @@ class Skypilot(Environment):
                 res_config,
             )
 
-            # SLURM does not support autostop; passing any non-None value
-            # (including 0) fails provisioning with "Slurm does not support
-            # autostop." Per-step `sky down` cleanup handles teardown anyway,
-            # so force None on SLURM regardless of the user's config.
+            # SLURM and LSF do not support autostop; passing any non-None
+            # value (including 0) fails provisioning. Per-step `sky down`
+            # cleanup handles teardown anyway, so force None on these
+            # backends regardless of the user's config.
             cloud_for_infra = (str(infra).split("/", 1)[0] or "").lower()
-            autostop = None if cloud_for_infra == "slurm" else idle_minutes
+            no_autostop_clouds = ("slurm", "lsf")
+            autostop = (
+                None if cloud_for_infra in no_autostop_clouds else idle_minutes
+            )
 
             # Launch and wait for provisioning
             request_id = sky.launch(
