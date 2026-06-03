@@ -63,9 +63,12 @@ class TestGbcliStandaloneGuards:
             f"'{group_name} {' '.join(subcommand)}' should exit non-zero in standalone "
             f"mode, got {result.exit_code}"
         )
-        assert WARNING_FRAGMENT in result.stderr, (
-            f"expected standalone warning in stderr for '{group_name}', "
-            f"got: {result.stderr!r}"
+        # Assert against result.output (combined stdout+stderr) rather than
+        # result.stderr: CliRunner mixes the streams by default on Click 8.1.x, where
+        # accessing result.stderr raises "stderr not separately captured".
+        assert WARNING_FRAGMENT in result.output, (
+            f"expected standalone warning for '{group_name}', "
+            f"got: {result.output!r}"
         )
 
     @pytest.mark.parametrize("module_path,group_name,subcommand", GUARDED_COMMANDS)
@@ -79,7 +82,7 @@ class TestGbcliStandaloneGuards:
 
         assert result.exit_code == 0, (
             f"'{group_name} --help' should succeed in standalone mode, "
-            f"got {result.exit_code}: {result.stderr}"
+            f"got {result.exit_code}: {result.output}"
         )
         assert WARNING_FRAGMENT not in result.output
 
@@ -94,7 +97,7 @@ class TestGbcliStandaloneGuards:
         # still fail later (no credentials), but it must not emit the standalone warning.
         result = runner.invoke(cli, subcommand, env={"GB_ENVIRONMENT": "PROD"})
 
-        assert WARNING_FRAGMENT not in result.stderr, (
+        assert WARNING_FRAGMENT not in result.output, (
             f"standalone warning should not appear for '{group_name}' outside "
-            f"standalone mode, got: {result.stderr!r}"
+            f"standalone mode, got: {result.output!r}"
         )

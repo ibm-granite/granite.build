@@ -8,7 +8,7 @@ from tabulate import tabulate
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.commands.common_options import common_options, exit_if_standalone
+from gbcli.commands.common_options import common_options, unsupported_in_standalone
 from gbcli.utils.gbconstants import (
     BUILD_LOG_DEFAULT_QUERY_RANGE,
     BUILD_LOG_MAX_LOG_LIFESPAN,
@@ -28,11 +28,9 @@ from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
 @click.group("admin")
-@click.pass_context
-def cli(ctx):
+@unsupported_in_standalone("admin")
+def cli():
     """Functions for admin users"""
-    if ctx.invoked_subcommand is not None:
-        exit_if_standalone("admin")
 
 
 @cli.command()

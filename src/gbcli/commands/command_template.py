@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.commands.common_options import common_options, exit_if_standalone
+from gbcli.commands.common_options import common_options, unsupported_in_standalone
 from gbcli.utils.gbconstants import (
     BUILD_DESCRIBE_ARTIFACTS_HEADERS,
     BUILD_DESCRIBE_STEPS_HEADERS,
@@ -21,11 +21,9 @@ from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
 @click.group("template")
-@click.pass_context
-def cli(ctx):
+@unsupported_in_standalone("template")
+def cli():
     """Work with templates"""
-    if ctx.invoked_subcommand is not None:
-        exit_if_standalone("template")
 
 
 @cli.command()

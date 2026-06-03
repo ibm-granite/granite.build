@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
-from gbcli.commands.common_options import common_options, exit_if_standalone
+from gbcli.commands.common_options import common_options, unsupported_in_standalone
 from gbcli.services.service_auth import verify_rits_api_key
 from gbcli.utils.gbconstants import (
     MODEL_LIST_HEADERS,
@@ -27,11 +27,9 @@ from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
 @click.group("model")
-@click.pass_context
-def cli(ctx):
+@unsupported_in_standalone("model")
+def cli():
     """Work with deployed models"""
-    if ctx.invoked_subcommand is not None:
-        exit_if_standalone("model")
 
 
 @cli.command()
