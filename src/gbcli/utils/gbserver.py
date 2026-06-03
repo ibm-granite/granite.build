@@ -665,8 +665,6 @@ def submit_build(
     targets: Optional[List[str]] = [],
     tags: Optional[list[str]] = [],
     description: Optional[str] = None,
-    webhook_url: Optional[str] = None,
-    webhook_secret: Optional[str] = None,
 ) -> Any:
 
     body = {
@@ -678,12 +676,6 @@ def submit_build(
         "tags": tags,
         "description": description,
     }
-
-    # Only include webhook fields if provided
-    if webhook_url:
-        body["webhook_url"] = webhook_url
-    if webhook_secret:
-        body["webhook_secret"] = webhook_secret
 
     return gb_server_request(
         user_token=token,

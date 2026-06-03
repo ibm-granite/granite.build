@@ -30,7 +30,7 @@ import traceback
 from asyncio import Event, Queue
 from base64 import b64decode
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Self, Union
+from typing import Callable, List, Optional, Self, Union
 
 from gbcommon.uri.git import GitURI
 from gbcommon.uri.uri import URI
@@ -77,11 +77,8 @@ from gbserver.types.constants import (
     DEFAULT_DIR_PERMS,
     DEFAULT_GH_API_ENDPOINT,
     DEFAULT_ROOT_WORKSPACE_DIR,
-    GB_ENVIRONMENT,
-    GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GITHUB_TOKEN,
     GBSERVER_RAISE_BUILD_EXCEPTIONS,
-
     STARTING_BUILD_MESSAGE,
     WORKSPACE_BUILDS_DIR,
 )
@@ -151,9 +148,6 @@ class BuildRunner(AbstractBuildRunner):
             build, _BUILD_EVENT_SOURCE_NAME
         )  # To be recreated later.
         self.event_storage = get_admin_storage().event_storage
-
-        self._event_publisher: Optional[Any] = None
-        self._standalone_dispatcher: Optional[Any] = None
 
     def stop(self: Self) -> None:
         """Stop the building thread if it was started."""
@@ -757,12 +751,6 @@ class BuildRunner(AbstractBuildRunner):
         # Add the BuildEvent to the history of events for this build
         self.event_storage.add(StoredEvent(build_event=event))
 
-        # Dispatch to RabbitMQ event bus (fire-and-forget async task)
-        asyncio.ensure_future(self.__dispatch_to_event_bus(event))
-
-        # Dispatch standalone notification (fire-and-forget async task)
-        asyncio.ensure_future(self.__dispatch_standalone_notification(event))
-
         if event.type in (
             BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT,
             BuildEventType.NEW_MULTIARTIFACT_IN_ENVIRONMENT_EVENT,
@@ -790,51 +778,6 @@ class BuildRunner(AbstractBuildRunner):
             logger.error("unsupported event type: %s", event)
         logger.debug("BuildRunner.process_event end")
         return build_finished
-
-    async def __dispatch_to_event_bus(self: Self, event: BuildEvent) -> None:
-        """Publish event to RabbitMQ exchange for push-based consumers."""
-        if not GBSERVER_EVENT_PUBLISHING_ENABLED:
-            return
-
-        try:
-            if self._event_publisher is None:
-                from gbserver.messaging.build_event_publisher import (
-                    BuildEventPublisher,
-                )
-
-                publisher = BuildEventPublisher.from_env()
-                await publisher.setup()
-                self._event_publisher = publisher
-                logger.info("[BuildRunner] Event publisher initialized")
-
-            await self._event_publisher.publish_event(event)
-        except Exception as e:
-            logger.warning(
-                "[BuildRunner] Event bus publish error (non-fatal): %s", e
-            )
-
-    async def __dispatch_standalone_notification(
-        self: Self, event: BuildEvent
-    ) -> None:
-        """Dispatch event via StandaloneDispatcher for non-RabbitMQ environments."""
-        if GB_ENVIRONMENT != "STANDALONE":
-            return
-
-        if GBSERVER_EVENT_PUBLISHING_ENABLED:
-            return
-
-        try:
-            if self._standalone_dispatcher is None:
-                from gbserver.notifications.dispatcher import StandaloneDispatcher
-
-                self._standalone_dispatcher = StandaloneDispatcher()
-                logger.info("[BuildRunner] Standalone dispatcher initialized")
-
-            await self._standalone_dispatcher.dispatch(event)
-        except Exception as e:
-            logger.warning(
-                "[BuildRunner] Standalone notification error (non-fatal): %s", e
-            )
 
     def __process_terminate_event(self: Self, event: BuildEvent) -> None:
         build_id = event.run_metadata.build_id

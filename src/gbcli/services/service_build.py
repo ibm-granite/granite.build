@@ -279,8 +279,6 @@ def build_start(
     tags: list[str] = [],
     callback=None,
     validation_type: str = "static",
-    webhook_url: Optional[str] = None,
-    webhook_secret: Optional[str] = None,
 ) -> str:
 
     gbserver_build_update = gb_environment_config().feature_flags[
@@ -453,8 +451,6 @@ def build_start(
             list(targets),
             tags,
             description,
-            webhook_url=webhook_url,
-            webhook_secret=webhook_secret,
         ),
         callback,
     )

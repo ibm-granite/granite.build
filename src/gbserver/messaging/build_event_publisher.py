@@ -68,6 +68,13 @@ class BuildEventPublisher:
         )
         return cls(rabbitmq=rabbitmq)
 
+    @classmethod
+    def is_configured(cls) -> bool:
+        """Return True if RabbitMQ connection environment is set."""
+        import os
+
+        return bool(os.getenv("RABBITMQ_HOST"))
+
     async def setup(self) -> None:
         """Initialize the RabbitMQ connection and channel."""
         await self._rabbitmq.setup()
