@@ -113,7 +113,7 @@ class RabbitMQAdmin:
         """
         suffix = self._random_string(6)
         username = f"tmp-build-{build_id[:8]}-{suffix}"
-        password = self._random_string(24)
+        password = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
         expires_iso = expires_at.isoformat()
 

@@ -195,8 +195,8 @@ def consume_events(subscribe_info: dict, timeout: int) -> list:
         from gbserver.messaging.messaging_base import Address
 
         settings = RabbitSettings(
-            host=subscribe_info["rabbitmq_host"],
-            port=subscribe_info["rabbitmq_port"],
+            host=subscribe_info["host"],
+            port=subscribe_info["port"],
             user=subscribe_info["username"],
             password=subscribe_info["password"],
             uri="amqp",

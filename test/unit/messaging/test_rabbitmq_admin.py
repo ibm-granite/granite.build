@@ -99,8 +99,8 @@ class TestCreateScopedUser:
         assert result["username"].startswith(f"tmp-build-{build_id[:8]}-")
         assert len(result["username"]) == len("tmp-build-") + 8 + 1 + 6
 
-        # Password is 24 chars
-        assert len(result["password"]) == 24
+        # Password is a URL-safe base64 token (32 bytes → 43 chars)
+        assert len(result["password"]) == 43
 
         # Expiry is a valid ISO datetime
         expires = datetime.fromisoformat(result["expires_at"])

@@ -24,7 +24,7 @@ Logging about the build to a PR/Issue.
 import functools
 from abc import abstractmethod
 from collections import deque
-from typing import List, Optional, Self, Tuple
+from typing import Callable, List, Optional, Self, Tuple
 
 from gbserver.github.myghapi import MyGHApi
 from gbserver.storage import singleton_storage
@@ -38,7 +38,11 @@ from gbserver.types.buildevent import (
     EntityRunMetadata,
     create_message_event,
 )
-from gbserver.types.constants import DEFAULT_GH_API_ENDPOINT, GBSERVER_GITHUB_TOKEN
+from gbserver.types.constants import (
+    DEFAULT_GH_API_ENDPOINT,
+    GBSERVER_EVENT_PUBLISHING_ENABLED,
+    GBSERVER_GITHUB_TOKEN,
+)
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -263,23 +267,88 @@ class BuildMultiMessageLogger(AbstractBuildLogger):
             )
 
 
-# A cache may not be necessary since we only log 1 message per build, but that may change. So use a small cache for now?
+# ── Logger Registry ──────────────────────────────────────────────────────────
+
+# Each entry: (predicate, factory)
+# predicate(stored_build, event_source) -> bool
+# factory(stored_build, event_source) -> AbstractBuildLogger
+_LOGGER_REGISTRY: List[
+    Tuple[
+        Callable[[StoredBuild, str], bool],
+        Callable[[StoredBuild, str], AbstractBuildLogger],
+    ]
+] = []
+
+
+def register_logger(
+    predicate: Callable[[StoredBuild, str], bool],
+    factory: Callable[[StoredBuild, str], AbstractBuildLogger],
+) -> None:
+    """Register a logger type with its activation predicate."""
+    _LOGGER_REGISTRY.append((predicate, factory))
+
+
+def _always(_build: StoredBuild, _source: str) -> bool:
+    return True
+
+
+def _has_source_uri(build: StoredBuild, _source: str) -> bool:
+    return bool(build.source_uri)
+
+
+def _event_publishing_enabled(_build: StoredBuild, _source: str) -> bool:
+    if not GBSERVER_EVENT_PUBLISHING_ENABLED:
+        return False
+    from gbserver.messaging.build_event_publisher import BuildEventPublisher
+
+    if not BuildEventPublisher.is_configured():
+        logger.warning(
+            "GBSERVER_EVENT_PUBLISHING_ENABLED is true but RABBITMQ_HOST is not set "
+            "— skipping event publishing"
+        )
+        return False
+    return True
+
+
+def _create_event_message_logger(
+    build: StoredBuild, source: str
+) -> AbstractBuildLogger:
+    return BuildEventMessageLogger(event_source=source, stored_build=build)
+
+
+def _create_pr_logger(build: StoredBuild, _source: str) -> AbstractBuildLogger:
+    return BuildPRLogger(stored_build=build)
+
+
+def _create_publish_logger(build: StoredBuild, _source: str) -> AbstractBuildLogger:
+    from gbserver.buildrunner.build_event_publish_logger import BuildEventPublishLogger
+    from gbserver.messaging.build_event_publisher import BuildEventPublisher
+
+    publisher = BuildEventPublisher.from_env()
+    return BuildEventPublishLogger(stored_build=build, publisher=publisher)
+
+
+# Register built-in loggers
+register_logger(predicate=_always, factory=_create_event_message_logger)
+register_logger(predicate=_has_source_uri, factory=_create_pr_logger)
+register_logger(predicate=_event_publishing_enabled, factory=_create_publish_logger)
+
+
 @functools.lru_cache(maxsize=4)
 def get_message_logger(
     stored_build: StoredBuild, event_source: str
 ) -> AbstractBuildLogger:
-    """Create the message logger for this build.  This will always logs as
-    events, but if the give build has a PR associated, it will also log to the PR.
+    """Create the message logger for this build from the registry.
+
+    Iterates through registered loggers, invokes each predicate,
+    and collects active loggers into a BuildMultiMessageLogger.
     """
-    # TODO: when PRs go away the build_message_logger becomes a BuildEventMessageLogger instead.
-    message_event_logger = BuildEventMessageLogger(
-        event_source=event_source, stored_build=stored_build
-    )
-    if not stored_build.source_uri:
-        logger = message_event_logger
-    else:
-        pr_logger = BuildPRLogger(stored_build=stored_build)
-        logger = BuildMultiMessageLogger(  # type: ignore[assignment]
-            stored_build=stored_build, loggers=[pr_logger, message_event_logger]
-        )
-    return logger
+    loggers: List[AbstractBuildLogger] = [
+        factory(stored_build, event_source)
+        for predicate, factory in _LOGGER_REGISTRY
+        if predicate(stored_build, event_source)
+    ]
+
+    if len(loggers) == 1:
+        return loggers[0]
+    return BuildMultiMessageLogger(stored_build=stored_build, loggers=loggers)

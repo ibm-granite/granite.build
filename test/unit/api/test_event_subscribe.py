@@ -88,9 +88,9 @@ class TestEventSubscribeEndpoint:
     """Tests for POST /api/v1/builds/{build_id}/events/subscribe."""
 
     @patch.dict(os.environ, {"RABBITMQ_HOST": "rmq.example.com", "RABBITMQ_PORT": "5672"})
+    @patch("gbserver.api.event_subscribe.provision_subscription")
     @patch("gbserver.api.event_subscribe.get_admin_storage")
-    @patch("gbserver.api.event_subscribe.RabbitMQAdmin")
-    def test_successful_subscription(self, mock_admin_cls, mock_get_storage):
+    def test_successful_subscription(self, mock_get_storage, mock_provision):
         """Valid auth + existing build returns scoped credentials."""
         build_id = "abc-123-def"
         mock_build = _make_stored_build(build_id)
@@ -100,16 +100,18 @@ class TestEventSubscribeEndpoint:
         mock_storage.build_storage.get_by_uuid.return_value = mock_build
         mock_get_storage.return_value = mock_storage
 
-        # Mock RabbitMQAdmin.create_scoped_user
-        mock_admin_instance = MagicMock()
-        mock_admin_instance.create_scoped_user = AsyncMock(
-            return_value={
-                "username": "tmp-build-abc-123d-xyzabc",
-                "password": "secret-password-12345678",
-                "expires_at": "2026-06-02T13:00:00+00:00",
-            }
-        )
-        mock_admin_cls.return_value = mock_admin_instance
+        # Mock provision_subscription
+        mock_provision.return_value = {
+            "delivery_type": "rabbitmq",
+            "host": "rmq.example.com",
+            "port": 5672,
+            "username": "tmp-build-abc-123d-xyzabc",
+            "password": "secret-password-12345678",
+            "exchange": "build-events",
+            "routing_key": f"build.{build_id}.#",
+            "queue": f"events.{build_id}.xyzabc",
+            "expires_at": "2026-06-02T13:00:00+00:00",
+        }
 
         app = _make_app()
         client = TestClient(app)
@@ -120,21 +122,17 @@ class TestEventSubscribeEndpoint:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["rabbitmq_host"] == "rmq.example.com"
-        assert data["rabbitmq_port"] == 5672
+        assert data["delivery_type"] == "rabbitmq"
+        assert data["host"] == "rmq.example.com"
+        assert data["port"] == 5672
         assert data["username"] == "tmp-build-abc-123d-xyzabc"
         assert data["password"] == "secret-password-12345678"
         assert data["exchange"] == "build-events"
         assert data["routing_key"] == f"build.{build_id}.#"
-        assert data["queue"].startswith(f"events.{build_id}.")
+        assert data["queue"] == f"events.{build_id}.xyzabc"
         assert data["expires_at"] == "2026-06-02T13:00:00+00:00"
 
-        # Verify RabbitMQAdmin was called correctly
-        mock_admin_instance.create_scoped_user.assert_called_once_with(
-            build_id=build_id,
-            exchange="build-events",
-            ttl_seconds=60,
-        )
+        mock_provision.assert_called_once_with(build_id)
 
     def test_missing_auth_returns_401(self):
         """Request without Authorization header returns 401."""
