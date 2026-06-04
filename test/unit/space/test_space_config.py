@@ -67,13 +67,15 @@ class TestStandalonePublicSpaceYaml:
     def test_default_environment_variable(self):
         with open(STANDALONE_PUBLIC_DIR / "space.yaml") as f:
             data = yaml.safe_load(f)
-        assert data["variables"]["DEFAULT_ENVIRONMENT"] == "sky-kube"
+        assert data["variables"]["DEFAULT_ENVIRONMENT"] == "skypilot/kubernetes"
 
 
 class TestSkyKubeEnvironmentYaml:
-    """Validate spaces/shared/environments/sky-kube/environment.yaml."""
+    """Validate spaces/shared/environments/skypilot/kubernetes/environment.yaml."""
 
-    ENV_PATH = SHARED_DIR / "environments" / "sky-kube" / "environment.yaml"
+    ENV_PATH = (
+        SHARED_DIR / "environments" / "skypilot" / "kubernetes" / "environment.yaml"
+    )
 
     def test_file_exists(self):
         assert self.ENV_PATH.exists()

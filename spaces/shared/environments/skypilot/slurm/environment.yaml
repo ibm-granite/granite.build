@@ -1,4 +1,4 @@
-name: slurm-local
+name: sky-slurm
 type: Skypilot
 config:
   default_cloud: slurm

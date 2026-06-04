@@ -11,7 +11,7 @@ base_uris:
   # Relative paths resolve against this space.yaml's directory.
   - file://../../shared
 variables:
-  DEFAULT_ENVIRONMENT: sky-kube
+  DEFAULT_ENVIRONMENT: skypilot/kubernetes
   S3_DIGIT_INPUT_URI: "s3://<your-bucket>/digit/input"
   S3_DIGIT_OUTPUT_URI: "s3://<your-bucket>/digit/output"
   S3_SAGE_OUTPUT_URI: "s3://<your-bucket>/sage/output"

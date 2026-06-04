@@ -7,7 +7,7 @@ granite.build:
   name: sage
   targets:
     evaluation:
-      environment_uri: space://environments/sky-kube
+      environment_uri: space://environments/skypilot/kubernetes
       steps:
         - step_uri: space://steps/sage
           config:

@@ -918,7 +918,7 @@ granite.build:
   name: skypilot-bash-example
   targets:
     image-run:
-      environment_uri: space://environments/slurm
+      environment_uri: space://environments/skypilot/slurm
       inputs:
         input_model:
           uri: hf://huggingface.co/datasets/ibm-research/some-dataset

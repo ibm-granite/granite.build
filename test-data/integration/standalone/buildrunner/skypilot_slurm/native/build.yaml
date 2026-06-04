@@ -2,7 +2,7 @@ granite.build:
   name: skypilot-slurm-image-hf-test
   targets:
     image-run:
-      environment_uri: space://environments/slurm
+      environment_uri: space://environments/skypilot/slurm
       inputs:
         input_model:
           uri: hf:///datasets/ibm-research/vira-intents-live
