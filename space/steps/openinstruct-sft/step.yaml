@@ -10,8 +10,8 @@ config:
   sft_config:
     model_path: ""
     tokenized_data_path: ""
-    chat_template_path: "/proj/granite-build/g4os/chat_template.jinja"
-    output_dir: "/proj/granite-build/g4os/sft/checkpoints"
+    chat_template_path: ""
+    output_dir: ""
     num_epochs: 3
     per_device_train_batch_size: 8
     gradient_accumulation_steps: 4
@@ -42,9 +42,6 @@ environment_configs:
         - skypilot_monitor
         config:
           image_id: "docker:us.icr.io/cil15-shared-registry/open-instruct-tuning:0.1.0-conda"
-          resources:
-            accelerators: "H100:8"
-            zone: "normal"
           run: |
             set -e
             echo "=== Open Instruct SFT Training on $(hostname) ==="

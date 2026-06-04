@@ -12,7 +12,7 @@ import os
 import shlex
 import urllib.parse
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Tuple, Union
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -37,12 +37,22 @@ else:
 
 
 def _require_skypilot():
-    """Raise a clear error if the sky SDK is not installed."""
+    """Raise a clear error if the sky SDK is not installed.
+
+    Also ensures the SkyPilot API server is running (starts it if needed).
+    """
     if not HAS_SKYPILOT:
         raise ImportError(
             "The 'skypilot' package is required for the Skypilot environment. "
             "Install it with: pip install 'gbserver[skypilot]'"
         )
+    try:
+        info = sky.api_info()
+        if info.status.value != "healthy":
+            raise RuntimeError("not healthy")
+    except Exception:
+        logger.info("SkyPilot API server not running — starting it now")
+        sky.api_start()
 
 
 @retry(
@@ -211,10 +221,16 @@ class Skypilot(Environment):
                 "idle_minutes_to_autostop", self._get_idle_minutes()
             )
 
-            # Build sky.Resources
-            res_config = launcher_config.get("resources", {})
+            # Build sky.Resources — merge build-level overrides on top of
+            # step defaults (config.launcher_config.resources wins over
+            # step's environment_configs.*.launchers.*.config.resources)
+            res_config = {
+                **launcher_config.get("resources", {}),
+                **config.get("launcher_config", {}).get("resources", {}),
+            }
 
-            # Build infra string: supports 'slurm/cluster/partition' format
+            # Build infra string: supports 'cloud/cluster/partition' format
+            # (e.g., 'slurm/mycluster/gpu', 'lsf/bluevela/normal')
             infra = res_config.get("infra") or cloud
             zone = res_config.get("zone")
             if not res_config.get("infra") and res_config.get("cluster"):
@@ -222,6 +238,11 @@ class Skypilot(Environment):
                 if zone:
                     infra = f"{infra}/{zone}"
                     zone = None
+            elif not res_config.get("infra") and zone:
+                # zone without cluster — fold into infra to avoid the
+                # "cannot specify both infra and zone" error in sky.Resources
+                infra = f"{infra}/{zone}" if infra else zone
+                zone = None
 
             resources = sky.Resources(
                 infra=infra,
@@ -797,6 +818,50 @@ class Skypilot(Environment):
         )
         binding_config = {"binding": {"path": str(binding_path)}}
         return binding_config, pull_step_config
+
+    async def pullasset_envstore(
+        self: Self,
+        uri: Optional[Union[str, URI]] = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        **kwargs,
+    ) -> Tuple[Dict, Optional[Any]]:
+        """Pull asset for env:// store — artifact is already on shared FS.
+
+        No-op pull: the path is directly accessible on the shared filesystem.
+        Returns the binding with the path extracted from the URI.
+        """
+        path = str(uri).replace("env://", "") if uri else ""
+        logger.info(
+            "pullasset_envstore: artifact at path=%s (shared FS, no transfer needed)",
+            path,
+        )
+        binding_config = {"binding": {"path": path}}
+        return binding_config, None
+
+    async def pushasset_envstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        storepush_config=None,
+        uri: Optional[Union[str, URI]] = None,
+        assetstore=None,
+        secrets: Optional[Dict[str, str]] = None,
+        run_metadata: Optional[Any] = None,
+        output_config: Optional[Any] = None,
+    ) -> URI:
+        """Push asset for env:// store — artifact is already on shared FS.
+
+        No-op push: the artifact path from the container is directly
+        accessible on the shared filesystem, so no transfer is needed.
+        """
+        logger.info(
+            "pushasset_envstore: registering artifact %s at uri=%s binding=%s",
+            binding_id,
+            uri,
+            binding,
+        )
+        return URI.get_uri(str(uri)) if uri else URI.get_uri("")
 
     async def pushasset_hfstore(
         self: Self,

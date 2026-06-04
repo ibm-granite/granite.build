@@ -1,0 +1,34 @@
+granite.build:
+  name: sft-10k-test
+  targets:
+    sft-training:
+      environment_uri: space://environments/lsf-skypilot
+      steps:
+        - step_uri: space://steps/openinstruct-sft
+          config:
+            sft_config:
+              model_path: "$${MODEL_PATH}"
+              tokenized_data_path: "$${TOKENIZED_DATA_PATH}"
+              chat_template_path: "$${CHAT_TEMPLATE_PATH}"
+              output_dir: "$${OUTPUT_DIR}"
+              num_epochs: $${NUM_EPOCHS}
+              per_device_train_batch_size: $${PER_DEVICE_BATCH_SIZE}
+              gradient_accumulation_steps: $${GRADIENT_ACCUMULATION_STEPS}
+              learning_rate: "$${LEARNING_RATE}"
+              lr_scheduler_type: "$${LR_SCHEDULER_TYPE}"
+              warmup_ratio: "$${WARMUP_RATIO}"
+              weight_decay: "$${WEIGHT_DECAY}"
+              clip_grad_norm: "$${CLIP_GRAD_NORM}"
+              max_seq_len: $${MAX_SEQ_LEN}
+              mixed_precision: "$${MIXED_PRECISION}"
+              seed: $${SEED}
+              reduce_loss: "$${REDUCE_LOSS}"
+              checkpointing_steps: "$${CHECKPOINTING_STEPS}"
+              keep_last_n_checkpoints: $${KEEP_LAST_N_CHECKPOINTS}
+              logging_steps: $${LOGGING_STEPS}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"

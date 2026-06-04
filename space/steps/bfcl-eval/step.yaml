@@ -1,0 +1,98 @@
+name: bfcl-eval
+version: 1.0.0
+type: EVAL
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  bfcl_config:
+    model_path: ""
+    model_id: "ibm-granite/granite-4"
+    experiment: ""
+    eval_name: "bfclv3"
+    test_categories: "all"
+    num_gpus_generate: 1
+    num_gpus_evaluate: 1
+    gpu_memory_utilization: "0.5"
+    output_dir: ""
+outputs:
+  optional:
+    bfcl_results:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: bfcl
+    launchers:
+      bfcl:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/bfcl-py311:0.02"
+          run: |
+            set -e
+            echo "=== BFCLv3 Evaluation on $(hostname) ==="
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+            # Unset distributed training vars — vLLM conflicts with them
+            unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
+
+            export MODEL_PATH="{{ config.bfcl_config.model_path }}"
+            export MODEL_ID="{{ config.bfcl_config.model_id }}"
+            export OUTPUT_DIR="{{ config.bfcl_config.output_dir }}/{{ config.bfcl_config.experiment }}/{{ config.bfcl_config.eval_name }}"
+            export EXP_NAME="{{ config.bfcl_config.experiment }}"
+            export TEST_CATEGORIES="{{ config.bfcl_config.test_categories }}"
+            export NUM_GPUS_GENERATE={{ config.bfcl_config.num_gpus_generate }}
+            export NUM_GPUS_EVALUATE={{ config.bfcl_config.num_gpus_evaluate }}
+            export GPU_MEMORY_UTILIZATION="{{ config.bfcl_config.gpu_memory_utilization }}"
+            export VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
+            export VLLM_WORKER_MULTIPROC_METHOD=spawn
+            export VLLM_SKIP_P2P_CHECK=1
+            export NCCL_IGNORE_DISABLED_P2P=1
+            export PYTHONUNBUFFERED=1
+
+            mkdir -p "$OUTPUT_DIR"
+
+            echo "=== Starting BFCL evaluation ==="
+            echo "  Model:      $MODEL_PATH"
+            echo "  Model ID:   $MODEL_ID"
+            echo "  Experiment: $EXP_NAME"
+            echo "  Categories: $TEST_CATEGORIES"
+            echo "  GPUs gen:   $NUM_GPUS_GENERATE"
+            echo "  GPUs eval:  $NUM_GPUS_EVALUATE"
+            echo "  Output:     $OUTPUT_DIR"
+
+            bash /workspace/scripts/run-bfcl.sh 2>&1 | tee "${OUTPUT_DIR}/${EXP_NAME}-bfcl.log"
+
+            # Emit artifact for gbserver
+            RESULT_FILE=$(find "$OUTPUT_DIR" -type f -name '*.json' -print -quit)
+            if [ -n "$RESULT_FILE" ]; then
+              echo "LLMB_ARTIFACT_ID:bfcl_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
+            else
+              echo "ERROR: No results file found in $OUTPUT_DIR"
+              exit 1
+            fi
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "Starting BFCL|Running.*stage|Evaluation complete"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+              - field_name: message
+                field_regex: ".+"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true
