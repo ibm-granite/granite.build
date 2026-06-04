@@ -168,17 +168,26 @@ def _run_standalone(
 
     storage = singleton_storage.get_admin_storage()
     existing = storage.space_storage.get_by_name("standalone")
+    
+    space_uri = f"file://{os.path.abspath(space_dir)}"
+    stored_space = StoredSpace(
+        name="standalone",
+        git_repo_uri=space_uri,
+        lakehouse_namespace="",
+    )
+    
     if existing is None:
-        space_uri = f"file://{os.path.abspath(space_dir)}"
-        stored_space = StoredSpace(
-            name="standalone",
-            git_repo_uri=space_uri,
-            lakehouse_namespace="",
-        )
         storage.space_storage.add(stored_space)
         logger.info("Created 'standalone' space with URI %s", space_uri)
     else:
-        logger.info("'standalone' space already exists (uuid=%s)", existing.uuid)
+        # Update existing space to point to new directory
+        stored_space.uuid = existing.uuid
+        storage.space_storage.update(stored_space, create_if_not_exist=False)
+        logger.info(
+            "Updated 'standalone' space (uuid=%s) to new URI %s",
+            existing.uuid,
+            space_uri,
+        )
 
     # 2.5. Start embedded nats-server if configured.
     from gbserver.types.constants import GBSERVER_NATS_EMBEDDED, GBSERVER_NATS_URL
