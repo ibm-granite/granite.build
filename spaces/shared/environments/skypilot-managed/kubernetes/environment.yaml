@@ -1,4 +1,4 @@
-name: skypilot-managed
+name: sky-managed-kubernetes
 type: Skypilot_managed
 config:
   default_cloud: kubernetes

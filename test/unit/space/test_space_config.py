@@ -105,9 +105,15 @@ class TestSkyKubeEnvironmentYaml:
 
 
 class TestSkypilotManagedEnvironmentYaml:
-    """Validate spaces/shared/environments/skypilot-managed/environment.yaml."""
+    """Validate spaces/shared/environments/skypilot-managed/kubernetes/environment.yaml."""
 
-    ENV_PATH = SHARED_DIR / "environments" / "skypilot-managed" / "environment.yaml"
+    ENV_PATH = (
+        SHARED_DIR
+        / "environments"
+        / "skypilot-managed"
+        / "kubernetes"
+        / "environment.yaml"
+    )
 
     def test_file_exists(self):
         assert self.ENV_PATH.exists()

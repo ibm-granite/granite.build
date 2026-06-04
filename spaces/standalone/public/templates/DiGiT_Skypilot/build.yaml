@@ -1,7 +1,7 @@
 #####
 # DiGiT synthetic data generation on SkyPilot with S3/COS file_mounts.
 # Input data is mounted from an S3 bucket via SkyPilot file_mounts.
-# To use Skypilot_managed, change environment_uri to space://environments/skypilot-managed
+# To use Skypilot_managed, change environment_uri to space://environments/skypilot-managed/kubernetes
 ######
 granite.build:
   name: digit

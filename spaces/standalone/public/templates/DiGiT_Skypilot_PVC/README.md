@@ -69,7 +69,7 @@ gbserver build run-and-monitor spaces/standalone/public/templates/DiGiT_Skypilot
 
 ## Switching to Skypilot_managed
 
-Edit `build.yaml` and change `environment_uri` from `space://environments/skypilot` to `space://environments/skypilot-managed`. Requires a running SkyPilot API Server.
+Edit `build.yaml` and change `environment_uri` from `space://environments/skypilot` to `space://environments/skypilot-managed/kubernetes`. Requires a running SkyPilot API Server.
 
 ## See Also
 

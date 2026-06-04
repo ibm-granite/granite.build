@@ -2,7 +2,7 @@
 # Sage LLM evaluation on SkyPilot with PVC-mounted output data.
 # Pipeline: sage (evaluate) -> s3push (upload results).
 # Results are staged on a PVC mounted at /gb-data via cluster-level pod_config.
-# To use Skypilot_managed, change environment_uri to space://environments/skypilot-managed
+# To use Skypilot_managed, change environment_uri to space://environments/skypilot-managed/kubernetes
 ######
 granite.build:
   name: sage

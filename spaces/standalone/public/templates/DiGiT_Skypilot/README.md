@@ -45,7 +45,7 @@ variables:
 To use SkyPilot managed mode instead of unmanaged, edit `build.yaml` and change:
 
 ```yaml
-environment_uri: space://environments/skypilot-managed
+environment_uri: space://environments/skypilot-managed/kubernetes
 ```
 
 ## Running

@@ -315,7 +315,7 @@ Two build templates are available, each supporting two SkyPilot execution modes:
 Both templates default to **unmanaged** SkyPilot mode (`space://environments/skypilot/kubernetes`). To switch to **managed** mode, edit the template's `build.yaml` and change:
 
 ```yaml
-environment_uri: space://environments/skypilot-managed
+environment_uri: space://environments/skypilot-managed/kubernetes
 ```
 
 ### Quick Start
@@ -341,7 +341,7 @@ See each template's README for full prerequisites and configuration.
 Managed mode submits jobs to a persistent SkyPilot API server instead of launching pods directly. To use it:
 
 1. Set `SKYPILOT_MANAGED_ENABLED=true` in your `.env.skypilot` and re-run the setup script
-2. Edit the template's `build.yaml`: change `environment_uri` to `space://environments/skypilot-managed`
+2. Edit the template's `build.yaml`: change `environment_uri` to `space://environments/skypilot-managed/kubernetes`
 3. Launch the build as normal — gbserver routes it through the API server
 
 ## GPU Setup (Optional)
