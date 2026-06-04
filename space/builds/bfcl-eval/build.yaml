@@ -1,0 +1,32 @@
+granite.build:
+  name: bfcl-eval
+  targets:
+    bfcl-evaluation:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        bfcl_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/$${EVAL_NAME}"
+      steps:
+        - step_uri: space://steps/bfcl-eval
+          config:
+            bfcl_config:
+              model_path: "$${MODEL_PATH}"
+              model_id: "$${MODEL_ID}"
+              experiment: "$${EXPERIMENT}"
+              eval_name: "$${EVAL_NAME}"
+              test_categories: "$${TEST_CATEGORIES}"
+              num_gpus_generate: $${NUM_GPUS_GENERATE}
+              num_gpus_evaluate: $${NUM_GPUS_EVALUATE}
+              gpu_memory_utilization: "$${GPU_MEMORY_UTILIZATION}"
+              output_dir: "$${OUTPUT_DIR}"
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
