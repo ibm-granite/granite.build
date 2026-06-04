@@ -15,7 +15,10 @@ from tqdm import tqdm
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
-from gbcli.commands.common_options import common_options
+from gbcli.commands.common_options import (
+    common_options,
+    pass_context_and_reject_standalone,
+)
 from gbcli.utils.click_utils import validation_formatting
 from gbcli.utils.gbconstants import (
     ASSETS_REPO_NAME,
@@ -266,6 +269,17 @@ def init(
     if not from_template and not from_build:
         click.echo(
             f"❌ Error: Please specify a template with --from-template option or a build with --from-build.",
+            err=True,
+        )
+        ctx.exit(1)  # Exit with a non-zero status
+
+    if from_template and is_standalone():
+        # --from-template clones the template from GitHub Enterprise, which is
+        # unavailable in standalone mode. Use --from-build instead.
+        click.echo(
+            "❌ Error: 'build init --from-template' is currently not supported in "
+            "standalone mode (templates are fetched from GitHub). Use --from-build "
+            "instead.",
             err=True,
         )
         ctx.exit(1)  # Exit with a non-zero status
@@ -1057,7 +1071,7 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
 
 
 @cli.command()
-@click.pass_context
+@pass_context_and_reject_standalone("build lineage")
 @click.argument("build_id", required=True)
 @click.option(
     "--format",
@@ -2724,7 +2738,7 @@ def monitor(ctx, build_id, show_events, fetch_pr, skip_version_check, quiet):
 
 
 @cli.command()
-@click.pass_context
+@pass_context_and_reject_standalone("build notification")
 @click.argument("status", nargs=-1)
 @click.option("--space", help="Space name.")
 @click.option(

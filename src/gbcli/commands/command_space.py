@@ -8,11 +8,15 @@ from tqdm import tqdm
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.commands.common_options import common_options
+from gbcli.commands.common_options import (
+    common_options,
+    pass_context_and_reject_standalone,
+)
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME, SPACE_LIST_HEADERS
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.spaceutil import get_spaces
 from gbcli.utils.versionutil import check_current_and_latest_versions
+from gbcommon.types.gbenvconfig import is_standalone
 
 
 @click.group("space")
@@ -57,6 +61,18 @@ def list(
     if refresh and not all:
         click.echo(
             f"❌ Try running again with 'llmb space list --all --refresh", err=True
+        )
+        ctx.exit(1)  # Exit with a non-zero status
+
+    if refresh and is_standalone():
+        # In standalone mode spaces are always fetched fresh from the local gbserver,
+        # and the local cache/profile that --refresh repopulates is never used (it would
+        # also corrupt ~/.gbcli/config because the standalone config has no spaces
+        # section). Block the flag with a clear message instead.
+        click.echo(
+            "❌ Error: '--refresh' is currently not supported in standalone mode "
+            "(spaces are always fetched fresh from the local gbserver).",
+            err=True,
         )
         ctx.exit(1)  # Exit with a non-zero status
 
@@ -143,7 +159,7 @@ def list(
 
 
 @cli.command()
-@click.pass_context
+@pass_context_and_reject_standalone("space set")
 @click.argument("space_name", required=True)
 @click.option(
     "--default",

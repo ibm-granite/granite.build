@@ -13,7 +13,10 @@ from tqdm import tqdm
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
-from gbcli.commands.common_options import common_options
+from gbcli.commands.common_options import (
+    common_options,
+    pass_context_and_reject_standalone,
+)
 from gbcli.services.service_artifact import (
     ArtifactURIError,
     lookup_hf_resource_group_id,
@@ -65,11 +68,10 @@ logger = logging.getLogger(__name__)
 
 
 @click.group("artifact")
-@click.pass_context
+@pass_context_and_reject_standalone
 def cli(ctx):
     """Work with artifacts"""
     ctx.ensure_object(dict)  # Ensures `ctx.obj` is a dictionary
-    pass
 
 
 @cli.command()
