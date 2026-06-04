@@ -57,14 +57,14 @@ Runs DiGiT synthetic data generation on SkyPilot using a PersistentVolumeClaim (
    - `/gb-data/inputs/digit/seeds.jsonl`
    - `/gb-data/inputs/digit/documents/*.md`
 
-4. **S3 URI variables in `space/space.yaml`** — Set `S3_DIGIT_INPUT_URI` and `S3_DIGIT_OUTPUT_URI` to your bucket paths.
+4. **S3 URI variables in `spaces/standalone/public/space.yaml`** — Set `S3_DIGIT_INPUT_URI` and `S3_DIGIT_OUTPUT_URI` to your bucket paths.
 
 ## Usage
 
 ```bash
-gbserver standalone --space-dir space/ &
-gbserver build run-and-monitor assets/templates/DiGiT_Skypilot_PVC \
-  --space-name standalone
+gbserver standalone --space-dir spaces/standalone/public &
+gbserver build run-and-monitor spaces/standalone/public/templates/DiGiT_Skypilot_PVC \
+  --space-name public
 ```
 
 ## Switching to Skypilot_managed

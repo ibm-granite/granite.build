@@ -10,3 +10,8 @@ base_uris:
   # Pull assetstores + environments from the shared primitives space.
   # Relative paths resolve against this space.yaml's directory.
   - file://../../shared
+variables:
+  DEFAULT_ENVIRONMENT: skypilot
+  S3_DIGIT_INPUT_URI: "s3://<your-bucket>/digit/input"
+  S3_DIGIT_OUTPUT_URI: "s3://<your-bucket>/digit/output"
+  S3_SAGE_OUTPUT_URI: "s3://<your-bucket>/sage/output"

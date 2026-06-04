@@ -35,7 +35,7 @@ This build template runs a Sage LLM evaluation on a SkyPilot environment. Evalua
 
 ## Configuration
 
-Edit `space/space.yaml` to set your S3 output URI:
+Edit `spaces/standalone/public/space.yaml` to set your S3 output URI:
 
 ```yaml
 variables:
@@ -53,9 +53,9 @@ environment_uri: space://environments/skypilot-managed
 ## Running
 
 ```bash
-gbserver standalone --space-dir space/ &
-gbserver build run-and-monitor assets/templates/Sage_Skypilot \
-  --space-name standalone
+gbserver standalone --space-dir spaces/standalone/public &
+gbserver build run-and-monitor spaces/standalone/public/templates/Sage_Skypilot \
+  --space-name public
 ```
 
 ## Setup Reference

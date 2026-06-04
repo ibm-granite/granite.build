@@ -309,8 +309,8 @@ Two build templates are available, each supporting two SkyPilot execution modes:
 
 | Template | Data Strategy | Best For | Details |
 |----------|--------------|----------|---------|
-| [DiGiT_Skypilot](../../assets/templates/DiGiT_Skypilot/) | S3 file_mounts | Simple setup, single-step builds | Mounts S3/COS bucket directly into the pod |
-| [DiGiT_Skypilot_PVC](../../assets/templates/DiGiT_Skypilot_PVC/) | PVC shared volume | Multi-step pipelines (download → generate → upload) | Data persists on a PVC between steps |
+| [DiGiT_Skypilot](../../../spaces/standalone/public/templates/DiGiT_Skypilot/) | S3 file_mounts | Simple setup, single-step builds | Mounts S3/COS bucket directly into the pod |
+| [DiGiT_Skypilot_PVC](../../../spaces/standalone/public/templates/DiGiT_Skypilot_PVC/) | PVC shared volume | Multi-step pipelines (download → generate → upload) | Data persists on a PVC between steps |
 
 Both templates default to **unmanaged** SkyPilot mode (`space://environments/skypilot`). To switch to **managed** mode, edit the template's `build.yaml` and change:
 
@@ -321,7 +321,7 @@ environment_uri: space://environments/skypilot-managed
 ### Quick Start
 
 1. Complete [Configure SkyPilot (Automated)](#configure-skypilot-automated) above
-2. Set S3 bucket URIs in `space/space.yaml`:
+2. Set S3 bucket URIs in `spaces/standalone/public/space.yaml`:
    ```yaml
    variables:
      S3_DIGIT_INPUT_URI: "s3://your-bucket/digit/input"
@@ -329,9 +329,9 @@ environment_uri: space://environments/skypilot-managed
    ```
 3. Launch a build:
    ```bash
-   gbserver standalone --space-dir space/ &
-   gbserver build run-and-monitor assets/templates/DiGiT_Skypilot \
-     --space-name standalone
+   gbserver standalone --space-dir spaces/standalone/public &
+   gbserver build run-and-monitor spaces/standalone/public/templates/DiGiT_Skypilot \
+     --space-name public
    ```
 
 See each template's README for full prerequisites and configuration.
@@ -485,7 +485,7 @@ If automatic labeling fails or doesn't apply all labels:
 | **Setup Script Fails** | Error during `setup-skypilot.sh` | Ensure `kubectl` is configured and cluster is reachable. Check that required env vars are set: `source .env.skypilot && env \| grep -E 'SKYPILOT\|IMAGE_PULL\|S3_\|RITS\|PVC'` |
 | **Sky Config Not Generated** | `~/.sky/config.yaml` missing after script | Check Python 3 is available: `python3 --version`. Check script output for `[ERROR]` lines. Ensure PyYAML is installed: `python3 -c "import yaml"` |
 | **S3 Input Validation Fails** | Error: "input URI ... doesn't exist" with s3:// URIs | Known limitation: `CosURI.exists()` is not yet implemented and always returns False. Remove `inputs`/`outputs` blocks with s3:// URIs from build.yaml — data is accessed via `file_mounts` or step config instead |
-| **Stale Space Registration** | Build uses wrong space directory or old config | Delete the old space from SQLite: `sqlite3 ~/.llmb/llmb-server.db "DELETE FROM gb_spaces WHERE name='standalone';"` then restart `gbserver standalone` |
+| **Stale Space Registration** | Build uses wrong space directory or old config | Delete the old space from SQLite: `sqlite3 ~/.llmb/llmb-server.db "DELETE FROM gb_spaces WHERE name='public';"` then restart `gbserver standalone` |
 
 ## Additional Resources
 

@@ -152,7 +152,7 @@ For the full schema, see [`docs/users/build-yaml-reference.md`](docs/users/build
 | `docs/` | User, operator, and contributor docs — start at [`docs/README.md`](docs/README.md). |
 | `samples/` | Sample build configs, environments, and steps. The [`standalone-quickstart`](samples/standalone/standalone-quickstart/) is the canonical first build. |
 | `examples/` | Worked examples for specific scenarios. |
-| `assets/` | Reusable templates referenced from builds. |
+| `spaces/` | Space configurations consumed by builds. [`spaces/shared/`](spaces/shared/) holds reusable assetstores, environments, and steps; [`spaces/standalone/public/`](spaces/standalone/public/) is the user-facing space for `GB_ENVIRONMENT=STANDALONE` and ships the build templates. |
 | `test/` | Test suites for all components. |
 | `scripts/` | Helper scripts including the standalone and SLURM demos. |
 | `k8s/` | Helm charts for production Kubernetes deployment. |

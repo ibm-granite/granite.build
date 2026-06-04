@@ -95,7 +95,7 @@ export GBSERVER_SECRET_API_KEY="sk-prod-api-key-67890"
 export GBSERVER_SECRET_DB_PASSWORD="test-db-password"
 
 # Run build - will use env overrides + local defaults
-gbserver build --space hybrid-secrets-example
+gbserver build run --space-name hybrid-secrets-example <BUILD_DIR>
 ```
 
 ### Example Scenarios
@@ -106,7 +106,7 @@ gbserver build --space hybrid-secrets-example
 # No environment variables set
 # All secrets come from ~/.gbserver/secrets/
 
-gbserver build --space hybrid-secrets-example
+gbserver build run --space-name hybrid-secrets-example <BUILD_DIR>
 # Uses: api_key from file, db_password from file
 ```
 
@@ -116,7 +116,7 @@ gbserver build --space hybrid-secrets-example
 # Override just the API key for testing
 export GBSERVER_SECRET_API_KEY="sk-test-api-key"
 
-gbserver build --space hybrid-secrets-example
+gbserver build run --space-name hybrid-secrets-example <BUILD_DIR>
 # Uses: api_key from env (override), db_password from file (default)
 ```
 
@@ -128,7 +128,7 @@ export GBSERVER_SECRET_API_KEY="sk-ci-key"
 export GBSERVER_SECRET_DB_PASSWORD="ci-password"
 export GBSERVER_SECRET_GITHUB_TOKEN="ghp_ci_token"
 
-gbserver build --space hybrid-secrets-example
+gbserver build run --space-name hybrid-secrets-example <BUILD_DIR>
 # Uses: all secrets from env (CI/CD values)
 ```
 
@@ -154,11 +154,11 @@ Maintain default secrets in local files, but override for production testing:
 
 ```bash
 # Local development uses file defaults
-gbserver build --space hybrid-secrets-example
+gbserver build run --space-name hybrid-secrets-example <BUILD_DIR>
 
 # Production testing uses env overrides
 export GBSERVER_SECRET_API_KEY="prod-key"
-gbserver build --space hybrid-secrets-example
+gbserver build run --space-name hybrid-secrets-example <BUILD_DIR>
 ```
 
 ### 2. Team Secret Sharing
@@ -192,7 +192,7 @@ jobs:
         env:
           GBSERVER_SECRET_API_KEY: ${{ secrets.API_KEY }}
           GBSERVER_SECRET_DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-        run: gbserver build --space hybrid-secrets-example
+        run: gbserver build run --space-name hybrid-secrets-example <BUILD_DIR>
 ```
 
 ```bash
@@ -202,7 +202,7 @@ echo "local-dev-key" > ~/.gbserver/secrets/api_key
 echo "local-dev-pass" > ~/.gbserver/secrets/db_password
 
 # Same command works locally
-gbserver build --space hybrid-secrets-example
+gbserver build run --space-name hybrid-secrets-example <BUILD_DIR>
 ```
 
 ### 4. Per-Environment Configuration
@@ -319,7 +319,7 @@ secrets/
 export GBSERVER_SECRET_API_KEY="new-rotated-key"
 
 # 2. Test with new key
-gbserver build --space hybrid-secrets-example
+gbserver build run --space-name hybrid-secrets-example <BUILD_DIR>
 
 # 3. Update local file after validation
 echo "new-rotated-key" > ~/.gbserver/secrets/api_key
