@@ -184,8 +184,9 @@ def _run_standalone(
         stored_space.uuid = existing.uuid
         storage.space_storage.update(stored_space, create_if_not_exist=False)
         logger.info(
-            "Updated 'standalone' space (uuid=%s) to new URI %s",
+            "Updated 'standalone' space (uuid=%s) from %s to %s",
             existing.uuid,
+            existing.git_repo_uri,
             space_uri,
         )
 
