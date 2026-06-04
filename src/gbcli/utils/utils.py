@@ -207,11 +207,12 @@ def generate_unique_id():
 
 def humanize_iso_date(date: str) -> str:
     format = "%Y-%m-%dT%H:%M:%S.%f%z" if "." in date else "%Y-%m-%dT%H:%M:%SZ"
-    time_interval = datetime.now(timezone.utc).replace(tzinfo=None) - datetime.strptime(
-        date, format
-    ).replace(tzinfo=None)
+    parsed = datetime.strptime(date, format)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    time_interval = datetime.now(timezone.utc) - parsed
     if time_interval.days > 1:
-        return humanize.naturaldate(datetime.strptime(date, format))
+        return humanize.naturaldate(parsed)
     else:
         return humanize.naturaltime(time_interval)
 
