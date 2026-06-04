@@ -312,7 +312,7 @@ Two build templates are available, each supporting two SkyPilot execution modes:
 | [DiGiT_Skypilot](../../../spaces/standalone/public/templates/DiGiT_Skypilot/) | S3 file_mounts | Simple setup, single-step builds | Mounts S3/COS bucket directly into the pod |
 | [DiGiT_Skypilot_PVC](../../../spaces/standalone/public/templates/DiGiT_Skypilot_PVC/) | PVC shared volume | Multi-step pipelines (download → generate → upload) | Data persists on a PVC between steps |
 
-Both templates default to **unmanaged** SkyPilot mode (`space://environments/skypilot`). To switch to **managed** mode, edit the template's `build.yaml` and change:
+Both templates default to **unmanaged** SkyPilot mode (`space://environments/sky-kube`). To switch to **managed** mode, edit the template's `build.yaml` and change:
 
 ```yaml
 environment_uri: space://environments/skypilot-managed

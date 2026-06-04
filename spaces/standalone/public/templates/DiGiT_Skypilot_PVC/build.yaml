@@ -8,7 +8,7 @@ granite.build:
   name: digit
   targets:
     download_input:
-      environment_uri: space://environments/skypilot
+      environment_uri: space://environments/sky-kube
       # NOTE: outputs with s3:// URIs are omitted because CosURI.exists()
       # is not yet implemented (always returns False), causing validation to fail.
       steps:
@@ -20,7 +20,7 @@ granite.build:
               endpoint_url: ""  # leave empty for default AWS endpoint; set for COS/MinIO
 
     syntheticdatageneration:
-      environment_uri: space://environments/skypilot
+      environment_uri: space://environments/sky-kube
       steps:
         - step_uri: space://steps/digit
           config:
@@ -67,7 +67,7 @@ granite.build:
                       maximo_docs: /gb-data/inputs/digit/documents/*.md
 
     upload_output:
-      environment_uri: space://environments/skypilot
+      environment_uri: space://environments/sky-kube
       steps:
         - step_uri: space://steps/s3push
           config:
