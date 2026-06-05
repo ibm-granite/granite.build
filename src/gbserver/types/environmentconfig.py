@@ -18,9 +18,9 @@
 The environment type.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from gbserver.types.config import Config
 
@@ -44,9 +44,33 @@ class AssetStoreEnvironmentConfig(Config):
 
 
 class EnvironmentConfig(Config):
-    """The environment.yaml file."""
+    """The environment.yaml file.
+
+    Attributes:
+        name: The user-facing name of the environment.
+        type: The environment class identifier (e.g. ``Skypilot``, ``K8s``).
+        step_type: Optional ordered fallback chain identifying which step
+            implementations apply to this environment.  May be a single string
+            (single-tier match) or a list of strings (most-preferred first).
+            When omitted or empty, step resolution skips step_type-narrowing
+            and falls straight through to the env-agnostic ``steps/<name>/``
+            location.  See ``Environment.step_type_chain`` for the normalized
+            list view used by the resolver.
+        config: Free-form environment-class-specific config block.
+        assetstores: Per-environment assetstore mappings.
+    """
 
     name: str
     type: str
+    step_type: Optional[Union[str, List[str]]] = None
     config: Dict = Field(default_factory=dict)
     assetstores: List[AssetStoreEnvironmentConfig] = Field(default_factory=list)
+
+    @field_validator("step_type", mode="before")
+    @classmethod
+    def _coerce_empty_step_type(cls, v):
+        """Treat the empty-string form ``step_type: ""`` as if the field were
+        absent so callers can rely on a None/empty distinction."""
+        if v == "" or v == []:
+            return None
+        return v

@@ -1,7 +1,9 @@
 """Tests for the canonical in-repo space configuration files.
 
-Validates the structure of `spaces/shared/` (the leaf primitives space) and
-`spaces/standalone/public/` (the user-facing standalone space).
+Validates the structure of `configurations/assets/` (the leaf primitives
+directory referenced via base_uris) and
+`configurations/spaces/standalone/public/` (the user-facing standalone space
+consumed by `gbserver standalone` and the build tests).
 """
 
 import pathlib
@@ -9,37 +11,33 @@ import pathlib
 import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
-SPACES_DIR = REPO_ROOT / "spaces"
-SHARED_DIR = SPACES_DIR / "shared"
-STANDALONE_PUBLIC_DIR = SPACES_DIR / "standalone" / "public"
+CONFIGURATIONS_DIR = REPO_ROOT / "configurations"
+ASSETS_DIR = CONFIGURATIONS_DIR / "assets"
+STANDALONE_PUBLIC_DIR = CONFIGURATIONS_DIR / "spaces" / "standalone" / "public"
 
 
-class TestSharedSpaceYaml:
-    """Validate spaces/shared/space.yaml — the leaf primitives space referenced
-    via base_uris from other spaces."""
+class TestAssetsLayout:
+    """Validate the configurations/assets/ tree — referenced via base_uris from
+    spaces.  No space.yaml lives here; this is purely the primitives target."""
 
-    def test_file_exists(self):
-        assert (SHARED_DIR / "space.yaml").exists()
+    def test_assetstores_dir_exists(self):
+        assert (ASSETS_DIR / "assetstores").is_dir()
 
-    def test_yaml_loads(self):
-        with open(SHARED_DIR / "space.yaml") as f:
-            data = yaml.safe_load(f)
-        assert isinstance(data, dict)
+    def test_environments_dir_exists(self):
+        assert (ASSETS_DIR / "environments").is_dir()
 
-    def test_name(self):
-        with open(SHARED_DIR / "space.yaml") as f:
-            data = yaml.safe_load(f)
-        assert data["name"] == "shared"
+    def test_steps_dir_exists(self):
+        assert (ASSETS_DIR / "steps").is_dir()
 
-    def test_secret_manager(self):
-        with open(SHARED_DIR / "space.yaml") as f:
-            data = yaml.safe_load(f)
-        assert data["secret_manager"]["type"] == "env"
+    def test_no_space_yaml_at_root(self):
+        # assets/ is a base_uris target, not a space — there should be no
+        # space.yaml claiming this directory as a standalone space.
+        assert not (ASSETS_DIR / "space.yaml").exists()
 
 
 class TestStandalonePublicSpaceYaml:
-    """Validate spaces/standalone/public/space.yaml — the user-facing space
-    consumed by `gbserver standalone` and the build tests."""
+    """Validate configurations/spaces/standalone/public/space.yaml — the
+    user-facing space consumed by `gbserver standalone` and the build tests."""
 
     def test_file_exists(self):
         assert (STANDALONE_PUBLIC_DIR / "space.yaml").exists()
@@ -54,10 +52,10 @@ class TestStandalonePublicSpaceYaml:
             data = yaml.safe_load(f)
         assert data["name"] == "public"
 
-    def test_base_uris_reference_shared(self):
+    def test_base_uris_reference_assets(self):
         with open(STANDALONE_PUBLIC_DIR / "space.yaml") as f:
             data = yaml.safe_load(f)
-        assert any("shared" in uri for uri in data["base_uris"])
+        assert any("assets" in uri for uri in data["base_uris"])
 
     def test_secret_manager(self):
         with open(STANDALONE_PUBLIC_DIR / "space.yaml") as f:
@@ -71,10 +69,10 @@ class TestStandalonePublicSpaceYaml:
 
 
 class TestSkyKubeEnvironmentYaml:
-    """Validate spaces/shared/environments/skypilot/kubernetes/environment.yaml."""
+    """Validate configurations/assets/environments/skypilot/kubernetes/environment.yaml."""
 
     ENV_PATH = (
-        SHARED_DIR / "environments" / "skypilot" / "kubernetes" / "environment.yaml"
+        ASSETS_DIR / "environments" / "skypilot" / "kubernetes" / "environment.yaml"
     )
 
     def test_file_exists(self):
@@ -105,10 +103,10 @@ class TestSkyKubeEnvironmentYaml:
 
 
 class TestSkypilotManagedEnvironmentYaml:
-    """Validate spaces/shared/environments/skypilot-managed/kubernetes/environment.yaml."""
+    """Validate configurations/assets/environments/skypilot-managed/kubernetes/environment.yaml."""
 
     ENV_PATH = (
-        SHARED_DIR
+        ASSETS_DIR
         / "environments"
         / "skypilot-managed"
         / "kubernetes"

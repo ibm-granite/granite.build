@@ -40,9 +40,7 @@ logger = get_logger(__name__)
 SPACE_YAML = "space.yaml"
 
 
-def _resolve_base_uris(
-    base_uris: List[str], space_uri: str
-) -> List[str]:
+def _resolve_base_uris(base_uris: List[str], space_uri: str) -> List[str]:
     """Resolve relative file:// base_uris against the space's source directory.
 
     Absolute URIs (any scheme, including file:///abs/path) pass through

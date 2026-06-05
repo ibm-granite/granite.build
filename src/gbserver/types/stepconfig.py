@@ -147,6 +147,11 @@ class StepConfig(Config):
 
     name: str = ""
     type: str = "custom"
+    # Optional: identifies which env step_type pool this step belongs to.  When
+    # set, the step is intended for environments whose ``step_type`` chain
+    # contains this value; mismatches are flagged at TargetStep load time.
+    # When omitted, the step is treated as env-agnostic.
+    step_type: Optional[str] = None
     is_dry_run_compatible: bool = False
     inputs: StepIOConfig = StepIOConfig()
     outputs: StepIOConfig = StepIOConfig()

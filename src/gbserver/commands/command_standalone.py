@@ -258,12 +258,12 @@ def _run_standalone(
 )
 @click.option(
     "--space-dir",
-    default="spaces/standalone/public",
+    default="configurations/spaces/standalone/public",
     show_default=True,
     type=click.Path(exists=True, file_okay=False, dir_okay=True),
     help="Path to the space directory.  Defaults to the in-repo standalone "
-    "space at spaces/standalone/public; override to point at any directory "
-    "containing a space.yaml.",
+    "space at configurations/spaces/standalone/public; override to point at "
+    "any directory containing a space.yaml.",
 )
 @pass_environment
 def cli(ctx: CliEnvironment, port: int, host: str, space_dir: str):

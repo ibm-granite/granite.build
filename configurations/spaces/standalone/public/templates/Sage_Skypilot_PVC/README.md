@@ -60,13 +60,13 @@ Runs a Sage LLM evaluation on SkyPilot using a PersistentVolumeClaim (PVC) for o
                      key: endpoint-url
    ```
 
-4. **S3 URI variables in `spaces/standalone/public/space.yaml`** — Set `S3_SAGE_OUTPUT_URI` to your bucket path.
+4. **S3 URI variables in `configurations/spaces/standalone/public/space.yaml`** — Set `S3_SAGE_OUTPUT_URI` to your bucket path.
 
 ## Usage
 
 ```bash
-gbserver standalone --space-dir spaces/standalone/public &
-gbserver build run-and-monitor spaces/standalone/public/templates/Sage_Skypilot_PVC \
+gbserver standalone --space-dir configurations/spaces/standalone/public &
+gbserver build run-and-monitor configurations/spaces/standalone/public/templates/Sage_Skypilot_PVC \
   --space-name public
 ```
 

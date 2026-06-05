@@ -18,6 +18,8 @@ The `config` section of `step.yaml` also carries per-environment fields (`lsf`, 
 ```yaml
 name: <string>          # Human-readable name (informational)
 type: <string>          # Environment class to instantiate: K8s, Lsf, Bash, Docker, Skypilot, etc.
+step_type: <string|list> # Optional. Identifies which step pool(s) this environment draws from.
+                        # See "step_type: routing steps to environments" below.
 config:                 # Environment-type-specific config (see sections below)
   ...
 assetstores:            # Asset stores accessible from this environment
@@ -29,6 +31,55 @@ assetstores:            # Asset stores accessible from this environment
       - mode: <mode>
         config: {}
 ```
+
+---
+
+### `step_type`: routing steps to environments
+
+`step_type` is an optional field on `environment.yaml` (and a peer optional field on `step.yaml`) that lets you organize step implementations into directories under `steps/<step_type>/<name>/` and have the resolver pick the right impl based on which environment is running the target.
+
+**On `environment.yaml`** — declares the step_type pool(s) this env consumes from. Single string or ordered list (most-preferred first):
+
+```yaml
+# single step_type
+type: K8s
+step_type: helm
+
+# ordered fallback chain — tried most-specific first
+type: Skypilot
+step_type: [skypilot-kubernetes, helm, skypilot]
+config:
+  default_cloud: kubernetes
+```
+
+When `step_type` is omitted (or set to `""` / `[]`), the env opts out of step_type-narrowing and `space://steps/<name>` resolves via the existing env-agnostic `steps/<name>/` path.
+
+**On `step.yaml`** — declares which pool the step belongs to. Used for validation only:
+
+```yaml
+name: digit
+version: 1.0.0
+type: custom
+step_type: helm        # this step is intended for envs whose step_type chain contains "helm"
+```
+
+Steps without a `step_type` field are env-agnostic — they apply to any env regardless of its step_type.
+
+**Resolution order**
+
+For `space://steps/<name>` and an env with `step_type: [skypilot-kubernetes, helm, skypilot]`:
+
+1. `steps/skypilot-kubernetes/<name>/step.yaml` — most-preferred step_type-specific impl
+2. `steps/helm/<name>/step.yaml` — same step pool also consumed by plain K8s envs (if their `step_type` is `helm`)
+3. `steps/skypilot/<name>/step.yaml` — generic Skypilot impl
+4. `steps/<name>/step.yaml` — env-agnostic fallback (existing convention)
+5. unresolvable → `ValueError`
+
+The intermediate `helm` tier is the typical reason to use a chain: a single `steps/helm/<name>/` impl can serve both plain K8s and Skypilot-on-Kubernetes when each env declares `helm` in its chain, eliminating duplication.
+
+**Backward compatibility**
+
+If neither the env nor the step declares `step_type`, behavior is identical to today — the resolver lands at `steps/<name>/`.
 
 ---
 

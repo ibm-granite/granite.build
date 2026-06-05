@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional, Self
 
 import yaml
 
+from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
 from gbserver.build.buildentity import BuildEntity
 from gbserver.build.step import STEP_FILE_NAME, Step
@@ -116,18 +117,23 @@ class TargetStep(BuildEntity):
         self.validator_map = {}
         self.monitors = {}
         self.parent_target_config = parent_target_config
-        self.step = Step(
-            stepuri=targetstep.step_uri, context=context, force_fetch=force_fetch  # type: ignore[arg-type]
-        )
-        self.step_uri = targetstep.step_uri
-        self.target_name = target_name
-        self.target_step_index = target_step_index
-        self.environment = environment
-        targetstep_dir = target_dir / os.path.basename(self.step.dir) / random_string()  # type: ignore[arg-type]
-        self.context = context
-        sync_or_copy(str(self.step.dir) + "/", targetstep_dir)
-        merge_config_dirs(self.step.dir, targetstep.config_dir, targetstep_dir)  # type: ignore[arg-type]
-        self.step = Step(str(targetstep_dir))
+        # Scope the active env's step_type chain on SpaceURI so that any
+        # `space://steps/...` URIs resolved during step assimilation pick the
+        # most-preferred env-specific impl with fallback to env-agnostic.
+        with SpaceURI.with_current_env_step_types(environment.step_type_chain):
+            self.step = Step(
+                stepuri=targetstep.step_uri, context=context, force_fetch=force_fetch  # type: ignore[arg-type]
+            )
+            self.step_uri = targetstep.step_uri
+            self.target_name = target_name
+            self.target_step_index = target_step_index
+            self.environment = environment
+            self._validate_step_type_against_environment()
+            targetstep_dir = target_dir / os.path.basename(self.step.dir) / random_string()  # type: ignore[arg-type]
+            self.context = context
+            sync_or_copy(str(self.step.dir) + "/", targetstep_dir)
+            merge_config_dirs(self.step.dir, targetstep.config_dir, targetstep_dir)  # type: ignore[arg-type]
+            self.step = Step(str(targetstep_dir))
         super().__init__(
             build_id=build_id,
             event_q=event_q,
@@ -139,6 +145,32 @@ class TargetStep(BuildEntity):
             force_fetch=force_fetch,
             **kwargs,
         )
+
+    def _validate_step_type_against_environment(self: Self) -> None:
+        """Warn when a loaded step.yaml's ``step_type`` field disagrees with the
+        active environment's ``step_type`` chain.
+
+        A step that declares a step_type is asserting it's intended for envs
+        whose chain contains that value; loading it under an env that does not
+        list that step_type is almost certainly a misconfiguration.  Steps with
+        no ``step_type`` field are env-agnostic and accepted unconditionally.
+        """
+        step_config = getattr(self.step, "config", None)
+        if step_config is None:
+            return
+        declared_step_type = getattr(step_config, "step_type", None)
+        if not declared_step_type:
+            return
+        env_chain = self.environment.step_type_chain
+        if declared_step_type not in env_chain:
+            logger.warning(
+                "step %s declares step_type=%r but env %s has step_type chain %s; "
+                "this is likely a misconfiguration",
+                self.step_uri,
+                declared_step_type,
+                getattr(self.environment, "type", "?"),
+                env_chain,
+            )
 
     def __get_validator_context(self: Self) -> dict:
         step_dir = self.step.step_yaml_path.parent

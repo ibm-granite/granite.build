@@ -269,6 +269,7 @@ class Environment(ABC):
             {}
         )  # stop events to exit monitoring, one per launch_id
         self.asset_bindings: Dict[str, Dict] = {}
+        self.step_type_chain: List[str] = self._compute_step_type_chain()
         self.tasks: List[Task] = []
         self.launch_tasks: List[Task] = []
         self.monitor_tasks: List[Task] = []
@@ -283,6 +284,28 @@ class Environment(ABC):
         self.pushasset_types = self._get_fns_with_prefix(prefix="pushasset_")
         self.supported_assetstores: Dict[Assetstore, AssetStoreEnvironmentConfig] = {}
         self._load_assetstores()
+
+    def _compute_step_type_chain(self: Self) -> List[str]:
+        """Return the normalized step_type chain for this environment.
+
+        Reads ``EnvironmentConfig.step_type`` (which may be a string or a list)
+        and produces an ordered list of step_type strings used by the SpaceURI
+        resolver to narrow ``space://steps/<name>`` lookups.  Returns an empty
+        list when the env config is missing or the field is unset, so callers
+        can treat ``not env.step_type_chain`` as "no step_type filtering".
+
+        Returns:
+            Ordered list of step_type strings, most-preferred first.  Empty
+            list when the env opts out of step_type-narrowing.
+        """
+        if self.config is None:
+            return []
+        value = getattr(self.config, "step_type", None)
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return list(value)
 
     async def retry_workload(
         self: Self,
