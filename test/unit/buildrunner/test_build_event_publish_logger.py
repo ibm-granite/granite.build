@@ -196,6 +196,10 @@ class TestGetMessageLoggerIntegration:
                 "gbserver.messaging.build_event_publisher.BuildEventPublisher.is_configured",
                 return_value=True,
             ),
+            patch(
+                "gbserver.messaging.build_event_publisher.BuildEventPublisher.from_env",
+                return_value=AsyncMock(),
+            ),
             patch("gbserver.buildrunner.buildlogger.singleton_storage") as mock_storage,
         ):
             mock_storage.get_admin_storage.return_value.event_storage = MagicMock()
