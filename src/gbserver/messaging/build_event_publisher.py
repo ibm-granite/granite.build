@@ -143,7 +143,7 @@ class BuildEventPublisher:
         payload: Dict[str, Any] = {
             "build_id": event.run_metadata.build_id or "unknown",
             "event_type": event.type.value,
-            "timestamp": event.timestamp.isoformat(),
+            "timestamp": int(event.timestamp.timestamp()),
             "target_name": event.run_metadata.target_name or "",
             "step_name": event.run_metadata.targetstep_uri or "",
             "source": event.source,

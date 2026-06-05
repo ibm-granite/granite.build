@@ -109,20 +109,20 @@ class RabbitMQAdmin:
         Returns
         -------
         dict
-            {"username": str, "password": str, "expires_at": str (ISO8601)}
+            {"username": str, "password": str, "expires_at": int (epoch seconds)}
         """
         suffix = self._random_string(6)
         username = f"tmp-build-{build_id[:8]}-{suffix}"
         password = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
-        expires_iso = expires_at.isoformat()
+        expires_epoch = int(expires_at.timestamp())
 
         async with httpx.AsyncClient(auth=self._auth()) as client:
             # 1. Create user
             user_url = f"{self.management_url}/api/users/{username}"
             user_body = {
                 "password": password,
-                "tags": f"tmp-build,expires:{expires_iso}",
+                "tags": f"tmp-build,expires:{expires_epoch}",
             }
             resp = await client.put(user_url, json=user_body)
             if resp.status_code not in (201, 204):
@@ -130,7 +130,9 @@ class RabbitMQAdmin:
                     f"Failed to create user {username}: "
                     f"{resp.status_code} {resp.text}"
                 )
-            logger.info("Created RabbitMQ user %s (expires %s)", username, expires_iso)
+            logger.info(
+                "Created RabbitMQ user %s (expires %s)", username, expires_epoch
+            )
 
             # 2. Set queue permissions (read-only, scoped to build)
             perm_url = (
@@ -175,7 +177,7 @@ class RabbitMQAdmin:
         return {
             "username": username,
             "password": password,
-            "expires_at": expires_iso,
+            "expires_at": expires_epoch,
         }
 
     async def cleanup_expired_users(self) -> int:
@@ -208,7 +210,7 @@ class RabbitMQAdmin:
                 if "tmp-build" not in tags:
                     continue
 
-                # Parse expiry from tags (format: "tmp-build,expires:2026-06-02T12:00:00+00:00")
+                # Parse expiry from tags (format: "tmp-build,expires:1748870400")
                 expires_at = self._parse_expiry_from_tags(tags)
                 if expires_at is None:
                     logger.warning(
@@ -261,14 +263,14 @@ class RabbitMQAdmin:
         """
         Extract the expiry datetime from a user's tags string.
 
-        Tags format example: "tmp-build,expires:2026-06-02T12:00:00+00:00"
+        Tags format example: "tmp-build,expires:1748870400"
         """
         for part in tags.split(","):
             part = part.strip()
             if part.startswith("expires:"):
-                iso_str = part[len("expires:"):]
+                value = part[len("expires:") :]
                 try:
-                    return datetime.fromisoformat(iso_str)
-                except ValueError:
+                    return datetime.fromtimestamp(int(value), tz=timezone.utc)
+                except (ValueError, OSError):
                     return None
         return None

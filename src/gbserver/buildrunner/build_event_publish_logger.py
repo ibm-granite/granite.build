@@ -37,7 +37,9 @@ class BuildEventPublishLogger(AbstractBuildLogger):
     Publishing is fire-and-forget — failures are logged but never raised.
     """
 
-    def __init__(self: Self, stored_build: StoredBuild, publisher: BuildEventPublisher) -> None:
+    def __init__(
+        self: Self, stored_build: StoredBuild, publisher: BuildEventPublisher
+    ) -> None:
         super().__init__(stored_build=stored_build)
         self._publisher = publisher
         self._setup_done = False

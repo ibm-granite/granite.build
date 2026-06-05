@@ -33,7 +33,6 @@ from gbserver.types.constants import (
     GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GIT_COMMIT,
 )
-
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)

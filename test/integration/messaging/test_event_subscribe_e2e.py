@@ -116,9 +116,9 @@ async def test_publish_and_consume_build_event():
         await asyncio.sleep(0.5)
 
     # 6. Verify consumer received the event
-    assert len(received_messages) >= 1, (
-        f"Expected at least 1 message, got {len(received_messages)}"
-    )
+    assert (
+        len(received_messages) >= 1
+    ), f"Expected at least 1 message, got {len(received_messages)}"
 
     msg = received_messages[0]
     assert msg["build_id"] == build_id
