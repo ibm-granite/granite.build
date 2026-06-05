@@ -83,9 +83,7 @@ class TestBuildEventPublishLogger:
         mock_publisher.publish_event.assert_called_once_with(status_event)
 
     @pytest.mark.asyncio
-    async def test_log_skips_non_status_events(
-        self, mock_stored_build, mock_publisher
-    ):
+    async def test_log_skips_non_status_events(self, mock_stored_build, mock_publisher):
         """Non-status triggering events are NOT published."""
         pub_logger = BuildEventPublishLogger(
             stored_build=mock_stored_build, publisher=mock_publisher
@@ -156,9 +154,7 @@ class TestBuildEventPublishLogger:
         await asyncio.sleep(0)
 
     @pytest.mark.asyncio
-    async def test_setup_called_only_once(
-        self, mock_stored_build, mock_publisher
-    ):
+    async def test_setup_called_only_once(self, mock_stored_build, mock_publisher):
         """setup() is called on first publish, not subsequent ones."""
         pub_logger = BuildEventPublishLogger(
             stored_build=mock_stored_build, publisher=mock_publisher
@@ -171,10 +167,14 @@ class TestBuildEventPublishLogger:
             source="build-runner",
         )
 
-        pub_logger._log(level=BuildLogLevel.INFO, markdown="first", triggering_event=status_event)
+        pub_logger._log(
+            level=BuildLogLevel.INFO, markdown="first", triggering_event=status_event
+        )
         await asyncio.sleep(0)
 
-        pub_logger._log(level=BuildLogLevel.INFO, markdown="second", triggering_event=status_event)
+        pub_logger._log(
+            level=BuildLogLevel.INFO, markdown="second", triggering_event=status_event
+        )
         await asyncio.sleep(0)
 
         # setup called only once, publish called twice
@@ -187,14 +187,17 @@ class TestGetMessageLoggerIntegration:
 
     def test_includes_publish_logger_when_enabled(self, mock_stored_build):
         """When GBSERVER_EVENT_PUBLISHING_ENABLED=True and RabbitMQ configured, publish logger included."""
-        with patch(
-            "gbserver.buildrunner.buildlogger.GBSERVER_EVENT_PUBLISHING_ENABLED", True
-        ), patch(
-            "gbserver.messaging.build_event_publisher.BuildEventPublisher.is_configured",
-            return_value=True,
-        ), patch(
-            "gbserver.buildrunner.buildlogger.singleton_storage"
-        ) as mock_storage:
+        with (
+            patch(
+                "gbserver.buildrunner.buildlogger.GBSERVER_EVENT_PUBLISHING_ENABLED",
+                True,
+            ),
+            patch(
+                "gbserver.messaging.build_event_publisher.BuildEventPublisher.is_configured",
+                return_value=True,
+            ),
+            patch("gbserver.buildrunner.buildlogger.singleton_storage") as mock_storage,
+        ):
             mock_storage.get_admin_storage.return_value.event_storage = MagicMock()
             mock_stored_build.source_uri = None
 
@@ -216,11 +219,13 @@ class TestGetMessageLoggerIntegration:
 
     def test_excludes_publish_logger_when_disabled(self, mock_stored_build):
         """When GBSERVER_EVENT_PUBLISHING_ENABLED=False, no publish logger."""
-        with patch(
-            "gbserver.buildrunner.buildlogger.GBSERVER_EVENT_PUBLISHING_ENABLED", False
-        ), patch(
-            "gbserver.buildrunner.buildlogger.singleton_storage"
-        ) as mock_storage:
+        with (
+            patch(
+                "gbserver.buildrunner.buildlogger.GBSERVER_EVENT_PUBLISHING_ENABLED",
+                False,
+            ),
+            patch("gbserver.buildrunner.buildlogger.singleton_storage") as mock_storage,
+        ):
             mock_storage.get_admin_storage.return_value.event_storage = MagicMock()
             mock_stored_build.source_uri = None
 
@@ -239,16 +244,21 @@ class TestGetMessageLoggerIntegration:
                     isinstance(l, BuildEventPublishLogger) for l in result._loggers
                 )
 
-    def test_excludes_publish_logger_when_rabbitmq_not_configured(self, mock_stored_build):
+    def test_excludes_publish_logger_when_rabbitmq_not_configured(
+        self, mock_stored_build
+    ):
         """When enabled but RABBITMQ_HOST unset, publish logger is skipped."""
-        with patch(
-            "gbserver.buildrunner.buildlogger.GBSERVER_EVENT_PUBLISHING_ENABLED", True
-        ), patch(
-            "gbserver.messaging.build_event_publisher.BuildEventPublisher.is_configured",
-            return_value=False,
-        ), patch(
-            "gbserver.buildrunner.buildlogger.singleton_storage"
-        ) as mock_storage:
+        with (
+            patch(
+                "gbserver.buildrunner.buildlogger.GBSERVER_EVENT_PUBLISHING_ENABLED",
+                True,
+            ),
+            patch(
+                "gbserver.messaging.build_event_publisher.BuildEventPublisher.is_configured",
+                return_value=False,
+            ),
+            patch("gbserver.buildrunner.buildlogger.singleton_storage") as mock_storage,
+        ):
             mock_storage.get_admin_storage.return_value.event_storage = MagicMock()
             mock_stored_build.source_uri = None
 

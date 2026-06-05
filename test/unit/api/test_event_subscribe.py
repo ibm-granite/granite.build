@@ -46,7 +46,9 @@ def _make_fake_user(login: str = "testuser") -> User:
 class _FakeAuthMiddleware(BaseHTTPMiddleware):
     """Middleware that injects a fake user if Authorization header present."""
 
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         auth = request.headers.get("authorization", "")
         if auth.startswith("Bearer ") and len(auth) > 7:
             request.state.data = {"user": _make_fake_user()}
@@ -58,7 +60,9 @@ class _FakeAuthMiddleware(BaseHTTPMiddleware):
 class _NoAuthMiddleware(BaseHTTPMiddleware):
     """Middleware that never sets a user (simulates missing auth)."""
 
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         request.state.data = {}
         return await call_next(request)
 
@@ -87,7 +91,9 @@ def _make_stored_build(build_id: str = "test-build-123") -> StoredBuild:
 class TestEventSubscribeEndpoint:
     """Tests for POST /api/v1/builds/{build_id}/events/subscribe."""
 
-    @patch.dict(os.environ, {"RABBITMQ_HOST": "rmq.example.com", "RABBITMQ_PORT": "5672"})
+    @patch.dict(
+        os.environ, {"RABBITMQ_HOST": "rmq.example.com", "RABBITMQ_PORT": "5672"}
+    )
     @patch("gbserver.api.event_subscribe.provision_subscription")
     @patch("gbserver.api.event_subscribe.get_admin_storage")
     def test_successful_subscription(self, mock_get_storage, mock_provision):
@@ -110,7 +116,7 @@ class TestEventSubscribeEndpoint:
             "exchange": "build-events",
             "routing_key": f"build.{build_id}.#",
             "queue": f"events.{build_id}.xyzabc",
-            "expires_at": "2026-06-02T13:00:00+00:00",
+            "expires_at": 1748869200,
         }
 
         app = _make_app()
@@ -130,7 +136,7 @@ class TestEventSubscribeEndpoint:
         assert data["exchange"] == "build-events"
         assert data["routing_key"] == f"build.{build_id}.#"
         assert data["queue"] == f"events.{build_id}.xyzabc"
-        assert data["expires_at"] == "2026-06-02T13:00:00+00:00"
+        assert data["expires_at"] == 1748869200
 
         mock_provision.assert_called_once_with(build_id)
 

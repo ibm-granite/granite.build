@@ -41,7 +41,7 @@ class SubscribeResponse(BaseModel):
     exchange: str
     routing_key: str
     queue: str
-    expires_at: str
+    expires_at: int
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────

@@ -66,9 +66,13 @@ class TestRunCleanupOnce:
         mock_admin = AsyncMock()
         mock_admin.cleanup_expired_users.return_value = 0
 
-        with patch(
-            "gbserver.messaging.credential_cleanup._get_admin", return_value=mock_admin
-        ), patch("gbserver.messaging.credential_cleanup.logger") as mock_logger:
+        with (
+            patch(
+                "gbserver.messaging.credential_cleanup._get_admin",
+                return_value=mock_admin,
+            ),
+            patch("gbserver.messaging.credential_cleanup.logger") as mock_logger,
+        ):
             result = await run_cleanup_once()
 
         assert result == 0
@@ -90,12 +94,15 @@ class TestStartCleanupLoop:
                 raise asyncio.CancelledError()
             return 0
 
-        with patch(
-            "gbserver.messaging.credential_cleanup.run_cleanup_once",
-            side_effect=fake_cleanup,
-        ), patch(
-            "gbserver.messaging.credential_cleanup.asyncio.sleep",
-            new_callable=AsyncMock,
+        with (
+            patch(
+                "gbserver.messaging.credential_cleanup.run_cleanup_once",
+                side_effect=fake_cleanup,
+            ),
+            patch(
+                "gbserver.messaging.credential_cleanup.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
         ):
             with pytest.raises(asyncio.CancelledError):
                 await start_cleanup_loop()
@@ -114,12 +121,15 @@ class TestStartCleanupLoop:
 
         mock_sleep = AsyncMock(side_effect=[None, asyncio.CancelledError()])
 
-        with patch(
-            "gbserver.messaging.credential_cleanup.run_cleanup_once",
-            side_effect=fake_cleanup,
-        ), patch(
-            "gbserver.messaging.credential_cleanup.asyncio.sleep",
-            mock_sleep,
+        with (
+            patch(
+                "gbserver.messaging.credential_cleanup.run_cleanup_once",
+                side_effect=fake_cleanup,
+            ),
+            patch(
+                "gbserver.messaging.credential_cleanup.asyncio.sleep",
+                mock_sleep,
+            ),
         ):
             with pytest.raises(asyncio.CancelledError):
                 await start_cleanup_loop()

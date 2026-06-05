@@ -27,7 +27,6 @@ import pytest
 from gbserver.messaging.build_event_publisher import (
     BuildEventPublisher,
 )
-from gbserver.types.constants import GBSERVER_BUILD_EVENTS_EXCHANGE
 from gbserver.messaging.messaging_base import Address
 from gbserver.types.buildevent import (
     BuildEvent,
@@ -36,6 +35,7 @@ from gbserver.types.buildevent import (
     BuildEventType,
     EntityRunMetadata,
 )
+from gbserver.types.constants import GBSERVER_BUILD_EVENTS_EXCHANGE
 from gbserver.types.status import Status
 
 
@@ -43,7 +43,9 @@ from gbserver.types.status import Status
 def mock_rabbitmq():
     """Create a mock RabbitMQBase instance."""
     mock = MagicMock()
-    mock.addr = Address(exchange=GBSERVER_BUILD_EVENTS_EXCHANGE, queue="build", routing_key=None)
+    mock.addr = Address(
+        exchange=GBSERVER_BUILD_EVENTS_EXCHANGE, queue="build", routing_key=None
+    )
     mock.setup = AsyncMock()
     mock.close = AsyncMock()
     mock.publish = AsyncMock()
@@ -98,14 +100,20 @@ class TestBuildEventPublisher:
     """Tests for BuildEventPublisher."""
 
     @pytest.mark.asyncio
-    async def test_publish_status_event(self, publisher, mock_rabbitmq, sample_status_event):
+    async def test_publish_status_event(
+        self, publisher, mock_rabbitmq, sample_status_event
+    ):
         """Test publishing a status event produces correct payload and routing."""
         await publisher.publish_event(sample_status_event)
 
         mock_rabbitmq.publish.assert_called_once()
         call_kwargs = mock_rabbitmq.publish.call_args
-        payload = call_kwargs.kwargs.get("payload") or call_kwargs[1].get("payload", call_kwargs[0][0] if call_kwargs[0] else None)
-        suffix = call_kwargs.kwargs.get("suffix") or call_kwargs[1].get("suffix", call_kwargs[0][1] if len(call_kwargs[0]) > 1 else None)
+        payload = call_kwargs.kwargs.get("payload") or call_kwargs[1].get(
+            "payload", call_kwargs[0][0] if call_kwargs[0] else None
+        )
+        suffix = call_kwargs.kwargs.get("suffix") or call_kwargs[1].get(
+            "suffix", call_kwargs[0][1] if len(call_kwargs[0]) > 1 else None
+        )
 
         # Verify the suffix is the event type value
         assert suffix == "status_event"
@@ -113,7 +121,7 @@ class TestBuildEventPublisher:
         # Verify payload contents
         assert payload["build_id"] == "build-123"
         assert payload["event_type"] == "status_event"
-        assert payload["timestamp"] == "2026-01-15T10:30:00"
+        assert payload["timestamp"] == int(datetime(2026, 1, 15, 10, 30, 0).timestamp())
         assert payload["target_name"] == "my-target"
         assert payload["step_name"] == "train-step"
         assert payload["source"] == "build-framework"
@@ -122,7 +130,9 @@ class TestBuildEventPublisher:
         assert payload["message"] == "Build is running"
 
     @pytest.mark.asyncio
-    async def test_publish_message_event(self, publisher, mock_rabbitmq, sample_message_event):
+    async def test_publish_message_event(
+        self, publisher, mock_rabbitmq, sample_message_event
+    ):
         """Test publishing a message event (no status/message fields added)."""
         await publisher.publish_event(sample_message_event)
 
@@ -176,7 +186,9 @@ class TestBuildEventPublisher:
         mock_rabbitmq.publish.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_routing_key_format(self, publisher, mock_rabbitmq, sample_status_event):
+    async def test_routing_key_format(
+        self, publisher, mock_rabbitmq, sample_status_event
+    ):
         """Test that the address is set correctly for routing key build.<id>.<type>."""
         await publisher.publish_event(sample_status_event)
 
@@ -255,7 +267,7 @@ class TestSerializeEvent:
         assert result == {
             "build_id": "build-123",
             "event_type": "status_event",
-            "timestamp": "2026-01-15T10:30:00",
+            "timestamp": int(datetime(2026, 1, 15, 10, 30, 0).timestamp()),
             "target_name": "my-target",
             "step_name": "train-step",
             "source": "build-framework",
@@ -270,7 +282,7 @@ class TestSerializeEvent:
         assert result == {
             "build_id": "build-456",
             "event_type": "message_event",
-            "timestamp": "2026-01-15T11:00:00",
+            "timestamp": int(datetime(2026, 1, 15, 11, 0, 0).timestamp()),
             "target_name": "eval-target",
             "step_name": "eval-step",
             "source": "step-runner",

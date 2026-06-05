@@ -102,9 +102,9 @@ class TestCreateScopedUser:
         # Password is a URL-safe base64 token (32 bytes → 43 chars)
         assert len(result["password"]) == 43
 
-        # Expiry is a valid ISO datetime
-        expires = datetime.fromisoformat(result["expires_at"])
-        assert expires.tzinfo is not None
+        # Expiry is an epoch timestamp (integer)
+        assert isinstance(result["expires_at"], int)
+        assert result["expires_at"] > int(datetime.now(timezone.utc).timestamp())
 
         # Three PUT calls: user, permissions, topic-permissions
         assert mock_client.put.call_count == 3
@@ -209,8 +209,8 @@ class TestCleanupExpiredUsers:
     @pytest.mark.asyncio
     async def test_cleanup_deletes_expired_users(self, admin):
         """Expired tmp-build users are deleted."""
-        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        past = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp())
+        future = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
 
         users_response = AsyncMock(spec=httpx.Response)
         users_response.status_code = 200
@@ -243,7 +243,7 @@ class TestCleanupExpiredUsers:
     @pytest.mark.asyncio
     async def test_cleanup_no_expired_users(self, admin):
         """Returns 0 when no users are expired."""
-        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        future = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
 
         users_response = AsyncMock(spec=httpx.Response)
         users_response.status_code = 200
@@ -361,17 +361,17 @@ class TestParseExpiryFromTags:
     """Tests for the _parse_expiry_from_tags static method."""
 
     def test_valid_expiry(self):
-        tags = "tmp-build,expires:2026-06-02T12:00:00+00:00"
+        tags = "tmp-build,expires:1748865600"
         result = RabbitMQAdmin._parse_expiry_from_tags(tags)
-        assert result == datetime(2026, 6, 2, 12, 0, 0, tzinfo=timezone.utc)
+        assert result == datetime(2025, 6, 2, 12, 0, 0, tzinfo=timezone.utc)
 
     def test_no_expiry_tag(self):
         tags = "tmp-build,monitoring"
         result = RabbitMQAdmin._parse_expiry_from_tags(tags)
         assert result is None
 
-    def test_invalid_iso_format(self):
-        tags = "tmp-build,expires:not-a-date"
+    def test_invalid_format(self):
+        tags = "tmp-build,expires:not-a-number"
         result = RabbitMQAdmin._parse_expiry_from_tags(tags)
         assert result is None
 
@@ -380,9 +380,9 @@ class TestParseExpiryFromTags:
         assert result is None
 
     def test_expiry_with_spaces(self):
-        tags = "tmp-build, expires:2026-06-02T12:00:00+00:00"
+        tags = "tmp-build, expires:1748865600"
         result = RabbitMQAdmin._parse_expiry_from_tags(tags)
-        assert result == datetime(2026, 6, 2, 12, 0, 0, tzinfo=timezone.utc)
+        assert result == datetime(2025, 6, 2, 12, 0, 0, tzinfo=timezone.utc)
 
 
 class TestRandomString:

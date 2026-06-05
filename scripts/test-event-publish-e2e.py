@@ -191,8 +191,8 @@ def consume_events(subscribe_info: dict, timeout: int) -> list:
     received = []
 
     async def _consume():
-        from gbserver.messaging.rabbitmq_base import RabbitMQBase, RabbitSettings
         from gbserver.messaging.messaging_base import Address
+        from gbserver.messaging.rabbitmq_base import RabbitMQBase, RabbitSettings
 
         settings = RabbitSettings(
             host=subscribe_info["host"],
