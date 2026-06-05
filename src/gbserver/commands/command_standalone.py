@@ -168,14 +168,14 @@ def _run_standalone(
 
     storage = singleton_storage.get_admin_storage()
     existing = storage.space_storage.get_by_name("standalone")
-    
+
     space_uri = f"file://{os.path.abspath(space_dir)}"
     stored_space = StoredSpace(
         name="standalone",
         git_repo_uri=space_uri,
         lakehouse_namespace="",
     )
-    
+
     if existing is None:
         storage.space_storage.add(stored_space)
         logger.info("Created 'standalone' space with URI %s", space_uri)
