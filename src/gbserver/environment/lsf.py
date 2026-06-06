@@ -54,16 +54,7 @@ from gbserver.types.buildevent import (
     EntityRunMetadata,
 )
 from gbserver.types.constants import (
-    CODE_GBSERVER_BUILTINS_STEPS_COSRCLONE_DIR,
-    CODE_GBSERVER_BUILTINS_STEPS_COSRCLONE_URI,
-    CODE_GBSERVER_BUILTINS_STEPS_HFPULL_DIR,
-    CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI,
-    CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_DIR,
-    CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI,
-    CODE_GBSERVER_BUILTINS_STEPS_LHPULL_DIR,
-    CODE_GBSERVER_BUILTINS_STEPS_LHPULL_URI,
-    CODE_GBSERVER_BUILTINS_STEPS_LHPUSH_DIR,
-    CODE_GBSERVER_BUILTINS_STEPS_LHPUSH_URI,
+    CODE_GBSERVER_BUILTINS_STEPS_DIR,
     DEFAULT_ROOT_WORKSPACE_DIR,
     ENABLE_SSH_HOST_KEY_VERIFICATION,
     LSF_USE_ASPERA,
@@ -92,6 +83,18 @@ JOB_LOG_STDERR_FILENAME = "job_log.err"
 LSF_SCRIPTS = "lsf_scripts"
 JOB_SUB_SH = "llmb_lsf_jobsub.sh"
 REPLACE_THIS_PREFIX = "LLMB_LSF_REPLACE_THIS_"
+
+# LSF-specific copies of the auto-injected builtin steps live under
+# `<builtins>/steps/lsf/<name>/`.  This module reads their step.yaml directly
+# (filesystem read, not a SpaceURI lookup) to extract the LSF launcher config
+# section.  At runtime the step itself is referenced via a `space://steps/<name>`
+# URI that the SpaceURI resolver routes to the correct env-keyed split.
+_LSF_BUILTIN_STEPS_DIR = CODE_GBSERVER_BUILTINS_STEPS_DIR / "lsf"
+_LSF_HFPULL_DIR = _LSF_BUILTIN_STEPS_DIR / "hfpull"
+_LSF_HFPUSH_DIR = _LSF_BUILTIN_STEPS_DIR / "hfpush"
+_LSF_LHPULL_DIR = _LSF_BUILTIN_STEPS_DIR / "lhpull"
+_LSF_LHPUSH_DIR = _LSF_BUILTIN_STEPS_DIR / "lhpush"
+_LSF_COSRCLONE_DIR = _LSF_BUILTIN_STEPS_DIR / "cosrclone"
 
 
 class BJobRecord(BaseModel):
@@ -1123,7 +1126,7 @@ class Lsf(Environment):
             "lh": lh_metadata,
         }
         logger.info("lhpull_config: %s", lhpull_config)
-        lhpull_stepuri = CODE_GBSERVER_BUILTINS_STEPS_LHPULL_URI
+        lhpull_stepuri = "space://steps/lhpull"
         if (
             storeload_config is not None
             and storeload_config.config is not None
@@ -1136,7 +1139,7 @@ class Lsf(Environment):
         final_binding_path = binding_path / assetstore.get_subdir(uri)
         binding_config = {BINDING_KEY: {"path": str(final_binding_path)}}
         lsf_dict, workload_dict = self._load_builtin_lh_lsf_section(
-            CODE_GBSERVER_BUILTINS_STEPS_LHPULL_DIR, lh_metadata
+            _LSF_LHPULL_DIR, lh_metadata
         )
         return binding_config, BuildTargetStepConfig(
             step_uri=lhpull_stepuri,
@@ -1192,7 +1195,7 @@ class Lsf(Environment):
             "lh": lh_metadata,
         }
         logger.info("lhpush_config: %s", lhpush_config)
-        lhpush_stepuri = CODE_GBSERVER_BUILTINS_STEPS_LHPUSH_URI
+        lhpush_stepuri = "space://steps/lhpush"
         if (
             storepush_config is not None
             and storepush_config.config is not None
@@ -1203,7 +1206,7 @@ class Lsf(Environment):
                 lhpush_stepuri, str
             ), f"invalid lhpush_stepuri: {lhpush_stepuri}"
         lsf_dict, workload_dict = self._load_builtin_lh_lsf_section(
-            CODE_GBSERVER_BUILTINS_STEPS_LHPUSH_DIR, lh_metadata
+            _LSF_LHPUSH_DIR, lh_metadata
         )
         return BuildTargetStepConfig(
             step_uri=lhpush_stepuri,
@@ -1257,7 +1260,7 @@ class Lsf(Environment):
             binding_path=str(binding_path),
         )
         logger.info("hfpull_config: %s", hfpull_config)
-        hfpull_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI
+        hfpull_stepuri = "space://steps/hfpull"
         if (
             storeload_config is not None
             and storeload_config.config is not None
@@ -1269,7 +1272,7 @@ class Lsf(Environment):
             ), f"invalid hfpull_stepuri: {hfpull_stepuri}"
         binding_config = {BINDING_KEY: {"path": str(binding_path)}}
         lsf_dict, workload_dict = self._load_builtin_hf_lsf_section(
-            CODE_GBSERVER_BUILTINS_STEPS_HFPULL_DIR, hf_metadata
+            _LSF_HFPULL_DIR, hf_metadata
         )
         return binding_config, BuildTargetStepConfig(
             step_uri=hfpull_stepuri,
@@ -1368,7 +1371,7 @@ class Lsf(Environment):
             hf_resource_group_id=resource_group_id,
         )
         logger.info("hfpush_config: %s", hfpush_config)
-        hfpush_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI
+        hfpush_stepuri = "space://steps/hfpush"
         if (
             storepush_config is not None
             and storepush_config.config is not None
@@ -1379,7 +1382,7 @@ class Lsf(Environment):
                 hfpush_stepuri, str
             ), f"invalid hfpush_stepuri: {hfpush_stepuri}"
         lsf_dict, workload_dict = self._load_builtin_hf_lsf_section(
-            CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_DIR, hf_metadata
+            _LSF_HFPUSH_DIR, hf_metadata
         )
         return BuildTargetStepConfig(
             step_uri=hfpush_stepuri,
@@ -1404,7 +1407,7 @@ class Lsf(Environment):
                 secret name keys are absent from cos_metadata.
         """
         cosrclone_step_path = (
-            CODE_GBSERVER_BUILTINS_STEPS_COSRCLONE_DIR / STEP_FILE_NAME
+            _LSF_COSRCLONE_DIR / STEP_FILE_NAME
         )
         assert cosrclone_step_path.is_file(), "cosrclone step is missing"
         step_section = StepConfigSection.model_validate(
@@ -1471,7 +1474,7 @@ class Lsf(Environment):
             "push": False,
             "cos": cos_metadata,
         }
-        cosrclone_stepuri = CODE_GBSERVER_BUILTINS_STEPS_COSRCLONE_URI
+        cosrclone_stepuri = "space://steps/cosrclone"
         if (
             storeload_config.config is not None
             and "step_uri" in storeload_config.config
@@ -1537,7 +1540,7 @@ class Lsf(Environment):
             "binding_id": binding_id,
             "cos": cos_metadata,
         }
-        cosrclone_stepuri = CODE_GBSERVER_BUILTINS_STEPS_COSRCLONE_URI
+        cosrclone_stepuri = "space://steps/cosrclone"
         if (
             storepush_config is not None
             and storepush_config.config is not None

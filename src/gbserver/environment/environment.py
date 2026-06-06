@@ -307,6 +307,24 @@ class Environment(ABC):
             return [value]
         return list(value)
 
+    @property
+    def environment_dir_uri(self: Self) -> Optional[str]:
+        """URI of the directory that contains this env's environment.yaml.
+
+        Used by the SpaceURI resolver to discover env-co-located steps at
+        ``<env-dir>/steps/<name>/`` when this env is the active target's env.
+        Returned with no trailing slash.  Returns ``None`` when the env was
+        constructed without an asset (e.g. some unit tests), in which case
+        the resolver skips the env-dir tier and falls through to the
+        ``step_type`` chain.
+        """
+        if self.environment_asset is None:
+            return None
+        uristr = self.environment_asset.uristr
+        if not uristr:
+            return None
+        return uristr.rstrip("/")
+
     async def retry_workload(
         self: Self,
         launch_id: str,

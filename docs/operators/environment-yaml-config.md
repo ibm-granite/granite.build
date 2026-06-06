@@ -65,21 +65,66 @@ step_type: helm        # this step is intended for envs whose step_type chain co
 
 Steps without a `step_type` field are env-agnostic — they apply to any env regardless of its step_type.
 
+**Co-located steps in the env's own directory**
+
+A second mechanism complements `step_type`: a step impl placed inside the env's own directory wins over the `step_type` chain when that env is active. Example layout:
+
+```
+configurations/assets/environments/skypilot/kubernetes/
+├── environment.yaml
+└── steps/
+    └── digit/step.yaml          # used when this env runs the target
+```
+
+The resolver auto-discovers `<env-dir>/steps/<name>/` whenever the active target's environment is this one — no `step_type` declaration or `base_uris` change is needed. Co-located steps are ideal for impls that are tightly coupled to a specific environment instance and don't need to be shared with other envs.
+
+**Env-class matching against existing `environment_configs`**
+
+A third mechanism — already in use by the in-repo builtin steps — lets the resolver pick a step variant based on the env's class name (`K8s`, `Lsf`, `Skypilot`, ...) by reading each candidate step.yaml's existing `environment_configs` keys. No new field on step.yaml is required.
+
+The resolver scans recursively under each base_uri for any file at `<...>/<name>/step.yaml`, parses each one, and selects the candidate whose `environment_configs` contains the active env's class name. Subdirectory naming is **conventional only** — the match is by file content, so step variants can live anywhere (the convention is `<base>/steps/<env-class-lowercase>/<name>/`):
+
+```
+src/gbserver/builtins/steps/
+├── s3push/step.yaml          # multi-env catch-all (environment_configs: K8s, Lsf, Skypilot, ...)
+├── k8s/s3push/step.yaml      # only environment_configs.K8s
+├── lsf/s3push/step.yaml      # only environment_configs.Lsf
+├── skypilot/s3push/step.yaml # only environment_configs.Skypilot
+└── ...
+```
+
+When the active env class is `K8s`, the resolver picks `steps/k8s/s3push/step.yaml`. When `Lsf`, it picks `steps/lsf/s3push/step.yaml`. When the env class is one not represented by a single-env split file, it falls back to the multi-env catch-all. Among multiple matches, the candidate with FEWER `environment_configs` keys wins — i.e. the most env-specific file beats a multi-env file that happens to list the same env. Lexicographic path is the secondary tie-break.
+
 **Resolution order**
 
-For `space://steps/<name>` and an env with `step_type: [skypilot-kubernetes, helm, skypilot]`:
+For `space://steps/<name>` and an env of class `K8s` (active env class) loaded from `<env-dir>` with `step_type: [skypilot-kubernetes, helm, skypilot]`:
 
-1. `steps/skypilot-kubernetes/<name>/step.yaml` — most-preferred step_type-specific impl
-2. `steps/helm/<name>/step.yaml` — same step pool also consumed by plain K8s envs (if their `step_type` is `helm`)
-3. `steps/skypilot/<name>/step.yaml` — generic Skypilot impl
-4. `steps/<name>/step.yaml` — env-agnostic fallback (existing convention)
-5. unresolvable → `ValueError`
+1. `<env-dir>/steps/<name>/step.yaml` — env-co-located impl (highest priority).
+2. Recursive glob `<base>/**/<name>/step.yaml` across base_uris — first candidate (by specificity, then lex) whose `environment_configs` contains `K8s`.
+3. `<base>/steps/skypilot-kubernetes/<name>/step.yaml` — most-preferred step_type-specific impl.
+4. `<base>/steps/helm/<name>/step.yaml` — same step pool also consumed by plain K8s envs (if their `step_type` is `helm`).
+5. `<base>/steps/skypilot/<name>/step.yaml` — generic Skypilot impl.
+6. `<base>/steps/<name>/step.yaml` — env-agnostic fallback (existing convention).
+7. unresolvable → `ValueError`.
 
-The intermediate `helm` tier is the typical reason to use a chain: a single `steps/helm/<name>/` impl can serve both plain K8s and Skypilot-on-Kubernetes when each env declares `helm` in its chain, eliminating duplication.
+The three mechanisms (env-co-located, env-class-match, step_type) are layered so users can pick the one that fits each step. Use co-located steps for impls tightly coupled to a specific environment instance; use env-class-match for splitting a multi-env step.yaml into per-env files (the builtins approach); use `step_type` chains for cross-env-class pools where multiple env classes share an impl.
+
+**Manual override via `base_uris`**
+
+A space.yaml can also explicitly base_uri into a specific env directory if you want its steps available regardless of which target runs:
+
+```yaml
+name: my-space
+base_uris:
+  - file://./environments/skypilot/kubernetes   # always check this env's steps
+  - file://./../assets                          # plus the shared assets
+```
+
+Auto-discovery of the active env's dir still happens on top of this — listing it manually is rarely necessary.
 
 **Backward compatibility**
 
-If neither the env nor the step declares `step_type`, behavior is identical to today — the resolver lands at `steps/<name>/`.
+If neither the env nor the step declares `step_type` and the env's directory has no `steps/` subdirectory, behavior is identical to today — the resolver lands at `<base>/steps/<name>/`.
 
 ---
 

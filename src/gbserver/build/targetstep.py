@@ -117,10 +117,11 @@ class TargetStep(BuildEntity):
         self.validator_map = {}
         self.monitors = {}
         self.parent_target_config = parent_target_config
-        # Scope the active env's step_type chain on SpaceURI so that any
-        # `space://steps/...` URIs resolved during step assimilation pick the
-        # most-preferred env-specific impl with fallback to env-agnostic.
-        with SpaceURI.with_current_env_step_types(environment.step_type_chain):
+        # Scope the active env's step-discovery context on SpaceURI so that
+        # any `space://steps/...` URIs resolved during step assimilation try,
+        # in order: (1) the env's own directory (env-co-located steps),
+        # (2) the env's step_type chain, (3) env-agnostic locations.
+        with SpaceURI.with_current_env(environment):
             self.step = Step(
                 stepuri=targetstep.step_uri, context=context, force_fetch=force_fetch  # type: ignore[arg-type]
             )

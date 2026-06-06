@@ -14,7 +14,10 @@ configurations/
 │   │   ├── bash/environment.yaml
 │   │   ├── docker/environment.yaml
 │   │   ├── skypilot/
-│   │   │   ├── kubernetes/environment.yaml
+│   │   │   ├── kubernetes/
+│   │   │   │   ├── environment.yaml
+│   │   │   │   └── steps/               # optional: env-co-located steps
+│   │   │   │       └── <name>/step.yaml # picked when this env runs the target
 │   │   │   └── slurm/environment.yaml
 │   │   └── skypilot-managed/
 │   │       └── kubernetes/environment.yaml
@@ -36,7 +39,12 @@ configurations/
 
 - **`assets/`** is the leaf primitives directory. It holds no `space.yaml`; it's a target for `base_uris`, not a space in its own right.
 - **`configurations/spaces/standalone/public/space.yaml`** is the canonical user-facing space. Its `base_uris` chains into `configurations/assets/` so `space://environments/...`, `space://assetstores/...`, and `space://steps/...` resolve through to the assets tree.
-- **`step_type` routing**: an environment may declare `step_type: <string>` (or an ordered list) in its `environment.yaml`; matching step impls live at `assets/steps/<step_type>/<name>/`. The `SpaceURI` resolver walks the env's `step_type` chain when looking up `space://steps/<name>` and falls back to the env-agnostic `assets/steps/<name>/`. See [Step type routing](../docs/operators/environment-yaml-config.md#step_type-routing-steps-to-environments).
+- **Step resolution tiers**: when a target runs, `space://steps/<name>` is resolved in order:
+  1. `<env-dir>/steps/<name>/` — steps co-located in the active env's own directory (auto-discovered).
+  2. `assets/steps/<step_type>/<name>/` — for each `step_type` in the env's chain (cross-env-class pools).
+  3. `assets/steps/<name>/` — env-agnostic fallback.
+
+  See [Step type routing](../docs/operators/environment-yaml-config.md#step_type-routing-steps-to-environments) for the full reference.
 
 ## Consumers
 

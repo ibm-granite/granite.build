@@ -1,0 +1,46 @@
+name: olmes_eval
+version: 1.0.0
+type: evaluation
+config:
+  gb:
+    step_contents_in_env: false
+  workload:
+    cwd: .
+  olmes_eval_config:
+    model: allenai/OLMo-7B
+    model_revision: step1000-tokens4B
+    model_commit: fd483312687af0209a13568b9e70403435a6c286
+    model_family: OLMo-1.x
+    model_path: null
+    trust_remote_code: false
+    tasks:
+    - arc_challenge::olmes
+    - mmlu::olmes
+    evaluation_regime: OLMES-v0.1
+    validate_compatibility: true
+    fail_on_incompatibility: true
+    output_dir: /workspace/results
+    batch_size: 16
+    num_shots: null
+    limit: null
+    gpus: 1
+    track_model_hash: true
+    track_tokenizer_version: true
+    save_raw_requests: true
+  compute_config:
+    num_gpus_per_node: 1
+    num_cpus_per_node: 8
+    total_memory_per_node: 64Gi
+    total_ephemeral_storage_per_node: 200Gi
+environment_configs:
+  K8s:
+    launchers:
+      olmes_eval:
+        type: helm
+        monitors:
+        - log_monitor
+        config:
+          chart: helm-charts/olmes_eval
+    monitors:
+      log_monitor:
+        type: sidecar_monitor
