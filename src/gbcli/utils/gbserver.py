@@ -764,7 +764,10 @@ def update_build_gserver(
     tags: Optional[list[str]] = None,
     append: bool = False,
 ):
-    if server_api and user_token:
+    # In standalone mode an empty token is legitimate (the local gbserver allows
+    # localhost access when no GBSERVER_API_KEY is configured). Without this, an empty
+    # token would silently skip the update and the change would never be sent.
+    if server_api and (user_token or is_standalone()):
         put_url = f"{server_api}{build_id}/update"
         try:
 

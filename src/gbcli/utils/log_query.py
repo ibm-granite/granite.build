@@ -12,6 +12,7 @@ from gbcli.utils.gbconstants import (
 from gbcli.utils.gbserver import gbserver_post
 from gbcli.utils.gh_auth import get_user
 from gbcli.utils.utils import convert_seconds_to_milliseconds
+from gbcommon.types.gbenvconfig import is_standalone
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,10 @@ def run_logquery(
     is_admin: Optional[bool] = None,
 ):
     username = get_user(github_token).login
-    if not username or not github_token:
+    # In standalone mode an empty token is legitimate (the local gbserver allows
+    # localhost access when no GBSERVER_API_KEY is configured), so only require a
+    # non-empty token outside standalone mode.
+    if not username or (not github_token and not is_standalone()):
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
 
     url = f"{GBSERVER_LOGS_API}logquery"

@@ -60,7 +60,7 @@ The **BuildWatcher** polls storage for pending builds and creates a **BuildRunne
 Five commands to a running build, using the bundled `standalone-quickstart` sample.
 
 ```bash
-# 1. Clone and enter the repo (use SSH; the repo is private)
+# 1. Clone and enter the repo
 git clone git@github.com:ibm-granite/granite.build.git
 cd granite.build
 

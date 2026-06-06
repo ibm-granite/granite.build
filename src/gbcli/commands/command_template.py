@@ -8,7 +8,10 @@ from tqdm import tqdm
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.commands.common_options import common_options
+from gbcli.commands.common_options import (
+    common_options,
+    pass_context_and_reject_standalone,
+)
 from gbcli.utils.gbconstants import (
     BUILD_DESCRIBE_ARTIFACTS_HEADERS,
     BUILD_DESCRIBE_STEPS_HEADERS,
@@ -21,10 +24,9 @@ from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
 @click.group("template")
-@click.pass_context
+@pass_context_and_reject_standalone
 def cli(ctx):
     """Work with templates"""
-    pass
 
 
 @cli.command()

@@ -11,6 +11,7 @@ from gbcli.utils.gbconstants import (
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gh_clone import get_repo_tags, run_github_command
 from gbcommon.types.constants import get_gh_credentials_section
+from gbcommon.types.gbenvconfig import is_standalone
 
 
 def get_latest_version(user_token: str, repo_org: str, repo_name: str) -> str:
@@ -33,6 +34,12 @@ def get_current_version(package_name: str) -> str:
 
 
 def check_current_and_latest_versions() -> str:
+    # The version check queries GitHub Enterprise (and so requires GitHub auth), which is
+    # unavailable in standalone mode. Skip it there so standalone commands don't fail
+    # with "user not logged in" just for the update check.
+    if is_standalone():
+        return ""
+
     credentials = GBCredentials()
     if not credentials.check_values():
         raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
