@@ -2,7 +2,7 @@ granite.build:
   name: slurm-trl-test
   targets:
     finetune:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/slurm
       inputs:
         model:
           uri: hf:///ibm-granite/granite-4.0-350m
