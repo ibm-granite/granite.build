@@ -11,7 +11,7 @@ human-readable companion.
 ## Top-level shape
 
 ```yaml
-llm.build:                  # or "granite.build" — both keys are accepted
+granite.build:              # or "llm.build" — both keys are accepted
   version: "0.0.1"          # optional; defaults to current schema version
   name: my-build            # optional human-readable label
   retries:                  # optional; defaults to no retries
@@ -32,7 +32,7 @@ llm.build:                  # or "granite.build" — both keys are accepted
 | `retries`  | object                | no       | `{}` (no retries)              | See [Retries](#retries). |
 | `targets`  | map of target name → target | **yes** | —                        | At least one target required. |
 
-The top-level key may be `llm.build` (current) or `granite.build` (legacy).
+The top-level key may be `granite.build` (current) or `llm.build` (legacy).
 
 ## Targets
 
