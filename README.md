@@ -33,9 +33,9 @@ The system has three main components:
 
 - **build.yaml** — the pipeline definition. Each file declares a set of named **targets** (logical stages like "download", "fine-tune", "evaluate"). Each target specifies an execution environment, input/output artifacts, and one or more **steps** to run. Targets can depend on each other through artifact **bindings** — when an upstream target produces an output, downstream targets that reference it are automatically dispatched.
 
-<center>
+<p align="center">
 <img src="docs/images/build-structure.jpg" alt="Build Structure" width="50%" />
-</center>
+</p>
 
 ### How the pieces fit together
 
@@ -49,18 +49,18 @@ flowchart LR
     BR --> Bash
     BR --> RunPod
     BR --> SkyPilot
-    Docker & Kubernetes & Bash & RunPod & SkyPilot --> AS["Artifact stores\n(HuggingFace, file://, git://)"]
+    Docker & Kubernetes & Bash & RunPod & SkyPilot --> AS["Artifact stores</br>(HuggingFace, file://, git://)"]
 
     classDef white fill:#fff,color:#000,stroke:#999
     class BY white
 ```
 
-The **BuildWatcher** polls storage for pending builds and creates a **BuildRunner** for each one. The runner walks the target graph, resolving dependencies and launching steps through the configured **Environment** (Docker, Kubernetes, Bash, RunPod, or SkyPilot). Each step can pull inputs from and push outputs to **artifact stores** selected by URI scheme (`hf://`, `file://`, `git://`, `cos://`).
-The build runs in an associated space providing environments, credentials, artifact stores and step implementations. 
+The **BuildWatcher** polls storage for pending builds and creates a **BuildRunner** for each one.
+The build runs in an associated **Space** providing environments, credentials, artifact stores and step implementations.
 
-<center>
-<img src="docs/images/build-execution.jpg" alt="Build Execution" width="50%"  />
-</center>
+<p align="center">
+<img src="docs/images/build-execution.jpg" alt="Build Execution" width="50%" />
+</p>
 
 The buildrunner walks the target graph, resolving dependencies and launching steps through the configured **Environment** (Docker, Kubernetes, Bash, RunPod, or SkyPilot). Each step can pull inputs from and push outputs to **artifact stores** selected by URI scheme (`hf://`, `file://`, `git://`, `cos://`).
 
@@ -69,9 +69,9 @@ or on the local machine.
 A cloud-based configuration can be seen [here](docs/images/architecture-cloud.jpg).
 Most of what follows utilizes the standalone configuration, shown below.
 
-<center>
-<img src="docs/images/architecture-standalone.jpg" alt="Granite.Build Standalone Configuration"  />
-</center>
+<p align="center">
+<img src="docs/images/architecture-standalone.jpg" alt="Granite.Build Standalone Configuration" />
+</p>
 
 ## Quick start (standalone)
 
@@ -157,7 +157,6 @@ llm.build:
       steps:
         - step_uri: space://steps/eval
 ```
-
 
 For the full schema, see [`docs/users/build-yaml-reference.md`](docs/users/build-yaml-reference.md).
 
