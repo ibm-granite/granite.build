@@ -33,9 +33,9 @@ The system has three main components:
 
 - **build.yaml** — the pipeline definition. Each file declares a set of named **targets** (logical stages like "download", "fine-tune", "evaluate"). Each target specifies an execution environment, input/output artifacts, and one or more **steps** to run. Targets can depend on each other through artifact **bindings** — when an upstream target produces an output, downstream targets that reference it are automatically dispatched.
 
-<center>
+<p align="center">
 <img src="docs/images/build-structure.jpg" alt="Build Structure" width="50%" />
-</center>
+</p>
 
 ### How the pieces fit together
 
@@ -58,9 +58,9 @@ flowchart LR
 The **BuildWatcher** polls storage for pending builds and creates a **BuildRunner** for each one. 
 The build runs in an associated **Space** providing environments, credentials, artifact stores and step implementations. 
 
-<center>
+<p align="center">
 <img src="docs/images/build-execution.jpg" alt="Build Execution" width="50%"  />
-</center>
+</p>
 
 The buildrunner walks the target graph, resolving dependencies and launching steps through the configured **Environment** (Docker, Kubernetes, Bash, RunPod, or SkyPilot). Each step can pull inputs from and push outputs to **artifact stores** selected by URI scheme (`hf://`, `file://`, `git://`, `cos://`).
 
@@ -69,9 +69,9 @@ or on the local machine.
 A cloud-based configuration can be seen [here](docs/images/architecture-cloud.jpg).
 Most of what follows utilizes the standalone configuration, shown below.
 
-<center>
+<p align="center">
 <img src="docs/images/architecture-standalone.jpg" alt="Granite.Build Standalone Configuration"  />
-</center>
+</p>
 
 ## Quick start (standalone)
 
