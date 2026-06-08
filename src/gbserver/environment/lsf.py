@@ -33,6 +33,7 @@ from gbcommon.uri.cos import CosURI
 from gbcommon.uri.env import EnvURI
 from gbcommon.uri.hf import HfURI
 from gbcommon.uri.lh import LhURI
+from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
@@ -54,7 +55,6 @@ from gbserver.types.buildevent import (
     EntityRunMetadata,
 )
 from gbserver.types.constants import (
-    CODE_GBSERVER_BUILTINS_STEPS_DIR,
     DEFAULT_ROOT_WORKSPACE_DIR,
     ENABLE_SSH_HOST_KEY_VERIFICATION,
     LSF_USE_ASPERA,
@@ -84,17 +84,14 @@ LSF_SCRIPTS = "lsf_scripts"
 JOB_SUB_SH = "llmb_lsf_jobsub.sh"
 REPLACE_THIS_PREFIX = "LLMB_LSF_REPLACE_THIS_"
 
-# LSF-specific copies of the auto-injected builtin steps live under
-# `<builtins>/steps/lsf/<name>/`.  This module reads their step.yaml directly
-# (filesystem read, not a SpaceURI lookup) to extract the LSF launcher config
-# section.  At runtime the step itself is referenced via a `space://steps/<name>`
-# URI that the SpaceURI resolver routes to the correct env-keyed split.
-_LSF_BUILTIN_STEPS_DIR = CODE_GBSERVER_BUILTINS_STEPS_DIR / "lsf"
-_LSF_HFPULL_DIR = _LSF_BUILTIN_STEPS_DIR / "hfpull"
-_LSF_HFPUSH_DIR = _LSF_BUILTIN_STEPS_DIR / "hfpush"
-_LSF_LHPULL_DIR = _LSF_BUILTIN_STEPS_DIR / "lhpull"
-_LSF_LHPUSH_DIR = _LSF_BUILTIN_STEPS_DIR / "lhpush"
-_LSF_COSRCLONE_DIR = _LSF_BUILTIN_STEPS_DIR / "cosrclone"
+# Builtin step names auto-injected by this module's pullasset/pushasset
+# handlers.  Each resolves via SpaceURI to the LSF env-keyed copy under
+# `<builtins>/steps/lsf/<name>/`.
+HFPULL_STEP_NAME = "hfpull"
+HFPUSH_STEP_NAME = "hfpush"
+LHPULL_STEP_NAME = "lhpull"
+LHPUSH_STEP_NAME = "lhpush"
+COSRCLONE_STEP_NAME = "cosrclone"
 
 
 class BJobRecord(BaseModel):
@@ -1006,21 +1003,38 @@ class Lsf(Environment):
         logger.info("loaded env uri: %s at binding: %s", uri, binding_config)
         return (binding_config, None)
 
+    def _resolve_builtin_step_yaml(self: Self, step_name: str) -> Path:
+        """Resolve ``space://steps/<step_name>`` to the local step.yaml Path,
+        routing through SpaceURI's env-class-match tier so the Lsf env-keyed
+        copy at ``<builtins>/steps/lsf/<step_name>/step.yaml`` is selected.
+
+        Wrapped in :meth:`SpaceURI.with_current_env_class_name` because these
+        helpers run during pullasset/pushasset (target setup), which happens
+        before any ``TargetStep`` enters the resolver's env-aware scope. We
+        explicitly scope the env class here so resolution doesn't depend on
+        caller context.
+        """
+        with SpaceURI.with_current_env_class_name(self.__class__.__name__):
+            uri = URI.get_uri(f"space://steps/{step_name}", default_scheme="file")
+        assert uri.uri is not None, f"unresolved space URI for step {step_name!r}"
+        return Path(uri.uri.path) / STEP_FILE_NAME
+
     def _load_builtin_lh_lsf_section(
-        self: Self, step_dir: Path, lh_metadata: dict
+        self: Self, step_name: str, lh_metadata: dict
     ) -> Tuple[dict, dict]:
         """Read a builtin LH step YAML and return (lsf_section_dict, workload_section_dict)
         with the LAKEHOUSE_TOKEN secret injected into the LSF section.
 
         Args:
-            step_dir: Directory containing the builtin step YAML (e.g. lhpull or lhpush dir).
+            step_name: Builtin step name (e.g. ``"lhpull"`` or ``"lhpush"``);
+                resolved via SpaceURI to the LSF env-keyed copy.
             lh_metadata: Lakehouse metadata dict; must contain 'token_secretname'.
         Returns:
             Tuple of (lsf_dict, workload_dict) ready for BuildTargetStepConfig config.
         Raises:
             AssertionError: if the step YAML is missing or 'token_secretname' is absent.
         """
-        step_path = step_dir / STEP_FILE_NAME
+        step_path = self._resolve_builtin_step_yaml(step_name)
         assert step_path.is_file(), f"step yaml is missing: {step_path}"
         step_config = StepConfig.from_yaml(path=step_path)
         lhpc = step_config.config
@@ -1049,20 +1063,21 @@ class Lsf(Environment):
         return lsf_dict, workload_dict
 
     def _load_builtin_hf_lsf_section(
-        self: Self, step_dir: Path, hf_metadata: dict
+        self: Self, step_name: str, hf_metadata: dict
     ) -> Tuple[dict, dict]:
         """Read a builtin HF step YAML and return (lsf_section_dict, workload_section_dict)
         with the HF_TOKEN secret injected into the LSF section.
 
         Args:
-            step_dir: Directory containing the builtin step YAML (e.g. hfpull or hfpush dir).
+            step_name: Builtin step name (e.g. ``"hfpull"`` or ``"hfpush"``);
+                resolved via SpaceURI to the LSF env-keyed copy.
             hf_metadata: HF metadata dict; must contain 'token_secretname'.
         Returns:
             Tuple of (lsf_dict, workload_dict) ready for BuildTargetStepConfig config.
         Raises:
             AssertionError: if the step YAML is missing or 'token_secretname' is absent.
         """
-        step_path = step_dir / STEP_FILE_NAME
+        step_path = self._resolve_builtin_step_yaml(step_name)
         assert step_path.is_file(), f"step yaml is missing: {step_path}"
         step_config = StepConfig.from_yaml(path=step_path)
         hfpc = step_config.config
@@ -1126,7 +1141,7 @@ class Lsf(Environment):
             "lh": lh_metadata,
         }
         logger.info("lhpull_config: %s", lhpull_config)
-        lhpull_stepuri = "space://steps/lhpull"
+        lhpull_stepuri = f"space://steps/{LHPULL_STEP_NAME}"
         if (
             storeload_config is not None
             and storeload_config.config is not None
@@ -1139,7 +1154,7 @@ class Lsf(Environment):
         final_binding_path = binding_path / assetstore.get_subdir(uri)
         binding_config = {BINDING_KEY: {"path": str(final_binding_path)}}
         lsf_dict, workload_dict = self._load_builtin_lh_lsf_section(
-            _LSF_LHPULL_DIR, lh_metadata
+            LHPULL_STEP_NAME, lh_metadata
         )
         return binding_config, BuildTargetStepConfig(
             step_uri=lhpull_stepuri,
@@ -1195,7 +1210,7 @@ class Lsf(Environment):
             "lh": lh_metadata,
         }
         logger.info("lhpush_config: %s", lhpush_config)
-        lhpush_stepuri = "space://steps/lhpush"
+        lhpush_stepuri = f"space://steps/{LHPUSH_STEP_NAME}"
         if (
             storepush_config is not None
             and storepush_config.config is not None
@@ -1206,7 +1221,7 @@ class Lsf(Environment):
                 lhpush_stepuri, str
             ), f"invalid lhpush_stepuri: {lhpush_stepuri}"
         lsf_dict, workload_dict = self._load_builtin_lh_lsf_section(
-            _LSF_LHPUSH_DIR, lh_metadata
+            LHPUSH_STEP_NAME, lh_metadata
         )
         return BuildTargetStepConfig(
             step_uri=lhpush_stepuri,
@@ -1260,7 +1275,7 @@ class Lsf(Environment):
             binding_path=str(binding_path),
         )
         logger.info("hfpull_config: %s", hfpull_config)
-        hfpull_stepuri = "space://steps/hfpull"
+        hfpull_stepuri = f"space://steps/{HFPULL_STEP_NAME}"
         if (
             storeload_config is not None
             and storeload_config.config is not None
@@ -1272,7 +1287,7 @@ class Lsf(Environment):
             ), f"invalid hfpull_stepuri: {hfpull_stepuri}"
         binding_config = {BINDING_KEY: {"path": str(binding_path)}}
         lsf_dict, workload_dict = self._load_builtin_hf_lsf_section(
-            _LSF_HFPULL_DIR, hf_metadata
+            HFPULL_STEP_NAME, hf_metadata
         )
         return binding_config, BuildTargetStepConfig(
             step_uri=hfpull_stepuri,
@@ -1371,7 +1386,7 @@ class Lsf(Environment):
             hf_resource_group_id=resource_group_id,
         )
         logger.info("hfpush_config: %s", hfpush_config)
-        hfpush_stepuri = "space://steps/hfpush"
+        hfpush_stepuri = f"space://steps/{HFPUSH_STEP_NAME}"
         if (
             storepush_config is not None
             and storepush_config.config is not None
@@ -1382,7 +1397,7 @@ class Lsf(Environment):
                 hfpush_stepuri, str
             ), f"invalid hfpush_stepuri: {hfpush_stepuri}"
         lsf_dict, workload_dict = self._load_builtin_hf_lsf_section(
-            _LSF_HFPUSH_DIR, hf_metadata
+            HFPUSH_STEP_NAME, hf_metadata
         )
         return BuildTargetStepConfig(
             step_uri=hfpush_stepuri,
@@ -1406,7 +1421,7 @@ class Lsf(Environment):
             AssertionError: if the cosrclone step YAML is missing or required
                 secret name keys are absent from cos_metadata.
         """
-        cosrclone_step_path = _LSF_COSRCLONE_DIR / STEP_FILE_NAME
+        cosrclone_step_path = self._resolve_builtin_step_yaml(COSRCLONE_STEP_NAME)
         assert cosrclone_step_path.is_file(), "cosrclone step is missing"
         step_section = StepConfigSection.model_validate(
             StepConfig.from_yaml(path=cosrclone_step_path).config
@@ -1472,7 +1487,7 @@ class Lsf(Environment):
             "push": False,
             "cos": cos_metadata,
         }
-        cosrclone_stepuri = "space://steps/cosrclone"
+        cosrclone_stepuri = f"space://steps/{COSRCLONE_STEP_NAME}"
         if (
             storeload_config.config is not None
             and "step_uri" in storeload_config.config
@@ -1538,7 +1553,7 @@ class Lsf(Environment):
             "binding_id": binding_id,
             "cos": cos_metadata,
         }
-        cosrclone_stepuri = "space://steps/cosrclone"
+        cosrclone_stepuri = f"space://steps/{COSRCLONE_STEP_NAME}"
         if (
             storepush_config is not None
             and storepush_config.config is not None
