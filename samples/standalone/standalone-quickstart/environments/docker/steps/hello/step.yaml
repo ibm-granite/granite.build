@@ -1,0 +1,24 @@
+name: hello
+version: v1
+type: custom
+config: {}
+environment_configs:
+  Docker:
+    launchers:
+      hello:
+        type: docker
+        monitors:
+        - docker_log
+        config:
+          image: alpine:latest
+    monitors:
+      docker_log:
+        type: docker_log
+        config:
+          event_configs:
+          - event_type: MESSAGE_EVENT
+            line_regex: .*
+            is_json: false
+            event_fields:
+            - field_name: msg
+              field_regex: .*
