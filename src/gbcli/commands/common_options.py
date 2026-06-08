@@ -67,7 +67,10 @@ def pass_context_and_reject_standalone(command_name=None):
             is_group = isinstance(ctx.command, click.Group)
             if not is_group or ctx.invoked_subcommand is not None:
                 exit_if_standalone(command_name or ctx.info_name)
-            return ctx.invoke(f, *args, **kwargs)
+            # ``f`` is the bare callback (its own ``@click.pass_context`` was replaced
+            # by this decorator), so ``ctx.invoke`` will not auto-inject the context --
+            # pass it explicitly as the first positional argument.
+            return ctx.invoke(f, ctx, *args, **kwargs)
 
         return wrapper
 
