@@ -1406,9 +1406,7 @@ class Lsf(Environment):
             AssertionError: if the cosrclone step YAML is missing or required
                 secret name keys are absent from cos_metadata.
         """
-        cosrclone_step_path = (
-            _LSF_COSRCLONE_DIR / STEP_FILE_NAME
-        )
+        cosrclone_step_path = _LSF_COSRCLONE_DIR / STEP_FILE_NAME
         assert cosrclone_step_path.is_file(), "cosrclone step is missing"
         step_section = StepConfigSection.model_validate(
             StepConfig.from_yaml(path=cosrclone_step_path).config

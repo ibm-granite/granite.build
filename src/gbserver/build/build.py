@@ -271,7 +271,9 @@ class Build(BuildEntity):
                         #     errors.add(err=err, type=GBValidationErrorType.NOT_EXIST)
                         #     continue
                     except Exception as e:
-                        err = f"{err_prefix} the step URI {step.step_uri} is invalid: {e}"
+                        err = (
+                            f"{err_prefix} the step URI {step.step_uri} is invalid: {e}"
+                        )
                         errors.add(err=err)
         return errors
 

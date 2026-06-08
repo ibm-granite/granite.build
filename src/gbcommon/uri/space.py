@@ -110,7 +110,7 @@ class SpaceURI(URI):
         """
         if not uri_suffix.startswith(STEPS_PREFIX):
             return None
-        after = uri_suffix[len(STEPS_PREFIX):]
+        after = uri_suffix[len(STEPS_PREFIX) :]
         if not after:
             return None
         name, _, rest = after.partition("/")
@@ -193,7 +193,7 @@ class SpaceURI(URI):
         step_types: List[str] = (
             getattr(SpaceURI._thread_local, "current_step_types", None) or []
         )
-        rest = uri_suffix[len(STEPS_PREFIX):]
+        rest = uri_suffix[len(STEPS_PREFIX) :]
         candidates = [f"{STEPS_PREFIX}{st}/{rest}" for st in step_types]
         candidates.append(uri_suffix)  # env-agnostic fallback
         return candidates
