@@ -45,7 +45,7 @@ configurations/
   2. Recursive glob `<base>/**/<name>/step.yaml` — first candidate whose `environment_configs` keys contain the active env's class name (e.g. `Bash`, `Docker`, `K8s`, `Skypilot`).
   3. `<base>/steps/<name>/` — env-agnostic fallback.
 
-  See [docs/operators/environment-yaml-config.md](../docs/operators/environment-yaml-config.md) for the full reference.
+  See [docs/operators/step-resolution.md](../docs/operators/step-resolution.md) for the full reference.
 
 ## Consumers
 
@@ -55,6 +55,7 @@ configurations/
 
 ## See also
 
-- [docs/operators/environment-yaml-config.md](../docs/operators/environment-yaml-config.md) — environment.yaml and step.yaml reference, including step resolution rules.
+- [docs/operators/environment-yaml-config.md](../docs/operators/environment-yaml-config.md) — environment.yaml and step.yaml reference.
+- [docs/operators/step-resolution.md](../docs/operators/step-resolution.md) — full step resolution rules (env-co-located, env-class match, env-agnostic).
 - [src/gbcommon/uri/space.py](../src/gbcommon/uri/space.py) — `SpaceURI` resolver implementing the three-tier lookup.
 - [src/gbserver/build/targetstep.py](../src/gbserver/build/targetstep.py) — scopes the active env on the resolver thread-local during step assimilation.
