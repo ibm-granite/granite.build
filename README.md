@@ -49,14 +49,14 @@ flowchart LR
     BR --> Bash
     BR --> RunPod
     BR --> SkyPilot
-    Docker & Kubernetes & Bash & RunPod & SkyPilot --> AS["Artifact stores\n(HuggingFace, file://, git://)"]
+    Docker & Kubernetes & Bash & RunPod & SkyPilot --> AS["Artifact stores</br>(HuggingFace, file://, git://)"]
 
     classDef white fill:#fff,color:#000,stroke:#999
     class BY white
 ```
 
-The **BuildWatcher** polls storage for pending builds and creates a **BuildRunner** for each one. The runner walks the target graph, resolving dependencies and launching steps through the configured **Environment** (Docker, Kubernetes, Bash, RunPod, or SkyPilot). Each step can pull inputs from and push outputs to **artifact stores** selected by URI scheme (`hf://`, `file://`, `git://`, `cos://`).
-The build runs in an associated space providing environments, credentials, artifact stores and step implementations. 
+The **BuildWatcher** polls storage for pending builds and creates a **BuildRunner** for each one. 
+The build runs in an associated **Space** providing environments, credentials, artifact stores and step implementations. 
 
 <center>
 <img src="docs/images/build-execution.jpg" alt="Build Execution" width="50%"  />
