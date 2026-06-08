@@ -26,6 +26,7 @@ from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
 from gbserver.api.builds import builds_api
+from gbserver.api.event_subscribe import event_subscribe_router
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
@@ -64,6 +65,7 @@ def read_root():
     }
 
 
+root_api.include_router(event_subscribe_router, prefix=API_BASE_PATH)
 root_api.mount(f"{API_BASE_PATH}/auth", auth_api)
 root_api.mount(f"{API_BASE_PATH}/artifacts", artifacts_api)
 root_api.mount(f"{API_BASE_PATH}/builds", builds_api)
