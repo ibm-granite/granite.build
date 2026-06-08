@@ -166,15 +166,25 @@ def _run_standalone(
 
     set_space_access_manager(StandaloneSpaceAccessManager())
 
-    # Register both 'standalone' (legacy alias) and 'public' (matches the new
-    # space.yaml name) pointing at the same directory.  The trailing-slash
-    # variant on the second URI sidesteps the unique index on git_repo_uri
-    # without changing the schema; both URIs resolve to the same dir on disk.
+    # Backward compatibility:  the standalone space.yaml's `name:` field used
+    # to be `standalone`; it is now `public`.  Existing deployments,
+    # bookmarks, scripts, and database rows still reference the old name, so
+    # we register two rows pointing at the exact same directory:
+    #
+    #   - 'public'     — matches the current space.yaml name field.
+    #   - 'standalone' — legacy alias kept so old build configs and tooling
+    #                    that still say `space_name: standalone` continue to
+    #                    resolve.
+    #
+    # Both rows share the same `git_repo_uri`.  This is allowed because the
+    # `git_repo_uri` column is not unique (see SQLSpaceStorage); only `name`
+    # is unique, so the two rows coexist cleanly.
     storage = singleton_storage.get_admin_storage()
     abs_dir = os.path.abspath(space_dir)
+    space_uri = f"file://{abs_dir}"
     space_aliases = [
-        ("standalone", f"file://{abs_dir}"),
-        ("public", f"file://{abs_dir}/"),
+        ("public", space_uri),
+        ("standalone", space_uri),
     ]
     for name, uri in space_aliases:
         existing = storage.space_storage.get_by_name(name)
