@@ -55,11 +55,11 @@ flowchart LR
     class BY white
 ```
 
-The **BuildWatcher** polls storage for pending builds and creates a **BuildRunner** for each one. 
-The build runs in an associated **Space** providing environments, credentials, artifact stores and step implementations. 
+The **BuildWatcher** polls storage for pending builds and creates a **BuildRunner** for each one.
+The build runs in an associated **Space** providing environments, credentials, artifact stores and step implementations.
 
 <p align="center">
-<img src="docs/images/build-execution.jpg" alt="Build Execution" width="50%"  />
+<img src="docs/images/build-execution.jpg" alt="Build Execution" width="50%" />
 </p>
 
 The buildrunner walks the target graph, resolving dependencies and launching steps through the configured **Environment** (Docker, Kubernetes, Bash, RunPod, or SkyPilot). Each step can pull inputs from and push outputs to **artifact stores** selected by URI scheme (`hf://`, `file://`, `git://`, `cos://`).
@@ -70,7 +70,7 @@ A cloud-based configuration can be seen [here](docs/images/architecture-cloud.jp
 Most of what follows utilizes the standalone configuration, shown below.
 
 <p align="center">
-<img src="docs/images/architecture-standalone.jpg" alt="Granite.Build Standalone Configuration"  />
+<img src="docs/images/architecture-standalone.jpg" alt="Granite.Build Standalone Configuration" />
 </p>
 
 ## Quick start (standalone)
@@ -157,7 +157,6 @@ llm.build:
       steps:
         - step_uri: space://steps/eval
 ```
-
 
 For the full schema, see [`docs/users/build-yaml-reference.md`](docs/users/build-yaml-reference.md).
 
