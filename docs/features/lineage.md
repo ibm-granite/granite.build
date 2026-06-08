@@ -106,7 +106,7 @@ Supported artifact types for lineage: model, dataset, fileset, table, bucket. Hu
 | `GBSERVER_WANDB_API_KEY` | (empty) | WandB API key (secret) |
 | `GBSERVER_WANDB_PROJECT` | `lineage-tracking` | WandB project name |
 | `GBSERVER_WANDB_ENTITY` | (varies per env) | WandB entity/team (secret) |
-| `GBSERVER_WANDB_BASE_URL` | `https://ibm.wandb.io` | WandB server URL |
+| `GBSERVER_WANDB_BASE_URL` | `https://api.wandb.ai` | WandB server URL |
 
 ### Dependencies
 
