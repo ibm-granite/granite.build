@@ -120,7 +120,8 @@ class TargetStep(BuildEntity):
         # Scope the active env's step-discovery context on SpaceURI so that
         # any `space://steps/...` URIs resolved during step assimilation try,
         # in order: (1) the env's own directory (env-co-located steps),
-        # (2) the env's step_type chain, (3) env-agnostic locations.
+        # (2) env-class-match against `environment_configs` keys, (3) the
+        # env-agnostic fallback location.
         with SpaceURI.with_current_env(environment):
             self.step = Step(
                 stepuri=targetstep.step_uri, context=context, force_fetch=force_fetch  # type: ignore[arg-type]
@@ -129,7 +130,6 @@ class TargetStep(BuildEntity):
             self.target_name = target_name
             self.target_step_index = target_step_index
             self.environment = environment
-            self._validate_step_type_against_environment()
             targetstep_dir = target_dir / os.path.basename(self.step.dir) / random_string()  # type: ignore[arg-type]
             self.context = context
             sync_or_copy(str(self.step.dir) + "/", targetstep_dir)
@@ -146,32 +146,6 @@ class TargetStep(BuildEntity):
             force_fetch=force_fetch,
             **kwargs,
         )
-
-    def _validate_step_type_against_environment(self: Self) -> None:
-        """Warn when a loaded step.yaml's ``step_type`` field disagrees with the
-        active environment's ``step_type`` chain.
-
-        A step that declares a step_type is asserting it's intended for envs
-        whose chain contains that value; loading it under an env that does not
-        list that step_type is almost certainly a misconfiguration.  Steps with
-        no ``step_type`` field are env-agnostic and accepted unconditionally.
-        """
-        step_config = getattr(self.step, "config", None)
-        if step_config is None:
-            return
-        declared_step_type = getattr(step_config, "step_type", None)
-        if not declared_step_type:
-            return
-        env_chain = self.environment.step_type_chain
-        if declared_step_type not in env_chain:
-            logger.warning(
-                "step %s declares step_type=%r but env %s has step_type chain %s; "
-                "this is likely a misconfiguration",
-                self.step_uri,
-                declared_step_type,
-                getattr(self.environment, "type", "?"),
-                env_chain,
-            )
 
     def __get_validator_context(self: Self) -> dict:
         step_dir = self.step.step_yaml_path.parent

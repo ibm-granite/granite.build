@@ -23,8 +23,9 @@ configurations/
 │   │       └── kubernetes/environment.yaml
 │   └── steps/
 │       ├── <name>/step.yaml             # env-agnostic step (matches any env)
-│       └── <step_type>/<name>/step.yaml # step_type-specific step (matches envs whose
-│                                        # `step_type` chain contains this dir name)
+│       └── <env-class>/<name>/step.yaml # env-class-keyed split (matches envs whose
+│                                        # class is `<env-class>`, e.g. `bash/`,
+│                                        # `docker/`, `skypilot/`, `k8s/`)
 └── spaces/
     └── standalone/
         └── public/                      # user-facing STANDALONE space
@@ -41,10 +42,10 @@ configurations/
 - **`configurations/spaces/standalone/public/space.yaml`** is the canonical user-facing space. Its `base_uris` chains into `configurations/assets/` so `space://environments/...`, `space://assetstores/...`, and `space://steps/...` resolve through to the assets tree.
 - **Step resolution tiers**: when a target runs, `space://steps/<name>` is resolved in order:
   1. `<env-dir>/steps/<name>/` — steps co-located in the active env's own directory (auto-discovered).
-  2. `assets/steps/<step_type>/<name>/` — for each `step_type` in the env's chain (cross-env-class pools).
-  3. `assets/steps/<name>/` — env-agnostic fallback.
+  2. Recursive glob `<base>/**/<name>/step.yaml` — first candidate whose `environment_configs` keys contain the active env's class name (e.g. `Bash`, `Docker`, `K8s`, `Skypilot`).
+  3. `<base>/steps/<name>/` — env-agnostic fallback.
 
-  See [Step type routing](../docs/operators/environment-yaml-config.md#step_type-routing-steps-to-environments) for the full reference.
+  See [docs/operators/environment-yaml-config.md](../docs/operators/environment-yaml-config.md) for the full reference.
 
 ## Consumers
 
@@ -54,6 +55,6 @@ configurations/
 
 ## See also
 
-- [docs/operators/environment-yaml-config.md](../docs/operators/environment-yaml-config.md) — environment.yaml and step.yaml reference, including the `step_type` matching rules.
-- [src/gbcommon/uri/space.py](../src/gbcommon/uri/space.py) — `SpaceURI` resolver that walks the `step_type` chain.
-- [src/gbserver/build/targetstep.py](../src/gbserver/build/targetstep.py) — sets the active env's `step_type_chain` on the resolver thread-local during step assimilation.
+- [docs/operators/environment-yaml-config.md](../docs/operators/environment-yaml-config.md) — environment.yaml and step.yaml reference, including step resolution rules.
+- [src/gbcommon/uri/space.py](../src/gbcommon/uri/space.py) — `SpaceURI` resolver implementing the three-tier lookup.
+- [src/gbserver/build/targetstep.py](../src/gbserver/build/targetstep.py) — scopes the active env on the resolver thread-local during step assimilation.

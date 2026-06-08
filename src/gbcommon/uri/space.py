@@ -55,9 +55,7 @@ class SpaceURI(URI):
         elif uristr.startswith(SPACE_SCHEME):
             uri_suffix = uristr.removeprefix(SPACE_SCHEME + "://")
         # Tier 1: env-co-located step lookup (only for `space://steps/<name>`).
-        # The env's own directory carries plain `steps/<name>/` paths — it does
-        # not sub-key by step_type — so we check just the bare suffix here, not
-        # the step_type-prefixed candidate list.
+        # The env's own directory carries plain `steps/<name>/` paths.
         if uri_suffix.startswith(STEPS_PREFIX):
             env_dir_uri: Optional[str] = getattr(
                 SpaceURI._thread_local, "current_env_dir_uri", None
@@ -78,17 +76,14 @@ class SpaceURI(URI):
         match = SpaceURI._try_env_class_match(uri_suffix)
         if match is not None:
             return match  # type: ignore[return-value]
-        # Tier 2: step_type chain + env-agnostic fallback against the space's
-        # own base_uris.
-        candidates = SpaceURI._build_candidates(uri_suffix)
-        for candidate in candidates:
-            for base_uri in SpaceURI._thread_local.base_uris:
-                resolved = URI.get_uri(
-                    base_uri, "file", secrets=SpaceURI._thread_local.space_secrets
-                )
-                resolved.append_path(candidate)
-                if resolved.exists():
-                    return resolved  # type: ignore[return-value]
+        # Tier 2: env-agnostic fallback against the space's own base_uris.
+        for base_uri in SpaceURI._thread_local.base_uris:
+            resolved = URI.get_uri(
+                base_uri, "file", secrets=SpaceURI._thread_local.space_secrets
+            )
+            resolved.append_path(uri_suffix)
+            if resolved.exists():
+                return resolved  # type: ignore[return-value]
         raise ValueError(f"Unresolvable space uri : {uristr}")
 
     @staticmethod
@@ -178,26 +173,6 @@ class SpaceURI(URI):
         p = Path(path_str)
         return p if p.is_absolute() else None
 
-    @staticmethod
-    def _build_candidates(uri_suffix: str) -> List[str]:
-        """Return the ordered list of suffixes to try against each base_uri.
-
-        For ``space://steps/<rest>`` the active env's step_type chain (from the
-        thread-local) is prepended so the resolver tries the most-preferred
-        step_type-specific path first, falling back through the chain to the
-        env-agnostic ``steps/<rest>`` location.  All other URI prefixes pass
-        through unchanged so this only affects step lookups.
-        """
-        if not uri_suffix.startswith(STEPS_PREFIX):
-            return [uri_suffix]
-        step_types: List[str] = (
-            getattr(SpaceURI._thread_local, "current_step_types", None) or []
-        )
-        rest = uri_suffix[len(STEPS_PREFIX) :]
-        candidates = [f"{STEPS_PREFIX}{st}/{rest}" for st in step_types]
-        candidates.append(uri_suffix)  # env-agnostic fallback
-        return candidates
-
     @classmethod
     def set_baseuris(cls, base_uris: List[str], space_secrets: dict):
         cls._thread_local.space_secrets = space_secrets
@@ -240,43 +215,14 @@ class SpaceURI(URI):
 
     @classmethod
     @contextmanager
-    def with_current_env_step_types(
-        cls, step_types: Optional[List[str]]
-    ) -> Iterator[None]:
-        """Scope a step_type chain on the thread-local for the duration of the
-        ``with`` block.
-
-        Saves and restores any previous value so that nested or sibling target
-        processing in the same thread doesn't leak.  ``None`` or an empty list
-        means "no step_type-narrowing" — the resolver behaves as if the field
-        had never been set.
-
-        Args:
-            step_types: Ordered chain of step_type strings, most-preferred first.
-                Pass ``None`` or an empty list to opt out of narrowing.
-        """
-        prev = getattr(cls._thread_local, "current_step_types", None)
-        cls._thread_local.current_step_types = list(step_types) if step_types else None
-        try:
-            yield
-        finally:
-            if prev is None:
-                if hasattr(cls._thread_local, "current_step_types"):
-                    del cls._thread_local.current_step_types
-            else:
-                cls._thread_local.current_step_types = prev
-
-    @classmethod
-    @contextmanager
     def with_current_env(cls, environment) -> Iterator[None]:
         """Scope the active env's step-discovery context on the thread-local
         for the duration of the ``with`` block.
 
-        Sets three thread-local fields used by ``SpaceURI.__new__`` when
+        Sets two thread-local fields used by ``SpaceURI.__new__`` when
         resolving ``space://steps/<name>`` URIs:
 
         * ``current_env_dir_uri``     ← ``environment.environment_dir_uri``
-        * ``current_step_types``      ← ``environment.step_type_chain``
         * ``current_env_class_name``  ← ``environment.__class__.__name__``
 
         Step lookups consult, in order:
@@ -287,35 +233,24 @@ class SpaceURI(URI):
            ``environment_configs`` keys contain the active env's class name
            (e.g. ``K8s``, ``Skypilot``).  Subdirectory naming is conventional
            only; the match is by step.yaml content.
-        3. ``<base>/steps/<step_type>/<name>/`` for each step_type in the env's
-           chain — cross-env-class step_type pools.
-        4. ``<base>/steps/<name>/`` — env-agnostic fallback.
+        3. ``<base>/steps/<name>/`` — env-agnostic fallback.
 
         Prior values are saved on enter and restored on exit so nested or
         sibling target processing in the same thread doesn't leak.
 
         Args:
             environment: The active target's ``Environment`` instance.  Reads
-                ``environment.step_type_chain``,
-                ``environment.environment_dir_uri``, and the instance class.
+                ``environment.environment_dir_uri`` and the instance class.
         """
-        prev_steps = getattr(cls._thread_local, "current_step_types", None)
         prev_dir = getattr(cls._thread_local, "current_env_dir_uri", None)
         prev_class = getattr(cls._thread_local, "current_env_class_name", None)
-        chain = getattr(environment, "step_type_chain", None) or None
         env_dir = getattr(environment, "environment_dir_uri", None)
         env_class = environment.__class__.__name__ if environment is not None else None
-        cls._thread_local.current_step_types = list(chain) if chain else None
         cls._thread_local.current_env_dir_uri = env_dir
         cls._thread_local.current_env_class_name = env_class
         try:
             yield
         finally:
-            if prev_steps is None:
-                if hasattr(cls._thread_local, "current_step_types"):
-                    del cls._thread_local.current_step_types
-            else:
-                cls._thread_local.current_step_types = prev_steps
             if prev_dir is None:
                 if hasattr(cls._thread_local, "current_env_dir_uri"):
                     del cls._thread_local.current_env_dir_uri
