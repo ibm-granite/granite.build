@@ -95,7 +95,7 @@ steps:
         learning_rate: 2e-5
 ```
 
-See the [`build.yaml` reference](../build-yaml-reference.md#steps)
+See the [`build.yaml` reference](../users/build-yaml-reference.md#steps)
 for the full set of fields.
 
 ## Extending with custom steps
@@ -112,4 +112,4 @@ Three approaches for running custom code:
 
 - [Templates](../templates/README.md) — reusable build.yaml patterns
 - [`build.yaml` reference](../users/build-yaml-reference.md) — full schema
-- [`environment.yaml` reference](../operators/environment-yaml-config.md) — environment definitions — environment definitions
+- [`environment.yaml` reference](../operators/environment-yaml-config.md) — environment definitions

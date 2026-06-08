@@ -167,7 +167,7 @@ Valid: `my-first-build`, `sft_full_run_01`
 
 ## See also
 
-- [`build.yaml` reference](../build-yaml-reference.md) — full schema
+- [`build.yaml` reference](build-yaml-reference.md) — full schema
 - [CLI reference](cli-reference.md) — all `gb` commands
 - [Bring Your Own Step](bring-your-own-step.md) — custom code steps
 - [Glossary](../glossary.md) — term definitions

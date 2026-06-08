@@ -95,6 +95,6 @@ Templates shipped with this repo live in [`assets/templates/`](../../assets/temp
 
 ## See also
 
-- [`build.yaml` reference](../build-yaml-reference.md) — full schema
+- [`build.yaml` reference](../users/build-yaml-reference.md) — full schema
 - [Steps](../steps/README.md) — built-in and custom steps
 - [Bring Your Own Step](../users/bring-your-own-step.md) — custom code as a step
