@@ -145,9 +145,9 @@ class TestCreateScopedUser:
         perm_url = calls[1].args[0]
         perm_body = calls[1].kwargs["json"]
         assert "/api/permissions/%2F/" in perm_url
-        assert perm_body["configure"] == ""
-        assert perm_body["write"] == ""
-        assert perm_body["read"] == f"events\\.{build_id}\\..*"
+        assert perm_body["configure"] == f"events\\.{build_id}\\..*"
+        assert perm_body["write"] == f"events\\.{build_id}\\..*"
+        assert f"events\\.{build_id}\\..*" in perm_body["read"]
 
         # Call 3: Topic permissions
         topic_url = calls[2].args[0]

@@ -14,7 +14,7 @@ Flow:
 6. Verifies events were received by the consumer
 
 Usage:
-    python scripts/test-webhook-e2e.py [--build-dir PATH] [--timeout 120]
+    python scripts/test-event-publish-e2e.py [--build-dir PATH] [--timeout 120]
 
 Requirements:
     - Activated venv with gbserver installed
@@ -191,31 +191,29 @@ def consume_events(subscribe_info: dict, timeout: int) -> list:
     received = []
 
     async def _consume():
-        from gbserver.messaging.messaging_base import Address
-        from gbserver.messaging.rabbitmq_base import RabbitMQBase, RabbitSettings
+        import aio_pika
 
-        settings = RabbitSettings(
+        consumer_conn = await aio_pika.connect(
             host=subscribe_info["host"],
             port=subscribe_info["port"],
-            user=subscribe_info["username"],
+            login=subscribe_info["username"],
             password=subscribe_info["password"],
-            uri="amqp",
         )
-        consumer = RabbitMQBase(
-            addr=Address(
-                exchange=subscribe_info["exchange"],
-                queue=subscribe_info["queue"],
-                routing_key=None,
-            ),
-            settings=settings,
+        consumer_chan = await consumer_conn.channel()
+        queue = await consumer_chan.declare_queue(
+            subscribe_info["queue"], exclusive=True
         )
-        await consumer.setup()
+        exchange = await consumer_chan.get_exchange(
+            subscribe_info["exchange"], ensure=False
+        )
+        await queue.bind(exchange, routing_key=subscribe_info["routing_key"])
 
-        async def handler(body, routing_key, delivery_tag):
-            event = json.loads(body)
-            received.append(event)
+        async def on_message(msg):
+            async with msg.process():
+                event = json.loads(msg.body)
+                received.append(event)
 
-        await consumer.consume_stream(handler)
+        await queue.consume(on_message)
 
         # Wait until timeout or until we see a terminal status event
         start = time.time()
@@ -223,84 +221,14 @@ def consume_events(subscribe_info: dict, timeout: int) -> list:
             for evt in received:
                 if evt.get("status") in TERMINAL_STATUSES:
                     await asyncio.sleep(2)  # Collect any trailing events
-                    await consumer.close()
+                    await consumer_conn.close()
                     return
             await asyncio.sleep(1)
 
-        await consumer.close()
+        await consumer_conn.close()
 
     asyncio.run(_consume())
     return received
-
-
-# ─── Build Polling ───────────────────────────────────────────────────────────
-
-
-def wait_for_build(server_port: int, build_id: str, timeout: int) -> str:
-    """Poll build status until terminal. Returns final status."""
-    import requests
-
-    poll_interval = 3
-    elapsed = 0
-
-    while elapsed < timeout:
-        try:
-            r = requests.get(
-                f"http://127.0.0.1:{server_port}/api/v1/builds/{build_id}/status",
-                timeout=2,
-            )
-            data = r.json()
-            build_status = data.get("build", {}).get("status", "unknown")
-        except Exception as e:
-            build_status = f"error: {e}"
-
-        print(f"  [{elapsed:3d}s] Build status: {build_status}")
-
-        if build_status in TERMINAL_STATUSES:
-            return build_status
-
-        time.sleep(poll_interval)
-        elapsed += poll_interval
-
-    return "timeout"
-
-
-# ─── Standalone Notification Test ────────────────────────────────────────────
-
-
-def test_standalone_notifications(build_dir: str) -> bool:
-    """Verify standalone notification config loading works.
-
-    This doesn't test actual delivery (would need a real SMTP server or macOS),
-    but verifies the config → dispatcher → adapter pipeline initializes correctly.
-    """
-    import tempfile
-
-    config_content = """
-notifications:
-  - type: macos
-    events: [status_event]
-"""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        f.write(config_content)
-        config_path = f.name
-
-    try:
-        from gbserver.notifications.dispatcher import StandaloneDispatcher
-
-        dispatcher = StandaloneDispatcher(config_path=config_path)
-        if dispatcher._adapters:
-            print("  Standalone dispatcher initialized with adapters:")
-            for entry in dispatcher._adapters:
-                adapter_type = type(entry["adapter"]).__name__
-                events = entry["events"]
-                print(f"    - {adapter_type}: events={events}")
-            return True
-        else:
-            print("  WARNING: No adapters created (may be expected on non-macOS)")
-            return True  # Not a failure — macOS adapter skips on Linux
-    finally:
-        os.unlink(config_path)
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
@@ -334,12 +262,21 @@ def main():
         default=120,
         help="Max seconds to wait for build completion (default: 120)",
     )
-    parser.add_argument(
-        "--skip-rabbitmq",
-        action="store_true",
-        help="Skip RabbitMQ tests (only test standalone notifications)",
-    )
     args = parser.parse_args()
+
+    if not os.getenv("RABBITMQ_HOST"):
+        print("ERROR: RABBITMQ_HOST not set. A running RabbitMQ is required.")
+        print()
+        print("Quick setup:")
+        print(
+            "  docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:management"
+        )
+        print("  export RABBITMQ_HOST=localhost RABBITMQ_PORT=5672")
+        print("  export GBSERVER_RABBITMQ_MGMT_URL=http://localhost:15672")
+        print(
+            "  export GBSERVER_RABBITMQ_MGMT_USER=guest GBSERVER_RABBITMQ_MGMT_PASSWORD=guest"
+        )
+        sys.exit(1)
 
     # Clean stale SQLite DB to avoid leftover builds from previous runs
     db_path = os.path.join(os.path.expanduser("~"), ".llmb", "llmb-server.db")
@@ -350,8 +287,6 @@ def main():
     server_port = args.server_port or get_free_port()
     build_dir = os.path.abspath(args.build_dir)
 
-    has_rabbitmq = bool(os.getenv("RABBITMQ_HOST")) and not args.skip_rabbitmq
-
     print("=" * 60)
     print("  Build Event Notifications — End-to-End Test")
     print("=" * 60)
@@ -359,38 +294,24 @@ def main():
     print(f"  gbserver port:    {server_port}")
     print(f"  Build directory:  {build_dir}")
     print(f"  Timeout:          {args.timeout}s")
-    print(f"  RabbitMQ:         {'available' if has_rabbitmq else 'skipped'}")
+    print(
+        f"  RabbitMQ:         {os.getenv('RABBITMQ_HOST')}:{os.getenv('RABBITMQ_PORT', '5672')}"
+    )
     print()
 
-    # Step 1: Test standalone notification pipeline
-    print("[1/5] Testing standalone notification dispatcher...")
-    standalone_ok = test_standalone_notifications(build_dir)
-    print()
-
-    if not has_rabbitmq:
-        print("  RabbitMQ not available (set RABBITMQ_HOST to enable).")
-        print("  Skipping event publishing tests.")
-        print()
-        if standalone_ok:
-            print("  PASS — Standalone notification pipeline verified.")
-        else:
-            print("  FAIL — Standalone notification pipeline failed.")
-            sys.exit(1)
-        return
-
-    # Step 2: Start gbserver
-    print("[2/5] Starting gbserver (standalone mode + event publishing)...")
+    # Step 1: Start gbserver
+    print("[1/4] Starting gbserver (standalone mode + event publishing)...")
     start_gbserver(server_port, build_dir)
     print(f"  Server ready at http://127.0.0.1:{server_port}")
     print()
 
-    # Step 3: Submit build
-    print("[3/5] Submitting build...")
+    # Step 2: Submit build
+    print("[2/4] Submitting build...")
     build_id = submit_build(server_port, build_dir)
     print()
 
-    # Step 4: Subscribe to build events
-    print("[4/5] Subscribing to build events via RabbitMQ...")
+    # Step 3: Subscribe to build events
+    print("[3/4] Subscribing to build events via RabbitMQ...")
     subscribe_info = subscribe_to_build(server_port, build_id)
     print(f"  Username:     {subscribe_info['username']}")
     print(f"  Exchange:     {subscribe_info['exchange']}")
@@ -399,38 +320,32 @@ def main():
     print(f"  Expires:      {subscribe_info['expires_at']}")
     print()
 
-    # Step 5: Wait for build and consume events
-    print("[5/5] Consuming events (waiting for build to complete)...")
+    # Step 4: Consume events until build completes
+    print("[4/4] Consuming events (waiting for build to complete)...")
     events = consume_events(subscribe_info, timeout=args.timeout)
 
     print()
     print("=" * 60)
     print("  Results")
     print("=" * 60)
-    print(f"  Events received:      {len(events)}")
+    print(f"  Events received: {len(events)}")
+    print()
 
     if events:
-        event_types = set()
         for evt in events:
-            event_types.add(evt.get("event_type", "unknown"))
             status = evt.get("status", "")
-            status_str = f" status={status}" if status else ""
-            print(
-                f"    [{evt.get('event_type', '?')}] "
-                f"build={evt.get('build_id', '?')[:8]}...{status_str}"
-            )
-        print()
-        print(f"  Event types seen:     {sorted(event_types)}")
+            target = evt.get("target_name", "")
+            step = evt.get("step_name", "")
+            scope = "build" if not target else ("step" if step else "target")
+            print(f"    [{scope:6s}] {status:10s} {evt.get('message', '')}")
 
-        if "status_event" in event_types:
-            print()
-            print("  SUCCESS — Build events published and consumed end-to-end!")
+        print()
+        if any(evt.get("status") in TERMINAL_STATUSES for evt in events):
+            print("  PASS — Build events published and consumed end-to-end!")
         else:
-            print()
-            print("  WARNING — No status_event found in received events.")
+            print("  WARNING — No terminal status event received.")
             sys.exit(1)
     else:
-        print()
         print("  FAIL — No events were received!")
         print()
         print("  Possible causes:")

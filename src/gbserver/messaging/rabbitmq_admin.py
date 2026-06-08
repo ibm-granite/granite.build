@@ -139,10 +139,11 @@ class RabbitMQAdmin:
                 f"{self.management_url}/api/permissions/"
                 f"{self._vhost_encoded}/{username}"
             )
+            exchange_escaped = exchange.replace(".", "\\.")
             perm_body = {
-                "configure": "",
-                "write": "",
-                "read": f"events\\.{build_id}\\..*",
+                "configure": f"events\\.{build_id}\\..*",
+                "write": f"events\\.{build_id}\\..*",
+                "read": f"({exchange_escaped}|events\\.{build_id}\\..*)",
             }
             resp = await client.put(perm_url, json=perm_body)
             if resp.status_code not in (201, 204):

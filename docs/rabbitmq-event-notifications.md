@@ -33,7 +33,7 @@ Response:
   "exchange": "build-events",
   "routing_key": "build.abc12345-full-uuid.#",
   "queue": "events.abc12345-full-uuid.xK9f",
-  "expires_at": "2026-06-02T18:30:00+00:00"
+  "expires_at": 1748886600
 }
 ```
 
@@ -67,7 +67,7 @@ Each event is a JSON object published to the exchange:
 {
   "build_id": "abc12345-full-uuid",
   "event_type": "status_event",
-  "timestamp": "2026-06-02T10:31:12+00:00",
+  "timestamp": 1748857872,
   "target_name": "training",
   "step_name": "space://steps/sft",
   "source": "build-framework",
@@ -80,7 +80,7 @@ Each event is a JSON object published to the exchange:
 |-------|---------------|-------------|
 | `build_id` | Yes | UUID of the build |
 | `event_type` | Yes | Always `status_event` for published events |
-| `timestamp` | Yes | ISO 8601 timestamp |
+| `timestamp` | Yes | Unix epoch seconds |
 | `target_name` | Yes | Target that produced the event (empty for build-level) |
 | `step_name` | Yes | Step URI (empty for target-level) |
 | `source` | Yes | Event source identifier |
@@ -211,6 +211,12 @@ Verify connectivity:
 
 ```bash
 curl -s http://localhost:15672/api/overview -u guest:guest | jq .cluster_name
+```
+
+To stop and remove the container:
+
+```bash
+docker stop rabbitmq && docker rm rabbitmq
 ```
 
 ---
