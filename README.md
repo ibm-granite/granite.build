@@ -77,6 +77,7 @@ Most of what follows utilizes the standalone configuration, shown below.
 
 Five commands to a running build, using the bundled `standalone-quickstart` sample.
 
+In a new terminal, run the following:
 ```bash
 # 1. Clone and enter the repo
 git clone git@github.com:ibm-granite/granite.build.git
@@ -89,7 +90,13 @@ source .venv/bin/activate
 # 3. Start the standalone server, pointed at the bundled sample space
 gbserver standalone --space-dir samples/standalone/standalone-quickstart
 
-# 4. In another terminal, activate the venv and submit the sample build
+```
+
+In a second terminal, run the build using the servers started above:
+
+```bash
+# 4. Activate the venv and submit the sample build
+cd granite.build
 source .venv/bin/activate
 export GB_ENVIRONMENT=STANDALONE
 gb build start -f samples/standalone/standalone-quickstart/build.yaml
