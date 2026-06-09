@@ -245,10 +245,7 @@ class TestPushassetHfstore:
         assert step_config.config["hfpush_config"]["private"] is False
 
 
-class TestLoadBuiltinHfLsfSection:
-    def test_injects_hf_token_secret(self, lsf_env, tmp_path):
-        """_load_builtin_hf_lsf_section injects HF_TOKEN into lsf_dict secrets."""
-        step_yaml_content = """\
+_HF_STEP_YAML = """\
 name: hfpull
 version: 1.0.0
 type: upload
@@ -268,14 +265,17 @@ environment_configs:
       bsub_monitor:
         type: bsub_monitor
 """
+
+
+class TestLoadBuiltinHfLsfSection:
+    def test_injects_hf_token_secret(self, lsf_env, tmp_path):
+        """_load_builtin_hf_lsf_section injects HF_TOKEN into lsf_dict secrets."""
         step_file = tmp_path / "step.yaml"
-        step_file.write_text(step_yaml_content)
+        step_file.write_text(_HF_STEP_YAML)
 
         hf_metadata = {"token_secretname": "MY_HF_SECRET"}
-        with patch("gbserver.environment.lsf.STEP_FILE_NAME", "step.yaml"):
-            lsf_dict, workload_dict = lsf_env._load_builtin_hf_lsf_section(
-                tmp_path, hf_metadata
-            )
+        with patch.object(lsf_env, "_resolve_builtin_step_yaml", return_value=step_file):
+            lsf_dict, _ = lsf_env._load_builtin_hf_lsf_section("hfpull", hf_metadata)
 
         assert lsf_dict["skip_finding_output_artifacts"] is True
         secrets = lsf_dict["secrets"]["secret_names_to_use_as_env_variable"]
@@ -285,29 +285,9 @@ environment_configs:
 
     def test_raises_on_missing_token_secretname(self, lsf_env, tmp_path):
         """_load_builtin_hf_lsf_section raises if token_secretname missing."""
-        step_yaml_content = """\
-name: hfpull
-version: 1.0.0
-type: upload
-config:
-  workload:
-    cwd: "."
-  compute_config:
-    total_memory_per_node: 10Gi
-environment_configs:
-  Lsf:
-    launchers:
-      tuning:
-        type: bsub
-        monitors:
-        - bsub_monitor
-    monitors:
-      bsub_monitor:
-        type: bsub_monitor
-"""
         step_file = tmp_path / "step.yaml"
-        step_file.write_text(step_yaml_content)
+        step_file.write_text(_HF_STEP_YAML)
 
-        with patch("gbserver.environment.lsf.STEP_FILE_NAME", "step.yaml"):
+        with patch.object(lsf_env, "_resolve_builtin_step_yaml", return_value=step_file):
             with pytest.raises(AssertionError, match="token_secretname is missing"):
-                lsf_env._load_builtin_hf_lsf_section(tmp_path, {})
+                lsf_env._load_builtin_hf_lsf_section("hfpull", {})
