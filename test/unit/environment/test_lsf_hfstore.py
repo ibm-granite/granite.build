@@ -274,7 +274,9 @@ class TestLoadBuiltinHfLsfSection:
         step_file.write_text(_HF_STEP_YAML)
 
         hf_metadata = {"token_secretname": "MY_HF_SECRET"}
-        with patch.object(lsf_env, "_resolve_builtin_step_yaml", return_value=step_file):
+        with patch.object(
+            lsf_env, "_resolve_builtin_step_yaml", return_value=step_file
+        ):
             lsf_dict, _ = lsf_env._load_builtin_hf_lsf_section("hfpull", hf_metadata)
 
         assert lsf_dict["skip_finding_output_artifacts"] is True
@@ -288,6 +290,8 @@ class TestLoadBuiltinHfLsfSection:
         step_file = tmp_path / "step.yaml"
         step_file.write_text(_HF_STEP_YAML)
 
-        with patch.object(lsf_env, "_resolve_builtin_step_yaml", return_value=step_file):
+        with patch.object(
+            lsf_env, "_resolve_builtin_step_yaml", return_value=step_file
+        ):
             with pytest.raises(AssertionError, match="token_secretname is missing"):
                 lsf_env._load_builtin_hf_lsf_section("hfpull", {})
