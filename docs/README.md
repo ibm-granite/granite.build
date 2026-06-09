@@ -12,8 +12,14 @@ You're authoring a `build.yaml`, picking environments, and submitting builds wit
 - [Getting started](getting-started.md) — first build on the standalone server
 - [`build.yaml` reference](users/build-yaml-reference.md) — full schema
 - [CLI reference](users/cli-reference.md) — `gb` subcommands
+- [Templates](templates/README.md) — reusable build.yaml patterns and how to create your own
+- [Steps](steps/README.md) — built-in steps, step.yaml structure, and custom step creation
 - [HuggingFace push](users/hf-push.md) — `hf://` URIs and `store_push`
+- [Bring your own step](users/bring-your-own-step.md) — custom code from a Git repo
+- [Custom code steps](users/custom-code-steps.md) — inline commands without step definitions
 - [Bring your own image](users/bring-your-own-image.md) — custom container images
+- [FAQ](users/faq.md) — common questions and troubleshooting
+- [Glossary](glossary.md) — key terms and abbreviations
 - [Try the demos](demos.md) — TRL fine-tuning and unitxt evaluation, standalone or on SLURM
 - Working examples live in [`samples/`](../samples/) and [`examples/`](../examples/)
 
@@ -23,7 +29,7 @@ Cross-cutting features you'll reach for:
 - [Step retry](features/step-retry-configuration.md) — retry a single step within one build
 - [`gbtest`](features/gbtest.md) — YAML-driven assertions for your builds
 - [Retry overview](features/retry.md) — how build- and step-level retry fit together
-- [Lineage tracking](features/lineage.md) — DMF Lakehouse and OpenLineage/W&B backends for build provenance
+- [Lineage tracking](features/lineage.md) — OpenLineage/W&B backend for build provenance
 
 ### I'm running gbserver
 
@@ -38,19 +44,12 @@ You're deploying gbserver, configuring environments, and keeping it healthy in p
 - [Multi-provider authentication](operators/multi-provider-authentication.md) — GitHub, IBMid, API key
 - [Troubleshooting](operators/troubleshooting.md) — common failures and where to look
 
-Planned (not yet written): a "secrets and credentials" decision guide, and
-a "monitoring and lineage" operator-facing summary.
-
 ### I'm changing gbserver
 
 You're modifying gbserver internals — adding an environment, a step, an asset store, or fixing the build engine.
 
 - [Architecture diagram](architecture/arch-diagram.md) — the big picture
 - [Environment classes](architecture/environment-classes.md) — the `Environment` base class and concrete implementations
-
-Planned (not yet written): a narrative architecture tour, a build-object-model
-reference (`Build`/`Target`/`Step` lifecycles), and design docs for the asset
-stores, storage layer, API layer, messaging, and resilience modules.
 
 ## Other
 

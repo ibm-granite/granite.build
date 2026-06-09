@@ -33,32 +33,51 @@ The system has three main components:
 
 - **build.yaml** — the pipeline definition. Each file declares a set of named **targets** (logical stages like "download", "fine-tune", "evaluate"). Each target specifies an execution environment, input/output artifacts, and one or more **steps** to run. Targets can depend on each other through artifact **bindings** — when an upstream target produces an output, downstream targets that reference it are automatically dispatched.
 
+<p align="center">
+<img src="docs/images/build-structure.jpg" alt="Build Structure" width="50%" />
+</p>
+
 ### How the pieces fit together
 
-```
-build.yaml ──→ gb build start ──→ gbserver REST API
-                                       │
-                                  BuildWatcher
-                                       │
-                                  BuildRunner
-                                       │
-                          ┌────────────┼────────────┐
-                          │            │            │
-                       Docker     Kubernetes     Bash
-                       RunPod      SkyPilot
-                          │            │            │
-                          └────────────┼────────────┘
-                                       │
-                              Artifact stores
-                          (HuggingFace, file://, git://)
+```mermaid
+flowchart LR
+    BY@{ shape: doc, label: "build.yaml" } -->|"gb build start"| API["gbserver REST API"]
+    API --> BW["BuildWatcher"]
+    BW --> BR["BuildRunner"]
+    BR --> Docker
+    BR --> Kubernetes
+    BR --> Bash
+    BR --> RunPod
+    BR --> SkyPilot
+    Docker & Kubernetes & Bash & RunPod & SkyPilot --> AS["Artifact stores</br>(HuggingFace, file://, git://)"]
+
+    classDef white fill:#fff,color:#000,stroke:#999
+    class BY white
 ```
 
-The **BuildWatcher** polls storage for pending builds and creates a **BuildRunner** for each one. The runner walks the target graph, resolving dependencies and launching steps through the configured **Environment** (Docker, Kubernetes, Bash, RunPod, or SkyPilot). Each step can pull inputs from and push outputs to **artifact stores** selected by URI scheme (`hf://`, `file://`, `git://`, `cos://`).
+The **BuildWatcher** polls storage for pending builds and creates a **BuildRunner** for each one.
+The build runs in an associated **Space** providing environments, credentials, artifact stores and step implementations.
 
-## Quick start
+<p align="center">
+<img src="docs/images/build-execution.jpg" alt="Build Execution" width="50%" />
+</p>
+
+The buildrunner walks the target graph, resolving dependencies and launching steps through the configured **Environment** (Docker, Kubernetes, Bash, RunPod, or SkyPilot). Each step can pull inputs from and push outputs to **artifact stores** selected by URI scheme (`hf://`, `file://`, `git://`, `cos://`).
+
+Granite.build can be configured to run in the cloud
+or on the local machine.
+A cloud-based configuration can be seen [here](docs/images/architecture-cloud.jpg).
+Most of what follows utilizes the standalone configuration, shown below.
+
+<p align="center">
+<img src="docs/images/architecture-standalone.jpg" alt="Granite.Build Standalone Configuration" />
+</p>
+
+## Quick start (standalone)
 
 Five commands to a running build, using the bundled `standalone-quickstart` sample.
 
+In a new terminal, run the following:
 ```bash
 # 1. Clone and enter the repo
 git clone git@github.com:ibm-granite/granite.build.git
@@ -71,7 +90,13 @@ source .venv/bin/activate
 # 3. Start the standalone server, pointed at the bundled sample space
 gbserver standalone --space-dir samples/standalone/standalone-quickstart
 
-# 4. In another terminal, activate the venv and submit the sample build
+```
+
+In a second terminal, run the build using the servers started above:
+
+```bash
+# 4. Activate the venv and submit the sample build
+cd granite.build
 source .venv/bin/activate
 export GB_ENVIRONMENT=STANDALONE
 gb build start -f samples/standalone/standalone-quickstart/build.yaml
