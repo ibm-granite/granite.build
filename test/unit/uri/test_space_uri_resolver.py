@@ -328,7 +328,9 @@ class TestResolveBaseUris:
         assert resolved == f"file://{expected}"
 
     def test_absolute_file_uri_passes_through(self, tmp_path):
-        out = _resolve_one_base_uri("file:///abs/assets", tmp_path, f"file://{tmp_path}")
+        out = _resolve_one_base_uri(
+            "file:///abs/assets", tmp_path, f"file://{tmp_path}"
+        )
         assert out == "file:///abs/assets"
 
     def test_non_file_scheme_passes_through(self):
