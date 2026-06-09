@@ -34,7 +34,7 @@ This build template generates synthetic data using DiGiT on a SkyPilot environme
 
 ## Configuration
 
-Edit `configurations/spaces/standalone/public/space.yaml` to set your S3 bucket URIs:
+Edit `configurations/spaces/local/space.yaml` to set your S3 bucket URIs:
 
 ```yaml
 variables:
@@ -51,8 +51,8 @@ environment_uri: space://environments/skypilot-managed/kubernetes
 ## Running
 
 ```bash
-gbserver standalone --space-dir configurations/spaces/standalone/public &
-gbserver build run-and-monitor configurations/spaces/standalone/public/templates/DiGiT_Skypilot \
+gbserver standalone --space-dir configurations/spaces/local &
+gbserver build run-and-monitor configurations/spaces/local/templates/DiGiT_Skypilot \
   --space-name public
 ```
 

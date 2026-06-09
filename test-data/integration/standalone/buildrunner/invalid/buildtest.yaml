@@ -5,11 +5,11 @@ expected_status: invalid
 # before any target runs.
 targets: []
 target_expectations: []
-# Use the shared standalone space at <repo>/configurations/spaces/standalone so the BuildRunner
+# Use the shared standalone space at <repo>/configurations/spaces/local so the BuildRunner
 # resolves space:// URIs without cloning from GitHub.  Relative path resolves
 # against this YAML's directory and is returned as an absolute file:// URI
 # by from_yaml.
-space_uri: ../../../../../configurations/spaces/standalone/public
+space_uri: ../../../../../configurations/spaces/local
 # Cancellation isn't meaningful for an invalid build, so opt out of the
 # default test_runner_cancellation method.
 tests:

@@ -167,24 +167,30 @@ def _run_standalone(
     set_space_access_manager(StandaloneSpaceAccessManager())
 
     # Backward compatibility:  the standalone space.yaml's `name:` field used
-    # to be `standalone`; it is now `public`.  Existing deployments,
-    # bookmarks, scripts, and database rows still reference the old name, so
-    # we register two rows pointing at the exact same directory:
+    # to be `standalone`, then `public`.  The space directory has since moved
+    # to configurations/spaces/local, but the `name:` field is still `public`.
+    # Existing deployments, bookmarks, scripts, and database rows reference the
+    # older names, so we register several rows pointing at the exact same
+    # directory:
     #
     #   - 'public'     — matches the current space.yaml name field.
     #   - 'standalone' — legacy alias kept so old build configs and tooling
     #                    that still say `space_name: standalone` continue to
     #                    resolve.
+    #   - 'local'      — alias matching the current directory name
+    #                    (configurations/spaces/local) for configs and tooling
+    #                    that reference the space by its directory name.
     #
-    # Both rows share the same `git_repo_uri`.  This is allowed because the
+    # All rows share the same `git_repo_uri`.  This is allowed because the
     # `git_repo_uri` column is not unique (see SQLSpaceStorage); only `name`
-    # is unique, so the two rows coexist cleanly.
+    # is unique, so the rows coexist cleanly.
     storage = singleton_storage.get_admin_storage()
     abs_dir = os.path.abspath(space_dir)
     space_uri = f"file://{abs_dir}"
     space_aliases = [
         ("public", space_uri),
         ("standalone", space_uri),
+        ("local", space_uri),
     ]
     for name, uri in space_aliases:
         existing = storage.space_storage.get_by_name(name)
@@ -282,11 +288,11 @@ def _run_standalone(
 )
 @click.option(
     "--space-dir",
-    default="configurations/spaces/standalone/public",
+    default="configurations/spaces/local",
     show_default=True,
     type=click.Path(exists=True, file_okay=False, dir_okay=True),
     help="Path to the space directory.  Defaults to the in-repo standalone "
-    "space at configurations/spaces/standalone/public; override to point at "
+    "space at configurations/spaces/local; override to point at "
     "any directory containing a space.yaml.",
 )
 @pass_environment

@@ -1,6 +1,14 @@
 # `configurations/`
 
-This directory holds the space, environment, step, and assetstore configurations consumed by builds. It is the canonical location after the `spaces/` reorganization.
+This directory holds the space, environment, step, and assetstore
+configurations consumed by builds.
+Primarily this is designed to support the local compute environment
+in which: 
+
+1. the gbserver components run locally in standalone mode
+(independent of space definitions),
+2. the compute environments also run on the local machine where the 
+build is started.
 
 ## Layout
 
@@ -27,19 +35,18 @@ configurations/
 │                                        # class is `<env-class>`, e.g. `bash/`,
 │                                        # `docker/`, `skypilot/`, `k8s/`)
 └── spaces/
-    └── standalone/
-        └── public/                      # user-facing STANDALONE space
-            ├── space.yaml               # name: public, base_uris: [file://../../../assets]
-            └── templates/               # build templates shipped with this space
-                └── <name>/
-                    ├── README.md
-                    └── build.yaml
+    └── local/                       # user-facing local/public/standalone space
+        ├── space.yaml               # name: public, base_uris: [file://../../assets]
+        └── templates/               # build templates shipped with this space
+            └── <name>/
+                ├── README.md
+                └── build.yaml
 ```
 
 ## How it composes
 
 - **`assets/`** is the leaf primitives directory. It holds no `space.yaml`; it's a target for `base_uris`, not a space in its own right.
-- **`configurations/spaces/standalone/public/space.yaml`** is the canonical user-facing space. Its `base_uris` chains into `configurations/assets/` so `space://environments/...`, `space://assetstores/...`, and `space://steps/...` resolve through to the assets tree.
+- **`configurations/spaces/local/space.yaml`** is the canonical user-facing space. Its `base_uris` chains into `configurations/assets/` so `space://environments/...`, `space://assetstores/...`, and `space://steps/...` resolve through to the assets tree.
 - **Step resolution tiers**: when a target runs, `space://steps/<name>` is resolved in order:
   1. `<env-dir>/steps/<name>/` — steps co-located in the active env's own directory (auto-discovered).
   2. Recursive glob `<base>/**/<name>/step.yaml` — first candidate whose `environment_configs` keys contain the active env's class name (e.g. `Bash`, `Docker`, `K8s`, `Skypilot`).
@@ -49,9 +56,9 @@ configurations/
 
 ## Consumers
 
-- **`gbserver standalone`** — `--space-dir` defaults to `configurations/spaces/standalone/public` ([command_standalone.py:259-267](../src/gbserver/commands/command_standalone.py#L259-L267)).
-- **Build tests** under `test/integration/standalone/buildrunner/` — each `buildtest.yaml` sets `space_uri` to a relative path resolving to `configurations/spaces/standalone/public`.
-- **Templates** — `gbserver build run-and-monitor configurations/spaces/standalone/public/templates/<name>` runs the templates that ship with the public space.
+- **`gbserver standalone`** — `--space-dir` defaults to `configurations/spaces/local` ([command_standalone.py:259-267](../src/gbserver/commands/command_standalone.py#L259-L267)).
+- **Build tests** under `test/integration/standalone/buildrunner/` — each `buildtest.yaml` sets `space_uri` to a relative path resolving to `configurations/spaces/local`.
+- **Templates** — `gbserver build run-and-monitor configurations/spaces/local/templates/<name>` runs the templates that ship with the public space.
 
 ## See also
 

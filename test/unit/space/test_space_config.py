@@ -2,7 +2,7 @@
 
 Validates the structure of `configurations/assets/` (the leaf primitives
 directory referenced via base_uris) and
-`configurations/spaces/standalone/public/` (the user-facing standalone space
+`configurations/spaces/local/` (the user-facing standalone space
 consumed by `gbserver standalone` and the build tests).
 """
 
@@ -13,7 +13,7 @@ import yaml
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 CONFIGURATIONS_DIR = REPO_ROOT / "configurations"
 ASSETS_DIR = CONFIGURATIONS_DIR / "assets"
-STANDALONE_PUBLIC_DIR = CONFIGURATIONS_DIR / "spaces" / "standalone" / "public"
+LOCAL_SPACE_DIR = CONFIGURATIONS_DIR / "spaces" / "local"
 
 
 class TestAssetsLayout:
@@ -36,34 +36,34 @@ class TestAssetsLayout:
 
 
 class TestStandalonePublicSpaceYaml:
-    """Validate configurations/spaces/standalone/public/space.yaml — the
+    """Validate configurations/spaces/local/space.yaml — the
     user-facing space consumed by `gbserver standalone` and the build tests."""
 
     def test_file_exists(self):
-        assert (STANDALONE_PUBLIC_DIR / "space.yaml").exists()
+        assert (LOCAL_SPACE_DIR / "space.yaml").exists()
 
     def test_yaml_loads(self):
-        with open(STANDALONE_PUBLIC_DIR / "space.yaml") as f:
+        with open(LOCAL_SPACE_DIR / "space.yaml") as f:
             data = yaml.safe_load(f)
         assert isinstance(data, dict)
 
     def test_name(self):
-        with open(STANDALONE_PUBLIC_DIR / "space.yaml") as f:
+        with open(LOCAL_SPACE_DIR / "space.yaml") as f:
             data = yaml.safe_load(f)
         assert data["name"] == "public"
 
     def test_base_uris_reference_assets(self):
-        with open(STANDALONE_PUBLIC_DIR / "space.yaml") as f:
+        with open(LOCAL_SPACE_DIR / "space.yaml") as f:
             data = yaml.safe_load(f)
         assert any("assets" in uri for uri in data["base_uris"])
 
     def test_secret_manager(self):
-        with open(STANDALONE_PUBLIC_DIR / "space.yaml") as f:
+        with open(LOCAL_SPACE_DIR / "space.yaml") as f:
             data = yaml.safe_load(f)
         assert data["secret_manager"]["type"] == "env"
 
     def test_default_environment_variable(self):
-        with open(STANDALONE_PUBLIC_DIR / "space.yaml") as f:
+        with open(LOCAL_SPACE_DIR / "space.yaml") as f:
             data = yaml.safe_load(f)
         assert data["variables"]["DEFAULT_ENVIRONMENT"] == "skypilot/kubernetes"
 

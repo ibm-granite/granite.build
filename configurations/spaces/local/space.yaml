@@ -9,7 +9,7 @@ secret_manager:
 base_uris:
   # Pull assetstores, environments, and steps from configurations/assets/.
   # Relative paths resolve against this space.yaml's directory.
-  - file://../../../assets
+  - file://../../assets
 variables:
   DEFAULT_ENVIRONMENT: skypilot/kubernetes
   S3_DIGIT_INPUT_URI: "s3://<your-bucket>/digit/input"

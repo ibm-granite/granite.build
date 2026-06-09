@@ -12,9 +12,9 @@ target_expectations:
     input_artifact_count: 1
     output_artifact_count: 2
     jobstats_count: 3
-# Use the shared standalone space at <repo>/configurations/spaces/standalone so the BuildRunner
+# Use the shared standalone space at <repo>/configurations/spaces/local so the BuildRunner
 # resolves space:// URIs without cloning from GitHub.  Relative path resolves
 # against this YAML's directory.
-space_uri: ../../../../../../configurations/spaces/standalone/public
+space_uri: ../../../../../../configurations/spaces/local
 simulate_step_failure: true
 timeout_minutes: 10 # Seems sufficient on mac running local slurm cluster

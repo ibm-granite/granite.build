@@ -9,7 +9,7 @@ target_expectations:
     input_artifact_count: 0
     output_artifact_count: 0
     jobstats_count: 0
-# Use the shared standalone space at <repo>/configurations/spaces/standalone so the BuildRunner
+# Use the shared standalone space at <repo>/configurations/spaces/local so the BuildRunner
 # resolves space:// URIs (the bash environment and the echo step) without
 # cloning from GitHub.  Relative path resolves against this YAML's directory.
-space_uri: ../../../../../../../configurations/spaces/standalone/public
+space_uri: ../../../../../../../configurations/spaces/local
