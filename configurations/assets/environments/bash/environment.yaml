@@ -1,4 +1,14 @@
 name: bash
 type: Bash
-config:
-assetstores: []
+config: {}
+assetstores:
+  # HuggingFace Hub — load models/datasets from hf:// URIs (push not enabled).
+  - store_uri: space://assetstores/hf/
+    load:
+      - mode: default
+  # Local filesystem — load/push artifacts via file: URIs.
+  - store_uri: space://assetstores/local/
+    load:
+      - mode: default
+    push:
+      - mode: default

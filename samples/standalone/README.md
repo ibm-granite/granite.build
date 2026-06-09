@@ -15,10 +15,10 @@ This is the recommended approach. Start the standalone server, then use `gb` (gb
 **Terminal 1 — Start the server:**
 
 ```bash
-gbserver standalone --space-dir samples/standalone/standalone-quickstart
+gbserver standalone --space-dir configurations/spaces/local
 ```
 
-This starts the REST API on port 8080 with a BuildWatcher, using SQLite storage and thread-based execution. A `standalone` space is auto-created from the provided directory.
+This starts the REST API on port 8080 with a BuildWatcher, using SQLite storage and thread-based execution. A `local` space (aliased as `public` and `standalone`) is auto-created from the in-repo [`configurations/spaces/local`](../../configurations/spaces/local/) directory, whose `base_uris` chain resolves the sample's `space://` URIs into the shared [`configurations/assets/`](../../configurations/assets/) tree.
 
 **Terminal 2 — Submit a build:**
 
@@ -58,7 +58,7 @@ Set the same `GBSERVER_API_KEY` on both the server and client:
 ```bash
 # Terminal 1 — server
 export GBSERVER_API_KEY="my-secret-key"
-gbserver standalone --space-dir samples/standalone/standalone-quickstart
+gbserver standalone --space-dir configurations/spaces/local
 
 # Terminal 2 — client (gbcli)
 export GB_ENVIRONMENT=STANDALONE
@@ -78,13 +78,15 @@ For simple one-off builds without the REST API:
 export GBSERVER_METADATA_STORAGE=sqlite
 export GBSERVER_DEFAULT_BUILDRUNNER_TYPE=process
 gbserver build run \
-  --space-config-uri "file://$(pwd)/samples/standalone/standalone-quickstart" \
+  --space-config-uri "file://$(pwd)/configurations/spaces/local" \
   samples/standalone/standalone-quickstart
 ```
 
+The first positional argument is the directory containing the `build.yaml` (the sample); `--space-config-uri` points at the canonical space, which resolves the build's `space://` URIs through `configurations/assets/`.
+
 ## Compute Backends
 
-The `standalone-quickstart` sample includes environment configurations for 4 compute backends. Edit `build.yaml` and uncomment the desired `environment_uri` line.
+The sample's `build.yaml` can target any compute-backend environment defined in the shared [`configurations/assets/environments/`](../../configurations/assets/environments/) tree. Edit `build.yaml` and uncomment the desired `environment_uri` line.
 
 ### Bash (default)
 
@@ -122,15 +124,19 @@ export RUNPOD_API_KEY="your-runpod-api-key"
 environment_uri: space://environments/runpod
 ```
 
-The RunPod environment defaults to an NVIDIA A100 80GB GPU. Edit `environments/runpod/environment.yaml` to change the GPU type. Supported types: A100-80GB, A100-40GB, H100-80GB, H100-SXM, L40S, RTX-4090, RTX-A6000, A40.
+The RunPod environment defaults to an NVIDIA A100 80GB GPU. Edit [`configurations/assets/environments/runpod/environment.yaml`](../../configurations/assets/environments/runpod/environment.yaml) to change the GPU type. Supported types: A100-80GB, A100-40GB, H100-80GB, H100-SXM, L40S, RTX-4090, RTX-A6000, A40.
 
 ### SkyPilot
 
-Cloud execution via SkyPilot. Supports AWS (EC2 direct) or Kubernetes backends.
+Cloud execution via SkyPilot. Separate environments are provided for AWS (EC2 direct) and Kubernetes backends.
 
-**AWS (default):** Requires AWS credentials at `~/.aws/credentials`.
+**AWS:** Requires AWS credentials at `~/.aws/credentials`.
 
-**Kubernetes:** Edit `environments/skypilot/environment.yaml` and change `default_cloud` from `aws` to `kubernetes`. Requires kubeconfig at `~/.kube/config`. See `docs/operators/setup/skypilot-kubernetes-setup.md` for K8s cluster setup.
+```yaml
+environment_uri: space://environments/skypilot/aws
+```
+
+**Kubernetes:** Requires a kubeconfig at `~/.kube/config`. See `docs/operators/setup/skypilot-kubernetes-setup.md` for K8s cluster setup.
 
 ```yaml
 environment_uri: space://environments/skypilot/kubernetes
@@ -138,7 +144,7 @@ environment_uri: space://environments/skypilot/kubernetes
 
 ## Storage Backends
 
-The sample includes 3 asset store configurations under `assetstores/`. Environments reference specific stores in their `environment.yaml`. The Bash and Docker environments default to local storage; RunPod and SkyPilot default to S3.
+Three asset store configurations live under [`configurations/assets/assetstores/`](../../configurations/assets/assetstores/). Environments reference specific stores in their `environment.yaml`. The Bash and Docker environments bind local + HuggingFace storage; RunPod and SkyPilot bind S3.
 
 ### Local Filesystem (default for Bash/Docker)
 
@@ -153,7 +159,7 @@ export COS_ACCESS_KEY_ID="your-access-key"
 export COS_SECRET_ACCESS_KEY="your-secret-key"
 ```
 
-Edit `assetstores/s3/store.yaml` to change the endpoint or region.
+Edit [`configurations/assets/assetstores/s3/store.yaml`](../../configurations/assets/assetstores/s3/store.yaml) to change the endpoint or region.
 
 ### HuggingFace Hub
 
@@ -163,27 +169,29 @@ For loading models and datasets from HuggingFace.
 export HF_TOKEN="your-hf-token"  # optional for public repos
 ```
 
-To use HuggingFace as a store in an environment, add it to the environment's `assetstores` list in its `environment.yaml`.
+The Bash and Docker environments already bind HuggingFace; to add it elsewhere, append it to that environment's `assetstores` list in `configurations/assets/environments/<env>/environment.yaml`.
 
 ## Sample Structure
 
+The sample is now just a build definition. It runs against the in-repo canonical space
+[`configurations/spaces/local`](../../configurations/spaces/local/), whose `base_uris` chain
+resolves the build's `space://` URIs into the shared [`configurations/assets/`](../../configurations/assets/) tree.
+
 ```
-standalone-quickstart/
-  space.yaml                              # Space config (env secret manager)
+samples/standalone/standalone-quickstart/
   build.yaml                              # Build definition (1 target, swap environment_uri)
+
+configurations/assets/                    # Shared, canonical definitions (resolved via the space)
   environments/
-    bash/environment.yaml                 # Local process execution
-    docker/environment.yaml               # Container execution (alpine:latest)
-    runpod/environment.yaml               # RunPod GPU cloud
-    skypilot/environment.yaml             # SkyPilot (AWS or K8s)
+    bash/        environment.yaml + steps/hello/   # Local process execution
+    docker/      environment.yaml + steps/hello/   # Container execution (alpine:latest)
+    runpod/      environment.yaml + steps/hello/   # RunPod GPU cloud
+    skypilot/aws/        environment.yaml + steps/hello/   # SkyPilot on AWS
+    skypilot/kubernetes/ environment.yaml                  # SkyPilot on K8s (Skypilot hello resolves via env-class match)
   assetstores/
     local/store.yaml                      # file: URIs
     s3/store.yaml                         # S3-compatible storage
     hf/store.yaml                         # HuggingFace Hub
-  steps/
-    hello/
-      step.yaml                           # Step with per-environment launcher configs
-      bash_scripts/hello/command.sh       # Script for Bash/Docker backends
 ```
 
 ## Architecture

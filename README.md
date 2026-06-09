@@ -87,8 +87,8 @@ cd granite.build
 make standalone-venv PYTHON=python3.13
 source .venv/bin/activate
 
-# 3. Start the standalone server, pointed at the bundled sample space
-gbserver standalone --space-dir samples/standalone/standalone-quickstart
+# 3. Start the standalone server, pointed at the in-repo local space
+gbserver standalone --space-dir configurations/spaces/local
 
 ```
 

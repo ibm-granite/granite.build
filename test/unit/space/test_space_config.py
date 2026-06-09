@@ -138,3 +138,69 @@ class TestSkypilotManagedEnvironmentYaml:
         assert store["store_uri"] == "space://assetstores/env-local"
         assert store["load"][0]["mode"] == "env_local"
         assert store["push"][0]["mode"] == "env_local"
+
+
+class TestMergedQuickstartAssets:
+    """Validate the assetstores, environments, and co-located steps merged in
+    from the former standalone-quickstart sample.  These are what the sample's
+    build.yaml resolves to through the configurations/spaces/local base_uris
+    chain, so the quickstart can run without carrying its own copies."""
+
+    ENVS_DIR = ASSETS_DIR / "environments"
+    STORES_DIR = ASSETS_DIR / "assetstores"
+
+    @staticmethod
+    def _load(path):
+        with open(path) as f:
+            return yaml.safe_load(f)
+
+    def test_local_store(self):
+        data = self._load(self.STORES_DIR / "local" / "store.yaml")
+        assert data["base_uri"] == "file:"
+
+    def test_s3_store(self):
+        data = self._load(self.STORES_DIR / "s3" / "store.yaml")
+        assert data["base_uri"] == "s3://"
+        assert "cos_access_key_id_secret_name" in data["config"]
+
+    def test_runpod_environment(self):
+        data = self._load(self.ENVS_DIR / "runpod" / "environment.yaml")
+        assert data["type"] == "Runpod"
+        assert any("s3" in s["store_uri"] for s in data["assetstores"])
+
+    def test_skypilot_aws_environment(self):
+        data = self._load(self.ENVS_DIR / "skypilot" / "aws" / "environment.yaml")
+        assert data["type"] == "Skypilot"
+
+    def test_bash_env_binds_local_and_hf(self):
+        data = self._load(self.ENVS_DIR / "bash" / "environment.yaml")
+        uris = {s["store_uri"] for s in data["assetstores"]}
+        assert any("local" in u for u in uris)
+        assert any("hf" in u for u in uris)
+
+    def test_docker_env_binds_local(self):
+        data = self._load(self.ENVS_DIR / "docker" / "environment.yaml")
+        uris = {s["store_uri"] for s in data["assetstores"]}
+        assert any("local" in u for u in uris)
+
+    def test_colocated_hello_steps_exist(self):
+        # bash/docker/runpod get co-located hello steps; the single Skypilot
+        # hello (under skypilot/aws) resolves for other Skypilot envs via
+        # env-class match.
+        for env in ("bash", "docker", "runpod"):
+            assert (self.ENVS_DIR / env / "steps" / "hello" / "step.yaml").exists()
+        assert (
+            self.ENVS_DIR / "skypilot" / "aws" / "steps" / "hello" / "step.yaml"
+        ).exists()
+
+    def test_bash_hello_step_has_command_script(self):
+        script = (
+            self.ENVS_DIR
+            / "bash"
+            / "steps"
+            / "hello"
+            / "bash_scripts"
+            / "hello"
+            / "command.sh"
+        )
+        assert script.exists()

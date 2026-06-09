@@ -31,17 +31,19 @@ have HTTPS credentials configured for github.com).
 ## Run the server
 
 ```bash
-gbserver standalone --space-dir samples/standalone/standalone-quickstart
+gbserver standalone --space-dir configurations/spaces/local
 ```
 
 The server listens on port 8080. It uses SQLite for metadata and runs builds in
 threads, so no Kubernetes or PostgreSQL is required.
 
-The `--space-dir` flag points at a directory that contains your build's
-*environments*, *steps*, and *asset stores*. The
-[`samples/standalone/standalone-quickstart/`](../samples/standalone/standalone-quickstart/)
-directory is the canonical example — read its `space.yaml` to see how a space
-is laid out.
+The `--space-dir` flag points at a space directory whose `space.yaml` chains
+(via `base_uris`) into the shared *environments*, *steps*, and *asset stores*
+under [`configurations/assets/`](../configurations/assets/). The
+[`configurations/spaces/local/`](../configurations/spaces/local/) space is the
+in-repo canonical example — read its `space.yaml` to see how a space is laid out.
+The build you submit below lives in
+[`samples/standalone/standalone-quickstart/`](../samples/standalone/standalone-quickstart/).
 
 > **Auth note (skip for localhost):** `gbserver` allows unauthenticated access
 > from `127.0.0.1` / `::1` when `GBSERVER_API_KEY` is unset, so this localhost

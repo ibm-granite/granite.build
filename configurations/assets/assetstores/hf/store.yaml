@@ -1,3 +1,8 @@
+# HuggingFace Hub
+# Required secrets (set via environment variables or space secret manager):
+#   HF_TOKEN  — HuggingFace access token (optional for public repos)
+#
+# Example URI: hf:///google-bert/bert-base-uncased
 base_uri: "hf:/"
 config:
   token_secretname: HF_TOKEN
