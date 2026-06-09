@@ -66,7 +66,7 @@ Runs a Sage LLM evaluation on SkyPilot using a PersistentVolumeClaim (PVC) for o
 
 ```bash
 gbserver standalone --space-dir configurations/spaces/local &
-gbserver build run-and-monitor configurations/spaces/local/templates/Sage_Skypilot_PVC \
+gbserver build run-and-monitor configurations/assets/templates/Sage_Skypilot_PVC \
   --space-name public
 ```
 
@@ -76,5 +76,5 @@ Edit `build.yaml` and change `environment_uri` from `space://environments/skypil
 
 ## See Also
 
-- [SkyPilot Kubernetes Setup](../../docs/operators/setup/skypilot-kubernetes-setup.md)
+- [SkyPilot Kubernetes Setup](../../../../docs/operators/setup/skypilot-kubernetes-setup.md)
 - [Sage Skypilot S3 Template](../Sage_Skypilot/) — S3 file_mounts variant

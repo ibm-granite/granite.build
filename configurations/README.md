@@ -29,18 +29,18 @@ configurations/
 │   │   │   └── slurm/environment.yaml
 │   │   └── skypilot-managed/
 │   │       └── kubernetes/environment.yaml
-│   └── steps/
-│       ├── <name>/step.yaml             # env-agnostic step (matches any env)
-│       └── <env-class>/<name>/step.yaml # env-class-keyed split (matches envs whose
-│                                        # class is `<env-class>`, e.g. `bash/`,
-│                                        # `docker/`, `skypilot/`, `k8s/`)
+│   ├── steps/
+│   │   ├── <name>/step.yaml             # env-agnostic step (matches any env)
+│   │   └── <env-class>/<name>/step.yaml # env-class-keyed split (matches envs whose
+│   │                                    # class is `<env-class>`, e.g. `bash/`,
+│   │                                    # `docker/`, `skypilot/`, `k8s/`)
+│   └── templates/                       # reusable build.yaml templates
+│       └── <name>/
+│           ├── README.md
+│           └── build.yaml
 └── spaces/
     └── local/                       # user-facing local/public/standalone space
-        ├── space.yaml               # name: public, base_uris: [file://../../assets]
-        └── templates/               # build templates shipped with this space
-            └── <name>/
-                ├── README.md
-                └── build.yaml
+        └── space.yaml               # name: public, base_uris: [file://../../assets]
 ```
 
 ## How it composes
@@ -58,7 +58,7 @@ configurations/
 
 - **`gbserver standalone`** — `--space-dir` defaults to `configurations/spaces/local` ([command_standalone.py:259-267](../src/gbserver/commands/command_standalone.py#L259-L267)).
 - **Build tests** under `test/integration/standalone/buildrunner/` — each `buildtest.yaml` sets `space_uri` to a relative path resolving to `configurations/spaces/local`.
-- **Templates** — `gbserver build run-and-monitor configurations/spaces/local/templates/<name>` runs the templates that ship with the public space.
+- **Templates** — `gbserver build run-and-monitor configurations/assets/templates/<name> --space-name public` runs the reusable build templates under `configurations/assets/templates/`.
 
 ## See also
 

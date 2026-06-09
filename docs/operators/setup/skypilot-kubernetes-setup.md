@@ -309,8 +309,8 @@ Two build templates are available, each supporting two SkyPilot execution modes:
 
 | Template | Data Strategy | Best For | Details |
 |----------|--------------|----------|---------|
-| [DiGiT_Skypilot](../../../configurations/spaces/local/templates/DiGiT_Skypilot/) | S3 file_mounts | Simple setup, single-step builds | Mounts S3/COS bucket directly into the pod |
-| [DiGiT_Skypilot_PVC](../../../configurations/spaces/local/templates/DiGiT_Skypilot_PVC/) | PVC shared volume | Multi-step pipelines (download → generate → upload) | Data persists on a PVC between steps |
+| [DiGiT_Skypilot](../../../configurations/assets/templates/DiGiT_Skypilot/) | S3 file_mounts | Simple setup, single-step builds | Mounts S3/COS bucket directly into the pod |
+| [DiGiT_Skypilot_PVC](../../../configurations/assets/templates/DiGiT_Skypilot_PVC/) | PVC shared volume | Multi-step pipelines (download → generate → upload) | Data persists on a PVC between steps |
 
 Both templates default to **unmanaged** SkyPilot mode (`space://environments/skypilot/kubernetes`). To switch to **managed** mode, edit the template's `build.yaml` and change:
 
@@ -330,7 +330,7 @@ environment_uri: space://environments/skypilot-managed/kubernetes
 3. Launch a build:
    ```bash
    gbserver standalone --space-dir configurations/spaces/local &
-   gbserver build run-and-monitor configurations/spaces/local/templates/DiGiT_Skypilot \
+   gbserver build run-and-monitor configurations/assets/templates/DiGiT_Skypilot \
      --space-name public
    ```
 

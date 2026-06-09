@@ -63,7 +63,7 @@ Runs DiGiT synthetic data generation on SkyPilot using a PersistentVolumeClaim (
 
 ```bash
 gbserver standalone --space-dir configurations/spaces/local &
-gbserver build run-and-monitor configurations/spaces/local/templates/DiGiT_Skypilot_PVC \
+gbserver build run-and-monitor configurations/assets/templates/DiGiT_Skypilot_PVC \
   --space-name public
 ```
 
@@ -73,5 +73,5 @@ Edit `build.yaml` and change `environment_uri` from `space://environments/skypil
 
 ## See Also
 
-- [SkyPilot Kubernetes Setup](../../docs/operators/setup/skypilot-kubernetes-setup.md)
+- [SkyPilot Kubernetes Setup](../../../../docs/operators/setup/skypilot-kubernetes-setup.md)
 - [DiGiT Skypilot S3 Template](../DiGiT_Skypilot/) — S3 file_mounts variant

@@ -54,10 +54,10 @@ environment_uri: space://environments/skypilot-managed/kubernetes
 
 ```bash
 gbserver standalone --space-dir configurations/spaces/local &
-gbserver build run-and-monitor configurations/spaces/local/templates/Sage_Skypilot \
+gbserver build run-and-monitor configurations/assets/templates/Sage_Skypilot \
   --space-name public
 ```
 
 ## Setup Reference
 
-See [SkyPilot Kubernetes Setup](../../docs/operators/setup/skypilot-kubernetes-setup.md) for cluster configuration, image pull secrets, and SkyPilot API server deployment.
+See [SkyPilot Kubernetes Setup](../../../../docs/operators/setup/skypilot-kubernetes-setup.md) for cluster configuration, image pull secrets, and SkyPilot API server deployment.
