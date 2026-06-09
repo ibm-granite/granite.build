@@ -352,6 +352,6 @@ pytest test/unit/messaging/ -v
 # Unit tests for the publish logger
 pytest test/unit/buildrunner/test_build_event_publish_logger.py -v
 
-# Integration test (requires running RabbitMQ)
+# Integration test (requires running RabbitMQ — see "Running RabbitMQ Locally" above)
 RABBITMQ_HOST=localhost pytest test/integration/messaging/test_event_subscribe_e2e.py -v
 ```
