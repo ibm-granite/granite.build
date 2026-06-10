@@ -1,4 +1,6 @@
 docs/superpowers
+# from demo scripts
+outputs/**
 # from env var GBSERVER_LOG_FILE=gbserver-log.txt
 gbserver-log.txt
 **/gbserverworkspace/
