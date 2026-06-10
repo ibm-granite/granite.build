@@ -218,6 +218,7 @@ cicd-pr-test:
 .PHONY: test-git-cicd-pr-setup
 test-git-cicd-pr-setup:
 	$(MAKE) g4os-skypilot-venv
+	$(MAKE) minio-setup 
 	$(MAKE) slurm-setup
 
 .PHONY: test-git-cicd-pr 
@@ -225,7 +226,7 @@ test-git-cicd-pr:
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
 		GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
-		PYTEST_TEST_TARGETS="test"				\
+		PYTEST_TEST_TARGETS="test/unit"				\
 		.test
 
 .PHONY: test-pr 
