@@ -225,7 +225,7 @@ test-git-cicd-pr:
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
 		GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
-		PYTEST_TEST_DIRS="test"				\
+		PYTEST_TEST_TARGETS="test"				\
 		.test
 
 .PHONY: test-pr 
@@ -233,7 +233,7 @@ test-pr:
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=false 		\
 		GBTEST_MODE=mock				\
 		PYTEST_MARKERS="$(PR_PYTEST_MARKERS)" 		\
-		PYTEST_TEST_DIRS="test/unit test/e2e test/integration/ibm"	\
+		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
 		.test
 
 .PHONY: cicd-merge-test
@@ -245,7 +245,7 @@ test-merge:
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
 		GBTEST_MODE=live				\
 		PYTEST_MARKERS="$(MERGE_PYTEST_MARKERS)" 	\
-		PYTEST_TEST_DIRS="test/unit test/e2e test/integration/ibm"	\
+		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
 		.test
 
 # The main test implementation, called after VENVDIR has been established
@@ -253,7 +253,7 @@ test-merge:
 # 	GBTEST_ENABLE_EXTENDED_TESTS=[true,false]
 # 	GBTEST_MODE=[live,mock]
 # 	PYTEST_MARKERS=
-#	PYTEST_TEST_DIRS=
+#	PYTEST_TEST_TARGETS=
 .PHONY: .test
 .test:
 	source $(VENVDIR)/bin/activate && \
@@ -262,9 +262,9 @@ test-merge:
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
 		args=(--durations=20 --cov --cov-report=xml --junitxml=report.xml) && \
-		args+=(-n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
+		args+=(-rs -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
 		args+=(-m '$(PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
-		pytest -rs "$${args[@]}" $(PYTEST_TEST_DIRS) && \
+		pytest "$${args[@]}" $(PYTEST_TEST_TARGETS) && \
 		coverage report --fail-under=$(MIN_COVERAGE) --sort=Cover
 
 .PHONY: py-test
