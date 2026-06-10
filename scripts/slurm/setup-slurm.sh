@@ -159,6 +159,27 @@ for node in slurm-slurmctld slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
 done
 log "rsync installed."
 
+# Demote container-hostile `session required` PAM modules in the sshd stack on
+# every node.  The stock image ships `session required pam_loginuid.so` (plus
+# pam_selinux/pam_namespace); on a real Linux host (e.g. GitHub Actions) these
+# fail inside the container, so sshd accepts the public key and then immediately
+# closes the session ("Connection closed" with no shell).  On Docker Desktop's
+# LinuxKit kernel they are effectively no-ops, which is why this only bites in
+# CI.  Demoting them to `optional` lets the session proceed; PAM reads
+# /etc/pam.d/sshd per-session, so slurmctld's already-running sshd picks this up
+# without a restart, and the compute-node sshds started below inherit it.
+# Args: $1 = container name.
+relax_sshd_pam() {
+    $DOCKER_CMD exec "$1" sed -i -E \
+        's/^(session[[:space:]]+)required([[:space:]]+(pam_loginuid|pam_selinux|pam_namespace)\.so)/\1optional\2/' \
+        /etc/pam.d/sshd 2>/dev/null || true
+}
+
+log "Relaxing container-hostile sshd PAM session modules..."
+for node in slurm-slurmctld slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
+    relax_sshd_pam "$node"
+done
+
 log "Starting sshd on compute nodes..."
 for node in slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
     $DOCKER_CMD exec "$node" bash -c '
@@ -186,11 +207,12 @@ fi
 # ---- Step 4: Verify SSH connectivity ----
 
 # Print SSH/port diagnostics for the slurmctld login node.  Called when the
-# connectivity check below fails so logs reveal *why* (connection refused vs.
-# timeout vs. auth, whether the host port is published, and whether sshd is
-# actually listening inside the container) instead of just reporting the retry
-# count.  Every probe is best-effort (`|| true`) so the dump never masks the
-# original failure.
+# connectivity check below fails so logs reveal *why* instead of just reporting
+# the retry count: whether the host port is published, whether the TCP/SSH
+# handshake reaches sshd, and — via the slurmctld container logs — any
+# post-authentication/session failure (e.g. a PAM module rejecting the session
+# after the key is accepted).  Every probe is best-effort (`|| true`) so the
+# dump never masks the original failure.
 dump_ssh_diagnostics() {
     warn "compose ps:"
     $COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" --project-name slurm-dev ps || true
@@ -199,9 +221,8 @@ dump_ssh_diagnostics() {
     warn "host listeners on ${SLURM_SSH_PORT}:"
     ss -tlnp 2>/dev/null | grep ":${SLURM_SSH_PORT}" \
         || echo "  (nothing listening on host port ${SLURM_SSH_PORT})"
-    warn "sshd listeners inside slurm-slurmctld:"
-    $DOCKER_CMD exec slurm-slurmctld ss -tlnp 2>/dev/null | grep ":22" \
-        || echo "  (sshd not listening on :22 inside the container)"
+    warn "slurmctld container logs (sshd runs with -e; post-auth failures land here):"
+    $DOCKER_CMD logs slurm-slurmctld 2>&1 | tail -60 || true
     warn "verbose ssh attempt (last 40 lines):"
     ssh -vvv -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o ConnectTimeout=5 -i "$SSH_KEY_PATH" \
