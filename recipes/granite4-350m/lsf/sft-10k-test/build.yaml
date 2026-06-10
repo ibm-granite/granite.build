@@ -2,7 +2,7 @@ granite.build:
   name: sft-10k-test
   targets:
     sft-training:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       steps:
         - step_uri: space://steps/openinstruct-sft
           config:

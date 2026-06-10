@@ -1,14 +1,14 @@
 ######
-# Sage general evaluation suite on BlueVela (LSF).
-# Runs 5 parallel eval targets: AGI Eval, BBH, MMLU Pro, IFEval, MMLU MC.
+# Sage math evaluation suite on BlueVela (LSF).
+# Runs 5 parallel eval targets: DeepMind Math, GPQA, GSM8K, GSM Symbolic, Minerva Math.
 ######
 granite.build:
-  name: general-eval
+  name: math-eval
   retries:
     max_retries: 5
   targets:
-    olmes-agi-eval:
-      environment_uri: space://environments/lsf-skypilot
+    olmes-deepmind-math:
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -16,12 +16,12 @@ granite.build:
       outputs:
         sage_eval_results:
           type: dataset
-          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/general/olmes-instruct/agi_eval_english:0shot_cot::tulu3"
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/deepmind_math:0shot_cot::tulu3"
       steps:
         - step_uri: space://steps/sage-eval
           config:
             sage_eval_config:
-              gb_script: "general_olmes_agi_eval_slim.sh"
+              gb_script: "math_olmes_deepmind_math_slim.sh"
               model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
@@ -37,8 +37,8 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: "$${MEMORY}"
 
-    olmes-bbh:
-      environment_uri: space://environments/lsf-skypilot
+    olmes-gpqa:
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -46,12 +46,12 @@ granite.build:
       outputs:
         sage_eval_results:
           type: dataset
-          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/general/olmes-instruct/bbh:cot-v1::tulu"
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/gpqa:0shot_cot::llama3.1"
       steps:
         - step_uri: space://steps/sage-eval
           config:
             sage_eval_config:
-              gb_script: "general_olmes_bbh_slim.sh"
+              gb_script: "math_olmes_gpqa_slim.sh"
               model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
@@ -67,8 +67,8 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: "$${MEMORY}"
 
-    olmes-mmlu-pro:
-      environment_uri: space://environments/lsf-skypilot
+    olmes-gsm8k:
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -76,12 +76,12 @@ granite.build:
       outputs:
         sage_eval_results:
           type: dataset
-          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/general/olmes-instruct/mmlu_pro:cot::none"
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/gsm8k::tulu"
       steps:
         - step_uri: space://steps/sage-eval
           config:
             sage_eval_config:
-              gb_script: "general_olmes_mmlu_pro_slim.sh"
+              gb_script: "math_olmes_gsm8k_slim.sh"
               model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
@@ -97,8 +97,8 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: "$${MEMORY}"
 
-    olmes-ifeval:
-      environment_uri: space://environments/lsf-skypilot
+    olmes-gsm-symbolic:
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -106,15 +106,15 @@ granite.build:
       outputs:
         sage_eval_results:
           type: dataset
-          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/general/olmes-instruct/ifeval::tulu"
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/gsm_symbolic::tulu"
       steps:
         - step_uri: space://steps/sage-eval
           config:
             sage_eval_config:
-              gb_script: "general_olmes_ifeval_slim.sh"
+              gb_script: "math_olmes_gsm_symbolic_slim.sh"
               model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
-              batch_size: 30
+              batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
               num_gpus: $${NUM_GPUS}
               output_dir: "$${OUTPUT_DIR}"
@@ -127,8 +127,8 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: "$${MEMORY}"
 
-    olmes-mmlu-mc:
-      environment_uri: space://environments/lsf-skypilot
+    olmes-minerva-math:
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -136,12 +136,12 @@ granite.build:
       outputs:
         sage_eval_results:
           type: dataset
-          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/general/olmes-instruct/mmlu:mc::tulu"
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/minerva_math::llama3.1"
       steps:
         - step_uri: space://steps/sage-eval
           config:
             sage_eval_config:
-              gb_script: "general_olmes_mmlu_mc_slim.sh"
+              gb_script: "math_olmes_minerva_math_slim.sh"
               model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}

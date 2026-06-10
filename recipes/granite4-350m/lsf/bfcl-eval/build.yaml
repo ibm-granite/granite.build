@@ -2,7 +2,7 @@ granite.build:
   name: bfcl-eval
   targets:
     bfcl-evaluation:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"

@@ -8,7 +8,7 @@ granite.build:
     max_retries: 5
   targets:
     attaq:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -38,7 +38,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     salad-bench:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"

@@ -1,14 +1,15 @@
 ######
-# Sage math evaluation suite on BlueVela (LSF).
-# Runs 5 parallel eval targets: DeepMind Math, GPQA, GSM8K, GSM Symbolic, Minerva Math.
+# Sage multilingual evaluation suite on BlueVela (LSF).
+# Runs 5 parallel eval targets: global_mmlu, mgsm, and 3 INCLUDE language groups.
+# Each target is an independent LSF job via skypilot/lsf.
 ######
 granite.build:
-  name: math-eval
+  name: multilingual-eval
   retries:
     max_retries: 5
   targets:
-    olmes-deepmind-math:
-      environment_uri: space://environments/lsf-skypilot
+    global-mmlu:
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -16,19 +17,19 @@ granite.build:
       outputs:
         sage_eval_results:
           type: dataset
-          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/deepmind_math:0shot_cot::tulu3"
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/multilingual/global_mmlu"
       steps:
         - step_uri: space://steps/sage-eval
           config:
             sage_eval_config:
-              gb_script: "math_olmes_deepmind_math_slim.sh"
+              gb_script: "multilingual_global_mmlu_slim.sh"
               model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
               num_gpus: $${NUM_GPUS}
               output_dir: "$${OUTPUT_DIR}"
-              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-multilingual:0.025"
               extra_env: {}
             launcher_config:
               resources:
@@ -37,8 +38,8 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: "$${MEMORY}"
 
-    olmes-gpqa:
-      environment_uri: space://environments/lsf-skypilot
+    mgsm:
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -46,19 +47,19 @@ granite.build:
       outputs:
         sage_eval_results:
           type: dataset
-          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/gpqa:0shot_cot::llama3.1"
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/multilingual/mgsm"
       steps:
         - step_uri: space://steps/sage-eval
           config:
             sage_eval_config:
-              gb_script: "math_olmes_gpqa_slim.sh"
+              gb_script: "multilingual_mgsm_slim.sh"
               model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
               num_gpus: $${NUM_GPUS}
               output_dir: "$${OUTPUT_DIR}"
-              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-multilingual:0.025"
               extra_env: {}
             launcher_config:
               resources:
@@ -67,8 +68,8 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: "$${MEMORY}"
 
-    olmes-gsm8k:
-      environment_uri: space://environments/lsf-skypilot
+    include-ar-de-es-fr:
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -76,19 +77,19 @@ granite.build:
       outputs:
         sage_eval_results:
           type: dataset
-          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/gsm8k::tulu"
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/multilingual/include-5shot/arabic_german_spanish_french"
       steps:
         - step_uri: space://steps/sage-eval
           config:
             sage_eval_config:
-              gb_script: "math_olmes_gsm8k_slim.sh"
+              gb_script: "multilingual_include_arabic_german_spanish_french_slim.sh"
               model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
               num_gpus: $${NUM_GPUS}
               output_dir: "$${OUTPUT_DIR}"
-              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-multilingual:0.025"
               extra_env: {}
             launcher_config:
               resources:
@@ -97,8 +98,8 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: "$${MEMORY}"
 
-    olmes-gsm-symbolic:
-      environment_uri: space://environments/lsf-skypilot
+    include-hi-bn-ta-te:
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -106,19 +107,19 @@ granite.build:
       outputs:
         sage_eval_results:
           type: dataset
-          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/gsm_symbolic::tulu"
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/multilingual/include-5shot/hindi_bengali_tamil_telugu"
       steps:
         - step_uri: space://steps/sage-eval
           config:
             sage_eval_config:
-              gb_script: "math_olmes_gsm_symbolic_slim.sh"
+              gb_script: "multilingual_include_hindi_bengali_tamil_telugu_slim.sh"
               model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
               num_gpus: $${NUM_GPUS}
               output_dir: "$${OUTPUT_DIR}"
-              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-multilingual:0.025"
               extra_env: {}
             launcher_config:
               resources:
@@ -127,8 +128,8 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: "$${MEMORY}"
 
-    olmes-minerva-math:
-      environment_uri: space://environments/lsf-skypilot
+    include-it-ja-ko-nl-pt-zh:
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -136,19 +137,19 @@ granite.build:
       outputs:
         sage_eval_results:
           type: dataset
-          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/minerva_math::llama3.1"
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/multilingual/include-5shot/italian_japanese_korean_dutch_portuguese_chinese"
       steps:
         - step_uri: space://steps/sage-eval
           config:
             sage_eval_config:
-              gb_script: "math_olmes_minerva_math_slim.sh"
+              gb_script: "multilingual_include_italian_japanese_korean_dutch_portuguese_chinese_slim.sh"
               model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
               num_gpus: $${NUM_GPUS}
               output_dir: "$${OUTPUT_DIR}"
-              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-multilingual:0.025"
               extra_env: {}
             launcher_config:
               resources:

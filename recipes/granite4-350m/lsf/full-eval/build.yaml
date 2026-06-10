@@ -11,7 +11,7 @@ granite.build:
   targets:
     # ─── Code (9) ───────────────────────────────────────────────────────────────
     olmes-cruxeval:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -41,7 +41,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-bigcodebench:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -72,7 +72,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     evalplus-humaneval:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -102,7 +102,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     evalplus-mbpp:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -132,7 +132,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     multiple-sh:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -164,7 +164,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     multiple-cpp:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -196,7 +196,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     multiple-java:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -228,7 +228,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     multiple-js:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -260,7 +260,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     multiple-rs:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -293,7 +293,7 @@ granite.build:
 
     # ─── General (5) ────────────────────────────────────────────────────────────
     olmes-agi-eval:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -323,7 +323,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-bbh:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -353,7 +353,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-mmlu-pro:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -383,7 +383,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-ifeval:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -413,7 +413,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-mmlu-mc:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -444,7 +444,7 @@ granite.build:
 
     # ─── Math (5) ───────────────────────────────────────────────────────────────
     olmes-deepmind-math:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -474,7 +474,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-gpqa:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -504,7 +504,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-gsm8k:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -534,7 +534,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-gsm-symbolic:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -564,7 +564,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-minerva-math:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -595,7 +595,7 @@ granite.build:
 
     # ─── Safety (2) ─────────────────────────────────────────────────────────────
     attaq:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -625,7 +625,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     salad-bench:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -656,7 +656,7 @@ granite.build:
 
     # ─── Multilingual (5) ───────────────────────────────────────────────────────
     global-mmlu:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -686,7 +686,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     mgsm:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -716,7 +716,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     include-ar-de-es-fr:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -746,7 +746,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     include-hi-bn-ta-te:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -776,7 +776,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     include-it-ja-ko-nl-pt-zh:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -807,7 +807,7 @@ granite.build:
 
     # ─── BFCL (1) ──────────────────────────────────────────────────────────────
     bfcl:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"

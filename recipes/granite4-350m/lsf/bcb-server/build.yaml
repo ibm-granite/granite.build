@@ -15,7 +15,7 @@ granite.build:
   name: bcb-server
   targets:
     bcb-server:
-      environment_uri: space://environments/lsf-skypilot
+      environment_uri: space://environments/skypilot/lsf
       outputs:
         bcb_server_url:
           type: dataset

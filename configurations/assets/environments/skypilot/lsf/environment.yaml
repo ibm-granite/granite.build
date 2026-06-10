@@ -1,4 +1,4 @@
-name: lsf-skypilot
+name: sky-lsf
 type: Skypilot
 config:
   default_cloud: lsf
