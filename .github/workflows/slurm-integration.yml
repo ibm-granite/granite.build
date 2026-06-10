@@ -2,14 +2,14 @@ name: SLURM Integration Tests
 
 on:
   push:
-    branches: [dev]
+    branches: [main]
     paths:
       - 'src/gbserver/environment/skypilot.py'
       - 'scripts/slurm/**'
       - 'test/integration/environment/**'
       - '.github/workflows/slurm-integration.yml'
   pull_request:
-    branches: [dev]
+    branches: [main]
     paths:
       - 'src/gbserver/environment/skypilot.py'
       - 'scripts/slurm/**'
