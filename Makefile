@@ -226,7 +226,7 @@ test-git-cicd-pr:
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
 		GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
-		PYTEST_TEST_TARGETS="test/unit"				\
+		PYTEST_TEST_TARGETS="test"			\
 		.test
 
 .PHONY: test-pr 
@@ -242,6 +242,7 @@ cicd-merge-test:
 	$(MAKE) cicd-venv
 	$(MAKE) test-merge 
 
+.PHONY: test-merge
 test-merge:
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
 		GBTEST_MODE=live				\
@@ -258,8 +259,8 @@ test-merge:
 .PHONY: .test
 .test:
 	source $(VENVDIR)/bin/activate && \
-		export GBTEST_ENABLE_EXTENDED_TESTS=${GBTEST_ENABLE_EXTENDED_TESTS} \
-		export GBTEST_MODE=${GBTEST_MODE} \
+		export GBTEST_ENABLE_EXTENDED_TESTS=${GBTEST_ENABLE_EXTENDED_TESTS} && \
+		export GBTEST_MODE=${GBTEST_MODE} && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
 		args=(--durations=20 --cov --cov-report=xml --junitxml=report.xml) && \
