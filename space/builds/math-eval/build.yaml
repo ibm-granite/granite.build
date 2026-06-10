@@ -1,0 +1,158 @@
+######
+# Sage math evaluation suite on BlueVela (LSF).
+# Runs 5 parallel eval targets: DeepMind Math, GPQA, GSM8K, GSM Symbolic, Minerva Math.
+######
+granite.build:
+  name: math-eval
+  retries:
+    max_retries: 5
+  targets:
+    olmes-deepmind-math:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/deepmind_math:0shot_cot::tulu3"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "math_olmes_deepmind_math_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: $${BATCH_SIZE}
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
+
+    olmes-gpqa:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/gpqa:0shot_cot::llama3.1"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "math_olmes_gpqa_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: $${BATCH_SIZE}
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
+
+    olmes-gsm8k:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/gsm8k::tulu"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "math_olmes_gsm8k_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: $${BATCH_SIZE}
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
+
+    olmes-gsm-symbolic:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/gsm_symbolic::tulu"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "math_olmes_gsm_symbolic_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: $${BATCH_SIZE}
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
+
+    olmes-minerva-math:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/math/olmes-instruct/minerva_math::llama3.1"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "math_olmes_minerva_math_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: $${BATCH_SIZE}
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"

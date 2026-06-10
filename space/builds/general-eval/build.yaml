@@ -1,0 +1,158 @@
+######
+# Sage general evaluation suite on BlueVela (LSF).
+# Runs 5 parallel eval targets: AGI Eval, BBH, MMLU Pro, IFEval, MMLU MC.
+######
+granite.build:
+  name: general-eval
+  retries:
+    max_retries: 5
+  targets:
+    olmes-agi-eval:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/general/olmes-instruct/agi_eval_english:0shot_cot::tulu3"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "general_olmes_agi_eval_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: $${BATCH_SIZE}
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
+
+    olmes-bbh:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/general/olmes-instruct/bbh:cot-v1::tulu"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "general_olmes_bbh_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: $${BATCH_SIZE}
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
+
+    olmes-mmlu-pro:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/general/olmes-instruct/mmlu_pro:cot::none"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "general_olmes_mmlu_pro_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: $${BATCH_SIZE}
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
+
+    olmes-ifeval:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/general/olmes-instruct/ifeval::tulu"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "general_olmes_ifeval_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: 30
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
+
+    olmes-mmlu-mc:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/general/olmes-instruct/mmlu:mc::tulu"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "general_olmes_mmlu_mc_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: $${BATCH_SIZE}
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"

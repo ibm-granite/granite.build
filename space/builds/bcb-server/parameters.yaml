@@ -1,0 +1,8 @@
+# Default parameters for BCB Lite Evaluator server
+# Override any of these with: gb build start --param KEY=VALUE
+
+# Infrastructure
+CLUSTER: "bluevela"
+QUEUE: "normal"
+MEMORY: "100"
+BCB_PORT: 7860

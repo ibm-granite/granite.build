@@ -1,0 +1,54 @@
+######
+# Export evaluation results to CSV.
+# Runs 2 parallel targets: sage exporter (all sage evals) and BFCL score gatherer.
+# Both produce CSV files on the shared filesystem.
+#
+# Usage:
+#   gb build start -f space/builds/export-results/build.yaml \
+#     --parameters-path space/builds/export-results/parameters.yaml \
+#     --param EXPERIMENT="sft-350m-epoch3-cma" \
+#     --skip-validation --skip-version-check
+######
+granite.build:
+  name: export-results
+  targets:
+    sage-export:
+      environment_uri: space://environments/lsf-skypilot
+      outputs:
+        sage_export_csv:
+          type: dataset
+          uri: "env://$${SAGE_OUTPUT_CSV}"
+      steps:
+        - step_uri: space://steps/sage-export
+          config:
+            sage_export_config:
+              experiment: "$${EXPERIMENT}"
+              export_stack: "$${EXPORT_STACK}"
+              input_dir: "$${SAGE_INPUT_DIR}"
+              output_csv: "$${SAGE_OUTPUT_CSV}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
+
+    bfcl-export:
+      environment_uri: space://environments/lsf-skypilot
+      outputs:
+        bfcl_export_csv:
+          type: dataset
+          uri: "env://$${BFCL_OUTPUT_CSV}"
+      steps:
+        - step_uri: space://steps/bfcl-export
+          config:
+            bfcl_export_config:
+              experiment: "$${EXPERIMENT}"
+              eval_name: "$${BFCL_EVAL_NAME}"
+              input_dir: "$${BFCL_INPUT_DIR}"
+              output_csv: "$${BFCL_OUTPUT_CSV}"
+              filter: "$${BFCL_FILTER}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"

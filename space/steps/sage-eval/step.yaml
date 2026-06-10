@@ -1,0 +1,146 @@
+name: sage-eval
+version: 1.0.0
+type: EVAL
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  sage_eval_config:
+    gb_script: ""
+    model_path: ""
+    experiment: ""
+    batch_size: 10
+    max_length: 4096
+    num_gpus: 1
+    output_dir: ""
+    image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
+    extra_env: {}
+outputs:
+  optional:
+    sage_eval_results:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: sage-eval
+    launchers:
+      sage-eval:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "{{ config.sage_eval_config.image_id }}"
+          run: |
+            set -e
+            echo "=== Sage Evaluation on $(hostname) ==="
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+            # Unset distributed training vars — sage manages its own parallelism
+            unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
+
+            # Sage vars.yaml (required by sage CLI before any eval)
+            mkdir -p ~/.sage /tmp/sage-scripts /tmp/sage-setup /tmp/sage-logs
+            cat > ~/.sage/vars.yaml << VARSEOF
+            GIT_TOKEN: "${GHE_TOKEN:-placeholder}"
+            HF_TOKEN: "${HF_TOKEN:-placeholder}"
+            SCRIPTS_DIR: /tmp/sage-scripts
+            SETUP_DIR: /tmp/sage-setup
+            LOGS_DIR: /tmp/sage-logs
+            VARSEOF
+
+            # Standard sage environment
+            export HOME=/workspace
+            export HF_HOME="/workspace/.cache/huggingface"
+            export HF_ALLOW_CODE_EVAL=1
+            export HF_HUB_OFFLINE=1
+            export PYTHONUNBUFFERED=1
+
+            # Language toolchains pre-installed under /workspace (used by
+            # bigcode-evaluation-harness multiple-* metric phase).
+            export PATH="/workspace/.cargo/bin:/workspace/setup_langs/java_setup/jdk-17.0.12+7/bin:/workspace/.nvm/versions/node/v18.17.1/bin:/usr/local/cuda/bin:$PATH"
+            export CARGO_HOME="/workspace/.cargo"
+            export RUSTUP_HOME="/workspace/.rustup"
+            export NVM_DIR="/workspace/.nvm"
+            export SAGE_SETUP_DIR="/workspace"
+            export JAVATUPLES_PATH="/workspace/setup_langs/java_setup/javatuples-1.2.jar"
+            export CPATH="/workspace/setup_langs/gpp_boost_setup/boost_1_84_0/build/boost/include"
+
+            # Redirect tempfile.gettempdir() off the container tmpfs (RAM-backed,
+            # ~few GB) onto the node-local NVMe scratch. The bigcode-eval metric
+            # phase writes thousands of per-problem JSON files plus per-program
+            # source/binaries into $TMPDIR; tmpfs fills up fast under contention.
+            if [ -d "/opt/nvme" ]; then
+              export TMPDIR="/opt/nvme/${USER:-$(id -un)}/tmp-${SKYPILOT_TASK_ID:-$$}"
+            else
+              export TMPDIR="/tmp/sage-tmp-${SKYPILOT_TASK_ID:-$$}"
+            fi
+            mkdir -p "$TMPDIR"
+            export TMP="$TMPDIR"
+            export TEMP="$TMPDIR"
+
+            # Standard vars consumed by sage gb_scripts
+            export MODEL_PATH="{{ config.sage_eval_config.model_path }}"
+            export EXPERIMENT="{{ config.sage_eval_config.experiment }}"
+            export OUTPUT_BASE_PATH="{{ config.sage_eval_config.output_dir }}"
+            export NUM_GPUS={{ config.sage_eval_config.num_gpus }}
+            export BATCH_SIZE={{ config.sage_eval_config.batch_size }}
+            export MAX_LENGTH={{ config.sage_eval_config.max_length }}
+
+            # Apply extra environment variables
+            {% for key, value in config.sage_eval_config.extra_env.items() %}
+            export {{ key }}="{{ value }}"
+            {% endfor %}
+
+            mkdir -p "$OUTPUT_BASE_PATH"
+
+            export GB_SCRIPT="{{ config.sage_eval_config.gb_script }}"
+
+            echo "=== Starting sage evaluation ==="
+            echo "  Script:     $GB_SCRIPT"
+            echo "  Model:      $MODEL_PATH"
+            echo "  Experiment: $EXPERIMENT"
+            echo "  Batch size: $BATCH_SIZE"
+            echo "  GPUs:       $NUM_GPUS"
+            echo "  Output:     $OUTPUT_BASE_PATH"
+
+            # Patch bigcode-evaluation-harness max_workers (matches gbansible)
+            if [ -f /workspace/bigcode-evaluation-harness/bigcode_eval/tasks/multiple.py ]; then
+              sed -i 's/^        max_workers = 1$/        max_workers = max(cpu_count() - 1, 8) if cpu_count() > 1 else 1/' \
+                /workspace/bigcode-evaluation-harness/bigcode_eval/tasks/multiple.py
+            fi
+
+            # Run the evaluation script
+            bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} 2>&1 | tee /tmp/sage-eval.log
+
+            # Emit artifact for gbserver
+            RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*${EXPERIMENT}*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit)
+            if [ -z "$RESULT_FILE" ]; then
+              RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -newer /tmp/sage-eval.log -print -quit 2>/dev/null || true)
+            fi
+            if [ -n "$RESULT_FILE" ]; then
+              echo "LLMB_ARTIFACT_ID:sage_eval_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
+            else
+              echo "ERROR: No results file found in $OUTPUT_BASE_PATH — eval likely incomplete"
+              exit 1
+            fi
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "Starting sage evaluation"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true

@@ -1,0 +1,33 @@
+######
+# BigCodeBench (BCB) Lite Evaluator server.
+# Launches a long-running HTTP service for sandboxed code execution.
+# Used by the code-eval bigcodebench target (OE_EVAL_BCB_API_URL).
+#
+# Usage:
+#   gb build start -f space/builds/bcb-server/build.yaml \
+#     --parameters-path space/builds/bcb-server/parameters.yaml \
+#     --skip-validation --skip-version-check
+#
+# Once running, get the URL from the build status artifacts.
+# The server stays alive until the cluster is terminated (sky down).
+######
+granite.build:
+  name: bcb-server
+  targets:
+    bcb-server:
+      environment_uri: space://environments/lsf-skypilot
+      outputs:
+        bcb_server_url:
+          type: dataset
+          uri: "env://bcb-server"
+      steps:
+        - step_uri: space://steps/bcb-server
+          config:
+            bcb_server_config:
+              port: $${BCB_PORT}
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
+                cpus: "8"

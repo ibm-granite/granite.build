@@ -1,0 +1,33 @@
+# Default parameters for full sage evaluation suite on BlueVela
+# Override any of these with: gb build start --param KEY=VALUE
+# Launches 28 parallel eval jobs (one H100 GPU per job)
+
+# Model
+MODEL_PATH: "/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
+EXPERIMENT: "eval-full"
+
+# Evaluation settings
+BATCH_SIZE: 10
+MAX_LENGTH: 4096
+NUM_GPUS: 1
+
+# Output
+OUTPUT_DIR: "/proj/granite-build/g4os/sage"
+
+# Infrastructure
+ACCELERATORS: "H100:1"
+CLUSTER: "bluevela"
+QUEUE: "preemptable"
+MEMORY: "256"
+
+# BigCodeBench API server (external service)
+OE_EVAL_BCB_API_URL: "http://p2-r24-n4.bluevela.rmf.ibm.com:7860/evaluate/"
+
+# BFCL parameters
+BFCL_MODEL_ID: "ibm-granite/granite-4"
+BFCL_EVAL_NAME: "bfclv3"
+BFCL_TEST_CATEGORIES: "all"
+BFCL_NUM_GPUS_GENERATE: 1
+BFCL_NUM_GPUS_EVALUATE: 1
+BFCL_GPU_MEMORY_UTILIZATION: "0.5"
+BFCL_OUTPUT_DIR: "/proj/granite-build/g4os/bfcl"

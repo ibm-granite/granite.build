@@ -1,0 +1,68 @@
+######
+# Sage safety evaluation suite on BlueVela (LSF).
+# Runs 2 parallel eval targets: ATTAQ and Salad Bench.
+######
+granite.build:
+  name: safety-eval
+  retries:
+    max_retries: 5
+  targets:
+    attaq:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/safety/attaq"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "safety_attaq_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: $${BATCH_SIZE}
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-safety:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
+
+    salad-bench:
+      environment_uri: space://environments/lsf-skypilot
+      inputs:
+        model_checkpoint:
+          uri: "env://$${MODEL_PATH}"
+          type: model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${OUTPUT_DIR}/$${EXPERIMENT}/safety/salad_bench"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "safety_salad_bench_slim.sh"
+              model_path: "$${MODEL_PATH}"
+              experiment: "$${EXPERIMENT}"
+              batch_size: $${BATCH_SIZE}
+              max_length: $${MAX_LENGTH}
+              num_gpus: $${NUM_GPUS}
+              output_dir: "$${OUTPUT_DIR}"
+              image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-safety:0.025"
+              extra_env: {}
+            launcher_config:
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: "$${MEMORY}"
