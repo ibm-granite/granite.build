@@ -32,12 +32,14 @@ class BaseSpaceStorageTest(AbstractStorageTest):
         return self.storage.space_storage
 
     def test_get_by_where_dict_multimatch(self):
-        """Override the super since this class does not support multiple item match search because both fields (name and uri) are forced to be unique."""
+        """Override the super since `name` is unique and the parent multimatch
+        test reuses the same `name` for two rows, which would collide."""
         pass
 
     def test_uniqueness_enforcement(self):
-        # Make sure we can't use duplicate space names or git URIs
-        self._duplication_test_helper(["git_repo_uri"])
+        # Only `name` is unique.  `git_repo_uri` is intentionally NOT unique
+        # so multiple alias rows (e.g. legacy `standalone` + current `public`)
+        # can share a single URI.
         self._duplication_test_helper(["name"])
 
     def test_get_by_name(self):

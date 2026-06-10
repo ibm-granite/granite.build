@@ -1,4 +1,0 @@
-name: hf-test # So we can make sure the resource_group_name is being used instead of the space name 
-secret_manager:
-  type: env
-  config: {}

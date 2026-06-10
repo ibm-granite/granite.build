@@ -49,7 +49,7 @@ Verify that secrets are being loaded correctly:
 export GBSERVER_SECRET_TEST_KEY="test-value"
 
 # Run a build that uses the secret
-gbserver build --space env-secrets-example
+gbserver build run --space-name env-secrets-example <BUILD_DIR>
 ```
 
 ## Name Transformation Examples

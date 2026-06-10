@@ -16,8 +16,10 @@ granite.build:
       # environment_uri: space://environments/runpod
 
       # SkyPilot (AWS) — requires AWS credentials (~/.aws/credentials)
-      # SkyPilot (K8s) — requires kubeconfig (~/.kube/config)
-      # environment_uri: space://environments/skypilot
+      # environment_uri: space://environments/skypilot/aws
+
+      # SkyPilot (Kubernetes) — requires a kubeconfig (~/.kube/config)
+      # environment_uri: space://environments/skypilot/kubernetes
 
       inputs: {}
       outputs: {}

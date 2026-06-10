@@ -36,6 +36,7 @@ Cross-cutting features you'll reach for:
 You're deploying gbserver, configuring environments, and keeping it healthy in production.
 
 - [`environment.yaml` reference](operators/environment-yaml-config.md) — Kubernetes, LSF, SkyPilot, RunPod
+- [Step resolution](operators/step-resolution.md) — how `space://steps/<name>` URIs route to the right impl per env
 - [Setup scripts and SkyPilot Kubernetes setup](operators/setup/)
 - [Local SkyPilot infrastructure](operators/skypilot-local-infrastructure.md) — Docker SLURM + MinIO for local testing
 - [RunPod orchestrator](operators/runpod-orchestrator.md) — gbserver as a persistent CPU orchestrator with on-demand GPU pods

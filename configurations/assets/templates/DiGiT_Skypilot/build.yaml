@@ -1,0 +1,61 @@
+#####
+# DiGiT synthetic data generation on SkyPilot with S3/COS file_mounts.
+# Input data is mounted from an S3 bucket via SkyPilot file_mounts.
+# To use Skypilot_managed, change environment_uri to space://environments/skypilot-managed/kubernetes
+######
+granite.build:
+  name: digit
+  targets:
+    syntheticdatageneration:
+      environment_uri: space://environments/skypilot/kubernetes
+      # NOTE: inputs/outputs with s3:// URIs are omitted because
+      # CosURI.exists() is not yet implemented (always returns False),
+      # causing build validation to fail. Data is accessed via file_mounts.
+      steps:
+        - step_uri: space://steps/digit
+          config:
+            file_mounts:
+              /data/input:
+                source: "{{ space.variables.S3_DIGIT_INPUT_URI }}"
+                mode: MOUNT
+            # https://pages.github.ibm.com/DGT/dgt-website/
+            digit_config:
+              databuilders:
+                knowledge_sdg:
+                  blocks:
+                    - name: generator
+                      type: rits
+                      base_url: https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/mixtral-8x22b-instruct-v01/v1
+                      model_id_or_path: mistralai/mixtral-8x22B-instruct-v0.1
+                      temperature: 0.5
+                      max_new_tokens: 1024
+                      min_new_tokens: 1
+                    - name: validator
+                      type: lm_judge
+                      filter: true
+                      lm_config:
+                        type: rits
+                        base_url: https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/mixtral-8x22b-instruct-v01/v1
+                        model_id_or_path: mistralai/mixtral-8x22B-instruct-v0.1
+                        temperature: 0.5
+                        max_new_tokens: 1024
+                        min_new_tokens: 1
+              tasks:
+                "tasks/watsonx/instructlab/knowledge/maximo":
+                  created_by: IBM Research
+                  data_builder: knowledge_sdg
+                  runner_config:
+                    num_outputs_to_generate: 1
+                    seed_batch_size: 1
+                    machine_batch_size: 1
+                  task_description: Answer all the FMEA related questions. Make sure to provide as specific details as possible.
+                  domain: IBM Maximo
+                  instruction_format:
+                    input: "{% raw %}SYSTEM: You are a reliability engineer having expertise in industrial asset management and can answer questions about failure modes and effect analysis (FMEA) for industrial assets. You are knowledgeable about the boundary conditions of an asset, asset components, failure mechanisms, their degradation influences, discovery or prevention opportunities and mitigation activities. You are a cautious assistant. You carefully follow instructions. You are helpful and harmless and you follow ethical guidelines and promote positive behavior.\n<|conversation|>\nUSER: {{question}}\nAGENT: {% endraw %}"
+                    output: "{% raw %}{{answer}}{% endraw %}"
+                  seed_datastore:
+                    type: default
+                    data_path: /data/input/seeds.jsonl
+                  include:
+                    documents:
+                      maximo_docs: /data/input/documents/*.md

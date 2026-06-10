@@ -129,9 +129,8 @@ class TestPullassetHfstore:
     async def test_default_step_uri_points_to_builtin_hfpull(
         self, skypilot_env, mock_hfuri
     ):
-        """Default step_uri resolves to the builtin hfpull dir."""
-        from gbserver.types.constants import CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI
-
+        """Default step_uri is `space://steps/hfpull` so the resolver picks the
+        env-keyed split (`builtins/steps/skypilot/hfpull/`) at lookup time."""
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
         storeload_config.mode = "hf_pull"
@@ -143,7 +142,7 @@ class TestPullassetHfstore:
             storeload_config=storeload_config,
         )
 
-        assert step_config.step_uri == CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI
+        assert step_config.step_uri == "space://steps/hfpull"
 
     @pytest.mark.asyncio
     async def test_rejects_wrong_assetstore_type(self, skypilot_env, mock_hfuri):
@@ -398,9 +397,8 @@ class TestPushassetHfstore:
     async def test_default_step_uri_points_to_builtin_hfpush(
         self, skypilot_env, mock_hfuri
     ):
-        """Default step_uri resolves to the builtin hfpush dir."""
-        from gbserver.types.constants import CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI
-
+        """Default step_uri is `space://steps/hfpush` so the resolver picks the
+        env-keyed split (`builtins/steps/skypilot/hfpush/`) at lookup time."""
         assetstore = _hfstore_mock()
         mock_hfuri.resolve_resource_group_id.return_value = None
 
@@ -411,4 +409,4 @@ class TestPushassetHfstore:
             assetstore=assetstore,
         )
 
-        assert step_config.step_uri == CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI
+        assert step_config.step_uri == "space://steps/hfpush"

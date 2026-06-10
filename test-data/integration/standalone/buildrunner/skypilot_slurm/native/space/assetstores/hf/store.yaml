@@ -1,3 +1,0 @@
-base_uri: "hf:/"
-config:
-  token_secretname: HF_TOKEN

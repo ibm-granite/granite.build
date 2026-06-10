@@ -1,4 +1,0 @@
-name: standalone
-secret_manager:
-  type: env
-  config: {}

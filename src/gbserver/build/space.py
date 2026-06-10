@@ -23,7 +23,8 @@ import shutil
 import tempfile
 import traceback
 from pathlib import Path
-from typing import Dict, Optional, Self, Union
+from typing import Dict, List, Optional, Self, Union
+from urllib.parse import urlparse
 
 from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
@@ -37,6 +38,94 @@ from gbserver.utils.utils import write_local_secrets_file
 logger = get_logger(__name__)
 
 SPACE_YAML = "space.yaml"
+
+
+def _resolve_base_uris(base_uris: List[str], space_uri: str) -> List[str]:
+    """Resolve relative file:// base_uris against the space's source directory.
+
+    Absolute URIs (any scheme, including file:///abs/path) pass through
+    unchanged.  Relative ``file://`` URIs and bare relative paths are
+    resolved against the directory implied by ``space_uri`` and returned as
+    absolute ``file://`` URIs.
+
+    Args:
+        base_uris: The base_uris list from a SpaceConfig.
+        space_uri: The URI string of the space being loaded
+            (``Space.uristr``).  Used as the anchor for relative paths.
+
+    Returns:
+        A new list with relative entries resolved to absolute file:// URIs.
+
+    Raises:
+        ValueError: A relative ``file://`` URI or bare relative path appears
+            in ``base_uris`` while ``space_uri`` is not a local ``file://``
+            URI — there is no anchor to resolve it against.
+    """
+    space_dir = _space_dir_from_uri(space_uri)
+    return [_resolve_one_base_uri(b, space_dir, space_uri) for b in base_uris]
+
+
+def _space_dir_from_uri(space_uri: str) -> Optional[Path]:
+    """Return the on-disk directory implied by a space URI, or None.
+
+    Returns None when the URI is not a local file:// URI (e.g. a git URI),
+    in which case relative base_uri resolution is skipped.
+    """
+    parsed = urlparse(space_uri)
+    if parsed.scheme not in ("", "file"):
+        return None
+    path_str = (parsed.netloc or "") + (parsed.path or "")
+    if not path_str:
+        return None
+    p = Path(path_str)
+    if not p.is_absolute():
+        return None
+    return p
+
+
+def _resolve_one_base_uri(
+    base_uri: str, space_dir: Optional[Path], space_uri: str
+) -> str:
+    """Resolve a single base_uri entry.
+
+    Absolute URIs are returned unchanged.  Relative file:// URIs and bare
+    relative paths are resolved against ``space_dir``.  When ``space_dir``
+    is None (i.e. the space URI is non-local, such as ``git://...``), a
+    relative entry has no anchor to resolve against and a ``ValueError``
+    naming both the entry and the space URI is raised.
+
+    Args:
+        base_uri: A single entry from ``SpaceConfig.base_uris``.
+        space_dir: The on-disk directory implied by the space URI, or None
+            when the space URI is non-local.
+        space_uri: The space URI string, included in error messages so the
+            caller can identify which space rejected the entry.
+
+    Raises:
+        ValueError: ``base_uri`` is a relative ``file://`` URI or bare
+            relative path while ``space_dir`` is None.
+    """
+    parsed = urlparse(base_uri)
+    if parsed.scheme and parsed.scheme != "file":
+        return base_uri
+    if parsed.scheme == "file":
+        path_str = (parsed.netloc or "") + (parsed.path or "")
+    else:
+        path_str = base_uri
+    if not path_str:
+        return base_uri
+    p = Path(path_str)
+    if p.is_absolute():
+        return f"file://{p}"
+    if space_dir is None:
+        raise ValueError(
+            f"Cannot resolve relative base_uri {base_uri!r} for non-local "
+            f"space URI {space_uri!r}: relative file:// or bare-path "
+            f"base_uris require a local file:// space URI as their anchor. "
+            f"Use an absolute file:// URI or a non-file scheme "
+            f"(git://, hf://, etc.) instead."
+        )
+    return f"file://{(space_dir / p).resolve()}"
 
 
 class Space:
@@ -62,7 +151,9 @@ class Space:
         self.space_config: SpaceConfig = SpaceConfig.from_yaml(Path(space_yamls[0]))
         if self.space_config is not None:
             if self.space_config.base_uris is not None:
-                base_uris = base_uris + self.space_config.base_uris
+                base_uris = base_uris + _resolve_base_uris(
+                    self.space_config.base_uris, self.uristr
+                )
             if self.space_config is not None:
                 URI.set_space_config(self.space_config)
         self.secrets = self._fetch_secrets(username=username)

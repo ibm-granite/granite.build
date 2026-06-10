@@ -1,0 +1,61 @@
+name: digit
+version: 1.0.0
+type: SDG
+config:
+  workload:
+    cwd: .
+  gb:
+    mock: false
+    step_contents_in_env: false
+  digit_config: {}
+inputs:
+  optional:
+    digit_input:
+      type: fileset
+      accept:
+      - uri
+      - binding
+outputs:
+  optional:
+    digit_output:
+      type: dataset
+environment_configs:
+  Skypilot:
+    default_launcher: digit
+    launchers:
+      digit:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: docker:us.icr.io/cil15-shared-registry/gbstep-dgt:0.42
+          resources:
+            cpus: 4+
+            memory: 16+
+          envs:
+            GB_DIGIT_CONFIG_YAML: '{{ config.digit_config | to_yaml }}'
+          run: |
+            set -e
+            export DGT_OUTPUT_DIR=${GB_OUTPUT_DIR:-/tmp/outputs/digit/${GB_SKYPILOT_LAUNCH_ID}}
+            mkdir -p ${DGT_OUTPUT_DIR}
+            echo "${GB_DIGIT_CONFIG_YAML}" > digit_config.yaml
+            python -m fms_dgt.research --config digit_config.yaml --restart --debug --output-dir ${DGT_OUTPUT_DIR} || exit 1
+            find ${DGT_OUTPUT_DIR} -type f -name 'final_data.jsonl' -print -quit | xargs -I {} echo 'Generated Data: {}'
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 15
+          event_configs:
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: Generated\sData:\s.+
+            is_json: false
+            event_fields:
+            - field_name: binding_id
+              field_value_template: digit_output
+            - field_name: path
+              field_regex: '[^\s]+[.]jsonl'
+              is_data: true
+            - field_name: binding
+              field_value_template: '{ "path": "{{ fields.data.path }}" }'
+              is_json: true

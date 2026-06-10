@@ -44,7 +44,14 @@ class AssetStoreEnvironmentConfig(Config):
 
 
 class EnvironmentConfig(Config):
-    """The environment.yaml file."""
+    """The environment.yaml file.
+
+    Attributes:
+        name: The user-facing name of the environment.
+        type: The environment class identifier (e.g. ``Skypilot``, ``K8s``).
+        config: Free-form environment-class-specific config block.
+        assetstores: Per-environment assetstore mappings.
+    """
 
     name: str
     type: str

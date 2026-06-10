@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional, Self
 
 import yaml
 
+from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
 from gbserver.build.buildentity import BuildEntity
 from gbserver.build.step import STEP_FILE_NAME, Step
@@ -116,18 +117,24 @@ class TargetStep(BuildEntity):
         self.validator_map = {}
         self.monitors = {}
         self.parent_target_config = parent_target_config
-        self.step = Step(
-            stepuri=targetstep.step_uri, context=context, force_fetch=force_fetch  # type: ignore[arg-type]
-        )
-        self.step_uri = targetstep.step_uri
-        self.target_name = target_name
-        self.target_step_index = target_step_index
-        self.environment = environment
-        targetstep_dir = target_dir / os.path.basename(self.step.dir) / random_string()  # type: ignore[arg-type]
-        self.context = context
-        sync_or_copy(str(self.step.dir) + "/", targetstep_dir)
-        merge_config_dirs(self.step.dir, targetstep.config_dir, targetstep_dir)  # type: ignore[arg-type]
-        self.step = Step(str(targetstep_dir))
+        # Scope the active env's step-discovery context on SpaceURI so that
+        # any `space://steps/...` URIs resolved during step assimilation try,
+        # in order: (1) the env's own directory (env-co-located steps),
+        # (2) env-class-match against `environment_configs` keys, (3) the
+        # env-agnostic fallback location.
+        with SpaceURI.with_current_env(environment):
+            self.step = Step(
+                stepuri=targetstep.step_uri, context=context, force_fetch=force_fetch  # type: ignore[arg-type]
+            )
+            self.step_uri = targetstep.step_uri
+            self.target_name = target_name
+            self.target_step_index = target_step_index
+            self.environment = environment
+            targetstep_dir = target_dir / os.path.basename(self.step.dir) / random_string()  # type: ignore[arg-type]
+            self.context = context
+            sync_or_copy(str(self.step.dir) + "/", targetstep_dir)
+            merge_config_dirs(self.step.dir, targetstep.config_dir, targetstep_dir)  # type: ignore[arg-type]
+            self.step = Step(str(targetstep_dir))
         super().__init__(
             build_id=build_id,
             event_q=event_q,

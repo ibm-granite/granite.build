@@ -1,0 +1,28 @@
+name: hello
+version: v1
+type: custom
+config: {}
+environment_configs:
+  Skypilot:
+    default_launcher: hello
+    launchers:
+      hello:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          resources:
+            cpus: 2+
+            memory: 4+
+          run: |
+            set -e
+            echo 'hello step start'
+            echo "Hello from gbserver standalone (SkyPilot)!"
+            echo "Running on: $(hostname)"
+            echo "Cloud: ${SKYPILOT_CLUSTER_NAME:-unknown}"
+            echo 'hello step end'
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 15

@@ -64,7 +64,7 @@ pytest -s test/gbserver_test/test_standalone_environments_e2e.py -k "docker_trl 
 The [standalone quickstart](../samples/standalone/standalone-quickstart/) supports bash, Docker, RunPod, and SkyPilot backends.
 
 ```bash
-gbserver standalone --space-dir samples/standalone/standalone-quickstart
+gbserver standalone --space-dir configurations/spaces/local
 gb build start -f samples/standalone/standalone-quickstart/build.yaml
 ```
 

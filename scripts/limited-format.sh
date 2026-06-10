@@ -6,8 +6,8 @@ echo 'format start'
 
 # check changed files and
 # collect the relative file paths in an array
-# mapfile -td '' files < <(git diff main...HEAD --name-only -z --format=)
-mapfile -td '' files < <(git diff dev...HEAD --name-only -z --format=)
+ mapfile -td '' files < <(git diff main...HEAD --name-only -z --format=)
+#mapfile -td '' files < <(git diff dev...HEAD --name-only -z --format=)
 
 # run formatter separately for each file
 for x in "${files[@]}" ;

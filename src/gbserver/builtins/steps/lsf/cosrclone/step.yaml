@@ -1,0 +1,33 @@
+name: cosrclone
+version: 1.0.0
+type: upload
+config:
+  retry_enabled_default: true
+  retry_transparently_default: true
+  cos_config:
+    path: <path>
+    uri: <uri>
+    bucket_name: <bucket_name>
+    push: false
+    binding_id: <binding_id>
+    cos:
+      config:
+        cos_secret_access_key_secret_name: ''
+        cos_access_key_id_secret_name: ''
+        cos_bucket_name: ''
+        cos_endpoint: ''
+        cos_region: ''
+  compute_config:
+    total_memory_per_node: 10Gi
+environment_configs:
+  Lsf:
+    launchers:
+      tuning:
+        type: bsub
+        monitors:
+        - bsub_monitor
+    monitors:
+      bsub_monitor:
+        type: bsub_monitor
+        config:
+          event_configs: []

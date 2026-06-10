@@ -1,4 +1,0 @@
-name: public
-secret_manager:
-  type: env
-  config: {}

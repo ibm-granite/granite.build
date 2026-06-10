@@ -1,0 +1,16 @@
+name: hello
+version: v1
+type: custom
+config: {}
+environment_configs:
+  Runpod:
+    launchers:
+      hello:
+        type: runpod
+        monitors:
+        - pod_status_monitor
+        config:
+          image: alpine:latest
+    monitors:
+      pod_status_monitor:
+        type: pod_status_monitor

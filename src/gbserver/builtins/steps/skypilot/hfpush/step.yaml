@@ -1,0 +1,116 @@
+name: hfpush
+version: 1.0.0
+type: upload
+config:
+  retry_enabled_default: true
+  retry_transparently_default: true
+  gb:
+    step_contents_in_env: false
+  k8s:
+    app_wrapper_config:
+      retryLimit: 2
+  workload:
+    cwd: .
+  hfpush_config:
+    path: <path>
+    uri: <uri>
+    binding_id: <binding_id>
+    hf:
+      type: model
+      owner: ''
+      repo: ''
+      revision: ''
+      private: true
+      organization: null
+      resource_group_id: null
+  compute_config:
+    total_memory_per_node: 10Gi
+environment_configs:
+  Skypilot:
+    default_launcher: hfpush
+    launchers:
+      hfpush:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          resources:
+            cpus: 1+
+          setup: |
+            pip install --no-cache-dir 'huggingface_hub[cli]'
+          run: |
+            set -euo pipefail
+            trap 'EC=$?; echo "hfpush failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
+            echo 'hfpush start'
+
+            HF_SOURCE='{{ config.hfpush_config.path }}'
+            HF_URI='{{ config.hfpush_config.uri }}'
+            export HF_ENDPOINT='{{ config.hfpush_config.endpoint }}'
+            HF_OWNER='{{ config.hfpush_config.owner }}'
+            HF_REPO_NAME='{{ config.hfpush_config.repo }}'
+            export HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"
+            HF_REVISION='{{ config.hfpush_config.revision }}'
+            export HF_PRIVATE='{{ config.hfpush_config.private }}'
+            export HF_TYPE='{{ config.hfpush_config.hf.type }}'
+            export HF_RESOURCE_GROUP_ID='{{ config.hfpush_config.hf.resource_group_id }}'
+            BINDING_ID='{{ config.hfpush_config.binding_id }}'
+
+            if [ -z "${HF_TOKEN:-}" ]; then
+                echo 'HF_TOKEN is not set' >&2
+                exit 1
+            fi
+
+            # Create the HF repo (idempotent) via the huggingface_hub Python
+            # API. `hf upload` cannot attach a resource_group_id, so we
+            # explicitly call create_repo with exist_ok=True. Single-quoted
+            # heredoc disables bash expansion — python reads everything from
+            # os.environ.
+            echo "Creating HF repo ${HF_REPO} (resource_group_id=${HF_RESOURCE_GROUP_ID:-<none>})"
+            python - <<'PY'
+            import os
+            from huggingface_hub import HfApi
+            rg = os.environ.get("HF_RESOURCE_GROUP_ID") or ""
+            HfApi(token=os.environ["HF_TOKEN"]).create_repo(
+                repo_id=os.environ["HF_REPO"],
+                repo_type=os.environ["HF_TYPE"] or "model",
+                private=os.environ.get("HF_PRIVATE", "True") == "True",
+                resource_group_id=(rg if rg and rg != "None" else None),
+                exist_ok=True,
+            )
+            PY
+
+            echo "Pushing HF URI: ${HF_URI} from path ${HF_SOURCE}"
+
+            REVISION_FLAG=""
+            if [ -n "${HF_REVISION}" ]; then
+                REVISION_FLAG="--revision ${HF_REVISION}"
+            fi
+
+            PRIVATE_FLAG=""
+            if [ "${HF_PRIVATE}" = "True" ]; then
+                PRIVATE_FLAG="--private"
+            fi
+
+            REPO_TYPE_FLAG=""
+            if [ -n "${HF_TYPE}" ]; then
+                REPO_TYPE_FLAG="--repo-type ${HF_TYPE}"
+            fi
+
+            hf upload "${HF_REPO}" "${HF_SOURCE}" ${REVISION_FLAG} ${PRIVATE_FLAG} ${REPO_TYPE_FLAG}
+
+            echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
+            echo 'hfpush end'
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 15
+          event_configs:
+          - event_type: ARTIFACT_PUSHED_EVENT
+            line_regex: Pushed HF URI:\s.+
+            is_json: false
+            event_fields:
+            - field_name: uri
+              field_regex: hf://[^\s]+
+            - field_name: binding_id
+              field_regex: (?<=binding\s)[^\s]+

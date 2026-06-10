@@ -1,0 +1,5 @@
+# Local filesystem store — artifacts addressed via file: URIs.
+# No secrets required.
+#
+# Example URI: file:///abs/path/to/artifact
+base_uri: "file:"
