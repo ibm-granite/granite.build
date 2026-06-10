@@ -32,6 +32,7 @@ import yaml
 
 pytest.importorskip("kubernetes_asyncio")
 
+from gbserver.lineage.noop_jobstats import NoopLineageStore
 from libgbtest.buildrunner.utils import (
     ExceptionRaisingThread,
     cluster_logout,
@@ -1168,9 +1169,31 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             )
         self._verify_steplist_status(build_id, step_list, status_list)
 
-        # Verify the number of jobstats/lineage records matches the expected count.
-        # Retry a few times because Lakehouse writes from the K8s build runner pod
-        # may not be immediately visible to a query in this process.
+        self._verify_lineage(built_target, expected)
+
+    def _verify_lineage(
+        self: Self,
+        built_target: StoredTargetRun,
+        expected: ExpectedTarget,
+    ) -> None:
+        """Verify the number of jobstats/lineage records matches the expected count.
+
+        Retries a few times because Lakehouse writes from the K8s build runner
+        pod may not be immediately visible to a query in this process. Skips the
+        check entirely when no real lineage store is configured.
+
+        Args:
+            built_target: The stored target run whose lineage records are counted
+                (uses its ``build_id`` as the release id and ``uuid`` as the
+                target id).
+            expected: Expected-target spec providing ``jobstats_count``.
+
+        Raises:
+            AssertionError: If the observed lineage record count never matches
+                ``expected.jobstats_count`` after the retries.
+        """
+        if isinstance(get_lineage_store(), NoopLineageStore):
+            return
         count = 0
         for attempt in range(5):
             count = get_lineage_store().count_release_ids(
