@@ -175,13 +175,14 @@ class Skypilot(Environment):
                 run=f"rm -rf {shlex.quote(workdir)}",
                 resources=sky.Resources(infra=self._get_cloud()),
             )
-            request_id = sky.launch(
+            request_id = await asyncio.to_thread(
+                sky.launch,
                 task,
                 cluster_name=cluster_name,
                 idle_minutes_to_autostop=0,
                 down=True,
             )
-            sky.stream_and_get(request_id)
+            await asyncio.to_thread(sky.stream_and_get, request_id)
         except Exception as e:  # don't fail the build for cleanup
             logger.warning("teardown_skypilot rm -rf %s failed: %s", workdir, e)
 
@@ -355,13 +356,17 @@ class Skypilot(Environment):
                 None if cloud_for_infra in no_autostop_clouds else idle_minutes
             )
 
-            # Launch and wait for provisioning
-            request_id = sky.launch(
+            # Launch and wait for provisioning. sky.launch / sky.stream_and_get
+            # block until LSF allocates resources — under queue contention
+            # that can be tens of minutes. Run them in a worker thread so
+            # the event loop can service concurrent target launches.
+            request_id = await asyncio.to_thread(
+                sky.launch,
                 task,
                 cluster_name=cluster_name,
                 idle_minutes_to_autostop=autostop,
             )
-            job_id, handle = sky.stream_and_get(request_id)
+            job_id, handle = await asyncio.to_thread(sky.stream_and_get, request_id)
 
             self._cluster_names[launch_id] = cluster_name
             if job_id is not None:
@@ -463,17 +468,22 @@ class Skypilot(Environment):
         stop_event = self._get_launch_stopped_event(launch_id)
         poll_interval = kwargs.get("poll_interval", 15)
         last_status = None
+        consecutive_poll_failures = 0
+        max_poll_failures = 3
 
         while not stop_event.is_set():
             status = None
             poll_failed = False
             try:
-                request_id = sky.job_status(
-                    cluster_name,
-                    job_ids=[job_id] if job_id is not None else None,
+                request_id = await asyncio.to_thread(
+                    lambda: sky.job_status(
+                        cluster_name,
+                        job_ids=[job_id] if job_id is not None else None,
+                    )
                 )
-                statuses = sky.get(request_id)
+                statuses = await asyncio.to_thread(sky.get, request_id)
                 status = statuses.get(job_id) if statuses else None
+                consecutive_poll_failures = 0
             except Exception as e:
                 logger.error(
                     "Error polling SkyPilot job %s on %s: %s",
@@ -482,6 +492,17 @@ class Skypilot(Environment):
                     e,
                 )
                 poll_failed = True
+                consecutive_poll_failures += 1
+                if "does not exist" in str(e) or consecutive_poll_failures >= max_poll_failures:
+                    logger.warning(
+                        "Cluster %s is gone (preempted or terminated) after %d consecutive poll failures. "
+                        "Treating as FAILED for launch_id %s.",
+                        cluster_name,
+                        consecutive_poll_failures,
+                        launch_id,
+                    )
+                    status = sky.JobStatus.FAILED
+                    poll_failed = False
 
             # Skip change-detection on poll failures so a transient error
             # doesn't emit a spurious RUNNING -> None -> RUNNING flap event.

@@ -901,16 +901,28 @@ Build ID    : {build_id}
                 uri=normalized_uri, space_name=stored_build.space_name
             )
             if existing is not None:
-                # Confirm that the artifact is really a retry from this same build.
                 assert isinstance(existing, ArtifactRegistration)
-                assert (
-                    existing.created_by_build_id == build_id
-                ), "Same artifact URI found for another build"
-                assert (
-                    existing.created_by_target_id == target_id
-                ), "Same artifact URI found for another target"
-                artifact = existing
-                artifact.status = ArtifactRegistrationStatus.PENDING
+                if existing.created_by_build_id == build_id:
+                    # Same build retry — reuse the existing record.
+                    artifact = existing
+                    artifact.status = ArtifactRegistrationStatus.PENDING
+                else:
+                    # Different build produced the same artifact URI (e.g.,
+                    # re-running an evaluation with the same experiment name).
+                    # Re-register under the current build so artifacts display
+                    # correctly in build status.
+                    logger.info(
+                        "Artifact URI %s already registered by build %s, "
+                        "re-registering for current build %s",
+                        normalized_uri,
+                        existing.created_by_build_id,
+                        build_id,
+                    )
+                    existing.created_by_build_id = build_id
+                    existing.created_by_target_id = target_id
+                    existing.created_at = event.timestamp
+                    existing.status = ArtifactRegistrationStatus.PENDING
+                    artifact = existing
             else:
                 artifact = ArtifactRegistration(
                     uri=normalized_uri,
