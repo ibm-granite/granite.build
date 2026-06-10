@@ -25,7 +25,7 @@ from datetime import timedelta
 from enum import Enum
 from pathlib import Path
 from time import sleep, time
-from typing import ClassVar, List, Optional, Self, Union
+from typing import TYPE_CHECKING, ClassVar, List, Optional, Self, Union
 
 import pytest
 import yaml
@@ -60,8 +60,13 @@ from gbcommon.types.testing import (
 )
 from gbcommon.uri.uri import URI
 from gbserver.buildrunner.buildrunner import BuildRunner
-from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
+
+if TYPE_CHECKING:
+    # Type-only import: resolves the BuildRunnerJob forward reference for type
+    # checkers without importing kubernetes_asyncio at runtime (it is imported
+    # lazily in _run_build_test's K8s-job branch).
+    from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
 from gbserver.github.myghapi import MyGHApi
 from gbserver.lineage.jobstats import get_lineage_store, reset_lineage_store
 from gbserver.lineage.noop_jobstats import NoopLineageStore
@@ -669,6 +674,12 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 build=stored_build, space_uri=space_uri, create_pr=space_uri is None
             )
         else:
+            # Imported lazily so BuildRunner/thread/process-only fixtures (e.g.
+            # the docker and local build tests) don't require kubernetes_asyncio,
+            # which BuildRunnerJob pulls in at import time.  Only this K8s-job
+            # path needs it.
+            from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
+
             runner = BuildRunnerJob(build=stored_build)
         logger.info("Starting the Build object. ")
         self._wait_for_build_status_threaded(
@@ -678,7 +689,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
     def _wait_for_build_status_threaded(
         self: Self,
-        runner: BuildRunner | BuildRunnerJob,
+        runner: "BuildRunner | BuildRunnerJob",
         build_ids: list[str],
         test_cancel: bool,
         expected_status: Status,
