@@ -13,6 +13,12 @@
 #
 # Environment variables:
 #   SLURM_SSH_PORT  - Host port for SSH to slurmctld (default: 2222)
+#   SLURM_SSH_HOST  - Host address used to reach the published SSH port
+#                     (default: 127.0.0.1). Pinned to IPv4 on purpose: the
+#                     published port is bound on IPv4 (0.0.0.0), and on Linux
+#                     `localhost` can resolve to ::1 first, which has no
+#                     listener — so `localhost` is unreliable across Docker
+#                     Desktop (macOS) vs native Linux runners.
 #   SLURM_VERSION   - SLURM version / image tag (default: 25.11.4)
 #   DOCKER          - Container runtime: docker or podman (default: auto-detect)
 
@@ -20,6 +26,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SLURM_SSH_PORT="${SLURM_SSH_PORT:-2222}"
+SLURM_SSH_HOST="${SLURM_SSH_HOST:-127.0.0.1}"
 SSH_KEY_PATH="${HOME}/.ssh/slurm_docker_key"
 
 # ---- Helpers ----
@@ -178,18 +185,42 @@ fi
 
 # ---- Step 4: Verify SSH connectivity ----
 
-log "Verifying SSH connectivity to slurmctld..."
+# Print SSH/port diagnostics for the slurmctld login node.  Called when the
+# connectivity check below fails so logs reveal *why* (connection refused vs.
+# timeout vs. auth, whether the host port is published, and whether sshd is
+# actually listening inside the container) instead of just reporting the retry
+# count.  Every probe is best-effort (`|| true`) so the dump never masks the
+# original failure.
+dump_ssh_diagnostics() {
+    warn "compose ps:"
+    $COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" --project-name slurm-dev ps || true
+    warn "host port mapping for slurm-slurmctld:"
+    $DOCKER_CMD port slurm-slurmctld || true
+    warn "host listeners on ${SLURM_SSH_PORT}:"
+    ss -tlnp 2>/dev/null | grep ":${SLURM_SSH_PORT}" \
+        || echo "  (nothing listening on host port ${SLURM_SSH_PORT})"
+    warn "sshd listeners inside slurm-slurmctld:"
+    $DOCKER_CMD exec slurm-slurmctld ss -tlnp 2>/dev/null | grep ":22" \
+        || echo "  (sshd not listening on :22 inside the container)"
+    warn "verbose ssh attempt (last 40 lines):"
+    ssh -vvv -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=5 -i "$SSH_KEY_PATH" \
+        -p "$SLURM_SSH_PORT" "root@${SLURM_SSH_HOST}" sinfo 2>&1 | tail -40 || true
+}
+
+log "Verifying SSH connectivity to slurmctld at ${SLURM_SSH_HOST}:${SLURM_SSH_PORT}..."
 ssh_ok=false
 for i in $(seq 1 10); do
     if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
            -o ConnectTimeout=5 -i "$SSH_KEY_PATH" \
-           -p "$SLURM_SSH_PORT" root@localhost sinfo --noheader &>/dev/null; then
+           -p "$SLURM_SSH_PORT" "root@${SLURM_SSH_HOST}" sinfo --noheader &>/dev/null; then
         ssh_ok=true
         break
     fi
     sleep 2
 done
 if [ "$ssh_ok" = false ]; then
+    dump_ssh_diagnostics
     err "SSH to slurmctld failed after 10 attempts. Check SSH config and port $SLURM_SSH_PORT."
 fi
 log "SSH connectivity verified."
@@ -213,7 +244,7 @@ sed_i "/$MARKER_BEGIN/,/$MARKER_END/d" "$SLURM_SSH_CONFIG"
 cat >> "$SLURM_SSH_CONFIG" <<SSHEOF
 $MARKER_BEGIN
 Host slurm-docker
-    HostName localhost
+    HostName ${SLURM_SSH_HOST}
     User root
     Port ${SLURM_SSH_PORT}
     IdentityFile ${SSH_KEY_PATH}
@@ -228,12 +259,12 @@ log "SkyPilot SLURM config written to $SLURM_SSH_CONFIG."
 
 log "Verifying SLURM cluster health..."
 NODE_COUNT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -i "$SSH_KEY_PATH" -p "$SLURM_SSH_PORT" root@localhost \
+    -i "$SSH_KEY_PATH" -p "$SLURM_SSH_PORT" "root@${SLURM_SSH_HOST}" \
     sinfo --noheader -N 2>/dev/null | wc -l)
 
 if [ "$NODE_COUNT" -lt 4 ]; then
     warn "Expected 4 compute nodes but found $NODE_COUNT. Cluster may still be starting."
-    warn "Run: ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@localhost sinfo"
+    warn "Run: ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@${SLURM_SSH_HOST} sinfo"
 else
     log "SLURM cluster is ready: $NODE_COUNT compute nodes."
 fi
@@ -241,7 +272,7 @@ fi
 echo ""
 log "Cluster status:"
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -i "$SSH_KEY_PATH" -p "$SLURM_SSH_PORT" root@localhost sinfo
+    -i "$SSH_KEY_PATH" -p "$SLURM_SSH_PORT" "root@${SLURM_SSH_HOST}" sinfo
 
 echo ""
 log "Setup complete."
