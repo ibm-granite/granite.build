@@ -69,10 +69,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[standalone,thirdparty,dev]"
+          make test-git-cicd-pr-setup
 
       - name: Run tests (standalone + thirdparty)
-        run: pytest -s test/ -m 'not ibm'
+        run: make test-git-cicd-pr
 
   demo-cpu:
     runs-on: ubuntu-latest

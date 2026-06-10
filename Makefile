@@ -215,36 +215,56 @@ cicd-pr-test:
 	$(MAKE) cicd-venv
 	$(MAKE) test-pr 
 
+.PHONY: test-git-cicd-pr-setup
+test-git-cicd-pr-setup:
+	$(MAKE) g4os-skypilot-venv
+	$(MAKE) slurm-setup
+
+.PHONY: test-git-cicd-pr 
+test-git-cicd-pr: 
+	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
+		GBTEST_MODE=live				\
+		PYTEST_MARKERS="not ibm" 			\
+		PYTEST_TEST_DIRS="test"				\
+		.test
+
 .PHONY: test-pr 
 test-pr: 
-	source $(VENVDIR)/bin/activate && \
-		export GBTEST_ENABLE_EXTENDED_TESTS=false &&	\
-		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
-		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
-		args=(--durations=20 --cov --cov-report=xml --junitxml=report.xml) && \
-		args+=(-n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
-		args+=(-m '$(PR_PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
-		pytest "$${args[@]}" test/unit test/e2e test/integration/ibm && \
-		coverage report --fail-under=$(MIN_COVERAGE) --sort=Cover
+	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=false 		\
+		GBTEST_MODE=mock				\
+		PYTEST_MARKERS="$(PR_PYTEST_MARKERS)" 		\
+		PYTEST_TEST_DIRS="test/unit test/e2e test/integration/ibm"	\
+		.test
 
 .PHONY: cicd-merge-test
 cicd-merge-test:
 	$(MAKE) cicd-venv
 	$(MAKE) test-merge 
 
-.PHONY: test-merge 
 test-merge:
-	#source $(VENVDIR)/bin/activate && pytest --cov -s test
-	#source $(VENVDIR)/bin/activate && $(MAKE) start-docker	# Needed by some build integration tests
+	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
+		GBTEST_MODE=live				\
+		PYTEST_MARKERS="$(MERGE_PYTEST_MARKERS)" 	\
+		PYTEST_TEST_DIRS="test/unit test/e2e test/integration/ibm"	\
+		.test
+
+# The main test implementation, called after VENVDIR has been established
+# Inputs are
+# 	GBTEST_ENABLE_EXTENDED_TESTS=[true,false]
+# 	GBTEST_MODE=[live,mock]
+# 	PYTEST_MARKERS=
+#	PYTEST_TEST_DIRS=
+.PHONY: .test
+.test:
 	source $(VENVDIR)/bin/activate && \
-		export GBTEST_MODE=live && \
-		export GBTEST_ENABLE_EXTENDED_TESTS=true &&	\
+		export GBTEST_ENABLE_EXTENDED_TESTS=${GBTEST_ENABLE_EXTENDED_TESTS} \
+		export GBTEST_MODE=${GBTEST_MODE} \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
 		args=(--durations=20 --cov --cov-report=xml --junitxml=report.xml) && \
 		args+=(-n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
-		args+=(-m '$(MERGE_PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
-		pytest "$${args[@]}" test/unit test/e2e test/integration/ibm && \
+		args+=(-m '$(PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
+		pytest -rs "$${args[@]}" $(PYTEST_TEST_DIRS) && \
 		coverage report --fail-under=$(MIN_COVERAGE) --sort=Cover
 
 .PHONY: py-test
@@ -480,7 +500,6 @@ demo-venv:
 
 .PHONY: g4os-skypilot-venv
 g4os-skypilot-venv:
-	@# Help: Create a venv with standalone + thirdparty + dev deps (no Artifactory required)
 	rm -rf $(VENVDIR)
 	$(PYTHON) -m venv $(VENVDIR)
 	source $(VENVDIR)/bin/activate; \
