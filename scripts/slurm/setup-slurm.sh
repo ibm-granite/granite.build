@@ -120,8 +120,10 @@ log "Starting Docker SLURM cluster..."
 export SSH_AUTHORIZED_KEYS="${SSH_KEY_PATH}.pub"
 export SLURM_SSH_PORT
 
+# --quiet-pull suppresses the per-layer "Pulling/Extracting/Pull complete"
+# progress (thousands of lines in CI); errors and the final status still print.
 $COMPOSE_CMD $COMPOSE_FILES \
-    --project-name slurm-dev up -d
+    --project-name slurm-dev up -d --quiet-pull
 
 log "Waiting for SLURM cluster to become ready (may take 1-2 minutes)..."
 timeout=240
@@ -214,21 +216,12 @@ fi
 
 # ---- Step 4: Verify SSH connectivity ----
 
-# Print SSH/port diagnostics for the slurmctld login node.  Called when the
-# connectivity check below fails so logs reveal *why* instead of just reporting
-# the retry count: whether the host port is published, whether the TCP/SSH
-# handshake reaches sshd, and — via the slurmctld container logs — any
-# post-authentication/session failure (e.g. a PAM module rejecting the session
-# after the key is accepted).  Every probe is best-effort (`|| true`) so the
-# dump never masks the original failure.
+# Print SSH diagnostics for the slurmctld login node when the connectivity check
+# below fails, so logs reveal *why* instead of just reporting the retry count.
+# Two high-signal probes: the slurmctld container logs (sshd runs with -e, so any
+# post-auth/PAM session failure lands there) and a verbose client-side attempt.
+# Both are best-effort (`|| true`) so the dump never masks the original failure.
 dump_ssh_diagnostics() {
-    warn "compose ps:"
-    $COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" --project-name slurm-dev ps || true
-    warn "host port mapping for slurm-slurmctld:"
-    $DOCKER_CMD port slurm-slurmctld || true
-    warn "host listeners on ${SLURM_SSH_PORT}:"
-    ss -tlnp 2>/dev/null | grep ":${SLURM_SSH_PORT}" \
-        || echo "  (nothing listening on host port ${SLURM_SSH_PORT})"
     warn "slurmctld container logs (sshd runs with -e; post-auth failures land here):"
     $DOCKER_CMD logs slurm-slurmctld 2>&1 | tail -60 || true
     warn "verbose ssh attempt (last 40 lines):"
