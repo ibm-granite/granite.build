@@ -159,23 +159,31 @@ for node in slurm-slurmctld slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
 done
 log "rsync installed."
 
-# Demote container-hostile `session required` PAM modules in the sshd stack on
-# every node.  The stock image ships `session required pam_loginuid.so` (plus
-# pam_selinux/pam_namespace); on a real Linux host (e.g. GitHub Actions) these
-# fail inside the container, so sshd accepts the public key and then immediately
-# closes the session ("Connection closed" with no shell).  On Docker Desktop's
-# LinuxKit kernel they are effectively no-ops, which is why this only bites in
-# CI.  Demoting them to `optional` lets the session proceed; PAM reads
-# /etc/pam.d/sshd per-session, so slurmctld's already-running sshd picks this up
-# without a restart, and the compute-node sshds started below inherit it.
+# Make the stock image's sshd PAM stack usable inside a container on a real
+# Linux kernel.  Two failures surface only off Docker Desktop's LinuxKit kernel
+# (hence "works on my Mac, fails in CI"):
+#   * account phase — one of the `account required` modules (pam_sepermit /
+#     pam_nologin / pam_unix, the last pulled in via `account include
+#     password-auth`) denies root, so sshd logs "Access denied for user root by
+#     PAM account configuration" right after the key is accepted.  We prepend
+#     `account sufficient pam_permit.so` so the account phase short-circuits to
+#     success before those modules run.
+#   * session phase — `session required pam_loginuid/pam_selinux/pam_namespace`
+#     fail in-container; we demote them to `optional`.
+# Both edits are idempotent and best-effort, target /etc/pam.d/sshd which PAM
+# reads per-session (so an already-running sshd picks them up with no restart),
+# and only ever touch the ephemeral container — never the host's PAM config.
 # Args: $1 = container name.
 relax_sshd_pam() {
-    $DOCKER_CMD exec "$1" sed -i -E \
-        's/^(session[[:space:]]+)required([[:space:]]+(pam_loginuid|pam_selinux|pam_namespace)\.so)/\1optional\2/' \
-        /etc/pam.d/sshd 2>/dev/null || true
+    $DOCKER_CMD exec "$1" sh -c '
+        f=/etc/pam.d/sshd
+        grep -q "^account[[:space:]]\+sufficient[[:space:]]\+pam_permit.so" "$f" \
+            || sed -i "0,/^account/s//account    sufficient   pam_permit.so\n&/" "$f"
+        sed -i -E "s/^(session[[:space:]]+)required([[:space:]]+(pam_loginuid|pam_selinux|pam_namespace)\.so)/\1optional\2/" "$f"
+    ' 2>/dev/null || true
 }
 
-log "Relaxing container-hostile sshd PAM session modules..."
+log "Relaxing container-hostile sshd PAM account/session modules..."
 for node in slurm-slurmctld slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
     relax_sshd_pam "$node"
 done
