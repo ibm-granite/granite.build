@@ -32,6 +32,12 @@ assetstores:            # Asset stores accessible from this environment
 
 ---
 
+### Step resolution
+
+When a target runs, `space://steps/<name>` URIs are resolved against the active environment via env-co-located lookup, env-class matching against `environment_configs`, and env-agnostic fallback.  See [`step-resolution.md`](step-resolution.md) for the full reference.
+
+---
+
 ### `K8s` environment config
 
 ```yaml
@@ -918,7 +924,7 @@ granite.build:
   name: skypilot-bash-example
   targets:
     image-run:
-      environment_uri: space://environments/slurm
+      environment_uri: space://environments/skypilot/slurm
       inputs:
         input_model:
           uri: hf://huggingface.co/datasets/ibm-research/some-dataset

@@ -1,0 +1,27 @@
+name: s3push
+version: 1.0.0
+type: upload
+config:
+  retry_enabled_default: true
+  retry_transparently_default: true
+  gb:
+    step_contents_in_env: false
+  s3push_config:
+    local_path: <source>
+    s3_uri: <s3://bucket/path>
+    endpoint_url: ''
+  compute_config:
+    num_gpus_per_node: 0
+    total_memory_per_node: 4Gi
+environment_configs:
+  Docker:
+    launchers:
+      s3push:
+        type: docker
+        monitors:
+        - docker_log
+        config:
+          image: amazon/aws-cli:latest
+    monitors:
+      docker_log:
+        type: docker_log

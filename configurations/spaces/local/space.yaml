@@ -1,0 +1,17 @@
+# A space intended for use only when GB_ENVIRONMENT=STANDALONE.
+# Build tests under test/integration/standalone/buildrunner/ point their
+# space_uri at this space; the base_uris chain resolves space:// URIs into
+# the shared assets directory.
+name: public
+secret_manager:
+  type: env
+  config: {}
+base_uris:
+  # Pull assetstores, environments, and steps from configurations/assets/.
+  # Relative paths resolve against this space.yaml's directory.
+  - file://../../assets
+variables:
+  DEFAULT_ENVIRONMENT: skypilot/kubernetes
+  S3_DIGIT_INPUT_URI: "s3://<your-bucket>/digit/input"
+  S3_DIGIT_OUTPUT_URI: "s3://<your-bucket>/digit/output"
+  S3_SAGE_OUTPUT_URI: "s3://<your-bucket>/sage/output"

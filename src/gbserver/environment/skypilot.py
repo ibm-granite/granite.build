@@ -740,7 +740,6 @@ class Skypilot(Environment):
         from gbcommon.uri.hf import HfURI
         from gbserver.asset.hfstore import Hfstore
         from gbserver.environment.local_assets import get_hf_cache_dir
-        from gbserver.types.constants import CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI
 
         assert isinstance(
             assetstore, Hfstore
@@ -769,7 +768,9 @@ class Skypilot(Environment):
         )
         hf_token = assetstore.resolve_token(hfuri) or ""
 
-        hfpull_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPULL_URI
+        # Use a space:// URI so the resolver picks the env-keyed split
+        # (`builtins/steps/<env-class>/hfpull/`) for the active env class.
+        hfpull_stepuri = "space://steps/hfpull"
         if (
             storeload_config is not None
             and storeload_config.config is not None
@@ -812,7 +813,6 @@ class Skypilot(Environment):
         """
         from gbcommon.uri.hf import HfURI
         from gbserver.asset.hfstore import Hfstore
-        from gbserver.types.constants import CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI
 
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
@@ -871,7 +871,9 @@ class Skypilot(Environment):
 
         hf_token = assetstore.resolve_token(hfuri) or ""
 
-        hfpush_stepuri = CODE_GBSERVER_BUILTINS_STEPS_HFPUSH_URI
+        # Use a space:// URI so the resolver picks the env-keyed split
+        # (`builtins/steps/<env-class>/hfpush/`) for the active env class.
+        hfpush_stepuri = "space://steps/hfpush"
         if (
             storepush_config is not None
             and storepush_config.config is not None

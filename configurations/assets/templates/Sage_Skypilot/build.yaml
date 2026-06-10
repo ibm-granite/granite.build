@@ -1,0 +1,26 @@
+######
+# Sage LLM evaluation on SkyPilot with S3/COS file_mounts for output collection.
+# Evaluation results are written to an S3 bucket via SkyPilot file_mounts.
+# To use Skypilot_managed, change environment_uri to space://environments/skypilot-managed/kubernetes
+######
+granite.build:
+  name: sage
+  targets:
+    evaluation:
+      environment_uri: space://environments/skypilot/kubernetes
+      steps:
+        - step_uri: space://steps/sage
+          config:
+            file_mounts:
+              /data/output:
+                source: "{{ space.variables.S3_SAGE_OUTPUT_URI }}"
+                mode: MOUNT
+            sage_config:
+              model: hf
+              model_args: "pretrained=ibm-granite/granite-4.0-350m"
+              tasks: piqa
+              batch_size: 1
+              device: cpu
+              limit: 10
+              num_fewshot: 0
+              cluster: local

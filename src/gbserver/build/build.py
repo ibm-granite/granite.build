@@ -25,6 +25,9 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Self
 
+import yaml
+
+from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
 from gbserver.build.buildentity import BuildEntity
 from gbserver.build.space import Space
@@ -232,6 +235,7 @@ class Build(BuildEntity):
         for target_name, target in build_config.targets.items():
             err_prefix = f"Target `{target_name}`:"
             logger.info("checking env of: %s %s", err_prefix, target)
+            target_env_uri: Optional[URI] = None
             try:
                 target_env_uri = URI.get_uri(target.environment_uri)
                 if not target_env_uri.exists():
@@ -245,23 +249,67 @@ class Build(BuildEntity):
                     f"{err_prefix} the env URI {target.environment_uri} is invalid: {e}"
                 )
                 errors.add(err=err)
+            # Read the env's `type` so SpaceURI's env-class-match tier picks the
+            # right env-keyed step variant during validation.  The validator runs
+            # before any TargetStep is instantiated, so without this scope the
+            # thread-local has no env class set and `space://steps/<name>` URIs
+            # whose only on-disk variants live under env-keyed subdirs would be
+            # reported as unresolvable.
+            env_class_name = self.__read_env_class_name(target_env_uri)
             logger.info("checking the steps of the target: %s %s", target_name, target)
-            for i, step in enumerate(target.steps):
-                err_prefix = f"Target `{target_name}` Step `{i}`:"
-                try:
-                    target_step_uri = URI.get_uri(step.step_uri)  # type: ignore[arg-type]
-                    if not target_step_uri.exists():
-                        err = f"{err_prefix} the step URI {step.step_uri} doesn't exist"
-                        errors.add(err=err, type=GBValidationErrorType.NOT_EXIST)
-                        continue
-                    # if not target_step_uri.is_accessible():
-                    #     err = f"{err_prefix} the step URI {step.step_uri} is not accessible"
-                    #     errors.add(err=err, type=GBValidationErrorType.NOT_EXIST)
-                    #     continue
-                except Exception as e:
-                    err = f"{err_prefix} the step URI {step.step_uri} is invalid: {e}"
-                    errors.add(err=err)
+            with SpaceURI.with_current_env_class_name(env_class_name):
+                for i, step in enumerate(target.steps):
+                    err_prefix = f"Target `{target_name}` Step `{i}`:"
+                    try:
+                        target_step_uri = URI.get_uri(step.step_uri)  # type: ignore[arg-type]
+                        if not target_step_uri.exists():
+                            err = f"{err_prefix} the step URI {step.step_uri} doesn't exist"
+                            errors.add(err=err, type=GBValidationErrorType.NOT_EXIST)
+                            continue
+                        # if not target_step_uri.is_accessible():
+                        #     err = f"{err_prefix} the step URI {step.step_uri} is not accessible"
+                        #     errors.add(err=err, type=GBValidationErrorType.NOT_EXIST)
+                        #     continue
+                    except Exception as e:
+                        err = (
+                            f"{err_prefix} the step URI {step.step_uri} is invalid: {e}"
+                        )
+                        errors.add(err=err)
         return errors
+
+    @staticmethod
+    def __read_env_class_name(target_env_uri: Optional[URI]) -> Optional[str]:
+        """Read the ``type`` field from the target's environment.yaml.
+
+        Returns the env's class name (e.g. ``"K8s"``, ``"Docker"``,
+        ``"Skypilot"``) for use as ``SpaceURI.current_env_class_name`` during
+        step URI validation.  Returns ``None`` when the env URI is unavailable,
+        not a local path, or its yaml can't be parsed — in which case the
+        env-class-match tier is silently skipped and validation falls back to
+        the existing tiers.
+
+        Lightweight on purpose: skips the full ``Environment.get_environment``
+        instantiation (which requires an event_q and runs side effects); the
+        validator only needs the class-name string.
+        """
+        if target_env_uri is None or target_env_uri.uri is None:
+            return None
+        env_path_str = target_env_uri.uri.path
+        if not env_path_str:
+            return None
+        env_dir = Path(env_path_str)
+        env_yaml = env_dir / "environment.yaml"
+        if not env_yaml.is_file():
+            return None
+        try:
+            with open(env_yaml, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except (OSError, yaml.YAMLError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        type_val = data.get("type")
+        return type_val if isinstance(type_val, str) and type_val else None
 
     def __validate_target_inputs(self: Self) -> GBValidationErrors:
         logger.info("validating the inputs of the build")

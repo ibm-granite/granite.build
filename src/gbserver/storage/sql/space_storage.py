@@ -29,7 +29,11 @@ class SQLSpaceStorage(
         # kwargs['item_class'] = StoredSpace
         # if kwargs.get('table_name') is None:    # Allow for testing using alternate table names.
         #     kwargs['table_name'] = GB_SPACES_TABLE_NAME
-        kwargs["unique_columns"] = {"name": None, "git_repo_uri": None}
+        # Only `name` is unique.  `git_repo_uri` is intentionally NOT unique
+        # so that multiple aliases (e.g. the legacy `standalone` name and the
+        # current `public` name) can point at the exact same URI without
+        # contortion at insert time.
+        kwargs["unique_columns"] = {"name": None}
         super().__init__(**kwargs)
 
     # def _get_column_values(self:Self, item: StoredSpace) -> dict:

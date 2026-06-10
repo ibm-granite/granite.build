@@ -2039,9 +2039,7 @@ class K8s(Environment):
                 "push": False,
                 "cos": cos_metadata,
             }
-            cospull_stepuri = "file://" + str(
-                Path(__file__).parent.parent / "builtins" / "steps" / "cosrclone"
-            )
+            cospull_stepuri = "space://steps/cosrclone"
             if "step_uri" in storeload_config.config:
                 cospull_stepuri = storeload_config.config["step_uri"]
             binding_config = {BINDING_KEY: {"path": str(Path(binding_path))}}
@@ -2117,9 +2115,7 @@ class K8s(Environment):
             "use_mount": use_mount,
             "mount_dst": mount_dst,
         }
-        cospush_stepuri = "file://" + str(
-            Path(__file__).parent.parent / "builtins" / "steps" / "cosrclone"
-        )
+        cospush_stepuri = "space://steps/cosrclone"
         if (
             storepush_config is not None
             and storepush_config.config is not None
@@ -2168,9 +2164,7 @@ class K8s(Environment):
 
             # Binding config for container
             binding_config = {BINDING_KEY: {"path": str(Path(binding_path))}}
-            hfpull_stepuri = "file://" + str(
-                Path(__file__).parent.parent / "builtins" / "steps" / "hfpull"
-            )
+            hfpull_stepuri = "space://steps/hfpull"
             if (
                 storeload_config is not None
                 and storeload_config.config is not None
@@ -2276,9 +2270,7 @@ class K8s(Environment):
             and "hf" in output_config.store_push.config
         ):
             hfpush_config["hf"].update(output_config.store_push.config["hf"])
-        hfpush_stepuri = "file://" + str(
-            Path(__file__).parent.parent / "builtins" / "steps" / "hfpush"
-        )
+        hfpush_stepuri = "space://steps/hfpush"
         if (
             storepush_config is not None
             and storepush_config.config is not None
@@ -2337,9 +2329,7 @@ class K8s(Environment):
                 "uri": lhuristr,
                 "lh": lh_metadata,
             }
-            lhpull_stepuri = "file://" + str(
-                Path(__file__).parent.parent / "builtins" / "steps" / "lhpull"
-            )
+            lhpull_stepuri = "space://steps/lhpull"
             if (
                 storeload_config is not None
                 and storeload_config.config is not None
@@ -2398,9 +2388,7 @@ class K8s(Environment):
             "binding_id": binding_id,
             "lh": Asset(lhuri).get_metadata(),
         }
-        lhpush_stepuri = "file://" + str(
-            Path(__file__).parent.parent / "builtins" / "steps" / "lhpush"
-        )
+        lhpush_stepuri = "space://steps/lhpush"
         if (
             storepush_config is not None
             and storepush_config.config is not None

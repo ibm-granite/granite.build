@@ -166,29 +166,58 @@ def _run_standalone(
 
     set_space_access_manager(StandaloneSpaceAccessManager())
 
+    # Backward compatibility:  the standalone space.yaml's `name:` field used
+    # to be `standalone`, then `public`.  The space directory has since moved
+    # to configurations/spaces/local, but the `name:` field is still `public`.
+    # Existing deployments, bookmarks, scripts, and database rows reference the
+    # older names, so we register several rows pointing at the exact same
+    # directory:
+    #
+    #   - 'public'     — matches the current space.yaml name field.
+    #   - 'standalone' — legacy alias kept so old build configs and tooling
+    #                    that still say `space_name: standalone` continue to
+    #                    resolve.
+    #   - 'local'      — alias matching the current directory name
+    #                    (configurations/spaces/local) for configs and tooling
+    #                    that reference the space by its directory name.
+    #
+    # All rows share the same `git_repo_uri`.  This is allowed because the
+    # `git_repo_uri` column is not unique (see SQLSpaceStorage); only `name`
+    # is unique, so the rows coexist cleanly.
     storage = singleton_storage.get_admin_storage()
-    existing = storage.space_storage.get_by_name("standalone")
-
-    space_uri = f"file://{os.path.abspath(space_dir)}"
-    stored_space = StoredSpace(
-        name="standalone",
-        git_repo_uri=space_uri,
-        lakehouse_namespace="",
-    )
-
-    if existing is None:
-        storage.space_storage.add(stored_space)
-        logger.info("Created 'standalone' space with URI %s", space_uri)
-    else:
-        # Update existing space to point to new directory
-        stored_space.uuid = existing.uuid
-        storage.space_storage.update(stored_space, create_if_not_exist=False)
-        logger.info(
-            "Updated 'standalone' space (uuid=%s) from %s to %s",
-            existing.uuid,
-            existing.git_repo_uri,
-            space_uri,
+    abs_dir = os.path.abspath(space_dir)
+    space_uri = f"file://{abs_dir}"
+    space_aliases = [
+        ("public", space_uri),
+        ("standalone", space_uri),
+        ("local", space_uri),
+    ]
+    for name, uri in space_aliases:
+        existing = storage.space_storage.get_by_name(name)
+        stored_space = StoredSpace(
+            name=name,
+            git_repo_uri=uri,
+            lakehouse_namespace="",
         )
+        if existing is None:
+            storage.space_storage.add(stored_space)
+            logger.info("Created '%s' space with URI %s", name, uri)
+        elif existing.git_repo_uri != uri:
+            # Update the existing row to point at the current --space-dir.
+            # Without this, re-launching standalone against a different
+            # directory would silently keep using the stale URI from the
+            # prior run.
+            stored_space.uuid = existing.uuid
+            storage.space_storage.update(stored_space, create_if_not_exist=False)
+            logger.info(
+                "Updated '%s' space (uuid=%s) from %s to %s",
+                name,
+                existing.uuid,
+                existing.git_repo_uri,
+                uri,
+            )
+        else:
+            logger.info("'%s' space already exists (uuid=%s)", name, existing.uuid)
 
     # 2.5. Start embedded nats-server if configured.
     from gbserver.types.constants import GBSERVER_NATS_EMBEDDED, GBSERVER_NATS_URL
@@ -237,6 +266,7 @@ def _run_standalone(
         server.startup = _startup_with_callback  # type: ignore[assignment]
 
     try:
+        logger.info("Starting REST server")
         server.run()
     finally:
         build_watcher.stop()
@@ -258,9 +288,12 @@ def _run_standalone(
 )
 @click.option(
     "--space-dir",
-    required=True,
+    default="configurations/spaces/local",
+    show_default=True,
     type=click.Path(exists=True, file_okay=False, dir_okay=True),
-    help="Path to the space directory.",
+    help="Path to the space directory.  Defaults to the in-repo standalone "
+    "space at configurations/spaces/local; override to point at "
+    "any directory containing a space.yaml.",
 )
 @pass_environment
 def cli(ctx: CliEnvironment, port: int, host: str, space_dir: str):

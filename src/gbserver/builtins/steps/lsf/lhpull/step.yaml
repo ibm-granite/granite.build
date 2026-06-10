@@ -1,0 +1,35 @@
+name: lhpull
+version: 1.0.0
+type: upload
+config:
+  retry_enabled_default: true
+  retry_transparently_default: true
+  gb:
+    step_contents_in_env: false
+  workload:
+    python_env:
+      venv: venv-lhpullpush
+    cwd: .
+  lhpull_config:
+    path: <path>
+    uri: <uri>
+    lh:
+      env: STAGING
+      namespace: granite_dot_build.public
+      type: table
+      table_name: ''
+      model_label: ''
+      model_revision: ''
+  compute_config:
+    total_memory_per_node: 10Gi
+    num_gpus_per_node: 0
+environment_configs:
+  Lsf:
+    launchers:
+      tuning:
+        type: bsub
+        monitors:
+        - bsub_monitor
+    monitors:
+      bsub_monitor:
+        type: bsub_monitor

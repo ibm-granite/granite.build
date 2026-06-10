@@ -1,0 +1,13 @@
+name: sky-managed-kubernetes
+type: Skypilot_managed
+config:
+  default_cloud: kubernetes
+  idle_minutes_to_autostop: 10
+assetstores:
+  - store_uri: space://assetstores/env-local
+    load:
+      - mode: env_local
+        config: {}
+    push:
+      - mode: env_local
+        config: {}

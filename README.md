@@ -87,8 +87,8 @@ cd granite.build
 make standalone-venv PYTHON=python3.13
 source .venv/bin/activate
 
-# 3. Start the standalone server, pointed at the bundled sample space
-gbserver standalone --space-dir samples/standalone/standalone-quickstart
+# 3. Start the standalone server, pointed at the in-repo local space
+gbserver standalone --space-dir configurations/spaces/local
 
 ```
 
@@ -177,7 +177,7 @@ For the full schema, see [`docs/users/build-yaml-reference.md`](docs/users/build
 | `docs/` | User, operator, and contributor docs — start at [`docs/README.md`](docs/README.md). |
 | `samples/` | Sample build configs, environments, and steps. The [`standalone-quickstart`](samples/standalone/standalone-quickstart/) is the canonical first build. |
 | `examples/` | Worked examples for specific scenarios. |
-| `assets/` | Reusable templates referenced from builds. |
+| `configurations/` | Space, environment, step, and assetstore configurations consumed by builds. [`configurations/assets/`](configurations/assets/) holds the reusable assetstores, environments, and steps; [`configurations/spaces/local/`](configurations/spaces/local/) is the user-facing space for `GB_ENVIRONMENT=STANDALONE` and ships the build templates. |
 | `test/` | Test suites for all components. |
 | `scripts/` | Helper scripts including the standalone and SLURM demos. |
 | `k8s/` | Helm charts for production Kubernetes deployment. |

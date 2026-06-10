@@ -12,7 +12,7 @@ customize the parameters, and submit.
 A template is just a directory containing:
 
 ```
-assets/templates/<TemplateName>/
+configurations/assets/templates/<TemplateName>/
 ├── build.yaml    # the pipeline definition
 └── README.md     # usage instructions (optional but recommended)
 ```
@@ -59,8 +59,8 @@ gb build start
 
 ## Creating your own template
 
-1. Create a directory under `assets/templates/` (or any location your space
-   is configured to scan).
+1. Create a directory under `configurations/assets/templates/` (or any location
+   your space is configured to scan).
 2. Add a `build.yaml` with your pipeline definition.
 3. Add a `README.md` documenting the template's purpose, required inputs,
    expected outputs, and configuration knobs.
@@ -79,12 +79,12 @@ A good template README covers:
 - **Configuration** — what to edit in `build.yaml` before running.
 - **Running** — the exact commands to submit and monitor.
 
-See [`assets/templates/DiGiT_Skypilot/README.md`](../../assets/templates/DiGiT_Skypilot/README.md)
+See [`configurations/assets/templates/DiGiT_Skypilot/README.md`](../../configurations/assets/templates/DiGiT_Skypilot/README.md)
 for a working example.
 
 ## Available templates
 
-Templates shipped with this repo live in [`assets/templates/`](../../assets/templates/):
+Templates shipped with this repo live in [`configurations/assets/templates/`](../../configurations/assets/templates/):
 
 | Template | Description |
 |----------|-------------|
