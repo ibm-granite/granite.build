@@ -67,14 +67,27 @@ environment_configs:
 
             bash /workspace/scripts/run-bfcl.sh 2>&1 | tee "${OUTPUT_DIR}/${EXP_NAME}-bfcl.log"
 
-            # Emit artifact for gbserver
-            RESULT_FILE=$(find "$OUTPUT_DIR" -type f -name '*.json' -print -quit)
-            if [ -n "$RESULT_FILE" ]; then
-              echo "LLMB_ARTIFACT_ID:bfcl_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
-            else
-              echo "ERROR: No results file found in $OUTPUT_DIR"
+            # Emit artifact for gbserver. The BFCL harness produces
+            # multiple JSON files (per category and a summary). Pick the
+            # most recently modified score/summary file; if multiple match,
+            # log the candidates so the choice is auditable rather than
+            # silently picking the first one returned by `find`.
+            mapfile -t CANDIDATES < <(
+              find "$OUTPUT_DIR" -type f \( -name '*score*.json' -o -name '*summary*.json' -o -name 'BFCL_*.json' \) -printf '%T@ %p\n' \
+                | sort -nr | awk '{print $2}'
+            )
+            if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+              echo "ERROR: No BFCL result file found in $OUTPUT_DIR"
+              echo "Contents of $OUTPUT_DIR:"
+              find "$OUTPUT_DIR" -maxdepth 2 -type f | head -20
               exit 1
             fi
+            if [ "${#CANDIDATES[@]}" -gt 1 ]; then
+              echo "WARNING: multiple BFCL result candidates; using newest. Candidates:"
+              printf '  %s\n' "${CANDIDATES[@]}"
+            fi
+            RESULT_FILE="${CANDIDATES[0]}"
+            echo "LLMB_ARTIFACT_ID:bfcl_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
     monitors:
       skypilot_monitor:
         type: skypilot_monitor

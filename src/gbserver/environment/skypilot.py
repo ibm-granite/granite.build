@@ -39,19 +39,34 @@ else:
 def _require_skypilot():
     """Raise a clear error if the sky SDK is not installed.
 
-    Also ensures the SkyPilot API server is running (starts it if needed).
+    Pure availability guard — does not start the API server. Callers that
+    need the server running should call ``_ensure_skypilot_api_running``.
     """
     if not HAS_SKYPILOT:
         raise ImportError(
             "The 'skypilot' package is required for the Skypilot environment. "
             "Install it with: pip install 'gbserver[skypilot]'"
         )
+
+
+def _ensure_skypilot_api_running():
+    """Start the SkyPilot API server if not already healthy.
+
+    Probes via sky.api_info(); starts the server only if the probe indicates
+    the server is unreachable or unhealthy. Other failure modes (auth, config,
+    etc.) propagate so they're not masked by an unconditional ``api_start``.
+    """
+    _require_skypilot()
     try:
         info = sky.api_info()
-        if info.status.value != "healthy":
-            raise RuntimeError("not healthy")
-    except Exception:
-        logger.info("SkyPilot API server not running — starting it now")
+    except (ConnectionError, OSError, RuntimeError) as e:
+        logger.info("SkyPilot API server not reachable (%s) — starting it now", e)
+        sky.api_start()
+        return
+    if info.status.value != "healthy":
+        logger.info(
+            "SkyPilot API server status=%s — starting it now", info.status.value
+        )
         sky.api_start()
 
 
@@ -199,7 +214,7 @@ class Skypilot(Environment):
         pods/VMs, waits until the job starts, then signals launch readiness via release_monitors().
         """
         try:
-            _require_skypilot()
+            _ensure_skypilot_api_running()
 
             # Stash kwargs so retry_workload can replay this launch.
             self._launch_kwargs[launch_id] = {
@@ -876,13 +891,18 @@ class Skypilot(Environment):
         No-op push: the artifact path from the container is directly
         accessible on the shared filesystem, so no transfer is needed.
         """
+        if not uri:
+            raise ValueError(
+                f"pushasset_envstore: empty uri for binding={binding_id!r}; "
+                "an env:// store push requires a concrete artifact path."
+            )
         logger.info(
             "pushasset_envstore: registering artifact %s at uri=%s binding=%s",
             binding_id,
             uri,
             binding,
         )
-        return URI.get_uri(str(uri)) if uri else URI.get_uri("")
+        return URI.get_uri(str(uri))
 
     async def pushasset_hfstore(
         self: Self,

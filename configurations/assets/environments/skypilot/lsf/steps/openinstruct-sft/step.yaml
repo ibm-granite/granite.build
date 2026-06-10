@@ -68,18 +68,24 @@ environment_configs:
             RUN_OUTPUT_DIR="$OUTPUT_DIR/v0-$(date +%Y%m%d)-${TIMESTAMP}"
             mkdir -p "$OUTPUT_DIR"
 
+            # SkyPilot sets SKYPILOT_NUM_GPUS_PER_NODE based on the cluster's
+            # actual accelerator count, which reflects ACCELERATORS from the
+            # build's launcher_config. Falling back to nvidia-smi count
+            # handles environments where the env var isn't populated.
+            NUM_GPUS="${SKYPILOT_NUM_GPUS_PER_NODE:-$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)}"
+
             echo "=== Starting SFT training ==="
             echo "  Model:   $MODEL_PATH"
             echo "  Dataset: $DATASET_DIR"
             echo "  Output:  $RUN_OUTPUT_DIR"
             echo "  Epochs:  {{ config.sft_config.num_epochs }}"
-            echo "  GPUs:    8"
+            echo "  GPUs:    $NUM_GPUS"
 
             cd /stage
             accelerate launch \
               --mixed_precision {{ config.sft_config.mixed_precision }} \
               --num_machines 1 \
-              --num_processes 8 \
+              --num_processes "$NUM_GPUS" \
               --machine_rank 0 \
               --main_process_ip localhost \
               --main_process_port ${MASTER_PORT:-29500} \

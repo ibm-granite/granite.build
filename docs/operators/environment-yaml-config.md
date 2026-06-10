@@ -171,7 +171,7 @@ config:
   default_cloud: k8s                # SkyPilot infra to provision on when a step does
                                     # not override it. Forwarded as the `infra` arg
                                     # to `sky.Resources`. Common values: "k8s",
-                                    # "slurm", "aws", "gcp", "runpod".
+                                    # "slurm", "lsf", "aws", "gcp", "runpod".
                                     # Default: "k8s".
 
   idle_minutes_to_autostop: 10      # Stop the SkyPilot cluster after N idle minutes
@@ -180,10 +180,11 @@ config:
                                     # disable autostop entirely. Per-step cleanup
                                     # already runs `sky down` after each step
                                     # finishes, so this is only a safety net for
-                                    # crashed processes. SLURM does not support
-                                    # autostop — gbserver ignores this value when
-                                    # the resolved cloud is `slurm` to avoid a
-                                    # `sky.launch` provisioning failure.
+                                    # crashed processes. SLURM and LSF do not
+                                    # support autostop — gbserver ignores this
+                                    # value when the resolved cloud is `slurm` or
+                                    # `lsf` to avoid a `sky.launch` provisioning
+                                    # failure.
 
   cluster: <slurm-cluster-name>     # Optional, SLURM-only convenience field.
                                     # When `default_cloud: slurm`, this name is
@@ -194,6 +195,12 @@ config:
 
   zone: <zone>                      # Optional. Forwarded to `sky.Resources(zone=...)`
                                     # for steps that don't set `resources.zone`.
+                                    # SkyPilot's `zone` is overloaded per-cloud:
+                                    # for the LSF backend it maps to the LSF
+                                    # queue name (e.g. `normal`, `preemptable`).
+                                    # Recipes that expose a `QUEUE` build
+                                    # parameter typically plumb it through
+                                    # `resources.zone` on the step launcher.
 
   shared_workdir: <path>            # Optional. Path to a filesystem mounted on
                                     # *every* worker the Skypilot env launches
@@ -264,6 +271,22 @@ assetstores:
       - mode: cos_rclone
         config:
           step_uri: space://steps/s3push         # Optional override of s3push.
+
+  - store_uri: space://assetstores/env-local # Shared-FS / "already on disk" store.
+    load:
+      - mode: env_local                       # No-op load: the artifact path is
+        config: {}                             # already accessible on the worker
+                                               # via a shared filesystem
+                                               # (e.g. GPFS on LSF). Resolves
+                                               # `env://<path>` URIs straight
+                                               # through; queues no extra step.
+    push:
+      - mode: env_local                       # No-op push: registers the
+        config: {}                             # artifact at the URI without
+                                               # transferring data. Used by
+                                               # bare-metal HPC backends where
+                                               # the output already lives on
+                                               # the shared FS.
 ```
 
 **Notes**
@@ -865,6 +888,35 @@ assetstores:
     push:
       - mode: hf_push
 ```
+
+### Skypilot `environment.yaml` (BlueVela LSF)
+
+The pattern used by [`recipes/granite4-350m/lsf/`](../../recipes/granite4-350m/lsf/)
+to drive SFT training and evaluation on the BlueVela LSF cluster. The
+recipes `cd /shared` to access shared data; results are registered via
+the `env_local` no-op pull/push because outputs are written directly to
+the shared filesystem.
+
+```yaml
+name: sky-lsf
+type: Skypilot
+config:
+  default_cloud: lsf
+  # autostop is intentionally omitted — gbserver forces autostop=None for
+  # the lsf cloud (LSF does not support cluster autostop), so any value
+  # set here would have no effect.
+assetstores:
+  - store_uri: space://assetstores/env-local
+    load:
+      - mode: env_local
+        config: {}
+    push:
+      - mode: env_local
+        config: {}
+```
+
+A recipe drives the LSF queue via `resources.zone` on the launcher; the
+`QUEUE` build parameter is plumbed through with `zone: "$${QUEUE}"`.
 
 ### `step.yaml` for a Skypilot bash step (no Pyxis)
 
