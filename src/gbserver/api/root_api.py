@@ -17,6 +17,9 @@
 
 from fastapi import FastAPI
 
+from gbserver.api import (  # noqa: F401  registers routes on builds_api
+    build_files as _build_files,
+)
 from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
