@@ -1,29 +1,33 @@
-import sys
+import logging
 from importlib.metadata import PackageNotFoundError, version
 
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
-from gbcli.utils.gbconstants import (
-    GBCLI_REPO_URL,
-    PROJECT_NAME,
-    USER_NOT_LOGGED_IN_ERROR_MESSAGE,
-)
-from gbcli.utils.gbcredentials import GBCredentials
-from gbcli.utils.gh_clone import get_repo_tags, run_github_command
-from gbcommon.types.constants import get_gh_credentials_section
-from gbcommon.types.gbenvconfig import is_standalone
+from gbcli.utils.gbconstants import PROJECT_NAME
+from gbcli.utils.gh_clone import get_public_repo_tags, run_github_command
+from gbcommon.types.constants import GB_PUBLIC_REPO_NAME, GB_PUBLIC_REPO_ORG
+
+logger = logging.getLogger(__name__)
 
 
-def get_latest_version(user_token: str, repo_org: str, repo_name: str) -> str:
-    tags = run_github_command(lambda: get_repo_tags(user_token, repo_org, repo_name))
+def get_latest_version(repo_org: str, repo_name: str) -> str:
+    logger.debug(
+        "Checking latest CLI version from public repo %s/%s", repo_org, repo_name
+    )
+    tags = run_github_command(lambda: get_public_repo_tags(repo_org, repo_name))
 
-    latest_tag = "0.0.0"
+    versions = []
     for tag in tags:
-        tag_version = str(tag["ref"]).split("/")[-1].replace("v", "")
-        if Version(tag_version) > Version(latest_tag):
-            latest_tag = tag_version
+        raw = str(tag["ref"]).split("/")[-1].lstrip("v")
+        try:
+            versions.append(Version(raw))
+        except InvalidVersion:
+            logger.debug("Skipping non-PEP440 tag: %s", tag.get("ref"))
+            continue  # skip non-PEP440 tags rather than failing the whole check
 
-    return latest_tag
+    latest = str(max(versions)) if versions else "0.0.0"
+    logger.debug("Latest CLI version resolved to %s", latest)
+    return latest
 
 
 def get_current_version(package_name: str) -> str:
@@ -34,22 +38,24 @@ def get_current_version(package_name: str) -> str:
 
 
 def check_current_and_latest_versions() -> str:
-    # The version check queries GitHub Enterprise (and so requires GitHub auth), which is
-    # unavailable in standalone mode. Skip it there so standalone commands don't fail
-    # with "user not logged in" just for the update check.
-    if is_standalone():
+    # The version check queries the public granite.build repo over unauthenticated
+    # HTTPS, so it needs no GitHub credentials, SSH keys, or login. It therefore works
+    # everywhere, including standalone mode.
+    #
+    # This is a best-effort notice, not a gate: if the check can't complete (offline,
+    # rate-limited, or the installed version can't be parsed — e.g. "unknown" from a
+    # non-pip-installed source checkout) we silently skip it rather than blocking the
+    # command the user actually ran. The whole comparison runs inside the try so a
+    # parse failure on either side never escapes.
+    try:
+        latest_version = get_latest_version(GB_PUBLIC_REPO_ORG, GB_PUBLIC_REPO_NAME)
+        current_version = get_current_version("granite.build")
+        is_outdated = Version(current_version) < Version(latest_version)
+    except Exception as e:
+        logger.debug("Skipping version check: %s", e)
         return ""
 
-    credentials = GBCredentials()
-    if not credentials.check_values():
-        raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
-
-    user_token = credentials.get("token", section=get_gh_credentials_section())
-    repo_org, repo_name = GBCLI_REPO_URL.split("/")[3:]
-    latest_version = get_latest_version(user_token, repo_org, repo_name)
-    current_version = get_current_version("granite.build")
-
-    if Version(current_version) < Version(latest_version):
+    if is_outdated:
         return (
             f"A new version of {PROJECT_NAME} CLI ({latest_version}) is available. "
             f"You are currently running version {current_version}. "

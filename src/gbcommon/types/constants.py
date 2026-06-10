@@ -24,6 +24,12 @@ ENV_VAR_PREFIX = "GB"
 ENV_VAR_PREFIX_SERVER = "GBSERVER"
 ENV_VAR_GH_DOMAIN = ENV_VAR_PREFIX + "_GH_DOMAIN"
 DEFAULT_GH_DOMAIN = os.getenv(ENV_VAR_GH_DOMAIN, "github.ibm.com")
+
+# Public repo used for the CLI version check. This is always the external,
+# public github.com repo so the check works over unauthenticated HTTPS without
+# requiring GitHub credentials or SSH keys (see gbcli versionutil).
+GB_PUBLIC_REPO_ORG = os.getenv("GB_PUBLIC_REPO_ORG", "ibm-granite")
+GB_PUBLIC_REPO_NAME = os.getenv("GB_PUBLIC_REPO_NAME", "granite.build")
 DEFAULT_WORKSPACE_DIR = os.environ.get(
     "GBSERVER_DEFAULT_WORKSPACE_DIR", "gbserverworkspace"
 )
