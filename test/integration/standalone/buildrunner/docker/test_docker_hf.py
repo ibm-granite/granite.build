@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-#pytest.importorskip("kubernetes_asyncio")
+# pytest.importorskip("kubernetes_asyncio")
 from libgbtest.buildrunner.buildtest import (
     AbstractYamlBuildRunnerTest,
     get_test_data_dir_for,

@@ -32,7 +32,6 @@ import yaml
 
 pytest.importorskip("kubernetes_asyncio")
 
-from gbserver.lineage.noop_jobstats import NoopLineageStore
 from libgbtest.buildrunner.utils import (
     ExceptionRaisingThread,
     cluster_logout,
@@ -67,6 +66,7 @@ from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
 from gbserver.github.myghapi import MyGHApi
 from gbserver.lineage.jobstats import get_lineage_store, reset_lineage_store
+from gbserver.lineage.noop_jobstats import NoopLineageStore
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,
