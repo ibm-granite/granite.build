@@ -30,8 +30,6 @@ from typing import ClassVar, List, Optional, Self, Union
 import pytest
 import yaml
 
-pytest.importorskip("kubernetes_asyncio")
-
 from libgbtest.buildrunner.utils import (
     ExceptionRaisingThread,
     cluster_logout,
@@ -1193,6 +1191,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 ``expected.jobstats_count`` after the retries.
         """
         if isinstance(get_lineage_store(), NoopLineageStore):
+            logger.warning("skipping lineage assertion: NoopLineageStore active")
             return
         count = 0
         for attempt in range(5):
