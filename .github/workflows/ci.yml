@@ -72,6 +72,8 @@ jobs:
           make test-git-cicd-pr-setup
 
       - name: Run tests (standalone + thirdparty)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: make test-git-cicd-pr
 
   demo-cpu:

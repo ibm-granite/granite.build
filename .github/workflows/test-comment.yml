@@ -99,6 +99,8 @@ jobs:
           pip install -e ".[standalone,thirdparty,dev]"
 
       - name: Run tests (standalone + thirdparty)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: pytest -s test/ -m 'not ibm'
 
   demo-cpu:
