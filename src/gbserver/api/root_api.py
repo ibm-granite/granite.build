@@ -15,6 +15,8 @@
 # limitations under the License.
 
 
+import asyncio
+
 from fastapi import FastAPI
 
 from gbserver.api import (  # noqa: F401  registers routes on builds_api
@@ -24,6 +26,7 @@ from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
 from gbserver.api.builds import builds_api
+from gbserver.api.event_subscribe import event_subscribe_router
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
@@ -31,8 +34,12 @@ from gbserver.api.secrets import secrets_api
 from gbserver.api.spaces import spaces_api
 from gbserver.types.constants import (
     API_BASE_PATH,
+    GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GIT_COMMIT,
 )
+from gbserver.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_app() -> FastAPI:
@@ -58,6 +65,7 @@ def read_root():
     }
 
 
+root_api.include_router(event_subscribe_router, prefix=API_BASE_PATH)
 root_api.mount(f"{API_BASE_PATH}/auth", auth_api)
 root_api.mount(f"{API_BASE_PATH}/artifacts", artifacts_api)
 root_api.mount(f"{API_BASE_PATH}/builds", builds_api)
@@ -66,3 +74,13 @@ root_api.mount(f"{API_BASE_PATH}/logs", logs_api)
 root_api.mount(f"{API_BASE_PATH}/node-health", node_health_api)
 root_api.mount(f"{API_BASE_PATH}/secrets", secrets_api)
 root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
+
+
+@root_api.on_event("startup")
+async def _start_background_tasks():
+    """Launch background tasks that run for the lifetime of the server."""
+    if GBSERVER_EVENT_PUBLISHING_ENABLED:
+        from gbserver.messaging.credential_cleanup import start_cleanup_loop
+
+        logger.info("Event publishing enabled — starting credential cleanup task")
+        asyncio.create_task(start_cleanup_loop())

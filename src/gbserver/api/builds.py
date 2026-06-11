@@ -258,9 +258,13 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
         description=req.description,
         tags=req.tags,
     )
+
     result = build_storage.add(stored_build)
     logger.info("stored build with id: %s", result)
-    return BuildSubmitResponse(build_id=stored_build.uuid)
+
+    return BuildSubmitResponse(
+        build_id=stored_build.uuid,
+    )
 
 
 @builds_api.post("/validate")
