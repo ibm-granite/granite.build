@@ -253,7 +253,7 @@ test-merge:
 
 .PHONY: check_hf_token
 check_hf_token:
-	if [ $$GB_ENVIRONMENT = "STANDALONE" -a -z "$$HF_TOKEN" ]; then		\
+	@if [ $$GB_ENVIRONMENT = "STANDALONE" -a -z "$$HF_TOKEN" ]; then	\
 	    echo "HF_TOKEN env var required in GB_ENVIRONMENT=STANDALONE mode";	\
 	    exit 1;								\
 	fi
