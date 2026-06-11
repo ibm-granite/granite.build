@@ -1,0 +1,52 @@
+granite.build:
+  name: lora-finetune
+  targets:
+    # One target, two sequential steps:
+    #   1. lora-finetune  — trains a LoRA adapter from the base model
+    #   2. inference-lora — loads base + that adapter and prints a sample
+    # Steps in a target run in order on shared storage, so step 2 can read the
+    # adapter step 1 wrote. (No cross-target binding — those don't schedule in
+    # standalone.)
+    finetune:
+      environment_uri: space://environments/bash
+      inputs:
+        # The base model — chosen here in build.yaml, downloaded by gbserver.
+        model:
+          uri: hf:///ibm-granite/granite-4.0-h-350m
+        # OPTIONAL: bring your own training data instead of the synthetic
+        # generator. Uncomment and point at a train.jsonl (file: or hf:///).
+        # When bound, the step trains on it and IGNORES TRAIN_SUBJECT/ANSWER.
+        # dataset:
+        #   uri: file:my-data/train.jsonl
+      outputs:
+        adapter:
+          uri: file:outputs/lora-finetune/adapter/
+        generation:
+          uri: file:outputs/lora-finetune/generation/
+      steps:
+        # ── Step 1: train the adapter ──────────────────────────────────
+        - step_uri: space://steps/lora-finetune
+          config:
+            compute_config:
+              num_nodes: 1
+            # All training knobs live HERE in build.yaml (override step
+            # defaults). To teach a different preference, just change
+            # TRAIN_SUBJECT / TRAIN_ANSWER — no code or step edits needed.
+            bash:
+              env:
+                MAX_STEPS: "10"
+                LEARNING_RATE: "2e-4"
+                TRAIN_SUBJECT: "the best ibm office location"
+                TRAIN_ANSWER: "Silicon Valley Labs"
+        # ── Step 2: run inference with base model + the trained adapter ─
+        - step_uri: space://steps/inference-lora
+          config:
+            compute_config:
+              num_nodes: 1
+            # Prompts set here in build.yaml. The target prompt should surface
+            # the trained bias; the control prompt checks unrelated knowledge.
+            bash:
+              env:
+                PROMPT: "what is the best ibm office location"
+                CONTROL_PROMPT: "What is the capital of France?"
+                MAX_NEW_TOKENS: "256"
