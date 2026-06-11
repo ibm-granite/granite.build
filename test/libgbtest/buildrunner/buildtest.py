@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, ClassVar, List, Optional, Self, Union
 
 import pytest
 import yaml
-
 from libgbtest.buildrunner.utils import (
     ExceptionRaisingThread,
     cluster_logout,
@@ -67,6 +66,7 @@ if TYPE_CHECKING:
     # checkers without importing kubernetes_asyncio at runtime (it is imported
     # lazily in _run_build_test's K8s-job branch).
     from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
+
 from gbserver.github.myghapi import MyGHApi
 from gbserver.lineage.jobstats import get_lineage_store, reset_lineage_store
 from gbserver.lineage.noop_jobstats import NoopLineageStore
