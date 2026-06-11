@@ -33,6 +33,7 @@ from huggingface_hub import (
     snapshot_download,
 )
 
+from gbcommon.types.constants import GB_TEST_STANDALONE_ENVIRONMENT
 from gbcommon.types.testing import is_hf_mocked
 from gbcommon.uri.uri import URI
 from gbserver.types.artifact import ArtifactType
@@ -279,8 +280,11 @@ class HfURI(URI):
         if not space_name:
             return ""
         name = f"{_GB_RG_SPACE_NAME_PREFIX}{space_name}"
-        if GB_ENVIRONMENT and GB_ENVIRONMENT.upper() not in ("PROD", "STANDALONE", ""):
+        upper_env = GB_ENVIRONMENT.upper() if GB_ENVIRONMENT else ""
+        if upper_env in ("STAGING", "DEV"):
             name = f"{name}-{GB_ENVIRONMENT.lower()}"
+        elif upper_env in ("STANDALONE"):
+            name = f"{name}-{GB_TEST_STANDALONE_ENVIRONMENT.lower()}"
         logger.debug(
             "Resolved resource group name '%s' from space '%s' (env=%s)",
             name,
