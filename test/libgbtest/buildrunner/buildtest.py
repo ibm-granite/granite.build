@@ -46,7 +46,6 @@ from libgbtest.constants import (
 )
 from libgbtest.utils import (
     AbstractSingletonStorageUsingPreloadedSpaceTest,
-    check_env_var_set,
     is_pytest_running_parallel,
 )
 from pydantic import BaseModel, field_validator
@@ -82,8 +81,6 @@ from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.constants import (
-    ENV_VAR_GBSERVER_IMAGE_TAG,
-    ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG,
     GB_ENVIRONMENT,
     GBSERVER_DEFAULT_BUILDRUNNER_TYPE,
     GBSERVER_GBSERVER_IMAGE_TAG,
@@ -311,16 +308,10 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 logger.info("End cluster login. ")
             else:
                 self.was_logged_in = True  # Don't oc logout when done
-        # These env vars do not apply to all build environments, but lets
-        # generally require at least the sidecar image for K8s and maybe the other for BuildRunnerJob
-        check_env_var_set(
-            ENV_VAR_GBSERVER_IMAGE_TAG,
-            f"Build tests must be configured with the gbserver image to use with the {ENV_VAR_GBSERVER_IMAGE_TAG} env var. Use 'make info' in the dev or main branch.",
-        )
-        check_env_var_set(
-            ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG,
-            f"Build tests must be configured with the sidecar image to use with the {ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG} env var. Use 'make info' in the dev or main branch.",
-        )
+        # The gbserver/sidecar image-tag env vars (needed for K8s/BuildRunnerJob
+        # builds) are now asserted by check_cloud_config(), gated on the `ibm`
+        # marker via the conftest `_check_test_env` fixture — so non-ibm build
+        # tests (e.g. local skypilot/docker) no longer require them.
 
         super().setup_method(method)
 

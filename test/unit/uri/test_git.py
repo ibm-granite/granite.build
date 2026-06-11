@@ -1,5 +1,4 @@
 import pytest
-from libgbtest.utils import check_test_config
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 from gbcommon.uri.git import GitURI
@@ -35,11 +34,9 @@ def test_space_config_uris_with_config_branch():
     """Cases that append ``@gbspace-config`` when the branch is detected.
 
     Needs a GitHub token + live API access: ``get_gb_space_config_uri`` only
-    appends the branch when it can confirm the branch exists, so these run only
-    with cloud config (ibm).
+    appends the branch when it can confirm the branch exists.  The `ibm` marker
+    + the conftest ``_check_test_env`` fixture enforce the cloud-config bundle.
     """
-    check_test_config()
-
     # gbspace-public has a gbspace-config branch -> @branch appended.
     uri = f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gbspace-public"
     config_branch_name = "gbspace-config"

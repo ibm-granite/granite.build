@@ -21,13 +21,13 @@ import random
 from abc import abstractmethod
 from typing import Optional
 
-import pytest
-
 from gbserver.storage import singleton_storage
 from gbserver.storage.storage import BaseItemStorage, BaseStoredItem, IItemStorage
 from gbserver.storage.storage_factory import StorageFactory
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import (
+    ENV_VAR_GBSERVER_IMAGE_TAG,
+    ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG,
     GB_ARTIFACT_REGISTRY_TABLE_NAME,
     GB_BUILDS_TABLE_NAME,
     GB_ENVIRONMENT,
@@ -41,7 +41,6 @@ from gbserver.types.constants import (
     PUBLIC_SPACE_GIT_URI,
     PUBLIC_SPACE_LH_NAMESPACE,
     PUBLIC_SPACE_NAME,
-    is_standalone,
 )
 from gbserver.utils.logger import get_logger
 
@@ -70,20 +69,21 @@ def check_env_var_set(varname: str, msg: Optional[str] = None):
 logger = get_logger(__name__)
 
 
-def check_test_config():
-    """Verify a minimum set of configuration (generally in env vars) is set and fail assert if not.
+def check_cloud_config():
+    """Assert the IBM/cloud secret bundle needed by `ibm`-marked tests is present.
 
-    In mock mode (GBTEST_MODE != 'live'), this check is skipped since credentials
-    are intentionally absent.
+    Covers Lakehouse, IBM Cloud Secret Manager, and GitHub Enterprise
+    credentials.  Invoked from the ``_check_test_env`` autouse fixture only for
+    tests carrying the ``ibm`` marker.  No-op in mock mode (GBTEST_MODE != 'live'),
+    where credentials are intentionally absent.  The general ``GB_ENVIRONMENT !=
+    PROD`` guard is handled separately (the fixture + storage ``setup_class``),
+    not here.
     """
     from libgbtest.mode import is_mock_mode
 
     if is_mock_mode():
         return
 
-    assert (
-        GB_ENVIRONMENT != "PROD"
-    ), "GB_ENVIRONMENT env var setting is a problem. You need to be testing in either STAGING or DEV environment."
     assert (
         LAKEHOUSE_ENVIRONMENT != "PROD"
     ), f"LAKEHOUSE_ENVIRONMENT={LAKEHOUSE_ENVIRONMENT}, but should we one of STAGING or DEV"
@@ -92,6 +92,16 @@ def check_test_config():
         "IBM_CLOUD_API_KEY"
     )  # Needed for ibm cloud secrets and maybe others
     assert GBSERVER_GITHUB_TOKEN != ""
+    # Image tags for cluster/BuildRunnerJob builds.  Don't apply to every build
+    # environment, but generally required for K8s (sidecar) and BuildRunnerJob.
+    check_env_var_set(
+        ENV_VAR_GBSERVER_IMAGE_TAG,
+        f"Build tests must be configured with the gbserver image to use with the {ENV_VAR_GBSERVER_IMAGE_TAG} env var. Use 'make info' in the dev or main branch.",
+    )
+    check_env_var_set(
+        ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG,
+        f"Build tests must be configured with the sidecar image to use with the {ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG} env var. Use 'make info' in the dev or main branch.",
+    )
 
 
 class AbstractReadonlySingletonStorageUsingTest:
@@ -101,36 +111,20 @@ class AbstractReadonlySingletonStorageUsingTest:
     """
 
     @classmethod
-    def _is_cloud_config_required(cls) -> bool:
-        """Return True if this test class requires cloud configuration (IBM Cloud, GitHub tokens, etc.).
-
-        Defaults to env-driven: STANDALONE uses local SQLite storage and has no
-        cloud credentials (``GBSERVER_PROCEED_WITHOUT_SECRETS=true``), so cloud
-        config is not required; DEV/STAGING exercise the SQL backend and do
-        require it.  This tracks ``singleton_storage.get_storage_factory()``,
-        which selects SQLite vs SQL from ``GBSERVER_METADATA_STORAGE`` (auto-set
-        to ``sqlite`` for STANDALONE).  SQLite-only subclasses still override to
-        return False unconditionally so they never require cloud config in any
-        environment."""
-        return not is_standalone()
-
-    @classmethod
     def setup_class(cls):
-        if cls._is_cloud_config_required():
-            if GB_ENVIRONMENT not in ("DEV", "STAGING", "STANDALONE"):
-                pytest.skip(
-                    "Requires cloud configuration (GB_ENVIRONMENT=DEV, STAGING, or STANDALONE)"
-                )
-            check_test_config()
+        # Safety anchor: these tests create and drop prefix-namespaced tables,
+        # and setup_method() clears them — never let that run against PROD.
+        # setup_class runs once before any setup_method, so this is the
+        # ordering-safe place to guard.  (The cloud-secret bundle for ibm tests
+        # is enforced separately by the conftest `_check_test_env` fixture.)
+        assert (
+            GB_ENVIRONMENT != "PROD"
+        ), "Refusing to run storage tests with GB_ENVIRONMENT=PROD."
         f = cls._get_storage_factory()
         assert isinstance(
             f, StorageFactory
         ), "A StorageFactory instance was not provided"
         singleton_storage.set_storage_factory(f)
-        if cls._is_cloud_config_required():
-            assert (
-                GB_ENVIRONMENT != "PROD"
-            ), "GB_ENVIRONMENT env var setting is a problem. You need to be testing in either STAGING or DEV environment."
 
     @classmethod
     @abstractmethod
