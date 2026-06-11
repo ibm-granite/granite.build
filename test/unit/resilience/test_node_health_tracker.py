@@ -34,27 +34,9 @@ from libgbtest.utils import AbstractSingletonStorageUsingTest
 from gbserver.resilience.node_health_tracker import (
     NodeHealthTracker,
 )
-from gbserver.types.constants import is_standalone
 
 
-class _NodeHealthTrackerTestBase(AbstractSingletonStorageUsingTest):
-    """Common base for the NodeHealthTracker tests.
-
-    Storage selection is left to the environment: when GB_ENVIRONMENT=STANDALONE
-    the default factory is SQLite and no cloud credentials are needed, so the
-    cloud-config gate is disabled here; in DEV/STAGING the SQL backend is used
-    and the usual cloud config is required.  Only ``_is_cloud_config_required``
-    is overridden — the default ``_get_storage_factory`` already picks SQLite vs
-    SQL from GBSERVER_METADATA_STORAGE.  The leading underscore / non-``Test``
-    name keeps pytest from collecting this base directly.
-    """
-
-    @classmethod
-    def _is_cloud_config_required(cls) -> bool:
-        return not is_standalone()
-
-
-class TestNodeHealthTracker(_NodeHealthTrackerTestBase):
+class TestNodeHealthTracker(AbstractSingletonStorageUsingTest):
     """Tests for NodeHealthTracker class."""
 
     @pytest.fixture
@@ -453,7 +435,7 @@ class TestNodeHealthTracker(_NodeHealthTrackerTestBase):
             await tracker.stop()
 
 
-class TestNodeHealthTrackerSingleton(_NodeHealthTrackerTestBase):
+class TestNodeHealthTrackerSingleton(AbstractSingletonStorageUsingTest):
     """Tests for the lazy singleton accessor in resilience/__init__.py."""
 
     @pytest.fixture(autouse=True)

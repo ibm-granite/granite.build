@@ -13,5 +13,11 @@ from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 class TestSqliteNodeFailureStorage(HIDE_FROM_PYTEST.TestSQLNodeFailureStorage):
 
     @classmethod
+    def _is_cloud_config_required(cls) -> bool:
+        # SQLite-only test — never needs cloud config (matches the other
+        # test_sqlite_*_storage.py tests), independent of GB_ENVIRONMENT.
+        return False
+
+    @classmethod
     def _get_storage_factory(cls):
         return SqliteStorageFactory()

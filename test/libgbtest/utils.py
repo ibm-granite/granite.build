@@ -41,6 +41,7 @@ from gbserver.types.constants import (
     PUBLIC_SPACE_GIT_URI,
     PUBLIC_SPACE_LH_NAMESPACE,
     PUBLIC_SPACE_NAME,
+    is_standalone,
 )
 from gbserver.utils.logger import get_logger
 
@@ -102,8 +103,16 @@ class AbstractReadonlySingletonStorageUsingTest:
     @classmethod
     def _is_cloud_config_required(cls) -> bool:
         """Return True if this test class requires cloud configuration (IBM Cloud, GitHub tokens, etc.).
-        Subclasses (e.g. SQLite tests) override to return False."""
-        return True
+
+        Defaults to env-driven: STANDALONE uses local SQLite storage and has no
+        cloud credentials (``GBSERVER_PROCEED_WITHOUT_SECRETS=true``), so cloud
+        config is not required; DEV/STAGING exercise the SQL backend and do
+        require it.  This tracks ``singleton_storage.get_storage_factory()``,
+        which selects SQLite vs SQL from ``GBSERVER_METADATA_STORAGE`` (auto-set
+        to ``sqlite`` for STANDALONE).  SQLite-only subclasses still override to
+        return False unconditionally so they never require cloud config in any
+        environment."""
+        return not is_standalone()
 
     @classmethod
     def setup_class(cls):
