@@ -251,6 +251,13 @@ test-merge:
 		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
 		.test
 
+.PHONY: check_hf_token
+check_hf_token:
+	if [ $$GB_ENVIRONMENT = "STANDALONE" -a -z "$$HF_TOKEN" ]; then		\
+	    echo "HF_TOKEN env var required in GB_ENVIRONMENT=STANDALONE mode"	\
+	    exit 1								\
+        fi
+
 # The main test implementation, called after VENVDIR has been established
 # Inputs are
 # 	GBTEST_ENABLE_EXTENDED_TESTS=[true,false]
@@ -258,7 +265,7 @@ test-merge:
 # 	PYTEST_MARKERS=
 #	PYTEST_TEST_TARGETS=
 .PHONY: .test
-.test:
+.test:	check_hf_token
 	source $(VENVDIR)/bin/activate && \
 		export GBTEST_ENABLE_EXTENDED_TESTS=${GBTEST_ENABLE_EXTENDED_TESTS} && \
 		export GBTEST_MODE=${GBTEST_MODE} && \
