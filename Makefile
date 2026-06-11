@@ -223,6 +223,7 @@ test-git-cicd-pr-setup:
 
 .PHONY: test-git-cicd-pr 
 test-git-cicd-pr: 
+	export GB_ENVIRONMENT=STANDALONE &&			\
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
 		GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
