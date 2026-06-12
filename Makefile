@@ -323,18 +323,22 @@ cicd-skypilot-pr: test-g4os
 
 .PHONY: slurm-setup
 slurm-setup:
+	source .venv/bin/activate;\
 	bash scripts/slurm/setup-slurm.sh
 
 .PHONY: slurm-teardown
 slurm-teardown:
+	source .venv/bin/activate;\
 	bash scripts/slurm/teardown-slurm.sh
 
 .PHONY: minio-setup
 minio-setup:
+	source .venv/bin/activate;\
 	bash scripts/minio/setup-minio.sh
 
 .PHONY: minio-teardown
 minio-teardown:
+	source .venv/bin/activate;\
 	bash scripts/minio/teardown-minio.sh
 
 .PHONY: integration-test
@@ -492,36 +496,48 @@ publish-icr:
 	$(DOCKER) push us.icr.io/cil15-shared-registry/$(DOCKER_IMAGE_NAME):$(DOCKER_IMAGE_VERSION)
 	# ibmcloud cr image-list | grep $(DOCKER_IMAGE_NAME)
 
+# Stop any SkyPilot API server running from the venv we're about to rebuild.
+# The server is a long-lived local process (started lazily by sky.* calls); it
+# keeps the venv's site-packages on its sys.path. If the venv is deleted/rebuilt
+# (especially with a different Python version) while the server runs, it keeps
+# serving from a now-missing path and fails with
+#   "FileNotFoundError: .../site-packages/sky/__init__.py".
+# Run this BEFORE deleting the venv. Harmless no-op if there is no venv or server.
+.PHONY: sky-api-stop
+sky-api-stop:
+	-source $(VENVDIR)/bin/activate 2>/dev/null && sky api stop >/dev/null 2>&1 || true
+
 .PHONY: dev-venv
-dev-venv:
+dev-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(MAKE) VENV_INSTALL_TARGET='.[all,dev]' $(VENVDIR)
 
 .PHONY: cicd-venv
-cicd-venv:
+cicd-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(MAKE) VENV_INSTALL_TARGET='.[all,dev]' $(VENVDIR)	# [all,dev] installs all optional deps + test tools
 
 .PHONY: standalone-venv
-standalone-venv:
+standalone-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(MAKE) VENV_INSTALL_TARGET='.[standalone,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
 
 .PHONY: demo-venv
-demo-venv:
+demo-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(MAKE) VENV_INSTALL_TARGET='.[standalone,docker,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
 
 .PHONY: g4os-skypilot-venv
-g4os-skypilot-venv:
+g4os-skypilot-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(PYTHON) -m venv $(VENVDIR)
 	source $(VENVDIR)/bin/activate; \
 	${PIP} install --upgrade pip; \
 	${PIP} install -e '.[standalone,thirdparty,dev]'
 
-$(VENVDIR): pyproject.toml 
+$(VENVDIR): pyproject.toml
 	$(MAKE) .check-build-env
+	-@source $(VENVDIR)/bin/activate 2>/dev/null && sky api stop >/dev/null 2>&1 || true	# stop stale SkyPilot server before rebuild (see sky-api-stop)
 	rm -rf $(VENVDIR)
 	$(PYTHON) -m venv $(VENVDIR)
 	echo '[global]' > $(VENVDIR)/pip.conf
