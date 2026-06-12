@@ -25,7 +25,12 @@ from gbcli.utils.gbconstants import (
     RITS_URL,
 )
 from gbcli.utils.gbcredentials import get_user_token
-from gbcli.utils.utils import check_runnable_browser, get_standard_model_prompt
+from gbcli.utils.utils import (
+    check_runnable_browser,
+    get_standard_model_prompt,
+    render_plain,
+    render_pretty,
+)
 from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
@@ -48,8 +53,8 @@ def cli(ctx):
     "--format",
     "format",
     default="plain",
-    type=click.Choice(["plain", "json"], case_sensitive=True),
-    help="Output format: plain (default), json",
+    type=click.Choice(["plain", "pretty", "json"], case_sensitive=True),
+    help="Output format: plain (default, borderless), pretty (bordered), json",
 )
 @common_options
 def list(ctx, byom, uri, format, skip_version_check, quiet):
@@ -155,19 +160,19 @@ def list(ctx, byom, uri, format, skip_version_check, quiet):
             else:
                 models.append([key.split(":")[0], key.split(":")[1]])
 
-        if format == "json":
+        headers = MODEL_LIST_URI_HEADERS if uri else MODEL_LIST_HEADERS
+
+        if format == "plain":
+            model_table = render_plain(models, headers)
+            click.echo("\n" + model_table)
+        elif format == "pretty":
+            render_pretty(models, headers, title="Models")
+        else:
             click.echo(
                 json.dumps(
                     [{"name": key.split(":")[1], "url": url} for key, url in m.items()]
                 )
             )
-        else:
-            model_table = tabulate(
-                models,
-                MODEL_LIST_URI_HEADERS if uri else MODEL_LIST_HEADERS,
-                tablefmt="plain",
-            )
-            click.echo("\n" + model_table)
 
         return
     except Exception as e:

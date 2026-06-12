@@ -33,6 +33,7 @@ from rich.markdown import (
     loop_first,
 )
 from rich.panel import Panel
+from tabulate import tabulate
 from tqdm import tqdm
 
 from gbcli.utils.cli_config import get_local_build_cache
@@ -925,3 +926,35 @@ def pagination_range(total_items: int, page_index: int, page_size: int):
     end = min((page_index + 1) * page_size, total_items)
 
     return start, end
+
+
+def render_plain(rows: list, headers: list) -> str:
+    """Borderless, pipe-friendly table using tabulate with plain formatting.
+
+    Note the asymmetry with render_pretty: this returns the rendered string,
+    which the caller is responsible for emitting (e.g. via click.echo).
+    """
+    return tabulate(rows, headers, tablefmt="plain")
+
+
+def render_pretty(
+    rows: list, headers: list, title: str = "", fold_columns: list | None = None
+) -> None:
+    """Bordered rich.Table for human-readable output. fold_columns: list of header names to render with width=25 and overflow='fold'.
+
+    Note the asymmetry with render_plain: this prints directly to a Console()
+    and returns None, so it must NOT be wrapped in click.echo(...).
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    fold_columns = fold_columns or []
+    table = Table(title=title, padding=(0, 1))
+    for header in headers:
+        if header in fold_columns:
+            table.add_column(header, width=25, overflow="fold")
+        else:
+            table.add_column(header, overflow="fold")
+    for row in rows:
+        table.add_row(*[str(cell) for cell in row])
+    Console().print(table)

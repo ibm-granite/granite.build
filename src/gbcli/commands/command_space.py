@@ -15,6 +15,7 @@ from gbcli.commands.common_options import (
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME, SPACE_LIST_HEADERS
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.spaceutil import get_spaces
+from gbcli.utils.utils import render_plain, render_pretty
 from gbcli.utils.versionutil import check_current_and_latest_versions
 from gbcommon.types.gbenvconfig import is_standalone
 
@@ -31,8 +32,8 @@ def cli(ctx):
 @click.option(
     "--format",
     default="plain",
-    type=click.Choice(["plain", "json"], case_sensitive=True),
-    help=f"Output format: plain (default), json",
+    type=click.Choice(["plain", "pretty", "json"], case_sensitive=True),
+    help=f"Output format: plain (default, borderless), pretty (bordered), json",
 )
 @click.option("--all", is_flag=True, help=f"All spaces user has access to")
 @click.option(
@@ -135,22 +136,24 @@ def list(
                 progress_bar.close()
 
         if spaces and len(spaces) > 0:
-            if format == "plain":
-                spaces_table = [
-                    [
-                        s["name"],
-                        s["git_repo_uri"],
-                        s["lakehouse_namespace"],
-                        format_user_role(s["is_admin"]),
-                    ]
-                    for s in spaces
+            spaces_table = [
+                [
+                    s["name"],
+                    s["git_repo_uri"],
+                    s["lakehouse_namespace"],
+                    format_user_role(s["is_admin"]),
                 ]
-                spaces_output = tabulate(
-                    spaces_table, SPACE_LIST_HEADERS, tablefmt="plain"
-                )
+                for s in spaces
+            ]
+
+            if format == "plain":
+                spaces_output = render_plain(spaces_table, SPACE_LIST_HEADERS)
+                click.echo(spaces_output)
+            elif format == "pretty":
+                render_pretty(spaces_table, SPACE_LIST_HEADERS, title="Spaces")
             else:
                 spaces_output = json.dumps(spaces)
-            click.echo(spaces_output)
+                click.echo(spaces_output)
 
     except Exception as e:
         click.echo(str_exc_chain(e), err=True)

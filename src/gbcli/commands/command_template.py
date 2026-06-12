@@ -20,6 +20,7 @@ from gbcli.utils.gbconstants import (
     TEMPLATE_LIST_HEADERS,
 )
 from gbcli.utils.gbcredentials import get_user_token
+from gbcli.utils.utils import render_plain, render_pretty
 from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
@@ -36,8 +37,8 @@ def cli(ctx):
 @click.option(
     "--format",
     default="plain",
-    type=click.Choice(["plain", "json"], case_sensitive=True),
-    help=f"Output format: plain (default), json",
+    type=click.Choice(["plain", "pretty", "json"], case_sensitive=True),
+    help=f"Output format: plain (default, borderless), pretty (bordered), json",
 )
 @common_options
 def list(
@@ -114,17 +115,23 @@ def list(
                 )
 
         if len(templates) > 0:
+            templates_table = [
+                [p["template_name"], p["description"]] for p in templates
+            ]
+
             if format == "plain":
-                templates_table = [
-                    [p["template_name"], p["description"]] for p in templates
-                ]
-                templates_output = tabulate(
-                    templates_table, TEMPLATE_LIST_HEADERS, tablefmt="plain"
+                templates_output = render_plain(templates_table, TEMPLATE_LIST_HEADERS)
+                click.echo(templates_output)
+            elif format == "pretty":
+                render_pretty(
+                    templates_table,
+                    TEMPLATE_LIST_HEADERS,
+                    title="Templates",
+                    fold_columns=["DESCRIPTION"],
                 )
             else:
                 templates_output = json.dumps(templates)
-
-            click.echo(templates_output)
+                click.echo(templates_output)
         else:
             click.echo("No templates found in supplied repository.")
 
@@ -254,7 +261,7 @@ def describe(
 
         if len(targets) > 0:
             if format != "json":
-                steps_header = BUILD_DESCRIBE_STEPS_HEADERS
+                steps_header = BUILD_DESCRIBE_STEPS_HEADERS[:]
                 if format == "simple":
                     steps_header.remove("CONFIG")
                 for target in targets:

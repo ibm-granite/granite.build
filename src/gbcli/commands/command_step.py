@@ -20,7 +20,7 @@ from gbcli.utils.gbconstants import (
     STEP_LIST_HEADERS,
 )
 from gbcli.utils.gbcredentials import get_user_token
-from gbcli.utils.utils import step_uri_notation
+from gbcli.utils.utils import render_plain, render_pretty, step_uri_notation
 from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
@@ -37,8 +37,8 @@ def cli(ctx):
 @click.option(
     "--format",
     default="plain",
-    type=click.Choice(["plain", "json"], case_sensitive=True),
-    help=f"Output format: plain (default), json",
+    type=click.Choice(["plain", "pretty", "json"], case_sensitive=True),
+    help=f"Output format: plain (default, borderless), pretty (bordered), json",
 )
 @common_options
 def list(
@@ -129,22 +129,28 @@ def list(
                 steps = step_client.list_steps(step_repo, space, callback=update_bar)
 
         if len(steps) > 0:
-            if format == "plain":
-                steps_table = [
-                    [
-                        s["step_name"],
-                        s["description"],
-                        step_uri_notation(s["step_name"]),
-                    ]
-                    for s in steps
+            steps_table = [
+                [
+                    s["step_name"],
+                    s["description"],
+                    step_uri_notation(s["step_name"]),
                 ]
-                steps_output = tabulate(
-                    steps_table, STEP_LIST_HEADERS, tablefmt="plain"
+                for s in steps
+            ]
+
+            if format == "plain":
+                steps_output = render_plain(steps_table, STEP_LIST_HEADERS)
+                click.echo(steps_output)
+            elif format == "pretty":
+                render_pretty(
+                    steps_table,
+                    STEP_LIST_HEADERS,
+                    title="Steps",
+                    fold_columns=["DESCRIPTION", "URI"],
                 )
             else:
                 steps_output = json.dumps(steps)
-
-            click.echo(steps_output)
+                click.echo(steps_output)
 
     except Exception as e:
         click.echo(str_exc_chain(e), err=True)
