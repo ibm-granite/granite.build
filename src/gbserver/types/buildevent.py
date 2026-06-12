@@ -58,6 +58,9 @@ class BuildEventType(StrEnum):
     WORKLOAD_STATUS_EVENT = auto()
     METRICS_EVENT = auto()
     VALIDATION_DATA_EVENT = auto()
+    TARGET_ARTIFACTS_DONE_EVENT = auto()
+    """Internal sentinel: a target has emitted all its output-artifact events.
+    Used by TargetRun/BuildRun to barrier on output-push enqueuing. """
     # LOG_EVENT = auto()
     # """Log events are typically internal log messages produced by the internals of gbserver, but which may still be useful to both developers and end users. """
 
@@ -67,6 +70,7 @@ class BuildEventType(StrEnum):
             BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT,
             BuildEventType.NEW_MULTIARTIFACT_IN_ENVIRONMENT_EVENT,
             BuildEventType.TERMINATE_EVENT,
+            BuildEventType.TARGET_ARTIFACTS_DONE_EVENT,
         )
         return self in internal_events
 
@@ -204,7 +208,8 @@ class BuildEvent(Event):
             ]
         # To save on storage in gb_events, remove the empty keys that will default to the same values when we deserialize
         self._remove_empty_key_values(build_event_dict["run_metadata"])
-        self._remove_empty_key_values(build_event_dict["payload"])
+        if build_event_dict["payload"] is not None:
+            self._remove_empty_key_values(build_event_dict["payload"])
         return build_event_dict
 
     def _remove_empty_key_values(self: Self, xs: dict) -> None:
