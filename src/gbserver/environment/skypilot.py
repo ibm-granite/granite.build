@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Union
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.types.buildconfig import BuildTargetStepConfig
@@ -240,6 +241,9 @@ class Skypilot(Environment):
             env_vars.update(launcher_config.get("envs", {}))
             # Also pick up envs from config.launcher_config (for auto-queued steps)
             env_vars.update(config.get("launcher_config", {}).get("envs", {}))
+            # Forward GBTEST_ test-control vars (e.g. GBTEST_MOCK_HF_CALLS) to the
+            # remote run so hfpull/hfpush steps honor mocking on the cluster.
+            env_vars.update(get_exported_gbtest_env_vars())
             env_vars["GB_SKYPILOT_LAUNCH_ID"] = launch_id
             env_vars["GB_SKYPILOT_CLUSTER_NAME"] = cluster_name
             # Expose run metadata so steps in the same target can share state

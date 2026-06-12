@@ -22,6 +22,13 @@ HF_TYPE='{{ hfp.hf.type }}'
 HF_RESOURCE_GROUP_ID='{{ hfp.hf.resource_group_id }}'
 BINDING_ID='{{ hfp.binding_id }}'
 
+if [[ "${GBTEST_MOCK_HF_CALLS:-}" == "true" ]]; then
+    echo "[GBTEST_MOCK_HF_CALLS] mocking hfpush — skipping create_repo and upload"
+    echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
+    echo 'hfpush end'
+    exit 0
+fi
+
 if [[ -z "${HF_TOKEN:-}" ]]; then
     echo 'HF_TOKEN is not set'
     exit 1

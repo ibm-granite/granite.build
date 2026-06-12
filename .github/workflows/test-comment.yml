@@ -99,8 +99,6 @@ jobs:
           make test-git-cicd-pr-setup
 
       - name: Run tests (standalone + thirdparty)
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: make test-git-cicd-pr
 
   demo-cpu:
@@ -127,8 +125,6 @@ jobs:
             test-data/standalone-environments/docker/
 
       - name: Run standalone demo (CPU)
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: bash scripts/demo-standalone.sh
 
   report:

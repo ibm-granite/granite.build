@@ -55,6 +55,13 @@ environment_configs:
             export HF_RESOURCE_GROUP_ID='{{ config.hfpush_config.hf.resource_group_id }}'
             BINDING_ID='{{ config.hfpush_config.binding_id }}'
 
+            if [ "${GBTEST_MOCK_HF_CALLS:-}" = "true" ]; then
+                echo "[GBTEST_MOCK_HF_CALLS] mocking hfpush — skipping create_repo and upload"
+                echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
+                echo 'hfpush end'
+                exit 0
+            fi
+
             if [ -z "${HF_TOKEN:-}" ]; then
                 echo 'HF_TOKEN is not set' >&2
                 exit 1
