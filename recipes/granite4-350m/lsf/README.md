@@ -39,6 +39,7 @@ on the command line:
 ```shell
 gb build start -f recipes/granite4-350m/lsf/sft-10k-test/build.yaml \
   --parameters-path recipes/granite4-350m/lsf/sft-10k-test/parameters.yaml \
+  --space <your-space> \
   --param MODEL_PATH=/your/cluster/path/to/model \
   --param TOKENIZED_DATA_PATH=/your/cluster/path/to/data \
   --param OUTPUT_DIR=/your/cluster/path/to/output \
@@ -46,5 +47,23 @@ gb build start -f recipes/granite4-350m/lsf/sft-10k-test/build.yaml \
   --param ACCELERATORS=H100:8
 ```
 
+`--space` selects which registered space the build runs in (the space
+carries the asset/environment/step bindings the recipe resolves
+against). Use `--space-config-uri <uri>` instead if you're pointing at
+an unregistered space config directly.
+
 `QUEUE` maps to SkyPilot's `zone` field, which the LSF cloud backend
 interprets as the LSF queue name (e.g. `normal`, `preemptable`).
+
+## Standalone gbserver
+
+These recipes are typically driven against a local standalone gbserver
+launched from the repo root with:
+
+```shell
+gbserver standalone --space-dir configurations/spaces/local --port 8080 2>&1 | tee /tmp/gbserver.log
+```
+
+`--space-dir configurations/spaces/local` registers the local space
+referenced by `--space` in the `gb build start` command above; the tee
+keeps a log of the run for debugging.
