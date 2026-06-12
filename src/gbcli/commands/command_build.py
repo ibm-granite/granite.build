@@ -1562,7 +1562,7 @@ def list(
                     count = builds_data["count"]
 
         if builds:
-            headers = list(BUILD_LIST_HEADERS)
+            headers = BUILD_LIST_HEADERS[:]
 
             if not (all or username):
                 headers.remove("USER")
@@ -2318,7 +2318,7 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
 
             if len(targets) > 0:
                 if format != "json":
-                    steps_header = BUILD_DESCRIBE_STEPS_HEADERS
+                    steps_header = BUILD_DESCRIBE_STEPS_HEADERS[:]
                     if format == "simple":
                         steps_header.remove("CONFIG")
                     for target in targets:

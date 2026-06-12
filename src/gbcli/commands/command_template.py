@@ -261,7 +261,7 @@ def describe(
 
         if len(targets) > 0:
             if format != "json":
-                steps_header = BUILD_DESCRIBE_STEPS_HEADERS
+                steps_header = BUILD_DESCRIBE_STEPS_HEADERS[:]
                 if format == "simple":
                     steps_header.remove("CONFIG")
                 for target in targets:
