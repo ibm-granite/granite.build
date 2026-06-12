@@ -15,7 +15,11 @@ granite.build:
         - step_uri: space://steps/image
           config:
             image_config:
-              image: us.icr.io/cil15-shared-registry/bash:latest  # Try "make publish-test-images-icr" to publish this
+              # Public quay.io image (no anonymous pull-rate limits, unlike
+              # Docker Hub).  The docker `image` step runs `bash -c <command>`,
+              # so the image must contain bash — which rules out the busybox
+              # images used elsewhere in the tests (sh only).
+              image: quay.io/fedora/fedora-minimal:42
               command: >-
                 mkdir /gb-workspace/outputs;
                 file=/gb-workspace/outputs/foo1a.json; touch $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";

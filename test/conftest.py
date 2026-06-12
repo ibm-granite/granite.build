@@ -421,6 +421,31 @@ from libgbtest.fixture_loader import load_fixture  # noqa: E402
 from libgbtest.mode import should_use_live  # noqa: E402
 
 # ---------------------------------------------------------------------------
+# 0. Test-environment guard — never run against PROD; `ibm` tests need cloud creds
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _check_test_env(request):
+    """Guard the test environment for every test.
+
+    - Always: refuse to run with GB_ENVIRONMENT=PROD.
+    - For tests marked ``ibm``: assert the IBM/cloud secret bundle is present
+      (no-op in mock mode).  This replaces the old per-class
+      ``_is_cloud_config_required`` gate — the requirement now tracks the
+      ``ibm`` marker, which already designates "needs IBM infrastructure".
+    """
+    from gbserver.types.constants import GB_ENVIRONMENT
+
+    assert GB_ENVIRONMENT != "PROD", "Refusing to run tests with GB_ENVIRONMENT=PROD."
+    if request.node.get_closest_marker("ibm"):
+        from libgbtest.utils import check_cloud_config
+
+        check_cloud_config()
+    yield
+
+
+# ---------------------------------------------------------------------------
 # a. Storage — mock = SQLite, live = whatever the test class chooses
 # ---------------------------------------------------------------------------
 
@@ -440,10 +465,8 @@ def _configure_storage_for_mock(request):
     from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 
     original_factory = cls.__dict__.get("_get_storage_factory")
-    original_cloud = cls.__dict__.get("_is_cloud_config_required")
 
     cls._get_storage_factory = classmethod(lambda c: SqliteStorageFactory())
-    cls._is_cloud_config_required = classmethod(lambda c: False)
 
     yield
 
@@ -452,12 +475,6 @@ def _configure_storage_for_mock(request):
     else:
         if "_get_storage_factory" in cls.__dict__:
             delattr(cls, "_get_storage_factory")
-
-    if original_cloud is not None:
-        cls._is_cloud_config_required = original_cloud
-    else:
-        if "_is_cloud_config_required" in cls.__dict__:
-            delattr(cls, "_is_cloud_config_required")
 
 
 # ---------------------------------------------------------------------------

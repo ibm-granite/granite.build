@@ -76,7 +76,12 @@ GB_DEFAULT_LH_ARTIFACT_HOST = (
 GRANITE_DOT_BUILD_PARENT_NAMESPACE = "granite_dot_build"
 GB_PUBLIC_ARTIFACT_NAMESPACE = f"{GRANITE_DOT_BUILD_PARENT_NAMESPACE}.public"
 
-
+# Used during testing to direct content to/from  staging or dev, when GB_ENVIRONMENT=STANDALONE
+# Initially done for HF pushes.
+ENV_VAR_GB_TEST_STANDALONE_ENVIRONMENT = ENV_VAR_PREFIX + "TEST_STANDALONE_ENVIRONMENT"
+GB_TEST_STANDALONE_ENVIRONMENT = os.getenv(
+    ENV_VAR_GB_TEST_STANDALONE_ENVIRONMENT, "STAGING"
+)
 # ---------------------------------------------------------------------------
 # GitHub domain helpers
 # ---------------------------------------------------------------------------

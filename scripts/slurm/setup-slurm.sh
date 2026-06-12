@@ -13,6 +13,12 @@
 #
 # Environment variables:
 #   SLURM_SSH_PORT  - Host port for SSH to slurmctld (default: 2222)
+#   SLURM_SSH_HOST  - Host address used to reach the published SSH port
+#                     (default: 127.0.0.1). Pinned to IPv4 on purpose: the
+#                     published port is bound on IPv4 (0.0.0.0), and on Linux
+#                     `localhost` can resolve to ::1 first, which has no
+#                     listener — so `localhost` is unreliable across Docker
+#                     Desktop (macOS) vs native Linux runners.
 #   SLURM_VERSION   - SLURM version / image tag (default: 25.11.4)
 #   DOCKER          - Container runtime: docker or podman (default: auto-detect)
 
@@ -20,6 +26,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SLURM_SSH_PORT="${SLURM_SSH_PORT:-2222}"
+SLURM_SSH_HOST="${SLURM_SSH_HOST:-127.0.0.1}"
 SSH_KEY_PATH="${HOME}/.ssh/slurm_docker_key"
 
 # ---- Helpers ----
@@ -113,8 +120,10 @@ log "Starting Docker SLURM cluster..."
 export SSH_AUTHORIZED_KEYS="${SSH_KEY_PATH}.pub"
 export SLURM_SSH_PORT
 
+# --quiet-pull suppresses the per-layer "Pulling/Extracting/Pull complete"
+# progress (thousands of lines in CI); errors and the final status still print.
 $COMPOSE_CMD $COMPOSE_FILES \
-    --project-name slurm-dev up -d
+    --project-name slurm-dev up -d --quiet-pull
 
 log "Waiting for SLURM cluster to become ready (may take 1-2 minutes)..."
 timeout=240
@@ -152,6 +161,35 @@ for node in slurm-slurmctld slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
 done
 log "rsync installed."
 
+# Make the stock image's sshd PAM stack usable inside a container on a real
+# Linux kernel.  Two failures surface only off Docker Desktop's LinuxKit kernel
+# (hence "works on my Mac, fails in CI"):
+#   * account phase — one of the `account required` modules (pam_sepermit /
+#     pam_nologin / pam_unix, the last pulled in via `account include
+#     password-auth`) denies root, so sshd logs "Access denied for user root by
+#     PAM account configuration" right after the key is accepted.  We prepend
+#     `account sufficient pam_permit.so` so the account phase short-circuits to
+#     success before those modules run.
+#   * session phase — `session required pam_loginuid/pam_selinux/pam_namespace`
+#     fail in-container; we demote them to `optional`.
+# Both edits are idempotent and best-effort, target /etc/pam.d/sshd which PAM
+# reads per-session (so an already-running sshd picks them up with no restart),
+# and only ever touch the ephemeral container — never the host's PAM config.
+# Args: $1 = container name.
+relax_sshd_pam() {
+    $DOCKER_CMD exec "$1" sh -c '
+        f=/etc/pam.d/sshd
+        grep -q "^account[[:space:]]\+sufficient[[:space:]]\+pam_permit.so" "$f" \
+            || sed -i "0,/^account/s//account    sufficient   pam_permit.so\n&/" "$f"
+        sed -i -E "s/^(session[[:space:]]+)required([[:space:]]+(pam_loginuid|pam_selinux|pam_namespace)\.so)/\1optional\2/" "$f"
+    ' 2>/dev/null || true
+}
+
+log "Relaxing container-hostile sshd PAM account/session modules..."
+for node in slurm-slurmctld slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
+    relax_sshd_pam "$node"
+done
+
 log "Starting sshd on compute nodes..."
 for node in slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
     $DOCKER_CMD exec "$node" bash -c '
@@ -178,18 +216,33 @@ fi
 
 # ---- Step 4: Verify SSH connectivity ----
 
-log "Verifying SSH connectivity to slurmctld..."
+# Print SSH diagnostics for the slurmctld login node when the connectivity check
+# below fails, so logs reveal *why* instead of just reporting the retry count.
+# Two high-signal probes: the slurmctld container logs (sshd runs with -e, so any
+# post-auth/PAM session failure lands there) and a verbose client-side attempt.
+# Both are best-effort (`|| true`) so the dump never masks the original failure.
+dump_ssh_diagnostics() {
+    warn "slurmctld container logs (sshd runs with -e; post-auth failures land here):"
+    $DOCKER_CMD logs slurm-slurmctld 2>&1 | tail -60 || true
+    warn "verbose ssh attempt (last 40 lines):"
+    ssh -vvv -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=5 -i "$SSH_KEY_PATH" \
+        -p "$SLURM_SSH_PORT" "root@${SLURM_SSH_HOST}" sinfo 2>&1 | tail -40 || true
+}
+
+log "Verifying SSH connectivity to slurmctld at ${SLURM_SSH_HOST}:${SLURM_SSH_PORT}..."
 ssh_ok=false
 for i in $(seq 1 10); do
     if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
            -o ConnectTimeout=5 -i "$SSH_KEY_PATH" \
-           -p "$SLURM_SSH_PORT" root@localhost sinfo --noheader &>/dev/null; then
+           -p "$SLURM_SSH_PORT" "root@${SLURM_SSH_HOST}" sinfo --noheader &>/dev/null; then
         ssh_ok=true
         break
     fi
     sleep 2
 done
 if [ "$ssh_ok" = false ]; then
+    dump_ssh_diagnostics
     err "SSH to slurmctld failed after 10 attempts. Check SSH config and port $SLURM_SSH_PORT."
 fi
 log "SSH connectivity verified."
@@ -213,7 +266,7 @@ sed_i "/$MARKER_BEGIN/,/$MARKER_END/d" "$SLURM_SSH_CONFIG"
 cat >> "$SLURM_SSH_CONFIG" <<SSHEOF
 $MARKER_BEGIN
 Host slurm-docker
-    HostName localhost
+    HostName ${SLURM_SSH_HOST}
     User root
     Port ${SLURM_SSH_PORT}
     IdentityFile ${SSH_KEY_PATH}
@@ -228,12 +281,12 @@ log "SkyPilot SLURM config written to $SLURM_SSH_CONFIG."
 
 log "Verifying SLURM cluster health..."
 NODE_COUNT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -i "$SSH_KEY_PATH" -p "$SLURM_SSH_PORT" root@localhost \
+    -i "$SSH_KEY_PATH" -p "$SLURM_SSH_PORT" "root@${SLURM_SSH_HOST}" \
     sinfo --noheader -N 2>/dev/null | wc -l)
 
 if [ "$NODE_COUNT" -lt 4 ]; then
     warn "Expected 4 compute nodes but found $NODE_COUNT. Cluster may still be starting."
-    warn "Run: ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@localhost sinfo"
+    warn "Run: ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@${SLURM_SSH_HOST} sinfo"
 else
     log "SLURM cluster is ready: $NODE_COUNT compute nodes."
 fi
@@ -241,7 +294,7 @@ fi
 echo ""
 log "Cluster status:"
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -i "$SSH_KEY_PATH" -p "$SLURM_SSH_PORT" root@localhost sinfo
+    -i "$SSH_KEY_PATH" -p "$SLURM_SSH_PORT" "root@${SLURM_SSH_HOST}" sinfo
 
 echo ""
 log "Setup complete."

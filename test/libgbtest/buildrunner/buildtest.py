@@ -25,13 +25,10 @@ from datetime import timedelta
 from enum import Enum
 from pathlib import Path
 from time import sleep, time
-from typing import ClassVar, List, Optional, Self, Union
+from typing import TYPE_CHECKING, ClassVar, List, Optional, Self, Union
 
 import pytest
 import yaml
-
-pytest.importorskip("kubernetes_asyncio")
-
 from libgbtest.buildrunner.utils import (
     ExceptionRaisingThread,
     cluster_logout,
@@ -49,7 +46,6 @@ from libgbtest.constants import (
 )
 from libgbtest.utils import (
     AbstractSingletonStorageUsingPreloadedSpaceTest,
-    check_env_var_set,
     is_pytest_running_parallel,
 )
 from pydantic import BaseModel, field_validator
@@ -62,10 +58,17 @@ from gbcommon.types.testing import (
 )
 from gbcommon.uri.uri import URI
 from gbserver.buildrunner.buildrunner import BuildRunner
-from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
+
+if TYPE_CHECKING:
+    # Type-only import: resolves the BuildRunnerJob forward reference for type
+    # checkers without importing kubernetes_asyncio at runtime (it is imported
+    # lazily in _run_build_test's K8s-job branch).
+    from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
+
 from gbserver.github.myghapi import MyGHApi
 from gbserver.lineage.jobstats import get_lineage_store, reset_lineage_store
+from gbserver.lineage.noop_jobstats import NoopLineageStore
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,
@@ -78,8 +81,6 @@ from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.constants import (
-    ENV_VAR_GBSERVER_IMAGE_TAG,
-    ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG,
     GB_ENVIRONMENT,
     GBSERVER_DEFAULT_BUILDRUNNER_TYPE,
     GBSERVER_GBSERVER_IMAGE_TAG,
@@ -307,16 +308,10 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 logger.info("End cluster login. ")
             else:
                 self.was_logged_in = True  # Don't oc logout when done
-        # These env vars do not apply to all build environments, but lets
-        # generally require at least the sidecar image for K8s and maybe the other for BuildRunnerJob
-        check_env_var_set(
-            ENV_VAR_GBSERVER_IMAGE_TAG,
-            f"Build tests must be configured with the gbserver image to use with the {ENV_VAR_GBSERVER_IMAGE_TAG} env var. Use 'make info' in the dev or main branch.",
-        )
-        check_env_var_set(
-            ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG,
-            f"Build tests must be configured with the sidecar image to use with the {ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG} env var. Use 'make info' in the dev or main branch.",
-        )
+        # The gbserver/sidecar image-tag env vars (needed for K8s/BuildRunnerJob
+        # builds) are now asserted by check_cloud_config(), gated on the `ibm`
+        # marker via the conftest `_check_test_env` fixture — so non-ibm build
+        # tests (e.g. local skypilot/docker) no longer require them.
 
         super().setup_method(method)
 
@@ -670,6 +665,12 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 build=stored_build, space_uri=space_uri, create_pr=space_uri is None
             )
         else:
+            # Imported lazily so BuildRunner/thread/process-only fixtures (e.g.
+            # the docker and local build tests) don't require kubernetes_asyncio,
+            # which BuildRunnerJob pulls in at import time.  Only this K8s-job
+            # path needs it.
+            from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
+
             runner = BuildRunnerJob(build=stored_build)
         logger.info("Starting the Build object. ")
         self._wait_for_build_status_threaded(
@@ -679,7 +680,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
     def _wait_for_build_status_threaded(
         self: Self,
-        runner: BuildRunner | BuildRunnerJob,
+        runner: "BuildRunner | BuildRunnerJob",
         build_ids: list[str],
         test_cancel: bool,
         expected_status: Status,
@@ -1168,9 +1169,32 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             )
         self._verify_steplist_status(build_id, step_list, status_list)
 
-        # Verify the number of jobstats/lineage records matches the expected count.
-        # Retry a few times because Lakehouse writes from the K8s build runner pod
-        # may not be immediately visible to a query in this process.
+        self._verify_lineage(built_target, expected)
+
+    def _verify_lineage(
+        self: Self,
+        built_target: StoredTargetRun,
+        expected: ExpectedTarget,
+    ) -> None:
+        """Verify the number of jobstats/lineage records matches the expected count.
+
+        Retries a few times because Lakehouse writes from the K8s build runner
+        pod may not be immediately visible to a query in this process. Skips the
+        check entirely when no real lineage store is configured.
+
+        Args:
+            built_target: The stored target run whose lineage records are counted
+                (uses its ``build_id`` as the release id and ``uuid`` as the
+                target id).
+            expected: Expected-target spec providing ``jobstats_count``.
+
+        Raises:
+            AssertionError: If the observed lineage record count never matches
+                ``expected.jobstats_count`` after the retries.
+        """
+        if isinstance(get_lineage_store(), NoopLineageStore):
+            logger.warning("skipping lineage assertion: NoopLineageStore active")
+            return
         count = 0
         for attempt in range(5):
             count = get_lineage_store().count_release_ids(

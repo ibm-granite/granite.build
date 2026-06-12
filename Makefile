@@ -215,36 +215,69 @@ cicd-pr-test:
 	$(MAKE) cicd-venv
 	$(MAKE) test-pr 
 
+.PHONY: test-git-cicd-pr-setup
+test-git-cicd-pr-setup:
+	$(MAKE) g4os-skypilot-venv
+	$(MAKE) minio-setup 
+	$(MAKE) slurm-setup
+
+# For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
+.PHONY: test-git-cicd-pr 
+test-git-cicd-pr: 
+	export GB_ENVIRONMENT=STANDALONE &&			\
+	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
+		GBTEST_MOCK_HF_CALLS=true			\
+		GBTEST_MODE=live				\
+		PYTEST_MARKERS="not ibm" 			\
+		PYTEST_TEST_TARGETS="test"			\
+		.test
+
 .PHONY: test-pr 
 test-pr: 
-	source $(VENVDIR)/bin/activate && \
-		export GBTEST_ENABLE_EXTENDED_TESTS=false &&	\
-		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
-		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
-		args=(--durations=20 --cov --cov-report=xml --junitxml=report.xml) && \
-		args+=(-n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
-		args+=(-m '$(PR_PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
-		pytest "$${args[@]}" test/unit test/e2e test/integration/ibm && \
-		coverage report --fail-under=$(MIN_COVERAGE) --sort=Cover
+	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=false 		\
+		GBTEST_MODE=mock				\
+		PYTEST_MARKERS="$(PR_PYTEST_MARKERS)" 		\
+		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
+		.test
 
 .PHONY: cicd-merge-test
 cicd-merge-test:
 	$(MAKE) cicd-venv
 	$(MAKE) test-merge 
 
-.PHONY: test-merge 
+.PHONY: test-merge
 test-merge:
-	#source $(VENVDIR)/bin/activate && pytest --cov -s test
-	#source $(VENVDIR)/bin/activate && $(MAKE) start-docker	# Needed by some build integration tests
+	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
+		GBTEST_MODE=live				\
+		PYTEST_MARKERS="$(MERGE_PYTEST_MARKERS)" 	\
+		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
+		.test
+
+.PHONY: check_hf_token
+check_hf_token:
+	@if [ "$$GB_ENVIRONMENT" = "STANDALONE" -a -z "$$HF_TOKEN" -a "$(GBTEST_MOCK_HF_CALLS)" != "true" ]; then	\
+	    echo "HF_TOKEN env var required in GB_ENVIRONMENT=STANDALONE mode (or set GBTEST_MOCK_HF_CALLS=true to mock HF calls)";	\
+	    exit 1;								\
+	fi
+
+# The main test implementation, called after VENVDIR has been established
+# Inputs are
+# 	GBTEST_ENABLE_EXTENDED_TESTS=[true,false]
+# 	GBTEST_MODE=[live,mock]
+# 	PYTEST_MARKERS=
+#	PYTEST_TEST_TARGETS=
+.PHONY: .test
+.test:	check_hf_token
 	source $(VENVDIR)/bin/activate && \
-		export GBTEST_MODE=live && \
-		export GBTEST_ENABLE_EXTENDED_TESTS=true &&	\
+		export GBTEST_ENABLE_EXTENDED_TESTS=${GBTEST_ENABLE_EXTENDED_TESTS} && \
+		export GBTEST_MOCK_HF_CALLS=${GBTEST_MOCK_HF_CALLS} &&	\
+		export GBTEST_MODE=${GBTEST_MODE} && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
 		args=(--durations=20 --cov --cov-report=xml --junitxml=report.xml) && \
-		args+=(-n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
-		args+=(-m '$(MERGE_PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
-		pytest "$${args[@]}" test/unit test/e2e test/integration/ibm && \
+		args+=(-rs -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
+		args+=(-m '$(PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
+		pytest "$${args[@]}" $(PYTEST_TEST_TARGETS) && \
 		coverage report --fail-under=$(MIN_COVERAGE) --sort=Cover
 
 .PHONY: py-test
@@ -289,18 +322,22 @@ cicd-skypilot-pr: test-g4os
 
 .PHONY: slurm-setup
 slurm-setup:
+	source .venv/bin/activate;\
 	bash scripts/slurm/setup-slurm.sh
 
 .PHONY: slurm-teardown
 slurm-teardown:
+	source .venv/bin/activate;\
 	bash scripts/slurm/teardown-slurm.sh
 
 .PHONY: minio-setup
 minio-setup:
+	source .venv/bin/activate;\
 	bash scripts/minio/setup-minio.sh
 
 .PHONY: minio-teardown
 minio-teardown:
+	source .venv/bin/activate;\
 	bash scripts/minio/teardown-minio.sh
 
 .PHONY: integration-test
@@ -458,37 +495,48 @@ publish-icr:
 	$(DOCKER) push us.icr.io/cil15-shared-registry/$(DOCKER_IMAGE_NAME):$(DOCKER_IMAGE_VERSION)
 	# ibmcloud cr image-list | grep $(DOCKER_IMAGE_NAME)
 
+# Stop any SkyPilot API server running from the venv we're about to rebuild.
+# The server is a long-lived local process (started lazily by sky.* calls); it
+# keeps the venv's site-packages on its sys.path. If the venv is deleted/rebuilt
+# (especially with a different Python version) while the server runs, it keeps
+# serving from a now-missing path and fails with
+#   "FileNotFoundError: .../site-packages/sky/__init__.py".
+# Run this BEFORE deleting the venv. Harmless no-op if there is no venv or server.
+.PHONY: sky-api-stop
+sky-api-stop:
+	-source $(VENVDIR)/bin/activate 2>/dev/null && sky api stop >/dev/null 2>&1 || true
+
 .PHONY: dev-venv
-dev-venv:
+dev-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(MAKE) VENV_INSTALL_TARGET='.[all,dev]' $(VENVDIR)
 
 .PHONY: cicd-venv
-cicd-venv:
+cicd-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(MAKE) VENV_INSTALL_TARGET='.[all,dev]' $(VENVDIR)	# [all,dev] installs all optional deps + test tools
 
 .PHONY: standalone-venv
-standalone-venv:
+standalone-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(MAKE) VENV_INSTALL_TARGET='.[standalone,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
 
 .PHONY: demo-venv
-demo-venv:
+demo-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(MAKE) VENV_INSTALL_TARGET='.[standalone,docker,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
 
 .PHONY: g4os-skypilot-venv
-g4os-skypilot-venv:
-	@# Help: Create a venv with standalone + thirdparty + dev deps (no Artifactory required)
+g4os-skypilot-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(PYTHON) -m venv $(VENVDIR)
 	source $(VENVDIR)/bin/activate; \
 	${PIP} install --upgrade pip; \
 	${PIP} install -e '.[standalone,thirdparty,dev]'
 
-$(VENVDIR): pyproject.toml 
+$(VENVDIR): pyproject.toml
 	$(MAKE) .check-build-env
+	-@source $(VENVDIR)/bin/activate 2>/dev/null && sky api stop >/dev/null 2>&1 || true	# stop stale SkyPilot server before rebuild (see sky-api-stop)
 	rm -rf $(VENVDIR)
 	$(PYTHON) -m venv $(VENVDIR)
 	echo '[global]' > $(VENVDIR)/pip.conf

@@ -13,10 +13,6 @@ from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 class TestSqliteStepStorage(BaseStepStorageTest):
 
     @classmethod
-    def _is_cloud_config_required(cls) -> bool:
-        return False
-
-    @classmethod
     def _get_storage_factory(cls):
         return SqliteStorageFactory()
 

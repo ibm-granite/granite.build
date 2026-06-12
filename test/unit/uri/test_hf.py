@@ -397,7 +397,6 @@ def test_pull_downloads_tiny_public_model(tmp_path):
     No token is required; the repo is public.
     Skipped automatically if the Hub is unreachable.
     """
-    pytest.importorskip("huggingface_hub")
 
     uri = HfURI.from_parts(
         owner="hf-internal-testing",

@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional, Self, Tuple, Union
 
 from pydantic import BaseModel
 
+from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.cos import CosURI
 from gbcommon.uri.env import EnvURI
 from gbcommon.uri.hf import HfURI
@@ -627,6 +628,9 @@ class Lsf(Environment):
         )
         # Get useful env vars to inject for LhPull and LhPush
         env_vars = {}
+        # Forward GBTEST_ test-control vars (e.g. GBTEST_MOCK_HF_CALLS) to the LSF
+        # job so hfpull/hfpush steps honor mocking on the remote node.
+        env_vars.update(get_exported_gbtest_env_vars())
         secrets_to_inject = (
             kwargs.get("config", {})
             .get("lsf", {})

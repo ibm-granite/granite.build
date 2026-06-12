@@ -17,6 +17,15 @@ HF_REPO='{{ hfp.owner }}/{{ hfp.repo }}'
 HF_REVISION='{{ hfp.revision }}'
 HF_TYPE='{{ hfp.hf.type }}'
 
+if [[ "${GBTEST_MOCK_HF_CALLS:-}" == "true" ]]; then
+    echo "[GBTEST_MOCK_HF_CALLS] mocking hfpull — skipping real download"
+    mkdir -p "${HF_DEST}"
+    echo mock > "${HF_DEST}/.gbtest_mock_hfpull"
+    echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
+    echo 'hfpull end'
+    exit 0
+fi
+
 if [[ -z "${HF_TOKEN:-}" ]]; then
     echo 'HF_TOKEN is not set'
     exit 1

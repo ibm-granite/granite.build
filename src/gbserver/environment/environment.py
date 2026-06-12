@@ -460,7 +460,11 @@ class Environment(ABC):
         """
         if not GBSERVER_ENABLE_STEP_RETRY:
             return False, False
-        launch_config = launch_params_for_id.get("config", {})
+        # `config` may be absent or explicitly None (e.g. a launch with no step
+        # config section); both mean "no per-step config", so coalesce to {}.
+        # `.get("config", {})` alone is insufficient — it returns None when the
+        # key is present with a None value, which StepConfigSection rejects.
+        launch_config = launch_params_for_id.get("config") or {}
         step_config = StepConfigSection.model_validate(launch_config)
         run_retry_transparently = launch_params_for_id.get("retry_transparently")
         if run_retry_transparently is not None:
