@@ -17,3 +17,11 @@ assetstores:
     push:
       - mode: env_local
         config: {}
+  - store_uri: space://assetstores/hf
+    load:
+      - mode: hf_pull
+        config:
+          cache_path: /tmp/hf_cache
+    push:
+      - mode: hf_push
+        config: {}
