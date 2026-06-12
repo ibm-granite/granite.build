@@ -479,11 +479,11 @@ def _mock_github_auth(request):
     with (
         patch("gbserver.api.auth.get_gh_user", return_value=(fake_user, "")),
         patch(
-            "lib.storage.build_storage.get_gh_user",
+            "libgbtest.storage.build_storage.get_gh_user",
             return_value=(fake_user, ""),
         ),
         patch(
-            "lib.api.utils.get_gh_user",
+            "libgbtest.api.utils.get_gh_user",
             return_value=(fake_user, ""),
         ),
         patch(
