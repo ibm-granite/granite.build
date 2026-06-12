@@ -221,13 +221,16 @@ test-git-cicd-pr-setup:
 	$(MAKE) minio-setup 
 	$(MAKE) slurm-setup
 
+# For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
 .PHONY: test-git-cicd-pr 
 test-git-cicd-pr: 
 	export GB_ENVIRONMENT=STANDALONE &&			\
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
+		GBTEST_MOCK_HF_CALLS=true			\
 		GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
 		PYTEST_TEST_TARGETS="test"			\
+		PYTEST_TEST_TARGETS="test/integration/standalone/buildrunner" \
 		.test
 
 .PHONY: test-pr 
@@ -253,8 +256,8 @@ test-merge:
 
 .PHONY: check_hf_token
 check_hf_token:
-	@if [ $$GB_ENVIRONMENT = "STANDALONE" -a -z "$$HF_TOKEN" ]; then	\
-	    echo "HF_TOKEN env var required in GB_ENVIRONMENT=STANDALONE mode";	\
+	@if [ "$$GB_ENVIRONMENT" = "STANDALONE" -a -z "$$HF_TOKEN" -a "$(GBTEST_MOCK_HF_CALLS)" != "true" ]; then	\
+	    echo "HF_TOKEN env var required in GB_ENVIRONMENT=STANDALONE mode (or set GBTEST_MOCK_HF_CALLS=true to mock HF calls)";	\
 	    exit 1;								\
 	fi
 
@@ -268,6 +271,7 @@ check_hf_token:
 .test:	check_hf_token
 	source $(VENVDIR)/bin/activate && \
 		export GBTEST_ENABLE_EXTENDED_TESTS=${GBTEST_ENABLE_EXTENDED_TESTS} && \
+		export GBTEST_MOCK_HF_CALLS=${GBTEST_MOCK_HF_CALLS} &&	\
 		export GBTEST_MODE=${GBTEST_MODE} && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
