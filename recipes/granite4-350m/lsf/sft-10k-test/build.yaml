@@ -3,6 +3,22 @@ granite.build:
   targets:
     sft-training:
       environment_uri: space://environments/skypilot/lsf
+      outputs:
+        # Declare the artifact the openinstruct-sft step emits via its
+        # `LLMB_ARTIFACT_ID:checkpoint` line. Without this declaration the
+        # buildrun resolver drops the NEWARTIFACT event on the floor and
+        # the checkpoint never gets recorded for downstream consumption.
+        #
+        # `uri` is templated against the NEWARTIFACT event's binding payload
+        # (filled by `pushasset` in environment.py with `binding=<payload>`),
+        # so `{{ binding.path }}` resolves to the run-specific dir the SFT
+        # step actually wrote (e.g. /proj/.../sft/checkpoints/v0-<DATE>-<TIME>).
+        # Hardcoding `env://$${OUTPUT_DIR}` would force every downstream eval
+        # to read the parent directory instead of the run-specific subdir,
+        # because pullasset_envstore strips `env://` from this URI verbatim.
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
       steps:
         - step_uri: space://steps/openinstruct-sft
           config:

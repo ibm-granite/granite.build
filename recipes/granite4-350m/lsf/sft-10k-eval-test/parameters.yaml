@@ -49,10 +49,18 @@ BFCL_NUM_GPUS_EVALUATE: 1
 BFCL_GPU_MEMORY_UTILIZATION: "0.5"
 
 # ─── Infrastructure ────────────────────────────────────────────────────────
-ACCELERATORS: "H100:1"
 CLUSTER: "bluevela"
 # SFT runs on `normal` so a 2-epoch training job isn't preempted mid-run;
 # evals are short and idempotent, so they ride the cheaper preemptable queue.
 SFT_QUEUE: "normal"
 EVAL_QUEUE: "preemptable"
-MEMORY: "256"
+# Granite-4 350M has tied embeddings (tie_word_embeddings: true). With
+# FSDP + --padfree on a single GPU, the tied embed_tokens/lm_head
+# flat-param triggers a "Cannot writeback when the parameter shape
+# changes" crash on the first forward pass. Two or more processes take
+# a different FSDP wrapping path and avoid the issue. Mirrors gbansible's
+# multi-GPU setup. Evals stay on a single H100 — they don't hit this path.
+SFT_ACCELERATORS: "H100:2"
+EVAL_ACCELERATORS: "H100:1"
+SFT_MEMORY: "1580"
+EVAL_MEMORY: "256"

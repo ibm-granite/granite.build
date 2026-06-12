@@ -5,13 +5,19 @@
 MODEL_PATH: "/proj/granite-build/g4os/granite-4.0-350m-base/r251014a"
 TOKENIZED_DATA_PATH: "/proj/granite-build/g4os/datasets/tokenized/all_combined/tokenized/8192/data_filtered_10k"
 CHAT_TEMPLATE_PATH: "/proj/granite-build/g4os/chat_template.jinja"
-OUTPUT_DIR: "/proj/granite-build/g4os/sft/checkpoints"
+OUTPUT_DIR: "/proj/granite-build/g4os/sft/checkpoints-cma"
 
 # Infrastructure
-ACCELERATORS: "H100:1"
+# Granite-4 350M has tied embeddings (tie_word_embeddings: true). With
+# FSDP + --padfree on a single GPU, the tied embed_tokens/lm_head
+# flat-param triggers a "Cannot writeback when the parameter shape
+# changes" crash on the first forward pass. Two or more processes take
+# a different FSDP wrapping path and avoid the issue. Mirrors gbansible's
+# multi-GPU setup.
+ACCELERATORS: "H100:2"
 CLUSTER: "bluevela"
 QUEUE: "normal"
-MEMORY: "192"
+MEMORY: "1580"
 
 # Training hyperparameters
 NUM_EPOCHS: 1

@@ -72,21 +72,31 @@ environment_configs:
             # most recently modified score/summary file; if multiple match,
             # log the candidates so the choice is auditable rather than
             # silently picking the first one returned by `find`.
-            mapfile -t CANDIDATES < <(
-              find "$OUTPUT_DIR" -type f \( -name '*score*.json' -o -name '*summary*.json' -o -name 'BFCL_*.json' \) -printf '%T@ %p\n' \
-                | sort -nr | awk '{print $2}'
-            )
-            if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+            # NOTE: this script body is run through Jinja2's template
+            # filler before being shipped to the SkyPilot job. Jinja
+            # parses an open-brace immediately followed by a hash as
+            # the start of a comment block, so bash's array-length
+            # syntax (open-brace + hash + name) blows up with
+            # "TemplateSyntaxError: Missing end of comment tag".
+            # Count via `wc -l` on the find output and capture the
+            # candidates list to a temp file to avoid that pair of
+            # characters appearing in this template's source.
+            CANDIDATES_FILE="${OUTPUT_DIR}/.bfcl-candidates.list"
+            find "$OUTPUT_DIR" -type f \( -name '*score*.json' -o -name '*summary*.json' -o -name 'BFCL_*.json' \) -printf '%T@ %p\n' \
+              | sort -nr | awk '{print $2}' > "$CANDIDATES_FILE"
+            CANDIDATE_COUNT=$(wc -l < "$CANDIDATES_FILE")
+            if [ "$CANDIDATE_COUNT" -eq 0 ]; then
               echo "ERROR: No BFCL result file found in $OUTPUT_DIR"
               echo "Contents of $OUTPUT_DIR:"
               find "$OUTPUT_DIR" -maxdepth 2 -type f | head -20
               exit 1
             fi
-            if [ "${#CANDIDATES[@]}" -gt 1 ]; then
+            if [ "$CANDIDATE_COUNT" -gt 1 ]; then
               echo "WARNING: multiple BFCL result candidates; using newest. Candidates:"
-              printf '  %s\n' "${CANDIDATES[@]}"
+              sed 's/^/  /' "$CANDIDATES_FILE"
             fi
-            RESULT_FILE="${CANDIDATES[0]}"
+            RESULT_FILE=$(head -n 1 "$CANDIDATES_FILE")
+            rm -f "$CANDIDATES_FILE"
             echo "LLMB_ARTIFACT_ID:bfcl_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
     monitors:
       skypilot_monitor:

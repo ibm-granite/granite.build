@@ -19,8 +19,14 @@ granite.build:
     sft-training:
       environment_uri: space://environments/skypilot/lsf
       outputs:
+        # `uri` is filled at push-time with `binding=<NEWARTIFACT payload>`,
+        # so `{{ binding.path }}` is the run-specific dir the SFT step wrote
+        # (e.g. /proj/.../sft/checkpoints/v0-<DATE>-<TIME>). The eval targets'
+        # `model_path` template appends `-hf/epoch_hf_<NUM_EPOCHS>` to that.
+        # Hardcoding `env://$${OUTPUT_DIR}` would point evals at the parent
+        # checkpoints dir instead of the run-specific subdir.
         checkpoint:
-          uri: "env://$${OUTPUT_DIR}"
+          uri: "env://{{ binding.path }}"
           type: model
       steps:
         - step_uri: space://steps/openinstruct-sft
@@ -47,10 +53,10 @@ granite.build:
               logging_steps: $${LOGGING_STEPS}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${SFT_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${SFT_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${SFT_MEMORY}"
 
     # ─── Code (9) ───────────────────────────────────────────────────────────────
     olmes-cruxeval:
@@ -67,7 +73,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_olmes_cruxeval_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -77,10 +83,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     olmes-bigcodebench:
       environment_uri: space://environments/skypilot/lsf
@@ -96,7 +102,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_olmes_bigcodebench_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -107,10 +113,10 @@ granite.build:
                 OE_EVAL_BCB_API_URL: "$${OE_EVAL_BCB_API_URL}"
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     evalplus-humaneval:
       environment_uri: space://environments/skypilot/lsf
@@ -126,7 +132,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_evalplus_humaneval_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -136,10 +142,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     evalplus-mbpp:
       environment_uri: space://environments/skypilot/lsf
@@ -155,7 +161,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_evalplus_mbpp_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -165,10 +171,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     multiple-sh:
       environment_uri: space://environments/skypilot/lsf
@@ -184,7 +190,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_multiple_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: 512
@@ -196,10 +202,10 @@ granite.build:
                 MAX_LENGTH: "512"
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     multiple-cpp:
       environment_uri: space://environments/skypilot/lsf
@@ -215,7 +221,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_multiple_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: 512
@@ -227,10 +233,10 @@ granite.build:
                 MAX_LENGTH: "512"
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     multiple-java:
       environment_uri: space://environments/skypilot/lsf
@@ -246,7 +252,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_multiple_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: 512
@@ -258,10 +264,10 @@ granite.build:
                 MAX_LENGTH: "512"
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     multiple-js:
       environment_uri: space://environments/skypilot/lsf
@@ -277,7 +283,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_multiple_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: 512
@@ -289,10 +295,10 @@ granite.build:
                 MAX_LENGTH: "512"
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     multiple-rs:
       environment_uri: space://environments/skypilot/lsf
@@ -308,7 +314,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_multiple_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: 512
@@ -320,10 +326,10 @@ granite.build:
                 MAX_LENGTH: "512"
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     # ─── General (5) ────────────────────────────────────────────────────────────
     olmes-agi-eval:
@@ -340,7 +346,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "general_olmes_agi_eval_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -350,10 +356,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     olmes-bbh:
       environment_uri: space://environments/skypilot/lsf
@@ -369,7 +375,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "general_olmes_bbh_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -379,10 +385,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     olmes-mmlu-pro:
       environment_uri: space://environments/skypilot/lsf
@@ -398,7 +404,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "general_olmes_mmlu_pro_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -408,10 +414,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     olmes-ifeval:
       environment_uri: space://environments/skypilot/lsf
@@ -427,7 +433,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "general_olmes_ifeval_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: 30
               max_length: $${MAX_LENGTH}
@@ -437,10 +443,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     olmes-mmlu-mc:
       environment_uri: space://environments/skypilot/lsf
@@ -456,7 +462,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "general_olmes_mmlu_mc_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -466,10 +472,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     # ─── Math (5) ───────────────────────────────────────────────────────────────
     olmes-deepmind-math:
@@ -486,7 +492,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "math_olmes_deepmind_math_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -496,10 +502,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     olmes-gpqa:
       environment_uri: space://environments/skypilot/lsf
@@ -515,7 +521,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "math_olmes_gpqa_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -525,10 +531,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     olmes-gsm8k:
       environment_uri: space://environments/skypilot/lsf
@@ -544,7 +550,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "math_olmes_gsm8k_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -554,10 +560,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     olmes-gsm-symbolic:
       environment_uri: space://environments/skypilot/lsf
@@ -573,7 +579,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "math_olmes_gsm_symbolic_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -583,10 +589,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     olmes-minerva-math:
       environment_uri: space://environments/skypilot/lsf
@@ -602,7 +608,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "math_olmes_minerva_math_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -612,10 +618,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     # ─── Safety (2) ─────────────────────────────────────────────────────────────
     attaq:
@@ -632,7 +638,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "safety_attaq_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -642,10 +648,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     salad-bench:
       environment_uri: space://environments/skypilot/lsf
@@ -661,7 +667,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "safety_salad_bench_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -671,10 +677,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     # ─── Multilingual (5) ───────────────────────────────────────────────────────
     global-mmlu:
@@ -691,7 +697,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_global_mmlu_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -701,10 +707,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     mgsm:
       environment_uri: space://environments/skypilot/lsf
@@ -720,7 +726,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_mgsm_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -730,10 +736,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     include-ar-de-es-fr:
       environment_uri: space://environments/skypilot/lsf
@@ -749,7 +755,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_include_arabic_german_spanish_french_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -759,10 +765,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     include-hi-bn-ta-te:
       environment_uri: space://environments/skypilot/lsf
@@ -778,7 +784,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_include_hindi_bengali_tamil_telugu_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -788,10 +794,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     include-it-ja-ko-nl-pt-zh:
       environment_uri: space://environments/skypilot/lsf
@@ -807,7 +813,7 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_include_italian_japanese_korean_dutch_portuguese_chinese_slim.sh"
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -817,10 +823,10 @@ granite.build:
               extra_env: {}
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"
 
     # ─── BFCL (1) ──────────────────────────────────────────────────────────────
     bfcl:
@@ -836,7 +842,7 @@ granite.build:
         - step_uri: space://steps/bfcl-eval
           config:
             bfcl_config:
-              model_path: "{{ bindings.model_checkpoint.binding.path }}-hf/epoch_hf_$${NUM_EPOCHS}"
+              model_path: "{{ bindings.model_checkpoint.binding.path }}"
               model_id: "$${BFCL_MODEL_ID}"
               experiment: "$${EXPERIMENT}"
               eval_name: "$${BFCL_EVAL_NAME}"
@@ -847,7 +853,7 @@ granite.build:
               output_dir: "$${BFCL_OUTPUT_DIR}"
             launcher_config:
               resources:
-                accelerators: "$${ACCELERATORS}"
+                accelerators: "$${EVAL_ACCELERATORS}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_QUEUE}"
-                memory: "$${MEMORY}"
+                memory: "$${EVAL_MEMORY}"

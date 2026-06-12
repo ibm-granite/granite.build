@@ -118,7 +118,32 @@ environment_configs:
               --no_try_launch_beaker_eval_jobs \
               --chat_template "$CHAT_TEMPLATE_PATH"
 
-            echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:${RUN_OUTPUT_DIR}"
+            # Save the chat template alongside the checkpoints so evals
+            # using AutoTokenizer.from_pretrained(<ckpt-dir>) pick it up
+            # without needing a separate path. Both the raw open-instruct
+            # output dir and the HF-converted dir's per-epoch
+            # subdirectories get a copy.
+            if [ -f "$CHAT_TEMPLATE_PATH" ]; then
+              cp "$CHAT_TEMPLATE_PATH" "${RUN_OUTPUT_DIR}/chat_template.jinja"
+              for d in "${RUN_OUTPUT_DIR}-hf"/epoch_hf_*; do
+                [ -d "$d" ] && cp "$CHAT_TEMPLATE_PATH" "$d/chat_template.jinja"
+              done
+            fi
+
+            # Pick the highest-numbered HF-converted epoch directory as
+            # the artifact. open-instruct writes 0-indexed epoch dirs
+            # (epoch_hf_0..epoch_hf_<N-1>), so eval recipes can simply
+            # bind to `bindings.<input>.binding.path` and consume the
+            # final-epoch HF checkpoint directly — no off-by-one in
+            # downstream templating. Falls back to the raw open-instruct
+            # dir when the HF conversion didn't run.
+            FINAL_HF_CKPT=""
+            if [ -d "${RUN_OUTPUT_DIR}-hf" ]; then
+              FINAL_HF_CKPT=$(ls -d "${RUN_OUTPUT_DIR}-hf"/epoch_hf_* 2>/dev/null \
+                | sort -V | tail -n 1)
+            fi
+            ARTIFACT_PATH="${FINAL_HF_CKPT:-${RUN_OUTPUT_DIR}}"
+            echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:${ARTIFACT_PATH}"
     monitors:
       skypilot_monitor:
         type: skypilot_monitor
@@ -140,3 +165,10 @@ environment_configs:
               - field_name: path
                 field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
                 is_data: true
+              # Build the binding payload that downstream targets
+              # dereference as `{{ bindings.<input>.binding.path }}`.
+              # Without this the dispatched ArtifactEventPayload has
+              # binding=None and Jinja resolution fails.
+              - field_name: binding
+                field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                is_json: true
