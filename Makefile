@@ -230,7 +230,6 @@ test-git-cicd-pr:
 		GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
 		PYTEST_TEST_TARGETS="test"			\
-		PYTEST_TEST_TARGETS="test/integration/standalone/buildrunner" \
 		.test
 
 .PHONY: test-pr 
