@@ -15,7 +15,7 @@ from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
 from gbcli.commands.common_options import (
     common_options,
-    pass_context_and_reject_standalone,
+    reject_standalone,
 )
 from gbcli.services.service_artifact import (
     ArtifactURIError,
@@ -68,14 +68,24 @@ logger = logging.getLogger(__name__)
 
 
 @click.group("artifact")
-@pass_context_and_reject_standalone
+@click.pass_context
 def cli(ctx):
     """Work with artifacts"""
+    # The group itself is not standalone-guarded: gbserver-backed metadata commands
+    # (list, describe, checksum, archive, unarchive, update) work in standalone mode.
+    # Subcommands that depend on Lakehouse/HuggingFace (push, register, download, copy,
+    # lineage) are guarded individually with @reject_standalone below.
+    #
+    # Unlike the secret/admin/template/step/model groups (guarded once at the group level),
+    # artifact is deliberately guarded per-subcommand because only *some* of its commands
+    # need cloud services. Accepted tradeoff: a new cloud-dependent artifact subcommand
+    # must remember its own @reject_standalone -- there is no group-level safety net.
     ctx.ensure_object(dict)  # Ensures `ctx.obj` is a dictionary
 
 
 @cli.command()
 @click.pass_context
+@reject_standalone
 @click.option(
     "--from-local",
     required=True,
@@ -783,6 +793,7 @@ def push(
 
 @cli.command()
 @click.pass_context
+@reject_standalone
 @click.option(
     "--artifact-name",
     required=True,
@@ -1539,6 +1550,7 @@ def _lineage_hf(ctx, artifact_client, artifact, format, quiet):
 
 @cli.command()
 @click.pass_context
+@reject_standalone
 @click.argument("artifact-id", required=True)
 @click.option(
     "--format",
@@ -2017,6 +2029,7 @@ def list(
     help="Git revision/branch name for HuggingFace artifacts (default: main)",
 )
 @click.pass_context
+@reject_standalone
 @common_options
 def download(
     ctx,
@@ -2577,6 +2590,7 @@ def unarchive(
 
 @cli.command()
 @click.pass_context
+@reject_standalone
 @click.argument("artifact_id")
 @click.option("--space-to", required=True, help="Destination space name.")
 @click.option(
