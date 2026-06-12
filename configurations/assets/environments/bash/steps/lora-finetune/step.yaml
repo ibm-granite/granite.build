@@ -1,0 +1,44 @@
+name: lora-finetune
+version: v1
+type: custom
+config: {}
+
+environment_configs:
+  Bash:
+    launchers:
+      lora-finetune:
+        type: nohup
+        monitors:
+          - log_monitor
+        config:
+          script_path: run.py
+          # No launcher `env:` — set training knobs in build.yaml's
+          # `config.bash.env` (a launcher env would override per-build values).
+          # The script defaults all of these via os.environ.get(...):
+          #   MAX_STEPS (10), LEARNING_RATE (2e-4),
+          #   TRAIN_SUBJECT ("the best state in the US"), TRAIN_ANSWER ("New Jersey").
+          # TRAIN_SUBJECT/ANSWER drive the synthetic data and are ignored when a
+          # `dataset` input is bound.
+    monitors:
+      log_monitor:
+        type: log_monitor
+        config:
+          event_configs:
+            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              is_json: false
+              event_fields:
+                - field_name: binding_id
+                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                - field_name: path
+                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  is_data: true
+                - field_name: binding
+                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                  is_json: true
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"

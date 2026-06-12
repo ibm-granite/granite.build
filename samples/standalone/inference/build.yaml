@@ -1,0 +1,32 @@
+granite.build:
+  name: inference
+  targets:
+    inference:
+      # Local bash process — no cloud creds, no GPU required.
+      environment_uri: space://environments/bash
+      inputs:
+        # The model is chosen HERE, in build.yaml. gbserver downloads it from
+        # HuggingFace and exposes its local path to the step as
+        # $LLMB_BASH_INPUT_MODEL. Swap this URI to run any other causal LM —
+        # the step code doesn't change. Granite 4.0 Nano (h-350m) is the
+        # smallest instruct model — fast to pull and run on CPU.
+        model:
+          uri: hf:///ibm-granite/granite-4.0-h-350m
+      outputs:
+        # The step writes inference_result.json + response.txt here and
+        # registers it as the "generation" artifact (name must match the
+        # LLMB_ARTIFACT_ID the step emits).
+        generation:
+          uri: file:outputs/inference/
+      steps:
+        - step_uri: space://steps/inference
+          config:
+            compute_config:
+              num_nodes: 1
+            # Step parameters are set HERE, in build.yaml — these override the
+            # defaults baked into the step's step.yaml. Change the prompt or
+            # generation length without touching any step files.
+            bash:
+              env:
+                PROMPT: "what are the top five states in the us"
+                MAX_NEW_TOKENS: "512"

@@ -1,0 +1,45 @@
+name: inference
+version: v1
+type: custom
+config: {}
+
+environment_configs:
+  Bash:
+    launchers:
+      inference:
+        type: nohup
+        monitors:
+          - log_monitor
+        config:
+          # Run a Python script instead of the default command.sh.
+          script_path: run.py
+          # NOTE: no launcher `env:` here on purpose. A launcher env would WIN
+          # over build.yaml's `config.bash.env` (see Bash.launch_nohup), which
+          # would defeat per-build overrides. Instead, set step parameters
+          # (PROMPT, MAX_NEW_TOKENS, ...) in build.yaml under `config.bash.env`;
+          # the script supplies sensible defaults via os.environ.get(...).
+    monitors:
+      log_monitor:
+        type: log_monitor
+        config:
+          event_configs:
+            # Register the generation output as an artifact
+            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              is_json: false
+              event_fields:
+                - field_name: binding_id
+                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                - field_name: path
+                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  is_data: true
+                - field_name: binding
+                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                  is_json: true
+            # Stream every other line to the build log
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"

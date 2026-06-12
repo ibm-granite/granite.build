@@ -1,0 +1,40 @@
+name: inference-lora
+version: v1
+type: custom
+config: {}
+
+environment_configs:
+  Bash:
+    launchers:
+      inference-lora:
+        type: nohup
+        monitors:
+          - log_monitor
+        config:
+          script_path: run.py
+          # No launcher `env:` — set PROMPT / CONTROL_PROMPT / MAX_NEW_TOKENS in
+          # build.yaml's `config.bash.env` (a launcher env would override it).
+          # The script defaults these via os.environ.get(...).
+    monitors:
+      log_monitor:
+        type: log_monitor
+        config:
+          event_configs:
+            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              is_json: false
+              event_fields:
+                - field_name: binding_id
+                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                - field_name: path
+                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  is_data: true
+                - field_name: binding
+                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                  is_json: true
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"
