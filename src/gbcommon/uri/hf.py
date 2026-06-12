@@ -757,6 +757,11 @@ class HfURI(URI):
             ValueError: If any of the provided inputs disagree, or if name/space
                 resolution fails.
         """
+        if is_hf_mocked():
+            # When HF calls are mocked there is no live Hub to query; skip the
+            # resource-group lookup (which would hit the /resource-groups list
+            # endpoint and require a token) and keep any explicit id, else None.
+            return resource_group_id
         if not resource_group_id and not resource_group_name and not space_name:
             return None
         derived_name = (
