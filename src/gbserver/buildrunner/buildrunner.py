@@ -728,9 +728,7 @@ class BuildRunner(AbstractBuildRunner):
         if not targetsteprun_id:
             return
         stored_step_run = self.storage.step_storage.get_by_uuid(targetsteprun_id)
-        if stored_step_run is None or not isinstance(
-            stored_step_run, StoredStepRun
-        ):
+        if stored_step_run is None or not isinstance(stored_step_run, StoredStepRun):
             return
         if stored_step_run.status.is_finished():
             return

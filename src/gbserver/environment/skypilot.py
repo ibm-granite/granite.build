@@ -414,9 +414,7 @@ class Skypilot(Environment):
             # backends regardless of the user's config.
             cloud_for_infra = (str(infra).split("/", 1)[0] or "").lower()
             no_autostop_clouds = ("slurm", "lsf")
-            autostop = (
-                None if cloud_for_infra in no_autostop_clouds else idle_minutes
-            )
+            autostop = None if cloud_for_infra in no_autostop_clouds else idle_minutes
 
             # Launch and wait for provisioning. sky.launch / sky.stream_and_get
             # block until LSF allocates resources — under queue contention
@@ -555,7 +553,10 @@ class Skypilot(Environment):
                 )
                 poll_failed = True
                 consecutive_poll_failures += 1
-                if "does not exist" in str(e) or consecutive_poll_failures >= max_poll_failures:
+                if (
+                    "does not exist" in str(e)
+                    or consecutive_poll_failures >= max_poll_failures
+                ):
                     logger.warning(
                         "Cluster %s is gone (preempted or terminated) after %d consecutive poll failures. "
                         "Treating as FAILED for launch_id %s.",
