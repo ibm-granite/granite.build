@@ -717,6 +717,31 @@ class BuildRunner(AbstractBuildRunner):
             payload.status,
             event.run_metadata,
         )
+        # When the workload reports terminal failure, mark the step run as
+        # FAILED so a stale STATUS_EVENT(SUCCESS) emitted afterwards by the
+        # framework's normal completion path can't overwrite it. Without
+        # this, the SkyPilot monitor's WORKLOAD_STATUS_EVENT(FAILED) was
+        # only logged, and the run framework's success emit won the race.
+        if payload.status is not Status.FAILED:
+            return
+        targetsteprun_id = event.run_metadata.targetsteprun_id
+        if not targetsteprun_id:
+            return
+        stored_step_run = self.storage.step_storage.get_by_uuid(targetsteprun_id)
+        if stored_step_run is None or not isinstance(
+            stored_step_run, StoredStepRun
+        ):
+            return
+        if stored_step_run.status.is_finished():
+            return
+        stored_step_run.status = Status.FAILED
+        if not stored_step_run.status_msg:
+            stored_step_run.status_msg = (
+                f"workload failed for {event.run_metadata.target_name}"
+            )
+        if stored_step_run.finished_at is None:
+            stored_step_run.finished_at = event.timestamp
+        self.storage.step_storage.update(stored_step_run)
 
     def __process_metrics_event(self: Self, event: BuildEvent) -> None:
         payload = event.payload

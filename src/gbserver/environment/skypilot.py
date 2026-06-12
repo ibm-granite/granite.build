@@ -21,6 +21,7 @@ from gbserver.environment.environment import Environment, EventLogLineParserConf
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.environmentconfig import EnvironmentConfig
+from gbserver.types.errors import WorkloadFailedException
 from gbserver.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -85,6 +86,23 @@ def _download_logs_with_retry(cluster_name: str, job_id: int):
 
 class Skypilot(Environment):
     """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
+
+    # Class-level semaphore so the cap applies across all Skypilot
+    # instances within a process — for fan-out builds gbserver creates
+    # one Environment per target, but they all share the SSH connection
+    # pool to the cloud's login node and therefore the same MaxAuthTries
+    # ceiling. Lazily constructed so no event loop is required at import.
+    _launch_semaphore: Optional[asyncio.Semaphore] = None
+
+    @classmethod
+    def _get_launch_semaphore(cls) -> asyncio.Semaphore:
+        if cls._launch_semaphore is None:
+            from gbserver.types.constants import GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY
+
+            cls._launch_semaphore = asyncio.Semaphore(
+                max(1, GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY)
+            )
+        return cls._launch_semaphore
 
     def __init__(
         self: Self,
@@ -212,6 +230,35 @@ class Skypilot(Environment):
 
         Creates a sky.Task from step config, calls sky.launch() to provision
         pods/VMs, waits until the job starts, then signals launch readiness via release_monitors().
+
+        Concurrency: the cluster bring-up is gated by a class-level
+        semaphore (see ``GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY``, default
+        4). Each launch opens a fresh SSH session to the cloud's login
+        node; LSF backends in particular trip sshd MaxAuthTries when
+        many evals fan out at once. Capping the in-flight count keeps
+        the SSH multiplexer from rejecting bring-ups with "Too many
+        authentication failures". The cap wraps the whole bring-up
+        (sky.launch → wait until job starts) but releases before
+        ``monitor_skypilot_monitor`` runs, so post-launch polling for
+        all targets continues in parallel.
+        """
+        async with self._get_launch_semaphore():
+            await self._launch_skypilot_inner(
+                launch_id=launch_id,
+                targetsteprun_asset_dir=targetsteprun_asset_dir,
+                environment_config=environment_config,
+                **kwargs,
+            )
+
+    async def _launch_skypilot_inner(
+        self: Self,
+        launch_id: str,
+        targetsteprun_asset_dir=None,
+        environment_config: Optional[EnvironmentConfig] = None,
+        **kwargs,
+    ) -> None:
+        """Body of launch_skypilot. Split out so the semaphore wrapper in
+        ``launch_skypilot`` doesn't have to re-indent the entire block.
         """
         try:
             _ensure_skypilot_api_running()
@@ -584,6 +631,17 @@ class Skypilot(Environment):
                             ),
                         )
                         await event_q.put(fail_event)
+                    # Raise so the awaiting launch task in
+                    # TargetStepRun._run propagates failure up through
+                    # Run.run, which sets Status.FAILED on the step.
+                    # Without this, terminating in a FAILED JobStatus
+                    # would let the launch task return cleanly and the
+                    # framework would emit STATUS_EVENT(SUCCESS).
+                    raise WorkloadFailedException(
+                        f"SkyPilot job {job_id} on {cluster_name} "
+                        f"terminated with status {status} "
+                        f"(launch_id={launch_id})"
+                    )
                 return
 
             try:
