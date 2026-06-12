@@ -76,6 +76,7 @@ ENV_VAR_IBM_SEC_MAN_API_KEY = ENV_VAR_PREFIX + "_IBM_SEC_MAN_API_KEY"
 ENV_VAR_DEFAULT_LOG_LEVEL = ENV_VAR_PREFIX + "_DEFAULT_LOG_LEVEL"
 ENV_VAR_DEFAULT_GITHUB_TOKEN = ENV_VAR_PREFIX + "_GITHUB_TOKEN"
 ENV_VAR_DEBUG_MODE = ENV_VAR_PREFIX + "_DEBUG_MODE"
+ENV_VAR_SKYPILOT_LAUNCH_CONCURRENCY = ENV_VAR_PREFIX + "_SKYPILOT_LAUNCH_CONCURRENCY"
 ENV_VAR_METADATA_STORAGE = ENV_VAR_PREFIX + "_METADATA_STORAGE"
 ENV_VAR_AUTH_MODE = ENV_VAR_PREFIX + "_AUTH_MODE"
 ENV_VAR_API_KEY = ENV_VAR_PREFIX + "_API_KEY"
@@ -249,6 +250,14 @@ GBSERVER_METRICS_AUTH_TOKEN = os.getenv(ENV_VAR_GBSERVER_METRICS_AUTH_TOKEN, "")
 # Metrics
 DEFAULT_LOG_LEVEL = os.getenv(ENV_VAR_DEFAULT_LOG_LEVEL, "info").lower()
 GBSERVER_TRUNCATE_LENGTH = int(os.getenv(ENV_VAR_TRUNCATE_LENGTH, "-1"), base=10)
+# Cap on simultaneous SkyPilot cluster bring-ups. Each launch opens a fresh
+# SSH session to the cloud's login node; LSF-backed clouds in particular
+# trip MaxAuthTries on sshd when many evals fan out at once. Default 4 is
+# safe for BlueVela; override to a higher value on clouds that don't
+# bottleneck on SSH (e.g. Kubernetes).
+GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY = int(
+    os.getenv(ENV_VAR_SKYPILOT_LAUNCH_CONCURRENCY, "4"), base=10
+)
 DEFAULT_GH_REQUEST_TIMEOUT = int(
     os.getenv(ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT, "60"), base=10
 )

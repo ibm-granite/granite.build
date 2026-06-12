@@ -1,0 +1,20 @@
+# Default parameters for sage general evaluation on BlueVela
+# Override any of these with: gb build start --param KEY=VALUE
+
+# Model
+MODEL_PATH: "/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
+EXPERIMENT: "eval-general"
+
+# Evaluation settings
+BATCH_SIZE: 10
+MAX_LENGTH: 4096
+NUM_GPUS: 1
+
+# Output
+OUTPUT_DIR: "/proj/granite-build/g4os/sage"
+
+# Infrastructure
+ACCELERATORS: "H100:1"
+CLUSTER: "bluevela"
+QUEUE: "preemptable"
+MEMORY: "256"

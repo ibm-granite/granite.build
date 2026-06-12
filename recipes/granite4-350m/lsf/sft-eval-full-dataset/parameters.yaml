@@ -1,0 +1,66 @@
+# Default parameters for sft-10k-eval-test on BlueVela.
+# Runs 2-epoch SFT on a 10k sample, then fans out to 27 eval targets.
+# Override any of these with: gb build start --param KEY=VALUE
+
+# ─── Base model + training data (consumed by sft-training) ─────────────────
+MODEL_PATH: "/proj/granite-build/g4os/granite-4.0-350m-base/r251014a"
+TOKENIZED_DATA_PATH: "/proj/granite-build/g4os/datasets/tokenized/all_combined/tokenized/8192/data_filtered"
+CHAT_TEMPLATE_PATH: "/proj/granite-build/g4os/chat_template.jinja"
+OUTPUT_DIR: "/proj/granite-build/g4os/sft/checkpoints"
+
+# ─── SFT hyperparameters ───────────────────────────────────────────────────
+# NUM_EPOCHS=2: evals consume <run_output_dir>-hf/epoch_hf_2 (see build.yaml).
+NUM_EPOCHS: 2
+PER_DEVICE_BATCH_SIZE: 4
+GRADIENT_ACCUMULATION_STEPS: 2
+LEARNING_RATE: "1e-5"
+LR_SCHEDULER_TYPE: "linear"
+WARMUP_RATIO: "0.03"
+WEIGHT_DECAY: "0.0"
+CLIP_GRAD_NORM: "1.0"
+MAX_SEQ_LEN: 8192
+MIXED_PRECISION: "bf16"
+SEED: 123
+REDUCE_LOSS: "sum"
+CHECKPOINTING_STEPS: "epoch"
+KEEP_LAST_N_CHECKPOINTS: 5
+LOGGING_STEPS: 1
+
+# ─── Eval settings (consumed by the 27 eval targets) ───────────────────────
+EXPERIMENT: "sft-10k-eval-test"
+BATCH_SIZE: 10
+MAX_LENGTH: 4096
+NUM_GPUS: 1
+
+# Eval output roots — kept separate from OUTPUT_DIR so SFT checkpoints and
+# eval results don't collide on the shared filesystem.
+SAGE_OUTPUT_DIR: "/proj/granite-build/g4os/sage"
+BFCL_OUTPUT_DIR: "/proj/granite-build/g4os/bfcl"
+
+# BigCodeBench API server (external service)
+OE_EVAL_BCB_API_URL: "http://p2-r24-n4.bluevela.rmf.ibm.com:7860/evaluate/"
+
+# BFCL parameters
+BFCL_MODEL_ID: "ibm-granite/granite-4"
+BFCL_EVAL_NAME: "bfclv3"
+BFCL_TEST_CATEGORIES: "all"
+BFCL_NUM_GPUS_GENERATE: 1
+BFCL_NUM_GPUS_EVALUATE: 1
+BFCL_GPU_MEMORY_UTILIZATION: "0.5"
+
+# ─── Infrastructure ────────────────────────────────────────────────────────
+CLUSTER: "bluevela"
+# SFT runs on `normal` so a 2-epoch training job isn't preempted mid-run;
+# evals are short and idempotent, so they ride the cheaper preemptable queue.
+SFT_QUEUE: "normal"
+EVAL_QUEUE: "preemptable"
+# Granite-4 350M has tied embeddings (tie_word_embeddings: true). With
+# FSDP + --padfree on a single GPU, the tied embed_tokens/lm_head
+# flat-param triggers a "Cannot writeback when the parameter shape
+# changes" crash on the first forward pass. Two or more processes take
+# a different FSDP wrapping path and avoid the issue. Mirrors gbansible's
+# multi-GPU setup. Evals stay on a single H100 — they don't hit this path.
+SFT_ACCELERATORS: "H100:8"
+EVAL_ACCELERATORS: "H100:1"
+SFT_MEMORY: "1580"
+EVAL_MEMORY: "256"

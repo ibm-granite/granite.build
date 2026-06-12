@@ -1,0 +1,66 @@
+name: bcb-server
+version: 1.0.0
+type: SERVICE
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  bcb_server_config:
+    port: 7860
+outputs:
+  optional:
+    bcb_server_url:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: bcb-server
+    launchers:
+      bcb-server:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/oe-eval-bcb-lite-evaluator:0.01"
+          resources:
+            cpus: "8"
+            memory: "100+"
+          ports:
+            - 7860
+          run: |
+            set -e
+            BCB_PORT={{ config.bcb_server_config.port }}
+            HOST=$(hostname -f)
+
+            echo "=== BCB Lite Evaluator Server ==="
+            echo "  Host: ${HOST}"
+            echo "  Port: ${BCB_PORT}"
+            echo "  URL:  http://${HOST}:${BCB_PORT}/evaluate/"
+
+            # Emit the server URL as artifact so dependents can discover it
+            echo "LLMB_ARTIFACT_ID:bcb_server_url LLMB_ARTIFACT_PATH:http://${HOST}:${BCB_PORT}/evaluate/"
+
+            # Start the server (blocks until killed)
+            echo "=== Starting BCB server ==="
+            /prod.sh
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "Starting BCB server"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true

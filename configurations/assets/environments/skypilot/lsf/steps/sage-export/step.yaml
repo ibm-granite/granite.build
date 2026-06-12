@@ -1,0 +1,75 @@
+name: sage-export
+version: 1.0.0
+type: EVAL
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  sage_export_config:
+    experiment: ""
+    export_stack: "granite4-instruct"
+    input_dir: ""
+    output_csv: ""
+outputs:
+  optional:
+    sage_export_csv:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: sage-export
+    launchers:
+      sage-export:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311:0.025"
+          resources:
+            memory: "48"
+          run: |
+            set -e
+            echo "=== Sage Results Export ==="
+
+            export INPUT_DIR="{{ config.sage_export_config.input_dir }}/{{ config.sage_export_config.experiment }}"
+            export OUTPUT_CSV="{{ config.sage_export_config.output_csv }}"
+            export EXPORT_STACK="{{ config.sage_export_config.export_stack }}"
+
+            echo "  Input:  $INPUT_DIR"
+            echo "  Output: $OUTPUT_CSV"
+            echo "  Stack:  $EXPORT_STACK"
+
+            mkdir -p "$(dirname "$OUTPUT_CSV")"
+
+            cd /workspace/sage/sage/exporters/
+            python exporter.py \
+              -in-folder "$INPUT_DIR" \
+              -stack "$EXPORT_STACK" \
+              -o "$OUTPUT_CSV"
+
+            echo "=== CSV OUTPUT ==="
+            cat "$OUTPUT_CSV"
+            echo "=== END CSV OUTPUT ==="
+
+            echo "LLMB_ARTIFACT_ID:sage_export_csv LLMB_ARTIFACT_PATH:${OUTPUT_CSV}"
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "Sage Results Export"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true

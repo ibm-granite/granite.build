@@ -1,0 +1,72 @@
+name: bfcl-export
+version: 1.0.0
+type: EVAL
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  bfcl_export_config:
+    experiment: ""
+    eval_name: "bfclv3"
+    input_dir: ""
+    output_csv: ""
+    filter: ""
+outputs:
+  optional:
+    bfcl_export_csv:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: bfcl-export
+    launchers:
+      bfcl-export:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/bfcl-py311:0.02"
+          resources:
+            memory: "64"
+          run: |
+            set -e
+            echo "=== BFCL Results Export ==="
+
+            export BFCL_INPUT_DIR="{{ config.bfcl_export_config.input_dir }}/{{ config.bfcl_export_config.experiment }}"
+            export BFCL_OUTPUT_CSV="{{ config.bfcl_export_config.output_csv }}"
+            export BFCL_FILTER="{{ config.bfcl_export_config.filter }}"
+
+            echo "  Input:  $BFCL_INPUT_DIR"
+            echo "  Output: $BFCL_OUTPUT_CSV"
+            echo "  Filter: $BFCL_FILTER"
+
+            mkdir -p "$(dirname "$BFCL_OUTPUT_CSV")"
+
+            python /workspace/scripts/gather_scores.py
+
+            echo "=== CSV OUTPUT ==="
+            cat "$BFCL_OUTPUT_CSV"
+            echo "=== END CSV OUTPUT ==="
+
+            echo "LLMB_ARTIFACT_ID:bfcl_export_csv LLMB_ARTIFACT_PATH:${BFCL_OUTPUT_CSV}"
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "BFCL Results Export"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true

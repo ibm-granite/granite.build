@@ -12,7 +12,7 @@ import os
 import shlex
 import urllib.parse
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Tuple, Union
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -21,6 +21,7 @@ from gbserver.environment.environment import Environment, EventLogLineParserConf
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.environmentconfig import EnvironmentConfig
+from gbserver.types.errors import WorkloadFailedException
 from gbserver.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -37,12 +38,37 @@ else:
 
 
 def _require_skypilot():
-    """Raise a clear error if the sky SDK is not installed."""
+    """Raise a clear error if the sky SDK is not installed.
+
+    Pure availability guard — does not start the API server. Callers that
+    need the server running should call ``_ensure_skypilot_api_running``.
+    """
     if not HAS_SKYPILOT:
         raise ImportError(
             "The 'skypilot' package is required for the Skypilot environment. "
             "Install it with: pip install 'gbserver[skypilot]'"
         )
+
+
+def _ensure_skypilot_api_running():
+    """Start the SkyPilot API server if not already healthy.
+
+    Probes via sky.api_info(); starts the server only if the probe indicates
+    the server is unreachable or unhealthy. Other failure modes (auth, config,
+    etc.) propagate so they're not masked by an unconditional ``api_start``.
+    """
+    _require_skypilot()
+    try:
+        info = sky.api_info()
+    except (ConnectionError, OSError, RuntimeError) as e:
+        logger.info("SkyPilot API server not reachable (%s) — starting it now", e)
+        sky.api_start()
+        return
+    if info.status.value != "healthy":
+        logger.info(
+            "SkyPilot API server status=%s — starting it now", info.status.value
+        )
+        sky.api_start()
 
 
 @retry(
@@ -60,6 +86,23 @@ def _download_logs_with_retry(cluster_name: str, job_id: int):
 
 class Skypilot(Environment):
     """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
+
+    # Class-level semaphore so the cap applies across all Skypilot
+    # instances within a process — for fan-out builds gbserver creates
+    # one Environment per target, but they all share the SSH connection
+    # pool to the cloud's login node and therefore the same MaxAuthTries
+    # ceiling. Lazily constructed so no event loop is required at import.
+    _launch_semaphore: Optional[asyncio.Semaphore] = None
+
+    @classmethod
+    def _get_launch_semaphore(cls) -> asyncio.Semaphore:
+        if cls._launch_semaphore is None:
+            from gbserver.types.constants import GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY
+
+            cls._launch_semaphore = asyncio.Semaphore(
+                max(1, GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY)
+            )
+        return cls._launch_semaphore
 
     def __init__(
         self: Self,
@@ -165,13 +208,14 @@ class Skypilot(Environment):
                 run=f"rm -rf {shlex.quote(workdir)}",
                 resources=sky.Resources(infra=self._get_cloud()),
             )
-            request_id = sky.launch(
+            request_id = await asyncio.to_thread(
+                sky.launch,
                 task,
                 cluster_name=cluster_name,
                 idle_minutes_to_autostop=0,
                 down=True,
             )
-            sky.stream_and_get(request_id)
+            await asyncio.to_thread(sky.stream_and_get, request_id)
         except Exception as e:  # don't fail the build for cleanup
             logger.warning("teardown_skypilot rm -rf %s failed: %s", workdir, e)
 
@@ -186,9 +230,38 @@ class Skypilot(Environment):
 
         Creates a sky.Task from step config, calls sky.launch() to provision
         pods/VMs, waits until the job starts, then signals launch readiness via release_monitors().
+
+        Concurrency: the cluster bring-up is gated by a class-level
+        semaphore (see ``GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY``, default
+        4). Each launch opens a fresh SSH session to the cloud's login
+        node; LSF backends in particular trip sshd MaxAuthTries when
+        many evals fan out at once. Capping the in-flight count keeps
+        the SSH multiplexer from rejecting bring-ups with "Too many
+        authentication failures". The cap wraps the whole bring-up
+        (sky.launch → wait until job starts) but releases before
+        ``monitor_skypilot_monitor`` runs, so post-launch polling for
+        all targets continues in parallel.
+        """
+        async with self._get_launch_semaphore():
+            await self._launch_skypilot_inner(
+                launch_id=launch_id,
+                targetsteprun_asset_dir=targetsteprun_asset_dir,
+                environment_config=environment_config,
+                **kwargs,
+            )
+
+    async def _launch_skypilot_inner(
+        self: Self,
+        launch_id: str,
+        targetsteprun_asset_dir=None,
+        environment_config: Optional[EnvironmentConfig] = None,
+        **kwargs,
+    ) -> None:
+        """Body of launch_skypilot. Split out so the semaphore wrapper in
+        ``launch_skypilot`` doesn't have to re-indent the entire block.
         """
         try:
-            _require_skypilot()
+            _ensure_skypilot_api_running()
 
             # Stash kwargs so retry_workload can replay this launch.
             self._launch_kwargs[launch_id] = {
@@ -211,10 +284,16 @@ class Skypilot(Environment):
                 "idle_minutes_to_autostop", self._get_idle_minutes()
             )
 
-            # Build sky.Resources
-            res_config = launcher_config.get("resources", {})
+            # Build sky.Resources — merge build-level overrides on top of
+            # step defaults (config.launcher_config.resources wins over
+            # step's environment_configs.*.launchers.*.config.resources)
+            res_config = {
+                **launcher_config.get("resources", {}),
+                **config.get("launcher_config", {}).get("resources", {}),
+            }
 
-            # Build infra string: supports 'slurm/cluster/partition' format
+            # Build infra string: supports 'cloud/cluster/partition' format
+            # (e.g., 'slurm/mycluster/gpu', 'lsf/bluevela/normal')
             infra = res_config.get("infra") or cloud
             zone = res_config.get("zone")
             if not res_config.get("infra") and res_config.get("cluster"):
@@ -222,6 +301,11 @@ class Skypilot(Environment):
                 if zone:
                     infra = f"{infra}/{zone}"
                     zone = None
+            elif not res_config.get("infra") and zone:
+                # zone without cluster — fold into infra to avoid the
+                # "cannot specify both infra and zone" error in sky.Resources
+                infra = f"{infra}/{zone}" if infra else zone
+                zone = None
 
             resources = sky.Resources(
                 infra=infra,
@@ -324,20 +408,25 @@ class Skypilot(Environment):
                 res_config,
             )
 
-            # SLURM does not support autostop; passing any non-None value
-            # (including 0) fails provisioning with "Slurm does not support
-            # autostop." Per-step `sky down` cleanup handles teardown anyway,
-            # so force None on SLURM regardless of the user's config.
+            # SLURM and LSF do not support autostop; passing any non-None
+            # value (including 0) fails provisioning. Per-step `sky down`
+            # cleanup handles teardown anyway, so force None on these
+            # backends regardless of the user's config.
             cloud_for_infra = (str(infra).split("/", 1)[0] or "").lower()
-            autostop = None if cloud_for_infra == "slurm" else idle_minutes
+            no_autostop_clouds = ("slurm", "lsf")
+            autostop = None if cloud_for_infra in no_autostop_clouds else idle_minutes
 
-            # Launch and wait for provisioning
-            request_id = sky.launch(
+            # Launch and wait for provisioning. sky.launch / sky.stream_and_get
+            # block until LSF allocates resources — under queue contention
+            # that can be tens of minutes. Run them in a worker thread so
+            # the event loop can service concurrent target launches.
+            request_id = await asyncio.to_thread(
+                sky.launch,
                 task,
                 cluster_name=cluster_name,
                 idle_minutes_to_autostop=autostop,
             )
-            job_id, handle = sky.stream_and_get(request_id)
+            job_id, handle = await asyncio.to_thread(sky.stream_and_get, request_id)
 
             self._cluster_names[launch_id] = cluster_name
             if job_id is not None:
@@ -439,17 +528,22 @@ class Skypilot(Environment):
         stop_event = self._get_launch_stopped_event(launch_id)
         poll_interval = kwargs.get("poll_interval", 15)
         last_status = None
+        consecutive_poll_failures = 0
+        max_poll_failures = 3
 
         while not stop_event.is_set():
             status = None
             poll_failed = False
             try:
-                request_id = sky.job_status(
-                    cluster_name,
-                    job_ids=[job_id] if job_id is not None else None,
+                request_id = await asyncio.to_thread(
+                    lambda: sky.job_status(
+                        cluster_name,
+                        job_ids=[job_id] if job_id is not None else None,
+                    )
                 )
-                statuses = sky.get(request_id)
+                statuses = await asyncio.to_thread(sky.get, request_id)
                 status = statuses.get(job_id) if statuses else None
+                consecutive_poll_failures = 0
             except Exception as e:
                 logger.error(
                     "Error polling SkyPilot job %s on %s: %s",
@@ -458,6 +552,20 @@ class Skypilot(Environment):
                     e,
                 )
                 poll_failed = True
+                consecutive_poll_failures += 1
+                if (
+                    "does not exist" in str(e)
+                    or consecutive_poll_failures >= max_poll_failures
+                ):
+                    logger.warning(
+                        "Cluster %s is gone (preempted or terminated) after %d consecutive poll failures. "
+                        "Treating as FAILED for launch_id %s.",
+                        cluster_name,
+                        consecutive_poll_failures,
+                        launch_id,
+                    )
+                    status = sky.JobStatus.FAILED
+                    poll_failed = False
 
             # Skip change-detection on poll failures so a transient error
             # doesn't emit a spurious RUNNING -> None -> RUNNING flap event.
@@ -524,6 +632,17 @@ class Skypilot(Environment):
                             ),
                         )
                         await event_q.put(fail_event)
+                    # Raise so the awaiting launch task in
+                    # TargetStepRun._run propagates failure up through
+                    # Run.run, which sets Status.FAILED on the step.
+                    # Without this, terminating in a FAILED JobStatus
+                    # would let the launch task return cleanly and the
+                    # framework would emit STATUS_EVENT(SUCCESS).
+                    raise WorkloadFailedException(
+                        f"SkyPilot job {job_id} on {cluster_name} "
+                        f"terminated with status {status} "
+                        f"(launch_id={launch_id})"
+                    )
                 return
 
             try:
@@ -794,6 +913,55 @@ class Skypilot(Environment):
         )
         binding_config = {"binding": {"path": str(binding_path)}}
         return binding_config, pull_step_config
+
+    async def pullasset_envstore(
+        self: Self,
+        uri: Optional[Union[str, URI]] = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        **kwargs,
+    ) -> Tuple[Dict, Optional[Any]]:
+        """Pull asset for env:// store — artifact is already on shared FS.
+
+        No-op pull: the path is directly accessible on the shared filesystem.
+        Returns the binding with the path extracted from the URI.
+        """
+        path = str(uri).replace("env://", "") if uri else ""
+        logger.info(
+            "pullasset_envstore: artifact at path=%s (shared FS, no transfer needed)",
+            path,
+        )
+        binding_config = {"binding": {"path": path}}
+        return binding_config, None
+
+    async def pushasset_envstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        storepush_config=None,
+        uri: Optional[Union[str, URI]] = None,
+        assetstore=None,
+        secrets: Optional[Dict[str, str]] = None,
+        run_metadata: Optional[Any] = None,
+        output_config: Optional[Any] = None,
+    ) -> URI:
+        """Push asset for env:// store — artifact is already on shared FS.
+
+        No-op push: the artifact path from the container is directly
+        accessible on the shared filesystem, so no transfer is needed.
+        """
+        if not uri:
+            raise ValueError(
+                f"pushasset_envstore: empty uri for binding={binding_id!r}; "
+                "an env:// store push requires a concrete artifact path."
+            )
+        logger.info(
+            "pushasset_envstore: registering artifact %s at uri=%s binding=%s",
+            binding_id,
+            uri,
+            binding,
+        )
+        return URI.get_uri(str(uri))
 
     async def pushasset_hfstore(
         self: Self,
