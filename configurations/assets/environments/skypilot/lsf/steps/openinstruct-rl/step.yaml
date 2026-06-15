@@ -1,0 +1,87 @@
+name: openinstruct-rl
+version: 1.0.0
+type: training
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  rl_config:
+    # ── identification ──
+    exp_name: ""
+    run_name: ""
+    rl_name: ""
+    # ── paths ──
+    model_name_or_path: ""
+    dataset_mixer: ""
+    dataset_eval_mixer: ""
+    output_dir: ""
+    checkpoint_state_dir: ""
+    # ── external services ──
+    rm_server_url: ""
+    code_server_url: ""
+    # ── GRPO hyperparameters (single-node defaults) ──
+    beta: "0.05"
+    num_unique_prompts_rollout: "64"
+    num_samples_per_prompt_rollout: "16"
+    cliprange_low: "0.2"
+    cliprange_high: "0.28"
+    temperature: "1.0"
+    deepspeed_stage: "3"
+    seed: "42"
+    pad_token_id: "6"
+    per_device_train_batch_size: "2"
+    learning_rate: "5e-7"
+    max_prompt_token_length: "512"
+    response_length: "8192"
+    total_episodes: "1000000"
+    kl_estimator: "kl3"
+    pack_length: "8704"
+    thinking: "4"
+    vllm_tensor_parallel_size: "1"
+    num_learners_per_node: "4"
+    vllm_num_engines: "4"
+    num_epochs: "1"
+    warmup_ratio: "0.0"
+    num_mini_batches: "1"
+    save_freq: "80"
+    eval_freq: "80"
+    checkpoint_state_freq: "80"
+    ref_policy_update_freq: "32"
+    n_gram: "3"
+    allowed_freq: "2"
+    temp_final: "1.0"
+    temp_change_interval: "10"
+    entropy_coeff: "0.0"
+    vllm_imp_ratio_cap: "-1"
+    # ── boolean flags ──
+    gradient_checkpointing: true
+    async_mode: true
+    apply_thinking_format_reward: true
+    apply_verifiable_reward: true
+    non_stop_penalty: true
+    apply_repetition_penalty: true
+    add_general_reward: true
+    set_weight_decay_on_bias_and_norm: false
+    additive_format_reward: false
+    filter_zero_advantage: false
+    with_tracking: false
+    # ── string-valued flags ──
+    ground_truths_key: "ground_truth"
+    sft_messages_key: "messages"
+    dataset_train_splits: "train"
+    dataset_eval_splits: "train"
+    stop_strings: '"<|end_of_text|>" "<｜end▁of▁sentence｜>" "<|EOT|>" "<|endoftext|>" "<|im_end|>"'
+    importance_sampling_level: "token"
+    advantage_normalization_type: "group_standard"
+    iterator_type: "random"
+    lr_scheduler_type: "linear"
+    loss_mode: "vanilla"
+    temp_schedule_type: "constant"
+    dataset_local_cache_dir: "/proj/granite-build/g4os/data_downloads/"
+    torchdynamo_disable: false
+outputs:
+  optional:
+    checkpoint:
+      type: model
