@@ -116,6 +116,7 @@ def finalize_build_status(
     if not build.status.is_finished():
         build = update_stored_build_status(build.uuid, status, failure_reason)
         logger.info("Build %s finalized with status %s", build_id, status)
+
     return build
 
 

@@ -53,6 +53,8 @@ from gbcli.utils.utils import (
     pagination_range,
     parse_build_identifier,
     parse_markdown_str,
+    render_plain,
+    render_pretty,
     validate_tags,
 )
 from gbcli.utils.versionutil import check_current_and_latest_versions
@@ -1339,8 +1341,8 @@ def lineage(ctx, build_id, format, lakehouse, skip_version_check, quiet):
 @click.option(
     "--format",
     default="plain",
-    type=click.Choice(["plain", "json"], case_sensitive=True),
-    help=f"Output format: plain (default), json",
+    type=click.Choice(["plain", "pretty", "json"], case_sensitive=True),
+    help=f"Output format: plain (default, borderless), pretty (bordered), json",
 )
 @click.option(
     "--wide",
@@ -1560,44 +1562,50 @@ def list(
                     count = builds_data["count"]
 
         if builds:
-            if format == "plain":
-                headers = BUILD_LIST_HEADERS
+            headers = BUILD_LIST_HEADERS[:]
 
-                if not (all or username):
-                    headers.remove("USER")
+            if not (all or username):
+                headers.remove("USER")
 
-                if all_spaces:
-                    headers.insert(2, "SPACE_NAME")
+            if all_spaces:
+                headers.insert(2, "SPACE_NAME")
 
-                    # need to filter by user spaces (will be in gbserver eventually)
-                    spaces = [
-                        s["name"]
-                        for s in GBClient.Space(get_user_token()).list_spaces(
-                            all, False, None
-                        )
-                    ]
-                    builds = [b for b in builds if b["space_name"] in spaces]
-                if wide:
-                    name_index = headers.index("NAME")
-                    headers.insert(name_index + 1, "DESCRIPTION")
-
-                prs_table = [
-                    [p["build_id"], p["name"]]
-                    + ([p["description"]] if (wide) else [])
-                    + ([p["user"]] if (all or username) else [])
-                    + ([p["space_name"]] if (all_spaces) else [])
-                    + ([p["tags"]])
-                    + [
-                        p["status"],
-                        humanize_iso_date(p["start_time"]),
-                    ]
-                    for p in builds
+                # need to filter by user spaces (will be in gbserver eventually)
+                spaces = [
+                    s["name"]
+                    for s in GBClient.Space(get_user_token()).list_spaces(
+                        all, False, None
+                    )
                 ]
-                builds_output = tabulate(prs_table, headers, tablefmt="plain")
+                builds = [b for b in builds if b["space_name"] in spaces]
+            if wide:
+                name_index = headers.index("NAME")
+                headers.insert(name_index + 1, "DESCRIPTION")
+
+            prs_table = [
+                [p["build_id"], p["name"]]
+                + ([p["description"]] if (wide) else [])
+                + ([p["user"]] if (all or username) else [])
+                + ([p["space_name"]] if (all_spaces) else [])
+                + ([p["tags"]])
+                + [
+                    p["status"],
+                    humanize_iso_date(p["start_time"]),
+                ]
+                for p in builds
+            ]
+
+            if format == "plain":
+                builds_output = render_plain(prs_table, headers)
+                click.echo(builds_output)
+            elif format == "pretty":
+                render_pretty(
+                    prs_table, headers, title="Builds", fold_columns=["DESCRIPTION"]
+                )
             else:
                 builds_output = json.dumps(builds)
+                click.echo(builds_output)
 
-            click.echo(builds_output)
             if format != "json" and page_index >= 0 and page_size > 0:
                 start, end = pagination_range(
                     total_items=count,
@@ -2310,7 +2318,7 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
 
             if len(targets) > 0:
                 if format != "json":
-                    steps_header = BUILD_DESCRIBE_STEPS_HEADERS
+                    steps_header = BUILD_DESCRIBE_STEPS_HEADERS[:]
                     if format == "simple":
                         steps_header.remove("CONFIG")
                     for target in targets:

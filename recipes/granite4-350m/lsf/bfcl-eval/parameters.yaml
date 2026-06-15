@@ -1,0 +1,21 @@
+# Default parameters for BFCL evaluation on BlueVela
+# Override any of these with: gb build start --param KEY=VALUE
+
+# Model
+MODEL_PATH: "/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
+MODEL_ID: "ibm-granite/granite-4"
+EXPERIMENT: "test-eval"
+EVAL_NAME: "bfclv3"
+
+# BFCL parameters
+TEST_CATEGORIES: "all"
+NUM_GPUS_GENERATE: 1
+NUM_GPUS_EVALUATE: 1
+GPU_MEMORY_UTILIZATION: "0.5"
+OUTPUT_DIR: "/proj/granite-build/g4os/bfcl"
+
+# Infrastructure
+ACCELERATORS: "H100:1"
+CLUSTER: "bluevela"
+QUEUE: "normal"
+MEMORY: "256"

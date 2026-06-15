@@ -76,6 +76,7 @@ ENV_VAR_IBM_SEC_MAN_API_KEY = ENV_VAR_PREFIX + "_IBM_SEC_MAN_API_KEY"
 ENV_VAR_DEFAULT_LOG_LEVEL = ENV_VAR_PREFIX + "_DEFAULT_LOG_LEVEL"
 ENV_VAR_DEFAULT_GITHUB_TOKEN = ENV_VAR_PREFIX + "_GITHUB_TOKEN"
 ENV_VAR_DEBUG_MODE = ENV_VAR_PREFIX + "_DEBUG_MODE"
+ENV_VAR_SKYPILOT_LAUNCH_CONCURRENCY = ENV_VAR_PREFIX + "_SKYPILOT_LAUNCH_CONCURRENCY"
 ENV_VAR_METADATA_STORAGE = ENV_VAR_PREFIX + "_METADATA_STORAGE"
 ENV_VAR_AUTH_MODE = ENV_VAR_PREFIX + "_AUTH_MODE"
 ENV_VAR_API_KEY = ENV_VAR_PREFIX + "_API_KEY"
@@ -135,6 +136,82 @@ ENV_VAR_GBSERVER_NODE_HEALTH_ALERT_SLACK_MENTION_USERS = (
 
 ENV_VAR_LSF_LOGIN_NODE_ROTATION = ENV_VAR_PREFIX + "_LSF_LOGIN_NODE_ROTATION"
 
+# Build-files REST API caps. SSH connection params are resolved
+# per-request from the target's environment.yaml (via
+# Environment.load_environment_config), not env vars.
+ENV_VAR_GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_DOWNLOAD_MAX_BYTES"
+)
+
+# Default: 1 GiB cap on streamed file downloads.
+BUILD_FILES_DOWNLOAD_MAX_BYTES = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES, str(1 * 1024**3))
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_LIST_MAX_ENTRIES = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_LIST_MAX_ENTRIES"
+)
+
+# Default: 10000 entries returned by a recursive directory listing.
+BUILD_FILES_LIST_MAX_ENTRIES = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_LIST_MAX_ENTRIES, "10000")
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_GREP_MAX_HITS = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_GREP_MAX_HITS"
+)
+
+# Default: 5000 hits cap on the recursive content-grep endpoint.
+BUILD_FILES_GREP_MAX_HITS = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_GREP_MAX_HITS, "5000")
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_GREP_LINE_MAX_BYTES = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_GREP_LINE_MAX_BYTES"
+)
+
+# Default: 512-byte cap on each matching line returned by grep search.
+BUILD_FILES_GREP_LINE_MAX_BYTES = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_GREP_LINE_MAX_BYTES, "512")
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_GREP_MAX_CONTEXT = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_GREP_MAX_CONTEXT"
+)
+
+# Default: 50-line cap on each of `before` / `after` context on grep search.
+BUILD_FILES_GREP_MAX_CONTEXT = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_GREP_MAX_CONTEXT, "50")
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_PEEK_MAX_LINES = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_PEEK_MAX_LINES"
+)
+
+# Default: 10000-line cap per direction on /file/download peek (head/tail).
+BUILD_FILES_PEEK_MAX_LINES = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_PEEK_MAX_LINES, "10000")
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_PEEK_MAX_BYTES = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_PEEK_MAX_BYTES"
+)
+
+# Default: 256 KiB cap on output bytes returned by /file/download peek mode.
+BUILD_FILES_PEEK_MAX_BYTES = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_PEEK_MAX_BYTES, str(256 * 1024))
+)
+
+ENV_VAR_GBSERVER_BUILD_FILES_STAT_BATCH_MAX = (
+    ENV_VAR_PREFIX + "_BUILD_FILES_STAT_BATCH_MAX"
+)
+
+# Default: 500 distinct files per batched stat call (keeps argv well under
+# typical ARG_MAX). Used by /files/search?stat=true.
+BUILD_FILES_STAT_BATCH_MAX = int(
+    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_STAT_BATCH_MAX, "500")
+)
+
 ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT = (
     ENV_VAR_PREFIX + "_DEFAULT_GH_REQUEST_TIMEOUT"
 )
@@ -173,6 +250,14 @@ GBSERVER_METRICS_AUTH_TOKEN = os.getenv(ENV_VAR_GBSERVER_METRICS_AUTH_TOKEN, "")
 # Metrics
 DEFAULT_LOG_LEVEL = os.getenv(ENV_VAR_DEFAULT_LOG_LEVEL, "info").lower()
 GBSERVER_TRUNCATE_LENGTH = int(os.getenv(ENV_VAR_TRUNCATE_LENGTH, "-1"), base=10)
+# Cap on simultaneous SkyPilot cluster bring-ups. Each launch opens a fresh
+# SSH session to the cloud's login node; LSF-backed clouds in particular
+# trip MaxAuthTries on sshd when many evals fan out at once. Default 4 is
+# safe for BlueVela; override to a higher value on clouds that don't
+# bottleneck on SSH (e.g. Kubernetes).
+GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY = int(
+    os.getenv(ENV_VAR_SKYPILOT_LAUNCH_CONCURRENCY, "4"), base=10
+)
 DEFAULT_GH_REQUEST_TIMEOUT = int(
     os.getenv(ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT, "60"), base=10
 )
@@ -538,6 +623,38 @@ def truncate(s: str, l: int = GBSERVER_TRUNCATE_LENGTH) -> str:
         return s
     return s[:l] + "..."
 
+
+# RabbitMQ event publishing
+ENV_VAR_GBSERVER_EVENT_PUBLISHING_ENABLED = ENV_VAR_PREFIX + "_EVENT_PUBLISHING_ENABLED"
+GBSERVER_EVENT_PUBLISHING_ENABLED: bool = getenv_boolean(
+    ENV_VAR_GBSERVER_EVENT_PUBLISHING_ENABLED, False
+)
+
+ENV_VAR_GBSERVER_BUILD_EVENTS_EXCHANGE = ENV_VAR_PREFIX + "_BUILD_EVENTS_EXCHANGE"
+GBSERVER_BUILD_EVENTS_EXCHANGE: str = os.getenv(
+    ENV_VAR_GBSERVER_BUILD_EVENTS_EXCHANGE, "build-events"
+)
+
+# RabbitMQ Management API (for event subscribe endpoint)
+ENV_VAR_GBSERVER_RABBITMQ_MGMT_URL = ENV_VAR_PREFIX + "_RABBITMQ_MGMT_URL"
+GBSERVER_RABBITMQ_MGMT_URL: str = os.getenv(
+    ENV_VAR_GBSERVER_RABBITMQ_MGMT_URL, "http://localhost:15672"
+)
+
+ENV_VAR_GBSERVER_RABBITMQ_MGMT_USER = ENV_VAR_PREFIX + "_RABBITMQ_MGMT_USER"
+GBSERVER_RABBITMQ_MGMT_USER: str = os.getenv(
+    ENV_VAR_GBSERVER_RABBITMQ_MGMT_USER, "guest"
+)
+
+ENV_VAR_GBSERVER_RABBITMQ_MGMT_PASSWORD = ENV_VAR_PREFIX + "_RABBITMQ_MGMT_PASSWORD"
+GBSERVER_RABBITMQ_MGMT_PASSWORD: str = os.getenv(
+    ENV_VAR_GBSERVER_RABBITMQ_MGMT_PASSWORD, "guest"
+)
+
+ENV_VAR_GBSERVER_EVENT_SUBSCRIBE_TTL = ENV_VAR_PREFIX + "_EVENT_SUBSCRIBE_TTL"
+GBSERVER_EVENT_SUBSCRIBE_TTL: int = int(
+    os.getenv(ENV_VAR_GBSERVER_EVENT_SUBSCRIBE_TTL, "60")
+)
 
 # Tags that begin with this are only editable via the super admin
 SYSTEM_TAG_PREFIX = "sys-"

@@ -14,6 +14,7 @@ from gbcli.commands.common_options import (
 )
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME
 from gbcli.utils.gbcredentials import get_user_token
+from gbcli.utils.utils import render_plain, render_pretty
 from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
@@ -35,8 +36,8 @@ def cli(ctx):
 @click.option(
     "--format",
     default="plain",
-    type=click.Choice(["plain", "json"], case_sensitive=True),
-    help=f"Output format: plain (default), json",
+    type=click.Choice(["plain", "pretty", "json"], case_sensitive=True),
+    help=f"Output format: plain (default, borderless), pretty (bordered), json",
 )
 @common_options
 def list(ctx, space, personal, format, skip_version_check, quiet):
@@ -106,15 +107,16 @@ def list(ctx, space, personal, format, skip_version_check, quiet):
             personal, space, callback=(None if quiet else echo_callback)
         )
         if secrets:
+            secrets_table = [[s] for s in secrets["secrets"]]
+
             if format == "plain":
-                secrets_table = [[s] for s in secrets["secrets"]]
-                secrets_output = tabulate(
-                    secrets_table, ["SECRET_NAME"], tablefmt="plain"
-                )
+                secrets_output = render_plain(secrets_table, ["SECRET_NAME"])
+                click.echo(secrets_output)
+            elif format == "pretty":
+                render_pretty(secrets_table, ["SECRET_NAME"], title="Secrets")
             else:
                 secrets_output = json.dumps(secrets)
-
-            click.echo(secrets_output)
+                click.echo(secrets_output)
     except Exception as e:
         click.echo(str_exc_chain(e), err=True)
         ctx.exit(1)  # Exit with a non-zero status

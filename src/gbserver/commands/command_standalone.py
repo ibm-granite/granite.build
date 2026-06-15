@@ -247,12 +247,16 @@ def _run_standalone(
     logger.info("BuildWatcher started in background thread")
 
     # 4. Start the REST API via uvicorn.
+    #    Force the "asyncio" event loop (not uvloop) to avoid subprocess-in-thread
+    #    issues on macOS: uvloop's SIGCHLD handling doesn't work in non-main threads,
+    #    causing BuildRunner's process.communicate() to hang indefinitely.
     config = uvicorn.Config(
         "gbserver.api.root_api:root_api",
         port=port,
         host=host,
         workers=1,
         log_config=None,
+        loop="asyncio",
     )
     server = uvicorn.Server(config)
 

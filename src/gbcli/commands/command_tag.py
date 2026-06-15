@@ -8,6 +8,7 @@ from gbcli.commands.command_auth import str_exc_chain
 from gbcli.commands.common_options import common_options
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME
 from gbcli.utils.gbcredentials import get_user_token
+from gbcli.utils.utils import render_plain, render_pretty
 from gbcli.utils.versionutil import check_current_and_latest_versions
 
 logger_name = __name__
@@ -44,8 +45,8 @@ def cli(ctx):
 @click.option(
     "--format",
     default="plain",
-    type=click.Choice(["plain", "json"]),
-    help="Output format.",
+    type=click.Choice(["plain", "pretty", "json"], case_sensitive=True),
+    help="Output format: plain (default, borderless), pretty (bordered), json",
 )
 @common_options
 def list(
@@ -103,14 +104,17 @@ def list(
             tags = tag_client.artifact_tag_list(username=username, space=space)
 
         # Format and display output
-        if format == "json":
-            click.echo(json.dumps(tags))
-        else:  # plain
-            if not tags:
-                click.echo("No tags found.")
+        if not tags:
+            click.echo("No tags found.")
+        else:
+            table_data = [[tag] for tag in tags]
+            if format == "plain":
+                tags_output = render_plain(table_data, ["TAG"])
+                click.echo(tags_output)
+            elif format == "pretty":
+                render_pretty(table_data, ["TAG"], title="Tags")
             else:
-                table_data = [[tag] for tag in tags]
-                click.echo(tabulate(table_data, headers=["TAG"], tablefmt="plain"))
+                click.echo(json.dumps(tags))
 
     except Exception as e:
         click.echo(str_exc_chain(e), err=True)

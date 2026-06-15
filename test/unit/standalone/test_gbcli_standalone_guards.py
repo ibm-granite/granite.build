@@ -36,8 +36,44 @@ GUARDED_COMMANDS = [
     ("gbcli.commands.command_admin", "admin", ["log", "gbserver-rest-server"]),
     ("gbcli.commands.command_template", "template", ["list"]),
     ("gbcli.commands.command_step", "step", ["list"]),
-    ("gbcli.commands.command_artifact", "artifact", ["list"]),
     ("gbcli.commands.command_model", "model", ["list"]),
+]
+
+# The artifact group is *not* guarded as a whole: gbserver-backed metadata commands work
+# in standalone mode, while only the Lakehouse/HuggingFace-dependent subcommands are
+# guarded individually. The guard fires at callback time, so each invocation must satisfy
+# Click's required-argument validation (which runs first) for the guard to be reached.
+# (module path, group name, subcommand invocation)
+ARTIFACT_GUARDED_SUBCOMMANDS = [
+    (
+        "gbcli.commands.command_artifact",
+        "artifact",
+        ["push", "--from-local", ".", "--artifact-name", "a", "--type", "model"],
+    ),
+    (
+        "gbcli.commands.command_artifact",
+        "artifact",
+        ["register", "--artifact-name", "a"],
+    ),
+    ("gbcli.commands.command_artifact", "artifact", ["download", "some-id"]),
+    (
+        "gbcli.commands.command_artifact",
+        "artifact",
+        ["copy", "some-id", "--space-to", "s"],
+    ),
+    ("gbcli.commands.command_artifact", "artifact", ["lineage", "some-id"]),
+]
+
+# Artifact subcommands that must remain runnable in standalone mode (they only talk to the
+# local gbserver). They may still fail later for other reasons, but must not emit the
+# standalone warning.
+ARTIFACT_UNGUARDED_SUBCOMMANDS = [
+    ("gbcli.commands.command_artifact", "artifact", ["list"]),
+    ("gbcli.commands.command_artifact", "artifact", ["describe", "some-id"]),
+    ("gbcli.commands.command_artifact", "artifact", ["checksum", "some-id"]),
+    ("gbcli.commands.command_artifact", "artifact", ["archive", "some-id"]),
+    ("gbcli.commands.command_artifact", "artifact", ["unarchive", "some-id"]),
+    ("gbcli.commands.command_artifact", "artifact", ["update", "some-id"]),
 ]
 
 
@@ -101,3 +137,88 @@ class TestGbcliStandaloneGuards:
             f"standalone warning should not appear for '{group_name}' outside "
             f"standalone mode, got: {result.output!r}"
         )
+
+
+class TestArtifactStandaloneGuards:
+    """The artifact group is guarded per-subcommand, not at the group level.
+
+    Cloud-only subcommands (push/register/download/copy/lineage) must refuse to run in
+    standalone mode, while gbserver-backed metadata subcommands (list/describe/...) must
+    not emit the standalone warning -- ``artifact list`` in particular must just work.
+    """
+
+    @pytest.mark.parametrize(
+        "module_path,group_name,subcommand", ARTIFACT_GUARDED_SUBCOMMANDS
+    )
+    def test_cloud_subcommand_blocked_in_standalone(
+        self, module_path: str, group_name: str, subcommand: list
+    ):
+        cli = _load_cli(module_path)
+        runner = CliRunner()
+        result = runner.invoke(cli, subcommand, env=STANDALONE_ENV)
+
+        assert result.exit_code != 0, (
+            f"'{group_name} {' '.join(subcommand)}' should exit non-zero in standalone "
+            f"mode, got {result.exit_code}"
+        )
+        assert WARNING_FRAGMENT in result.output, (
+            f"expected standalone warning for '{group_name} {' '.join(subcommand)}', "
+            f"got: {result.output!r}"
+        )
+
+    def test_warning_uses_qualified_command_name(self):
+        """The warning must name the command as ``artifact register``, not just ``register``.
+
+        ``reject_standalone`` derives the name from ``ctx.command_path`` minus the program
+        name, so it only reads correctly when the artifact group is mounted under a root
+        (as it is under the real ``gb`` CLI). Mount it that way here so the qualified-name
+        logic is actually exercised -- invoking the group as its own root would collapse
+        the name back to the bare leaf and silently pass.
+        """
+        import click
+
+        artifact_cli = _load_cli("gbcli.commands.command_artifact")
+        root = click.Group("gb")
+        root.add_command(artifact_cli)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            root,
+            ["artifact", "register", "--artifact-name", "a"],
+            env=STANDALONE_ENV,
+            prog_name="gb",
+        )
+
+        assert result.exit_code != 0
+        assert "'artifact register'" in result.output, (
+            f"expected qualified command name 'artifact register' in warning, "
+            f"got: {result.output!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "module_path,group_name,subcommand", ARTIFACT_UNGUARDED_SUBCOMMANDS
+    )
+    def test_metadata_subcommand_not_blocked_in_standalone(
+        self, module_path: str, group_name: str, subcommand: list
+    ):
+        cli = _load_cli(module_path)
+        runner = CliRunner()
+        result = runner.invoke(cli, subcommand, env=STANDALONE_ENV)
+
+        # The command may fail later (e.g. no local gbserver), but it must not be rejected
+        # by the standalone guard.
+        assert WARNING_FRAGMENT not in result.output, (
+            f"standalone warning should not appear for '{group_name} "
+            f"{' '.join(subcommand)}' in standalone mode, got: {result.output!r}"
+        )
+
+    def test_group_help_works_in_standalone(self):
+        cli = _load_cli("gbcli.commands.command_artifact")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--help"], env=STANDALONE_ENV)
+
+        assert result.exit_code == 0, (
+            f"'artifact --help' should succeed in standalone mode, "
+            f"got {result.exit_code}: {result.output}"
+        )
+        assert WARNING_FRAGMENT not in result.output

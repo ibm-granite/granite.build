@@ -1,0 +1,27 @@
+name: sky-lsf
+type: Skypilot
+config:
+  default_cloud: lsf
+  # SkyPilot's `zone` is overloaded per-cloud: for the LSF backend it
+  # maps to the LSF queue name (e.g. `normal`, `preemptable`). Recipes
+  # that expose a `QUEUE` build parameter plumb it through `zone`.
+  #
+  # Note: autostop is intentionally omitted here. The Skypilot environment
+  # forces autostop=None for the lsf cloud (LSF does not support cluster
+  # autostop), so any value set here would have no effect.
+assetstores:
+  - store_uri: space://assetstores/env-local
+    load:
+      - mode: env_local
+        config: {}
+    push:
+      - mode: env_local
+        config: {}
+  - store_uri: space://assetstores/hf
+    load:
+      - mode: hf_pull
+        config:
+          cache_path: /tmp/hf_cache
+    push:
+      - mode: hf_push
+        config: {}

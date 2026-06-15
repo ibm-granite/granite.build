@@ -1,0 +1,21 @@
+# Default parameters for exporting evaluation results
+# Override any of these with: gb build start --param KEY=VALUE
+
+# Experiment to export
+EXPERIMENT: "eval-full"
+
+# Sage export
+SAGE_INPUT_DIR: "/proj/granite-build/g4os/sage"
+SAGE_OUTPUT_CSV: "/proj/granite-build/g4os/sage/results/sage-results.csv"
+EXPORT_STACK: "granite4-instruct"
+
+# BFCL export
+BFCL_INPUT_DIR: "/proj/granite-build/g4os/bfcl"
+BFCL_OUTPUT_CSV: "/proj/granite-build/g4os/sage/results/bfcl-results.csv"
+BFCL_EVAL_NAME: "bfclv3"
+BFCL_FILTER: ""
+
+# Infrastructure (CPU-only, no GPU needed)
+CLUSTER: "bluevela"
+QUEUE: "preemptable"
+MEMORY: "64"

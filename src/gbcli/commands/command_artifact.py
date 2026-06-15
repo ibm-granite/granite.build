@@ -6,16 +6,14 @@ from pathlib import Path
 from typing import Dict
 
 import click
-from rich.console import Console
-from rich.table import Table
-from tabulate import tabulate
+from fastapi import HTTPException
 from tqdm import tqdm
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
 from gbcli.commands.common_options import (
     common_options,
-    pass_context_and_reject_standalone,
+    reject_standalone,
 )
 from gbcli.services.service_artifact import (
     ArtifactURIError,
@@ -56,6 +54,8 @@ from gbcli.utils.utils import (
     origins_from_local,
     parse_artifact_identifier,
     parse_build_identifier,
+    render_plain,
+    render_pretty,
     validate_tags,
 )
 from gbcli.utils.versionutil import check_current_and_latest_versions
@@ -68,14 +68,24 @@ logger = logging.getLogger(__name__)
 
 
 @click.group("artifact")
-@pass_context_and_reject_standalone
+@click.pass_context
 def cli(ctx):
     """Work with artifacts"""
+    # The group itself is not standalone-guarded: gbserver-backed metadata commands
+    # (list, describe, checksum, archive, unarchive, update) work in standalone mode.
+    # Subcommands that depend on Lakehouse/HuggingFace (push, register, download, copy,
+    # lineage) are guarded individually with @reject_standalone below.
+    #
+    # Unlike the secret/admin/template/step/model groups (guarded once at the group level),
+    # artifact is deliberately guarded per-subcommand because only *some* of its commands
+    # need cloud services. Accepted tradeoff: a new cloud-dependent artifact subcommand
+    # must remember its own @reject_standalone -- there is no group-level safety net.
     ctx.ensure_object(dict)  # Ensures `ctx.obj` is a dictionary
 
 
 @cli.command()
 @click.pass_context
+@reject_standalone
 @click.option(
     "--from-local",
     required=True,
@@ -783,6 +793,7 @@ def push(
 
 @cli.command()
 @click.pass_context
+@reject_standalone
 @click.option(
     "--artifact-name",
     required=True,
@@ -1385,7 +1396,7 @@ def _lineage_lh(ctx, artifact_client, artifact, format, quiet, echo_callback):
     )
 
     if len(lineage_dict) == 0:
-        click.echo("\nNo lineage found.")
+        _show_no_lineage_message(artifact)
         return
 
     if format == "json":
@@ -1456,6 +1467,16 @@ def _lineage_lh(ctx, artifact_client, artifact, format, quiet, echo_callback):
                 webbrowser.open(artifact_lineage_url)
 
 
+def _show_no_lineage_message(artifact):
+    certified_no_restrictions = artifact.get("certified_no_restrictions", False)
+    if certified_no_restrictions:
+        click.echo(
+            "\nℹ️  This artifact was registered with --certify-no-restrictions and has no origin lineage data."
+        )
+    else:
+        click.echo("\nℹ️  No lineage found for this artifact.")
+
+
 def _lineage_hf(ctx, artifact_client, artifact, format, quiet):
     artifact_uri = artifact["uri"]
 
@@ -1468,9 +1489,13 @@ def _lineage_hf(ctx, artifact_client, artifact, format, quiet):
         else execute_with_spinner(artifact_client.artifact_lineage_hf, artifact_uri)
     )
 
+    if response is None:
+        _show_no_lineage_message(artifact)
+        return
+
     runs = response.get("runs", [])
     if len(runs) == 0:
-        click.echo("\nNo lineage found.")
+        _show_no_lineage_message(artifact)
         return
 
     if format == "json":
@@ -1539,6 +1564,7 @@ def _lineage_hf(ctx, artifact_client, artifact, format, quiet):
 
 @cli.command()
 @click.pass_context
+@reject_standalone
 @click.argument("artifact-id", required=True)
 @click.option(
     "--format",
@@ -1586,6 +1612,7 @@ def lineage(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
         else:
             pass  # Ignore unknown events
 
+    artifact = None
     try:
         id_format = parse_artifact_identifier(artifact_id)
         if id_format in ["uuid", "uri"]:
@@ -1630,9 +1657,15 @@ def lineage(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
         click.echo(f"❌ {str(e)}", err=True)
         ctx.exit(1)  # Exit with a non-zero status
     except Exception as e:
-        click.echo(f"\n{str_exc_chain(e)}", err=True)
-        click.echo(f"❌ Artifact lineage failed!", err=True)
-        ctx.exit(1)  # Exit with a non-zero status
+        if isinstance(e, HTTPException) and e.status_code == 404:
+            if artifact:
+                _show_no_lineage_message(artifact)
+            else:
+                click.echo("\nℹ️  No lineage found for this artifact.")
+        else:
+            click.echo(f"\n{str_exc_chain(e)}", err=True)
+            click.echo(f"❌ Artifact lineage failed!", err=True)
+            ctx.exit(1)  # Exit with a non-zero status
 
 
 @cli.command()
@@ -1645,8 +1678,8 @@ def lineage(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
 @click.option(
     "--format",
     default="plain",
-    type=click.Choice(["plain", "json"], case_sensitive=True),
-    help=f"Output format: plain (default), json",
+    type=click.Choice(["plain", "pretty", "json"], case_sensitive=True),
+    help=f"Output format: plain (default, borderless), pretty (bordered), json",
 )
 @click.option(
     "--username",
@@ -1879,73 +1912,71 @@ def list(
                 )
 
         if len(artifacts) > 0:
-            if format == "plain":
-                artifacts_formatted = []
-                headers = ARTIFACT_LIST_HEADERS
-                attribute_keys = [
-                    "uuid",
-                    "name",
-                    "uri",
-                    "type",
-                    "tags",
-                    "status",
-                    "created_by_build_id",
-                    "username",
-                    "created_at",
+            artifacts_formatted = []
+            # NOTE: this function is named `list`, which shadows the builtin,
+            # so use slicing (not list(...)) to copy the headers.
+            headers = ARTIFACT_LIST_HEADERS[:]
+            attribute_keys = [
+                "uuid",
+                "name",
+                "uri",
+                "type",
+                "tags",
+                "status",
+                "created_by_build_id",
+                "username",
+                "created_at",
+            ]
+
+            if all_spaces:
+                headers.insert(7, "SPACE_NAME")
+                attribute_keys.insert(7, "space_name")
+
+                # need to filter by user spaces (will be in gbserver eventually)
+                spaces = [
+                    s["name"]
+                    for s in GBClient.Space(get_user_token()).list_spaces(
+                        all, False, None
+                    )
                 ]
+                artifacts = [a for a in artifacts if a["space_name"] in spaces]
 
-                if all_spaces:
-                    headers.insert(7, "SPACE_NAME")
-                    attribute_keys.insert(7, "space_name")
+            if show_archived:
+                headers.append("ARCHIVED")
+                attribute_keys.append("is_archived")
+            if wide:
+                name_index = headers.index("NAME")
+                headers.insert(name_index + 1, "DESCRIPTION")
+                attribute_keys.insert(name_index + 1, "description")
+                headers.insert(name_index + 2, "CHECKSUM")
+                attribute_keys.insert(name_index + 2, "checksum")
+            for a in artifacts:
+                entry = []
+                for k in attribute_keys:
+                    match k:
+                        case "status":
+                            entry.append(a.get("status", "success"))
+                        case "created_at":
+                            entry.append(humanize_iso_date(a["created_at"]))
+                        case "description":
+                            entry.append(a.get("description", ""))
+                        case "checksum":
+                            entry.append(a.get("checksum", ""))
+                        case _:
+                            entry.append(a[k])
 
-                    # need to filter by user spaces (will be in gbserver eventually)
-                    spaces = [
-                        s["name"]
-                        for s in GBClient.Space(get_user_token()).list_spaces(
-                            all, False, None
-                        )
-                    ]
-                    artifacts = [a for a in artifacts if a["space_name"] in spaces]
+                artifacts_formatted.append(entry)
 
-                if show_archived:
-                    headers.append("ARCHIVED")
-                    attribute_keys.append("is_archived")
-                if wide:
-                    name_index = headers.index("NAME")
-                    headers.insert(name_index + 1, "DESCRIPTION")
-                    attribute_keys.insert(name_index + 1, "description")
-                    headers.insert(name_index + 2, "CHECKSUM")
-                    attribute_keys.insert(name_index + 2, "checksum")
-                for a in artifacts:
-                    entry = []
-                    for k in attribute_keys:
-                        match k:
-                            case "status":
-                                entry.append(a.get("status", "success"))
-                            case "created_at":
-                                entry.append(humanize_iso_date(a["created_at"]))
-                            case "description":
-                                entry.append(a.get("description", ""))
-                            case "checksum":
-                                entry.append(a.get("checksum", ""))
-                            case _:
-                                entry.append(a[k])
-
-                    artifacts_formatted.append(entry)
-
-                table = Table(title="Artifacts", padding=(0, 1))
-                for header in headers:
-                    # Set width constraints for description column only
-                    if header in ["DESCRIPTION", "URI"]:
-                        table.add_column(header, width=25, overflow="fold")
-                    else:
-                        table.add_column(header, overflow="fold")
-
-                for row in artifacts_formatted:
-                    table.add_row(*[str(cell) for cell in row])
-
-                console = Console()
-                console.print(table)
+            if format == "plain":
+                artifacts_output = render_plain(artifacts_formatted, headers)
+                click.echo(artifacts_output)
+            elif format == "pretty":
+                render_pretty(
+                    artifacts_formatted,
+                    headers,
+                    title="Artifacts",
+                    fold_columns=["DESCRIPTION", "URI"],
+                )
             else:
                 artifacts_output = json.dumps(artifacts)
                 click.echo(artifacts_output)
@@ -2017,6 +2048,7 @@ def list(
     help="Git revision/branch name for HuggingFace artifacts (default: main)",
 )
 @click.pass_context
+@reject_standalone
 @common_options
 def download(
     ctx,
@@ -2577,6 +2609,7 @@ def unarchive(
 
 @cli.command()
 @click.pass_context
+@reject_standalone
 @click.argument("artifact_id")
 @click.option("--space-to", required=True, help="Destination space name.")
 @click.option(
