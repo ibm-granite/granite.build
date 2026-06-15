@@ -71,6 +71,18 @@ class TestRmServerStep:
         assert "IDLE_TIMEOUT" not in run
         assert "HF_TOKEN" not in run
 
+    def test_status_event_running(self):
+        cfg = _load()
+        events = cfg["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"][
+            "config"
+        ]["event_configs"]
+        status = next(e for e in events if e["event_type"] == "WORKLOAD_STATUS_EVENT")
+        assert re.search(status["line_regex"], "Starting FastAPI server on host:8000")
+        status_field = next(
+            f for f in status["event_fields"] if f["field_name"] == "status"
+        )
+        assert status_field["field_value_template"] == "RUNNING"
+
     def test_monitor_url_tie_in(self):
         cfg = _load()
         events = cfg["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"][

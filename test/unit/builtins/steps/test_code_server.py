@@ -83,6 +83,20 @@ class TestCodeServerStep:
         run = _render_run({"idle_timeout": ""})
         assert "IDLE_TIMEOUT" not in run
 
+    def test_status_event_running(self):
+        cfg = _load()
+        events = cfg["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"][
+            "config"
+        ]["event_configs"]
+        status = next(e for e in events if e["event_type"] == "WORKLOAD_STATUS_EVENT")
+        assert re.search(
+            status["line_regex"], "Starting FastAPI server on codehost:9000"
+        )
+        status_field = next(
+            f for f in status["event_fields"] if f["field_name"] == "status"
+        )
+        assert status_field["field_value_template"] == "RUNNING"
+
     def test_monitor_url_tie_in(self):
         cfg = _load()
         events = cfg["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"][

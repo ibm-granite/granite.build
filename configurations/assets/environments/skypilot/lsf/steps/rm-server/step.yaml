@@ -43,6 +43,8 @@ environment_configs:
             export HF_TOKEN="{{ config.rm_server_config.hf_token }}"
             {% endif %}
 
+            # RM server runs from /stage with no PYTHONPATH override
+            # (matches gbansible bluevela_rm_server CONTAINER_CMD).
             cd /stage
             if [[ -x /opt/miniconda3/bin/python ]]; then
                 PYTHON_BIN=/opt/miniconda3/bin/python
