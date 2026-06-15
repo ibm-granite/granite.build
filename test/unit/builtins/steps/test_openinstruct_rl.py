@@ -110,7 +110,12 @@ class TestOpeninstructRlRun:
 
     def test_emits_artifact_line(self):
         run = _render_run()
-        assert (
-            "LLMB_ARTIFACT_ID:checkpoint "
-            "LLMB_ARTIFACT_PATH:/proj/runs/ifrl/checkpoints" in run
+        emitted = (
+            "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:/proj/runs/ifrl/checkpoints"
         )
+        assert emitted in run
+
+    def test_service_env_absent_when_unset(self):
+        # code_server_url defaults to "" → the {% if %} guard omits the export
+        run = _render_run()
+        assert "CODE_SERVER_URL" not in run
