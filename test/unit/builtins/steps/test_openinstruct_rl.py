@@ -120,6 +120,34 @@ class TestOpeninstructRlRun:
         run = _render_run()
         assert "CODE_SERVER_URL" not in run
 
+    def test_boolean_flags_flipped_branch(self):
+        """Exercise the conditional branches the default config never renders:
+        with_tracking on, and the three off-by-default flags toggled."""
+        flipped = {
+            "config": {
+                "rl_config": {
+                    **_load()["config"]["rl_config"],
+                    "exp_name": "gb-ifrl-test",
+                    "output_dir": "/proj/runs/ifrl/checkpoints",
+                    "with_tracking": True,
+                    "set_weight_decay_on_bias_and_norm": True,
+                    "additive_format_reward": True,
+                    "filter_zero_advantage": True,
+                }
+            }
+        }
+        cfg = _load()
+        run_block = cfg["environment_configs"]["Skypilot"]["launchers"]["rl"]["config"][
+            "run"
+        ]
+        run = fill_template(run_block, flipped, strict=False)
+        # with_tracking true → bare flag, and the explicit-false lines are gone
+        assert "--with_tracking false" not in run
+        assert "--with_tracking" in run
+        assert "--set_weight_decay_on_bias_and_norm false" not in run
+        assert "--additive_format_reward false" not in run
+        assert "--filter_zero_advantage false" not in run
+
 
 class TestOpeninstructRlMonitor:
     def test_monitor_defined(self):

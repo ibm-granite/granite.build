@@ -112,6 +112,9 @@ environment_configs:
             # ('GRPO_CMD') so bash does not re-expand the special characters in
             # --stop_strings and --dataset_mixer. cmd.sh is self-contained:
             # PYTHON_BIN and PYTHONPATH are defined inside the body.
+            # NOTE: GRPO boolean flags below use plain truthiness — override
+            # them with YAML booleans (true/false), not quoted strings
+            # ("false" would be truthy).
             GRPO_SCRIPT="$(mktemp /tmp/gb-grpo-XXXXXX.sh)"
             cat > "$GRPO_SCRIPT" << 'GRPO_CMD'
             #!/bin/bash
@@ -226,6 +229,9 @@ environment_configs:
             # Emit the checkpoint artifact for downstream targets. GRPO writes
             # checkpoints directly under output_dir (no SFT-style epoch_hf_*
             # conversion), so the artifact path is output_dir.
+            # VERIFY (issue-36 BlueVela run): confirm grpo_fast writes the
+            # final checkpoint under output_dir (no epoch subdir), so this is
+            # the correct artifact path.
             echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:{{ config.rl_config.output_dir }}"
     monitors:
       skypilot_monitor:
