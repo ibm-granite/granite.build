@@ -21,11 +21,13 @@ secret resolution path stay consistent.
 """
 
 import json
+import os
 
+from gbcommon.types.constants import get_gb_home_dir
 from gbserver.types.constants import (
-    GBSERVER_USER_SECRET_DIR,
-    GBSERVER_USER_SECRET_MANAGER,
-    GBSERVER_USER_SECRET_MANAGER_CONFIG,
+    ENV_VAR_USER_SECRET_DIR,
+    ENV_VAR_USER_SECRET_MANAGER,
+    ENV_VAR_USER_SECRET_MANAGER_CONFIG,
 )
 from gbserver.usersecretmanager.usersecretmanager import UserSecretManager
 from gbserver.utils.logger import get_logger
@@ -38,15 +40,27 @@ def get_user_secret_manager() -> UserSecretManager:
 
     The backend is selected by GBSERVER_USER_SECRET_MANAGER (ibmcloud / local /
     env). Backend-specific config comes from dedicated env vars, optionally
-    overridden by a GBSERVER_USER_SECRET_MANAGER_CONFIG JSON blob.
+    overridden by a GBSERVER_USER_SECRET_MANAGER_CONFIG JSON blob (which, if set,
+    must be valid JSON — an invalid value is a hard error rather than a silent
+    fall-back to defaults).
+
+    All env vars are read at call time so overrides are honored regardless of
+    module import/reload ordering (the standalone default for the manager type is
+    applied to os.environ by gbserver.types.constants at import).
     """
-    manager_type = GBSERVER_USER_SECRET_MANAGER
+    manager_type = os.getenv(ENV_VAR_USER_SECRET_MANAGER, "ibmcloud")
     config: dict = {}
     if manager_type == "local":
-        config["dir"] = GBSERVER_USER_SECRET_DIR
-    if GBSERVER_USER_SECRET_MANAGER_CONFIG:
+        config["dir"] = os.getenv(
+            ENV_VAR_USER_SECRET_DIR,
+            os.path.join(get_gb_home_dir(), "user_secrets"),
+        )
+    config_blob = os.getenv(ENV_VAR_USER_SECRET_MANAGER_CONFIG, "")
+    if config_blob:
         try:
-            config.update(json.loads(GBSERVER_USER_SECRET_MANAGER_CONFIG))
+            config.update(json.loads(config_blob))
         except json.JSONDecodeError as e:
-            logger.error("Invalid GBSERVER_USER_SECRET_MANAGER_CONFIG JSON: %s", e)
+            raise ValueError(
+                "Invalid GBSERVER_USER_SECRET_MANAGER_CONFIG: must be valid JSON"
+            ) from e
     return UserSecretManager.get_usersecretmanager(manager_type, **config)

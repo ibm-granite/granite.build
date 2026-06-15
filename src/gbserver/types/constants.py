@@ -22,7 +22,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from gbcommon.types.constants import DEFAULT_GH_DOMAIN, GB_HOME_DIR, get_gh_api_base
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN, get_gh_api_base
 from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.types.constants_base import (
     ENV_VAR_IBMID_AUTHORIZE_URL,
@@ -380,15 +380,13 @@ GBSERVER_PROCEED_WITHOUT_SECRETS = getenv_boolean(
     ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS", False
 )  # default False
 
-# Per-user secret manager backend. Defaults to "ibmcloud" outside standalone;
-# the is_standalone() block above sets it to "local".
-GBSERVER_USER_SECRET_MANAGER = os.getenv(ENV_VAR_USER_SECRET_MANAGER, "ibmcloud")
-# Directory for the local per-user secret backend (one <user_id>.yaml file each).
-GBSERVER_USER_SECRET_DIR = os.getenv(
-    ENV_VAR_USER_SECRET_DIR,
-    os.path.join(GB_HOME_DIR, "user_secrets"),
-)
-GBSERVER_USER_SECRET_MANAGER_CONFIG = os.getenv(ENV_VAR_USER_SECRET_MANAGER_CONFIG, "")
+# Per-user secret manager selection and config. These are read from the
+# environment at call time (not cached here) in
+# usersecretmanager.factory.get_user_secret_manager(), so a GB_HOME_DIR /
+# GBSERVER_USER_SECRET_DIR / GBSERVER_USER_SECRET_MANAGER override is honored
+# regardless of module import/reload ordering. The backend defaults to "ibmcloud"
+# outside standalone; the is_standalone() block above sets it to "local" by
+# writing ENV_VAR_USER_SECRET_MANAGER into os.environ.
 
 # NATS JetStream configuration
 ENV_VAR_NATS_URL = ENV_VAR_PREFIX + "_NATS_URL"

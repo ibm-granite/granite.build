@@ -43,21 +43,25 @@ _STANDALONE_ENV_DEFAULTS = {
 
 
 def _migrate_legacy_sqlite_db() -> None:
-    """One-time migration of the standalone SQLite db from ~/.llmb to GB_HOME_DIR.
+    """One-time migration of the standalone SQLite db from ~/.llmb to the GB home dir.
 
     Earlier versions stored the standalone metadata db at ``~/.llmb/llmb-server.db``.
-    State now lives under the consolidated ``GB_HOME_DIR`` (default ~/.granite.build).
+    State now lives under the consolidated GB home dir (default ~/.granite.build).
     If the new db does not yet exist but a legacy one does, copy it across so existing
     standalone deployments keep their builds/spaces. The legacy file is left in place as
     a backup, and an existing new db is never overwritten. Safe to call repeatedly.
+
+    A copy failure is raised rather than swallowed: continuing would let the storage
+    factory create a fresh empty db, silently abandoning the user's migrated history.
     """
-    from gbcommon.types.constants import GB_HOME_DIR
+    from gbcommon.types.constants import get_gb_home_dir
     from gbserver.storage.sqlite.sqlite_storage import (
         LEGACY_LLMB_DIR_NAME,
         SQLITE_DB_FILE_NAME,
     )
 
-    new_db = os.path.join(GB_HOME_DIR, SQLITE_DB_FILE_NAME)
+    gb_home_dir = get_gb_home_dir()
+    new_db = os.path.join(gb_home_dir, SQLITE_DB_FILE_NAME)
     legacy_db = os.path.join(
         os.path.expanduser("~"), LEGACY_LLMB_DIR_NAME, SQLITE_DB_FILE_NAME
     )
@@ -65,16 +69,13 @@ def _migrate_legacy_sqlite_db() -> None:
         return  # New db is the source of truth; never overwrite.
     if not os.path.exists(legacy_db):
         return  # Nothing to migrate.
-    try:
-        os.makedirs(GB_HOME_DIR, exist_ok=True)
-        shutil.copy2(legacy_db, new_db)
-        logger.info(
-            "Migrated legacy standalone db %s -> %s (legacy file left as backup)",
-            legacy_db,
-            new_db,
-        )
-    except Exception as e:
-        logger.error("Failed to migrate legacy standalone db from %s: %s", legacy_db, e)
+    os.makedirs(gb_home_dir, exist_ok=True)
+    shutil.copy2(legacy_db, new_db)
+    logger.info(
+        "Migrated legacy standalone db %s -> %s (legacy file left as backup)",
+        legacy_db,
+        new_db,
+    )
 
 
 def _start_nats_server(

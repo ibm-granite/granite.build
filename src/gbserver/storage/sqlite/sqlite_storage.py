@@ -24,7 +24,7 @@ from filelock import FileLock
 from pydantic import BaseModel
 from sqlalchemy import Integer
 
-from gbcommon.types.constants import GB_HOME_DIR
+from gbcommon.types.constants import get_gb_home_dir
 from gbserver.storage.sql.artifact_registry import SQLArtifactRegistry
 from gbserver.storage.sql.build_storage import SQLBuildStorage
 from gbserver.storage.sql.event_storage import SQLEventStorage
@@ -83,14 +83,15 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
         return db_schema, db_url, db_obfuscated_url, connect_args
 
     def _get_db_file_path(self) -> Path:
-        # Stored under the shared GB_HOME_DIR (default ~/.granite.build); the
+        # Stored under the shared GB home dir (default ~/.granite.build); the
         # standalone startup migration copies any legacy ~/.llmb db here once.
-        if not os.path.exists(GB_HOME_DIR):
+        gb_home_dir = get_gb_home_dir()
+        if not os.path.exists(gb_home_dir):
             try:
-                os.makedirs(GB_HOME_DIR)
+                os.makedirs(gb_home_dir)
             except FileExistsError:
                 pass  # Something else got in ahead of us
-        db_file = os.path.join(GB_HOME_DIR, SQLITE_DB_FILE_NAME)
+        db_file = os.path.join(gb_home_dir, SQLITE_DB_FILE_NAME)
         return Path(db_file)
 
     def _get_autoincr_column_type(self) -> Any:

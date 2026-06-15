@@ -26,11 +26,11 @@ that the per-user namespacing is encapsulated inside each backend rather than
 leaked to callers such as the REST API.
 """
 
-import importlib
 import logging
-import os
 from abc import ABC, abstractmethod
 from typing import ClassVar, Dict, List, Optional, Self, Type
+
+from gbserver.utils.secretmanager_discovery import discover_secret_managers
 
 logger = logging.getLogger(__name__)
 
@@ -97,55 +97,9 @@ class UserSecretManager(ABC):
     @staticmethod
     def load_usersecretmanagers() -> None:
         """Auto-discover and register all user secret manager implementations."""
-        if len(UserSecretManager.usersecretmanagers) != 0:
-            return
-        package_dir = os.path.dirname(__file__)
-
-        suffix = UserSecretManager.__name__.lower()  # "usersecretmanager"
-        for filename in os.listdir(package_dir):
-            if (
-                filename.endswith(".py")
-                and filename != "__init__.py"
-                and filename != os.path.basename(__file__)
-                # Only modules named "<key>usersecretmanager.py" are backends;
-                # skip helpers like factory.py.
-                and filename[:-3].lower().endswith(suffix)
-                and len(filename[:-3]) > len(suffix)
-            ):
-                module_name = filename[:-3]
-                key_name = module_name[: -len(UserSecretManager.__name__)].lower()
-                type_name = key_name.capitalize() + UserSecretManager.__name__
-                try:
-                    module = importlib.import_module(
-                        f".{module_name}",
-                        package="gbserver.usersecretmanager",
-                    )
-                    if hasattr(module, type_name):
-                        handler_class = getattr(module, type_name)
-                        if isinstance(handler_class, type) and issubclass(
-                            handler_class, UserSecretManager
-                        ):
-                            UserSecretManager.usersecretmanagers[key_name] = (
-                                handler_class
-                            )
-                        else:
-                            logger.error(
-                                "Ignoring %s since it is not a subclass of "
-                                "UserSecretManager class",
-                                type_name,
-                            )
-                    else:
-                        logger.error(
-                            "Module %s does not contain expected user secret "
-                            "manager type class %s",
-                            module_name,
-                            type_name,
-                        )
-                except ImportError as e:
-                    logger.error("Error importing module %s: %s", type_name, e)
-                except Exception as e:
-                    logger.error(
-                        "Error loading user secret manager type from %s: %s",
-                        type_name,
-                        e,
-                    )
+        discover_secret_managers(
+            package_file=__file__,
+            package_name="gbserver.usersecretmanager",
+            base_class=UserSecretManager,
+            registry=UserSecretManager.usersecretmanagers,
+        )

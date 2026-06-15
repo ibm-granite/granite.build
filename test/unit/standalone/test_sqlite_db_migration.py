@@ -14,9 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the one-time ~/.llmb -> GB_HOME_DIR standalone SQLite db migration."""
-
-import importlib
+"""Tests for the one-time ~/.llmb -> GB home dir standalone SQLite db migration."""
 
 import pytest
 
@@ -28,7 +26,11 @@ from gbserver.storage.sqlite.sqlite_storage import (
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    """A fake home with a legacy ~/.llmb dir and a fresh GB_HOME_DIR, both under tmp."""
+    """A fake home with a legacy ~/.llmb dir and a fresh GB_HOME_DIR, both under tmp.
+
+    GB_HOME_DIR is read at call time by the migration helper (via get_gb_home_dir),
+    so setting the env var is enough — no module reload needed.
+    """
     fake_home = tmp_path / "home"
     legacy_dir = fake_home / LEGACY_LLMB_DIR_NAME
     legacy_dir.mkdir(parents=True)
@@ -37,13 +39,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("GB_HOME_DIR", str(gb_home))
 
-    # GB_HOME_DIR is read at import time; reload so the migration helper sees tmp paths.
-    import gbcommon.types.constants
-
-    importlib.reload(gbcommon.types.constants)
     import gbserver.commands.command_standalone as cmd
-
-    importlib.reload(cmd)
 
     legacy_db = legacy_dir / SQLITE_DB_FILE_NAME
     new_db = gb_home / SQLITE_DB_FILE_NAME
@@ -91,3 +87,18 @@ def test_idempotent(env):
     cmd._migrate_legacy_sqlite_db()
 
     assert new_db.read_text() == "legacy"
+
+
+def test_copy_failure_raises(env, monkeypatch):
+    """A copy failure must propagate, not be swallowed (else a fresh empty db
+    would silently replace the user's migrated history)."""
+    cmd, legacy_db, new_db = env
+    legacy_db.write_text("legacy")
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cmd.shutil, "copy2", _boom)
+
+    with pytest.raises(OSError):
+        cmd._migrate_legacy_sqlite_db()

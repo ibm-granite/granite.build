@@ -45,10 +45,6 @@ def _get_ibm_secret_manager_admin():
     return IbmcloudSpaceSecretManagerAdmin()
 
 
-def _get_user_secret_manager():
-    return get_user_secret_manager()
-
-
 secret_manager: Optional[MySecretsManagerAPI] = None
 
 sec_man_api_key = os.getenv(ENV_VAR_IBM_SEC_MAN_API_KEY, "")
@@ -245,7 +241,7 @@ def list_user_secrets(request: Request):
         if user_id is None:
             # if the above dereference fails somewhere it will trigger an exception anyway
             raise Exception("Failed to obtain username")
-        manager = _get_user_secret_manager()
+        manager = get_user_secret_manager()
         logger.info("Fetching user secrets")
         return {
             "user": user_id,
@@ -264,7 +260,7 @@ def get_user_secret(request: Request, secret_name: str):
         if user_id is None:
             # if the above dereference fails somewhere it will trigger an exception anyway
             raise Exception("Failed to obtain username")
-        manager = _get_user_secret_manager()
+        manager = get_user_secret_manager()
         logger.info("Fetching a user secret")
         secret_value = manager.get_user_secret(user_id, secret_name)
         if secret_value is None:
@@ -302,7 +298,7 @@ def create_user_secret(request: Request, secret_request: SecretCreateRequest):
         ):
             raise Exception("Unsupported encoding")
 
-        manager = _get_user_secret_manager()
+        manager = get_user_secret_manager()
         logger.info("Creating a user secret")
         secret_value = (
             base64.b64decode(secret_request.secret_value.encode("ascii")).decode(
@@ -317,6 +313,12 @@ def create_user_secret(request: Request, secret_request: SecretCreateRequest):
             secret_value=secret_value,
         )
         return {"result": "success"}
+    except NotImplementedError as e:
+        # The configured user-secret backend is read-only (e.g. the env backend).
+        logger.error("User secret backend is read-only: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_405_METHOD_NOT_ALLOWED, detail=repr(e)
+        )
     except Exception as e:
         logger.error("Failed to create a user secret: %s", e)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=repr(e))
@@ -346,7 +348,7 @@ def update_user_secret(
         ):
             raise Exception("Unsupported encoding")
 
-        manager = _get_user_secret_manager()
+        manager = get_user_secret_manager()
         logger.info("Updating a user secret")
         secret_value = (
             base64.b64decode(secret_request.secret_value.encode("ascii")).decode(
@@ -357,6 +359,12 @@ def update_user_secret(
         )
         manager.update_user_secret(user_id, secret_name, secret_value)
         return {"result": "success"}
+    except NotImplementedError as e:
+        # The configured user-secret backend is read-only (e.g. the env backend).
+        logger.error("User secret backend is read-only: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_405_METHOD_NOT_ALLOWED, detail=repr(e)
+        )
     except Exception as e:
         logger.error("Failed to update a user secret: %s", e)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=repr(e))
@@ -374,10 +382,16 @@ def delete_user_secret(request: Request, secret_name: str):
         if secret_name is None:
             raise Exception("Invalid secret name")
 
-        manager = _get_user_secret_manager()
+        manager = get_user_secret_manager()
         logger.info("Deleting a user secret")
         manager.delete_user_secret(user_id, secret_name)
         return {"result": "success"}
+    except NotImplementedError as e:
+        # The configured user-secret backend is read-only (e.g. the env backend).
+        logger.error("User secret backend is read-only: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_405_METHOD_NOT_ALLOWED, detail=repr(e)
+        )
     except Exception as e:
         logger.error("Failed to delete a user secret: %s", e)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=repr(e))

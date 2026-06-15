@@ -29,28 +29,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    """A TestClient for secrets_api with a local user-secret backend and a fake user.
+def _build_client():
+    """A TestClient for secrets_api with a fake authenticated user 'alice'.
 
-    The constants module captures the backend env vars at import time, so we set them
-    and reload it (plus the modules that imported the captured values) before building
-    the app.
+    The factory reads the backend env vars at call time, so the per-test monkeypatch
+    of GBSERVER_USER_SECRET_MANAGER / dir is picked up without reloading modules.
     """
-    import importlib
-
-    monkeypatch.setenv("GBSERVER_USER_SECRET_MANAGER", "local")
-    monkeypatch.setenv("GBSERVER_USER_SECRET_DIR", str(tmp_path / "user_secrets"))
-
-    import gbserver.types.constants
-
-    importlib.reload(gbserver.types.constants)
-    import gbserver.usersecretmanager.factory as factory
-
-    importlib.reload(factory)
     import gbserver.api.secrets as secrets_module
-
-    importlib.reload(secrets_module)
 
     app = FastAPI()
 
@@ -61,6 +46,21 @@ def client(tmp_path, monkeypatch):
 
     app.mount("", secrets_module.secrets_api)
     return TestClient(app)
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    """TestClient backed by the editable local user-secret backend."""
+    monkeypatch.setenv("GBSERVER_USER_SECRET_MANAGER", "local")
+    monkeypatch.setenv("GBSERVER_USER_SECRET_DIR", str(tmp_path / "user_secrets"))
+    return _build_client()
+
+
+@pytest.fixture
+def env_client(monkeypatch):
+    """TestClient backed by the read-only env user-secret backend."""
+    monkeypatch.setenv("GBSERVER_USER_SECRET_MANAGER", "env")
+    return _build_client()
 
 
 def _decode(resp_json):
@@ -118,3 +118,26 @@ def test_create_accepts_base64_encoding(client):
 
 def test_get_missing_returns_404(client):
     assert client.get("/user_secrets/NOPE").status_code == 404
+
+
+def test_readonly_backend_create_returns_405(env_client, monkeypatch):
+    """Writing to the read-only env backend must return 405, not 404."""
+    monkeypatch.setenv("GBSERVER_USER_SECRET_ALICE_API_KEY", "v")
+    # reads still work on the env backend
+    assert env_client.get("/user_secrets").json()["secrets"] == ["API_KEY"]
+    # writes are rejected as Method Not Allowed (not 404 Not Found)
+    r = env_client.post(
+        "/user_secrets",
+        json={"secret_name": "X", "secret_value": "y", "encoding": "plain"},
+    )
+    assert r.status_code == 405
+
+
+def test_readonly_backend_update_delete_return_405(env_client):
+    assert (
+        env_client.put(
+            "/user_secrets/X", json={"secret_value": "y", "encoding": "plain"}
+        ).status_code
+        == 405
+    )
+    assert env_client.delete("/user_secrets/X").status_code == 405

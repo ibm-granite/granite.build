@@ -28,10 +28,7 @@ import pytest
 def _isolate_gb_home_dir(tmp_path, monkeypatch):
     home = tmp_path / "gb_home"
     home.mkdir()
-    # sqlite_storage binds GB_HOME_DIR as a module global at import time, so patch
-    # it there (patching the source constant would not affect the already-bound name).
-    import gbserver.storage.sqlite.sqlite_storage as sqlite_storage
-
-    monkeypatch.setattr(sqlite_storage, "GB_HOME_DIR", str(home))
+    # sqlite_storage resolves the home dir via get_gb_home_dir() at call time, so
+    # setting the env var is enough to redirect it to a per-test temp dir.
     monkeypatch.setenv("GB_HOME_DIR", str(home))
     yield
