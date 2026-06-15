@@ -411,6 +411,11 @@ class BuildRun(Run):
             self.targetrun_additionaljobs_queue[targetrun.id] = Queue()
         if targetrun.id not in self.targetrun_pushes_enqueued:
             self.targetrun_pushes_enqueued[targetrun.id] = asyncio.Event()
+        # NOTE: leave this TargetRun task *untagged* (no ``.targetrun_id``
+        # attribute). _release_target_pushes filters in-flight tasks by that tag
+        # and must never await this one — it blocks on the pushes-enqueued
+        # barrier, so awaiting it would deadlock. Only the per-event tasks created
+        # in _run_targets_of_build are tagged.
         self.tasks.add(
             asyncio_runner.create_task(
                 targetrun.run(
@@ -472,16 +477,32 @@ class BuildRun(Run):
         push step before we set the barrier, so TargetRun's additional-steps
         consumer cannot exit early and orphan a queued push.
 
+        Correctness rests on two invariants:
+
+        * Synchronous emit: a target's NEWARTIFACT events are all put on the
+          event queue *before* its sentinel — i.e. emitted synchronously within
+          ``targetstep_run.run()``, not from a detached monitor that outlives it.
+          Otherwise the sentinel could overtake a real artifact event and we'd
+          release the barrier before that artifact's push is enqueued.
+        * A real sentinel always carries a truthy ``targetrun_id`` (set by
+          ``TargetRun.get_runmetadata``). This is load-bearing: the in-flight
+          filter below matches tasks by tag, and the TargetRun coroutine task
+          (created untagged in ``__dispatch_target``) is itself blocked on this
+          barrier. A falsy id would match that untagged task and deadlock on its
+          own release, so we assert it rather than silently tolerate an empty id.
+
         Args:
-            targetrun_id: The targetrun whose artifact processing to await. A
-                missing/empty id (e.g. skipped targets) is tolerated.
+            targetrun_id: The targetrun whose artifact processing to await.
         """
+        assert targetrun_id, "TARGET_ARTIFACTS_DONE_EVENT requires a targetrun_id"
         current = asyncio.current_task()
         in_flight = [
             t
             for t in self.tasks
-            if t is not current
-            and not t.done()
+            if t is not current and not t.done()
+            # Tag match. Given the truthy-id assert above this can never match the
+            # untagged (tag=None) TargetRun task, which is blocked on this very
+            # barrier — matching it would deadlock.
             and getattr(t, "targetrun_id", None) == targetrun_id
         ]
         try:
@@ -490,7 +511,7 @@ class BuildRun(Run):
         finally:
             # Always release the TargetRun, even if an event task errored — the
             # exception still surfaces via the self.tasks aggregation below.
-            event = self.targetrun_pushes_enqueued.get(targetrun_id or "")
+            event = self.targetrun_pushes_enqueued.get(targetrun_id)
             if event is not None:
                 event.set()
 
