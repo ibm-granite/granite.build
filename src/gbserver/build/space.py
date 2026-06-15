@@ -216,9 +216,11 @@ class Space:
     def _fetch_user_secrets(self: Self, username: str) -> Dict[str, str]:
         """Fetch per-user secrets via the configured UserSecretManager.
 
-        Failures are swallowed (respecting GBSERVER_PROCEED_WITHOUT_SECRETS) so a
-        user-secret backend problem does not discard already-fetched space
-        secrets; the build proceeds with whatever was resolved.
+        User secrets are an additive enrichment on top of the already-resolved
+        space secrets, so a failure here (e.g. the configured user-secret backend
+        is unavailable — such as the IBM backend without the IBM SDK installed)
+        degrades to "no user secrets" and lets the build proceed with the space
+        secrets, rather than aborting the whole build. Failures are logged.
         """
         try:
             from gbserver.usersecretmanager.factory import get_user_secret_manager
@@ -229,9 +231,12 @@ class Space:
             )
             return user_secrets
         except Exception as e:
-            logger.error("failed to fetch user secrets for %s: %s", username, e)
-            if not GBSERVER_PROCEED_WITHOUT_SECRETS:
-                raise
+            logger.warning(
+                "could not fetch user secrets for %s (%s); "
+                "proceeding with space secrets only",
+                username,
+                e,
+            )
             return {}
 
     def _fetch_secrets(self: Self, username: Optional[str] = None) -> Dict[str, str]:

@@ -370,11 +370,13 @@ if is_standalone():
         ENV_VAR_DEFAULT_BUILDRUNNER_TYPE: "thread",
         ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS": "true",
         ENV_VAR_PREFIX + "_LINEAGE_PROVIDER": "none",
-        # Standalone has no IBM Secret Manager; default per-user secrets to a
-        # local file backend so the /user_secrets API and CLI work out of the box.
-        ENV_VAR_USER_SECRET_MANAGER: "local",
     }.items():
         os.environ.setdefault(_k, _v)
+# NOTE: the standalone default for the per-user secret backend (local, IBM-free)
+# is NOT set here. It is resolved dynamically in
+# usersecretmanager.factory.get_user_secret_manager() via is_standalone() at call
+# time, so it works even when standalone mode is established after this module is
+# first imported (e.g. tests / embedded use that set GB_ENVIRONMENT at runtime).
 
 GBSERVER_PROCEED_WITHOUT_SECRETS = getenv_boolean(
     ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS", False

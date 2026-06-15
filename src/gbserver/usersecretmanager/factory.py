@@ -24,6 +24,7 @@ import json
 import os
 
 from gbcommon.types.constants import get_gb_home_dir
+from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.types.constants import (
     ENV_VAR_USER_SECRET_DIR,
     ENV_VAR_USER_SECRET_MANAGER,
@@ -38,17 +39,20 @@ logger = get_logger(__name__)
 def get_user_secret_manager() -> UserSecretManager:
     """Build the configured per-user secret manager.
 
-    The backend is selected by GBSERVER_USER_SECRET_MANAGER (ibmcloud / local /
-    env). Backend-specific config comes from dedicated env vars, optionally
+    The backend is selected by GBSERVER_USER_SECRET_MANAGER when set; otherwise it
+    defaults to the local (file) backend in standalone mode and to ibmcloud
+    elsewhere. Backend-specific config comes from dedicated env vars, optionally
     overridden by a GBSERVER_USER_SECRET_MANAGER_CONFIG JSON blob (which, if set,
     must be valid JSON — an invalid value is a hard error rather than a silent
     fall-back to defaults).
 
-    All env vars are read at call time so overrides are honored regardless of
-    module import/reload ordering (the standalone default for the manager type is
-    applied to os.environ by gbserver.types.constants at import).
+    The selection (including the standalone default) and all config are resolved at
+    call time, so standalone mode established at runtime — not just at import — picks
+    the IBM-free local backend, and overrides are honored regardless of module
+    import/reload ordering.
     """
-    manager_type = os.getenv(ENV_VAR_USER_SECRET_MANAGER, "ibmcloud")
+    default_manager = "local" if is_standalone() else "ibmcloud"
+    manager_type = os.getenv(ENV_VAR_USER_SECRET_MANAGER, default_manager)
     config: dict = {}
     if manager_type == "local":
         config["dir"] = os.getenv(
