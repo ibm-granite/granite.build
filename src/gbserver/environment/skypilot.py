@@ -241,7 +241,7 @@ class Skypilot(Environment):
             env_vars.update(launcher_config.get("envs", {}))
             # Also pick up envs from config.launcher_config (for auto-queued steps)
             env_vars.update(config.get("launcher_config", {}).get("envs", {}))
-            # Forward GBTEST_ test-control vars (e.g. GBTEST_MOCK_HF_CALLS) to the
+            # Forward GBTEST_ test-control vars (e.g. GBTEST_MOCKED_HF_OPS) to the
             # remote run so hfpull/hfpush steps honor mocking on the cluster.
             env_vars.update(get_exported_gbtest_env_vars())
             env_vars["GB_SKYPILOT_LAUNCH_ID"] = launch_id

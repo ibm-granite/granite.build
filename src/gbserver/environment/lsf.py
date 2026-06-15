@@ -628,7 +628,7 @@ class Lsf(Environment):
         )
         # Get useful env vars to inject for LhPull and LhPush
         env_vars = {}
-        # Forward GBTEST_ test-control vars (e.g. GBTEST_MOCK_HF_CALLS) to the LSF
+        # Forward GBTEST_ test-control vars (e.g. GBTEST_MOCKED_HF_OPS) to the LSF
         # job so hfpull/hfpush steps honor mocking on the remote node.
         env_vars.update(get_exported_gbtest_env_vars())
         secrets_to_inject = (

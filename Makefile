@@ -226,7 +226,7 @@ test-git-cicd-pr-setup:
 test-git-cicd-pr: 
 	export GB_ENVIRONMENT=STANDALONE &&			\
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
-		GBTEST_MOCK_HF_CALLS=true			\
+		GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group	\
 		GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
 		PYTEST_TEST_TARGETS="test"			\
@@ -255,9 +255,14 @@ test-merge:
 
 .PHONY: check_hf_token
 check_hf_token:
-	@if [ "$$GB_ENVIRONMENT" = "STANDALONE" -a -z "$$HF_TOKEN" -a "$(GBTEST_MOCK_HF_CALLS)" != "true" ]; then	\
-	    echo "HF_TOKEN env var required in GB_ENVIRONMENT=STANDALONE mode (or set GBTEST_MOCK_HF_CALLS=true to mock HF calls)";	\
-	    exit 1;								\
+	@if [ "$$GB_ENVIRONMENT" = "STANDALONE" -a -z "$$HF_TOKEN" ]; then	\
+	    case ",$(GBTEST_MOCKED_HF_OPS)," in						\
+	        *,push,*|*,all,*) : ;;						\
+	        *)								\
+	            echo "HF_TOKEN env var required in GB_ENVIRONMENT=STANDALONE mode (or add 'push' to GBTEST_MOCKED_HF_OPS to mock HF pushes)";	\
+	            exit 1;							\
+	            ;;								\
+	    esac;								\
 	fi
 
 # The main test implementation, called after VENVDIR has been established
@@ -270,7 +275,7 @@ check_hf_token:
 .test:	check_hf_token
 	source $(VENVDIR)/bin/activate && \
 		export GBTEST_ENABLE_EXTENDED_TESTS=${GBTEST_ENABLE_EXTENDED_TESTS} && \
-		export GBTEST_MOCK_HF_CALLS=${GBTEST_MOCK_HF_CALLS} &&	\
+		export GBTEST_MOCKED_HF_OPS=${GBTEST_MOCKED_HF_OPS} &&	\
 		export GBTEST_MODE=${GBTEST_MODE} && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
