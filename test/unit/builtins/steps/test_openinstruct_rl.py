@@ -155,3 +155,26 @@ class TestOpeninstructRlMonitor:
         ]["event_configs"]
         status = next(e for e in events if e["event_type"] == "WORKLOAD_STATUS_EVENT")
         assert re.search(status["line_regex"], "episode: 128 | training_step: 4")
+
+
+def test_asset_loads_and_run_block_renders():
+    """Mirror production's load path for an asset step.yaml.
+
+    Asset step.yaml files are loaded with plain ``yaml.safe_load``
+    (``targetstep.py``), which drops comments; templated *values* such as the
+    ``run:`` block are rendered later, per-value, via ``fill_template``. (Only
+    the gbstep ``step_default.yaml`` fallback is whole-file Jinja-rendered.)
+    This guards both halves: the raw file parses as YAML, and its run block
+    renders to valid, non-empty bash without leaving unresolved ``{{ }}``
+    config placeholders.
+    """
+    # 1. Raw file parses as PyYAML sees it (comments dropped, no Jinja).
+    cfg = yaml.safe_load(RL_STEP_YAML.read_text())
+    assert cfg["name"] == "openinstruct-rl"
+
+    # 2. The run-block value renders cleanly with a representative config.
+    run = _render_run()
+    assert "open_instruct.grpo_fast" in run
+    assert "--exp_name gb-ifrl-test" in run
+    # no unresolved config placeholders survived rendering
+    assert "{{ config.rl_config" not in run
