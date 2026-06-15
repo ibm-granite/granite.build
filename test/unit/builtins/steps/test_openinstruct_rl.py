@@ -148,7 +148,7 @@ class TestOpeninstructRlMonitor:
         m = re.search(path_field["field_regex"], emitted)
         assert m and m.group(0) == "/proj/runs/ifrl/checkpoints"
 
-    def test_progress_regex_is_provisional(self):
+    def test_progress_regex_matches_metric_line(self):
         cfg = _load()
         events = cfg["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"][
             "config"

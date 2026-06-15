@@ -253,6 +253,10 @@ environment_configs:
               - field_name: path
                 field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
                 is_data: true
+              # Build the binding payload that downstream targets
+              # dereference as `{{ bindings.<input>.binding.path }}`.
+              # Without this the dispatched ArtifactEventPayload has
+              # binding=None and Jinja resolution fails.
               - field_name: binding
                 field_value_template: '{ "path": "{{ fields.data.path }}" }'
                 is_json: true
