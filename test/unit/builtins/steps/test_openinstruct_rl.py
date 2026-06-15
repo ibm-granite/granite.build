@@ -16,8 +16,10 @@ import yaml
 
 from gbserver.utils.template import fill_template
 
-RL_STEP_YAML = Path(
-    "configurations/assets/environments/skypilot/lsf/steps/" "openinstruct-rl/step.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[4]
+RL_STEP_YAML = (
+    REPO_ROOT
+    / "configurations/assets/environments/skypilot/lsf/steps/openinstruct-rl/step.yaml"
 )
 
 
@@ -35,3 +37,7 @@ class TestOpeninstructRlStep:
         assert cfg["type"] == "training"
         assert "rl_config" in cfg["config"]
         assert cfg["outputs"]["optional"]["checkpoint"]["type"] == "model"
+        # numeric hyperparameters are intentionally quoted strings (avoid YAML
+        # float coercion; they are only interpolated into a shell command)
+        assert isinstance(cfg["config"]["rl_config"]["learning_rate"], str)
+        assert isinstance(cfg["config"]["rl_config"]["beta"], str)
