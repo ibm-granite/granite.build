@@ -1,0 +1,76 @@
+name: code-server
+version: 1.0.0
+type: SERVICE
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  code_server_config:
+    module: "open_instruct.servers.code_server"
+    container_home: "/stage"
+    container_pythonpath: "/stage"
+    container_path: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    idle_timeout: ""
+outputs:
+  optional:
+    code_server_url:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: code-server
+    launchers:
+      code-server:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/open-instruct-3:0.1.0-noconda"
+          resources:
+            cpus: "8"
+          run: |
+            set -e
+            echo "=== Open Instruct Code Server on $(hostname) ==="
+
+            export PATH="{{ config.code_server_config.container_path }}:${PATH}"
+            export PYTHONPATH="{{ config.code_server_config.container_pythonpath }}:${PYTHONPATH:-}"
+            {% if config.code_server_config.idle_timeout %}
+            export IDLE_TIMEOUT="{{ config.code_server_config.idle_timeout }}"
+            {% endif %}
+
+            cd {{ config.code_server_config.container_home }}
+            if [[ -x /opt/miniconda3/bin/python ]]; then
+                PYTHON_BIN=/opt/miniconda3/bin/python
+            elif command -v python3.11 &>/dev/null; then
+                PYTHON_BIN=python3.11
+            elif command -v python3 &>/dev/null; then
+                PYTHON_BIN=python3
+            else
+                PYTHON_BIN=python
+            fi
+            echo "Using Python: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
+            exec $PYTHON_BIN -u -m {{ config.code_server_config.module }}
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "Starting FastAPI server on"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "Starting FastAPI server on .+"
+            event_fields:
+              - field_name: binding_id
+                field_value_template: "code_server_url"
+              - field_name: path
+                field_regex: "(?<=Starting FastAPI server on )\\S+"
+                is_data: true
+              - field_name: binding
+                field_value_template: '{ "path": "http://{{ fields.data.path }}" }'
+                is_json: true
