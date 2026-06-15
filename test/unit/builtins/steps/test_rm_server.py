@@ -86,6 +86,14 @@ class TestRmServerStep:
         )
         m = re.search(path_field["field_regex"], sample)
         assert m and m.group(0) == "host123:8000"
+        # The scraped line is produced by Python logging (has a prefix) and may
+        # carry a trailing CR; the path regex must still extract clean host:port.
+        for sample in (
+            "2026-06-15 10:00:00 INFO server: Starting FastAPI server on host123:8000",
+            "Starting FastAPI server on host123:8000\r",
+        ):
+            m2 = re.search(path_field["field_regex"], sample)
+            assert m2 and m2.group(0) == "host123:8000", sample
         binding_field = next(
             f for f in newart["event_fields"] if f["field_name"] == "binding"
         )

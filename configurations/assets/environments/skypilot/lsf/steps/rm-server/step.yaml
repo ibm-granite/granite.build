@@ -68,7 +68,7 @@ environment_configs:
               - field_name: binding_id
                 field_value_template: "rm_server_url"
               - field_name: path
-                field_regex: "(?<=Starting FastAPI server on ).*"
+                field_regex: "(?<=Starting FastAPI server on )\\S+"
                 is_data: true
               - field_name: binding
                 field_value_template: '{ "path": "http://{{ fields.data.path }}" }'
