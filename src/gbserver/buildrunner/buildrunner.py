@@ -905,13 +905,23 @@ Build ID    : {build_id}
                 # (a retried step re-emits within the same build; a build retry re-emits
                 # from an ancestor build).
                 assert isinstance(existing, ArtifactRegistration)
-                if existing.created_by_build_id not in self.__get_retry_chain_build_ids():
-                    raise ValueError("Same artifact URI found for another build not in this retry chain")
+                if (
+                    existing.created_by_build_id
+                    not in self.__get_retry_chain_build_ids()
+                ):
+                    raise ValueError(
+                        "Same artifact URI found for another build not in this retry chain"
+                    )
                 if existing.created_by_build_id == build_id:
-                    logger.info("Reusing artifact (%s) from retried step", existing.uuid)
+                    logger.info(
+                        "Reusing artifact (%s) from retried step", existing.uuid
+                    )
                 else:
-                    logger.info("Reusing artifact (%s) from retried build (%s)",
-                            existing.uuid, existing.created_by_build_id)
+                    logger.info(
+                        "Reusing artifact (%s) from retried build (%s)",
+                        existing.uuid,
+                        existing.created_by_build_id,
+                    )
                 artifact = existing
             else:
                 artifact = ArtifactRegistration(
