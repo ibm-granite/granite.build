@@ -34,8 +34,12 @@ environment_configs:
             set -e
             echo "=== Open Instruct Code Server on $(hostname) ==="
 
+            {% if config.code_server_config.container_path %}
             export PATH="{{ config.code_server_config.container_path }}:${PATH}"
+            {% endif %}
+            {% if config.code_server_config.container_pythonpath %}
             export PYTHONPATH="{{ config.code_server_config.container_pythonpath }}:${PYTHONPATH:-}"
+            {% endif %}
             {% if config.code_server_config.idle_timeout %}
             export IDLE_TIMEOUT="{{ config.code_server_config.idle_timeout }}"
             {% endif %}

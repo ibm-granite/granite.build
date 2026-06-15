@@ -69,6 +69,16 @@ class TestCodeServerStep:
         assert 'export PYTHONPATH="/workspace:${PYTHONPATH:-}"' in run
         assert "cd /workspace" in run
 
+    def test_path_exports_guarded(self):
+        # default config → both exports present
+        run = _render_run()
+        assert 'export PATH="' in run
+        assert 'export PYTHONPATH="' in run
+        # empty values → guarded out entirely (no leading-":" PATH element)
+        empty = _render_run({"container_path": "", "container_pythonpath": ""})
+        assert 'export PATH="' not in empty
+        assert 'export PYTHONPATH="' not in empty
+
     def test_idle_timeout_absent_when_unset(self):
         run = _render_run({"idle_timeout": ""})
         assert "IDLE_TIMEOUT" not in run
