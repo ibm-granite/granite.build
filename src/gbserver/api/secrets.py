@@ -29,6 +29,7 @@ from gbserver.types.constants import (
     PUBLIC_SPACE_NAME,
 )
 from gbserver.types.secret import MySecret
+from gbserver.usersecretmanager.factory import get_user_secret_manager
 from gbserver.utils.get_header_auth_token import get_header_auth_token
 from gbserver.utils.logger import get_logger
 from gbserver.utils.secretmanager import MySecretsManagerAPI
@@ -42,6 +43,10 @@ def _get_ibm_secret_manager_admin():
     )
 
     return IbmcloudSpaceSecretManagerAdmin()
+
+
+def _get_user_secret_manager():
+    return get_user_secret_manager()
 
 
 secret_manager: Optional[MySecretsManagerAPI] = None
@@ -240,15 +245,11 @@ def list_user_secrets(request: Request):
         if user_id is None:
             # if the above dereference fails somewhere it will trigger an exception anyway
             raise Exception("Failed to obtain username")
-        manager = _get_ibm_secret_manager_admin()
+        manager = _get_user_secret_manager()
         logger.info("Fetching user secrets")
-        secret_group_name = manager.get_secret_group_for_users()
-        if secret_group_name is None:
-            raise Exception(f"Secret group is unavailable")
-        secrets_all_users = manager.list_secret_names(secret_group_name)
         return {
             "user": user_id,
-            "secrets": manager.filter_user_secrets(user_id, secrets_all_users),
+            "secrets": manager.list_user_secrets(user_id),
         }
     except Exception as e:
         logger.error("Failed to get the list of user secrets: %s", e)
@@ -263,21 +264,17 @@ def get_user_secret(request: Request, secret_name: str):
         if user_id is None:
             # if the above dereference fails somewhere it will trigger an exception anyway
             raise Exception("Failed to obtain username")
-        manager = _get_ibm_secret_manager_admin()
+        manager = _get_user_secret_manager()
         logger.info("Fetching a user secret")
-        secret_group_name = manager.get_secret_group_for_users()
-        if secret_group_name is None:
-            raise Exception(f"Secret group is unavailable")
-        secret_name_for_user = manager.get_secret_name_for_user(user_id, secret_name)
-        secret_value = manager.get_secret_value(
-            secret_group_name, secret_name_for_user, True
-        )
+        secret_value = manager.get_user_secret(user_id, secret_name)
         if secret_value is None:
             raise Exception("secret not found")
         return {
             "user_id": user_id,
             "secret_name": secret_name,
-            "secret_value": secret_value,
+            "secret_value": base64.b64encode(secret_value.encode("utf-8")).decode(
+                "utf-8"
+            ),
             "encoding": "base64",
         }
     except Exception as e:
@@ -305,14 +302,8 @@ def create_user_secret(request: Request, secret_request: SecretCreateRequest):
         ):
             raise Exception("Unsupported encoding")
 
-        manager = _get_ibm_secret_manager_admin()
+        manager = _get_user_secret_manager()
         logger.info("Creating a user secret")
-        secret_group_name = manager.get_secret_group_for_users()
-        if secret_group_name is None:
-            raise Exception(f"Secret group is unavailable")
-        secret_name_for_user = manager.get_secret_name_for_user(
-            user_id, secret_request.secret_name
-        )
         secret_value = (
             base64.b64decode(secret_request.secret_value.encode("ascii")).decode(
                 "utf-8"
@@ -320,9 +311,9 @@ def create_user_secret(request: Request, secret_request: SecretCreateRequest):
             if secret_request.encoding == "base64"
             else secret_request.secret_value
         )
-        manager.create_secret(
-            secret_group_name=secret_group_name,
-            secret_name=secret_name_for_user,
+        manager.create_user_secret(
+            user_id=user_id,
+            secret_name=secret_request.secret_name,
             secret_value=secret_value,
         )
         return {"result": "success"}
@@ -355,12 +346,8 @@ def update_user_secret(
         ):
             raise Exception("Unsupported encoding")
 
-        manager = _get_ibm_secret_manager_admin()
+        manager = _get_user_secret_manager()
         logger.info("Updating a user secret")
-        secret_group_name = manager.get_secret_group_for_users()
-        if secret_group_name is None:
-            raise Exception(f"Secret group is unavailable")
-        secret_name_for_user = manager.get_secret_name_for_user(user_id, secret_name)
         secret_value = (
             base64.b64decode(secret_request.secret_value.encode("ascii")).decode(
                 "utf-8"
@@ -368,9 +355,7 @@ def update_user_secret(
             if secret_request.encoding == "base64"
             else secret_request.secret_value
         )
-        manager.update_secret_value(
-            secret_group_name, secret_name_for_user, secret_value
-        )
+        manager.update_user_secret(user_id, secret_name, secret_value)
         return {"result": "success"}
     except Exception as e:
         logger.error("Failed to update a user secret: %s", e)
@@ -389,13 +374,9 @@ def delete_user_secret(request: Request, secret_name: str):
         if secret_name is None:
             raise Exception("Invalid secret name")
 
-        manager = _get_ibm_secret_manager_admin()
+        manager = _get_user_secret_manager()
         logger.info("Deleting a user secret")
-        secret_group_name = manager.get_secret_group_for_users()
-        if secret_group_name is None:
-            raise Exception(f"Secret group is unavailable")
-        secret_name_for_user = manager.get_secret_name_for_user(user_id, secret_name)
-        manager.delete_secret(secret_group_name, secret_name_for_user)
+        manager.delete_user_secret(user_id, secret_name)
         return {"result": "success"}
     except Exception as e:
         logger.error("Failed to delete a user secret: %s", e)

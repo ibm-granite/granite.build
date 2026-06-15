@@ -39,7 +39,7 @@ class HybridSpaceSecretManager(SpaceSecretManager):
             "config": {
                 "managers": [
                     {"type": "env", "config": {}},
-                    {"type": "local", "config": {"secrets_dir": "~/.gbserver/secrets"}},
+                    {"type": "local", "config": {"secrets_dir": "~/.granite.build/secrets"}},
                     {"type": "ibmcloud", "config": {"service_url": "..."}}
                 ]
             }

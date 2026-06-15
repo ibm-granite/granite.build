@@ -16,10 +16,14 @@
 
 """Verify that cloud-only gbcli commands are guarded in standalone mode.
 
-The ``admin`` and ``secret`` command groups depend on cloud-only backends and cannot
-work when ``GB_ENVIRONMENT=STANDALONE``. Invoking any of their subcommands in standalone
-mode should warn and exit non-zero *before* hitting an auth/network error, while plain
-``--help`` should still work.
+The ``admin`` command group depends on cloud-only backends and cannot work when
+``GB_ENVIRONMENT=STANDALONE``. Invoking any of its subcommands in standalone mode should
+warn and exit non-zero *before* hitting an auth/network error, while plain ``--help``
+should still work.
+
+The ``secret`` group is intentionally *not* guarded: gbserver supports per-user secrets
+in standalone mode via its configured ``UserSecretManager`` (local file backend by
+default), so ``secret`` subcommands must reach the server rather than being rejected.
 """
 
 import importlib
@@ -32,11 +36,17 @@ WARNING_FRAGMENT = "not supported in standalone mode"
 
 # (module path, group name, a representative subcommand invocation)
 GUARDED_COMMANDS = [
-    ("gbcli.commands.command_secret", "secret", ["list"]),
     ("gbcli.commands.command_admin", "admin", ["log", "gbserver-rest-server"]),
     ("gbcli.commands.command_template", "template", ["list"]),
     ("gbcli.commands.command_step", "step", ["list"]),
     ("gbcli.commands.command_model", "model", ["list"]),
+]
+
+# Groups that used to be guarded but now work in standalone mode (they only talk to the
+# local gbserver). Their subcommands may still fail later for other reasons, but must not
+# emit the standalone warning.
+UNGUARDED_GROUPS = [
+    ("gbcli.commands.command_secret", "secret", ["list"]),
 ]
 
 # The artifact group is *not* guarded as a whole: gbserver-backed metadata commands work
@@ -136,6 +146,24 @@ class TestGbcliStandaloneGuards:
         assert WARNING_FRAGMENT not in result.output, (
             f"standalone warning should not appear for '{group_name}' outside "
             f"standalone mode, got: {result.output!r}"
+        )
+
+    @pytest.mark.parametrize("module_path,group_name,subcommand", UNGUARDED_GROUPS)
+    def test_unguarded_group_not_blocked_in_standalone(
+        self, module_path: str, group_name: str, subcommand: list
+    ):
+        """The secret group must reach the server in standalone, not be rejected.
+
+        It may still fail later (e.g. no local gbserver running), but it must not emit
+        the standalone "not supported" warning.
+        """
+        cli = _load_cli(module_path)
+        runner = CliRunner()
+        result = runner.invoke(cli, subcommand, env=STANDALONE_ENV)
+
+        assert WARNING_FRAGMENT not in result.output, (
+            f"standalone warning should not appear for '{group_name} "
+            f"{' '.join(subcommand)}' in standalone mode, got: {result.output!r}"
         )
 
 

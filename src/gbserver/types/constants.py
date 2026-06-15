@@ -22,7 +22,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from gbcommon.types.constants import DEFAULT_GH_DOMAIN, get_gh_api_base
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN, GB_HOME_DIR, get_gh_api_base
 from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.types.constants_base import (
     ENV_VAR_IBMID_AUTHORIZE_URL,
@@ -73,6 +73,13 @@ ENV_VAR_TRUNCATE_LENGTH = ENV_VAR_PREFIX + "_TRUNCATE_LENGTH"
 ENV_VAR_GBSERVER_ADMIN_TABLE_PREFIX = ENV_VAR_PREFIX + "_ADMIN_TABLE_PREFIX"
 ENV_VAR_IBM_SEC_MAN_ENDPOINT = ENV_VAR_PREFIX + "_IBM_SEC_MAN_ENDPOINT"
 ENV_VAR_IBM_SEC_MAN_API_KEY = ENV_VAR_PREFIX + "_IBM_SEC_MAN_API_KEY"
+# Per-user secret manager backend selection (ibmcloud / local / env). Defaults to
+# ibmcloud in cloud environments and local in standalone (see is_standalone() block).
+ENV_VAR_USER_SECRET_MANAGER = ENV_VAR_PREFIX + "_USER_SECRET_MANAGER"
+# Directory used by the local per-user secret backend.
+ENV_VAR_USER_SECRET_DIR = ENV_VAR_PREFIX + "_USER_SECRET_DIR"
+# Optional JSON blob of extra kwargs passed to the user secret backend constructor.
+ENV_VAR_USER_SECRET_MANAGER_CONFIG = ENV_VAR_PREFIX + "_USER_SECRET_MANAGER_CONFIG"
 ENV_VAR_DEFAULT_LOG_LEVEL = ENV_VAR_PREFIX + "_DEFAULT_LOG_LEVEL"
 ENV_VAR_DEFAULT_GITHUB_TOKEN = ENV_VAR_PREFIX + "_GITHUB_TOKEN"
 ENV_VAR_DEBUG_MODE = ENV_VAR_PREFIX + "_DEBUG_MODE"
@@ -363,12 +370,25 @@ if is_standalone():
         ENV_VAR_DEFAULT_BUILDRUNNER_TYPE: "thread",
         ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS": "true",
         ENV_VAR_PREFIX + "_LINEAGE_PROVIDER": "none",
+        # Standalone has no IBM Secret Manager; default per-user secrets to a
+        # local file backend so the /user_secrets API and CLI work out of the box.
+        ENV_VAR_USER_SECRET_MANAGER: "local",
     }.items():
         os.environ.setdefault(_k, _v)
 
 GBSERVER_PROCEED_WITHOUT_SECRETS = getenv_boolean(
     ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS", False
 )  # default False
+
+# Per-user secret manager backend. Defaults to "ibmcloud" outside standalone;
+# the is_standalone() block above sets it to "local".
+GBSERVER_USER_SECRET_MANAGER = os.getenv(ENV_VAR_USER_SECRET_MANAGER, "ibmcloud")
+# Directory for the local per-user secret backend (one <user_id>.yaml file each).
+GBSERVER_USER_SECRET_DIR = os.getenv(
+    ENV_VAR_USER_SECRET_DIR,
+    os.path.join(GB_HOME_DIR, "user_secrets"),
+)
+GBSERVER_USER_SECRET_MANAGER_CONFIG = os.getenv(ENV_VAR_USER_SECRET_MANAGER_CONFIG, "")
 
 # NATS JetStream configuration
 ENV_VAR_NATS_URL = ENV_VAR_PREFIX + "_NATS_URL"

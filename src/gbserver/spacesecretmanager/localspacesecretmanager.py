@@ -18,16 +18,16 @@
 Secret manager from local directory.
 """
 
-import base64
-import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Self
 
-import yaml
-from dotenv import dotenv_values
-
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
 from gbserver.utils.logger import get_logger
+from gbserver.utils.secretfile import (
+    SUPPORTED_SECRET_FILE_EXTENSIONS,
+    load_secret_file,
+    write_secret_file,
+)
 
 logger = get_logger(__name__)
 
@@ -39,7 +39,7 @@ class LocalSpaceSecretManager(SpaceSecretManager):
     # If space_name is empty, they should have access to only public space
     # A user can be part of many spaces, but they can access only one space's resources at a time
 
-    SUPPORTED_EXTENSIONS = [".env", ".yaml", ".yml", ".json"]
+    SUPPORTED_EXTENSIONS = SUPPORTED_SECRET_FILE_EXTENSIONS
 
     def __init__(self: Self, uri: str, secrets_dir: Path, **kwargs) -> None:
         super().__init__(uri=uri, **kwargs)
@@ -102,73 +102,7 @@ class LocalSpaceSecretManager(SpaceSecretManager):
 
     def _load_from_file(self: Self, file_path: Path) -> Dict[str, str]:
         """Load secrets from a specific file based on its extension."""
-        suffix = file_path.suffix.lower()
-        name = file_path.name.lower()
-        secrets = {}
-        if suffix == ".env" or name == ".env":
-            logger.info("Loading secrets from dotenv file: %s", file_path)
-            secrets = dotenv_values(file_path)
-        elif suffix in [".yaml", ".yml"]:
-            logger.info("Loading secrets from YAML file: %s", file_path)
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-            secrets = data if isinstance(data, dict) else {}
-        elif suffix == ".json":
-            try:
-                logger.info("Loading secrets from JSON file: %s", file_path)
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                secrets = data if isinstance(data, dict) else {}
-            except json.JSONDecodeError as e:
-                logger.warning(
-                    "Failed to parse secrets JSON file %s: %s . Returning empty dict.",
-                    file_path,
-                    e,
-                )
-                return {}
-        else:
-            raise ValueError(f"Unsupported file type: {suffix}")
-
-        decoded_secrets = {}
-
-        # NEW FORMAT: spaces -> <space> -> secrets
-        if "spaces" in secrets:
-            for space_name, space_cfg in secrets["spaces"].items():  # type: ignore[union-attr]
-                space_secrets = space_cfg.get("secrets", {})
-                for name, secret in space_secrets.items():
-                    try:
-                        payload = secret["payload"]
-                        labels = secret.get("labels")
-                        if labels and "encode:base64" in labels:
-                            value = base64.b64decode(payload.encode("utf-8")).decode(
-                                "utf-8"
-                            )
-                        else:
-                            value = payload
-                        decoded_secrets[name] = value
-                    except Exception as e:
-                        logger.error(
-                            "Invalid secret entry for key: %s | value: %s error: %s",
-                            name,
-                            secret,
-                            e,
-                        )
-
-        # BACKWARD COMPATIBILITY - OLD FORMAT: flat key -> base64 (old file format, if any)
-        else:
-            for key, value in secrets.items():  # type: ignore[assignment]
-                try:
-                    decoded_value = base64.b64decode(value).decode("utf-8")
-                    decoded_secrets[key] = decoded_value
-                except Exception as e:
-                    logger.error(
-                        "Invalid base64 value for key: %s | value: %s error: %s",
-                        key,
-                        value,
-                        e,
-                    )
-
-        return decoded_secrets
+        return load_secret_file(file_path)
 
     def create_secret(
         self,
@@ -229,25 +163,6 @@ class LocalSpaceSecretManager(SpaceSecretManager):
         Supports .env, .yaml/.yml, and .json file formats.
         """
         try:
-            encoded_secrets = {
-                k: base64.b64encode(v.encode("utf-8")).decode("utf-8")
-                for k, v in secrets.items()
-            }
-            if target_file.name == ".env":
-                suffix = ".env"
-            else:
-                suffix = target_file.suffix.lower()
-            if suffix == ".env":
-                with open(target_file, "w", encoding="utf-8") as f:
-                    for k, v in encoded_secrets.items():
-                        f.write(f"{k}={v}\n")
-            elif suffix in [".yaml", ".yml"]:
-                with open(target_file, "w", encoding="utf-8") as f:
-                    yaml.safe_dump(encoded_secrets, f, default_flow_style=False)
-            elif suffix == ".json":
-                with open(target_file, "w", encoding="utf-8") as f:
-                    json.dump(encoded_secrets, f, indent=4)
-            else:
-                raise ValueError(f"Unsupported file type for secrets: {suffix}")
+            write_secret_file(target_file, secrets)
         except Exception as e:
             logger.error("Failed to write secrets to %s: %s", target_file, e)

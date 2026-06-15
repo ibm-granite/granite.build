@@ -42,6 +42,41 @@ _STANDALONE_ENV_DEFAULTS = {
 }
 
 
+def _migrate_legacy_sqlite_db() -> None:
+    """One-time migration of the standalone SQLite db from ~/.llmb to GB_HOME_DIR.
+
+    Earlier versions stored the standalone metadata db at ``~/.llmb/llmb-server.db``.
+    State now lives under the consolidated ``GB_HOME_DIR`` (default ~/.granite.build).
+    If the new db does not yet exist but a legacy one does, copy it across so existing
+    standalone deployments keep their builds/spaces. The legacy file is left in place as
+    a backup, and an existing new db is never overwritten. Safe to call repeatedly.
+    """
+    from gbcommon.types.constants import GB_HOME_DIR
+    from gbserver.storage.sqlite.sqlite_storage import (
+        LEGACY_LLMB_DIR_NAME,
+        SQLITE_DB_FILE_NAME,
+    )
+
+    new_db = os.path.join(GB_HOME_DIR, SQLITE_DB_FILE_NAME)
+    legacy_db = os.path.join(
+        os.path.expanduser("~"), LEGACY_LLMB_DIR_NAME, SQLITE_DB_FILE_NAME
+    )
+    if os.path.exists(new_db):
+        return  # New db is the source of truth; never overwrite.
+    if not os.path.exists(legacy_db):
+        return  # Nothing to migrate.
+    try:
+        os.makedirs(GB_HOME_DIR, exist_ok=True)
+        shutil.copy2(legacy_db, new_db)
+        logger.info(
+            "Migrated legacy standalone db %s -> %s (legacy file left as backup)",
+            legacy_db,
+            new_db,
+        )
+    except Exception as e:
+        logger.error("Failed to migrate legacy standalone db from %s: %s", legacy_db, e)
+
+
 def _start_nats_server(
     space_dir: str,
     port: int = 4222,
@@ -155,6 +190,9 @@ def _run_standalone(
     from gbserver.storage import singleton_storage
     from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
     from gbserver.storage.stored_space import StoredSpace
+
+    # Migrate any legacy ~/.llmb db into GB_HOME_DIR before the factory opens it.
+    _migrate_legacy_sqlite_db()
 
     singleton_storage.set_storage_factory(SqliteStorageFactory())
 

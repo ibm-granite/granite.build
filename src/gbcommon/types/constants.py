@@ -25,6 +25,13 @@ ENV_VAR_PREFIX_SERVER = "GBSERVER"
 ENV_VAR_GH_DOMAIN = ENV_VAR_PREFIX + "_GH_DOMAIN"
 DEFAULT_GH_DOMAIN = os.getenv(ENV_VAR_GH_DOMAIN, "github.ibm.com")
 
+# Single base directory for per-user, server-side state (standalone sqlite db,
+# user secrets, etc.). Consolidates what used to live under ~/.llmb and ~/.gbserver.
+# Overridable via GB_HOME_DIR (e.g. for test isolation or relocating in a container).
+# Note: the CLI's own config/credentials still live under ~/.gbcli (see GB_CONFIG).
+ENV_VAR_GB_HOME_DIR = ENV_VAR_PREFIX + "_HOME_DIR"
+GB_HOME_DIR = os.path.expanduser(os.getenv(ENV_VAR_GB_HOME_DIR, "~/.granite.build"))
+
 # Public repo used for the CLI version check. This is always the external,
 # public github.com repo so the check works over unauthenticated HTTPS without
 # requiring GitHub credentials or SSH keys (see gbcli versionutil).
