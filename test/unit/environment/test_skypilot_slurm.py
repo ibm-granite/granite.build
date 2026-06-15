@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from gbserver.environment.skypilot import Skypilot
 from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.environmentconfig import EnvironmentConfig
+from gbserver.types.errors import WorkloadFailedException
 
 
 @pytest.fixture
@@ -440,8 +442,9 @@ class TestSkypilotRetry:
 
     @pytest.mark.asyncio
     async def test_retry_workload_propagates_relaunch_failure(self, slurm_env):
-        """If launch_skypilot raises during retry, retry_workload re-raises
-        and the retry-complete event is NOT set."""
+        """If launch_skypilot raises during retry, retry_workload re-raises but
+        still sets the retry-complete event (in its finally) so the monitor
+        doesn't hang; the monitor then fails the step on the missing cluster."""
         slurm_env._launch_kwargs["retry-3"] = {
             "launcher_config": {"run": "echo"},
             "config": {},
@@ -466,4 +469,267 @@ class TestSkypilotRetry:
             with pytest.raises(RuntimeError, match="boom"):
                 await slurm_env.retry_workload(launch_id="retry-3")
 
-        assert not retry_event.is_set()
+        assert retry_event.is_set()
+
+
+class TestProvisionRetry:
+    """Bounded provision-retry on transient resource-acquisition failures
+    (the slurm teardown→relaunch race)."""
+
+    @staticmethod
+    def _patches(mock_sky, attempts=4):
+        """Common patch set: mocked sky, HAS_SKYPILOT, and 0-backoff so the
+        tenacity wait is instant. Constants are imported inside
+        _provision_with_retry, so patch them at their definition module."""
+        return (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch(
+                "gbserver.types.constants.GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX", 0
+            ),
+            patch(
+                "gbserver.types.constants.GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS",
+                attempts,
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_is_retried_then_succeeds(self, slurm_env):
+        """A transient resource-acquisition error on the first provision attempt
+        tears down the partial cluster and the relaunch succeeds."""
+        mock_sky = _mock_sky()
+        mock_sky.stream_and_get.side_effect = [
+            Exception("Failed to acquire resources in normal for {Slurm(cpus=1+)}"),
+            (1, MagicMock()),
+        ]
+        s, h, bmax, batt = self._patches(mock_sky)
+        with s, h, bmax, batt:
+            slurm_env._get_launch_ready_event("prov-1")
+            await slurm_env.launch_skypilot(
+                launch_id="prov-1",
+                launcher_config={"run": "hostname", "resources": {"cloud": "slurm"}},
+                config={},
+            )
+
+        assert mock_sky.stream_and_get.call_count == 2
+        # partial cluster torn down once between the two attempts
+        assert mock_sky.down.call_count == 1
+        assert slurm_env._cluster_names["prov-1"] == "gb-prov-1"
+
+    @pytest.mark.asyncio
+    async def test_non_retriable_failure_propagates_without_retry(self, slurm_env):
+        """A non-provision error (e.g. bad image) is re-raised on the first
+        attempt — never retried, never masked, no teardown."""
+        mock_sky = _mock_sky()
+        mock_sky.stream_and_get.side_effect = Exception("Image not found: badimage")
+        s, h, bmax, batt = self._patches(mock_sky)
+        with s, h, bmax, batt:
+            slurm_env._get_launch_ready_event("prov-2")
+            with pytest.raises(Exception, match="Image not found"):
+                await slurm_env.launch_skypilot(
+                    launch_id="prov-2",
+                    launcher_config={"run": "hostname", "resources": {}},
+                    config={},
+                )
+
+        assert mock_sky.stream_and_get.call_count == 1
+        assert mock_sky.down.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_reraises_original_error(self, slurm_env):
+        """When every attempt hits a transient failure, the original provision
+        error surfaces after exactly max_attempts tries."""
+        mock_sky = _mock_sky()
+        mock_sky.stream_and_get.side_effect = Exception(
+            "Failed to provision all possible launchable resources"
+        )
+        s, h, bmax, batt = self._patches(mock_sky, attempts=2)
+        with s, h, bmax, batt:
+            slurm_env._get_launch_ready_event("prov-3")
+            with pytest.raises(Exception, match="Failed to provision"):
+                await slurm_env.launch_skypilot(
+                    launch_id="prov-3",
+                    launcher_config={"run": "hostname", "resources": {}},
+                    config={},
+                )
+
+        assert mock_sky.stream_and_get.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cleanup_tolerates_cluster_already_gone(self, slurm_env):
+        """_teardown swallows ClusterDoesNotExist (already gone) and
+        cleanup_skypilot still clears the per-launch bookkeeping."""
+
+        class _ClusterGone(Exception):
+            pass
+
+        mock_sky = _mock_sky()
+        mock_sky.exceptions.ClusterDoesNotExist = _ClusterGone
+        mock_sky.down.side_effect = _ClusterGone("gb-td-1 does not exist")
+        slurm_env._cluster_names["td-1"] = "gb-td-1"
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            await slurm_env.cleanup_skypilot(launch_id="td-1")  # no raise
+
+        mock_sky.down.assert_called_once()
+        assert "td-1" not in slurm_env._cluster_names
+
+
+class TestMonitorRetryHandoff:
+    """monitor_skypilot_monitor must AWAIT a (possibly slow) relaunch rather
+    than racing retry_complete_event and abandoning the relaunched job."""
+
+    @staticmethod
+    def _kwargs(launch_id):
+        return {
+            "launcher_config": {"run": "echo", "resources": {}},
+            "config": {},
+            "run_metadata": None,
+            "setup_config": None,
+            "retry_enabled": True,
+            "retry_transparently": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_monitor_awaits_slow_relaunch_and_polls_fresh_cluster(
+        self, slurm_env
+    ):
+        """First poll triggers a retry; the relaunch finishes only after the
+        monitor begins waiting. The monitor must poll the FRESH cluster (a 2nd
+        poll) instead of returning early. On the old code only 1 poll happened."""
+        mock_sky = _mock_sky()
+        slurm_env._launch_kwargs["race-1"] = self._kwargs("race-1")
+        slurm_env._cluster_names["race-1"] = "gb-old"
+        poll_calls = []
+        fresh_seen = []
+        retry_task = {}
+
+        @asynccontextmanager
+        async def fake_with_retry_handler(*_a, **_k):
+            yield slurm_env.event_q
+
+        async def fake_cleanup(launch_id, **_):
+            slurm_env._cluster_names.pop(launch_id, None)
+
+        async def fake_launch(launch_id, **_):
+            await asyncio.sleep(0.05)  # slow: completes after monitor starts waiting
+            slurm_env._cluster_names[launch_id] = "gb-new"
+
+        async def fake_poll(launch_id, **_):
+            poll_calls.append(launch_id)
+            if len(poll_calls) == 1:
+                # Trigger a retry the way the RetryHandler would, concurrently,
+                # then mirror _poll's stop-event return path.
+                retry_task["t"] = asyncio.create_task(
+                    slurm_env.retry_workload(launch_id=launch_id)
+                )
+                await slurm_env._get_launch_stopped_event(launch_id).wait()
+                return
+            fresh_seen.append(slurm_env._cluster_names.get(launch_id))  # terminal success
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(slurm_env, "_with_retry_handler", fake_with_retry_handler),
+            patch.object(slurm_env, "_poll_skypilot_job", fake_poll),
+            patch.object(slurm_env, "cleanup_skypilot", fake_cleanup),
+            patch.object(slurm_env, "launch_skypilot", fake_launch),
+        ):
+            await asyncio.wait_for(
+                slurm_env.monitor_skypilot_monitor(
+                    launch_id="race-1", event_q=slurm_env.event_q
+                ),
+                timeout=5,
+            )
+            await retry_task["t"]  # ensure the retry task finished cleanly
+
+        assert poll_calls == ["race-1", "race-1"]  # polled the FRESH cluster
+        assert fresh_seen == ["gb-new"]
+        assert "race-1" not in slurm_env._skypilot_retry_complete_events
+        assert "race-1" not in slurm_env._skypilot_retry_in_progress_events
+
+    @pytest.mark.asyncio
+    async def test_monitor_fails_when_relaunch_fails(self, slurm_env):
+        """If the relaunch fails (no fresh cluster), the monitor raises
+        WorkloadFailedException rather than returning cleanly."""
+        mock_sky = _mock_sky()
+        slurm_env._launch_kwargs["race-2"] = self._kwargs("race-2")
+        slurm_env._cluster_names["race-2"] = "gb-old"
+        poll_calls = []
+        retry_task = {}
+
+        @asynccontextmanager
+        async def fake_with_retry_handler(*_a, **_k):
+            yield slurm_env.event_q
+
+        async def fake_cleanup(launch_id, **_):
+            slurm_env._cluster_names.pop(launch_id, None)
+
+        async def fake_launch(launch_id, **_):
+            await asyncio.sleep(0.02)
+            raise RuntimeError("relaunch boom")
+
+        async def fake_poll(launch_id, **_):
+            poll_calls.append(launch_id)
+            retry_task["t"] = asyncio.create_task(
+                slurm_env.retry_workload(launch_id=launch_id)
+            )
+            await slurm_env._get_launch_stopped_event(launch_id).wait()
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(slurm_env, "_with_retry_handler", fake_with_retry_handler),
+            patch.object(slurm_env, "_poll_skypilot_job", fake_poll),
+            patch.object(slurm_env, "cleanup_skypilot", fake_cleanup),
+            patch.object(slurm_env, "launch_skypilot", fake_launch),
+        ):
+            with pytest.raises(WorkloadFailedException):
+                await asyncio.wait_for(
+                    slurm_env.monitor_skypilot_monitor(
+                        launch_id="race-2", event_q=slurm_env.event_q
+                    ),
+                    timeout=5,
+                )
+            # retrieve the retry task's failure so it isn't an orphan exception
+            with pytest.raises(RuntimeError, match="relaunch boom"):
+                await retry_task["t"]
+
+        assert poll_calls == ["race-2"]  # never polled a fresh cluster
+        assert "race-2" not in slurm_env._skypilot_retry_in_progress_events
+
+    @pytest.mark.asyncio
+    async def test_monitor_times_out_if_relaunch_never_signals(self, slurm_env):
+        """If retry_complete is never set, the monitor fails (bounded) instead
+        of hanging forever."""
+        mock_sky = _mock_sky()
+        poll_calls = []
+
+        @asynccontextmanager
+        async def fake_with_retry_handler(*_a, **_k):
+            yield slurm_env.event_q
+
+        async def fake_poll(launch_id, **_):
+            poll_calls.append(launch_id)
+            # Simulate a retry beginning but never completing.
+            slurm_env._skypilot_retry_in_progress_events[launch_id].set()
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch("gbserver.environment.skypilot.RETRY_RELAUNCH_TIMEOUT_SECONDS", 0.05),
+            patch.object(slurm_env, "_with_retry_handler", fake_with_retry_handler),
+            patch.object(slurm_env, "_poll_skypilot_job", fake_poll),
+        ):
+            with pytest.raises(WorkloadFailedException):
+                await asyncio.wait_for(
+                    slurm_env.monitor_skypilot_monitor(
+                        launch_id="race-3", event_q=slurm_env.event_q
+                    ),
+                    timeout=5,
+                )
+
+        assert poll_calls == ["race-3"]

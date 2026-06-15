@@ -14,7 +14,13 @@ import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Tuple, Union
 
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    AsyncRetrying,
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.uri import URI
@@ -34,6 +40,7 @@ from gbserver.utils.optional_imports import HAS_SKYPILOT
 
 if HAS_SKYPILOT:
     import sky
+    import sky.exceptions
 else:
     sky = None  # type: ignore[assignment]
 
@@ -85,6 +92,56 @@ def _download_logs_with_retry(cluster_name: str, job_id: int):
     return result.get(str(job_id))
 
 
+# Upper bound for how long monitor_skypilot_monitor waits for retry_workload to
+# finish a teardown+relaunch before treating the step as failed. Generous: must
+# comfortably exceed real relaunch time (provision-retry backoff + cloud
+# provisioning). Purely defensive — retry_workload sets the complete event in a
+# finally, so this should never actually trip.
+RETRY_RELAUNCH_TIMEOUT_SECONDS = 1800
+
+
+# Substrings that mark a transient resource-acquisition / provision failure.
+# Conservative: drawn from observed SkyPilot/slurm failover messages. Anything
+# else (auth, image-not-found, NotSupported, config, quota-denied) is treated as
+# fatal and re-raised immediately so a genuine launch failure is never masked.
+_TRANSIENT_PROVISION_SUBSTRINGS = (
+    "failed to provision",  # "Failed to provision all possible launchable resources"
+    "failed to acquire resources",  # slurm: "Failed to acquire resources in normal for ..."
+    "resources unavailable",
+    "in normal for",  # slurm partition acquisition failure tail
+)
+
+
+def _is_transient_provision_error(exc: BaseException) -> bool:
+    """Return True if exc is a retriable resource-acquisition/provision failure.
+
+    The primary signal is the SkyPilot exception *type*; the substring scan is a
+    conservative fallback for SDK builds that surface the failure as a plain
+    Exception. Non-provision failures (auth, image-not-found, config, etc.)
+    return False so they propagate without masking.
+
+    Args:
+        exc: The exception raised by the provisioning step.
+
+    Returns:
+        bool: True if the failure looks transient and worth retrying.
+    """
+    if sky is not None:
+        exc_types = tuple(
+            t
+            for t in (
+                getattr(sky.exceptions, "ResourcesUnavailableError", None),
+                getattr(sky.exceptions, "ResourcesMismatchError", None),
+                getattr(sky.exceptions, "ProvisionPrechecksError", None),
+            )
+            if isinstance(t, type)
+        )
+        if exc_types and isinstance(exc, exc_types):
+            return True
+    text = str(exc).lower()
+    return any(s in text for s in _TRANSIENT_PROVISION_SUBSTRINGS)
+
+
 class Skypilot(Environment):
     """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
 
@@ -118,6 +175,11 @@ class Skypilot(Environment):
         # launch_id -> kwargs replayed by retry_workload
         self._launch_kwargs: Dict[str, Dict] = {}
         self._skypilot_retry_complete_events: Dict[str, asyncio.Event] = {}
+        # launch_id -> set the instant retry_workload begins (before stop_event),
+        # so monitor_skypilot_monitor can distinguish a retry-induced poll stop
+        # from a terminal completion and await the (possibly slow) relaunch
+        # instead of racing it.
+        self._skypilot_retry_in_progress_events: Dict[str, asyncio.Event] = {}
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -420,17 +482,12 @@ class Skypilot(Environment):
             no_autostop_clouds = ("slurm", "lsf")
             autostop = None if cloud_for_infra in no_autostop_clouds else idle_minutes
 
-            # Launch and wait for provisioning. sky.launch / sky.stream_and_get
-            # block until LSF allocates resources — under queue contention
-            # that can be tens of minutes. Run them in a worker thread so
-            # the event loop can service concurrent target launches.
-            request_id = await asyncio.to_thread(
-                sky.launch,
-                task,
-                cluster_name=cluster_name,
-                idle_minutes_to_autostop=autostop,
+            # Launch and wait for provisioning, retrying transient
+            # resource-acquisition failures (e.g. a just-torn-down slurm/lsf
+            # allocation not yet released on retry). See _provision_with_retry.
+            job_id, _handle = await self._provision_with_retry(
+                task, cluster_name, autostop
             )
-            job_id, handle = await asyncio.to_thread(sky.stream_and_get, request_id)
 
             self._cluster_names[launch_id] = cluster_name
             if job_id is not None:
@@ -448,6 +505,78 @@ class Skypilot(Environment):
             raise
         finally:
             self._release_monitors(launch_id)
+
+    async def _provision_with_retry(
+        self: Self,
+        task: Any,
+        cluster_name: str,
+        autostop: Optional[int],
+    ) -> Tuple[Optional[int], Any]:
+        """Run ``sky.launch`` + ``sky.stream_and_get`` with bounded retry on
+        transient resource-acquisition failures.
+
+        On a retry (RetryHandler tears the cluster down then relaunches the same
+        name), the backend (slurm/lsf) allocation may not be released yet, so the
+        relaunch can fail with "Failed to acquire resources". Rather than fail the
+        whole build, retry the provisioning a bounded number of times with capped
+        exponential backoff — the backoff gives the backend time to release. A
+        failed provision can leave a partial INIT/FAILED cluster record under the
+        same name, so tear it down before each retry. Non-transient failures
+        re-raise immediately; on exhaustion the original error is re-raised
+        (``reraise=True``) so the genuine message surfaces.
+
+        Args:
+            task: The ``sky.Task`` to launch.
+            cluster_name: Deterministic cluster name for this launch.
+            autostop: idle_minutes_to_autostop (None on slurm/lsf).
+
+        Returns:
+            Tuple of (job_id, handle) from ``sky.stream_and_get``.
+
+        Raises:
+            Exception: The last provisioning error if all attempts are exhausted,
+                or any non-transient error immediately.
+        """
+        from gbserver.types.constants import (
+            GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX,
+            GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS,
+        )
+
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception(_is_transient_provision_error),
+            wait=wait_exponential(
+                multiplier=1, max=GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX
+            ),
+            stop=stop_after_attempt(max(1, GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS)),
+            reraise=True,
+        ):
+            with attempt:
+                try:
+                    request_id = await asyncio.to_thread(
+                        sky.launch,
+                        task,
+                        cluster_name=cluster_name,
+                        idle_minutes_to_autostop=autostop,
+                    )
+                    return await asyncio.to_thread(sky.stream_and_get, request_id)
+                except Exception as e:
+                    # Clear the partial INIT/FAILED cluster record before the
+                    # next attempt so the relaunch doesn't reuse the stale
+                    # allocation. Only for transient errors — others re-raise
+                    # untouched and tenacity will not retry them.
+                    if _is_transient_provision_error(e):
+                        logger.warning(
+                            "Transient provision failure for %s (attempt %d): %s "
+                            "— tearing down partial cluster before retry",
+                            cluster_name,
+                            attempt.retry_state.attempt_number,
+                            e,
+                        )
+                        await self._teardown(cluster_name)
+                    raise
+        # Unreachable: AsyncRetrying with reraise=True either returns from the
+        # `return` above or raises; this satisfies the type checker.
+        raise AssertionError("unreachable: _provision_with_retry exited loop")
 
     async def monitor_skypilot_monitor(
         self: Self,
@@ -469,6 +598,8 @@ class Skypilot(Environment):
         _require_skypilot()
         retry_complete_event = asyncio.Event()
         self._skypilot_retry_complete_events[launch_id] = retry_complete_event
+        retry_in_progress_event = asyncio.Event()
+        self._skypilot_retry_in_progress_events[launch_id] = retry_in_progress_event
 
         enabled, retry_transparently = self._get_step_retry_config(
             self._launch_kwargs.get(launch_id, {})
@@ -485,6 +616,7 @@ class Skypilot(Environment):
             try:
                 while True:
                     retry_complete_event.clear()
+                    retry_in_progress_event.clear()
                     await self._poll_skypilot_job(
                         launch_id=launch_id,
                         event_q=monitor_queue,
@@ -492,13 +624,38 @@ class Skypilot(Environment):
                         event_configs=event_configs,
                         **kwargs,
                     )
-                    if retry_complete_event.is_set():
-                        # retry_workload re-launched and set this event;
-                        # loop to poll the fresh cluster_name/job_id.
+                    # _poll returned without raising: either a terminal SUCCESS
+                    # (no retry) or stop_event was set by retry_workload to begin
+                    # a retry. retry_in_progress — set before stop_event in
+                    # retry_workload — disambiguates the two.
+                    if not retry_in_progress_event.is_set():
+                        return  # terminal success path; done.
+                    # A retry is underway. Wait for the (possibly slow) relaunch
+                    # to finish before polling again, instead of racing it. The
+                    # complete event is set in retry_workload's finally, so it
+                    # fires on both relaunch success and failure.
+                    try:
+                        await asyncio.wait_for(
+                            retry_complete_event.wait(),
+                            timeout=RETRY_RELAUNCH_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError as e:
+                        raise WorkloadFailedException(
+                            f"Retry relaunch never signalled completion within "
+                            f"{RETRY_RELAUNCH_TIMEOUT_SECONDS}s (launch_id={launch_id})"
+                        ) from e
+                    if self._cluster_names.get(launch_id):
+                        # Relaunch succeeded -> poll the fresh cluster/job to terminal.
                         continue
-                    return
+                    # Relaunch failed (no fresh cluster). Raise so the step fails
+                    # regardless of how the RetryHandler classified the trigger
+                    # event (never return cleanly on a failed step).
+                    raise WorkloadFailedException(
+                        f"Retry relaunch failed; no cluster for launch_id={launch_id}"
+                    )
             finally:
                 self._skypilot_retry_complete_events.pop(launch_id, None)
+                self._skypilot_retry_in_progress_events.pop(launch_id, None)
 
     async def _poll_skypilot_job(
         self: Self,
@@ -712,6 +869,32 @@ class Skypilot(Environment):
                 e,
             )
 
+    async def _teardown(self: Self, cluster_name: str) -> None:
+        """Tear down a SkyPilot cluster by name, off the event loop.
+
+        Wraps ``sky.down(purge=True)`` + ``sky.get`` in ``asyncio.to_thread`` so
+        the blocking SDK calls don't stall the event loop, and tolerates a
+        cluster that is already gone. Does not touch the per-launch bookkeeping
+        dicts — callers own those.
+
+        Args:
+            cluster_name: The SkyPilot cluster name to remove.
+        """
+        try:
+            request_id = await asyncio.to_thread(sky.down, cluster_name, purge=True)
+            await asyncio.to_thread(sky.get, request_id)
+            logger.info("Torn down SkyPilot cluster %s", cluster_name)
+        except Exception as e:
+            cluster_gone = (
+                getattr(sky.exceptions, "ClusterDoesNotExist", ())
+                if sky is not None
+                else ()
+            )
+            if isinstance(cluster_gone, type) and isinstance(e, cluster_gone):
+                logger.info("SkyPilot cluster %s already gone", cluster_name)
+                return
+            logger.error("Failed to tear down SkyPilot cluster %s: %s", cluster_name, e)
+
     async def cleanup_skypilot(
         self: Self,
         launch_id: Optional[str] = None,
@@ -736,9 +919,7 @@ class Skypilot(Environment):
                 cluster_name,
                 launch_id,
             )
-            request_id = sky.down(cluster_name, purge=True)
-            res = sky.get(request_id)
-            logger.info("Torn down SkyPilot cluster %s, res=%s", cluster_name, res)
+            await self._teardown(cluster_name)
         except Exception as e:
             logger.error("Failed to tear down SkyPilot cluster %s: %s", cluster_name, e)
         finally:
@@ -755,11 +936,13 @@ class Skypilot(Environment):
         """Retry a failed Skypilot workload via tear-down + relaunch.
 
         Called by ``RetryHandler`` when a strategy decides the failure is
-        retriable. Stops the polling loop, takes the cluster down, and
-        re-invokes ``launch_skypilot`` with the kwargs stashed during
-        the first launch. Sets ``_skypilot_retry_complete_events[launch_id]``
-        so ``monitor_skypilot_monitor``'s outer loop runs another
-        iteration against the fresh cluster.
+        retriable. Sets ``_skypilot_retry_in_progress_events[launch_id]``,
+        stops the polling loop, takes the cluster down, and re-invokes
+        ``launch_skypilot`` with the kwargs stashed during the first launch.
+        Sets ``_skypilot_retry_complete_events[launch_id]`` in a ``finally`` —
+        on BOTH relaunch success and failure — to release
+        ``monitor_skypilot_monitor``, which then polls the fresh cluster
+        (success) or fails the step (failure, no fresh cluster).
 
         :param launch_id: The launch identifier to retry.
         :param nodes_to_avoid: Currently logged-and-ignored — Skypilot
@@ -782,23 +965,31 @@ class Skypilot(Environment):
         )
         self._send_message(msg=msg, **original_kwargs)
 
+        # Mark the retry as in-progress BEFORE stopping the poll loop. Ordering
+        # is load-bearing: monitor_skypilot_monitor observes stop_event only
+        # after this set (no await between the two), so it can distinguish a
+        # retry-induced poll stop from a terminal completion.
+        retry_in_progress = self._skypilot_retry_in_progress_events.get(launch_id)
+        if retry_in_progress is not None:
+            retry_in_progress.set()
+
         # Stop the polling loop cleanly before sky down.
         self._get_launch_stopped_event(launch_id).set()
 
         try:
-            await self.cleanup_skypilot(launch_id=launch_id)
-        except Exception as e:
-            logger.warning(
-                "retry_workload cleanup_skypilot failed for %s: %s", launch_id, e
-            )
+            try:
+                await self.cleanup_skypilot(launch_id=launch_id)
+            except Exception as e:
+                logger.warning(
+                    "retry_workload cleanup_skypilot failed for %s: %s", launch_id, e
+                )
 
-        # Reset the stop event so the next polling iteration runs.
-        self._get_launch_stopped_event(launch_id).clear()
-        # Re-arm the launch-ready gate so launch_skypilot's release_monitors
-        # call has a fresh event to set.
-        self._get_launch_ready_event(launch_id)
+            # Reset the stop event so the next polling iteration runs.
+            self._get_launch_stopped_event(launch_id).clear()
+            # Re-arm the launch-ready gate so launch_skypilot's release_monitors
+            # call has a fresh event to set.
+            self._get_launch_ready_event(launch_id)
 
-        try:
             await self.launch_skypilot(launch_id, **original_kwargs)
         except Exception as launch_error:
             logger.error(
@@ -807,10 +998,15 @@ class Skypilot(Environment):
                 launch_error,
             )
             raise
-
-        retry_event = self._skypilot_retry_complete_events.get(launch_id)
-        if retry_event is not None:
-            retry_event.set()
+        finally:
+            # Signal monitor_skypilot_monitor on BOTH relaunch success and
+            # failure. On failure _cluster_names[launch_id] is absent (set only
+            # after provisioning succeeds in _launch_skypilot_inner), so the
+            # monitor wakes, sees no fresh cluster, and fails the step. Setting
+            # this in finally also prevents the monitor from hanging on its wait.
+            retry_event = self._skypilot_retry_complete_events.get(launch_id)
+            if retry_event is not None:
+                retry_event.set()
 
     def _get_default_retry_strategies(self: Self) -> List["RetryStrategy"]:
         """Return Skypilot's default retry strategies.
