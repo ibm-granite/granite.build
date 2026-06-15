@@ -119,3 +119,39 @@ class TestOpeninstructRlRun:
         # code_server_url defaults to "" → the {% if %} guard omits the export
         run = _render_run()
         assert "CODE_SERVER_URL" not in run
+
+
+class TestOpeninstructRlMonitor:
+    def test_monitor_defined(self):
+        cfg = _load()
+        mons = cfg["environment_configs"]["Skypilot"]["monitors"]
+        assert mons["skypilot_monitor"]["type"] == "skypilot_monitor"
+
+    def test_newartifact_regex_matches_emitted_line(self):
+        """The monitor's NEWARTIFACT line_regex must match the exact line the
+        run script emits — this ties emitter and monitor together."""
+        cfg = _load()
+        events = cfg["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"][
+            "config"
+        ]["event_configs"]
+        newart = next(
+            e for e in events if e["event_type"] == "NEWARTIFACT_IN_ENVIRONMENT_EVENT"
+        )
+        emitted = (
+            "LLMB_ARTIFACT_ID:checkpoint "
+            "LLMB_ARTIFACT_PATH:/proj/runs/ifrl/checkpoints"
+        )
+        assert re.search(newart["line_regex"], emitted)
+        path_field = next(
+            f for f in newart["event_fields"] if f["field_name"] == "path"
+        )
+        m = re.search(path_field["field_regex"], emitted)
+        assert m and m.group(0) == "/proj/runs/ifrl/checkpoints"
+
+    def test_progress_regex_is_provisional(self):
+        cfg = _load()
+        events = cfg["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"][
+            "config"
+        ]["event_configs"]
+        status = next(e for e in events if e["event_type"] == "WORKLOAD_STATUS_EVENT")
+        assert re.search(status["line_regex"], "episode: 128 | training_step: 4")

@@ -227,3 +227,32 @@ environment_configs:
             # checkpoints directly under output_dir (no SFT-style epoch_hf_*
             # conversion), so the artifact path is output_dir.
             echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:{{ config.rl_config.output_dir }}"
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            # PROVISIONAL: open_instruct.grpo_fast logs per-step metrics via
+            # print_rich_single_line_metrics (a Rich panel), not "Step: N"
+            # lines like SFT. Matches the scalar-metric keys ('episode',
+            # 'training_step') present in stdout each step. Refine against real
+            # BlueVela logs during issue-36 verification.
+            line_regex: "episode|training_step"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+              - field_name: message
+                field_regex: "(episode|training_step).*"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true
+              - field_name: binding
+                field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                is_json: true
