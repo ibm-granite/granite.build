@@ -26,7 +26,16 @@ class TestOptionalRabbitMQ:
             **_RABBITMQ_MODULES,
             "gbserver.messaging.rabbitmq_base": None,
         }
-        with mock.patch.dict(sys.modules, modules_to_mock):
+        # rabbitmq_base's top-level `import aio_pika` is gated on
+        # optional_imports.HAS_RABBITMQ, which is computed once at import and
+        # cached. Whether a prior test left it True or False is non-deterministic
+        # under xdist, so pin it to False here to faithfully simulate "aio_pika is
+        # not installed" — otherwise discovery may still import rabbitmq_base and
+        # register the backend regardless of the mocked sys.modules.
+        with (
+            mock.patch.dict(sys.modules, modules_to_mock),
+            mock.patch("gbserver.utils.optional_imports.HAS_RABBITMQ", False),
+        ):
             messaging_init = importlib.import_module("gbserver.messaging")
             importlib.reload(messaging_init)
             backends = messaging_init.discover_backends()
