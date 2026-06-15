@@ -230,7 +230,6 @@ test-git-cicd-pr:
 		GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
 		PYTEST_TEST_TARGETS="test"			\
-		PYTEST_TEST_TARGETS=test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_slurm_hf.py::TestSkypilotSlurmNativeHF::test_runner \
 		.test
 
 .PHONY: test-pr 
