@@ -440,6 +440,50 @@ class TestSkypilotRetry:
         }
         assert retry_event.is_set()
 
+    def test_cluster_name_for_suffixes_only_on_relaunch(self, slurm_env):
+        """_cluster_name_for is unchanged on the initial launch (attempt 0) and
+        appends an -r<attempt> suffix on relaunches so each attempt is distinct."""
+        assert slurm_env._cluster_name_for("abcdef123456789") == "gb-abcdef123456"
+        assert slurm_env._cluster_name_for("abcdef123456789", 0) == "gb-abcdef123456"
+        assert slurm_env._cluster_name_for("abcdef123456789", 1) == "gb-abcdef123456-r1"
+        assert slurm_env._cluster_name_for("abcdef123456789", 2) == "gb-abcdef123456-r2"
+
+    @pytest.mark.asyncio
+    async def test_retry_workload_relaunches_with_fresh_cluster_name(self, slurm_env):
+        """retry_workload records the attempt so the relaunch provisions a fresh,
+        uniquely-named cluster instead of reusing the draining original name."""
+        slurm_env._launch_kwargs["retry-9"] = {
+            "launcher_config": {"run": "echo", "resources": {}},
+            "config": {},
+            "run_metadata": None,
+            "setup_config": None,
+            "retry_enabled": True,
+            "retry_transparently": None,
+        }
+        slurm_env._cluster_names["retry-9"] = "gb-retry-9"
+        slurm_env._skypilot_retry_complete_events["retry-9"] = asyncio.Event()
+
+        # Attempt value observed at the instant launch_skypilot is invoked — this
+        # is what _launch_skypilot_inner reads to derive the cluster name.
+        attempt_at_launch: list = []
+
+        async def fake_cleanup(launch_id, **_):
+            slurm_env._cluster_names.pop(launch_id, None)
+            slurm_env._relaunch_attempts.pop(launch_id, None)
+
+        async def fake_launch(launch_id, **_):
+            attempt_at_launch.append(slurm_env._relaunch_attempts.get(launch_id))
+
+        with (
+            patch.object(slurm_env, "cleanup_skypilot", fake_cleanup),
+            patch.object(slurm_env, "launch_skypilot", fake_launch),
+        ):
+            await slurm_env.retry_workload(launch_id="retry-9", retry_count=2)
+
+        assert attempt_at_launch == [2]
+        # The name the relaunch would provision under is the suffixed, fresh one.
+        assert slurm_env._cluster_name_for("retry-9", 2) == "gb-retry-9-r2"
+
     @pytest.mark.asyncio
     async def test_retry_workload_propagates_relaunch_failure(self, slurm_env):
         """If launch_skypilot raises during retry, retry_workload re-raises but

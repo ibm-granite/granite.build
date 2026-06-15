@@ -306,6 +306,7 @@ class Environment(ABC):
         self: Self,
         launch_id: str,
         nodes_to_avoid: Optional[List[str]] = None,
+        retry_count: int = 0,
         **kwargs,
     ) -> None:
         """
@@ -318,6 +319,9 @@ class Environment(ABC):
         Args:
             launch_id: The launch identifier for the workload
             nodes_to_avoid: Optional list of node names to avoid (K8s-specific)
+            retry_count: 1-based relaunch attempt number from ``RetryHandler``.
+                Environments may use it to disambiguate retries (e.g. SkyPilot
+                derives a fresh cluster name per attempt); ignored otherwise.
             **kwargs: Additional environment-specific parameters
 
         Raises:

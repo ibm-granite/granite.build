@@ -171,6 +171,10 @@ class Skypilot(Environment):
     ) -> None:
         self._cluster_names: Dict[str, str] = {}  # launch_id -> cluster_name
         self._job_ids: Dict[str, int] = {}  # launch_id -> sky job_id
+        # launch_id -> relaunch attempt number. 0 (or absent) is the initial
+        # launch; retry_workload bumps it so each relaunch provisions a fresh,
+        # uniquely-named cluster instead of reusing the draining original.
+        self._relaunch_attempts: Dict[str, int] = {}
         self._setup_workdirs: Dict[str, str] = {}  # setup_id -> per-run workdir
         # launch_id -> kwargs replayed by retry_workload
         self._launch_kwargs: Dict[str, Dict] = {}
@@ -200,9 +204,19 @@ class Skypilot(Environment):
         return self.config.config.get("idle_minutes_to_autostop", 10)
 
     @staticmethod
-    def _cluster_name_for(launch_id: str) -> str:
-        """Generate a unique cluster name from a launch_id."""
-        return f"gb-{launch_id[:12]}"
+    def _cluster_name_for(launch_id: str, attempt: int = 0) -> str:
+        """Generate a unique cluster name from a launch_id.
+
+        :param launch_id: The launch identifier the cluster belongs to.
+        :param attempt: Relaunch attempt number. ``0`` (the initial launch)
+            yields the bare ``gb-<launch_id>`` name for backward compatibility;
+            ``> 0`` appends an ``-r<attempt>`` suffix so a retry provisions a
+            distinct cluster/allocation instead of colliding with the original
+            that may still be draining on the backend (slurm/lsf).
+        :returns: The deterministic cluster name for this launch + attempt.
+        """
+        base = f"gb-{launch_id[:12]}"
+        return base if attempt <= 0 else f"{base}-r{attempt}"
 
     async def setup_skypilot(
         self: Self,
@@ -339,7 +353,8 @@ class Skypilot(Environment):
             launcher_config = kwargs.get("launcher_config", {}) or {}
             config = kwargs.get("config", {}) or {}
 
-            cluster_name = self._cluster_name_for(launch_id)
+            attempt = self._relaunch_attempts.get(launch_id, 0)
+            cluster_name = self._cluster_name_for(launch_id, attempt)
             cloud = (
                 launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
             )
@@ -926,11 +941,13 @@ class Skypilot(Environment):
             self._cluster_names.pop(launch_id, None)
             self._job_ids.pop(launch_id, None)
             self._launch_kwargs.pop(launch_id, None)
+            self._relaunch_attempts.pop(launch_id, None)
 
     async def retry_workload(
         self: Self,
         launch_id: str,
         nodes_to_avoid: Optional[List[str]] = None,
+        retry_count: int = 0,
         **kwargs,
     ) -> None:
         """Retry a failed Skypilot workload via tear-down + relaunch.
@@ -939,14 +956,21 @@ class Skypilot(Environment):
         retriable. Sets ``_skypilot_retry_in_progress_events[launch_id]``,
         stops the polling loop, takes the cluster down, and re-invokes
         ``launch_skypilot`` with the kwargs stashed during the first launch.
-        Sets ``_skypilot_retry_complete_events[launch_id]`` in a ``finally`` —
-        on BOTH relaunch success and failure — to release
+        The relaunch provisions a *fresh, uniquely-named* cluster
+        (``gb-<launch_id>-r<retry_count>``) rather than reusing the original
+        name: ``sky down`` returning does not guarantee the backend (slurm/lsf)
+        allocation has drained, so reusing the name races the still-draining
+        original and intermittently fails provisioning. A distinct name sidesteps
+        that contention. Sets ``_skypilot_retry_complete_events[launch_id]`` in a
+        ``finally`` — on BOTH relaunch success and failure — to release
         ``monitor_skypilot_monitor``, which then polls the fresh cluster
         (success) or fails the step (failure, no fresh cluster).
 
         :param launch_id: The launch identifier to retry.
         :param nodes_to_avoid: Currently logged-and-ignored — Skypilot
             has no portable per-launch node-exclusion knob.
+        :param retry_count: 1-based relaunch attempt from ``RetryHandler``; used
+            to derive the fresh cluster name so each attempt is distinct.
         :raises Exception: Re-raises any failure from the relaunch.
         """
         original_kwargs = self._launch_kwargs.get(launch_id, {})
@@ -989,6 +1013,11 @@ class Skypilot(Environment):
             # Re-arm the launch-ready gate so launch_skypilot's release_monitors
             # call has a fresh event to set.
             self._get_launch_ready_event(launch_id)
+
+            # Record the attempt so _launch_skypilot_inner provisions a fresh,
+            # uniquely-named cluster. Set AFTER cleanup_skypilot (which pops this
+            # entry) so the new value is the one the relaunch reads.
+            self._relaunch_attempts[launch_id] = retry_count
 
             await self.launch_skypilot(launch_id, **original_kwargs)
         except Exception as launch_error:

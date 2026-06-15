@@ -260,12 +260,18 @@ class Lsf(Environment):
         self: Self,
         launch_id: str,
         nodes_to_avoid: Optional[List[str]] = None,
+        retry_count: int = 0,
         **kwargs,
     ) -> None:
         """Retry an LSF workload after a transient error.
 
         Called by RetryHandler when LsfTransientErrorRetryStrategy triggers.
         Re-launches the job and signals monitor_bsub_monitor via the coordination event.
+
+        :param retry_count: 1-based relaunch attempt number from ``RetryHandler``.
+            Accepted for interface parity; LSF reuses the same job submission
+            path on retry and does not key off the attempt number, so it is
+            currently unused.
         """
         original_kwargs = self._launch_kwargs.get(launch_id, {})
         job_id = self._launched_jobs.get(launch_id, launch_id)
