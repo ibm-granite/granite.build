@@ -59,9 +59,9 @@ class TestFormatFlag:
                 f"Expected non-zero exit in STANDALONE mode, got "
                 f"{result.exit_code}. Output: {result.output}"
             )
-            assert "standalone mode" in result.output, (
-                f"Expected a standalone-rejection message. Output: {result.output}"
-            )
+            assert (
+                "standalone mode" in result.output
+            ), f"Expected a standalone-rejection message. Output: {result.output}"
         else:
             assert (
                 result.exit_code == 0

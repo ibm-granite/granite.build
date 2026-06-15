@@ -628,7 +628,9 @@ class TestMonitorRetryHandoff:
                 )
                 await slurm_env._get_launch_stopped_event(launch_id).wait()
                 return
-            fresh_seen.append(slurm_env._cluster_names.get(launch_id))  # terminal success
+            fresh_seen.append(
+                slurm_env._cluster_names.get(launch_id)
+            )  # terminal success
 
         with (
             patch("gbserver.environment.skypilot.sky", mock_sky),

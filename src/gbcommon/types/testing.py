@@ -78,7 +78,9 @@ def enable_hf_mocks(*ops: str) -> None:
         *ops: HF_OP_* names to mock. Defaults to all ops when none are given.
     """
     _HF_OPS_SAVED.append(os.environ.get(ENV_VAR_GBTEST_MOCKED_HF_OPS))
-    os.environ[ENV_VAR_GBTEST_MOCKED_HF_OPS] = ",".join(ops) if ops else _HF_OPS_ALL_TOKEN
+    os.environ[ENV_VAR_GBTEST_MOCKED_HF_OPS] = (
+        ",".join(ops) if ops else _HF_OPS_ALL_TOKEN
+    )
 
 
 def disable_hf_mocks() -> None:
