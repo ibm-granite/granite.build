@@ -41,3 +41,76 @@ class TestOpeninstructRlStep:
         # float coercion; they are only interpolated into a shell command)
         assert isinstance(cfg["config"]["rl_config"]["learning_rate"], str)
         assert isinstance(cfg["config"]["rl_config"]["beta"], str)
+
+
+SAMPLE_CONFIG = {
+    "config": {
+        "rl_config": {
+            **_load()["config"]["rl_config"],  # start from shipped defaults
+            "exp_name": "gb-ifrl-test",
+            "run_name": "ifrl-run-0",
+            "model_name_or_path": "/proj/models/granite4-350m",
+            "dataset_mixer": '{"ai2-adapt-dev/rlvr_gsm8k_zs": 1.0}',
+            "dataset_eval_mixer": '{"ai2-adapt-dev/rlvr_gsm8k_zs": 16}',
+            "output_dir": "/proj/runs/ifrl/checkpoints",
+            "checkpoint_state_dir": "/proj/runs/ifrl/state",
+            "learning_rate": "5e-7",
+            "rm_server_url": "http://rm-server:8000",
+        }
+    }
+}
+
+
+def _render_run() -> str:
+    cfg = _load()
+    run_block = cfg["environment_configs"]["Skypilot"]["launchers"]["rl"]["config"][
+        "run"
+    ]
+    return fill_template(run_block, SAMPLE_CONFIG, strict=False)
+
+
+class TestOpeninstructRlRun:
+    def test_launcher_shape(self):
+        cfg = _load()
+        rl = cfg["environment_configs"]["Skypilot"]["launchers"]["rl"]
+        assert rl["type"] == "skypilot"
+        assert rl["monitors"] == ["skypilot_monitor"]
+        assert "open-instruct-3:0.1.0-conda" in rl["config"]["image_id"]
+
+    def test_command_uses_grpo_fast_with_values(self):
+        run = _render_run()
+        assert "open_instruct.grpo_fast" in run
+        assert "--exp_name gb-ifrl-test" in run
+        assert "--learning_rate 5e-7" in run
+        assert "--output_dir /proj/runs/ifrl/checkpoints" in run
+        assert "--model_name_or_path /proj/models/granite4-350m" in run
+
+    def test_heredoc_is_quoted_and_self_contained(self):
+        run = _render_run()
+        assert "<< 'GRPO_CMD'" in run
+        assert "PYTHON_BIN=" in run
+        assert "PYTHONPATH=/stage:/stage/open_instruct" in run
+
+    def test_stop_strings_and_dataset_mixer_quoting(self):
+        run = _render_run()
+        assert "--dataset_mixer '{\"ai2-adapt-dev/rlvr_gsm8k_zs\": 1.0}'" in run
+        assert '--stop_strings "<|end_of_text|>"' in run
+        assert '"<|im_end|>"' in run
+
+    def test_boolean_flags_toggle(self):
+        run = _render_run()
+        assert "--gradient_checkpointing" in run
+        assert "--add_general_reward true" in run
+        assert "--set_weight_decay_on_bias_and_norm false" in run
+        assert "--with_tracking false" in run
+
+    def test_service_env_present_when_set(self):
+        run = _render_run()
+        assert 'RM_SERVER_URL="http://rm-server:8000"' in run
+
+    def test_emits_artifact_line(self):
+        run = _render_run()
+        assert (
+            "LLMB_ARTIFACT_ID:checkpoint "
+            "LLMB_ARTIFACT_PATH:/proj/runs/ifrl/checkpoints" in run
+        )

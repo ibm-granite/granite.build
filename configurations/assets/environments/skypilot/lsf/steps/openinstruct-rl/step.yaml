@@ -85,3 +85,145 @@ outputs:
   optional:
     checkpoint:
       type: model
+
+environment_configs:
+  Skypilot:
+    default_launcher: rl
+    launchers:
+      rl:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/open-instruct-3:0.1.0-conda"
+          run: |
+            set -e
+            echo "=== Open Instruct GRPO RL Training on $(hostname) ==="
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+            {% if config.rl_config.code_server_url %}
+            export CODE_SERVER_URL="{{ config.rl_config.code_server_url }}"
+            {% endif %}
+            {% if config.rl_config.rm_server_url %}
+            export RM_SERVER_URL="{{ config.rl_config.rm_server_url }}"
+            {% endif %}
+
+            # The GRPO command is written to a script via a quoted heredoc
+            # ('GRPO_CMD') so bash does not re-expand the special characters in
+            # --stop_strings and --dataset_mixer. cmd.sh is self-contained:
+            # PYTHON_BIN and PYTHONPATH are defined inside the body.
+            GRPO_SCRIPT="$(mktemp /tmp/gb-grpo-XXXXXX.sh)"
+            cat > "$GRPO_SCRIPT" << 'GRPO_CMD'
+            #!/bin/bash
+            cd /stage
+
+            # Use container's Python: miniconda for conda image, else system
+            # python3.11. Enroot does not preserve Dockerfile ENV PATH.
+            if [[ -x "/opt/miniconda3/bin/python" ]]; then
+                PYTHON_BIN="/opt/miniconda3/bin/python"
+            else
+                PYTHON_BIN="python3.11"
+            fi
+            echo "[$(date)] Using container Python: $PYTHON_BIN"
+
+            export PYTHONPATH=/stage:/stage/open_instruct${PYTHONPATH:+:$PYTHONPATH}
+            $PYTHON_BIN -m open_instruct.grpo_fast \
+              --exp_name {{ config.rl_config.exp_name }} \
+              --run_name {{ config.rl_config.run_name }} \
+              --dataset_mixer '{{ config.rl_config.dataset_mixer }}' \
+              --dataset_eval_mixer '{{ config.rl_config.dataset_eval_mixer }}' \
+              --dataset_train_splits {{ config.rl_config.dataset_train_splits }} \
+              --dataset_eval_splits {{ config.rl_config.dataset_eval_splits }} \
+              --beta {{ config.rl_config.beta }} \
+              --num_unique_prompts_rollout {{ config.rl_config.num_unique_prompts_rollout }} \
+              --num_samples_per_prompt_rollout {{ config.rl_config.num_samples_per_prompt_rollout }} \
+              --cliprange_low {{ config.rl_config.cliprange_low }} \
+              --cliprange_high {{ config.rl_config.cliprange_high }} \
+              --temperature {{ config.rl_config.temperature }} \
+              --deepspeed_stage {{ config.rl_config.deepspeed_stage }} \
+              --seed {{ config.rl_config.seed }} \
+              --output_dir {{ config.rl_config.output_dir }} \
+              --pad_token_id {{ config.rl_config.pad_token_id }} \
+              --per_device_train_batch_size {{ config.rl_config.per_device_train_batch_size }} \
+              --model_name_or_path {{ config.rl_config.model_name_or_path }} \
+              --learning_rate {{ config.rl_config.learning_rate }} \
+              --max_prompt_token_length {{ config.rl_config.max_prompt_token_length }} \
+              --response_length {{ config.rl_config.response_length }} \
+              --ground_truths_key {{ config.rl_config.ground_truths_key }} \
+              --sft_messages_key {{ config.rl_config.sft_messages_key }} \
+              --total_episodes {{ config.rl_config.total_episodes }} \
+              --kl_estimator {{ config.rl_config.kl_estimator }} \
+              --pack_length {{ config.rl_config.pack_length }} \
+              --stop_strings {{ config.rl_config.stop_strings }} \
+              --thinking {{ config.rl_config.thinking }} \
+              --vllm_tensor_parallel_size {{ config.rl_config.vllm_tensor_parallel_size }} \
+              --num_learners_per_node {{ config.rl_config.num_learners_per_node }} \
+              --vllm_num_engines {{ config.rl_config.vllm_num_engines }} \
+              --num_epochs {{ config.rl_config.num_epochs }} \
+              --warmup_ratio {{ config.rl_config.warmup_ratio }} \
+              --num_mini_batches {{ config.rl_config.num_mini_batches }} \
+              --save_freq {{ config.rl_config.save_freq }} \
+              --eval_freq {{ config.rl_config.eval_freq }} \
+              --checkpoint_state_freq {{ config.rl_config.checkpoint_state_freq }} \
+              --checkpoint_state_dir {{ config.rl_config.checkpoint_state_dir }} \
+              --ref_policy_update_freq {{ config.rl_config.ref_policy_update_freq }} \
+              --n_gram {{ config.rl_config.n_gram }} \
+              --allowed_freq {{ config.rl_config.allowed_freq }} \
+              --importance_sampling_level {{ config.rl_config.importance_sampling_level }} \
+              --advantage_normalization_type {{ config.rl_config.advantage_normalization_type }} \
+              --iterator_type {{ config.rl_config.iterator_type }} \
+              --lr_scheduler_type {{ config.rl_config.lr_scheduler_type }} \
+              --loss_mode {{ config.rl_config.loss_mode }} \
+              --entropy_coeff {{ config.rl_config.entropy_coeff }} \
+              --temp_schedule_type {{ config.rl_config.temp_schedule_type }} \
+              --temp_final {{ config.rl_config.temp_final }} \
+              --temp_change_interval {{ config.rl_config.temp_change_interval }} \
+              --vllm_imp_ratio_cap {{ config.rl_config.vllm_imp_ratio_cap }} \
+              --dataset_local_cache_dir {{ config.rl_config.dataset_local_cache_dir }} \
+            {%- if config.rl_config.gradient_checkpointing %}
+              --gradient_checkpointing \
+            {%- endif %}
+            {%- if config.rl_config.async_mode %}
+              --async_mode true \
+            {%- endif %}
+            {%- if config.rl_config.apply_thinking_format_reward %}
+              --apply_thinking_format_reward true \
+            {%- endif %}
+            {%- if config.rl_config.apply_verifiable_reward %}
+              --apply_verifiable_reward true \
+            {%- endif %}
+            {%- if config.rl_config.non_stop_penalty %}
+              --non_stop_penalty true \
+            {%- endif %}
+            {%- if config.rl_config.apply_repetition_penalty %}
+              --apply_repetition_penalty true \
+            {%- endif %}
+            {%- if config.rl_config.add_general_reward %}
+              --add_general_reward true \
+            {%- endif %}
+            {%- if not config.rl_config.set_weight_decay_on_bias_and_norm %}
+              --set_weight_decay_on_bias_and_norm false \
+            {%- endif %}
+            {%- if not config.rl_config.additive_format_reward %}
+              --additive_format_reward false \
+            {%- endif %}
+            {%- if not config.rl_config.filter_zero_advantage %}
+              --filter_zero_advantage false \
+            {%- endif %}
+            {%- if config.rl_config.with_tracking %}
+              --with_tracking
+            {%- else %}
+              --with_tracking false
+            {%- endif %}
+            GRPO_CMD
+            chmod +x "$GRPO_SCRIPT"
+
+            echo "[$(date)] Starting GRPO training"
+            echo "  exp_name: {{ config.rl_config.exp_name }}"
+            echo "  output:   {{ config.rl_config.output_dir }}"
+            bash "$GRPO_SCRIPT"
+
+            # Emit the checkpoint artifact for downstream targets. GRPO writes
+            # checkpoints directly under output_dir (no SFT-style epoch_hf_*
+            # conversion), so the artifact path is output_dir.
+            echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:{{ config.rl_config.output_dir }}"
