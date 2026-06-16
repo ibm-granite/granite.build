@@ -1,6 +1,13 @@
 # Granite.Build
 
+[![CI](https://img.shields.io/github/actions/workflow/status/ibm-granite/granite.build/ci.yml?branch=main&label=CI&cacheSeconds=86400)](https://github.com/ibm-granite/granite.build/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Issues](https://img.shields.io/github/issues/ibm-granite/granite.build?cacheSeconds=86400)](https://github.com/ibm-granite/granite.build/issues)
+[![PRs](https://img.shields.io/github/issues-pr/ibm-granite/granite.build?cacheSeconds=86400)](https://github.com/ibm-granite/granite.build/pulls)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Discussions](https://img.shields.io/github/discussions/ibm-granite/granite.build?cacheSeconds=86400)](https://github.com/ibm-granite/granite.build/discussions)
 
 Build orchestration for LLM pipelines. Define multi-step model workflows in YAML — download, fine-tune, evaluate, and deploy — and run them locally or on cloud infrastructure.
 
