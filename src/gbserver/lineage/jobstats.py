@@ -32,6 +32,17 @@ from gbserver.storage.stored_target_run import StoredTargetRun
 class ILineageStore(ABC):
     """Abstract interface for lineage storage backends."""
 
+    @property
+    def records_centralized_lineage(self) -> bool:
+        """Whether this backend records lineage to a centralized store.
+
+        True for real backends (e.g. WandB); False for the no-op backend used
+        when lineage is disabled (standalone / GBSERVER_LINEAGE_PROVIDER=none),
+        which records nothing. Callers/tests can use this to skip assertions that
+        only make sense for a recording store. Defaults to True.
+        """
+        return True
+
     @abstractmethod
     def add_jobstats_for_build(
         self, storage: SingletonAdminStorage, build_id: str

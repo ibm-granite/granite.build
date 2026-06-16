@@ -53,7 +53,6 @@ from gbserver.api.artifacts import (
 )
 from gbserver.api.auth import get_gh_user
 from gbserver.lineage.jobstats import get_lineage_store
-from gbserver.lineage.noop_jobstats import NoopLineageStore
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,
@@ -495,10 +494,10 @@ class TestArtifactAPI(AbstractAPITest):
 
         # JobStats record with a release_id equal to the output artifact id should have been created.
         job_storage = get_lineage_store()
-        # The NoopLineageStore (used when GBSERVER_LINEAGE_PROVIDER=none, e.g. in
-        # standalone mode) records nothing by design, so the release-id check only
-        # makes sense for a real backing store.
-        if not isinstance(job_storage, NoopLineageStore):
+        # A non-recording store (noop, e.g. standalone/GBSERVER_LINEAGE_PROVIDER=none)
+        # records nothing by design, so the release-id check only makes sense for a
+        # real recording store.
+        if job_storage.records_centralized_lineage:
             # assert not job_storage.does_release_id_exist("should-not-exist")
             assert job_storage.does_release_id_exist(artifact.uuid, 1)
 

@@ -44,6 +44,9 @@ class TestStandaloneLineageProviderDefault:
         assert _resolve_lineage_provider() == "wandb"
 
 
+# Opts out of the autouse _mock_lineage fixture so get_lineage_store() returns the
+# real store (these tests assert the concrete NoopLineageStore / singleton wiring).
+@pytest.mark.live("lineage")
 class TestGetLineageStoreStandalone:
     """Verify get_lineage_store() returns NoopLineageStore when provider is 'none'."""
 

@@ -32,7 +32,6 @@ from libgbtest.storage.utils import (
 
 from gbserver.api.lineage import TargetJobStatsResponse
 from gbserver.lineage.jobstats import get_lineage_store
-from gbserver.lineage.noop_jobstats import NoopLineageStore
 from gbserver.types.status import Status
 
 base_url = "api/v1/lineage"
@@ -46,6 +45,7 @@ class TestLineageAPI(AbstractAPITest):
         response = client.get(f"{base_url}/target/non-existent-uuid")
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
+    @pytest.mark.live("lineage")
     def test_get_target_jobstats(self):
         """Test retrieving JobStats for a valid target with output artifacts."""
         # Set up test support classes
@@ -112,6 +112,7 @@ class TestLineageAPI(AbstractAPITest):
                 assert "sources" in stats
                 assert "targets" in stats
 
+    @pytest.mark.live("lineage")
     def test_get_target_jobstats_no_outputs(self):
         """Test retrieving JobStats for a target with no output artifacts."""
         # Set up test support classes
@@ -161,10 +162,10 @@ class TestLineageAPI(AbstractAPITest):
         assert "jobstats" in resp_json
 
         # For targets with inputs but no outputs, we expect a "no-output" key.
-        # The NoopLineageStore (GBSERVER_LINEAGE_PROVIDER=none, e.g. standalone)
-        # records nothing, so the jobstats dict is legitimately empty there.
+        # A non-recording store (noop, e.g. standalone/GBSERVER_LINEAGE_PROVIDER=none)
+        # legitimately returns no jobstats, so only assert content for a recording one.
         jobstats_dict = resp_json["jobstats"]
-        if not isinstance(get_lineage_store(), NoopLineageStore):
+        if get_lineage_store().records_centralized_lineage:
             assert "no-output" in jobstats_dict
 
     def test_get_build_jobstats_not_found(self):
@@ -292,6 +293,7 @@ class TestLineageAPI(AbstractAPITest):
         # Should have empty targets list
         assert len(resp_json["targets"]) == 0
 
+    @pytest.mark.live("lineage")
     def test_get_build_jobstats(self):
         """Test retrieving JobStats for a build with multiple targets."""
         # Set up test support classes
@@ -386,6 +388,7 @@ class TestLineageAPI(AbstractAPITest):
                     assert "sources" in stats
                     assert "targets" in stats
 
+    @pytest.mark.live("lineage")
     def test_get_build_jobstats_no_outputs(self):
         """Test retrieving JobStats for a build where targets have no outputs."""
         # Set up test support classes
@@ -452,10 +455,10 @@ class TestLineageAPI(AbstractAPITest):
         assert len(targets_list) == 2
 
         # Each target should have a "no-output" key since they have inputs but no
-        # outputs. The NoopLineageStore (GBSERVER_LINEAGE_PROVIDER=none, e.g.
-        # standalone) records nothing, so the jobstats dicts are legitimately empty.
-        is_noop = isinstance(get_lineage_store(), NoopLineageStore)
+        # outputs. A non-recording store (noop, e.g. standalone) returns no
+        # jobstats, so only assert content for a recording store.
+        records = get_lineage_store().records_centralized_lineage
         for jobstats_dict in targets_list:
             assert isinstance(jobstats_dict, dict)
-            if not is_noop:
+            if records:
                 assert "no-output" in jobstats_dict
