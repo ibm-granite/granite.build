@@ -170,3 +170,41 @@ async def test_read_error_does_not_advance_offset(tmp_path):
         )
         evs = await _collect(q)
     assert any(getattr(e.payload, "binding_id", None) == "rm_server_url" for e in evs)
+
+
+@pytest.mark.asyncio
+async def test_offset_resets_when_log_shrinks(tmp_path):
+    env = _make_env()
+    env._cluster_names["L"] = "gb-x"
+    env._job_ids["L"] = 1
+    q: asyncio.Queue = asyncio.Queue()
+    _write_log(tmp_path, "1.log", ["a", "b", "Starting FastAPI server on host9:8000"])
+    with mock.patch(
+        "gbserver.environment.skypilot._download_logs_with_retry",
+        return_value=str(tmp_path),
+    ):
+        await env._download_and_parse_logs(
+            cluster_name="gb-x",
+            job_id=1,
+            launch_id="L",
+            event_q=q,
+            entityrun_metadata=None,
+            event_log_parser_configs=_parser_configs(),
+        )
+        _ = await _collect(q)
+        # log replaced by a SHORTER one that again contains the server line
+        _write_log(tmp_path, "1.log", ["Starting FastAPI server on host42:8000"])
+        await env._download_and_parse_logs(
+            cluster_name="gb-x",
+            job_id=1,
+            launch_id="L",
+            event_q=q,
+            entityrun_metadata=None,
+            event_log_parser_configs=_parser_configs(),
+        )
+        evs = await _collect(q)
+    # shrink detected → re-read from top → new server line emitted
+    binding = next(
+        e for e in evs if getattr(e.payload, "binding_id", None) == "rm_server_url"
+    )
+    assert binding.payload.binding == {"path": "http://host42:8000"}

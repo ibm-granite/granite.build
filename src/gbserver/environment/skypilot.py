@@ -693,28 +693,38 @@ class Skypilot(Environment):
             self._emitted_binding_ids.setdefault(launch_id, set())
             for log_file in log_files:
                 offset = self._parsed_log_offsets[launch_id].get(log_file, 0)
-                max_line = offset
                 read_ok = True
                 try:
                     with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                        for line_num, line in enumerate(f, 1):
-                            if line_num <= offset:
-                                continue
-                            max_line = line_num
-                            line = line.rstrip("\n")
-                            if not line:
-                                continue
-                            events = await self.get_events_from_log_line(
-                                log_line=line,
-                                event_configs=event_log_parser_configs,
-                                event_q=event_q,
-                                entityrun_metadata=entityrun_metadata,
-                                line_num=line_num,
-                            )
-                            for ev in events or []:
-                                bid = getattr(ev.payload, "binding_id", None)
-                                if bid:
-                                    self._emitted_binding_ids[launch_id].add(bid)
+                        lines = f.readlines()
+                    # Log rotated/truncated/re-downloaded shorter than before:
+                    # reset and re-read from the top so we don't silently stop.
+                    if len(lines) < offset:
+                        offset = 0
+                    max_line = offset
+                    for line_num, raw in enumerate(lines, 1):
+                        if line_num <= offset:
+                            continue
+                        max_line = line_num
+                        line = raw.rstrip("\n")
+                        if not line:
+                            continue
+                        # get_events_from_log_line enqueues matched events onto
+                        # event_q itself (and swallows per-config parse errors
+                        # internally); we use its return value only to record
+                        # which binding_ids were emitted, for the per-poll
+                        # backoff in the poll loop.
+                        events = await self.get_events_from_log_line(
+                            log_line=line,
+                            event_configs=event_log_parser_configs,
+                            event_q=event_q,
+                            entityrun_metadata=entityrun_metadata,
+                            line_num=line_num,
+                        )
+                        for ev in events or []:
+                            bid = getattr(ev.payload, "binding_id", None)
+                            if bid:
+                                self._emitted_binding_ids[launch_id].add(bid)
                 except OSError as e:
                     logger.warning("Failed to read log file %s: %s", log_file, e)
                     read_ok = False
