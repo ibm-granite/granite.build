@@ -600,6 +600,7 @@ class RetryHandler:
         await self.environment.retry_workload(
             launch_id=self.launch_id,
             nodes_to_avoid=list(self.nodes_to_avoid) if self.nodes_to_avoid else None,
+            retry_count=self.retry_count,
         )
         logger.info(
             "[RetryHandler launch_id %s] Retry %d/%d completed successfully",

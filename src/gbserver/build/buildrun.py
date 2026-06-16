@@ -109,6 +109,11 @@ class BuildRun(Run):
     starting_targets: List[Target]
     targetruns: Dict[str, TargetRun]
     targetrun_additionaljobs_queue: Dict[str, Queue]
+    # Per-targetrun barrier: set once BuildRun has processed all of a target's
+    # output-artifact events and enqueued every resulting push step. TargetRun
+    # waits on this before declaring its steps done, so queued push steps can't
+    # be orphaned by the additional-steps consumer exiting early.
+    targetrun_pushes_enqueued: Dict[str, asyncio.Event]
     targets_queue: Queue[BuildEvent]
     binding_to_target_mapping: Dict[BindingInfo, List[Target]]
     input_status_update_lock: asyncio.Lock
@@ -124,6 +129,7 @@ class BuildRun(Run):
         self.starting_targets = []
         self.targetruns = {}
         self.targetrun_additionaljobs_queue = {}
+        self.targetrun_pushes_enqueued = {}
         self.targets_queue = Queue()
         self.binding_to_target_mapping = {}
         self.tasks: Set[asyncio.Task] = set()
@@ -403,6 +409,13 @@ class BuildRun(Run):
         self.targetruns[targetrun.id] = targetrun
         if targetrun.id not in self.targetrun_additionaljobs_queue:
             self.targetrun_additionaljobs_queue[targetrun.id] = Queue()
+        if targetrun.id not in self.targetrun_pushes_enqueued:
+            self.targetrun_pushes_enqueued[targetrun.id] = asyncio.Event()
+        # NOTE: leave this TargetRun task *untagged* (no ``.targetrun_id``
+        # attribute). _release_target_pushes filters in-flight tasks by that tag
+        # and must never await this one — it blocks on the pushes-enqueued
+        # barrier, so awaiting it would deadlock. Only the per-event tasks created
+        # in _run_targets_of_build are tagged.
         self.tasks.add(
             asyncio_runner.create_task(
                 targetrun.run(
@@ -410,6 +423,7 @@ class BuildRun(Run):
                     additional_targetsteps_queue=self.targetrun_additionaljobs_queue[
                         targetrun.id
                     ],
+                    pushes_enqueued=self.targetrun_pushes_enqueued[targetrun.id],
                 )
             )
         )
@@ -428,9 +442,14 @@ class BuildRun(Run):
             try:
                 event = await asyncio.wait_for(self.targets_queue.get(), timeout=1.0)
                 asyncio_runner = tg if tg is not None else asyncio
-                self.tasks.add(
-                    asyncio_runner.create_task(self._process_event(event=event, tg=tg))  # type: ignore[arg-type]
+                event_task = asyncio_runner.create_task(
+                    self._process_event(event=event, tg=tg)  # type: ignore[arg-type]
                 )
+                # Tag with the originating targetrun so the artifacts-done
+                # sentinel handler can await this target's in-flight event
+                # processing (see _process_event) without a separate index.
+                event_task.targetrun_id = event.run_metadata.targetrun_id  # type: ignore[union-attr]
+                self.tasks.add(event_task)
             except TimeoutError:
                 if all(task.done() for task in self.tasks):
                     logger.info("all tasks are done")
@@ -445,11 +464,69 @@ class BuildRun(Run):
             raise RunFailed(status_updated=False, exceptions=exceptions)
         logger.debug("BuildRun._run_targets_of_build %s end", self.id)
 
+    async def _release_target_pushes(self: Self, targetrun_id: Optional[str]) -> None:
+        """Release the pushes-enqueued barrier for a target.
+
+        Handles the TARGET_ARTIFACTS_DONE_EVENT sentinel emitted by a TargetRun
+        once it has finished its explicit steps. Because that sentinel rides the
+        same FIFO ``targets_queue`` as the target's artifact events (and the
+        dequeue loop creates+tags one ``_process_event`` task per event before
+        pulling the next), every NEWARTIFACT event for this target has already
+        been dequeued and has a tagged task in ``self.tasks`` by the time we get
+        here. Awaiting those tasks guarantees each ``pushasset`` has enqueued its
+        push step before we set the barrier, so TargetRun's additional-steps
+        consumer cannot exit early and orphan a queued push.
+
+        Correctness rests on two invariants:
+
+        * Synchronous emit: a target's NEWARTIFACT events are all put on the
+          event queue *before* its sentinel — i.e. emitted synchronously within
+          ``targetstep_run.run()``, not from a detached monitor that outlives it.
+          Otherwise the sentinel could overtake a real artifact event and we'd
+          release the barrier before that artifact's push is enqueued.
+        * A real sentinel always carries a truthy ``targetrun_id`` (set by
+          ``TargetRun.get_runmetadata``). This is load-bearing: the in-flight
+          filter below matches tasks by tag, and the TargetRun coroutine task
+          (created untagged in ``__dispatch_target``) is itself blocked on this
+          barrier. A falsy id would match that untagged task and deadlock on its
+          own release, so we assert it rather than silently tolerate an empty id.
+
+        Args:
+            targetrun_id: The targetrun whose artifact processing to await.
+        """
+        assert targetrun_id, "TARGET_ARTIFACTS_DONE_EVENT requires a targetrun_id"
+        current = asyncio.current_task()
+        in_flight = [
+            t
+            for t in self.tasks
+            if t is not current and not t.done()
+            # Tag match. Given the truthy-id assert above this can never match the
+            # untagged (tag=None) TargetRun task, which is blocked on this very
+            # barrier — matching it would deadlock.
+            and getattr(t, "targetrun_id", None) == targetrun_id
+        ]
+        try:
+            if in_flight:
+                await asyncio.gather(*in_flight, return_exceptions=True)
+        finally:
+            # Always release the TargetRun, even if an event task errored — the
+            # exception still surfaces via the self.tasks aggregation below.
+            event = self.targetrun_pushes_enqueued.get(targetrun_id)
+            if event is not None:
+                event.set()
+
     async def _process_event(self: Self, event: BuildEvent, tg: TaskGroup) -> None:
         event_str = truncate(str(event))
         logger.info(
             "build %s received event: %s : %s", self.build_id, event.type, event_str
         )
+        if event.type is BuildEventType.TARGET_ARTIFACTS_DONE_EVENT:
+            # Purely internal coordination sentinel (no payload) — release the
+            # target's push barrier and return BEFORE dispatch_event so it is
+            # never forwarded to the BuildRunner/event store, which can't
+            # serialize a payload-less event.
+            await self._release_target_pushes(event.run_metadata.targetrun_id)
+            return
         if event.type is BuildEventType.ARTIFACT_PUSHED_EVENT:
             event_payload = event.payload
             assert isinstance(event_payload, ArtifactPushedEventPayload)

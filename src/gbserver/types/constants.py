@@ -77,6 +77,12 @@ ENV_VAR_DEFAULT_LOG_LEVEL = ENV_VAR_PREFIX + "_DEFAULT_LOG_LEVEL"
 ENV_VAR_DEFAULT_GITHUB_TOKEN = ENV_VAR_PREFIX + "_GITHUB_TOKEN"
 ENV_VAR_DEBUG_MODE = ENV_VAR_PREFIX + "_DEBUG_MODE"
 ENV_VAR_SKYPILOT_LAUNCH_CONCURRENCY = ENV_VAR_PREFIX + "_SKYPILOT_LAUNCH_CONCURRENCY"
+ENV_VAR_SKYPILOT_PROVISION_MAX_ATTEMPTS = (
+    ENV_VAR_PREFIX + "_SKYPILOT_PROVISION_MAX_ATTEMPTS"
+)
+ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX = (
+    ENV_VAR_PREFIX + "_SKYPILOT_PROVISION_BACKOFF_MAX"
+)
 ENV_VAR_METADATA_STORAGE = ENV_VAR_PREFIX + "_METADATA_STORAGE"
 ENV_VAR_AUTH_MODE = ENV_VAR_PREFIX + "_AUTH_MODE"
 ENV_VAR_API_KEY = ENV_VAR_PREFIX + "_API_KEY"
@@ -257,6 +263,17 @@ GBSERVER_TRUNCATE_LENGTH = int(os.getenv(ENV_VAR_TRUNCATE_LENGTH, "-1"), base=10
 # bottleneck on SSH (e.g. Kubernetes).
 GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY = int(
     os.getenv(ENV_VAR_SKYPILOT_LAUNCH_CONCURRENCY, "4"), base=10
+)
+# Bounded retry of the sky.launch + stream_and_get provisioning step when it
+# fails with a transient resource-acquisition error (e.g. a just-torn-down
+# slurm/lsf allocation not yet released on retry). A few attempts with capped
+# exponential backoff bound the total wait so a genuinely full cluster still
+# fails promptly. Env-overridable (set backoff to 0 in tests).
+GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS = int(
+    os.getenv(ENV_VAR_SKYPILOT_PROVISION_MAX_ATTEMPTS, "4"), base=10
+)
+GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX = int(
+    os.getenv(ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX, "30"), base=10
 )
 DEFAULT_GH_REQUEST_TIMEOUT = int(
     os.getenv(ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT, "60"), base=10

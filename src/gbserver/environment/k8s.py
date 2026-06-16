@@ -1222,6 +1222,7 @@ class K8s(Environment):
         self: Self,
         launch_id: str,
         nodes_to_avoid: Optional[List[str]] = None,
+        retry_count: int = 0,
         **kwargs,
     ) -> None:
         """
@@ -1235,6 +1236,9 @@ class K8s(Environment):
         Args:
             launch_id: The launch identifier
             nodes_to_avoid: List of node names to avoid in the retry
+            retry_count: 1-based relaunch attempt number from ``RetryHandler``.
+                Accepted for interface parity; K8s relies on node anti-affinity
+                rather than per-attempt naming, so it is currently unused.
             **kwargs: Additional parameters (currently unused)
         """
         logger.warning(
@@ -1411,7 +1415,7 @@ class K8s(Environment):
             enabled=retry_enabled,
             entityrun_metadata=entityrun_metadata,
             retry_transparently=retry_transparently,
-        ) as monitor_event_queue:
+        ) as (monitor_event_queue, _handler_task):
             # Create RabbitMQ-based launch monitor with termination appwrapper monitor
             appwrapper_monitor = AppWrapperMonitor(
                 name=release_name,
@@ -1550,7 +1554,7 @@ class K8s(Environment):
             self.node_health_tracker,
             enabled=retry_enabled,
             entityrun_metadata=entityrun_metadata,
-        ) as monitor_event_queue:
+        ) as (monitor_event_queue, _handler_task):
             # Create appwrapper monitor
             appwrapper_monitor = AppWrapperMonitor(
                 name=appwrapper_name,

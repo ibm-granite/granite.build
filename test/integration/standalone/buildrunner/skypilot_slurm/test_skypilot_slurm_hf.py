@@ -29,8 +29,6 @@ _get_yaml_spec_dir below.
 from pathlib import Path
 
 import pytest
-
-pytest.importorskip("kubernetes_asyncio")
 from integration.environment.test_skypilot_slurm_e2e import (
     _slurm_cluster_reachable,
 )
