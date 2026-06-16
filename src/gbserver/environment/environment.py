@@ -497,8 +497,9 @@ class Environment(ABC):
     ):
         """Async context manager for the full RetryHandler lifecycle.
 
-        Yields monitor_queue: the RetryHandler input queue, or event_q when retry
-        is inactive. Pass this queue to all monitors.
+        Creates the RetryHandler and its ``process_events`` task, yields the queue
+        and task for monitors to use, and on exit stops and awaits the task (see
+        Yields/Raises).
 
         Args:
             launch_id: The launch identifier
@@ -512,9 +513,32 @@ class Environment(ABC):
                 with this flag before creating the handler. Pass None (default) to skip
                 wrapping (e.g. when there are no artifact events to filter).
 
+        Yields:
+            tuple[asyncio.Queue, Optional[asyncio.Task]]: ``(monitor_queue, handler_task)``.
+
+            - ``monitor_queue``: the queue every monitor must publish events to. When
+              a handler exists it is the handler's wrapper queue (events flow through
+              the handler, which evaluates retries and forwards downstream); when no
+              handler is created (no retry strategies) it is the downstream ``event_q``
+              (or its ``RetryArtifactFilterQueue`` wrapper) directly.
+            - ``handler_task``: the ``asyncio.Task`` running ``handler.process_events()``,
+              or ``None`` when no handler was created. While the ``async with`` body
+              runs, this task completes only by raising ``WorkloadFailedException`` (its
+              terminal no-retry verdict); a monitor may race its polling against this
+              task to surface that verdict promptly. Do not ``await``/cancel it directly
+              — the context manager owns its lifecycle (see Raises).
+
+        Raises:
+            WorkloadFailedException: Propagated on ``__aexit__`` from ``await task`` when
+                the handler reaches a terminal no-retry verdict. This is the normal way
+                a failed workload fails the step, so callers should let it propagate.
+
         Usage::
 
-            async with self._with_retry_handler(launch_id, event_q, build_id) as monitor_q:
+            async with self._with_retry_handler(launch_id, event_q, build_id) as (
+                monitor_q,
+                handler_task,
+            ):
                 # pass monitor_q to all monitors
         """
         if event_q is None:
@@ -530,7 +554,7 @@ class Environment(ABC):
             launch_id, downstream, build_id, node_health_tracker, entityrun_metadata  # type: ignore[arg-type]
         )
         if handler is None:
-            yield downstream
+            yield downstream, None
             return
         # When retry is disabled, still create the handler with max_retries=0
         # so that terminal failures (e.g. Failed AppWrapper) are detected and
@@ -543,7 +567,7 @@ class Environment(ABC):
                 handler, self._get_retry_test_scenario()
             )
         try:
-            yield handler.get_wrapper_queue()
+            yield handler.get_wrapper_queue(), task
         finally:
             handler.stop()
             await task

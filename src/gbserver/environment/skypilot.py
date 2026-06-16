@@ -609,6 +609,17 @@ class Skypilot(Environment):
         ``retry_workload`` (cleanup + relaunch + sets the per-launch
         retry-complete event) or raises ``WorkloadFailedException`` to
         propagate failure.
+
+        Each poll runs as its own task, raced (``asyncio.wait`` /
+        ``FIRST_COMPLETED``) against the handler task: if the handler reaches a
+        terminal no-retry verdict it raises and completes first, so the verdict
+        surfaces promptly (the cancelled poll never hangs on its deferred
+        ``stop_event`` wait); if the poll completes first it is either a terminal
+        SUCCESS or a retry handoff (``stop_event`` set by ``retry_workload``),
+        and the monitor awaits the relaunch and re-polls the fresh cluster.
+        This lets a relaunched cluster that fails again be retried in turn, up to
+        the handler's budget. When no handler exists (no strategies), the poll
+        raises on terminal failure directly.
         """
         _require_skypilot()
         retry_complete_event = asyncio.Event()
@@ -627,28 +638,51 @@ class Skypilot(Environment):
             enabled=enabled,
             entityrun_metadata=entityrun_metadata,
             retry_transparently=retry_transparently,
-        ) as monitor_queue:
+        ) as (monitor_queue, handler_task):
             try:
                 while True:
                     retry_complete_event.clear()
                     retry_in_progress_event.clear()
-                    await self._poll_skypilot_job(
-                        launch_id=launch_id,
-                        event_q=monitor_queue,
-                        entityrun_metadata=entityrun_metadata,
-                        event_configs=event_configs,
-                        **kwargs,
+                    poll_task = asyncio.create_task(
+                        self._poll_skypilot_job(
+                            launch_id=launch_id,
+                            event_q=monitor_queue,
+                            entityrun_metadata=entityrun_metadata,
+                            event_configs=event_configs,
+                            defer_terminal_failure=handler_task is not None,
+                            **kwargs,
+                        )
                     )
-                    # _poll returned without raising: either a terminal SUCCESS
-                    # (no retry) or stop_event was set by retry_workload to begin
-                    # a retry. retry_in_progress — set before stop_event in
-                    # retry_workload — disambiguates the two.
+                    waiters = {poll_task}
+                    if handler_task is not None:
+                        waiters.add(handler_task)
+                    done, _ = await asyncio.wait(
+                        waiters, return_when=asyncio.FIRST_COMPLETED
+                    )
+
+                    if handler_task is not None and handler_task in done:
+                        # Handler reached a terminal verdict (while the monitor
+                        # body runs it completes only by raising). Cancel the
+                        # deferred poll and return; __aexit__'s ``await task``
+                        # surfaces the handler's WorkloadFailedException.
+                        poll_task.cancel()
+                        try:
+                            await poll_task
+                        except asyncio.CancelledError:
+                            pass
+                        return
+
+                    # poll_task completed first: surface its result (a terminal
+                    # raise when no handler is deferring) or fall through.
+                    await poll_task
+                    # Returned without raising: terminal SUCCESS, or stop_event
+                    # was set by retry_workload to begin a retry. retry_in_progress
+                    # — set before stop_event in retry_workload — disambiguates.
                     if not retry_in_progress_event.is_set():
                         return  # terminal success path; done.
                     # A retry is underway. Wait for the (possibly slow) relaunch
-                    # to finish before polling again, instead of racing it. The
-                    # complete event is set in retry_workload's finally, so it
-                    # fires on both relaunch success and failure.
+                    # to finish before polling again. retry_complete is set in
+                    # retry_workload's finally, on both success and failure.
                     try:
                         await asyncio.wait_for(
                             retry_complete_event.wait(),
@@ -660,7 +694,7 @@ class Skypilot(Environment):
                             f"{RETRY_RELAUNCH_TIMEOUT_SECONDS}s (launch_id={launch_id})"
                         ) from e
                     if self._cluster_names.get(launch_id):
-                        # Relaunch succeeded -> poll the fresh cluster/job to terminal.
+                        # Relaunch succeeded -> poll the fresh cluster/job.
                         continue
                     # Relaunch failed (no fresh cluster). Raise so the step fails
                     # regardless of how the RetryHandler classified the trigger
@@ -678,15 +712,26 @@ class Skypilot(Environment):
         event_q: Optional[asyncio.Queue] = None,
         entityrun_metadata=None,
         event_configs: Optional[List] = None,
+        defer_terminal_failure: bool = False,
         **kwargs,
     ) -> None:
         """Poll ``sky.job_status`` for one launch attempt, emit events.
 
-        Returns when the job reaches a terminal state or ``stop_event``
-        is set. Emits a ``WORKLOAD_STATUS_EVENT(FAILED)`` on a non-success
-        terminal state but does NOT raise — the upstream
-        ``_with_retry_handler`` interprets the FAILED event and decides
-        between retry and final-failure propagation.
+        Emits a ``WORKLOAD_STATUS_EVENT(FAILED)`` on a non-success terminal
+        state so the RetryHandler can decide between retry and final-failure.
+
+        Terminal non-success handling depends on ``defer_terminal_failure``:
+
+        - ``True`` (used when a RetryHandler is active): after emitting the
+          FAILED event, wait on ``stop_event`` and return. ``retry_workload``
+          sets ``stop_event`` to begin a retry; on a no-retry verdict the
+          handler raises and ``monitor_skypilot_monitor`` cancels this poll.
+          The handler — not this coroutine — owns failure propagation.
+        - ``False`` (no RetryHandler to defer to): raise
+          ``WorkloadFailedException`` directly so the step fails.
+
+        Returns on terminal SUCCESS, on ``stop_event`` (retry), or (when
+        deferring) after the terminal FAILED handoff.
         """
         event_log_parser_configs = []
         if event_configs is not None:
@@ -808,17 +853,24 @@ class Skypilot(Environment):
                             ),
                         )
                         await event_q.put(fail_event)
-                    # Raise so the awaiting launch task in
-                    # TargetStepRun._run propagates failure up through
-                    # Run.run, which sets Status.FAILED on the step.
-                    # Without this, terminating in a FAILED JobStatus
-                    # would let the launch task return cleanly and the
-                    # framework would emit STATUS_EVENT(SUCCESS).
-                    raise WorkloadFailedException(
+                    terminal_msg = (
                         f"SkyPilot job {job_id} on {cluster_name} "
                         f"terminated with status {status} "
                         f"(launch_id={launch_id})"
                     )
+                    if defer_terminal_failure:
+                        # A RetryHandler is active: hand the FAILED event off to
+                        # it and wait. It either initiates a retry (sets
+                        # stop_event via retry_workload) or raises a terminal
+                        # verdict, on which monitor_skypilot_monitor cancels this
+                        # poll. Do NOT raise here — that would tear the handler
+                        # down before it can decide (the no-retry gap bug).
+                        await stop_event.wait()
+                        return
+                    # No RetryHandler to defer to: raise so the failure
+                    # propagates up through monitor_skypilot_monitor ->
+                    # Run.run, which sets Status.FAILED on the step.
+                    raise WorkloadFailedException(terminal_msg)
                 return
 
             try:

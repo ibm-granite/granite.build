@@ -873,7 +873,7 @@ class Lsf(Environment):
             enabled=enabled,
             entityrun_metadata=entityrun_metadata,
             retry_transparently=retry_transparently,
-        ) as monitor_queue:
+        ) as (monitor_queue, _handler_task):
             # _logfile_event_configs is pre-populated synchronously by monitor()
             # before any tasks run, so no scheduling yield is needed here.
             resolved_event_configs = event_configs or self._logfile_event_configs.pop(

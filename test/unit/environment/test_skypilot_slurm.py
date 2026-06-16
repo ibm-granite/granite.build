@@ -5,9 +5,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gbserver.environment.skypilot import Skypilot
-from gbserver.types.buildevent import EntityRunMetadata
+from gbserver.types.buildevent import (
+    BuildEvent,
+    BuildEventType,
+    BuildEventWorkloadStatusPayload,
+    EntityRunMetadata,
+)
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import WorkloadFailedException
+from gbserver.types.status import Status
 
 
 @pytest.fixture
@@ -653,7 +659,9 @@ class TestMonitorRetryHandoff:
 
         @asynccontextmanager
         async def fake_with_retry_handler(*_a, **_k):
-            yield slurm_env.event_q
+            # No handler task: _poll raises directly on terminal failure; the
+            # retry path is driven by retry_workload setting stop_event.
+            yield slurm_env.event_q, None
 
         async def fake_cleanup(launch_id, **_):
             slurm_env._cluster_names.pop(launch_id, None)
@@ -709,7 +717,9 @@ class TestMonitorRetryHandoff:
 
         @asynccontextmanager
         async def fake_with_retry_handler(*_a, **_k):
-            yield slurm_env.event_q
+            # No handler task: _poll raises directly on terminal failure; the
+            # retry path is driven by retry_workload setting stop_event.
+            yield slurm_env.event_q, None
 
         async def fake_cleanup(launch_id, **_):
             slurm_env._cluster_names.pop(launch_id, None)
@@ -756,7 +766,9 @@ class TestMonitorRetryHandoff:
 
         @asynccontextmanager
         async def fake_with_retry_handler(*_a, **_k):
-            yield slurm_env.event_q
+            # No handler task: _poll raises directly on terminal failure; the
+            # retry path is driven by retry_workload setting stop_event.
+            yield slurm_env.event_q, None
 
         async def fake_poll(launch_id, **_):
             poll_calls.append(launch_id)
@@ -779,3 +791,185 @@ class TestMonitorRetryHandoff:
                 )
 
         assert poll_calls == ["race-3"]
+
+
+class TestMonitorTerminalNoRetry:
+    """A genuine terminal failure must be routed through the RetryHandler:
+    retried while budget remains, then failed once the handler gives up — never
+    hung, never wrongly succeeded. Exercises the poll-vs-handler-task race with a
+    realistic handler task (the TestMonitorRetryHandoff fakes have none, so they
+    don't cover the handler's terminal-verdict path)."""
+
+    @staticmethod
+    def _kwargs():
+        return {
+            "launcher_config": {"run": "echo", "resources": {}},
+            "config": {},
+            "run_metadata": None,
+            "setup_config": None,
+            "retry_enabled": True,
+            "retry_transparently": None,
+        }
+
+    @staticmethod
+    def _fail_event(launch_id):
+        return BuildEvent(
+            run_metadata=EntityRunMetadata(build_id=launch_id),
+            type=BuildEventType.WORKLOAD_STATUS_EVENT,
+            payload=BuildEventWorkloadStatusPayload(status=Status.FAILED),
+        )
+
+    async def _run_monitor(
+        self,
+        slurm_env,
+        launch_id,
+        poll_outcomes,
+        decisions,
+        poll_calls,
+        launch_calls,
+        *,
+        timeout=5,
+    ):
+        """Drive monitor_skypilot_monitor against a realistic handler task.
+
+        poll_outcomes: per-poll "fail"|"success" (the SkyPilot job state).
+        decisions: per-FAILED-event "retry"|"fail" (the handler's verdict).
+        poll_calls/launch_calls: caller-owned lists, populated as side effects so
+        they remain inspectable even when the monitor raises.
+        """
+        slurm_env._launch_kwargs[launch_id] = self._kwargs()
+        slurm_env._cluster_names[launch_id] = "gb-initial"
+        state = {"idx": 0}
+
+        async def fake_poll(launch_id, event_q=None, defer_terminal_failure=False, **_):
+            poll_calls.append(launch_id)
+            if poll_outcomes[len(poll_calls) - 1] == "success":
+                return
+            await event_q.put(self._fail_event(launch_id))
+            if defer_terminal_failure:
+                await slurm_env._get_launch_stopped_event(launch_id).wait()
+                return
+            raise WorkloadFailedException(f"no-handler terminal {launch_id}")
+
+        async def fake_cleanup(launch_id, **_):
+            slurm_env._cluster_names.pop(launch_id, None)
+            slurm_env._relaunch_attempts.pop(launch_id, None)
+
+        async def fake_launch(launch_id, **_):
+            launch_calls.append(launch_id)
+            slurm_env._cluster_names[launch_id] = f"gb-{launch_id}-r{len(launch_calls)}"
+
+        @asynccontextmanager
+        async def handler_cm(*_a, **_k):
+            queue: asyncio.Queue = asyncio.Queue()
+            stop = {"v": False}
+
+            async def handler():
+                while not stop["v"]:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), 0.05)
+                    except asyncio.TimeoutError:
+                        continue
+                    if event.type != BuildEventType.WORKLOAD_STATUS_EVENT:
+                        continue
+                    i = state["idx"]
+                    state["idx"] += 1
+                    decision = decisions[i] if i < len(decisions) else "fail"
+                    if decision == "retry":
+                        await slurm_env.retry_workload(
+                            launch_id=launch_id, retry_count=i + 1
+                        )
+                    else:
+                        raise WorkloadFailedException(f"terminal no-retry {launch_id}")
+
+            task = asyncio.create_task(handler())
+            try:
+                yield queue, task
+            finally:
+                # Mirror _with_retry_handler.__aexit__: stop then await the task,
+                # surfacing its terminal-verdict raise (or a clean exit).
+                stop["v"] = True
+                await task
+
+        with (
+            patch("gbserver.environment.skypilot.sky", _mock_sky()),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(slurm_env, "_with_retry_handler", handler_cm),
+            patch.object(slurm_env, "_poll_skypilot_job", fake_poll),
+            patch.object(slurm_env, "cleanup_skypilot", fake_cleanup),
+            patch.object(slurm_env, "launch_skypilot", fake_launch),
+        ):
+            await asyncio.wait_for(
+                slurm_env.monitor_skypilot_monitor(
+                    launch_id=launch_id, event_q=slurm_env.event_q
+                ),
+                timeout=timeout,
+            )
+
+    @pytest.mark.asyncio
+    async def test_first_terminal_failure_is_retried(self, slurm_env):
+        """A real terminal failure (not simulated) triggers one relaunch, and the
+        monitor polls the fresh cluster to a clean success."""
+        poll_calls, launch_calls = [], []
+        await self._run_monitor(
+            slurm_env, "nr-a", ["fail", "success"], ["retry"], poll_calls, launch_calls
+        )
+        assert poll_calls == ["nr-a", "nr-a"]
+        assert launch_calls == ["nr-a"]
+        assert "nr-a" not in slurm_env._skypilot_retry_in_progress_events
+
+    @pytest.mark.asyncio
+    async def test_consecutive_terminal_failures_retry_until_success(self, slurm_env):
+        """A relaunched cluster that ALSO fails terminally is retried again — the
+        exact scenario the old code could not recover from."""
+        poll_calls, launch_calls = [], []
+        await self._run_monitor(
+            slurm_env,
+            "nr-b",
+            ["fail", "fail", "success"],
+            ["retry", "retry"],
+            poll_calls,
+            launch_calls,
+        )
+        assert poll_calls == ["nr-b", "nr-b", "nr-b"]
+        assert launch_calls == ["nr-b", "nr-b"]
+
+    @pytest.mark.asyncio
+    async def test_exhausted_budget_fails_step_without_orphan(self, slurm_env):
+        """When the handler gives up (no retry), the monitor raises and never
+        relaunches — no orphaned cluster, no wrong success."""
+        poll_calls, launch_calls = [], []
+        with pytest.raises(WorkloadFailedException):
+            await self._run_monitor(
+                slurm_env, "nr-c", ["fail"], ["fail"], poll_calls, launch_calls
+            )
+        assert poll_calls == ["nr-c"]
+        assert launch_calls == []  # no orphaned relaunch
+        assert "nr-c" not in slurm_env._skypilot_retry_in_progress_events
+
+    @pytest.mark.asyncio
+    async def test_success_path_unaffected(self, slurm_env):
+        """A terminal SUCCESS returns immediately with no retry/relaunch."""
+        poll_calls, launch_calls = [], []
+        await self._run_monitor(
+            slurm_env, "nr-d", ["success"], [], poll_calls, launch_calls
+        )
+        assert poll_calls == ["nr-d"]
+        assert launch_calls == []
+
+    @pytest.mark.asyncio
+    async def test_no_retry_resolves_promptly(self, slurm_env):
+        """The no-retry verdict must surface within seconds with the real
+        RETRY_RELAUNCH_TIMEOUT_SECONDS (1800s) in place — proving it does NOT
+        route through the relaunch-completion wait (the old hang)."""
+        poll_calls, launch_calls = [], []
+        with pytest.raises(WorkloadFailedException):
+            await self._run_monitor(
+                slurm_env,
+                "nr-e",
+                ["fail"],
+                ["fail"],
+                poll_calls,
+                launch_calls,
+                timeout=2,
+            )

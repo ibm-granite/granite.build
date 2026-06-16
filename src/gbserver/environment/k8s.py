@@ -1415,7 +1415,7 @@ class K8s(Environment):
             enabled=retry_enabled,
             entityrun_metadata=entityrun_metadata,
             retry_transparently=retry_transparently,
-        ) as monitor_event_queue:
+        ) as (monitor_event_queue, _handler_task):
             # Create RabbitMQ-based launch monitor with termination appwrapper monitor
             appwrapper_monitor = AppWrapperMonitor(
                 name=release_name,
@@ -1554,7 +1554,7 @@ class K8s(Environment):
             self.node_health_tracker,
             enabled=retry_enabled,
             entityrun_metadata=entityrun_metadata,
-        ) as monitor_event_queue:
+        ) as (monitor_event_queue, _handler_task):
             # Create appwrapper monitor
             appwrapper_monitor = AppWrapperMonitor(
                 name=appwrapper_name,
