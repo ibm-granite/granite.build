@@ -19,10 +19,11 @@ granite.build:
         # dataset:
         #   uri: file:my-data/train.jsonl
       outputs:
+        # The trained adapter (produced by step 1). Step 2's inference result is
+        # printed to the log and written under the step's output dir; it isn't
+        # registered as a separate target output here.
         adapter:
           uri: file:outputs/lora-finetune/adapter/
-        generation:
-          uri: file:outputs/lora-finetune/generation/
       steps:
         # ── Step 1: train the adapter ──────────────────────────────────
         - step_uri: space://steps/lora-finetune

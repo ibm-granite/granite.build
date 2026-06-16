@@ -3,6 +3,27 @@ version: v1
 type: custom
 config: {}
 
+# I/O schema — validated against the build.yaml target at build time.
+inputs:
+  allow_unknown: false
+  required:
+    # Base model to fine-tune -> $LLMB_BASH_INPUT_MODEL in the script.
+    model:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # Training data -> $LLMB_BASH_INPUT_DATASET. Optional: if unbound, the step
+    # synthesizes data from TRAIN_SUBJECT / TRAIN_ANSWER instead (see run.py).
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+outputs:
+  # Script emits the `adapter` artifact dynamically via LLMB_ARTIFACT_ID:adapter.
+  allow_unknown: true
+  optional:
+    adapter:
+      type: model
+
 environment_configs:
   Bash:
     launchers:
