@@ -117,6 +117,13 @@ class Skypilot(Environment):
         # launch_id -> kwargs replayed by retry_workload
         self._launch_kwargs: Dict[str, Dict] = {}
         self._skypilot_retry_complete_events: Dict[str, asyncio.Event] = {}
+        # launch_id -> {log_file_path: number of lines already parsed}.
+        # Lets the per-poll log scrape parse only newly-appended lines so each
+        # event emits exactly once (a SERVICE's log grows while it serves).
+        self._parsed_log_offsets: Dict[str, Dict[str, int]] = {}
+        # launch_id -> set of binding_ids already emitted, used to stop
+        # per-poll scraping once all statically-known bindings are seen.
+        self._emitted_binding_ids: Dict[str, set] = {}
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -741,6 +748,8 @@ class Skypilot(Environment):
             self._cluster_names.pop(launch_id, None)
             self._job_ids.pop(launch_id, None)
             self._launch_kwargs.pop(launch_id, None)
+            self._parsed_log_offsets.pop(launch_id, None)
+            self._emitted_binding_ids.pop(launch_id, None)
 
     async def retry_workload(
         self: Self,
