@@ -9,31 +9,37 @@ the adapter (the base model is left untouched). Training data comes from an opti
 
 ## Inputs
 
-| Name      | Type      | Required | Accepts          | Reaches the script as      |
-|-----------|-----------|----------|------------------|----------------------------|
-| `model`   | `model`   | yes      | `uri`, `binding` | `$LLMB_BASH_INPUT_MODEL`    |
-| `dataset` | `dataset` | no       | `uri`, `binding` | `$LLMB_BASH_INPUT_DATASET`  |
+Everything the step needs is passed in from `build.yaml`, via two different mechanisms
+(the **Set in build.yaml** column says which, and **Reaches script as** says how it arrives):
 
-Training-data resolution:
+- **Artifact inputs** — declared under the target's `inputs:`. gbserver resolves them and
+  auto-exports the local path as `$LLMB_BASH_INPUT_<NAME>`.
+- **Config inputs** — set under the step's `config.bash.env:`. Passed through as the named
+  env var; the script supplies the default when unset.
+
+| Input | Set in build.yaml | Reaches script as | Type / required | Purpose |
+|-------|-------------------|-------------------|-----------------|---------|
+| `model` | `inputs.model` (`uri` or `binding`) | `$LLMB_BASH_INPUT_MODEL` | `model`, **required** | Base model to fine-tune. |
+| `dataset` | `inputs.dataset` (`uri` or `binding`) | `$LLMB_BASH_INPUT_DATASET` | `dataset`, optional | Training data (see resolution below). If omitted, data is synthesized. |
+| `MAX_STEPS` | `config.bash.env.MAX_STEPS` | `$MAX_STEPS` | int, optional (default `10`) | Training steps. Higher = stronger bias (slower on CPU). |
+| `LEARNING_RATE` | `config.bash.env.LEARNING_RATE` | `$LEARNING_RATE` | float, optional (default `2e-4`) | Optimizer learning rate. |
+| `TRAIN_SUBJECT` | `config.bash.env.TRAIN_SUBJECT` | `$TRAIN_SUBJECT` | string, optional (default `the best state in the US`) | What the synthetic data asks about (used only when no `dataset` is bound). |
+| `TRAIN_ANSWER` | `config.bash.env.TRAIN_ANSWER` | `$TRAIN_ANSWER` | string, optional (default `New Jersey`) | The answer the model is biased toward (synthetic data only). |
+
+**Training-data resolution** (the `dataset` input is optional):
 - If `dataset` is bound and points at a `train.jsonl` file (or a directory containing one),
   it is used directly.
 - Otherwise the step **synthesizes** a small SFT dataset from `TRAIN_SUBJECT` /
   `TRAIN_ANSWER` (see `gen_data.py`). Records are `{"messages": [user, assistant]}`.
+
+See [how inputs reach your script](../../../../../../docs/operators/bash-environment.md#how-inputs-reach-your-script)
+for the underlying mechanics.
 
 ## Outputs
 
 | Name      | Type    | Notes |
 |-----------|---------|-------|
 | `adapter` | `model` | The trained LoRA adapter directory (plus a `training_summary.json`). Registered via `LLMB_ARTIFACT_ID:adapter`. |
-
-## Configuration (`config.bash.env`)
-
-| Var             | Default                       | Meaning |
-|-----------------|-------------------------------|---------|
-| `MAX_STEPS`     | `10`                          | Training steps. Higher = stronger bias (and slower on CPU). |
-| `LEARNING_RATE` | `2e-4`                        | Optimizer learning rate. |
-| `TRAIN_SUBJECT` | `the best state in the US`    | What the synthetic data asks about (used only when no `dataset` input is bound). |
-| `TRAIN_ANSWER`  | `New Jersey`                  | The answer the model is biased toward. |
 
 Success marker (stdout): `LORA_FINETUNE_SUCCESS`.
 
