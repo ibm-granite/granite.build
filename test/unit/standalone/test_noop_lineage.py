@@ -43,6 +43,12 @@ class TestStandaloneLineageProviderDefault:
             importlib.reload(constants)
 
 
+# These tests exercise the real get_lineage_store() backend selection, so they
+# must opt out of the autouse _mock_lineage fixture (which otherwise replaces
+# get_lineage_store with a MagicMock in mock mode). The "lakehouse" service key
+# matches that fixture's should_use_live() guard. Provider "none" only
+# instantiates NoopLineageStore, so no real lakehouse connection is made.
+@pytest.mark.live("lakehouse")
 class TestGetLineageStoreStandalone:
     """Verify get_lineage_store() returns NoopLineageStore when provider is 'none'."""
 

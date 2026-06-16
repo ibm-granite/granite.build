@@ -225,7 +225,7 @@ PYTEST_TEST_TARGETS ?= test
 .PHONY: quick-tests 
 quick-tests: 
 	export GB_ENVIRONMENT=STANDALONE &&			\
-	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=FALSE 		\
+	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=false 		\
 		GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
 		GBTEST_MODE=mock				\
 		PYTEST_MARKERS="not ibm" 			\
