@@ -9,6 +9,7 @@ VENV_INSTALL_TARGET='.[dev]'
 ARTIFACTORY_DESTINATION=https://na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-engineering-team-pypi-local
 # Eventually this number (a percentage over all the code) needs to be bumped up.
 MIN_COVERAGE?=20
+PYTEST_TEST_TARGETS ?= test
 
 GB_ENVIRONMENT_LOWER ?= dev
 
@@ -219,7 +220,6 @@ cicd-pr-test:
 quick-tests-setup:
 	$(MAKE) g4os-skypilot-venv
 
-PYTEST_TEST_TARGETS ?= test
 # Setup does not setup slurm, so the skypilot/slurm tests are skipped 
 # Mock most of HF since the action does not have the HF_TOKEN secret on PRs
 .PHONY: quick-tests 
