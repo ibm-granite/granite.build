@@ -65,3 +65,12 @@ def _restore_standalone_env():
             from gbserver.types import constants
 
             importlib.reload(constants)
+
+        # Always reset the lineage-store singleton. A standalone test may have
+        # cached a NoopLineageStore (whether via a leaked env var or a direct
+        # monkeypatch of GBSERVER_LINEAGE_PROVIDER); that singleton would otherwise
+        # persist process-wide and make later lineage/artifact tests on the same
+        # worker see an empty (noop) store.
+        from gbserver.lineage.jobstats import reset_lineage_store
+
+        reset_lineage_store()

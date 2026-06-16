@@ -31,6 +31,8 @@ from libgbtest.storage.utils import (
 )
 
 from gbserver.api.lineage import TargetJobStatsResponse
+from gbserver.lineage.jobstats import get_lineage_store
+from gbserver.lineage.noop_jobstats import NoopLineageStore
 from gbserver.types.status import Status
 
 base_url = "api/v1/lineage"
@@ -158,9 +160,12 @@ class TestLineageAPI(AbstractAPITest):
         assert resp_json["target_id"] == target.uuid
         assert "jobstats" in resp_json
 
-        # For targets with inputs but no outputs, we expect a "no-output" key
+        # For targets with inputs but no outputs, we expect a "no-output" key.
+        # The NoopLineageStore (GBSERVER_LINEAGE_PROVIDER=none, e.g. standalone)
+        # records nothing, so the jobstats dict is legitimately empty there.
         jobstats_dict = resp_json["jobstats"]
-        assert "no-output" in jobstats_dict
+        if not isinstance(get_lineage_store(), NoopLineageStore):
+            assert "no-output" in jobstats_dict
 
     def test_get_build_jobstats_not_found(self):
         """Test that requesting JobStats for a non-existent build returns 404."""
@@ -446,7 +451,11 @@ class TestLineageAPI(AbstractAPITest):
         targets_list = resp_json["targets"]
         assert len(targets_list) == 2
 
-        # Each target should have a "no-output" key since they have inputs but no outputs
+        # Each target should have a "no-output" key since they have inputs but no
+        # outputs. The NoopLineageStore (GBSERVER_LINEAGE_PROVIDER=none, e.g.
+        # standalone) records nothing, so the jobstats dicts are legitimately empty.
+        is_noop = isinstance(get_lineage_store(), NoopLineageStore)
         for jobstats_dict in targets_list:
             assert isinstance(jobstats_dict, dict)
-            assert "no-output" in jobstats_dict
+            if not is_noop:
+                assert "no-output" in jobstats_dict
