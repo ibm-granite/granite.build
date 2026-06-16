@@ -22,9 +22,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
+from gbcommon.types.testing import ENV_VAR_GBTEST_MOCKED_HF_OPS
 from gbcommon.uri.hf import DEFAULT_REVISION, HF_HOST, HfType, HfURI
 from gbcommon.uri.uri import URI
 from gbserver.types.artifact import ArtifactType
+
+
+@pytest.fixture(autouse=True)
+def _disable_hf_op_mocking(monkeypatch):
+    """Disable HF-op mocking for this module.
+
+    These unit tests exercise the *real* HfURI methods (pull/push/exists/delete
+    and resource-group resolution) against a mocked HfApi / snapshot_download.
+    A suite-level GBTEST_MOCKED_HF_OPS (e.g. exported by ``make test-git-cicd-pr``)
+    would otherwise short-circuit those methods before they call the mocked Hub,
+    so clear it here; monkeypatch restores the prior value after each test.
+    """
+    monkeypatch.delenv(ENV_VAR_GBTEST_MOCKED_HF_OPS, raising=False)
+
 
 # ---------------------------------------------------------------------------
 # Unit tests – snapshot_download is mocked, no network required
@@ -397,7 +412,6 @@ def test_pull_downloads_tiny_public_model(tmp_path):
     No token is required; the repo is public.
     Skipped automatically if the Hub is unreachable.
     """
-    pytest.importorskip("huggingface_hub")
 
     uri = HfURI.from_parts(
         owner="hf-internal-testing",
@@ -814,9 +828,16 @@ class TestSpaceNameToResourceGroupName:
         monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "DEV")
         assert HfURI.space_name_to_resource_group_name("public") == "gbspace-public-dev"
 
-    def test_standalone_no_suffix(self, monkeypatch):
+    def test_standalone_uses_write_rg_suffix(self, monkeypatch):
+        # STANDALONE test mode targets the configured write resource group
+        # (GB_TEST_STANDALONE_ENVIRONMENT, "STAGING" by default) so test
+        # artifacts have a real RG to push to.
         monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STANDALONE")
-        assert HfURI.space_name_to_resource_group_name("public") == "gbspace-public"
+        monkeypatch.setattr("gbcommon.uri.hf.GB_TEST_STANDALONE_ENVIRONMENT", "STAGING")
+        assert (
+            HfURI.space_name_to_resource_group_name("public")
+            == "gbspace-public-staging"
+        )
 
     def test_empty_space_name_returns_empty(self, monkeypatch):
         monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STAGING")

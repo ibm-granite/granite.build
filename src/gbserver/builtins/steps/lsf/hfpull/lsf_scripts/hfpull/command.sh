@@ -17,10 +17,25 @@ HF_REPO='{{ hfp.owner }}/{{ hfp.repo }}'
 HF_REVISION='{{ hfp.revision }}'
 HF_TYPE='{{ hfp.hf.type }}'
 
-if [[ -z "${HF_TOKEN:-}" ]]; then
-    echo 'HF_TOKEN is not set'
-    exit 1
+# Mocked iff the op (or "all") is listed in GBTEST_MOCKED_HF_OPS;
+# tolerant of spaces/case to match gbcommon.types.testing.hf_mocked_ops.
+hf_mocked() {
+    local ops=",${GBTEST_MOCKED_HF_OPS:-},"
+    ops=${ops// /}
+    ops=${ops,,}
+    case "$ops" in *,"$1",*|*,all,*) return 0 ;; *) return 1 ;; esac
+}
+if hf_mocked pull; then
+    echo "[GBTEST_MOCKED_HF_OPS] mocking hfpull — skipping real download"
+    mkdir -p "${HF_DEST}"
+    echo mock > "${HF_DEST}/.gbtest_mock_hfpull"
+    echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
+    echo 'hfpull end'
+    exit 0
 fi
+
+# No HF_TOKEN required: public repos download anonymously. When set,
+# `hf download` picks up HF_TOKEN from the env for private/gated repos.
 
 # --------------------------------------------------------------------------
 # Environment variables

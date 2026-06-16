@@ -33,7 +33,15 @@ from huggingface_hub import (
     snapshot_download,
 )
 
-from gbcommon.types.testing import is_hf_mocked
+from gbcommon.types.constants import GB_TEST_STANDALONE_ENVIRONMENT
+from gbcommon.types.testing import (
+    HF_OP_DELETE,
+    HF_OP_EXISTS,
+    HF_OP_PULL,
+    HF_OP_PUSH,
+    HF_OP_RESOURCE_GROUP,
+    is_hf_mocked,
+)
 from gbcommon.uri.uri import URI
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.constants import GB_ENVIRONMENT
@@ -206,7 +214,7 @@ class HfURI(URI):
 
     def exists(self: Self, force: bool = False) -> bool:
         """Check whether the HF repo/bucket (and revision) actually exists on the Hub."""
-        if is_hf_mocked():
+        if is_hf_mocked(HF_OP_EXISTS):
             return True
         try:
             p = self._parts()
@@ -279,8 +287,13 @@ class HfURI(URI):
         if not space_name:
             return ""
         name = f"{_GB_RG_SPACE_NAME_PREFIX}{space_name}"
-        if GB_ENVIRONMENT and GB_ENVIRONMENT.upper() not in ("PROD", "STANDALONE", ""):
+        upper_env = GB_ENVIRONMENT.upper() if GB_ENVIRONMENT else ""
+        if upper_env in ("STAGING", "DEV"):
             name = f"{name}-{GB_ENVIRONMENT.lower()}"
+        elif upper_env == "STANDALONE":
+            # STANDALONE test mode targets the configured write resource group
+            # (staging by default) so test artifacts have a real RG to push to.
+            name = f"{name}-{GB_TEST_STANDALONE_ENVIRONMENT.lower()}"
         logger.debug(
             "Resolved resource group name '%s' from space '%s' (env=%s)",
             name,
@@ -475,8 +488,8 @@ class HfURI(URI):
         so all repo files land directly in *dest*.  For buckets, uses
         ``HfApi.sync_bucket`` to download bucket contents to *dest*.
 
-        Returns ``True`` immediately without network calls when
-        ``GBTEST_MOCK_HF_CALLS=true``.
+        Returns ``True`` immediately without network calls when ``pull`` is
+        listed in ``GBTEST_MOCKED_HF_OPS``.
 
         Token is resolved from ``self.secrets['HF_TOKEN']`` or the ``HF_TOKEN``
         environment variable.  For non-default hosts the ``endpoint`` kwarg is
@@ -489,7 +502,7 @@ class HfURI(URI):
         Returns:
             True if the download succeeded, False on any error.
         """
-        if is_hf_mocked():
+        if is_hf_mocked(HF_OP_PULL):
             return True
         try:
             p = self._parts()
@@ -624,7 +637,7 @@ class HfURI(URI):
         Returns:
             True if deletion succeeded, False on any error.
         """
-        if is_hf_mocked():
+        if is_hf_mocked(HF_OP_DELETE):
             return True
         p = self._parts()
         try:
@@ -759,6 +772,11 @@ class HfURI(URI):
             ValueError: If any of the provided inputs disagree, or if name/space
                 resolution fails.
         """
+        if is_hf_mocked(HF_OP_RESOURCE_GROUP):
+            # When this op is mocked there is no live Hub to query; skip the
+            # resource-group lookup (which would hit the /resource-groups list
+            # endpoint and require a token) and keep any explicit id, else None.
+            return resource_group_id
         if not resource_group_id and not resource_group_name and not space_name:
             return None
         derived_name = (
@@ -886,7 +904,7 @@ class HfURI(URI):
             ValueError: If ``src`` does not exist.
             Exception: Any error from the HuggingFace Hub API is re-raised.
         """
-        if is_hf_mocked():
+        if is_hf_mocked(HF_OP_PUSH):
             return
         p = self._parts()
         repo_id = f"{p.owner}/{p.repo}"

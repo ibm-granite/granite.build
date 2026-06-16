@@ -29,7 +29,7 @@ from gbserver.build.targetstep import TargetStep
 from gbserver.build.targetsteprun import TargetStepRun
 from gbserver.environment.environment import Environment
 from gbserver.types.buildconfig import BuildTargetStepConfig
-from gbserver.types.buildevent import EntityRunMetadata
+from gbserver.types.buildevent import BuildEvent, BuildEventType, EntityRunMetadata
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
@@ -65,6 +65,7 @@ class TargetRun(Run):
         self: Self,
         tg: Optional[TaskGroup] = None,
         additional_targetsteps_queue: Optional[Queue] = None,
+        pushes_enqueued: Optional[Event] = None,
         **kwargs,
     ) -> None:
         self.target_step_runs = set()
@@ -157,6 +158,21 @@ class TargetRun(Run):
                 )
                 self.target_step_runs.add(targetstep_run)
                 await targetstep_run.run(tg)
+            # All explicit steps are done, so all of this target's output-artifact
+            # events have been emitted onto the (FIFO) event queue. Emit a
+            # sentinel after them and wait until BuildRun confirms it has
+            # processed those events and enqueued every output-push step. Only
+            # then signal done — otherwise the additional-steps consumer could
+            # observe an empty queue and exit before the push configs arrive,
+            # orphaning the queued push steps and leaving artifacts pending.
+            await self.event_q.put(
+                BuildEvent(
+                    run_metadata=self.get_runmetadata(),
+                    type=BuildEventType.TARGET_ARTIFACTS_DONE_EVENT,
+                )
+            )
+            if pushes_enqueued is not None:
+                await pushes_enqueued.wait()
             all_targetstep_runs_done.set()
             await run_additional_targetsteps_task
             results = await asyncio.gather(

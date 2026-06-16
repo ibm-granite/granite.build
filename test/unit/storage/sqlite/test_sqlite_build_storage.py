@@ -21,10 +21,6 @@ class SqliteBuildStorageTestSupport(BuildStorageTestSupport):
 class TestSqliteBuildStorage(HIDE_FROM_PYTEST.TestSQLBuildStorage):
 
     @classmethod
-    def _is_cloud_config_required(cls) -> bool:
-        return False
-
-    @classmethod
     def _get_storage_factory(cls):
         return SqliteStorageFactory()
 

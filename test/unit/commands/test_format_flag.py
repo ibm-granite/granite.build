@@ -29,6 +29,7 @@ from gbcli.commands.command_tag import cli as tag_cli
 from gbcli.commands.command_template import cli as template_cli
 from gbcli.commands.command_version import cli as version_cli
 from gbcli.utils.gbconstants import ARTIFACT_LIST_HEADERS
+from gbcommon.types.gbenvconfig import is_standalone
 
 
 class TestFormatFlag:
@@ -41,6 +42,30 @@ class TestFormatFlag:
     def _mock_token(self):
         """Mock get_user_token to return a dummy token."""
         return "test-token"
+
+    def _assert_ok_or_standalone_rejected(self, result):
+        """Assert the expected outcome for a cloud-only command.
+
+        These commands (template/step/secret) are intentionally rejected by
+        ``exit_if_standalone()`` when ``GB_ENVIRONMENT=STANDALONE`` and should
+        succeed otherwise, so the expected behavior depends on the environment
+        the suite runs under.
+
+        Args:
+            result: The Click ``Result`` from ``CliRunner.invoke``.
+        """
+        if is_standalone():
+            assert result.exit_code != 0, (
+                f"Expected non-zero exit in STANDALONE mode, got "
+                f"{result.exit_code}. Output: {result.output}"
+            )
+            assert (
+                "standalone mode" in result.output
+            ), f"Expected a standalone-rejection message. Output: {result.output}"
+        else:
+            assert (
+                result.exit_code == 0
+            ), f"Expected exit code 0, got {result.exit_code}. Output: {result.output}"
 
     # Tag command tests
     @patch("gbcli.commands.command_tag.get_user_token")
@@ -145,9 +170,7 @@ class TestFormatFlag:
 
         result = self.runner.invoke(template_cli, ["list", "--format", "plain"])
 
-        assert (
-            result.exit_code == 0
-        ), f"Expected exit code 0, got {result.exit_code}. Output: {result.output}"
+        self._assert_ok_or_standalone_rejected(result)
 
     @patch("gbcli.commands.command_template.get_user_token")
     @patch("gbcli.commands.command_template.GBClient")
@@ -166,9 +189,7 @@ class TestFormatFlag:
 
         result = self.runner.invoke(template_cli, ["list", "--format", "json"])
 
-        assert (
-            result.exit_code == 0
-        ), f"Expected exit code 0, got {result.exit_code}. Output: {result.output}"
+        self._assert_ok_or_standalone_rejected(result)
 
     @patch("gbcli.commands.command_template.get_user_token")
     @patch("gbcli.commands.command_template.GBClient")
@@ -190,9 +211,7 @@ class TestFormatFlag:
             template_cli, ["describe", "test-template", "--format", "plain"]
         )
 
-        assert (
-            result.exit_code == 0
-        ), f"Expected exit code 0, got {result.exit_code}. Output: {result.output}"
+        self._assert_ok_or_standalone_rejected(result)
 
     # Artifact command tests
     @patch("gbcli.commands.command_artifact.get_user_token")
@@ -338,9 +357,7 @@ class TestFormatFlag:
 
         result = self.runner.invoke(step_cli, ["list", "--format", "plain"])
 
-        assert (
-            result.exit_code == 0
-        ), f"Expected exit code 0, got {result.exit_code}. Output: {result.output}"
+        self._assert_ok_or_standalone_rejected(result)
 
     @patch("gbcli.commands.command_step.get_user_token")
     @patch("gbcli.commands.command_step.GBClient")
@@ -355,9 +372,7 @@ class TestFormatFlag:
 
         result = self.runner.invoke(step_cli, ["list", "--format", "json"])
 
-        assert (
-            result.exit_code == 0
-        ), f"Expected exit code 0, got {result.exit_code}. Output: {result.output}"
+        self._assert_ok_or_standalone_rejected(result)
 
     # Version command tests (uses "simple" and "json" format, not "plain")
     @patch("gbcli.commands.command_version.get_user_token")
@@ -407,9 +422,7 @@ class TestFormatFlag:
 
         result = self.runner.invoke(secret_cli, ["list", "--format", "plain"])
 
-        assert (
-            result.exit_code == 0
-        ), f"Expected exit code 0, got {result.exit_code}. Output: {result.output}"
+        self._assert_ok_or_standalone_rejected(result)
 
     @patch("gbcli.commands.command_secret.get_user_token")
     @patch("gbcli.commands.command_secret.GBClient")
