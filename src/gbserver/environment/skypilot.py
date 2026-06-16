@@ -689,22 +689,42 @@ class Skypilot(Environment):
                 )
                 return
 
+            self._parsed_log_offsets.setdefault(launch_id, {})
+            self._emitted_binding_ids.setdefault(launch_id, set())
             for log_file in log_files:
+                offset = self._parsed_log_offsets[launch_id].get(log_file, 0)
+                max_line = offset
+                read_ok = True
                 try:
                     with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                         for line_num, line in enumerate(f, 1):
+                            if line_num <= offset:
+                                continue
+                            max_line = line_num
                             line = line.rstrip("\n")
-                            if line:
-                                await self.get_events_from_log_line(
-                                    log_line=line,
-                                    event_configs=event_log_parser_configs,
-                                    event_q=event_q,
-                                    entityrun_metadata=entityrun_metadata,
-                                    line_num=line_num,
-                                )
+                            if not line:
+                                continue
+                            events = await self.get_events_from_log_line(
+                                log_line=line,
+                                event_configs=event_log_parser_configs,
+                                event_q=event_q,
+                                entityrun_metadata=entityrun_metadata,
+                                line_num=line_num,
+                            )
+                            for ev in events or []:
+                                bid = getattr(ev.payload, "binding_id", None)
+                                if bid:
+                                    self._emitted_binding_ids[launch_id].add(bid)
                 except OSError as e:
                     logger.warning("Failed to read log file %s: %s", log_file, e)
-                    continue
+                    read_ok = False
+                except Exception as e:  # parse error: swallow, do not advance offset
+                    logger.warning("Failed to parse log file %s: %s", log_file, e)
+                    read_ok = False
+                # Advance the offset only on a clean read so a transient error
+                # re-reads the same lines next poll instead of skipping them.
+                if read_ok:
+                    self._parsed_log_offsets[launch_id][log_file] = max_line
 
         except Exception as e:
             logger.error(
