@@ -215,21 +215,37 @@ cicd-pr-test:
 	$(MAKE) cicd-venv
 	$(MAKE) test-pr 
 
-.PHONY: test-git-cicd-pr-setup
-test-git-cicd-pr-setup:
+.PHONY: quick-tests-setup
+quick-tests-setup:
+	$(MAKE) g4os-skypilot-venv
+
+PYTEST_TEST_TARGETS ?= test
+# Setup does not setup slurm, so the skypilot/slurm tests are skipped 
+# Mock most of HF since the action does not have the HF_TOKEN secret on PRs
+.PHONY: quick-tests 
+quick-tests: 
+	export GB_ENVIRONMENT=STANDALONE &&			\
+	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=FALSE 		\
+		GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
+		GBTEST_MODE=mock				\
+		PYTEST_MARKERS="not ibm" 			\
+		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
+		.test
+
+.PHONY: extended-tests-setup
+extended-tests-setup:
 	$(MAKE) g4os-skypilot-venv
 	$(MAKE) minio-setup 
 	$(MAKE) slurm-setup
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
-.PHONY: test-git-cicd-pr 
-test-git-cicd-pr: 
+.PHONY: extended-tests 
+extended-tests: 
 	export GB_ENVIRONMENT=STANDALONE &&			\
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
-		GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group	\
 		GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
-		PYTEST_TEST_TARGETS="test"			\
+		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
 
 .PHONY: test-pr 
