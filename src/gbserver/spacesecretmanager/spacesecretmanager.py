@@ -18,7 +18,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Dict, Optional, Self, Type
+from typing import Any, ClassVar, Dict, List, Optional, Self, Type
 
 from gbserver.utils.secretmanager_discovery import discover_secret_managers
 
@@ -67,6 +67,38 @@ class SpaceSecretManager(ABC):
         """
         Creates a secret in the secret manager
         """
+
+    # The following management operations back the /space_secrets admin REST API.
+    # They have read-only-safe defaults (writes raise NotImplementedError) so a
+    # backend only needs to override what it supports; read-only backends (e.g.
+    # env) inherit the correct "not writable" behavior.
+
+    def list_secret_names(self: Self, secret_group_name: str = "") -> List[str]:
+        """Return the names of the secrets managed for this space."""
+        return list((self.get_secrets() or {}).keys())
+
+    def update_secret(
+        self: Self,
+        secret_name: str,
+        secret_value: str,
+        secret_type: str = "arbitrary",
+        secret_group_name: str = "",
+    ) -> None:
+        """Update an existing secret. Defaults to create_secret (upsert)."""
+        self.create_secret(
+            secret_name=secret_name,
+            secret_value=secret_value,
+            secret_type=secret_type,
+            secret_group_name=secret_group_name,
+        )
+
+    def delete_secret(
+        self: Self, secret_name: str, secret_group_name: str = ""
+    ) -> None:
+        """Delete a secret from the secret manager."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support deleting secrets"
+        )
 
     @staticmethod
     def get_spacesecretmanager(

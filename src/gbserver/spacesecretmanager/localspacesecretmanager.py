@@ -57,16 +57,20 @@ class LocalSpaceSecretManager(SpaceSecretManager):
         Gets as input the secret_name and first checks if the secret exists in the space and if it does, return it.
         If it does not exist, check if exists in the public space, and return it.
         """
+        secrets = self._load_all_secrets(secrets_dir=self.dir)
         return (
-            {"value": self.secrets[secret_name]}
-            if self.secrets.get(secret_name) is not None
+            {"value": secrets[secret_name]}
+            if secrets.get(secret_name) is not None
             else {}
         )
 
     def get_secrets(
         self: Self, username: Optional[str] = None
     ) -> Optional[Dict[str, str]]:
-        return self.secrets
+        # Reload from disk so reads reflect writes made via create/update/delete on
+        # the same manager instance (the /space_secrets admin API does both). The
+        # source is a local file, so re-reading is cheap.
+        return self._load_all_secrets(secrets_dir=self.dir)
 
     def _load_all_secrets(self: Self, secrets_dir: Path) -> Dict[str, str]:
         """Load all the secrets from a directory by automatically detecting and loading
@@ -153,6 +157,30 @@ class LocalSpaceSecretManager(SpaceSecretManager):
         secrets[secret_name] = secret_value
         self._write_encoded_secrets_to_file(target_file, secrets)
         logger.info("Secret '%s' saved to %s", secret_name, target_file)
+
+    def _resolve_target_file(self: Self, secret_group_name: str) -> Path:
+        """Resolve the on-disk file backing a secret group (mirrors create_secret)."""
+        dir_path = self.dir
+        if dir_path.is_file():
+            return dir_path
+        if not secret_group_name:
+            raise ValueError(
+                f"secret_group_name cannot be empty when 'dir' {self.dir} is a directory."
+            )
+        return dir_path / f"{secret_group_name}.yaml"
+
+    def delete_secret(
+        self: Self, secret_name: str, secret_group_name: str = ""
+    ) -> None:
+        target_file = self._resolve_target_file(secret_group_name)
+        secrets = self._load_from_file(target_file) if target_file.exists() else {}
+        if secret_name not in secrets:
+            raise ValueError(
+                f"Secret '{secret_name}' does not exist in '{target_file.name}'"
+            )
+        del secrets[secret_name]
+        self._write_encoded_secrets_to_file(target_file, secrets)
+        logger.info("Secret '%s' deleted from %s", secret_name, target_file)
 
     def _write_encoded_secrets_to_file(
         self, target_file: Path, secrets: Dict[str, str]
