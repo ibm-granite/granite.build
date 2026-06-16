@@ -238,3 +238,41 @@ def test_non_static_binding_id_disables_backoff():
     ]
     expected, all_static = _expected_binding_ids(cfgs)
     assert all_static is False
+
+
+def test_backoff_gate_stops_after_static_binding_emitted():
+    """The poll loop's need_scrape predicate: once the statically-known
+    binding is recorded as emitted, scraping backs off; before that, it scrapes."""
+    expected, all_static = _expected_binding_ids(_parser_configs())
+    assert all_static is True and expected == {"rm_server_url"}
+
+    def need_scrape(emitted: set) -> bool:
+        # mirrors the gate computed in _poll_skypilot_job
+        return not all_static or not expected or not expected.issubset(emitted)
+
+    assert need_scrape(set()) is True  # nothing emitted yet -> scrape
+    assert need_scrape({"rm_server_url"}) is False  # emitted -> back off
+
+
+def test_backoff_never_when_binding_scraped():
+    """A regex-scraped binding_id (all_static False) must never back off."""
+    from gbserver.environment.environment import EventLogLineParserConfig
+
+    cfgs = [
+        EventLogLineParserConfig.model_validate(
+            {
+                "event_type": "NEWARTIFACT_IN_ENVIRONMENT_EVENT",
+                "line_regex": "X .+",
+                "event_fields": [
+                    {"field_name": "binding_id", "field_regex": "(?<=X )\\S+"},
+                ],
+            }
+        )
+    ]
+    expected, all_static = _expected_binding_ids(cfgs)
+
+    def need_scrape(emitted: set) -> bool:
+        return not all_static or not expected or not expected.issubset(emitted)
+
+    assert need_scrape(set()) is True
+    assert need_scrape({"anything"}) is True  # never backs off

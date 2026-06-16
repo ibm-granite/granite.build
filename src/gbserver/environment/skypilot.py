@@ -91,6 +91,8 @@ def _static_expected_binding_ids(event_log_parser_configs) -> "tuple[set, bool]"
     event_config sets binding_id via a static field_value_template (no regex).
     all_static: False if any NEWARTIFACT binding_id is scraped (field_regex),
     meaning we cannot know the full set and must never back off.
+    A `field_value_template` containing Jinja (`{{ }}`) is treated as
+    non-static (we can't predict the rendered value).
     """
     expected: set = set()
     all_static = True
@@ -98,7 +100,12 @@ def _static_expected_binding_ids(event_log_parser_configs) -> "tuple[set, bool]"
         if cfg.event_type != "NEWARTIFACT_IN_ENVIRONMENT_EVENT":
             continue
         bid = next((f for f in cfg.event_fields if f.field_name == "binding_id"), None)
-        if bid is not None and bid.field_value_template and not bid.field_regex:
+        if (
+            bid is not None
+            and bid.field_value_template
+            and not bid.field_regex
+            and "{{" not in bid.field_value_template
+        ):
             expected.add(bid.field_value_template)
         else:
             all_static = False
@@ -630,7 +637,7 @@ class Skypilot(Environment):
             # Emit artifact/status events while the job runs (not only at
             # terminal status) so long-running SERVICE targets publish their
             # URL binding live. Scrape until all statically-known bindings are
-            # emitted, then stop to avoid repeated sky.download_logs over the
+            # emitted, then stop to avoid repeated log downloads over the
             # server's (possibly hours-long) lifetime. Scrape errors are
             # tolerated and retried next poll.
             status_is_terminal = status is not None and status.is_terminal()
