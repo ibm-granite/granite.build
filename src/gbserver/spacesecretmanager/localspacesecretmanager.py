@@ -33,7 +33,14 @@ logger = get_logger(__name__)
 
 
 class LocalSpaceSecretManager(SpaceSecretManager):
-    """Secret manager that fetches from the local filesystem secrets folder."""
+    """Secret manager that fetches from the local filesystem secrets folder.
+
+    Reads (get_secret/get_secrets) reload from disk on each call, and writes are
+    read-modify-write on the secrets file without file locking, so concurrent
+    writes to the same file could race and lose an update. Acceptable for the
+    standalone single-user use case; multi-client concurrent writes would need a
+    file lock (follow-up if that becomes a real scenario).
+    """
 
     # Users should have access to all secrets in the space_name and in `public` space.
     # If space_name is empty, they should have access to only public space
@@ -43,8 +50,6 @@ class LocalSpaceSecretManager(SpaceSecretManager):
 
     def __init__(self: Self, uri: str, secrets_dir: Path, **kwargs) -> None:
         super().__init__(uri=uri, **kwargs)
-        space_name = ""  # How to get the space_name?
-        self.secrets = self._load_all_secrets(secrets_dir=secrets_dir)
         self.dir = Path(secrets_dir)
 
     def get_secret(

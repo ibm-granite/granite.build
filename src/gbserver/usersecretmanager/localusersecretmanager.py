@@ -36,7 +36,13 @@ _SAFE_USER_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class LocalUserSecretManager(UserSecretManager):
-    """Per-user secret manager that persists to ``<dir>/<user_id>.yaml``."""
+    """Per-user secret manager that persists to ``<dir>/<user_id>.yaml``.
+
+    Writes are read-modify-write on the per-user file without file locking, so
+    concurrent writes to the same user could race and lose an update. This is
+    acceptable for the standalone single-user use case; multi-client concurrent
+    writes would need a file lock (follow-up if that becomes a real scenario).
+    """
 
     def __init__(self: Self, uri: str = "", **kwargs) -> None:
         # The directory comes from the backend's `config: {dir: ...}`; read it via
@@ -78,6 +84,10 @@ class LocalUserSecretManager(UserSecretManager):
     def create_user_secret(
         self: Self, user_id: str, secret_name: str, secret_value: str
     ) -> None:
+        # Create is an upsert: an existing secret of the same name is overwritten
+        # (a warning is logged). This matches the prior IBM-backed behavior, where
+        # the secret manager does not reject a duplicate name, and keeps POST
+        # /(user|space)_secrets idempotent rather than erroring on re-create.
         secrets = self._load(user_id)
         if secret_name in secrets:
             logger.warning(

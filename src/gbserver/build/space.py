@@ -222,6 +222,11 @@ class Space:
         degrades to "no user secrets" and lets the build proceed with the space
         secrets, rather than aborting the whole build. Failures are logged.
         """
+        import os
+
+        from gbserver.types.constants import ENV_VAR_USER_SECRET_MANAGER
+
+        backend = os.getenv(ENV_VAR_USER_SECRET_MANAGER, "(default)")
         try:
             from gbserver.usersecretmanager.factory import get_user_secret_manager
 
@@ -232,9 +237,10 @@ class Space:
             return user_secrets
         except Exception as e:
             logger.warning(
-                "could not fetch user secrets for %s (%s); "
+                "could not fetch user secrets for %s via backend '%s' (%s); "
                 "proceeding with space secrets only",
                 username,
+                backend,
                 e,
             )
             return {}

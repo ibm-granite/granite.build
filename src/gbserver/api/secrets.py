@@ -114,13 +114,52 @@ class _IbmSpaceSecretAdmin:
         self._a.delete_secret(self._group, secret_name)
 
 
+# Cache of SpaceSecretManager instances keyed by (space name, space uri) so the
+# standalone space-secret admin path does not re-pull the space repo (just to read
+# space.yaml) on every /space_secrets request.
+_space_secret_manager_cache: dict = {}
+
+
+def _build_space_secret_manager(space_uri: str):
+    """Build a SpaceSecretManager from a space's space.yaml.
+
+    Pulls the space into a temporary directory (cleaned up on return) only to read
+    space.yaml; the resulting manager reads from its own configured location
+    (env vars / a configured secrets dir), not from the pulled copy.
+    """
+    import glob
+    import tempfile
+    from pathlib import Path
+
+    from gbcommon.uri.uri import URI
+    from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
+    from gbserver.types.spaceconfig import SpaceConfig
+
+    space_yaml_name = "space.yaml"
+    uriobj = URI.get_uri(uri=space_uri, default_scheme="file")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        uriobj.pull(dest=Path(tmpdir))
+        space_yamls = glob.glob(
+            str(Path(tmpdir) / "**" / space_yaml_name), recursive=True
+        )
+        if not space_yamls:
+            raise ValueError(f"No '{space_yaml_name}' found for space at {space_uri}")
+        space_config: SpaceConfig = SpaceConfig.from_yaml(Path(space_yamls[0]))
+
+    SpaceSecretManager.load_spacesecretmanagers()
+    return SpaceSecretManager.get_spacesecretmanager(
+        secret_manager_type=space_config.secret_manager.type,
+        uri=space_uri,
+        **space_config.secret_manager.config,
+    )
+
+
 def _get_space_secret_admin(space: dict):
     """Return a uniform space-secret admin facade for the given space.
 
-    Cloud (ibmcloud) preserves the previous IBM admin behavior. In standalone (or
-    any non-ibmcloud space backend) the pluggable SpaceSecretManager configured in
-    the space's space.yaml is used, so space-secret administration needs no IBM
-    dependency.
+    Outside standalone (cloud) the previous IBM admin behavior is preserved. In
+    standalone mode the pluggable SpaceSecretManager configured in the space's
+    space.yaml is used, so space-secret administration needs no IBM dependency.
     """
     from gbcommon.types.gbenvconfig import is_standalone
 
@@ -131,30 +170,12 @@ def _get_space_secret_admin(space: dict):
             raise Exception("Secret group is unavailable")
         return _IbmSpaceSecretAdmin(admin, group)
 
-    import glob
-    import tempfile
-    from pathlib import Path
-
-    from gbcommon.uri.uri import URI
-    from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
-    from gbserver.types.spaceconfig import SpaceConfig
-
-    space_yaml_name = "space.yaml"
     space_uri = space["git_repo_uri"]
-    uriobj = URI.get_uri(uri=space_uri, default_scheme="file")
-    tmppath = Path(tempfile.mkdtemp())
-    uriobj.pull(dest=tmppath)
-    space_yamls = glob.glob(str(tmppath / "**" / space_yaml_name), recursive=True)
-    if not space_yamls:
-        raise ValueError(f"No '{space_yaml_name}' found for space at {space_uri}")
-    space_config: SpaceConfig = SpaceConfig.from_yaml(Path(space_yamls[0]))
-
-    SpaceSecretManager.load_spacesecretmanagers()
-    manager = SpaceSecretManager.get_spacesecretmanager(
-        secret_manager_type=space_config.secret_manager.type,
-        uri=space_uri,
-        **space_config.secret_manager.config,
-    )
+    cache_key = (space.get("name", ""), space_uri)
+    manager = _space_secret_manager_cache.get(cache_key)
+    if manager is None:
+        manager = _build_space_secret_manager(space_uri)
+        _space_secret_manager_cache[cache_key] = manager
     return _SpaceSecretAdmin(manager, space.get("name", ""))
 
 
