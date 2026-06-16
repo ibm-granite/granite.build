@@ -208,3 +208,33 @@ async def test_offset_resets_when_log_shrinks(tmp_path):
         e for e in evs if getattr(e.payload, "binding_id", None) == "rm_server_url"
     )
     assert binding.payload.binding == {"path": "http://host42:8000"}
+
+
+def _expected_binding_ids(parser_configs):
+    from gbserver.environment.skypilot import _static_expected_binding_ids
+
+    return _static_expected_binding_ids(parser_configs)
+
+
+def test_static_expected_binding_ids_extraction():
+    expected, all_static = _expected_binding_ids(_parser_configs())
+    assert expected == {"rm_server_url"}
+    assert all_static is True
+
+
+def test_non_static_binding_id_disables_backoff():
+    from gbserver.environment.environment import EventLogLineParserConfig
+
+    cfgs = [
+        EventLogLineParserConfig.model_validate(
+            {
+                "event_type": "NEWARTIFACT_IN_ENVIRONMENT_EVENT",
+                "line_regex": "X .+",
+                "event_fields": [
+                    {"field_name": "binding_id", "field_regex": "(?<=X )\\S+"},
+                ],
+            }
+        )
+    ]
+    expected, all_static = _expected_binding_ids(cfgs)
+    assert all_static is False

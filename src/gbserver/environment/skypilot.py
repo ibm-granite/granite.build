@@ -84,6 +84,27 @@ def _download_logs_with_retry(cluster_name: str, job_id: int):
     return result.get(str(job_id))
 
 
+def _static_expected_binding_ids(event_log_parser_configs) -> "tuple[set, bool]":
+    """Return (expected_binding_ids, all_static).
+
+    expected_binding_ids: binding_ids we can predict because a NEWARTIFACT
+    event_config sets binding_id via a static field_value_template (no regex).
+    all_static: False if any NEWARTIFACT binding_id is scraped (field_regex),
+    meaning we cannot know the full set and must never back off.
+    """
+    expected: set = set()
+    all_static = True
+    for cfg in event_log_parser_configs:
+        if cfg.event_type != "NEWARTIFACT_IN_ENVIRONMENT_EVENT":
+            continue
+        bid = next((f for f in cfg.event_fields if f.field_name == "binding_id"), None)
+        if bid is not None and bid.field_value_template and not bid.field_regex:
+            expected.add(bid.field_value_template)
+        else:
+            all_static = False
+    return expected, all_static
+
+
 class Skypilot(Environment):
     """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
 
@@ -526,6 +547,10 @@ class Skypilot(Environment):
                 for config in event_configs
             ]
 
+        expected_binding_ids, all_static_bindings = _static_expected_binding_ids(
+            event_log_parser_configs
+        )
+
         cluster_name = self._cluster_names.get(launch_id)
         job_id = self._job_ids.get(launch_id)
         if not cluster_name:
@@ -601,6 +626,44 @@ class Skypilot(Environment):
                     )
                     await event_q.put(event)
                 last_status = status
+
+            # Emit artifact/status events while the job runs (not only at
+            # terminal status) so long-running SERVICE targets publish their
+            # URL binding live. Scrape until all statically-known bindings are
+            # emitted, then stop to avoid repeated sky.download_logs over the
+            # server's (possibly hours-long) lifetime. Scrape errors are
+            # tolerated and retried next poll.
+            status_is_terminal = status is not None and status.is_terminal()
+            if (
+                not poll_failed
+                and not status_is_terminal
+                and event_log_parser_configs
+                and event_q
+                and entityrun_metadata
+                and job_id is not None
+            ):
+                already = self._emitted_binding_ids.get(launch_id, set())
+                need_scrape = (
+                    not all_static_bindings
+                    or not expected_binding_ids
+                    or not expected_binding_ids.issubset(already)
+                )
+                if need_scrape:
+                    try:
+                        await self._download_and_parse_logs(
+                            cluster_name=cluster_name,
+                            job_id=job_id,
+                            launch_id=launch_id,
+                            event_q=event_q,
+                            entityrun_metadata=entityrun_metadata,
+                            event_log_parser_configs=event_log_parser_configs,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "per-poll log scrape failed for %s (will retry): %s",
+                            cluster_name,
+                            e,
+                        )
 
             if status is not None and status.is_terminal():
                 logger.info(
