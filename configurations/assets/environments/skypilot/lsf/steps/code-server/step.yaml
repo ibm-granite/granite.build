@@ -63,7 +63,13 @@ environment_configs:
           poll_interval_seconds: 30
           event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
-            line_regex: "Starting FastAPI server on"
+            # Use the SAME full-line regex as the NEWARTIFACT event below.
+            # get_events_from_log_line reassigns `log_line = match[0]` after the
+            # first matching config, so a shorter regex here would truncate the
+            # line and stop the NEWARTIFACT config (which needs the host:port)
+            # from matching. Matching the full line keeps host:port intact for
+            # both. Remove once environment.py stops mutating log_line.
+            line_regex: "Starting FastAPI server on .+"
             event_fields:
               - field_name: status
                 field_value_template: "RUNNING"
