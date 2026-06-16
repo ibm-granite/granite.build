@@ -7,7 +7,6 @@ Verifies that:
 4. NoopLineageStore methods are safe no-ops with correct return types
 """
 
-import importlib
 import os
 
 import pytest
@@ -16,31 +15,33 @@ import pytest
 class TestStandaloneLineageProviderDefault:
     """Verify standalone mode defaults GBSERVER_LINEAGE_PROVIDER to 'none'."""
 
-    def test_standalone_sets_lineage_provider_none(self, monkeypatch):
-        from gbserver.types import constants
+    def test_standalone_defaults_lineage_provider_none(self, monkeypatch):
+        # The standalone default is resolved dynamically at call time (it is NOT
+        # written to os.environ, to avoid leaking into other tests/components).
+        from gbserver.lineage.jobstats import _resolve_lineage_provider
 
         monkeypatch.setenv("GB_ENVIRONMENT", "STANDALONE")
         monkeypatch.delenv("GBSERVER_LINEAGE_PROVIDER", raising=False)
-        importlib.reload(constants)
 
-        try:
-            assert os.environ.get("GBSERVER_LINEAGE_PROVIDER") == "none"
-            assert constants.GBSERVER_LINEAGE_PROVIDER == "none"
-        finally:
-            importlib.reload(constants)
+        assert _resolve_lineage_provider() == "none"
+        # The resolution must not pollute the process environment.
+        assert os.environ.get("GBSERVER_LINEAGE_PROVIDER") is None
 
     def test_standalone_preserves_explicit_lineage_provider(self, monkeypatch):
-        from gbserver.types import constants
+        from gbserver.lineage.jobstats import _resolve_lineage_provider
 
         monkeypatch.setenv("GB_ENVIRONMENT", "STANDALONE")
         monkeypatch.setenv("GBSERVER_LINEAGE_PROVIDER", "wandb")
-        importlib.reload(constants)
 
-        try:
-            assert os.environ.get("GBSERVER_LINEAGE_PROVIDER") == "wandb"
-            assert constants.GBSERVER_LINEAGE_PROVIDER == "wandb"
-        finally:
-            importlib.reload(constants)
+        assert _resolve_lineage_provider() == "wandb"
+
+    def test_non_standalone_defaults_lineage_provider_wandb(self, monkeypatch):
+        from gbserver.lineage.jobstats import _resolve_lineage_provider
+
+        monkeypatch.setenv("GB_ENVIRONMENT", "STAGING")
+        monkeypatch.delenv("GBSERVER_LINEAGE_PROVIDER", raising=False)
+
+        assert _resolve_lineage_provider() == "wandb"
 
 
 class TestGetLineageStoreStandalone:
@@ -49,9 +50,8 @@ class TestGetLineageStoreStandalone:
     def test_returns_noop_store(self, monkeypatch):
         from gbserver.lineage import jobstats
         from gbserver.lineage.noop_jobstats import NoopLineageStore
-        from gbserver.types import constants
 
-        monkeypatch.setattr(constants, "GBSERVER_LINEAGE_PROVIDER", "none")
+        monkeypatch.setenv("GBSERVER_LINEAGE_PROVIDER", "none")
 
         jobstats.reset_lineage_store()
         try:
@@ -62,9 +62,8 @@ class TestGetLineageStoreStandalone:
 
     def test_singleton_is_reused(self, monkeypatch):
         from gbserver.lineage import jobstats
-        from gbserver.types import constants
 
-        monkeypatch.setattr(constants, "GBSERVER_LINEAGE_PROVIDER", "none")
+        monkeypatch.setenv("GBSERVER_LINEAGE_PROVIDER", "none")
 
         jobstats.reset_lineage_store()
         try:

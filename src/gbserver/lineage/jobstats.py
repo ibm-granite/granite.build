@@ -80,13 +80,29 @@ def reset_lineage_store() -> None:
     __JOBSTATS_STORAGE = None
 
 
+def _resolve_lineage_provider() -> str:
+    """Resolve the lineage provider at call time.
+
+    GBSERVER_LINEAGE_PROVIDER wins if set; otherwise the default is "none" in
+    standalone mode (no wandb dependency) and "wandb" elsewhere. Resolved
+    dynamically — rather than read from a cached constant or written to os.environ
+    at import — so standalone mode established at runtime is honored and the
+    standalone default never leaks into the process environment.
+    """
+    import os
+
+    from gbcommon.types.gbenvconfig import is_standalone
+    from gbserver.types.constants import ENV_VAR_PREFIX
+
+    default = "none" if is_standalone() else "wandb"
+    return os.getenv(ENV_VAR_PREFIX + "_LINEAGE_PROVIDER", default)
+
+
 def get_lineage_store() -> ILineageStore:
     """Get a singleton instance of the lineage storage backend."""
     global __JOBSTATS_STORAGE
     if __JOBSTATS_STORAGE is None:
-        from gbserver.types.constants import GBSERVER_LINEAGE_PROVIDER
-
-        if GBSERVER_LINEAGE_PROVIDER == "none":
+        if _resolve_lineage_provider() == "none":
             from gbserver.lineage.noop_jobstats import NoopLineageStore
 
             __JOBSTATS_STORAGE = NoopLineageStore()

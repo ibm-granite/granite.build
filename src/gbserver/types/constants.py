@@ -369,14 +369,16 @@ if is_standalone():
         ENV_VAR_METADATA_STORAGE: "sqlite",
         ENV_VAR_DEFAULT_BUILDRUNNER_TYPE: "thread",
         ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS": "true",
-        ENV_VAR_PREFIX + "_LINEAGE_PROVIDER": "none",
     }.items():
         os.environ.setdefault(_k, _v)
-# NOTE: the standalone default for the per-user secret backend (local, IBM-free)
-# is NOT set here. It is resolved dynamically in
-# usersecretmanager.factory.get_user_secret_manager() via is_standalone() at call
-# time, so it works even when standalone mode is established after this module is
-# first imported (e.g. tests / embedded use that set GB_ENVIRONMENT at runtime).
+# NOTE: the standalone defaults for the per-user secret backend (local, IBM-free)
+# and the lineage provider (none) are NOT written to os.environ here. They are
+# resolved dynamically at call time via is_standalone() — in
+# usersecretmanager.factory.get_user_secret_manager() and
+# lineage.jobstats.get_lineage_store() respectively. Writing them via setdefault()
+# would (a) miss the case where standalone mode is established after this module is
+# first imported, and (b) leak the value into the process environment where it
+# can poison unrelated tests/components that read it later.
 
 GBSERVER_PROCEED_WITHOUT_SECRETS = getenv_boolean(
     ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS", False
