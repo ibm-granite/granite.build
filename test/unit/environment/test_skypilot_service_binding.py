@@ -276,3 +276,47 @@ def test_backoff_never_when_binding_scraped():
 
     assert need_scrape(set()) is True
     assert need_scrape({"anything"}) is True  # never backs off
+
+
+@pytest.mark.asyncio
+async def test_terminal_scrape_only_reads_tail(tmp_path):
+    """After a per-poll scrape, a terminal scrape parses only newly-appended
+    lines — no double-emit of earlier events (offset is shared)."""
+    env = _make_env()
+    env._cluster_names["L"] = "gb-x"
+    env._job_ids["L"] = 1
+    q: asyncio.Queue = asyncio.Queue()
+    _write_log(tmp_path, "1.log", ["Starting FastAPI server on host9:8000"])
+    with mock.patch(
+        "gbserver.environment.skypilot._download_logs_with_retry",
+        return_value=str(tmp_path),
+    ):
+        await env._download_and_parse_logs(  # per-poll
+            cluster_name="gb-x",
+            job_id=1,
+            launch_id="L",
+            event_q=q,
+            entityrun_metadata=None,
+            event_log_parser_configs=_parser_configs(),
+        )
+        _ = await _collect(q)
+        _write_log(
+            tmp_path,
+            "1.log",
+            [
+                "Starting FastAPI server on host9:8000",
+                "shutting down",
+            ],
+        )
+        await env._download_and_parse_logs(  # terminal
+            cluster_name="gb-x",
+            job_id=1,
+            launch_id="L",
+            event_q=q,
+            entityrun_metadata=None,
+            event_log_parser_configs=_parser_configs(),
+        )
+        tail = await _collect(q)
+    # The FastAPI line was already emitted in the per-poll pass; the terminal
+    # pass sees only "shutting down" (no NEWARTIFACT match) -> no re-emit.
+    assert all(getattr(e.payload, "binding_id", None) != "rm_server_url" for e in tail)
