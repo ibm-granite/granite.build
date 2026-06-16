@@ -21,8 +21,13 @@ granite.build:
     rm-server:
       environment_uri: space://environments/skypilot/lsf
       outputs:
+        # Static env:// label, NOT env://{{ binding.path }}: the binding payload
+        # is a URL (http://host:8000), and round-tripping env://http://... through
+        # URI parsing mangles it to /http:/host:8000. Consumers read the clean URL
+        # via {{ bindings.<x>.binding.path }} (the monitor payload); this uri is
+        # just the env-store label.
         rm_server_url:
-          uri: "env://{{ binding.path }}"
+          uri: "env://rm-server"
           type: dataset
       steps:
         - step_uri: space://steps/rm-server
@@ -41,8 +46,10 @@ granite.build:
     code-server:
       environment_uri: space://environments/skypilot/lsf
       outputs:
+        # Static env:// label (see rm_server_url note above): avoids env://<URL>
+        # mangling; the clean URL reaches the trainer via the binding payload.
         code_server_url:
-          uri: "env://{{ binding.path }}"
+          uri: "env://code-server"
           type: dataset
       steps:
         - step_uri: space://steps/code-server

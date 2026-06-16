@@ -101,6 +101,13 @@ environment_configs:
             echo "=== Open Instruct GRPO RL Training on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
+            # open_instruct.grpo_fast calls maybe_use_ai2_wandb_entity() ->
+            # wandb.login() unconditionally at startup, BEFORE --with_tracking is
+            # honored, which aborts with "api_key not configured (no-tty)" on a
+            # cluster with no wandb key. Disable wandb entirely; tracking is off.
+            export WANDB_MODE=disabled
+            export WANDB_DISABLED=true
+
             {% if config.rl_config.code_server_url %}
             export CODE_SERVER_URL="{{ config.rl_config.code_server_url }}"
             {% endif %}
