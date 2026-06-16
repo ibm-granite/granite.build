@@ -1,6 +1,5 @@
 """Test that messaging discovery works without aio_pika installed."""
 
-import importlib
 import sys
 import unittest.mock as mock
 
@@ -19,28 +18,21 @@ _RABBITMQ_MODULES = {
 
 class TestOptionalRabbitMQ:
     def test_discover_backends_without_aio_pika(self):
-        """Backend discovery should succeed even if aio_pika is not installed."""
-        # Also remove the already-cached rabbitmq_base module so discover_backends()
-        # tries to re-import it (and fails gracefully due to mocked aio_pika=None)
-        modules_to_mock = {
-            **_RABBITMQ_MODULES,
-            "gbserver.messaging.rabbitmq_base": None,
-        }
-        # rabbitmq_base's top-level `import aio_pika` is gated on
-        # optional_imports.HAS_RABBITMQ, which is computed once at import and
-        # cached. Whether a prior test left it True or False is non-deterministic
-        # under xdist, so pin it to False here to faithfully simulate "aio_pika is
-        # not installed" — otherwise discovery may still import rabbitmq_base and
-        # register the backend regardless of the mocked sys.modules.
-        with (
-            mock.patch.dict(sys.modules, modules_to_mock),
-            mock.patch("gbserver.utils.optional_imports.HAS_RABBITMQ", False),
-        ):
-            messaging_init = importlib.import_module("gbserver.messaging")
-            importlib.reload(messaging_init)
-            backends = messaging_init.discover_backends()
-            # RabbitMQ backend should not be in the list
+        """Backend discovery should skip RabbitMQ when aio_pika is not installed.
+
+        RabbitMQBase.is_available() reports HAS_RABBITMQ, and discover_backends()
+        skips unavailable backends. Simulate the missing dependency by pinning
+        HAS_RABBITMQ False — no sys.modules surgery needed (which would risk
+        corrupting C-extension imports such as numpy for sibling tests).
+        """
+        import gbserver.messaging as messaging_pkg
+
+        with mock.patch("gbserver.messaging.rabbitmq_base.HAS_RABBITMQ", False):
+            backends = messaging_pkg.discover_backends()
+            # RabbitMQ backend should not be offered.
             assert "rabbitmqbase" not in backends
+            # ... but other backends (e.g. NATS) still are.
+            assert "natsmessaging" in backends
 
     def test_messaging_base_importable_without_aio_pika(self):
         """MessagingBase should always be importable."""

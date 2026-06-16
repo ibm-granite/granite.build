@@ -30,6 +30,9 @@ def discover_backends() -> Dict[str, "type"]:
                 inspect.isclass(obj)
                 and issubclass(obj, MessagingBase)
                 and obj is not MessagingBase
+                # Skip backends whose optional dependency is not installed, rather
+                # than offering one that would only fail at instantiation.
+                and obj.is_available()
             ):
                 key = obj.__name__.lower()  # e.g. "rabbitmqbase"
                 backends[key] = obj
