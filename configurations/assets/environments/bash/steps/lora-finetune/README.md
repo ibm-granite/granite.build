@@ -4,9 +4,8 @@ Train a small **LoRA adapter** on a base model in the **bash** environment, and 
 the adapter (the base model is left untouched). Training data comes from an optional
 `dataset` input, or is synthesized from a configurable subject/answer when none is bound.
 
-- **Step asset:** [`configurations/assets/environments/bash/steps/lora-finetune/`](../../configurations/assets/environments/bash/steps/lora-finetune/)
-- **Example build:** [`samples/standalone/lora-finetune/`](../../samples/standalone/lora-finetune/)
-- **Environment mechanics:** [bash-environment.md](../operators/bash-environment.md)
+- **Example build:** [`samples/standalone/lora-finetune/`](../../../../../../samples/standalone/lora-finetune/)
+- **Environment mechanics:** [bash-environment.md](../../../../../../docs/operators/bash-environment.md)
 
 ## Inputs
 
@@ -44,9 +43,9 @@ Success marker (stdout): `LORA_FINETUNE_SUCCESS`.
 
 ## Minimal build.yaml (with stage-2 inference)
 
-The sample pairs this step with [`inference-lora`](inference-lora.md) as two sequential
-steps in **one target**; the adapter is handed off via the target-shared dir (see
-[standalone caveats](../operators/bash-environment.md#standalone-caveats-for-multi-step-pipelines)):
+The sample pairs this step with [`inference-lora`](../inference-lora/README.md) as two
+sequential steps in **one target**; the adapter is handed off via the target-shared dir (see
+[standalone caveats](../../../../../../docs/operators/bash-environment.md#standalone-caveats-for-multi-step-pipelines)):
 
 ```yaml
 granite.build:

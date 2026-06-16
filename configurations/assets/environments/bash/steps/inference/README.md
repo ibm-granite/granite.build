@@ -4,9 +4,8 @@ Generate a response to a single prompt with any causal language model, in the **
 environment (local process — no GPU or container required). The model is chosen entirely in
 `build.yaml`; the step code is model-agnostic.
 
-- **Step asset:** [`configurations/assets/environments/bash/steps/inference/`](../../configurations/assets/environments/bash/steps/inference/)
-- **Example build:** [`samples/standalone/inference/`](../../samples/standalone/inference/)
-- **Environment mechanics:** [bash-environment.md](../operators/bash-environment.md)
+- **Example build:** [`samples/standalone/inference/`](../../../../../../samples/standalone/inference/)
+- **Environment mechanics:** [bash-environment.md](../../../../../../docs/operators/bash-environment.md)
 
 ## Inputs
 
@@ -16,7 +15,7 @@ environment (local process — no GPU or container required). The model is chose
 
 Declare `model` in the target's `inputs:`; gbserver downloads it (e.g. from an `hf:///`
 URI) and exposes its local path automatically. See
-[how inputs reach your script](../operators/bash-environment.md#how-inputs-reach-your-script).
+[how inputs reach your script](../../../../../../docs/operators/bash-environment.md#how-inputs-reach-your-script).
 
 ## Outputs
 

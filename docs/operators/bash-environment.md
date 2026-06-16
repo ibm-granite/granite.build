@@ -156,7 +156,8 @@ cluster, prefer the normal input/binding mechanism.
 ## See also
 
 - [Steps overview](../steps/README.md) and the per-step docs:
-  [inference](../steps/inference.md), [inference-lora](../steps/inference-lora.md),
-  [lora-finetune](../steps/lora-finetune.md).
+  [inference](../../configurations/assets/environments/bash/steps/inference/README.md),
+  [inference-lora](../../configurations/assets/environments/bash/steps/inference-lora/README.md),
+  [lora-finetune](../../configurations/assets/environments/bash/steps/lora-finetune/README.md).
 - [`build.yaml` reference](../users/build-yaml-reference.md)
 - [`environment.yaml` / `step.yaml` reference](environment-yaml-config.md)

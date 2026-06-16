@@ -5,8 +5,7 @@ model and, if an adapter is available, applies it (via `peft`). Runs a *target* 
 (which should surface the adapter's learned bias) and a *control* prompt (to check unrelated
 knowledge is intact).
 
-- **Step asset:** [`configurations/assets/environments/bash/steps/inference-lora/`](../../configurations/assets/environments/bash/steps/inference-lora/)
-- **Environment mechanics:** [bash-environment.md](../operators/bash-environment.md)
+- **Environment mechanics:** [bash-environment.md](../../../../../../docs/operators/bash-environment.md)
 
 ## Inputs
 
@@ -19,7 +18,7 @@ Adapter resolution order:
 1. `$LLMB_BASH_INPUT_ADAPTER` (a bound `adapter` input), if it points at an existing dir;
 2. otherwise the **target-shared handoff dir** keyed on `$LLMB_BASH_TARGET_RUN_ID` — where a
    preceding `lora-finetune` step in the same target drops its adapter
-   (see [standalone caveats](../operators/bash-environment.md#standalone-caveats-for-multi-step-pipelines));
+   (see [standalone caveats](../../../../../../docs/operators/bash-environment.md#standalone-caveats-for-multi-step-pipelines));
 3. otherwise **base model only** (no adapter).
 
 ## Outputs
@@ -41,7 +40,7 @@ Success marker (stdout): `LORA_INFERENCE_SUCCESS`.
 ## Example
 
 This step is exercised as **stage 2** of the LoRA fine-tune sample —
-[`samples/standalone/lora-finetune/build.yaml`](../../samples/standalone/lora-finetune/build.yaml).
+[`samples/standalone/lora-finetune/build.yaml`](../../../../../../samples/standalone/lora-finetune/build.yaml).
 There, step 1 (`lora-finetune`) trains an adapter and step 2 (`inference-lora`) loads
 base + adapter and prints the biased response. The adapter is passed between the two steps
 via the target-shared handoff dir (no explicit `adapter` input needed).

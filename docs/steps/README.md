@@ -53,9 +53,9 @@ receives inputs/config and reports outputs.
 
 | Step | Description | Doc |
 |------|-------------|-----|
-| `inference` | Generate a response to a prompt with any causal LM. | [inference.md](inference.md) |
-| `inference-lora` | Inference with an optional LoRA adapter (target + control prompt). | [inference-lora.md](inference-lora.md) |
-| `lora-finetune` | Train a LoRA adapter (synthetic or supplied dataset). | [lora-finetune.md](lora-finetune.md) |
+| `inference` | Generate a response to a prompt with any causal LM. | [README](../../configurations/assets/environments/bash/steps/inference/README.md) |
+| `inference-lora` | Inference with an optional LoRA adapter (target + control prompt). | [README](../../configurations/assets/environments/bash/steps/inference-lora/README.md) |
+| `lora-finetune` | Train a LoRA adapter (synthetic or supplied dataset). | [README](../../configurations/assets/environments/bash/steps/lora-finetune/README.md) |
 
 ## `step.yaml` structure
 
