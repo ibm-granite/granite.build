@@ -46,10 +46,11 @@ class TestFormatFlag:
     def _assert_ok_or_standalone_rejected(self, result):
         """Assert the expected outcome for a cloud-only command.
 
-        These commands (template/step/secret) are intentionally rejected by
+        These commands (template/step) are intentionally rejected by
         ``exit_if_standalone()`` when ``GB_ENVIRONMENT=STANDALONE`` and should
         succeed otherwise, so the expected behavior depends on the environment
-        the suite runs under.
+        the suite runs under. (``secret`` is no longer rejected in standalone —
+        it asserts success directly.)
 
         Args:
             result: The Click ``Result`` from ``CliRunner.invoke``.
@@ -422,7 +423,11 @@ class TestFormatFlag:
 
         result = self.runner.invoke(secret_cli, ["list", "--format", "plain"])
 
-        self._assert_ok_or_standalone_rejected(result)
+        # `secret` now works in standalone mode too (it routes through the server's
+        # pluggable secret backends), so it must succeed regardless of environment.
+        assert (
+            result.exit_code == 0
+        ), f"Expected exit code 0, got {result.exit_code}. Output: {result.output}"
 
     @patch("gbcli.commands.command_secret.get_user_token")
     @patch("gbcli.commands.command_secret.GBClient")
