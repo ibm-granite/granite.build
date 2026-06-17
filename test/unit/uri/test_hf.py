@@ -34,7 +34,7 @@ def _disable_hf_op_mocking(monkeypatch):
 
     These unit tests exercise the *real* HfURI methods (pull/push/exists/delete
     and resource-group resolution) against a mocked HfApi / snapshot_download.
-    A suite-level GBTEST_MOCKED_HF_OPS (e.g. exported by ``make test-git-cicd-pr``)
+    A suite-level GBTEST_MOCKED_HF_OPS (e.g. exported by ``make quick-tests``)
     would otherwise short-circuit those methods before they call the mocked Hub,
     so clear it here; monkeypatch restores the prior value after each test.
     """
