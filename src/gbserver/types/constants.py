@@ -361,15 +361,22 @@ GBSERVER_IBM_CLOUD_SERVER_LOGS_API_KEY = os.getenv("IBM_CLOUD_SERVER_LOGS_API_KE
 GBSERVER_IBM_CLOUD_SERVER_LOGS_API_URL = os.getenv("IBM_CLOUD_SERVER_LOGS_API_URL", "")
 GBSERVER_DEBUG_MODE = os.getenv(ENV_VAR_DEBUG_MODE, None)
 GBSERVER_GIT_COMMIT = os.getenv(ENV_VAR_PREFIX + "_GIT_COMMIT", "")
-# Standalone defaults — when GB_ENVIRONMENT=STANDALONE, fill in env vars
-# that other constants below will read. Uses setdefault() so explicit user
-# overrides are preserved.
+# Standalone env-var defaults — the single source of truth for "what does
+# STANDALONE default to". Applied two ways, both via setdefault() so explicit
+# user overrides are always preserved:
+#   1. Here at import time, when GB_ENVIRONMENT=STANDALONE is already set, so the
+#      constants below read the standalone values.
+#   2. At runtime by commands.utils.check_and_init_for_standalone(), which reuses
+#      this same dict — covering the case where standalone mode is established
+#      after this module was first imported (e.g. `gbserver standalone` forcing it).
+STANDALONE_ENV_DEFAULTS = {
+    ENV_VAR_METADATA_STORAGE: "sqlite",
+    ENV_VAR_DEFAULT_BUILDRUNNER_TYPE: "thread",
+    ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS": "true",
+    ENV_VAR_AUTH_MODE: "apikey",
+}
 if is_standalone():
-    for _k, _v in {
-        ENV_VAR_METADATA_STORAGE: "sqlite",
-        ENV_VAR_DEFAULT_BUILDRUNNER_TYPE: "thread",
-        ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS": "true",
-    }.items():
+    for _k, _v in STANDALONE_ENV_DEFAULTS.items():
         os.environ.setdefault(_k, _v)
 # NOTE: the standalone defaults for the per-user secret backend (local, IBM-free)
 # and the lineage provider (none) are NOT written to os.environ here. They are
