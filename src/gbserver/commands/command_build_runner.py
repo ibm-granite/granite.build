@@ -24,7 +24,7 @@ import click
 from gbserver.asset.assetstore import Assetstore
 from gbserver.buildrunner.build_utils import finalize_build_status
 from gbserver.buildrunner.buildrunner import BuildRunner
-from gbserver.commands.utils import MutexOption, check_and_init_for_standalone
+from gbserver.commands.utils import MutexOption
 from gbserver.storage import singleton_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.buildconfig import BUILD_FILENAME, BuildConfig
@@ -210,7 +210,6 @@ def cli(
     dry_run: bool = False,
 ):
     """Start build in build storage or loaded from a specified directory"""
-    check_and_init_for_standalone()
     if asset_stores_dir:
         logger.info("loading assets from path: %s", asset_stores_dir)
         Assetstore.load_assetstores_from_dir(Path(asset_stores_dir))

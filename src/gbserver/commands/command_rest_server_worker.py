@@ -19,7 +19,6 @@ import os
 
 import click
 
-from gbserver.commands.utils import check_and_init_for_standalone
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
 
@@ -32,7 +31,6 @@ def cli(
     ctx: CliEnvironment,
 ):
     """REST API server worker psuedo-command. It just initializes the process and gracefully exits."""
-    check_and_init_for_standalone()
     try:
         logger.info("Worker process initialized: pid %d", os.getpid())
     finally:

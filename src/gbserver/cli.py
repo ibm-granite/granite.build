@@ -112,6 +112,16 @@ def gbserver(
         level=ctx.log_level,
         log_file=str(ctx.log_path) if ctx.log_path is not None else None,
     )
+
+    # Process-level standalone setup (env defaults -> constants reload -> sqlite
+    # storage factory -> standalone space access manager). Click invokes this root
+    # group callback before any subcommand, so a single call here covers all
+    # current and future commands. No-op outside STANDALONE; idempotent within it.
+    # command_standalone makes its own call with the space_dir it alone knows.
+    from gbserver.commands.utils import check_and_init_for_standalone
+
+    check_and_init_for_standalone()
+
     if gb_admin_table_prefix is not None:
         logger.warning(
             "Global admin table name prefix set to '%s'!!!", gb_admin_table_prefix

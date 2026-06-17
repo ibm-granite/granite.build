@@ -20,10 +20,7 @@ from typing import Optional
 
 import click
 
-from gbserver.commands.utils import (
-    check_and_init_for_standalone,
-    set_failed_build_status,
-)
+from gbserver.commands.utils import set_failed_build_status
 from gbserver.storage import singleton_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_step_run import StoredStepRun
@@ -70,7 +67,6 @@ def cli(
     fix-zombie-steps:  For steps that are RUNNING, if their builds are not RUNNING, then copy the build status.
     fail-pending-without-pr: Mark PENDING builds that do not have a PR uri as FAILED.
     """
-    check_and_init_for_standalone()
     print(f"\nPerforming admin table operations with the following:")
     print(f"Operation             : {operation}")
     print(f"Dry run               : {dry_run}")

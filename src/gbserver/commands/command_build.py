@@ -27,7 +27,6 @@ from gbcommon.uri.git import GitURI
 from gbserver.build import Build
 from gbserver.build.buildrun import BuildRun
 from gbserver.build.space import Space
-from gbserver.commands.utils import check_and_init_for_standalone
 from gbserver.storage import singleton_storage
 from gbserver.types.buildevent import BuildEvent
 from gbserver.types.constants import truncate
@@ -87,7 +86,6 @@ def get_space(
 @click.group("build")
 def cli():
     """build."""
-    check_and_init_for_standalone()
 
 
 @cli.command()

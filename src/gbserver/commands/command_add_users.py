@@ -22,7 +22,6 @@ import click
 import yaml
 from pydantic import BaseModel
 
-from gbserver.commands.utils import check_and_init_for_standalone
 from gbserver.storage import singleton_storage
 from gbserver.storage.stored_space_user import StoredSpaceUser
 from gbserver.types.context import CliEnvironment, pass_environment
@@ -48,7 +47,6 @@ class AddUsersConfig(BaseModel):
 @pass_environment
 def cli(ctx: CliEnvironment, users_file: Path):
     """Add users to spaces from a YAML file"""
-    check_and_init_for_standalone()
     logger.info("Reading users file: %s", users_file)
 
     with open(users_file, "r", encoding="utf-8") as f:

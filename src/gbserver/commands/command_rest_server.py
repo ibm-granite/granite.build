@@ -21,7 +21,6 @@ import sys
 import click
 import uvicorn
 
-from gbserver.commands.utils import check_and_init_for_standalone
 from gbserver.types.constants import (
     GBSERVER_REST_SERVER_TIMEOUT_KEEP_ALIVE,
     GBSERVER_REST_SERVER_WORKERS,
@@ -46,7 +45,6 @@ def cli(
     port: int,
 ):
     """Start the REST API server."""
-    check_and_init_for_standalone()
     auth_mode = os.getenv("GBSERVER_AUTH_MODE", "github")
 
     if auth_mode in ("ibmid", "multi"):
