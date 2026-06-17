@@ -97,6 +97,16 @@ class TestOpeninstructRlRun:
         assert '--stop_strings "<|end_of_text|>"' in run
         assert '"<|im_end|>"' in run
 
+    def test_home_exported_for_nltk_data(self):
+        # The image's NLTK data (punkt_tab, needed by verifiable rewards) lives
+        # under /stage/nltk_data, found only via $HOME/nltk_data. The SkyPilot
+        # LSF backend sets HOME=/, so the run block must export HOME=/stage
+        # before launching the trainer (matches gbansible). Must be outside the
+        # quoted heredoc so it propagates to the cmd.sh child process.
+        run = _render_run()
+        assert "export HOME=/stage" in run
+        assert run.index("export HOME=/stage") < run.index("<< 'GRPO_CMD'")
+
     def test_boolean_flags_toggle(self):
         run = _render_run()
         assert "--gradient_checkpointing" in run

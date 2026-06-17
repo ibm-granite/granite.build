@@ -101,6 +101,13 @@ environment_configs:
             echo "=== Open Instruct GRPO RL Training on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
+            # The open-instruct-3 image prepopulates NLTK data (incl. the
+            # punkt_tab tokenizer the verifiable-reward functions need) under
+            # /stage/nltk_data, which NLTK only finds via $HOME/nltk_data.
+            # The SkyPilot LSF backend sets HOME=/, so point HOME at /stage
+            # (matches gbansible's bluevela_rl_job HOME=/stage).
+            export HOME=/stage
+
             {% if config.rl_config.code_server_url %}
             export CODE_SERVER_URL="{{ config.rl_config.code_server_url }}"
             {% endif %}
