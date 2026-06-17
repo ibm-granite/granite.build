@@ -39,10 +39,10 @@ from tqdm import tqdm
 from gbcli.utils.cli_config import get_local_build_cache
 from gbcli.utils.gbconstants import (
     BUILD_LOG_DEFAULT_QUERY_RANGE,
-    DMF_URL,
     GBSERVER_ARTIFACT_API,
     SPACE_REPO_NAME,
     SPACE_REPO_ORG,
+    WEB_UI_URL,
 )
 from gbcli.utils.gbserver import get_artifacts, make_gbserver_call
 from gbcli.utils.gh_auth import get_user
@@ -406,27 +406,6 @@ def get_artifact_formatted_name(decoded_artifact: DecodedURIResponse):
             return None
 
 
-def get_artifact_lineage_url(decoded_artifact, artifact_id):
-    type = decoded_artifact.type
-    namespace = decoded_artifact.namespace
-    table = decoded_artifact.table_name
-
-    match type:
-        case "model":
-            model_label = decoded_artifact.model_label
-            revision = decoded_artifact.model_revision
-            return f"{DMF_URL}/v2/models/detail/{namespace}/{table}/{model_label}/{revision}"
-        case "fileset":
-            return f"{DMF_URL}/gb/artifacts/{artifact_id}"
-        case "dataset":
-            dataset = decoded_artifact.dataset_name
-            return f"{DMF_URL}/v2/datasets/detail/{namespace}/{table}/{dataset}"
-        case "table":
-            return f"{DMF_URL}/v2/lakehouse/{namespace}/{table}/details"
-
-    return None
-
-
 def parse_artifact_identifier(identifier: str):
     uuid_format = re.compile(
         r"^[a-z0-9]*-[a-z0-9]*-[a-z0-9]*-[a-z0-9]*-[a-z0-9]*$",
@@ -628,12 +607,7 @@ def get_artifact_uuid(github_token: str, uri: str, callback=None):
 
 
 def get_build_lineage_url(build_id: str):
-    url = f"{DMF_URL}/gb/builds/{build_id}"
-
-    if gb_environment_config().env == "DEV":
-        url = url + "?gb_environment=DEV"
-
-    return url
+    return f"{WEB_UI_URL}/builds/{build_id}"
 
 
 def custom_parse_markdown_str(markdown_str: str) -> str:

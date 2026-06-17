@@ -91,8 +91,8 @@ def short_alphanumeric_lower_hash(input_string):
 
 # def get_lineage_link(build_id: str) -> str:
 #     """Get the link to the lineage given the build ID."""
-#     DMF_URL = gb_environment_config()["dmf_ui"]
-#     build_lineage_url = f"{DMF_URL}/gb/builds/{build_id}/lineage"
+#     WEB_UI_URL = gb_environment_config()["web_ui_url"]
+#     build_lineage_url = f"{WEB_UI_URL}/builds/{build_id}/lineage"
 #     return build_lineage_url
 
 

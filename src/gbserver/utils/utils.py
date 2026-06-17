@@ -29,17 +29,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 from uuid import uuid4
 
+import requests
 import yaml
 
+from gbserver.types.constants import GB_ENVIRONMENT_CONFIG
 from gbserver.types.localsecretsconfig import SpacesConfig
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-import requests
-
-from gbserver.types.constants import GB_ENVIRONMENT_CONFIG
 
 
 def get_uuid() -> str:
@@ -109,10 +106,10 @@ def random_string(length: int = 8):
 
 def get_build_status_link(build_id: str) -> str:
     """Get the link to the build status/lineage given the build ID."""
-    dmf_ui = GB_ENVIRONMENT_CONFIG.dmf_ui
-    if not dmf_ui:
+    web_ui_url = GB_ENVIRONMENT_CONFIG.web_ui_url
+    if not web_ui_url:
         return "(lineage is not available in standalone mode)"
-    return f"{dmf_ui}/gb/builds/{build_id}"
+    return f"{web_ui_url}/builds/{build_id}"
 
 
 def get_dashboard_link(build_id: str) -> str:

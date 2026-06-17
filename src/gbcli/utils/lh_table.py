@@ -22,8 +22,13 @@ def createTableFromFile(
     table_name,
     public,
 ):
-    from lakehouse.assets.table import Table
-    from lakehouse.core import TableDetails
+    try:
+        from lakehouse.assets.table import Table
+        from lakehouse.core import TableDetails
+    except ModuleNotFoundError:
+        raise Exception(
+            "Error: The dmf-lib package is required. Install it with 'pip install dmf-lib' or contact your administrator for access."
+        )
 
     table_details = TableDetails(namespace=namespace, name=table_name, is_public=public)
 

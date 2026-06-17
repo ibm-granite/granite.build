@@ -42,7 +42,7 @@ Most-used group. Submit, monitor, and inspect builds.
 | `gb build cancel <build-id>` | Cancel a running build. |
 | `gb build describe [<build-id> \| -f <build.yaml>]` | Describe targets and steps. |
 | `gb build diff <build-id-1> [<build-id-2>]` | Diff two builds (or one against its `build.yaml`). |
-| `gb build lineage <build-id>` | Show artifact lineage for a build. |
+| `gb build lineage <build-id>` | Show build lineage. |
 | `gb build monitor <build-id>` | Live progress view. |
 | `gb build init [NAME \| -f <file>]` | Scaffold a new build definition. |
 | `gb build update <build-id>` | Update description or tags. |
@@ -63,7 +63,6 @@ Upload, download, register, and tag artifacts produced or consumed by builds.
 | `gb artifact download <artifact-id>` | Download by UUID or URI. |
 | `gb artifact describe <artifact-id>` | Show description and tags. |
 | `gb artifact checksum <artifact-id>` | Print the checksum. |
-| `gb artifact lineage <artifact-id>` | Show artifact lineage. |
 | `gb artifact update <artifact-id>` | Update description or tags. |
 | `gb artifact archive <artifact-id>` / `unarchive` | Toggle archived state. |
 | `gb artifact copy <artifact-id> --space-to <space>` | Copy a model to another space. |

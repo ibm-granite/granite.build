@@ -35,8 +35,8 @@ from gbcli.utils.gbconstants import (
     BUILD_STATUS_HISTORY_HEADERS,
     BUILD_STATUS_STEPS_HEADERS,
     CLIPBOARD_CHAR,
-    DMF_URL,
     PROJECT_NAME,
+    WEB_UI_URL,
 )
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.lh_auth import AuthException
@@ -107,7 +107,7 @@ def execution_status_plain_output(
 - **Status**: {get_status_emoji(details['status'])} {str(details['status']).upper()}
 - **Started**: {datetime_to_string(details['started_at'])}
 - **Updated**: {datetime_to_string(details['updated_at'])}
-- **Status page**: <{DMF_URL}/gb/builds/{details['build_id']}>
+- **Status page**: <{WEB_UI_URL}/builds/{details['build_id']}>
 - **Build PR**: {source_pr}
 - **Targets**
 {"".join(targets_overview)}
@@ -689,7 +689,7 @@ def start(
                 if parse_build_identifier(requested_build_url) == "uuid"
                 else "BUILD_ID"
             )
-            details_page = f"{DMF_URL}/gb/builds/{requested_build_url}"
+            details_page = f"{WEB_UI_URL}/builds/{requested_build_url}"
             if not quiet:
                 click.echo(
                     f"✅ Requested build: {details_page if show_build_id != 'BUILD_ID' else requested_build_url}"
@@ -1081,14 +1081,8 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
     type=click.Choice(["simple", "full", "json"], case_sensitive=True),
     help="Lineage contents format: simple (default), full, json",
 )
-@click.option(
-    "--lakehouse",
-    is_flag=True,
-    default=False,
-    help="Fetch lineage from Lakehouse.",
-)
 @common_options
-def lineage(ctx, build_id, format, lakehouse, skip_version_check, quiet):
+def lineage(ctx, build_id, format, skip_version_check, quiet):
     """
     Access build lineage
 
@@ -1122,32 +1116,23 @@ def lineage(ctx, build_id, format, lakehouse, skip_version_check, quiet):
         )
         sys.exit(1)
 
-    total_steps = 2 if lakehouse else 1
-    if id_format == "url":
-        total_steps += 1
+    total_steps = 2 if id_format == "url" else 1
 
     erase_sequence = "\r\033[K"
 
     def echo_callback(callback_event: str, callback_args: Dict):
         match callback_event:
             case "fetching_build_id" if not quiet:
-                current_step = 2 if lakehouse else 1
                 source_uri = callback_args.get("source_uri", "")
                 click.echo(
-                    f"({current_step}/{total_steps}) Obtaining build ID for build URL {source_uri}.",
+                    f"(1/{total_steps}) Obtaining build ID for build URL {source_uri}.",
                     nl=False,
                 )
             case "fetched_build_id" if not quiet:
-                current_step = 2 if lakehouse else 1
                 source_uri = callback_args.get("source_uri", "")
                 build_id = callback_args.get("build_id", "")
                 click.echo(
-                    f"{erase_sequence}({current_step}/{total_steps}) Obtained build ID {build_id} for build URL {source_uri}."
-                )
-            case "fetching_build_lineage_lh" if not quiet:
-                current_step = 3 if id_format == "url" else 2
-                click.echo(
-                    f"({current_step}/{total_steps}) Fetching build lineage from Lakehouse. This may take a while, please wait..."
+                    f"{erase_sequence}(1/{total_steps}) Obtained build ID {build_id} for build URL {source_uri}."
                 )
             case "fetching_build_lineage_gbserver" if not quiet:
                 click.echo(
@@ -1175,26 +1160,9 @@ def lineage(ctx, build_id, format, lakehouse, skip_version_check, quiet):
     try:
         build_client = GBClient.Build(get_user_token())
 
-        if lakehouse:
-            if not quiet:
-                click.echo(f"(1/{total_steps}) Obtaining Lakehouse token.")
-
-            token = GBClient.Auth.lakehouse_user_token(
-                build_client.github_token, callback=echo_callback
-            )
-
-            if not token:
-                return
-            if not quiet:
-                click.echo(f"Lakehouse token obtained successfully!.")
-
-            status, lineage_dict = build_client.build_lineage_lh(
-                token, build_id, id_format, echo_callback
-            )
-        else:
-            status, lineage_dict = build_client.build_lineage(
-                build_id, id_format, echo_callback
-            )
+        status, lineage_dict = build_client.build_lineage(
+            build_id, id_format, echo_callback
+        )
 
         if status in ["pending", "running", "submitted"]:
             click.echo(
