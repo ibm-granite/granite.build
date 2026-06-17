@@ -124,7 +124,22 @@ class Bash(Environment):
                 cwd = Path(".").resolve()
                 logger.info("Falling back to current working directory: %s", cwd)
 
-            env = {**self._env, **launcher_config.get("env", {})}
+            # Env precedence (lowest to highest):
+            #   1. self._env       — space secrets + environment.yaml `env`
+            #   2. launcher `env`  — defaults declared in the step.yaml launcher
+            #   3. config.bash.env — per-build overrides from build.yaml's step
+            #                        config, so a build can set step parameters
+            #                        (e.g. PROMPT, MAX_STEPS) without editing the
+            #                        step. Mirrors the docker launcher's
+            #                        `config.docker.env` handling.
+            step_config = kwargs.get("config", {}) or {}
+            bash_config = step_config.get("bash", {}) or {}
+            bash_config_env = bash_config.get("env", {}) or {}
+            env = {
+                **self._env,
+                **launcher_config.get("env", {}),
+                **{str(k): str(v) for k, v in bash_config_env.items()},
+            }
             logger.debug(f"launch_nohup() called with launch_id={launch_id}")
             logger.debug(f"launcher_config = {launcher_config}")
             step_name = kwargs.get("step", {}).get("name", "")

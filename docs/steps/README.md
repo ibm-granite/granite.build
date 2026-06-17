@@ -44,6 +44,19 @@ These steps ship with gbserver in `src/gbserver/builtins/steps/`:
 | `cosrclone` | Transfer files using rclone (supports COS, S3, and many backends). |
 | `image` | Run a custom container image (BYOI). |
 
+## Bash example steps
+
+These steps ship under `configurations/assets/environments/bash/steps/` and demonstrate
+inference and LoRA fine-tuning in the local **bash** environment (no GPU or container
+required). See [bash-environment.md](../operators/bash-environment.md) for how a bash step
+receives inputs/config and reports outputs.
+
+| Step | Description | Doc |
+|------|-------------|-----|
+| `inference` | Generate a response to a prompt with any causal LM. | [README](../../configurations/assets/environments/bash/steps/inference/README.md) |
+| `inference-lora` | Inference with an optional LoRA adapter (target + control prompt). | [README](../../configurations/assets/environments/bash/steps/inference-lora/README.md) |
+| `lora-finetune` | Train a LoRA adapter (synthetic or supplied dataset). | [README](../../configurations/assets/environments/bash/steps/lora-finetune/README.md) |
+
 ## `step.yaml` structure
 
 A step definition lives in a directory with a `step.yaml`:
@@ -71,6 +84,7 @@ config:
 | Field | Description |
 |-------|-------------|
 | `name` | Step identifier. |
+| `inputs` / `outputs` | Optional I/O schema (`required`/`optional` maps of `name → {type, accept}`, plus `allow_unknown`). Validated against the build's target inputs/outputs before the build runs — a missing required input fails fast. See the [bash example steps](#bash-example-steps) for concrete schemas. |
 | `launchers` | Map of environment type → launch config. The environment selects which launcher to use. |
 | `monitors` | How gbserver detects step completion (log patterns, exit codes). |
 | `config` | Default configuration (overridable by the build.yaml `step.config`). |
@@ -110,6 +124,7 @@ Three approaches for running custom code:
 
 ## See also
 
+- [Bash environment](../operators/bash-environment.md) — how bash steps execute (inputs, config, outputs)
 - [Templates](../templates/README.md) — reusable build.yaml patterns
 - [`build.yaml` reference](../users/build-yaml-reference.md) — full schema
 - [`environment.yaml` reference](../operators/environment-yaml-config.md) — environment definitions
