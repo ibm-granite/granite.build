@@ -60,7 +60,12 @@ class TestStandalonePublicSpaceYaml:
     def test_secret_manager(self):
         with open(LOCAL_SPACE_DIR / "space.yaml") as f:
             data = yaml.safe_load(f)
-        assert data["secret_manager"]["type"] == "env"
+        # The standalone space uses the writable `local` backend so that
+        # `gb secret create` works (the `env` backend is read-only). No
+        # secrets_dir is configured, so LocalSpaceSecretManager defaults it
+        # to <gb_home>/space_secrets.
+        assert data["secret_manager"]["type"] == "local"
+        assert data["secret_manager"]["config"] == {}
 
     def test_default_environment_variable(self):
         with open(LOCAL_SPACE_DIR / "space.yaml") as f:
