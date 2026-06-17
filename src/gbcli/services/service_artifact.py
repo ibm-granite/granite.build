@@ -761,7 +761,7 @@ def register_artifact_hf(
         "description": description,
         "checksum": checksum,
         "status": status,
-        "tags": format_artifact_tags(tags),
+        "tags": tags,
     }
 
     if type == "model":
