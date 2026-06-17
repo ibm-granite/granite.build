@@ -9,6 +9,7 @@ from gbserver.storage import singleton_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
+from gbserver.types.constants import STANDALONE_ENV_DEFAULTS
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
@@ -101,15 +102,6 @@ def _set_build_status(
     print(f"Build with id {build_id} status updated to {status}")
 
 
-# Standalone-friendly env var defaults — only set if not already defined.
-_STANDALONE_ENV_DEFAULTS = {
-    "GB_ENVIRONMENT": "STANDALONE",
-    "GBSERVER_METADATA_STORAGE": "sqlite",
-    "GBSERVER_DEFAULT_BUILDRUNNER_TYPE": "thread",
-    "GBSERVER_AUTH_MODE": "apikey",
-}
-
-
 def _migrate_legacy_sqlite_db() -> None:
     """One-time migration of the standalone SQLite db from ~/.llmb to the GB home dir.
 
@@ -182,8 +174,11 @@ def check_and_init_for_standalone(space_dir: Optional[str] = None) -> None:
     if not is_standalone():
         return
 
-    # 1. Set defaults only if not already set (user may override these).
-    for key, value in _STANDALONE_ENV_DEFAULTS.items():
+    # 1. Apply the shared standalone env-var defaults (single source of truth in
+    #    constants.STANDALONE_ENV_DEFAULTS), only where not already set so the
+    #    user can override. GB_ENVIRONMENT is not in that dict — it's the trigger
+    #    (the is_standalone() guard above), already set by the time we get here.
+    for key, value in STANDALONE_ENV_DEFAULTS.items():
         os.environ.setdefault(key, value)
 
     # 2. Re-evaluate constants captured at import time before our env-var
