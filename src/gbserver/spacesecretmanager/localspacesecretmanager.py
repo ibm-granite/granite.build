@@ -18,9 +18,11 @@
 Secret manager from local directory.
 """
 
+import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Self
+from typing import Any, Dict, Optional, Self, Union
 
+from gbcommon.types.constants import get_gb_home_dir
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
 from gbserver.utils.logger import get_logger
 from gbserver.utils.secretfile import (
@@ -48,9 +50,21 @@ class LocalSpaceSecretManager(SpaceSecretManager):
 
     SUPPORTED_EXTENSIONS = SUPPORTED_SECRET_FILE_EXTENSIONS
 
-    def __init__(self: Self, uri: str, secrets_dir: Path, **kwargs) -> None:
+    def __init__(
+        self: Self, uri: str, secrets_dir: Optional[Union[str, Path]] = None, **kwargs
+    ) -> None:
         super().__init__(uri=uri, **kwargs)
-        self.dir = Path(secrets_dir)
+        # secrets_dir is optional: when omitted (e.g. a space.yaml with `config: {}`),
+        # default to <gb_home>/space_secrets — the sibling of the per-user secrets dir
+        # (see usersecretmanager.factory). Resolved at call time via get_gb_home_dir()
+        # so a GB_HOME_DIR override is honored. ~ and ${ENV} in an explicit value are
+        # expanded so a committed space.yaml can carry a portable path.
+        raw_dir = (
+            os.path.join(get_gb_home_dir(), "space_secrets")
+            if secrets_dir is None
+            else str(secrets_dir)
+        )
+        self.dir = Path(os.path.expanduser(os.path.expandvars(raw_dir)))
 
     def get_secret(
         self: Self,
