@@ -71,7 +71,6 @@ ARTIFACT_GUARDED_SUBCOMMANDS = [
         "artifact",
         ["copy", "some-id", "--space-to", "s"],
     ),
-    ("gbcli.commands.command_artifact", "artifact", ["lineage", "some-id"]),
 ]
 
 # Artifact subcommands that must remain runnable in standalone mode (they only talk to the

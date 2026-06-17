@@ -63,7 +63,6 @@ _SUBCOMMANDS = [
     ("artifact", "copy"),
     ("artifact", "checksum"),
     ("artifact", "register"),
-    ("artifact", "lineage"),
     ("build", "list"),
     ("build", "describe"),
     ("build", "start"),

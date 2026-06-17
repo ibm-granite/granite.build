@@ -163,42 +163,7 @@ View the list of both unrestricted use and restricted-use models in the project 
 For any help on how to use each option in more details see `llmb artifact push --help`. For more information, ask a question in the `#llm-dot-build-users` channel."""
 
 
-# DMF
-DMF_URL = gb_environment_config().dmf_ui
-
-# for tabulate
-ARTIFACT_LINEAGE_DEFAULT_HEADERS = [
-    "ARTIFACT_ID",
-    "JOB_NAME",
-    "JOB_ID",
-    "JOB_STATUS",
-    "SOURCE",
-    "TARGET",
-]
-
-ARTIFACT_LINEAGE_FULL_HEADERS = [
-    "ARTIFACT_ID",
-    "CATEGORY",
-    "JOB_NAME",
-    "JOB_ID",
-    "JOB_TYPE",
-    "JOB_STARTED_AT",
-    "JOB_COMPLETED_AT",
-    "JOB_STATUS",
-    "OWNER",
-    "SOURCE",
-    "SOURCE_FILTER",
-    "SOURCE_TYPE",
-    "SOURCE_OBJECT",
-    "TARGET",
-    "TARGET_FILTER",
-    "TARGET_TYPE",
-    "TARGET_OBJECT",
-    "SOURCE_CODE_DETAILS",
-    "JOB_INPUT_PARAMS",
-    "EXECUTION_STATS",
-    "JOB_OUTPUT_STATS",
-]
+WEB_UI_URL = gb_environment_config().web_ui_url
 
 ARTIFACT_LIST_HEADERS = [
     "UUID",

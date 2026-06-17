@@ -56,8 +56,8 @@ class GBEnvConfig(BaseModel):
     default_space: str = ""
     """The default space name."""
 
-    dmf_ui: str = ""
-    """The full DMF UI base URL (e.g. https://ui.dmf.vpc-int.res.ibm.com)."""
+    web_ui_url: str = ""
+    """The full web UI base URL."""
 
     config_spaces: str = ""
     """Config section name for spaces."""
@@ -109,7 +109,7 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         # gbcli
         gbserver_host="https://api.llm-build-prod.vpc-int.res.ibm.com",
         default_space="public",
-        dmf_ui="https://ui.dmf.vpc-int.res.ibm.com",
+        web_ui_url="https://dashboard.llm-build-prod.vpc-int.res.ibm.com",
         config_spaces="gb.spaces",
         config_profile="gb.spaces.profiles",
         server_log_application_name="llm-build-prod",
@@ -139,7 +139,7 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         # gbcli
         gbserver_host="https://api.llm-build-staging.vpc-int.res.ibm.com",
         default_space="public",
-        dmf_ui="https://ui.dmf-staging.vpc-int.res.ibm.com",
+        web_ui_url="https://dashboard.llm-build-staging.vpc-int.res.ibm.com",
         config_spaces="staging.gb.spaces",
         config_profile="staging.gb.spaces.profiles",
         server_log_application_name="llm-build-staging",
@@ -169,7 +169,7 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         # gbcli
         gbserver_host="https://api.llm-build-dev.vpc-int.res.ibm.com",
         default_space="public",
-        dmf_ui="https://ui2.dmf-staging.vpc-int.res.ibm.com",
+        web_ui_url="https://dashboard.llm-build-dev.vpc-int.res.ibm.com",
         config_spaces="dev.gb.spaces",
         config_profile="dev.gb.spaces.profiles",
         server_log_application_name="llm-build-dev",
@@ -199,7 +199,7 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         # gbcli
         gbserver_host="http://localhost:8080",
         default_space="standalone",
-        dmf_ui="",
+        web_ui_url="",
         config_spaces="",
         config_profile="",
         server_log_application_name="gbserver-standalone",
