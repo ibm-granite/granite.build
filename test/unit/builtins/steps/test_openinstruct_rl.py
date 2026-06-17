@@ -148,6 +148,44 @@ class TestOpeninstructRlRun:
         assert "--additive_format_reward false" not in run
         assert "--filter_zero_advantage false" not in run
 
+    def test_boolean_flags_string_values(self):
+        """Recipe build params arrive via $${...} substitution as STRINGS, not
+        YAML booleans. A bare Jinja `if` treats the non-empty string "false" as
+        truthy, which would (a) emit a bare --with_tracking (parsed True by
+        HfArgumentParser → grpo_fast runs wandb.login and crashes) and (b) drop
+        the explicit `--X false` flags. The template must compare against a
+        truthy set so string "false" is handled correctly."""
+        string_cfg = {
+            "config": {
+                "rl_config": {
+                    **_load()["config"]["rl_config"],
+                    "exp_name": "gb-ifrl-test",
+                    "output_dir": "/proj/runs/ifrl/checkpoints",
+                    # mirror quoted $${...} substitution: all strings
+                    "with_tracking": "false",
+                    "gradient_checkpointing": "true",
+                    "add_general_reward": "true",
+                    "set_weight_decay_on_bias_and_norm": "false",
+                    "additive_format_reward": "false",
+                    "filter_zero_advantage": "false",
+                }
+            }
+        }
+        cfg = _load()
+        run_block = cfg["environment_configs"]["Skypilot"]["launchers"]["rl"]["config"][
+            "run"
+        ]
+        run = fill_template(run_block, string_cfg, strict=False)
+        # "false" string must NOT produce a bare --with_tracking (would be True)
+        assert "--with_tracking false" in run
+        # the explicit-false flags must still be emitted (not dropped)
+        assert "--set_weight_decay_on_bias_and_norm false" in run
+        assert "--additive_format_reward false" in run
+        assert "--filter_zero_advantage false" in run
+        # "true" strings still emit their flags
+        assert "--gradient_checkpointing" in run
+        assert "--add_general_reward true" in run
+
 
 class TestOpeninstructRlMonitor:
     def test_monitor_defined(self):
