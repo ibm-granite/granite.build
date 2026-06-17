@@ -77,7 +77,9 @@ jobs:
   extended-test:
     # Run the heavier, live extended test suite only when a PR is merged
     # into main (the push event), not on every pull request.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     strategy:
       matrix:
