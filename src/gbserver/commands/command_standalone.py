@@ -146,8 +146,9 @@ def _run_standalone(
         nats_proc = _start_nats_server(space_dir, nats_url=GBSERVER_NATS_URL)
 
     # 3. Start a BuildWatcher in a background daemon thread.
-    #    Force thread runner — BuildWatcherConfig defaults to "job" (k8s)
-    #    because DEFAULT_BUILDRUNNER_TYPE is evaluated at import time.
+    #    check_and_init_for_standalone() set GBSERVER_DEFAULT_BUILDRUNNER_TYPE to
+    #    "thread", and BuildWatcherConfig reads it at instantiation, so the watcher
+    #    uses the thread runner here (no k8s) without any explicit override.
     from gbserver.buildwatcher.buildwatcher import BuildWatcher
 
     build_watcher = BuildWatcher(
@@ -155,7 +156,6 @@ def _run_standalone(
         watch_for_config_changes=False,
         gh_token="",
     )
-    build_watcher.config.buildrunner_type = "thread"
 
     watcher_thread = threading.Thread(
         target=build_watcher.start_and_wait,
