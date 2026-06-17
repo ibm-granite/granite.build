@@ -39,7 +39,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("GB_HOME_DIR", str(gb_home))
 
-    import gbserver.commands.command_standalone as cmd
+    # _migrate_legacy_sqlite_db lives in commands.utils (the standalone-init home).
+    import gbserver.commands.utils as cmd
 
     legacy_db = legacy_dir / SQLITE_DB_FILE_NAME
     new_db = gb_home / SQLITE_DB_FILE_NAME

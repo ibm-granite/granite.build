@@ -22,6 +22,7 @@ import click
 import yaml
 from pydantic import BaseModel
 
+from gbserver.commands.utils import check_and_init_for_standalone
 from gbserver.storage import singleton_storage
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import (
@@ -82,6 +83,7 @@ def cli(
     spaces_path: Optional[Path],
 ):
     """Create the fixed/predefined spaces"""
+    check_and_init_for_standalone()
     logger.info(
         "running with clear: %s force: %s replace: %s spaces: %s",
         clear,

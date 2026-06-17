@@ -24,6 +24,7 @@ import click
 
 from gbserver.asset.assetstore import Assetstore
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
+from gbserver.commands.utils import check_and_init_for_standalone
 from gbserver.types.constants import ENV_VAR_DEFAULT_GITHUB_TOKEN, GBSERVER_GITHUB_TOKEN
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
@@ -67,6 +68,7 @@ def cli(
     asset_stores_dir: Path,
 ):
     """Start the pending build watcher/monitor."""
+    check_and_init_for_standalone()
     if asset_stores_dir:
         logger.info("loading assets from path: %s", asset_stores_dir)
         Assetstore.load_assetstores_from_dir(Path(asset_stores_dir))

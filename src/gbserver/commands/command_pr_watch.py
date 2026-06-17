@@ -21,6 +21,7 @@ from typing import Optional
 
 import click
 
+from gbserver.commands.utils import check_and_init_for_standalone
 from gbserver.github.githubmanager import GitHubManager
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
@@ -57,6 +58,7 @@ def cli(
     watch: bool,
 ):
     """Start the PR Watcher/Monitor."""
+    check_and_init_for_standalone()
     if gh_token == "":
         logger.error("no GitHub token specified, GitHub monitoring exiting!")
         sys.exit(1)
