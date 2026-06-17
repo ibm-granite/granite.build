@@ -213,6 +213,38 @@ class Space:
 
         return not secrets_dir.exists() or secrets_dir.stat().st_size == 0
 
+    def _fetch_user_secrets(self: Self, username: str) -> Dict[str, str]:
+        """Fetch per-user secrets via the configured UserSecretManager.
+
+        User secrets are an additive enrichment on top of the already-resolved
+        space secrets, so a failure here (e.g. the configured user-secret backend
+        is unavailable — such as the IBM backend without the IBM SDK installed)
+        degrades to "no user secrets" and lets the build proceed with the space
+        secrets, rather than aborting the whole build. Failures are logged.
+        """
+        import os
+
+        from gbserver.types.constants import ENV_VAR_USER_SECRET_MANAGER
+
+        backend = os.getenv(ENV_VAR_USER_SECRET_MANAGER, "(default)")
+        try:
+            from gbserver.usersecretmanager.factory import get_user_secret_manager
+
+            user_secrets = get_user_secret_manager().get_user_secrets(username) or {}
+            logger.info(
+                "fetched %d user secrets for user %s", len(user_secrets), username
+            )
+            return user_secrets
+        except Exception as e:
+            logger.warning(
+                "could not fetch user secrets for %s via backend '%s' (%s); "
+                "proceeding with space secrets only",
+                username,
+                backend,
+                e,
+            )
+            return {}
+
     def _fetch_secrets(self: Self, username: Optional[str] = None) -> Dict[str, str]:
         logger.info("_fetch_secrets start")
 
@@ -292,6 +324,13 @@ class Space:
                 if not GBSERVER_PROCEED_WITHOUT_SECRETS:
                     raise ValueError("secrets is None")
                 secrets = {}
+            # Merge per-user secrets via the configured UserSecretManager so that
+            # builds get user secrets regardless of the space backend (env/local
+            # in standalone, ibmcloud in cloud). User secrets take priority over
+            # space secrets, matching the prior ibmcloud merge semantics.
+            if username is not None:
+                user_secrets = self._fetch_user_secrets(username)
+                secrets = {**secrets, **user_secrets}
             logger.info(
                 "fetched %d secrets using the secret manager: %s",
                 len(secrets),

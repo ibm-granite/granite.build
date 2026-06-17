@@ -33,6 +33,12 @@ class NoopLineageStore(ILineageStore):
     and persisted to an external provider later.
     """
 
+    @property
+    def records_centralized_lineage(self) -> bool:
+        # The noop store records nothing to a centralized store, so lineage
+        # queries return empty.
+        return False
+
     def add_jobstats_for_build(
         self, storage: SingletonAdminStorage, build_id: str
     ) -> None:

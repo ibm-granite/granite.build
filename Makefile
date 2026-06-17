@@ -248,10 +248,14 @@ extended-tests:
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
 
-.PHONY: test-pr 
-test-pr: 
+.PHONY: test-pr
+test-pr:
+	# NOTE: #92 switched this target to GBTEST_MODE=mock, but the full PR suite is
+	# not green under mock yet (some tests need an admin GitHub token and the
+	# IBM-backed secret manager). Revert to live for now; making test-pr pass under
+	# mock is tracked as separate, follow-up work.
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=false 		\
-		GBTEST_MODE=mock				\
+		GBTEST_MODE=live				\
 		PYTEST_MARKERS="$(PR_PYTEST_MARKERS)" 		\
 		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
 		.test

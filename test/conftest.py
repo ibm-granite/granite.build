@@ -683,8 +683,12 @@ def _mock_huggingface(request):
 
 @pytest.fixture(autouse=True)
 def _mock_lineage(request):
-    """In mock mode, patch get_lineage_store to return a no-op stub."""
-    if should_use_live(request, "lakehouse"):
+    """In mock mode, patch get_lineage_store to return a no-op stub.
+
+    Tests that assert the real lineage store (noop or wandb) opt out with
+    @pytest.mark.live("lineage").
+    """
+    if should_use_live(request, "lineage"):
         yield
         return
 

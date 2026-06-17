@@ -528,6 +528,11 @@ class TestWandBLineageStore:
         assert self.storage_impl.does_release_id_exist("b1", 3) is False
 
 
+# These tests assert get_lineage_store() returns the real concrete store, so they
+# must opt out of the autouse _mock_lineage fixture (which otherwise patches
+# get_lineage_store to a MagicMock in mock mode). @pytest.mark.live("lineage")
+# makes that fixture bow out so the real selection logic is exercised.
+@pytest.mark.live("lineage")
 class TestFeatureFlagSelection:
     @pytest.fixture(autouse=True)
     def _reset_singleton(self):

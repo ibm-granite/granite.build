@@ -117,6 +117,11 @@ class RabbitMQBase(MessagingBase):
     aio_pika-based implementation for RabbitMQBase
     """
 
+    @classmethod
+    def is_available(cls) -> bool:
+        """Available only when aio_pika (the `rabbitmq` extra) is installed."""
+        return HAS_RABBITMQ
+
     def __init__(
         self: Self,
         addr: Address,
