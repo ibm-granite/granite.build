@@ -222,8 +222,8 @@ quick-tests-setup:
 
 # Setup does not setup slurm, so the skypilot/slurm tests are skipped 
 # Mock most of HF since the action does not have the HF_TOKEN secret on PRs
-.PHONY: quick-tests 
-quick-tests: 
+.PHONY: quick-tests
+quick-tests:
 	export GB_ENVIRONMENT=STANDALONE &&			\
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=false 		\
 		GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
@@ -239,8 +239,8 @@ extended-tests-setup:
 	$(MAKE) slurm-setup
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
-.PHONY: extended-tests 
-extended-tests: 
+.PHONY: extended-tests
+extended-tests:
 	export GB_ENVIRONMENT=STANDALONE &&			\
 	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
 		GBTEST_MODE=live				\
