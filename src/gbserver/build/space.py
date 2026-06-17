@@ -181,13 +181,17 @@ class Space:
         if sm.type != "local":
             return False
 
-        assert (
-            "secrets_dir" in sm.config
-        ), "Local secret manager requires 'secrets_dir' in config"
-
-        # Remote sync must be explicitly enabled
+        # Remote sync must be explicitly enabled. Check this before requiring
+        # secrets_dir: without remote sync there is nothing to sync into, and the
+        # local manager resolves its own default dir (<gb_home>/space_secrets) when
+        # secrets_dir is omitted (the standalone `config: {}` case).
         if not sm.config.get("do_remote_sync", False):
             return False
+
+        # secrets_dir is only required to locate the local file to sync into.
+        assert (
+            "secrets_dir" in sm.config
+        ), "Local secret manager requires 'secrets_dir' in config when do_remote_sync is set"
 
         # Validate remote sync config
         assert (
