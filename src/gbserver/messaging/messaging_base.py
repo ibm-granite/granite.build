@@ -49,6 +49,17 @@ class MessagingBase(abc.ABC):
     def __init__(self, addr: Address):
         self.addr: Address = addr
 
+    @classmethod
+    def is_available(cls) -> bool:
+        """Whether this backend's optional dependencies are installed.
+
+        Backends that require an optional package (e.g. aio_pika for RabbitMQ)
+        override this to report availability so discovery can skip them when the
+        dependency is missing, rather than offering a backend that fails only at
+        instantiation. Defaults to True.
+        """
+        return True
+
     @abc.abstractmethod
     async def setup(self) -> None: ...
 

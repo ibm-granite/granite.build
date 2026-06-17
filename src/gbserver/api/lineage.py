@@ -38,7 +38,6 @@ from gbserver.lineage.openlineage_utils import parse_hf_url
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
-from gbserver.types.constants import GBSERVER_LINEAGE_PROVIDER
 
 
 def _uri_from_url(url: Optional[str]) -> Optional[str]:
@@ -137,7 +136,11 @@ _openlineage_service: Optional[LineageService] = None
 def _get_openlineage_service() -> LineageService:
     global _openlineage_service
     if _openlineage_service is None:
-        _openlineage_service = LineageServiceFactory.create(GBSERVER_LINEAGE_PROVIDER)
+        # Resolve the provider at call time (handles standalone established at
+        # runtime; avoids the cached-constant / env-leak fragility).
+        from gbserver.lineage.jobstats import _resolve_lineage_provider
+
+        _openlineage_service = LineageServiceFactory.create(_resolve_lineage_provider())
     return _openlineage_service
 
 

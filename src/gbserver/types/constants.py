@@ -73,6 +73,13 @@ ENV_VAR_TRUNCATE_LENGTH = ENV_VAR_PREFIX + "_TRUNCATE_LENGTH"
 ENV_VAR_GBSERVER_ADMIN_TABLE_PREFIX = ENV_VAR_PREFIX + "_ADMIN_TABLE_PREFIX"
 ENV_VAR_IBM_SEC_MAN_ENDPOINT = ENV_VAR_PREFIX + "_IBM_SEC_MAN_ENDPOINT"
 ENV_VAR_IBM_SEC_MAN_API_KEY = ENV_VAR_PREFIX + "_IBM_SEC_MAN_API_KEY"
+# Per-user secret manager backend selection (ibmcloud / local / env). Defaults to
+# ibmcloud in cloud environments and local in standalone (see is_standalone() block).
+ENV_VAR_USER_SECRET_MANAGER = ENV_VAR_PREFIX + "_USER_SECRET_MANAGER"
+# Directory used by the local per-user secret backend.
+ENV_VAR_USER_SECRET_DIR = ENV_VAR_PREFIX + "_USER_SECRET_DIR"
+# Optional JSON blob of extra kwargs passed to the user secret backend constructor.
+ENV_VAR_USER_SECRET_MANAGER_CONFIG = ENV_VAR_PREFIX + "_USER_SECRET_MANAGER_CONFIG"
 ENV_VAR_DEFAULT_LOG_LEVEL = ENV_VAR_PREFIX + "_DEFAULT_LOG_LEVEL"
 ENV_VAR_DEFAULT_GITHUB_TOKEN = ENV_VAR_PREFIX + "_GITHUB_TOKEN"
 ENV_VAR_DEBUG_MODE = ENV_VAR_PREFIX + "_DEBUG_MODE"
@@ -362,13 +369,28 @@ if is_standalone():
         ENV_VAR_METADATA_STORAGE: "sqlite",
         ENV_VAR_DEFAULT_BUILDRUNNER_TYPE: "thread",
         ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS": "true",
-        ENV_VAR_PREFIX + "_LINEAGE_PROVIDER": "none",
     }.items():
         os.environ.setdefault(_k, _v)
+# NOTE: the standalone defaults for the per-user secret backend (local, IBM-free)
+# and the lineage provider (none) are NOT written to os.environ here. They are
+# resolved dynamically at call time via is_standalone() — in
+# usersecretmanager.factory.get_user_secret_manager() and
+# lineage.jobstats.get_lineage_store() respectively. Writing them via setdefault()
+# would (a) miss the case where standalone mode is established after this module is
+# first imported, and (b) leak the value into the process environment where it
+# can poison unrelated tests/components that read it later.
 
 GBSERVER_PROCEED_WITHOUT_SECRETS = getenv_boolean(
     ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS", False
 )  # default False
+
+# Per-user secret manager selection and config. These are read from the
+# environment at call time (not cached here) in
+# usersecretmanager.factory.get_user_secret_manager(), so a GB_HOME_DIR /
+# GBSERVER_USER_SECRET_DIR / GBSERVER_USER_SECRET_MANAGER override is honored
+# regardless of module import/reload ordering. The backend defaults to "ibmcloud"
+# outside standalone; the is_standalone() block above sets it to "local" by
+# writing ENV_VAR_USER_SECRET_MANAGER into os.environ.
 
 # NATS JetStream configuration
 ENV_VAR_NATS_URL = ENV_VAR_PREFIX + "_NATS_URL"

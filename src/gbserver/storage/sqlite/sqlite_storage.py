@@ -24,6 +24,7 @@ from filelock import FileLock
 from pydantic import BaseModel
 from sqlalchemy import Integer
 
+from gbcommon.types.constants import get_gb_home_dir
 from gbserver.storage.sql.artifact_registry import SQLArtifactRegistry
 from gbserver.storage.sql.build_storage import SQLBuildStorage
 from gbserver.storage.sql.event_storage import SQLEventStorage
@@ -34,7 +35,8 @@ from gbserver.storage.sql.steprun_storage import SQLStepRunStorage
 from gbserver.storage.sql.target_run_storage import SQLTargetRunStorage
 from gbserver.storage.storage import BASE_ITEM_TYPE, IItemStorage, QueryControl
 
-USER_HOME_LLMB_DIR_NAME = ".llmb"
+# Legacy location, retained for the one-time standalone startup migration.
+LEGACY_LLMB_DIR_NAME = ".llmb"
 SQLITE_DB_FILE_NAME = "llmb-server.db"
 
 
@@ -81,17 +83,15 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
         return db_schema, db_url, db_obfuscated_url, connect_args
 
     def _get_db_file_path(self) -> Path:
-        home_dir = os.getenv("HOME", None)
-        if not home_dir:
-            raise ValueError("Could not get home directory from HOME env var")
-
-        llmb_dir = f"{home_dir}/{USER_HOME_LLMB_DIR_NAME}"
-        if not os.path.exists(llmb_dir):
+        # Stored under the shared GB home dir (default ~/.granite.build); the
+        # standalone startup migration copies any legacy ~/.llmb db here once.
+        gb_home_dir = get_gb_home_dir()
+        if not os.path.exists(gb_home_dir):
             try:
-                os.makedirs(llmb_dir)
-            except FileExistsError as e:
+                os.makedirs(gb_home_dir)
+            except FileExistsError:
                 pass  # Something else got in ahead of us
-        db_file = f"{llmb_dir}/{SQLITE_DB_FILE_NAME}"
+        db_file = os.path.join(gb_home_dir, SQLITE_DB_FILE_NAME)
         return Path(db_file)
 
     def _get_autoincr_column_type(self) -> Any:

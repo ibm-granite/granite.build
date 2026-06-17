@@ -494,8 +494,12 @@ class TestArtifactAPI(AbstractAPITest):
 
         # JobStats record with a release_id equal to the output artifact id should have been created.
         job_storage = get_lineage_store()
-        # assert not job_storage.does_release_id_exist("should-not-exist")
-        assert job_storage.does_release_id_exist(artifact.uuid, 1)
+        # A non-recording store (noop, e.g. standalone/GBSERVER_LINEAGE_PROVIDER=none)
+        # records nothing by design, so the release-id check only makes sense for a
+        # real recording store.
+        if job_storage.records_centralized_lineage:
+            # assert not job_storage.does_release_id_exist("should-not-exist")
+            assert job_storage.does_release_id_exist(artifact.uuid, 1)
 
         # Now try and register another artifact with an input that does not exist.
         origin_uris.append("lh://unregistered")
