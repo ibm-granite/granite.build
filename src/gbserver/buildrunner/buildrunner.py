@@ -910,7 +910,9 @@ Build ID    : {build_id}
                     not in self.__get_retry_chain_build_ids()
                 ):
                     raise ValueError(
-                        "Same artifact URI found for another build not in this retry chain"
+                        "Same artifact URI found in space %s for another build in this space that is not in this retry chain: %s",
+                        existing.space_name,
+                        existing.uri
                     )
                 if existing.created_by_build_id == build_id:
                     logger.info(
