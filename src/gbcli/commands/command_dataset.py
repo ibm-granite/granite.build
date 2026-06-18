@@ -6,7 +6,7 @@ import click
 def cli(ctx):
     """
     Operate datasets.
-    In this version, please use 'llmb artifact' for dataset operations.
+    In this version, please use 'gb artifact' for dataset operations.
     """
     pass
 

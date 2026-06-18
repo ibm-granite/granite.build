@@ -98,7 +98,7 @@ def upload_to_lh(
     )
     if namespace == None:
         raise Exception(
-            f"Error: Lakehouse namespace of space='{space}' does not exist. Please check the 'llmb space list --all' or check if it is a valid space name and try again."
+            f"Error: Lakehouse namespace of space='{space}' does not exist. Please check the 'gb space list --all' or check if it is a valid space name and try again."
         )
     public = global_space.get("name") == "public"
 
@@ -1257,7 +1257,7 @@ def artifact_copy(
     target_namespace = global_space.get("lakehouse_namespace")
     if target_namespace == None:
         raise Exception(
-            f"Error: Lakehouse namespace of space='{space_to}' does not exist. Please check the 'llmb space list --all' or check if it is a valid space name and try again."
+            f"Error: Lakehouse namespace of space='{space_to}' does not exist. Please check the 'gb space list --all' or check if it is a valid space name and try again."
         )
     public = global_space.get("name") == "public"
     target_table = LAKEHOUSE_MODEL_SHARED_TABLE if public else LAKEHOUSE_MODEL_TABLE
