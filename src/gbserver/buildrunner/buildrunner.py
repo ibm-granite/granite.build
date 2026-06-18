@@ -57,7 +57,7 @@ from gbserver.storage.artifact_registration import (
     ArtifactRegistrationStatus,
 )
 from gbserver.storage.singleton_storage import get_admin_storage
-from gbserver.storage.stored_build import StoredBuild
+from gbserver.storage.stored_build import StoredBuild, get_retry_chain_members
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -207,6 +207,15 @@ class BuildRunner(AbstractBuildRunner):
                         self.stored_build.uuid,
                         buildrunner_resume,
                     )
+
+                # Stop the chain if a cancellation was requested for any member of
+                # the retry chain (e.g. the FAILED original). This runs after every
+                # attempt regardless of how it finished — including the exception
+                # path that bypasses the worker task — so the whole chain is marked
+                # CANCELLED and no further retry is created.
+                if self.__is_build_cancelled():
+                    self.__cancel_build_run()
+                    break
 
                 retry_build = self.__prepare_retry()
                 if retry_build is None:
@@ -581,17 +590,19 @@ class BuildRunner(AbstractBuildRunner):
         return space
 
     def __is_build_cancelled(self) -> bool:
-        # See if something else has signalled us to stop the build.
+        # See if something else has signalled us to stop the build. We check the
+        # whole retry chain, not just the current build, so a cancellation
+        # requested on any member (e.g. the FAILED original) also stops the
+        # active retry that is running here.
         build_id = self.stored_build.uuid
         try:
-            build: StoredBuild = self.storage.build_storage.get_by_uuid(build_id)  # type: ignore
-            if build is None:
-                logger.warning(
-                    "Build id %s unexpectedly not found on cancellation request check. Ignoring.",
-                    build_id,
-                )
-                return False
-            return build.status in (Status.CANCEL_REQUESTED, Status.CANCELLED)
+            members = get_retry_chain_members(
+                self.storage.build_storage, self.stored_build
+            )
+            return any(
+                member.status in (Status.CANCEL_REQUESTED, Status.CANCELLED)
+                for member in members
+            )
         except Exception as e:
             logger.warning(
                 "Exception checking if build %s is cancelled: %s. Assuming not cancelled.",
@@ -687,19 +698,16 @@ class BuildRunner(AbstractBuildRunner):
             logger.error("Could not mark build %s as failed", self.stored_build.uuid)
 
     def __cancel_build_run(self: Self, update_status: bool = True) -> None:
-        """Cancel an inprogress build_run and mark the stored build as CANCELLED, unless it has finished."""
+        """Cancel the in-progress build_run and mark the whole retry chain CANCELLED.
+
+        Marking every build in the retry chain (not just the current one) means a
+        cancellation requested on any member — including the FAILED original —
+        cancels the active retry running here and stops the chain.
+        """
 
         self.stop_event.set()
 
-        # This can be called both from the worker thread and stop(), so try and avoid duplication.
-        if self.stored_build.status == Status.CANCELLED:
-            if update_status:
-                # Re-run entity finalization to catch any targets/steps stored concurrently
-                # with a previous finalize_build_status() call (race between the BuildWatcher
-                # monitoring thread and the build runner's event loop).
-                finalize_build_status(self.stored_build.uuid, Status.CANCELLED)
-            return
-
+        # Cancel the in-progress workload for the current build, if still running.
         if self.build_run is not None:
             status = self.build_run.status
             if status is Status.PENDING or status is Status.RUNNING:
@@ -707,13 +715,31 @@ class BuildRunner(AbstractBuildRunner):
                 self.build_run.cancel()
             else:
                 logger.info(
-                    "Not marking finished build as cancelled:  build id = %s",
+                    "Not cancelling already-finished build_run:  build id = %s",
                     self.stored_build.uuid,
                 )
         else:
             logger.warning("self.build_run is None")
-        if update_status and not self.stored_build.status.is_finished():
+
+        if not update_status:
+            return
+
+        # Finalize the current build's child entities (targets/steps/artifacts)
+        # to CANCELLED when it hasn't already reached a terminal state.
+        if not self.stored_build.status.is_finished():
             self.__update_stored_build_status(Status.CANCELLED)
+
+        # Force every build in the retry chain to CANCELLED. update_fields is
+        # unconditional (unlike finalize_build_status, which skips a build already
+        # in a different finished state), so an attempt that just failed is still
+        # flipped to CANCELLED — cancelling any member cancels the whole chain.
+        for member in get_retry_chain_members(
+            self.storage.build_storage, self.stored_build
+        ):
+            if member.status != Status.CANCELLED:
+                self.storage.build_storage.update_fields(
+                    member.uuid, {"status": Status.CANCELLED}
+                )
 
     def __process_workload_status_event(self: Self, event: BuildEvent) -> None:
         payload = event.payload
