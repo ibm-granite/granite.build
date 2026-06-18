@@ -79,5 +79,8 @@ environment_configs:
                 field_regex: "(?<=Starting FastAPI server on )\\S+"
                 is_data: true
               - field_name: binding
-                field_value_template: '{ "path": "http://{{ fields.data.path }}" }'
+                # Emit the URL as `state` (not `path`): the mem:// store passes
+                # binding["state"] to the consumer verbatim, so the trainer reads
+                # the clean URL via {{ bindings.rm_url.binding.state }}.
+                field_value_template: '{ "state": "http://{{ fields.data.path }}" }'
                 is_json: true

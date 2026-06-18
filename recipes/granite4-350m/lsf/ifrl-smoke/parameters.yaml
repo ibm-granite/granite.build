@@ -20,15 +20,15 @@ CHECKPOINT_STATE_DIR: "/proj/granite-build/g4os/RLHF/outputs/granite4-350m-14-71
 # open-instruct floor-divides: num_training_steps =
 #   total_episodes // (num_unique_prompts_rollout * num_samples_per_prompt_rollout)
 # 2048 // (64 * 16) = 2048 // 1024 = 2 optimizer updates (no exact-multiple req).
-TOTAL_EPISODES: "2048"
-SAVE_FREQ: "1"
-EVAL_FREQ: "1"
-CHECKPOINT_STATE_FREQ: "1"
-REF_POLICY_UPDATE_FREQ: "1"
+TOTAL_EPISODES: "1024"
+SAVE_FREQ: "10"
+EVAL_FREQ: "10"
+CHECKPOINT_STATE_FREQ: "10"
+REF_POLICY_UPDATE_FREQ: "6"
 
 # ─── 4-GPU topology (override the step's 4+4 default to fit H100:4) ────
-NUM_LEARNERS_PER_NODE: "2"
-VLLM_NUM_ENGINES: "2"
+NUM_LEARNERS_PER_NODE: "4"
+VLLM_NUM_ENGINES: "4"
 VLLM_TENSOR_PARALLEL_SIZE: "1"
 
 # ─── IFRL deltas from the source config ───────────────────────────────

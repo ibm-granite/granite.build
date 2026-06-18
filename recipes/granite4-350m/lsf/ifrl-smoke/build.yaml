@@ -21,14 +21,13 @@ granite.build:
     rm-server:
       environment_uri: space://environments/skypilot/lsf
       outputs:
-        # Static env:// label, NOT env://{{ binding.path }}: the binding payload
-        # is a URL (http://host:8000), and round-tripping env://http://... through
-        # URI parsing mangles it to /http:/host:8000. Consumers read the clean URL
-        # via {{ bindings.<x>.binding.path }} (the monitor payload); this uri is
-        # just the env-store label.
+        # mem:// store: the binding payload is a URL (http://host:8000). env://
+        # would round-trip it through filesystem-path normalisation and mangle it
+        # to /http:/host:8000. The mem:// store keys this URI to the producer's
+        # verbatim binding["state"] in the build's shared_mem_state dict, so the
+        # consumer reads the clean URL via {{ bindings.<x>.binding.state }}.
         rm_server_url:
-          uri: "env://rm-server"
-          type: dataset
+          uri: "mem://rm-server"
       steps:
         - step_uri: space://steps/rm-server
           config:
@@ -46,11 +45,10 @@ granite.build:
     code-server:
       environment_uri: space://environments/skypilot/lsf
       outputs:
-        # Static env:// label (see rm_server_url note above): avoids env://<URL>
-        # mangling; the clean URL reaches the trainer via the binding payload.
+        # mem:// store (see rm_server_url note above): avoids env://<URL> mangling;
+        # the clean URL reaches the trainer via the verbatim binding["state"].
         code_server_url:
-          uri: "env://code-server"
-          type: dataset
+          uri: "mem://code-server"
       steps:
         - step_uri: space://steps/code-server
           config:
@@ -93,9 +91,10 @@ granite.build:
               dataset_eval_mixer: '$${DATASET_EVAL_MIXER}'
               output_dir: "$${OUTPUT_DIR}"
               checkpoint_state_dir: "$${CHECKPOINT_STATE_DIR}"
-              # external services (resolved from the server target bindings)
-              rm_server_url: "{{ bindings.rm_url.binding.path }}"
-              code_server_url: "{{ bindings.code_url.binding.path }}"
+              # external services (resolved from the server target bindings;
+              # .binding.state carries the verbatim URL from the mem:// store)
+              rm_server_url: "{{ bindings.rm_url.binding.state }}"
+              code_server_url: "{{ bindings.code_url.binding.state }}"
               # GRPO hyperparameters (all parameterizable)
               beta: "$${BETA}"
               num_unique_prompts_rollout: "$${NUM_UNIQUE_PROMPTS_ROLLOUT}"

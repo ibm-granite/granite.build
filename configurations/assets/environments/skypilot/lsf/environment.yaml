@@ -25,3 +25,15 @@ assetstores:
     push:
       - mode: hf_push
         config: {}
+  # In-memory store: passes a producer target's binding payload (e.g. a service
+  # URL) to a consumer verbatim via the build's shared_mem_state dict, bypassing
+  # the env:// filesystem-path normalisation that mangles a URL like
+  # http://host:8000 into /http:/host:8000. Used by the rm-server/code-server
+  # service URL bindings consumed by the IFRL trainer.
+  - store_uri: space://assetstores/mem
+    load:
+      - mode: mem
+        config: {}
+    push:
+      - mode: mem
+        config: {}

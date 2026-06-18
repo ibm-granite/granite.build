@@ -281,6 +281,7 @@ class Environment(ABC):
         self.teardown_types = self._get_fns_with_prefix(prefix="teardown_")
         self.pullasset_types = self._get_fns_with_prefix(prefix="pullasset_")
         self.pushasset_types = self._get_fns_with_prefix(prefix="pushasset_")
+        self.shared_mem_store: Dict[str, Any] = {}
         self.supported_assetstores: Dict[Assetstore, AssetStoreEnvironmentConfig] = {}
         self._load_assetstores()
 
@@ -1356,3 +1357,58 @@ class Environment(ABC):
         and other monitors or anything else associated with the launch also should stop.
         """
         return self.__get_event(launch_id, self.__launch_stopped_events)
+
+    def set_shared_memstore(self: Self, shared_mem_store: Dict[str, Any]):
+        self.shared_mem_store = shared_mem_store
+
+    async def pullasset_memstore(
+        self: Self,
+        uri: Optional[Union[str, URI]] = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        **kwargs,
+    ) -> Tuple[Dict, Optional[Any]]:
+        """Pull asset for the mem:// store.
+
+        Reads the producer's verbatim ``state`` value out of the build's shared
+        in-memory dict (keyed by the mem:// URI), so a value like a service URL
+        survives intact — unlike env://, which reconstructs the path from the
+        URI string and would mangle it. Returns the consumer-facing binding.
+        """
+        state = self.shared_mem_store.get(str(uri))
+        logger.info("pullasset_memstore: uri=%s state=%s", uri, state)
+        binding_config = {"binding": {"state": state}}
+        return binding_config, None
+
+    async def pushasset_memstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        storepush_config=None,
+        uri: Optional[Union[str, URI]] = None,
+        assetstore=None,
+        secrets: Optional[Dict[str, str]] = None,
+        run_metadata: Optional[Any] = None,
+        output_config: Optional[Any] = None,
+        **kwargs,
+    ) -> URI:
+        """Push asset to the build's shared in-memory dict.
+
+        Stores the producer binding's ``state`` value keyed by the mem:// URI so
+        a consumer target can read it back verbatim via pullasset_memstore. Used
+        to pass values (e.g. a service URL) that must not go through filesystem
+        URI normalisation.
+        """
+        if not uri:
+            raise ValueError(
+                f"pushasset_memstore: empty uri for binding={binding_id!r}; "
+                "a mem:// store push requires a concrete artifact state."
+            )
+        self.shared_mem_store[str(uri)] = binding.get("state")
+        logger.info(
+            "pushasset_memstore: registering binding_id=%s at uri=%s binding=%s",
+            binding_id,
+            uri,
+            binding,
+        )
+        return URI.get_uri(str(uri))
