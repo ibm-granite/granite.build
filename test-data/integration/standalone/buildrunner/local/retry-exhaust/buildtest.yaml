@@ -1,0 +1,17 @@
+# Fixture for the build-level retry-exhaustion regression test
+# (test/integration/standalone/buildrunner/local/test_buildrunner_retry_exhaustion.py).
+#
+# build_yaml defaults to ./build.yaml (sibling) when omitted.  The build's single
+# target always fails, so the expected end state is a FAILED build.
+expected_status: failed
+# This test exercises build-level retry, NOT step-level failure simulation.
+simulate_step_failure: false
+# Use the shared standalone space at <repo>/configurations/spaces/local so the
+# BuildRunner resolves space:// URIs (the bash environment and the command step)
+# without cloning from GitHub.  Relative path resolves against this YAML's
+# directory and is returned as an absolute file:// URI by from_yaml.
+space_uri: ../../../../../../configurations/spaces/local
+# No per-target expectations are asserted by this test (it counts build records
+# instead), but the field is required by BuildTestSpecification.
+target_expectations: []
+timeout_minutes: 10

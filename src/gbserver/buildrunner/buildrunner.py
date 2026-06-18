@@ -245,7 +245,10 @@ class BuildRunner(AbstractBuildRunner):
             source_uri="",
             username=latest.username,
             build_archive=latest.build_archive,
-            status=Status.PENDING,
+            # RETRY (not PENDING): this build is run by the in-process retry loop
+            # below; a distinct status keeps the BuildWatcher (which polls PENDING)
+            # from dispatching a duplicate runner for it. See Status.RETRY.
+            status=Status.RETRY,
             targets=latest.targets,
             description=latest.description,
             tags=latest.tags,
@@ -524,7 +527,9 @@ class BuildRunner(AbstractBuildRunner):
         update = self.storage.build_storage.update_fields(
             self.stored_build.uuid,
             updates,
-            should_update=lambda item: item.status == Status.PENDING,
+            # PENDING for a first run, RETRY for a build-level retry run.
+            should_update=lambda item: item.status
+            in (Status.PENDING, Status.RETRY),
         )
         if update is not None:  # Build had pending status, all good.
             self.stored_build = update
@@ -543,11 +548,14 @@ class BuildRunner(AbstractBuildRunner):
             self.stored_build = _build_result
             success = False
             logger.warning(
-                "Build update failed.  Likely as the status was not %s (currently %s).",
+                "Build update failed.  Likely as the status was not %s/%s (currently %s).",
                 Status.PENDING,
+                Status.RETRY,
                 self.stored_build.status,
             )
-            push_failed_status_update_metric(self.stored_build.uuid, [Status.PENDING])
+            push_failed_status_update_metric(
+                self.stored_build.uuid, [Status.PENDING, Status.RETRY]
+            )
         return success
 
     def __get_build_space(self: Self, stored_build: StoredBuild) -> Optional[Space]:
@@ -1331,7 +1339,8 @@ Download : {download_msg}
             )
 
         # Update the build status as the last thing so JobStats and PR are updated before declaring the build complete - tests expect this.
-        valid_status_values = [Status.PENDING, Status.RUNNING]
+        # RETRY is included so a build-level retry run can transition RETRY->RUNNING/FAILED.
+        valid_status_values = [Status.PENDING, Status.RUNNING, Status.RETRY]
         valid_status = lambda item: item.status in valid_status_values
         updated = self.__update_stored_build_status(
             status, failure_reason=failure_reason, unfinished_should_update=valid_status
