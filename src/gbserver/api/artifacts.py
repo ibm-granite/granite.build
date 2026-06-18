@@ -300,10 +300,12 @@ def register_artifact(
 ) -> RegisterArtifactResponse:
     new_artifact = artifact
 
-    # Make sure we can't register non-prod uris in the PROD environment
+    # Block non-prod uris in PROD only for URI types that encode an environment
+    # (e.g. LhURI). URI types without an environment notion (HfURI, etc.) carry no
+    # prod/non-prod information and are always allowed.
     if GB_ENVIRONMENT == "PROD":
         uri_obj = URI.get_uri(new_artifact.uri)
-        if not hasattr(uri_obj, "is_prod") or not uri_obj.is_prod():
+        if hasattr(uri_obj, "is_prod") and not uri_obj.is_prod():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Non-production artifacts are not allowed!",

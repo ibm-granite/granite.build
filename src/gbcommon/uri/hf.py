@@ -350,17 +350,6 @@ class HfURI(URI):
         # Always include host in the output
         return f"{HF_URI_SCHEME}://{p.host}{path}"
 
-    def is_prod(self) -> bool:
-        """Return True if this URI is production-safe.
-
-        Since all GB environments use the canonical HuggingFace host (huggingface.co),
-        production status is determined solely by the GB_ENVIRONMENT, not the host
-        or the URI format. In PROD and STANDALONE environments, HF artifacts are
-        production-safe; in non-PROD environments (DEV, STAGING) they are not.
-        """
-        env_upper = GB_ENVIRONMENT.upper() if GB_ENVIRONMENT else ""
-        return env_upper in ("PROD", "STANDALONE")
-
     @staticmethod
     def parse(uri_str: str) -> "HfURI":
         """Factory method from a raw URI string"""
