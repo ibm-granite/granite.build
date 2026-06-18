@@ -891,8 +891,8 @@ Build ID    : {build_id}
         artifact_type = get_artifact_type(normalized_uri)
         if not pushed:
             # Check if already registered: the same URI can arrive twice when a
-            # step is retried (original job writes it before bkill, retried job
-            # writes it again).  Reuse the existing record rather than inserting
+            # step is retried or a target only partially succeeded and a build retry
+            # is being attempted.  Reuse the existing record rather than inserting
             # a new one with a different UUID, which would violate the
             # (uri, space_name) unique constraint.
             # NOTE: this also means we should never use the artifact UUID for lookups and
@@ -901,16 +901,30 @@ Build ID    : {build_id}
                 uri=normalized_uri, space_name=stored_build.space_name
             )
             if existing is not None:
-                # Confirm that the artifact is really a retry from this same build.
+                # Confirm the artifact really originates from a build in this retry chain
+                # (a retried step re-emits within the same build; a build retry re-emits
+                # from an ancestor build).
                 assert isinstance(existing, ArtifactRegistration)
-                assert (
-                    existing.created_by_build_id == build_id
-                ), "Same artifact URI found for another build"
-                assert (
-                    existing.created_by_target_id == target_id
-                ), "Same artifact URI found for another target"
+                if (
+                    existing.created_by_build_id
+                    not in self.__get_retry_chain_build_ids()
+                ):
+                    raise ValueError(
+                        "Same artifact URI found in space %s for another build in this space that is not in this retry chain: %s",
+                        existing.space_name,
+                        existing.uri,
+                    )
+                if existing.created_by_build_id == build_id:
+                    logger.info(
+                        "Reusing artifact (%s) from retried step", existing.uuid
+                    )
+                else:
+                    logger.info(
+                        "Reusing artifact (%s) from retried build (%s)",
+                        existing.uuid,
+                        existing.created_by_build_id,
+                    )
                 artifact = existing
-                artifact.status = ArtifactRegistrationStatus.PENDING
             else:
                 artifact = ArtifactRegistration(
                     uri=normalized_uri,
@@ -923,8 +937,8 @@ Build ID    : {build_id}
                     created_at=event.timestamp,
                     status=ArtifactRegistrationStatus.PENDING,
                 )
-            logger.info("registering the artifact as pending: %s", artifact)
-            self.storage.artifact_registry.update(artifact)
+                logger.info("registering the artifact as pending: %s", artifact)
+                self.storage.artifact_registry.update(artifact)
             self.__update_target_with_artifact(event=event, artifact=artifact)
         else:
             art_store = self.storage.artifact_registry
