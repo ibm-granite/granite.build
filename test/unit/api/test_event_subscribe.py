@@ -19,6 +19,7 @@
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from fastapi import FastAPI, Request, status
 from fastapi.testclient import TestClient
@@ -26,6 +27,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 
 from gbserver.api.event_subscribe import SubscribeResponse, event_subscribe_router
+from gbserver.messaging.rabbitmq_admin import RabbitMQAdminError
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.auth import User
 
@@ -167,3 +169,78 @@ class TestEventSubscribeEndpoint:
 
         assert response.status_code == 404
         assert "not found" in response.json()["detail"]
+
+    @patch("gbserver.api.event_subscribe.provision_subscription")
+    @patch("gbserver.api.event_subscribe.get_admin_storage")
+    def test_rabbitmq_admin_error_returns_503(self, mock_get_storage, mock_provision):
+        """RabbitMQAdminError during provisioning returns 503."""
+        build_id = "abc-123-def"
+        mock_storage = MagicMock()
+        mock_storage.build_storage.get_by_uuid.return_value = _make_stored_build(
+            build_id
+        )
+        mock_get_storage.return_value = mock_storage
+
+        mock_provision.side_effect = RabbitMQAdminError(
+            "Failed to create user tmp-build-abc-123d-xyzabc: 401 Unauthorized"
+        )
+
+        app = _make_app()
+        client = TestClient(app)
+        response = client.post(
+            f"/api/v1/builds/{build_id}/events/subscribe",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+        assert response.status_code == 503
+        assert "Event subscription service unavailable" in response.json()["detail"]
+
+    @patch("gbserver.api.event_subscribe.provision_subscription")
+    @patch("gbserver.api.event_subscribe.get_admin_storage")
+    def test_connect_error_returns_503(self, mock_get_storage, mock_provision):
+        """httpx.ConnectError returns 503."""
+        build_id = "abc-123-def"
+        mock_storage = MagicMock()
+        mock_storage.build_storage.get_by_uuid.return_value = _make_stored_build(
+            build_id
+        )
+        mock_get_storage.return_value = mock_storage
+
+        mock_provision.side_effect = httpx.ConnectError(
+            "Connection refused: localhost:15672"
+        )
+
+        app = _make_app()
+        client = TestClient(app)
+        response = client.post(
+            f"/api/v1/builds/{build_id}/events/subscribe",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+        assert response.status_code == 503
+        assert "unreachable" in response.json()["detail"]
+
+    @patch("gbserver.api.event_subscribe.provision_subscription")
+    @patch("gbserver.api.event_subscribe.get_admin_storage")
+    def test_timeout_error_returns_504(self, mock_get_storage, mock_provision):
+        """httpx.TimeoutException returns 504."""
+        build_id = "abc-123-def"
+        mock_storage = MagicMock()
+        mock_storage.build_storage.get_by_uuid.return_value = _make_stored_build(
+            build_id
+        )
+        mock_get_storage.return_value = mock_storage
+
+        mock_provision.side_effect = httpx.ReadTimeout(
+            "Timed out reading response"
+        )
+
+        app = _make_app()
+        client = TestClient(app)
+        response = client.post(
+            f"/api/v1/builds/{build_id}/events/subscribe",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+        assert response.status_code == 504
+        assert "timed out" in response.json()["detail"]
