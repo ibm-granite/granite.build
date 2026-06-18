@@ -1,8 +1,8 @@
 name: Nightly Extended Tests
 
 # Runs the heavier, live extended test suite on a nightly schedule against the
-# default branch. This complements the merge-triggered `extended-test` job in
-# ci.yml by catching regressions caused by external/live dependencies (HF,
+# default branch. This replaces the previously merge-triggered `extended-test`
+# job in ci.yml, catching regressions caused by external/live dependencies (HF,
 # MinIO, SLURM) that drift independently of repo changes.
 #
 # NOTE: GitHub only runs `schedule` triggers on the default branch (main), so
@@ -75,7 +75,7 @@ jobs:
 
           # Reuse an existing open issue if one is already tracking this.
           EXISTING="$(gh issue list --state open --label "$LABEL" \
-            --json number --jq '.[0].number')"
+            --json number --jq '.[0].number // empty')"
 
           if [ -n "$EXISTING" ]; then
             gh issue comment "$EXISTING" --body "$BODY"
