@@ -89,9 +89,7 @@ def _make_runner(retry_chain_ids):
 
 def _make_event(build_id, targetrun_id):
     return BuildEvent(
-        run_metadata=EntityRunMetadata(
-            build_id=build_id, targetrun_id=targetrun_id
-        ),
+        run_metadata=EntityRunMetadata(build_id=build_id, targetrun_id=targetrun_id),
         type=BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT,
         payload=CreatedArtifactEventPayload(
             uri=_TEST_URI, binding_id=_BINDING, type=ArtifactType.FILESET

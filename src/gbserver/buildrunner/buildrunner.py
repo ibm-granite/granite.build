@@ -912,7 +912,7 @@ Build ID    : {build_id}
                     raise ValueError(
                         "Same artifact URI found in space %s for another build in this space that is not in this retry chain: %s",
                         existing.space_name,
-                        existing.uri
+                        existing.uri,
                     )
                 if existing.created_by_build_id == build_id:
                     logger.info(
