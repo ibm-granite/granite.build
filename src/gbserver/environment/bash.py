@@ -32,11 +32,13 @@ from gbserver.environment.environment import (
     EventLogLineParserConfig,
 )
 from gbserver.environment.local_assets import get_hf_cache_dir, pull_asset_hfstore
+from gbserver.monitoring.logfile_monitor import LogFileMonitor
+from gbserver.monitoring.streams.stream_factory import make_stream
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.environmentconfig import EnvironmentConfig
+from gbserver.types.errors import LogMonitoringFailedException
 from gbserver.utils.filesystem import sync_or_copy
-from gbserver.utils.launch import launch_command_and_raise_errors
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -53,10 +55,12 @@ class Bash(Environment):
 
     _launched_processes: Dict[str, Process]
     _env: dict[str, Any]
+    log_paths: Dict[str, str]  # launch_id -> combined job.log path
 
     def __init__(self: Self, event_q: asyncio.Queue, **kwargs) -> None:
         self._launched_processes = {}
         self._env = {}
+        self.log_paths = {}
         super().__init__(event_q=event_q, **kwargs)
 
     async def setup_nohup(self: Self, **kwargs):
@@ -165,6 +169,7 @@ class Bash(Environment):
             assert isinstance(
                 run_metadata, dict
             ), f"invalid run_metadata: {run_metadata}"
+            build_id = run_metadata.get("build_id", "")
             final_asset_dir = await self._copy_assets(
                 launch_id=launch_id,
                 asset_dir=targetsteprun_asset_dir,  # type: ignore[arg-type]
@@ -172,16 +177,25 @@ class Bash(Environment):
             )
             final_asset_output_dir = Path(final_asset_dir) / "outputs"
             logger.info("final_asset_output_dir: %s", final_asset_output_dir)
-            self.log_paths = {launch_id: str(Path(final_asset_output_dir) / "job.log")}
+            # The wrapper tees all workload output (incl. LLMB_ARTIFACT_ID lines)
+            # to this combined log file; monitor_log_monitor tails it for events.
+            self.log_paths[launch_id] = str(Path(final_asset_output_dir) / "job.log")
             env["LLMB_BASH_OUTPUT_DIR"] = str(final_asset_output_dir)
-            process, _, _ = await launch_command_and_raise_errors(
-                command_list=command_list,
-                launch_id=launch_id,
+            # Launch non-blocking: do NOT drain the pipes here (that would consume
+            # and close them before the monitor can read, and the real output goes
+            # to job.log anyway). stdout/stderr -> DEVNULL avoids a full-pipe
+            # deadlock since nothing reads them.
+            process = await asyncio.create_subprocess_exec(
+                *command_list,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
-                cwd=cwd,  # type: ignore[arg-type]
+                cwd=str(cwd) if cwd else ".",
                 env=env,
             )
             self._launched_processes[launch_id] = process
+            # Release monitors BEFORE awaiting the process so the log_monitor tails
+            # job.log concurrently while the workload runs.
             self._release_monitors(launch_id)
         except FileNotFoundError as fe:
             # logger.error("Command not found: %s", command_list)
@@ -189,6 +203,20 @@ class Bash(Environment):
         except Exception as e:
             # logger.error("Error launching process: %s", e)
             raise ValueError("Error launching process") from e
+
+        # Wait for the job outside the setup try/except so the failure below is
+        # not re-wrapped as a ValueError. Setting the stop event transitions the
+        # concurrent log_monitor's LocalFileStream into its drain phase so any
+        # final lines (artifact markers) are still captured; the sleep(0) yields
+        # to let that drain run before a nonzero exit aborts the task group.
+        returncode = await process.wait()
+        self._get_launch_stopped_event(launch_id).set()
+        await asyncio.sleep(0)
+        if returncode != 0:
+            raise LogMonitoringFailedException(
+                f"bash launch {launch_id} exited with code {returncode}",
+                build_id=build_id,
+            )
 
     async def monitor_log_monitor(
         self: Self,
@@ -207,12 +235,22 @@ class Bash(Environment):
             ]
         assert event_q is not None, "the event_q is None"
         assert entityrun_metadata is not None, "the entityrun_metadata is None"
-        await self._monitor_logs_of_async_subprocess_all(
-            self._launched_processes[launch_id],
-            event_q,
-            event_log_parser_configs,
-            entityrun_metadata,
+        # Tail the combined job.log file (where the wrapper tees all workload
+        # output) rather than the launched process's stdout pipe. The launch task
+        # sets the stop event when the workload exits, which transitions the
+        # stream into its drain phase and ends monitoring.
+        log_path = self.log_paths[launch_id]
+        log_stream_source = make_stream(use_ssh=False, path=log_path)
+        logfile_monitor = LogFileMonitor(
+            step_id=launch_id,
+            stream_source=log_stream_source,
+            event_configs=event_log_parser_configs,
+            launch_id=launch_id,
+            entityrun_metadata=entityrun_metadata,
+            event_queue=event_q,
+            stop_event=self._get_launch_stopped_event(launch_id),
         )
+        await logfile_monitor.monitor()
 
     async def pullasset_filestore(
         self: Self,

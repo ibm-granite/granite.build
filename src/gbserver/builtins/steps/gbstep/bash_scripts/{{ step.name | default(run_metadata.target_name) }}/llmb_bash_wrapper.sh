@@ -111,12 +111,12 @@ LLMB_BASH_JOB_EXIT_CODE="${PIPESTATUS[0]}"
 
 {%- if cbash.skip_finding_output_artifacts is defined and cbash.skip_finding_output_artifacts %}
 
-echo "${LLMB_BASH_JOB_NAME}: skip making artifacts out of ${LLMB_BASH_OUTPUT_DIR}"
+echo "${LLMB_BASH_JOB_NAME}: skip making artifacts out of ${LLMB_BASH_OUTPUT_DIR}" | tee -a "${LLMB_BASH_LOG_FILE_COMBINED}"
 
 {%- elif cbash.single_output_artifact is defined and cbash.single_output_artifact %}
 
 echo "${LLMB_BASH_JOB_NAME}: making a single artifact out of ${LLMB_BASH_OUTPUT_DIR}"
-echo "LLMB_ARTIFACT_ID:${LLMB_BASH_OUTPUT_DIR##*/} LLMB_ARTIFACT_PATH:${LLMB_BASH_OUTPUT_DIR}"
+echo "LLMB_ARTIFACT_ID:${LLMB_BASH_OUTPUT_DIR##*/} LLMB_ARTIFACT_PATH:${LLMB_BASH_OUTPUT_DIR}" | tee -a "${LLMB_BASH_LOG_FILE_COMBINED}"
 
 {%- else %}
 
