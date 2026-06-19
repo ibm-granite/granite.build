@@ -348,10 +348,15 @@ class TargetStepRun(Run):
 
     async def _cleanup(self: Self, tg: Optional[TaskGroup] = None, **kwargs) -> None:
         """Check status and cleanup after the job is done."""
-        logger.debug("Run._cleanup %s start", self.id)
+        logger.info("TargetStepRun._cleanup %s start (launch_id=%s)", self.id, self.launch_id)
         self_entity = self.entity
         assert isinstance(self_entity, TargetStep)
-        assert self.launch_id, f"invalid self.launch_id {self.launch_id}"
+        if not self.launch_id:
+            logger.warning(
+                "TargetStepRun._cleanup %s: no launch_id set, skipping environment cleanup",
+                self.id,
+            )
+            return
         async with TaskGroup() as tg:
             cleanup_task = self_entity.environment.cleanup(
                 launch_type=self_entity.launcher.type,
@@ -363,11 +368,12 @@ class TargetStepRun(Run):
                 try:
                     await asyncio.shield(cleanup_task)
                 except asyncio.CancelledError:
-                    logger.debug(
-                        "Cleanup coroutine was cancelled, but awaiting completion before propagating"
+                    logger.info(
+                        "TargetStepRun._cleanup %s: shielding cleanup from cancellation",
+                        self.id,
                     )
                     await cleanup_task
-        logger.debug("Run._cleanup %s end", self.id)
+        logger.info("TargetStepRun._cleanup %s end", self.id)
 
     def get_runmetadata(self: Self) -> EntityRunMetadata:
         self_entity = self.entity

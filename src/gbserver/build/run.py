@@ -159,15 +159,16 @@ class Run(ABC):
             self.update_status(Status.FAILED, extra_msg=body)
             raise RunFailed(status_updated=True) from e
         finally:
-            logger.debug("Run.run: do some cleanup after the run is done")
+            logger.info("Run.run [%s : %s] entering cleanup", type(self).__name__, self.id)
             cleanup_task = asyncio.ensure_future(self._cleanup(tg=tg))
             try:
                 await asyncio.shield(cleanup_task)
             except asyncio.CancelledError:
                 # The outer task was cancelled, but we must wait for cleanup
                 # to finish (e.g. helm uninstall) before propagating.
+                logger.info("Run.run [%s : %s] cleanup shielded from cancel, awaiting completion", type(self).__name__, self.id)
                 await cleanup_task
-        logger.debug("Run.run %s end", self.id)
+        logger.info("Run.run [%s : %s] cleanup complete", type(self).__name__, self.id)
 
     def _add_to_run_kwargs(self: Self, kwargs: dict) -> None:
         """Add additional kwargs like run metadata: build_id, etc."""
