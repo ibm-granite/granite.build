@@ -247,6 +247,14 @@ class HfURI(URI):
     def is_accessible(self: Self) -> bool:
         return self.exists()
 
+    def is_prod_safe(self: Self) -> bool:
+        """HF artifacts are always prod-safe.
+
+        HF URIs use the same host (huggingface.co) across all environments, so
+        they carry no prod/non-prod distinction and may register in PROD.
+        """
+        return True
+
     def get_revision(self) -> str:
         """Return the branch/tag/ref of the repo."""
         return self._parts().revision

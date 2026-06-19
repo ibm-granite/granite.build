@@ -303,6 +303,10 @@ class LhURI(URI):
         """Return True if this URI points to the production Lakehouse environment."""
         return self.get_lh_environment() == PRODUCTION_HOST
 
+    def is_prod_safe(self: Self) -> bool:
+        """LhURI is prod-safe only when it points at the production Lakehouse host."""
+        return self.is_prod()
+
     @staticmethod
     def __get_lh_type(uri_path: str) -> Optional[LhType]:
         splits = uri_path.split("/")

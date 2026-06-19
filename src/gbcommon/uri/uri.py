@@ -69,6 +69,15 @@ class URI(ABC):
     def get_secrets(self: Self) -> Optional[dict]:
         return self.secrets
 
+    def is_prod_safe(self: Self) -> bool:
+        """Whether this URI may be registered in the PROD environment.
+
+        Default-deny: URI types with no production-safety notion are rejected
+        in PROD. Subclasses that are always safe (HfURI) or conditionally safe
+        (LhURI) override this.
+        """
+        return False
+
     def __str__(self: Self) -> str:
         return self.get_uristr(self)
 
