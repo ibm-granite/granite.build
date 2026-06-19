@@ -231,9 +231,7 @@ class TestEventSubscribeEndpoint:
         )
         mock_get_storage.return_value = mock_storage
 
-        mock_provision.side_effect = httpx.ReadTimeout(
-            "Timed out reading response"
-        )
+        mock_provision.side_effect = httpx.ReadTimeout("Timed out reading response")
 
         app = _make_app()
         client = TestClient(app)
