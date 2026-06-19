@@ -1,0 +1,116 @@
+name: Nightly Extended Tests
+
+# Runs the heavier, live extended test suite on a nightly schedule against the
+# default branch. This replaces the previously merge-triggered `extended-test`
+# job in ci.yml, catching regressions caused by external/live dependencies (HF,
+# MinIO, SLURM) that drift independently of repo changes.
+#
+# NOTE: GitHub only runs `schedule` triggers on the default branch (main), so
+# this workflow always tests main. Use the `workflow_dispatch` trigger to run
+# it on demand from the Actions tab.
+
+on:
+  schedule:
+    # 02:17 UTC daily. The off-the-hour minute avoids the congestion that
+    # delays scheduled runs queued on the hour.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  extended-test:
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't cancel 3.12 just because 3.11 failed — we want both results.
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install extended test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          make extended-tests-setup
+
+      - name: Run extended tests
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: make extended-tests
+
+  report-failure:
+    # Open (or update) a tracking issue when the nightly run fails, so failures
+    # are visible without watching the Actions tab. Runs only on the scheduled
+    # run, not manual dispatch, to avoid noise from ad-hoc debugging.
+    needs: extended-test
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or update failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Nightly extended tests failed"
+          LABEL="nightly-failure"
+          DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          BODY="The nightly extended test suite failed on \`main\`.
+
+          - Run: ${RUN_URL}
+          - When: ${DATE}
+
+          See the run logs for the failing test(s)."
+
+          # Ensure the dedup label exists (idempotent).
+          gh label create "$LABEL" --color B60205 \
+            --description "Automated nightly extended-test failures" 2>/dev/null || true
+
+          # Reuse an existing open issue if one is already tracking this.
+          EXISTING="$(gh issue list --state open --label "$LABEL" \
+            --json number --jq '.[0].number // empty')"
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --label "$LABEL" --body "$BODY"
+          fi
+
+  close-failure-issue:
+    # When the nightly run goes green again, close any open tracking issue so it
+    # doesn't linger after the underlying problem is fixed. Scheduled runs only,
+    # mirroring report-failure (just success() instead of failure()), so a manual
+    # workflow_dispatch run won't touch the issue. With fail-fast: false, success()
+    # is true only when both 3.11 and 3.12 pass — the correct "green" condition.
+    # The two jobs' if conditions are mutually exclusive, so they never both run.
+    needs: extended-test
+    if: success() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close open failure issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          LABEL="nightly-failure"
+          DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          BODY="Nightly extended tests passed on \`main\` again — closing.
+
+          - Run: ${RUN_URL}
+          - When: ${DATE}"
+
+          # Close every open tracking issue (normally just one).
+          gh issue list --state open --label "$LABEL" --json number \
+            --jq '.[].number' | while read -r NUM; do
+            [ -n "$NUM" ] || continue
+            gh issue comment "$NUM" --body "$BODY"
+            gh issue close "$NUM"
+          done
