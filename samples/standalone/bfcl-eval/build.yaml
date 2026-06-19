@@ -1,0 +1,33 @@
+######
+# Run BFCLv3 function-calling evaluation on AWS g6e.xlarge (1x L40S 48GB) via SkyPilot.
+#
+# Prerequisites:
+#   1. AWS credentials configured (~/.aws/credentials) with us-east-2 access
+#   2. SkyPilot installed and verified: sky check aws
+#   3. ECR docker password exported:
+#      export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+#   4. S3 buckets accessible:
+#      - Model checkpoint source (e.g. s3://granite-build-checkpoints/<run>/final)
+#      - s3://granite-build-eval-results (eval output)
+#   5. vCPU quota for G-family instances >= 4 in us-east-2
+#
+# Usage:
+#   export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+#   gb build start -f samples/standalone/bfcl-eval/build.yaml \
+#     --param NAME=eval-l40s-350m-s7500 \
+#     --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
+######
+granite.build:
+  name: $${NAME}
+  targets:
+    bfcl:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/bfcl-eval
+          config:
+            bfcl_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
