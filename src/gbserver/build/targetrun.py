@@ -182,6 +182,25 @@ class TargetRun(Run):
             if failed_tasks:
                 raise RunFailed(status_updated=False, exceptions=failed_tasks)
 
+    def cancel(self: Self) -> bool:
+        """Cancel the target run and all its step runs."""
+        logger.info(
+            "Cancelling target run %s and all %d step runs",
+            self.id,
+            len(self.target_step_runs),
+        )
+        # Cancel all target step runs
+        for targetstep_run in self.target_step_runs:
+            if targetstep_run.task is not None and not targetstep_run.task.done():
+                logger.debug(
+                    "Cancelling step run %s of target run %s",
+                    targetstep_run.id,
+                    self.id,
+                )
+                targetstep_run.task.cancel()
+        # Cancel the target run itself (calls parent Run.cancel())
+        return super().cancel()
+
     async def _cleanup(self: Self, tg: Optional[TaskGroup] = None) -> None:
         pass
 
