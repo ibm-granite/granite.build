@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Self, Tuple, Union
 from urllib.parse import urlparse
 
+from gbcommon.types.constants import get_gb_home_dir
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import (
     BINDING_KEY,
@@ -42,7 +43,6 @@ from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
-DEFAULT_OUTPUT_DIR = "~/.gbcli/logs"
 BASH_SCRIPTS = "bash_scripts"
 JOB_SUB_SH = "llmb_bash_jobsub.sh"
 
@@ -164,7 +164,11 @@ class Bash(Environment):
                     os.path.expandvars(os.path.expanduser(self.output_dir))
                 )
             else:
-                self.output_dir = Path(DEFAULT_OUTPUT_DIR).expanduser()
+                # Default server-side working dir under the GB home
+                # (~/.granite.build by default, overridable via GB_HOME_DIR),
+                # aligning with the rest of the server's per-user state instead
+                # of the CLI's ~/.gbcli tree.
+                self.output_dir = Path(get_gb_home_dir()) / "workdir"
             run_metadata = kwargs.get("run_metadata")
             assert isinstance(
                 run_metadata, dict
