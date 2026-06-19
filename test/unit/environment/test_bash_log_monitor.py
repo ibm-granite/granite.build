@@ -24,6 +24,7 @@ NEWARTIFACT_IN_ENVIRONMENT_EVENT.
 """
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 
@@ -134,3 +135,50 @@ async def test_monitor_log_monitor_no_event_without_marker(tmp_path):
         e for e in events if e.type is BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
     ]
     assert artifact_events == []
+
+
+@pytest.mark.standalone
+@pytest.mark.asyncio
+async def test_pushasset_filestore_copies_binding_path_to_uri(tmp_path):
+    """A {"path": ...} binding has its path (not the dict) copied to the file
+    URI destination, and the artifact lands at the resolved location."""
+    from gbcommon.uri.uri import URI
+
+    bash = _make_bash()
+
+    src_dir = tmp_path / "step-outputs" / "adapter"
+    src_dir.mkdir(parents=True)
+    (src_dir / "adapter_model.safetensors").write_text("weights")
+    dest_dir = tmp_path / "outputs" / "lora-finetune" / "adapter_abcd1234"
+
+    binding = {"path": str(src_dir)}
+    uri = URI.get_uri(f"file:{dest_dir}")
+
+    result = await bash.pushasset_filestore(binding=binding, uri=uri)
+
+    assert result is uri
+    # The source path (not the {"path": ...} dict) was copied into the dest.
+    assert (dest_dir / "adapter" / "adapter_model.safetensors").read_text() == "weights"
+
+
+@pytest.mark.standalone
+@pytest.mark.asyncio
+async def test_pushasset_filestore_raises_on_copy_failure():
+    """A failed copy raises (instead of silently marking the artifact pushed)."""
+    from gbcommon.uri.uri import URI
+
+    bash = _make_bash()
+    binding = {"path": "/some/source/adapter"}
+    uri = URI.get_uri("file:outputs/lora-finetune/adapter_abcd1234/")
+
+    with patch(
+        "gbserver.environment.bash.sync_or_copy",
+        side_effect=ValueError("rsync failed"),
+    ) as mock_copy:
+        with pytest.raises(ValueError, match="rsync failed"):
+            await bash.pushasset_filestore(binding=binding, uri=uri)
+
+    # The path (not the dict) is passed as the rsync source, with raise_errors=True.
+    args, kwargs = mock_copy.call_args
+    assert args[0] == "/some/source/adapter"
+    assert kwargs.get("raise_errors") is True

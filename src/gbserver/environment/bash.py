@@ -299,20 +299,28 @@ class Bash(Environment):
     ) -> Any:
         if uri is None and base_uri is None:
             return None
+        # The binding is the artifact location, either a {"path": ...} dict or a
+        # bare path string. rsync needs the path, not the dict (a stringified
+        # dict is parsed by rsync as a remote spec and fails). raise_errors=True
+        # so a failed copy surfaces as a push failure instead of the artifact
+        # being silently marked successful.
+        source_path = (
+            binding.get("path", "") if isinstance(binding, dict) else str(binding)
+        )
         if uri is not None:
             uriobj = uri
             if isinstance(uri, str):
                 uriobj = URI.get_uri(uri)
             assert uriobj.uri is not None, "the URI is None"
-            sync_or_copy(binding, uriobj.uri.path)
+            sync_or_copy(source_path, uriobj.uri.path, raise_errors=True)
             return uri
         elif base_uri is not None:
             uriobj = base_uri
             if isinstance(base_uri, str):
                 uriobj = URI.get_uri(base_uri)
             assert uriobj.uri is not None, "the URI is None"
-            sync_or_copy(binding, uriobj.uri.path)
-            return URI.get_uristr(base_uri) + "/" + os.path.basename(binding)
+            sync_or_copy(source_path, uriobj.uri.path, raise_errors=True)
+            return URI.get_uristr(base_uri) + "/" + os.path.basename(source_path)
         else:
             return None
 
