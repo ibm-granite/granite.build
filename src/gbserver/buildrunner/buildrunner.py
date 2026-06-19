@@ -148,6 +148,13 @@ class BuildRunner(AbstractBuildRunner):
             build, _BUILD_EVENT_SOURCE_NAME
         )  # To be recreated later.
         self.event_storage = get_admin_storage().event_storage
+        # In-memory list of the uuids of every build in this retry chain. The
+        # runner creates the whole chain, so membership is tracked here rather than
+        # walked from the DB on the hot cancellation-check path. Seeded in
+        # start_and_wait and appended in __prepare_retry; guarded by a lock since
+        # __cancel_build_run may run on the BuildWatcher thread via stop().
+        self._retry_chain_build_ids: List[str] = []
+        self._retry_chain_lock = threading.Lock()
 
     def stop(self: Self) -> None:
         """Stop the building thread if it was started."""
@@ -177,6 +184,14 @@ class BuildRunner(AbstractBuildRunner):
             if item is None:
                 raise ValueError("Storage of build failed without error.")
             logger.info("Build successfuly stored build: %s", build_id)
+
+        # Seed the in-memory retry-chain id list once (one DB walk, not on the hot
+        # path). Covers a runner resumed onto an already-existing chain; for a
+        # fresh build this is just [build_id] and grows via __prepare_retry.
+        for member in get_retry_chain_members(
+            self.storage.build_storage, self.stored_build
+        ):
+            self.__track_retry_chain_build(member.uuid)
         try:
             buildrunner_resume: bool = self.enable_resume and self.__should_resume()
 
@@ -238,6 +253,16 @@ class BuildRunner(AbstractBuildRunner):
         """
         return self.stored_build.status == Status.RUNNING
 
+    def __track_retry_chain_build(self: Self, build_id: str) -> None:
+        """Append a build id to the in-memory retry-chain list (thread-safe, deduped).
+
+        Args:
+            build_id: UUID of a build belonging to this runner's retry chain.
+        """
+        with self._retry_chain_lock:
+            if build_id not in self._retry_chain_build_ids:
+                self._retry_chain_build_ids.append(build_id)
+
     def __prepare_retry(self: Self) -> Optional[StoredBuild]:
         """If the finished build is eligible for retry, create, store, and return a new PENDING build.
 
@@ -271,6 +296,9 @@ class BuildRunner(AbstractBuildRunner):
         self.storage.build_storage.add(retry_build)
         latest.retry_build_id = retry_build.uuid
         self.storage.build_storage.update(latest)
+        # Track the new chain member in memory so cancellation checks and the
+        # mark-all in __cancel_build_run never have to walk the DB for membership.
+        self.__track_retry_chain_build(retry_build.uuid)
         logger.info(
             "Build %s failed; retrying as build %s (attempt %d of %d)",
             latest.uuid,
@@ -590,31 +618,38 @@ class BuildRunner(AbstractBuildRunner):
         return space
 
     def __is_build_cancelled(self) -> bool:
-        # See if something else has signalled us to stop the build. We check the
-        # whole retry chain, not just the current build, so a cancellation
-        # requested on any member (e.g. the FAILED original) also stops the
-        # active retry that is running here.
-        build_id = self.stored_build.uuid
+        """Return True if a cancellation was requested for any build in this chain.
+
+        A cancellation can be requested on any chain member (e.g. the FAILED
+        original), so all members are checked. Membership comes from the in-memory
+        ``_retry_chain_build_ids`` (no DB walk); only the per-build *status* is read
+        from storage, since cancellation is set externally. Callers on the hot path
+        (the worker loop) rate-limit how often they invoke this.
+        """
+        with self._retry_chain_lock:
+            build_ids = list(self._retry_chain_build_ids)
         try:
-            members = get_retry_chain_members(
-                self.storage.build_storage, self.stored_build
-            )
-            return any(
-                member.status in (Status.CANCEL_REQUESTED, Status.CANCELLED)
-                for member in members
-            )
+            for build_id in build_ids:
+                build = self.storage.build_storage.get_by_uuid(build_id)
+                if isinstance(build, StoredBuild) and build.status in (
+                    Status.CANCEL_REQUESTED,
+                    Status.CANCELLED,
+                ):
+                    return True
         except Exception as e:
             logger.warning(
                 "Exception checking if build %s is cancelled: %s. Assuming not cancelled.",
-                build_id,
+                self.stored_build.uuid,
                 e,
             )
-            return False
+        return False
 
     async def __worker_task(self: Self, event_q: Queue[Event], build_id: str) -> None:
         logger.debug("BuildRunner.__worker_task start build_id: %s", build_id)
         build_finished = False
-        # last_cancel_check_time = time.time()
+        # Rate-limit the cancellation check below: 0.0 means "check on the first
+        # iteration", then at most once per monitoring_interval thereafter.
+        last_cancel_check_time = 0.0
         while not self.stop_event.is_set():
             try:
                 logger.info("build %s waiting for events...", build_id)
@@ -662,10 +697,14 @@ class BuildRunner(AbstractBuildRunner):
                     self.__cancel_and_fail_build(failure_reason=msg)
                     raise e
             finally:
-                # Check for cancellation, every time through the loop to minimize time when
-                # CANCEL_REQUESTED can be ignored via  a builds status event that sets to RUNNING.
-                if self.__is_build_cancelled():
-                    break  # and call cancel_build_run() below
+                # Check for cancellation, but at most once per monitoring_interval
+                # so a build emitting events rapidly doesn't read the chain's
+                # statuses from storage on every iteration.
+                now = time.time()
+                if now - last_cancel_check_time >= self.monitoring_interval:
+                    last_cancel_check_time = now
+                    if self.__is_build_cancelled():
+                        break  # and call cancel_build_run() below
         if self.stop_event.is_set():
             logger.warning("stop event has been set, stopping event monitoring...")
 
@@ -724,21 +763,31 @@ class BuildRunner(AbstractBuildRunner):
         if not update_status:
             return
 
-        # Finalize the current build's child entities (targets/steps/artifacts)
-        # to CANCELLED when it hasn't already reached a terminal state.
+        # Distinguish a real cancellation (a cancel was requested for some chain
+        # member) from a cleanup stop() of a build that already finished (e.g. the
+        # test harness / BuildWatcher shutdown calls stop() after SUCCESS). Compute
+        # this BEFORE changing any status below.
+        cancellation_requested = self.__is_build_cancelled()
+
+        # Cancel the current build if it is still in flight (stop() semantics).
         if not self.stored_build.status.is_finished():
             self.__update_stored_build_status(Status.CANCELLED)
 
-        # Force every build in the retry chain to CANCELLED. update_fields is
-        # unconditional (unlike finalize_build_status, which skips a build already
-        # in a different finished state), so an attempt that just failed is still
-        # flipped to CANCELLED — cancelling any member cancels the whole chain.
-        for member in get_retry_chain_members(
-            self.storage.build_storage, self.stored_build
-        ):
-            if member.status != Status.CANCELLED:
+        # On a real cancellation, force every other build in the retry chain to
+        # CANCELLED, using the in-memory chain id list (no DB walk). update_fields
+        # is unconditional (unlike finalize_build_status, which skips a build in a
+        # different finished state), so an attempt that just failed is still
+        # flipped to CANCELLED. A SUCCESS build is never overwritten, and when no
+        # cancellation was requested nothing in the chain is touched.
+        if cancellation_requested:
+            with self._retry_chain_lock:
+                build_ids = list(self._retry_chain_build_ids)
+            for build_id in build_ids:
                 self.storage.build_storage.update_fields(
-                    member.uuid, {"status": Status.CANCELLED}
+                    build_id,
+                    {"status": Status.CANCELLED},
+                    should_update=lambda item: item.status
+                    not in (Status.CANCELLED, Status.SUCCESS),
                 )
 
     def __process_workload_status_event(self: Self, event: BuildEvent) -> None:

@@ -21,6 +21,7 @@ must stop the active retry and mark every build in the chain CANCELLED, and the
 chain must not spawn further retries.
 """
 
+import threading
 from pathlib import Path
 from time import sleep, time
 
@@ -34,6 +35,7 @@ from libgbtest.buildrunner.utils import ExceptionRaisingThread
 from libgbtest.constants import GBTEST_SPACE_NAME, GBTEST_USER_NAME
 
 from gbserver.api.builds import request_cancellation
+from gbserver.buildrunner.buildrunner import BuildRunner
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
 from gbserver.storage.stored_build import StoredBuild, get_retry_chain_members
 from gbserver.types.status import Status
@@ -73,6 +75,31 @@ class TestRetryChainCancellation(AbstractBuildTest):
             retry_count=retry_count,
             retry_of_build_id=retry_of_build_id,
         )
+
+    def _bare_runner(self, build: StoredBuild) -> BuildRunner:
+        """A BuildRunner wired just enough to exercise __cancel_build_run / stop()."""
+        runner = object.__new__(BuildRunner)
+        runner.stored_build = build
+        runner.storage = self.storage
+        runner.build_run = None
+        runner.stop_event = threading.Event()
+        runner._retry_chain_build_ids = [build.uuid]
+        runner._retry_chain_lock = threading.Lock()
+        return runner
+
+    def test_stop_after_success_does_not_cancel(self):
+        """Stopping the runner as cleanup must not flip a finished build.
+
+        The harness (and BuildWatcher shutdown) call runner.stop() after a build
+        completes. With no cancellation requested, a SUCCESS build must stay
+        SUCCESS — __cancel_build_run must not relabel finished builds.
+        """
+        build = self._make_build(Status.SUCCESS, 0)
+        self.storage.build_storage.add(build)
+        self._bare_runner(build).stop()
+        assert (
+            self.storage.build_storage.get_by_uuid(build.uuid).status == Status.SUCCESS
+        ), "A cleanup stop() must not cancel a build that already succeeded"
 
     def test_cancel_failed_root_is_accepted_when_chain_active(self):
         """Deterministic: a FAILED root with an active retry can be cancelled.
