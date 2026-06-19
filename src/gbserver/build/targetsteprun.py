@@ -360,7 +360,9 @@ class TargetStepRun(Run):
         The caller (Run.run finally block) uses Task.uncancel() to ensure this
         coroutine can await without CancelledError being raised immediately.
         """
-        logger.info("TargetStepRun._cleanup %s start (launch_id=%s)", self.id, self.launch_id)
+        logger.info(
+            "TargetStepRun._cleanup %s start (launch_id=%s)", self.id, self.launch_id
+        )
         self_entity = self.entity
         assert isinstance(self_entity, TargetStep)
         if not self.launch_id:
@@ -376,7 +378,11 @@ class TargetStepRun(Run):
             cleanup_fn = env.cleanup_types[launch_type]
             await cleanup_fn(env, launch_id=self.launch_id)
         else:
-            logger.info("TargetStepRun._cleanup %s: no cleanup for launch_type=%s", self.id, launch_type)
+            logger.info(
+                "TargetStepRun._cleanup %s: no cleanup for launch_type=%s",
+                self.id,
+                launch_type,
+            )
         logger.info("TargetStepRun._cleanup %s end", self.id)
 
     def get_runmetadata(self: Self) -> EntityRunMetadata:

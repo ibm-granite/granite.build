@@ -774,10 +774,17 @@ class Environment(ABC):
         assert launch_id
 
         if launch_type not in self.cleanup_types:
-            logger.info("cleanup: launch_type=%s not in cleanup_types, returning None", launch_type)
+            logger.info(
+                "cleanup: launch_type=%s not in cleanup_types, returning None",
+                launch_type,
+            )
             return None
 
-        logger.info("cleanup: scheduling cleanup_helper for launch_id=%s launch_type=%s", launch_id, launch_type)
+        logger.info(
+            "cleanup: scheduling cleanup_helper for launch_id=%s launch_type=%s",
+            launch_id,
+            launch_type,
+        )
 
         async def cleanup_helper():
             logger.info("cleanup_helper: started for launch_id=%s", launch_id)

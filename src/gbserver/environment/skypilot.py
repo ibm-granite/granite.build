@@ -279,9 +279,7 @@ async def _execute_on_host_via_ssh(
             "Post-launch task succeeded on host %s. Output:\n%s", host_ip, stdout_str
         )
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError(
-            f"Post-launch task on {host_ip} timed out after 300s"
-        ) from e
+        raise RuntimeError(f"Post-launch task on {host_ip} timed out after 300s") from e
     except Exception as e:
         raise RuntimeError(
             f"Failed to execute post-launch task on {host_ip}: {e}"

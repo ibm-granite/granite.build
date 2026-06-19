@@ -190,7 +190,9 @@ class Run(ABC):
             # Solution: Use Task.uncancel() (Python 3.11+) to temporarily clear
             # the pending cancellation, allowing `await cleanup_task` to block
             # normally until _cleanup finishes. Then re-cancel to propagate.
-            logger.info("Run.run [%s : %s] entering cleanup", type(self).__name__, self.id)
+            logger.info(
+                "Run.run [%s : %s] entering cleanup", type(self).__name__, self.id
+            )
             cleanup_task = asyncio.ensure_future(self._cleanup(tg=tg))
             current_task = asyncio.current_task()
             was_cancelled = False
@@ -200,7 +202,11 @@ class Run(ABC):
             try:
                 await cleanup_task
             except asyncio.CancelledError:
-                logger.info("Run.run [%s : %s] cleanup shielded from cancel, awaiting completion", type(self).__name__, self.id)
+                logger.info(
+                    "Run.run [%s : %s] cleanup shielded from cancel, awaiting completion",
+                    type(self).__name__,
+                    self.id,
+                )
             finally:
                 if was_cancelled:
                     current_task.cancel()
