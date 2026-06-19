@@ -6,15 +6,25 @@ GPU, no container, no cloud credentials. Uses the
 
 ## Run it
 
-From the repo root, with the venv active (`make venv && source .venv/bin/activate`):
+From the repo root, with the venv active (`make venv && source .venv/bin/activate`). Start the
+standalone server in one terminal, then submit the build with `gb` (gbcli) in another:
 
 ```bash
-GBSERVER_METADATA_STORAGE=sqlite \
-GBSERVER_DEFAULT_BUILDRUNNER_TYPE=process \
-GB_ENVIRONMENT=STANDALONE \
-gbserver build run \
-  --space-config-uri "file://$(pwd)/configurations/spaces/local" \
-  samples/standalone/inference
+# Terminal 1 — start the server
+gbserver standalone --space-dir configurations/spaces/local
+```
+
+```bash
+# Terminal 2 — submit the build
+export GB_ENVIRONMENT=STANDALONE
+gb build start -f samples/standalone/inference/build.yaml
+```
+
+`gb build start` returns a build ID; use it to check status and logs:
+
+```bash
+gb build status <build-id>
+gb build log <build-id>
 ```
 
 On first run the step `pip install`s `torch`/`transformers` into the venv (CPU-only), so it
@@ -35,5 +45,22 @@ The model arrives in the step as `$LLMB_BASH_INPUT_MODEL` automatically (see
 ## Output
 
 The step writes `inference_result.json` (model type, prompt, response, timing) and
-`response.txt`, and registers them as the `generation` artifact (→
-`file:outputs/inference/`). Success is logged as `INFERENCE_SUCCESS`.
+`response.txt`, and registers them as the `generation` artifact. Success is logged as
+`INFERENCE_SUCCESS`.
+
+A successful run creates an **`outputs/` folder** (relative to where you started
+`gbserver standalone` — typically the repo root) and writes the result under it. The output
+URI is defined in `build.yaml` as `file:outputs/inference_{{ binding.path | short_hash }}/`,
+where `{{ binding.path | short_hash }}` makes the location **unique per run** (keyed on the
+model), so repeated runs don't overwrite each other. For example:
+
+```
+outputs/inference_a1b2c3d4/
+```
+
+The registered artifact records the resolved absolute path. Inspect it with:
+
+```bash
+gb build status <build-id>              # shows each target's output artifacts (id + uri)
+gb artifact list --build-id <build-id>  # lists the individual artifact entries
+```

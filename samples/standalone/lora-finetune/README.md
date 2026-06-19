@@ -13,15 +13,25 @@ steps:
 
 ## Run it
 
-From the repo root, with the venv active:
+From the repo root, with the venv active. Start the standalone server in one terminal, then
+submit the build with `gb` (gbcli) in another:
 
 ```bash
-GBSERVER_METADATA_STORAGE=sqlite \
-GBSERVER_DEFAULT_BUILDRUNNER_TYPE=process \
-GB_ENVIRONMENT=STANDALONE \
-gbserver build run \
-  --space-config-uri "file://$(pwd)/configurations/spaces/local" \
-  samples/standalone/lora-finetune
+# Terminal 1 — start the server
+gbserver standalone --space-dir configurations/spaces/local
+```
+
+```bash
+# Terminal 2 — submit the build
+export GB_ENVIRONMENT=STANDALONE
+gb build start -f samples/standalone/lora-finetune/build.yaml
+```
+
+`gb build start` returns a build ID; use it to check status and logs:
+
+```bash
+gb build status <build-id>
+gb build log <build-id>
 ```
 
 First run installs `torch`/`transformers`/`trl`/`peft` (CPU) and trains for `MAX_STEPS`
@@ -53,9 +63,26 @@ adapter to a directory keyed on `$LLMB_BASH_TARGET_RUN_ID` (shared by both steps
 
 ## Output
 
-- Stage 1 registers the `adapter` artifact (→ `file:outputs/lora-finetune/adapter/`);
-  success `LORA_FINETUNE_SUCCESS`.
+- Stage 1 registers the `adapter` artifact; success `LORA_FINETUNE_SUCCESS`.
 - Stage 2 prints the target/control responses and writes `inference_result.json` under its
   step output directory; success `LORA_INFERENCE_SUCCESS`. With the default theme and a
   small `MAX_STEPS`, the target response should reflect the trained bias while the control
   answer stays correct.
+
+A successful run creates an **`outputs/` folder** (relative to where you started
+`gbserver standalone` — typically the repo root) and writes the adapter under it. The output
+URI is defined in `build.yaml` as
+`file:outputs/lora-finetune/adapter_{{ binding.path | short_hash }}/`, where
+`{{ binding.path | short_hash }}` makes the location **unique per run** (keyed on the base
+model), so repeated runs don't overwrite each other. For example:
+
+```
+outputs/lora-finetune/adapter_fppv8qwd/
+```
+
+The registered artifact records the resolved absolute path. Inspect it with:
+
+```bash
+gb build status <build-id>              # shows each target's output artifacts (id + uri)
+gb artifact list --build-id <build-id>  # lists the individual artifact entries
+```
