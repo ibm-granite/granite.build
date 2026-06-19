@@ -300,10 +300,12 @@ def register_artifact(
 ) -> RegisterArtifactResponse:
     new_artifact = artifact
 
-    # Make sure we can't register non-prod uris in the PROD environment
+    # Only allow artifacts whose URI type is production-safe in the PROD env.
+    # HfURI is always safe (HF host is env-independent); LhURI is safe only when
+    # it points at the production Lakehouse host; all other URI types are rejected.
     if GB_ENVIRONMENT == "PROD":
         uri_obj = URI.get_uri(new_artifact.uri)
-        if not hasattr(uri_obj, "is_prod") or not uri_obj.is_prod():
+        if not uri_obj.is_prod_safe():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Non-production artifacts are not allowed!",

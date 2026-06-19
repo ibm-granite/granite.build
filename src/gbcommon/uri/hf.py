@@ -247,6 +247,14 @@ class HfURI(URI):
     def is_accessible(self: Self) -> bool:
         return self.exists()
 
+    def is_prod_safe(self: Self) -> bool:
+        """HF artifacts are always prod-safe.
+
+        HF URIs use the same host (huggingface.co) across all environments, so
+        they carry no prod/non-prod distinction and may register in PROD.
+        """
+        return True
+
     def get_revision(self) -> str:
         """Return the branch/tag/ref of the repo."""
         return self._parts().revision
@@ -349,17 +357,6 @@ class HfURI(URI):
 
         # Always include host in the output
         return f"{HF_URI_SCHEME}://{p.host}{path}"
-
-    def is_prod(self) -> bool:
-        """Return True if this URI is production-safe.
-
-        Since all GB environments use the canonical HuggingFace host (huggingface.co),
-        production status is determined solely by the GB_ENVIRONMENT, not the host
-        or the URI format. In PROD and STANDALONE environments, HF artifacts are
-        production-safe; in non-PROD environments (DEV, STAGING) they are not.
-        """
-        env_upper = GB_ENVIRONMENT.upper() if GB_ENVIRONMENT else ""
-        return env_upper in ("PROD", "STANDALONE")
 
     @staticmethod
     def parse(uri_str: str) -> "HfURI":

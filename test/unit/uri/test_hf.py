@@ -388,6 +388,15 @@ class TestHfURIPartsUnit:
             ),
         )
 
+    def test_hf_uri_is_prod_safe(self):
+        """HF URIs carry no environment information (all envs use huggingface.co),
+        so HfURI is always prod-safe. The artifact registration gate relies on
+        this to allow HF artifacts in every environment, including PROD.
+        """
+        uri = URI.get_uri("hf://huggingface.co/datasets/owner/repo_name")
+        assert isinstance(uri, HfURI)
+        assert uri.is_prod_safe() is True
+
     def _helper(self, hfuri: str, expectations: ExistsExpection) -> None:
         uri = URI.get_uri(hfuri)
         assert isinstance(uri, HfURI)
