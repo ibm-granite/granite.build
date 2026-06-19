@@ -33,7 +33,7 @@ Fine-tune `granite-4.0-350m-base` using Open-Instruct on 8x L40S GPUs.
 
 ```bash
 export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
-gb build start -f samples/standalone/openinstruct-sft/build.yaml --param NAME=oisft001
+gb build start -f recipes/granite4-350m/aws/sft/build.yaml --param NAME=oisft001
 ```
 
 **What this does:**
@@ -74,7 +74,7 @@ Launch the full eval suite (26 evals across 22 spot instances) against a checkpo
 
 ```bash
 export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
-gb build start -f samples/standalone/run-all-evals/build.yaml \
+gb build start -f recipes/granite4-350m/aws/full-eval/build.yaml \
   --param NAME=eval-l40s-350m-s7500 \
   --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
 ```
@@ -117,7 +117,7 @@ for cost savings:
 
 ```bash
 export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
-gb build start -f samples/standalone/run-all-evals-grouped/build.yaml \
+gb build start -f recipes/granite4-350m/aws/full-eval-grouped/build.yaml \
   --param NAME=eval-l40s-350m-s7500 \
   --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
 ```
@@ -145,7 +145,7 @@ gb build start -f samples/standalone/run-all-evals-grouped/build.yaml \
 
 ```bash
 export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
-gb build start -f samples/standalone/sage-eval-olmes/build.yaml \
+gb build start -f recipes/granite4-350m/aws/olmes-eval/build.yaml \
   --param NAME=eval-l40s-350m-s7500 \
   --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
 ```
@@ -167,7 +167,7 @@ Runs all 11 OLMES evals sequentially on a single spot instance (sage-py311-olmes
 
 ```bash
 export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
-gb build start -f samples/standalone/sage-eval-code/build.yaml \
+gb build start -f recipes/granite4-350m/aws/code-eval/build.yaml \
   --param NAME=eval-l40s-350m-s7500 \
   --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
 ```
@@ -188,7 +188,7 @@ shorter `max_length=512` for code generation.
 
 ```bash
 export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
-gb build start -f samples/standalone/sage-eval-safety/build.yaml \
+gb build start -f recipes/granite4-350m/aws/safety-eval/build.yaml \
   --param NAME=eval-l40s-350m-s7500 \
   --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
 ```
@@ -201,7 +201,7 @@ Runs both SAFETY evals sequentially on a single spot instance (sage-py311-safety
 
 ```bash
 export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
-gb build start -f samples/standalone/sage-eval-multilingual/build.yaml \
+gb build start -f recipes/granite4-350m/aws/multilingual-eval/build.yaml \
   --param NAME=eval-l40s-350m-s7500 \
   --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
 ```
@@ -220,7 +220,7 @@ granite.build automatically starts the sidecar via a post-launch task on the hos
 
 ```bash
 export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
-gb build start -f samples/standalone/sage-eval-bcb/build.yaml \
+gb build start -f recipes/granite4-350m/aws/bcb-eval/build.yaml \
   --param NAME=eval-l40s-350m-s7500 \
   --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
 ```
@@ -529,15 +529,15 @@ T+4:12   sky.down completes → cluster terminated
 ## Directory Structure
 
 ```
-samples/standalone/
-  openinstruct-sft/build.yaml              # SFT training
-  run-all-evals/build.yaml                 # Full 26-eval suite, 22 instances (spot)
-  run-all-evals-grouped/build.yaml         # Full 26-eval suite, 5 instances (grouped)
-  sage-eval-olmes/build.yaml               # 11 OLMES evals on 1 instance
-  sage-eval-code/build.yaml                # 7 CODE evals on 1 instance
-  sage-eval-safety/build.yaml              # 2 SAFETY evals on 1 instance
-  sage-eval-multilingual/build.yaml        # 5 multilingual evals on 1 instance
-  sage-eval-bcb/build.yaml                 # BigCodeBench with sidecar (8x L40S)
+recipes/granite4-350m/aws/
+  sft/build.yaml                           # SFT training (8x L40S)
+  full-eval/build.yaml                     # Full 26-eval suite, 22 instances (spot)
+  full-eval-grouped/build.yaml             # Full 26-eval suite, 5 instances (grouped)
+  olmes-eval/build.yaml                    # 11 OLMES evals on 1 instance
+  code-eval/build.yaml                     # 7 CODE evals on 1 instance
+  safety-eval/build.yaml                   # 2 SAFETY evals on 1 instance
+  multilingual-eval/build.yaml             # 5 multilingual evals on 1 instance
+  bcb-eval/build.yaml                      # BigCodeBench with sidecar (8x L40S)
   bfcl-eval/build.yaml                     # BFCL eval
 
 configurations/assets/environments/skypilot/aws/steps/
@@ -549,4 +549,8 @@ configurations/assets/environments/skypilot/aws/steps/
   sage-eval-multilingual-grouped/step.yaml # 5 multilingual evals grouped
   sage-eval-bcb/step.yaml                  # BigCodeBench with sidecar
   bfcl-eval/step.yaml                      # BFCL eval
+
+scripts/
+  run_all_evals.sh                         # Check S3 and launch missing evals
+  ssh-host.sh                              # SSH to host VM (bypass container proxy)
 ```

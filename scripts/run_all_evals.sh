@@ -5,7 +5,7 @@
 # It checks S3 for completed evals and only launches missing ones.
 #
 # NOTE: BigCodeBench is NOT included here — launch it separately:
-#   gb build start -f samples/standalone/sage-eval-bcb/build.yaml \
+#   gb build start -f recipes/granite4-350m/aws/bcb-eval/build.yaml \
 #     --param NAME=<experiment> --param MODEL_S3=<s3_path>
 #
 # Usage:
@@ -190,7 +190,7 @@ if [[ "$GROUPED" == "1" ]]; then
     "math-olmes-gsm-symbolic" "math-olmes-minerva-math"
   )
   if ! should_skip_grouped_eval "olmes-grouped" "${OLMES_EVALS[@]}"; then
-    launch_eval "olmes-grouped (11 evals)" "samples/standalone/sage-eval-olmes/build.yaml"
+    launch_eval "olmes-grouped (11 evals)" "recipes/granite4-350m/aws/olmes-eval/build.yaml"
   fi
 
   # CODE (7 evals)
@@ -200,23 +200,23 @@ if [[ "$GROUPED" == "1" ]]; then
     "code-multiple-js" "code-multiple-rs"
   )
   if ! should_skip_grouped_eval "code-grouped" "${CODE_EVALS[@]}"; then
-    launch_eval "code-grouped (7 evals)" "samples/standalone/sage-eval-code/build.yaml"
+    launch_eval "code-grouped (7 evals)" "recipes/granite4-350m/aws/code-eval/build.yaml"
   fi
 
   # SAFETY (2 evals)
   SAFETY_EVALS=("safety-attaq" "safety-salad-bench")
   if ! should_skip_grouped_eval "safety-grouped" "${SAFETY_EVALS[@]}"; then
-    launch_eval "safety-grouped (2 evals)" "samples/standalone/sage-eval-safety/build.yaml"
+    launch_eval "safety-grouped (2 evals)" "recipes/granite4-350m/aws/safety-eval/build.yaml"
   fi
 
   # MULTILINGUAL (5 evals)
   if ! should_skip_grouped_eval "multilingual-grouped" "${MULTILINGUAL_INDIVIDUAL_EVALS[@]}"; then
-    launch_eval "multilingual-grouped (5 evals)" "samples/standalone/sage-eval-multilingual/build.yaml"
+    launch_eval "multilingual-grouped (5 evals)" "recipes/granite4-350m/aws/multilingual-eval/build.yaml"
   fi
 
   # BFCL (1 eval)
   if ! should_skip_eval "bfcl"; then
-    launch_eval "bfcl" "samples/standalone/bfcl-eval/build.yaml"
+    launch_eval "bfcl" "recipes/granite4-350m/aws/bfcl-eval/build.yaml"
   fi
 
 else
@@ -248,7 +248,7 @@ else
     # For partial re-runs, we launch individually
     for eval_name in "${OLMES_PENDING[@]}"; do
       echo "[$(date)]   Starting: $eval_name (${OLMES_SCRIPTS[$eval_name]})"
-      gb build start -f samples/standalone/run-all-evals/build.yaml \
+      gb build start -f recipes/granite4-350m/aws/full-eval/build.yaml \
         --param NAME="${EXPERIMENT}" \
         --param MODEL_S3="${MODEL_S3}" \
         --target "${eval_name}" 2>/dev/null || \
@@ -302,7 +302,7 @@ else
     echo "  MULTILINGUAL:  $([[ $ML_SKIP -eq 0 ]] && echo "pending" || echo "done")"
     echo "  BFCL:          $([[ $BFCL_SKIP -eq 0 ]] && echo "pending" || echo "done")"
     echo ""
-    gb build start -f samples/standalone/run-all-evals/build.yaml \
+    gb build start -f recipes/granite4-350m/aws/full-eval/build.yaml \
       --param NAME="${EXPERIMENT}" \
       --param MODEL_S3="${MODEL_S3}"
   fi
@@ -336,7 +336,7 @@ else
   echo "  Results: aws s3 ls s3://granite-build-eval-results/sage/${EXPERIMENT}/"
   echo ""
   echo "  BigCodeBench (requires evaluator sidecar — launch separately):"
-  echo "    gb build start -f samples/standalone/sage-eval-bcb/build.yaml \\"
+  echo "    gb build start -f recipes/granite4-350m/aws/bcb-eval/build.yaml \\"
   echo "      --param NAME=${EXPERIMENT} --param MODEL_S3=${MODEL_S3}"
 fi
 echo "============================================================"
