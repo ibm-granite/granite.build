@@ -195,20 +195,29 @@ class Run(ABC):
             )
             cleanup_task = asyncio.ensure_future(self._cleanup(tg=tg))
             current_task = asyncio.current_task()
-            was_cancelled = False
-            if current_task and current_task.cancelling() > 0:
-                was_cancelled = True
-                current_task.uncancel()
+            cancel_count = 0
+            if current_task:
+                cancel_count = current_task.cancelling()
+                for _ in range(cancel_count):
+                    current_task.uncancel()
             try:
-                await cleanup_task
-            except asyncio.CancelledError:
-                logger.info(
-                    "Run.run [%s : %s] cleanup shielded from cancel, awaiting completion",
-                    type(self).__name__,
-                    self.id,
-                )
+                while not cleanup_task.done():
+                    try:
+                        await asyncio.shield(cleanup_task)
+                    except asyncio.CancelledError:
+                        # Another cancellation arrived while awaiting cleanup.
+                        # Suppress it so we can re-await until cleanup finishes.
+                        logger.info(
+                            "Run.run [%s : %s] cleanup interrupted by cancel, re-awaiting",
+                            type(self).__name__,
+                            self.id,
+                        )
+                        if current_task and current_task.cancelling() > 0:
+                            cancel_count += current_task.cancelling()
+                            for _ in range(current_task.cancelling()):
+                                current_task.uncancel()
             finally:
-                if was_cancelled:
+                if cancel_count > 0:
                     current_task.cancel()
         logger.info("Run.run [%s : %s] cleanup complete", type(self).__name__, self.id)
 
