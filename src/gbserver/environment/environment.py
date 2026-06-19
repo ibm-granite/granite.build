@@ -776,9 +776,23 @@ class Environment(ABC):
 
         async def cleanup_helper():
             launch_event = self.__get_launch_done_event(launch_id)
-            logger.debug("Sync waiting on launch done")
-            await launch_event.wait()
-            logger.debug("Sync got launch done")
+            logger.debug("Sync waiting on launch done (with 5s timeout)")
+            try:
+                # Wait for launch to complete with a timeout.
+                # If the launch was cancelled, it may have already set launch_done_event,
+                # but if not, we don't want to block indefinitely in cleanup.
+                # A 5-second timeout is reasonable since launch should complete quickly
+                # (either successfully or with an error).
+                await asyncio.wait_for(launch_event.wait(), timeout=5.0)
+                logger.debug("Sync got launch done")
+            except asyncio.TimeoutError:
+                # Launch didn't signal completion, likely due to cancellation.
+                # This is expected during build cancellation. Proceed with cleanup anyway.
+                logger.warning(
+                    "Launch did not complete within timeout for launch_id=%s. "
+                    "Proceeding with cleanup anyway (likely due to cancellation).",
+                    launch_id,
+                )
             cleanup_event = self.__get_cleanup_done_event(launch_id)
             if not self.__any_events_set_from_dict(
                 setup_ids, self.__teardown_started_events
