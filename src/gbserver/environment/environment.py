@@ -763,31 +763,30 @@ class Environment(ABC):
         tg: Optional[TaskGroup] = None,
         **kwargs,
     ) -> Optional[Task]:
-        """Cleanup the workload from the environment."""
-        # self._monitoring_cleanup(launch_id=launch_id)
+        """Cleanup the workload from the environment.
+
+        The cleanup task is scheduled as an independent future (not under a
+        TaskGroup) so that it survives cancellation of the caller's scope.
+        This ensures destructive cleanup (e.g. sky.down) actually runs during
+        build cancellation.
+        """
         assert launch_type
         assert launch_id
 
-        if tg is None:
-            tg = asyncio.TaskGroup()
-
         if launch_type not in self.cleanup_types:
+            logger.info("cleanup: launch_type=%s not in cleanup_types, returning None", launch_type)
             return None
 
+        logger.info("cleanup: scheduling cleanup_helper for launch_id=%s launch_type=%s", launch_id, launch_type)
+
         async def cleanup_helper():
+            logger.info("cleanup_helper: started for launch_id=%s", launch_id)
             launch_event = self.__get_launch_done_event(launch_id)
-            logger.debug("Sync waiting on launch done (with 5s timeout)")
+            logger.info("cleanup_helper: waiting on launch_done_event (5s timeout)")
             try:
-                # Wait for launch to complete with a timeout.
-                # If the launch was cancelled, it may have already set launch_done_event,
-                # but if not, we don't want to block indefinitely in cleanup.
-                # A 5-second timeout is reasonable since launch should complete quickly
-                # (either successfully or with an error).
                 await asyncio.wait_for(launch_event.wait(), timeout=5.0)
                 logger.debug("Sync got launch done")
             except asyncio.TimeoutError:
-                # Launch didn't signal completion, likely due to cancellation.
-                # This is expected during build cancellation. Proceed with cleanup anyway.
                 logger.warning(
                     "Launch did not complete within timeout for launch_id=%s. "
                     "Proceeding with cleanup anyway (likely due to cancellation).",
@@ -806,9 +805,8 @@ class Environment(ABC):
                 finally:
                     cleanup_event.set()
             cleanup_event.set()
-            # self.__cleanup_gc(launch_id)
 
-        task = tg.create_task(cleanup_helper())
+        task = asyncio.ensure_future(cleanup_helper())
         return task
 
     def _monitoring_cleanup(self: Self, launch_id: str):

@@ -9,8 +9,10 @@ config:
     dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
     checkpoint_s3_uri: "s3://granite-build-checkpoints"
     num_epochs: "3"
-    per_device_train_batch_size: "2"
-    gradient_accumulation_steps: "8"
+    per_device_train_batch_size: "1"
+    gradient_accumulation_steps: "16"
+    #per_device_train_batch_size: "2"
+    #gradient_accumulation_steps: "8"
     learning_rate: "1e-5"
     max_seq_len: "8192"
     lr_scheduler_type: "linear"
@@ -46,8 +48,10 @@ environment_configs:
           image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/open-instruct-tuning:0.1.0-conda"
           resources:
             infra: aws/us-east-2
-            accelerators: "L40S:8"
+            accelerators: "A10G:8"
+            #accelerators: "L40S:8"
             disk_size: 256
+            use_spot: true
           file_mounts:
             /data/datasets:
               source: "{{ config.sft_config.dataset_s3_uri }}"

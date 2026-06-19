@@ -531,14 +531,25 @@ class Skypilot(Environment):
                 infra = f"{infra}/{zone}" if infra else zone
                 zone = None
 
+            # Build cluster config overrides (docker run_options, etc.)
+            # SkyPilot's top-level `config:` section maps to
+            # _cluster_config_overrides on sky.Resources.
+            cluster_config_overrides = {}
+            docker_config = launcher_config.get("docker")
+            if docker_config:
+                cluster_config_overrides["docker"] = docker_config
+
             resources = sky.Resources(
                 infra=infra,
                 accelerators=res_config.get("accelerators"),
+                instance_type=res_config.get("instance_type"),
                 cpus=res_config.get("cpus"),
                 memory=res_config.get("memory"),
                 disk_size=res_config.get("disk_size"),
+                use_spot=res_config.get("use_spot"),
                 zone=zone,
                 image_id=launcher_config.get("image_id"),
+                _cluster_config_overrides=cluster_config_overrides or None,
             )
 
             # Build environment variables

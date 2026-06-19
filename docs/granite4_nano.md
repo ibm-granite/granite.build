@@ -369,8 +369,76 @@ To stop a running build (tears down all SkyPilot clusters):
 gb build cancel <build-id>
 ```
 
-This propagates cancellation through the full task hierarchy and runs `sky down` on
-each provisioned cluster.
+### How Cancellation Works
+
+When `gb build cancel` is called, the following sequence occurs:
+
+1. **Cancel signal received** — The REST API marks the build as `cancel_requested`.
+   The buildwatcher picks this up and calls `BuildRunner.__cancel_build_run()` which
+   invokes `task.cancel()` on the BuildRun's asyncio task.
+
+2. **Propagation down the hierarchy** — CancelledError propagates through the TaskGroup
+   chain: `BuildRun.run()` → `TargetRun.run()` → `TargetStepRun.run()`.
+
+3. **Waiting for sky.launch to finish** — If the cluster is still in INIT state
+   (provisioning), the TargetStepRun is blocked inside `asyncio.to_thread(sky.launch)`
+   which runs in a real OS thread. **OS threads cannot be interrupted by asyncio
+   cancellation.** The cancel only takes effect once provisioning completes and the
+   `await` returns. This means cancel latency equals the remaining provisioning time
+   (typically 2-5 minutes for spot instances).
+
+4. **Cleanup runs** — Once the TargetStepRun's `_run` finishes (either normally or via
+   cancellation), the `finally` block in `Run.run` executes `_cleanup()`. For SkyPilot
+   steps, this calls `cleanup_skypilot()` which runs `sky.down(cluster_name, purge=True)`
+   to terminate the cluster.
+
+5. **sky.down completes** — The cluster is terminated (~12 seconds). Build is marked
+   as fully cancelled.
+
+### Cancellation Challenges & Implementation
+
+The cancellation cleanup is non-trivial because Python's asyncio cancellation semantics
+conflict with the requirement that `sky.down` must run to completion:
+
+**Problem:** In a cancelled asyncio coroutine, every `await` immediately raises
+`CancelledError` without actually waiting. This means standard patterns for running
+cleanup code after cancellation fail:
+
+- `asyncio.shield(task)` — Protects the inner task from being cancelled, but the
+  outer `await` still raises `CancelledError` immediately without blocking.
+- `TaskGroup` + `create_task` — `TaskGroup.__aexit__` cancels all child tasks during
+  cancellation, killing the cleanup task before `sky.down` runs.
+- `asyncio.ensure_future` + `await` — The `await` raises `CancelledError` without
+  blocking, so the cleanup runs as fire-and-forget but the build finishes and the
+  event loop moves on before `sky.down` completes, leaking the cluster.
+
+**Solution:** Two-part approach implemented in `src/gbserver/build/run.py` and
+`src/gbserver/build/targetsteprun.py`:
+
+1. **`Run.run` finally block** uses `Task.uncancel()` (Python 3.11+) to temporarily
+   suppress the pending cancellation, allowing `await cleanup_task` to block normally
+   until `_cleanup` finishes. After cleanup completes, it re-cancels the task to
+   propagate the cancellation.
+
+2. **`TargetStepRun._cleanup`** calls `cleanup_skypilot()` directly (bypassing
+   `environment.cleanup()` which uses `ensure_future`). The `cleanup_skypilot` →
+   `_teardown` → `asyncio.to_thread(sky.down)` path is un-cancellable because
+   `sky.down` runs in a real OS thread that completes regardless of asyncio state.
+
+### Timeline Example
+
+```
+T+0:00   gb build start → cluster provisioning begins (INIT)
+T+1:30   gb build cancel → cancel signal received
+         └─ BuildRun.run() catches CancelledError, enters finally block
+         └─ TargetStepRun still blocked in asyncio.to_thread(sky.launch)
+T+4:00   sky.launch completes → cluster is UP
+         └─ CancelledError propagates to TargetStepRun.run()
+         └─ Run.run finally block calls uncancel() + await _cleanup()
+         └─ _cleanup calls cleanup_skypilot() → sky.down(cluster)
+T+4:12   sky.down completes → cluster terminated
+         └─ Build marked as fully cancelled
+```
 
 ## Directory Structure
 

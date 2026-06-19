@@ -347,7 +347,19 @@ class TargetStepRun(Run):
             await self.launch_task
 
     async def _cleanup(self: Self, tg: Optional[TaskGroup] = None, **kwargs) -> None:
-        """Check status and cleanup after the job is done."""
+        """Tear down environment resources (e.g. sky.down) after the step finishes or is cancelled.
+
+        Calls the environment's cleanup function directly (e.g. cleanup_skypilot)
+        rather than going through environment.cleanup(). This is intentional:
+        environment.cleanup() wraps the work in asyncio.ensure_future which creates
+        a task that gets abandoned when the build finishes — the build does not wait
+        for fire-and-forget futures. By calling cleanup_fn directly, the await blocks
+        on asyncio.to_thread(sky.down) which runs in a real OS thread and cannot be
+        cancelled, guaranteeing the cluster is torn down.
+
+        The caller (Run.run finally block) uses Task.uncancel() to ensure this
+        coroutine can await without CancelledError being raised immediately.
+        """
         logger.info("TargetStepRun._cleanup %s start (launch_id=%s)", self.id, self.launch_id)
         self_entity = self.entity
         assert isinstance(self_entity, TargetStep)
@@ -357,22 +369,14 @@ class TargetStepRun(Run):
                 self.id,
             )
             return
-        async with TaskGroup() as tg:
-            cleanup_task = self_entity.environment.cleanup(
-                launch_type=self_entity.launcher.type,
-                launch_id=self.launch_id,
-                setup_ids=list(self.target.setup_ids.keys()),
-                tg=tg,
-            )
-            if cleanup_task is not None:
-                try:
-                    await asyncio.shield(cleanup_task)
-                except asyncio.CancelledError:
-                    logger.info(
-                        "TargetStepRun._cleanup %s: shielding cleanup from cancellation",
-                        self.id,
-                    )
-                    await cleanup_task
+        env = self_entity.environment
+        launch_type = self_entity.launcher.type
+        if launch_type in env.cleanup_types:
+            logger.info("TargetStepRun._cleanup %s: calling cleanup directly", self.id)
+            cleanup_fn = env.cleanup_types[launch_type]
+            await cleanup_fn(env, launch_id=self.launch_id)
+        else:
+            logger.info("TargetStepRun._cleanup %s: no cleanup for launch_type=%s", self.id, launch_type)
         logger.info("TargetStepRun._cleanup %s end", self.id)
 
     def get_runmetadata(self: Self) -> EntityRunMetadata:
