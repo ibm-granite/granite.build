@@ -106,7 +106,7 @@ sky status  # see all eval clusters
 **Results** are written to:
 ```
 s3://granite-build-eval-results/sage/<experiment>/
-s3://granite-build-eval-results/bfcl/<experiment>/
+s3://granite-build-eval-results/bfcl/<experiment>/code-bfclv3/
 ```
 
 ## Running All Evals — Grouped Mode (5 instances)
@@ -283,6 +283,110 @@ Time 5:00+ — Evaluation Proceeds
   - Health check polling (~30 sec max)
 
 No manual SSH or cluster-specific steps needed — everything is automated.
+
+## Running Evals with Completion Tracking (run_all_evals.sh)
+
+The `scripts/run_all_evals.sh` script checks S3 for `.done` markers and only launches
+evals that haven't completed yet. This makes it safe to re-run after spot preemptions
+or partial failures — completed evals are skipped automatically.
+
+### Usage
+
+```bash
+# First, ensure gbserver is running with ECR credentials:
+export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+gbserver standalone --space-dir configurations/spaces/local 2>&1 | tee /tmp/standalone.log
+
+# In another terminal:
+
+# Check what's missing (dry run — no launches):
+DRY_RUN=1 ./scripts/run_all_evals.sh sft/v0-20260614_093520-hf/step_hf_7500 eval-l40s-350m-s7500
+
+# Launch missing evals in grouped mode (5 instances, cost-optimized):
+GROUPED=1 ./scripts/run_all_evals.sh sft/v0-20260614_093520-hf/step_hf_7500 eval-l40s-350m-s7500
+
+# Launch missing evals in individual mode (22 instances, fast):
+./scripts/run_all_evals.sh sft/v0-20260614_093520-hf/step_hf_7500 eval-l40s-350m-s7500
+
+# Force re-run all evals regardless of completion state:
+FORCE=1 GROUPED=1 ./scripts/run_all_evals.sh sft/v0-20260614_093520-hf/step_hf_7500 eval-l40s-350m-s7500
+```
+
+### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `<s3_checkpoint_subpath>` | Path under `s3://granite-build-checkpoints/` (e.g. `sft/v0-20260614_093520-hf/step_hf_7500`) |
+| `<experiment>` | Experiment name used for output paths and tracking (e.g. `eval-l40s-350m-s7500`) |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DRY_RUN` | `0` | Set to `1` to only check state, don't launch |
+| `GROUPED` | `0` | Set to `1` to use grouped mode (5 instances vs 22) |
+| `FORCE` | `0` | Set to `1` to re-run all evals regardless of state |
+
+### Completion Tracking
+
+The script tracks eval completion in two ways:
+
+1. **S3 `.done` markers** — Each eval writes a `.done` file to S3 on successful completion:
+   - Sage evals: `s3://granite-build-eval-results/sage/<experiment>/<eval-name>.done`
+   - BFCL: `s3://granite-build-eval-results/bfcl/<experiment>/code-bfclv3/bfcl.done`
+
+2. **Local state file** — `.eval_runs/<experiment>.completed` caches which evals are done
+   to avoid repeated S3 checks. Delete this file to force S3 re-verification.
+
+### Status Detection
+
+For each eval, the script determines status as:
+
+| Status | Meaning |
+|--------|---------|
+| `completed (local)` | Found in local state file |
+| `completed (S3)` | `.done` marker found in S3 |
+| `incomplete (preempted)` | `.log` exists but no `.done` — spot instance was preempted |
+| `pending` | No evidence of prior run |
+| `pending (forced)` | FORCE=1 set, will re-run |
+
+### Output Example
+
+```
+============================================================
+ granite.build Eval Suite — 26 evals
+ Checkpoint: s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
+ Experiment: eval-l40s-350m-s7500
+ Mode:       GROUPED (5 instances)
+ DRY RUN — no launches
+============================================================
+
+============================================================
+ Eval Status Summary — eval-l40s-350m-s7500
+============================================================
+  EVAL                                          STATUS
+  ----                                          ------
+  code-evalplus-humaneval                       completed (S3)
+  code-evalplus-mbpp                            completed (S3)
+  code-multiple-cpp                             incomplete (preempted)
+  code-multiple-java                            pending
+  ...
+  safety-attaq                                  completed (S3)
+  safety-salad-bench                            pending
+------------------------------------------------------------
+  Completed: 18 | Running: 0 | Incomplete: 3 | Pending: 5 | Total: 26
+============================================================
+```
+
+### BigCodeBench (separate launch)
+
+BigCodeBench requires a sidecar evaluator and is always launched separately:
+
+```bash
+gb build start -f recipes/granite4-350m/aws/bcb-eval/build.yaml \
+  --param NAME=eval-l40s-350m-s7500 \
+  --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
+```
 
 ## Docker SSH Fix (sage/bfcl images)
 
