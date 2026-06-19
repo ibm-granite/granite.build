@@ -126,9 +126,7 @@ class TestRetryChainCancellation(AbstractBuildTest):
 
         # With every member finished (no active retry), cancellation is rejected.
         self.storage.build_storage.update_fields(root.uuid, {"status": Status.FAILED})
-        self.storage.build_storage.update_fields(
-            retry2.uuid, {"status": Status.FAILED}
-        )
+        self.storage.build_storage.update_fields(retry2.uuid, {"status": Status.FAILED})
         done_root = self.storage.build_storage.get_by_uuid(root.uuid)
         from fastapi import HTTPException
 

@@ -123,9 +123,9 @@ class TestBuildWatcherRetryExhaustion(AbstractBuildTest):
             f"with retry_counts={retry_counts}. More than expected indicates the "
             f"BuildWatcher is double-dispatching PENDING retry builds."
         )
-        assert all(s == Status.FAILED for s in statuses), (
-            f"Every build in the chain should be FAILED, got statuses={statuses}"
-        )
+        assert all(
+            s == Status.FAILED for s in statuses
+        ), f"Every build in the chain should be FAILED, got statuses={statuses}"
         assert retry_counts == list(range(0, max_retries + 1)), (
             f"Retry chain should have one build per retry_count 0..{max_retries}, "
             f"got {retry_counts}"
