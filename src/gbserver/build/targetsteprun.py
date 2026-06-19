@@ -360,7 +360,13 @@ class TargetStepRun(Run):
                 tg=tg,
             )
             if cleanup_task is not None:
-                await cleanup_task
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    logger.debug(
+                        "Cleanup coroutine was cancelled, but awaiting completion before propagating"
+                    )
+                    await cleanup_task
         logger.debug("Run._cleanup %s end", self.id)
 
     def get_runmetadata(self: Self) -> EntityRunMetadata:
