@@ -109,7 +109,93 @@ s3://granite-build-eval-results/sage/<experiment>/
 s3://granite-build-eval-results/bfcl/<experiment>/
 ```
 
+## Running All Evals — Grouped Mode (5 instances)
+
+The cost-optimized approach groups evals by category onto single instances instead of
+launching one per eval. Uses 5 instances instead of 22 (77% fewer), trading parallelism
+for cost savings:
+
+```bash
+export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+gb build start -f samples/standalone/run-all-evals-grouped/build.yaml \
+  --param NAME=eval-l40s-350m-s7500 \
+  --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
+```
+
+| Target | Step | Image | Evals | Instance |
+|--------|------|-------|-------|----------|
+| olmes-grouped | sage-eval-olmes-grouped | sage-py311-olmes:0.025 | 11 | 1x L40S |
+| code-grouped | sage-eval-code-grouped | sage-py311-code:0.025 | 7 | 1x L40S |
+| safety-grouped | sage-eval-safety-grouped | sage-py311-safety:0.025 | 2 | 1x L40S |
+| multilingual-grouped | sage-eval-multilingual-grouped | sage-py311-multilingual:0.025 | 5 | 1x L40S |
+| bfcl | bfcl-eval | bfcl-py311:0.02 | 1 | 1x L40S |
+
+**Cost comparison:**
+
+| Mode | Instances | vCPUs | Spot cost/hr |
+|------|-----------|-------|--------------|
+| Ungrouped (`run-all-evals`) | 22 | 88 | ~$7.50 |
+| **Grouped** (`run-all-evals-grouped`) | 5 | 20 | ~$1.70 |
+
+**Note:** BigCodeBench is NOT included in either mode — launch it separately (see below).
+
 ## Running Individual Eval Groups
+
+### OLMES only (11 evals, 1 instance)
+
+```bash
+export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+gb build start -f samples/standalone/sage-eval-olmes/build.yaml \
+  --param NAME=eval-l40s-350m-s7500 \
+  --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
+```
+
+Runs all 11 OLMES evals sequentially on a single spot instance (sage-py311-olmes:0.025):
+- code-olmes-cruxeval
+- general-olmes-agi-eval
+- general-olmes-bbh
+- general-olmes-mmlu-pro
+- general-olmes-ifeval
+- general-olmes-mmlu-mc
+- math-olmes-deepmind-math
+- math-olmes-gpqa
+- math-olmes-gsm8k
+- math-olmes-gsm-symbolic
+- math-olmes-minerva-math
+
+### CODE only (7 evals, 1 instance)
+
+```bash
+export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+gb build start -f samples/standalone/sage-eval-code/build.yaml \
+  --param NAME=eval-l40s-350m-s7500 \
+  --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
+```
+
+Runs all 7 CODE evals sequentially on a single spot instance (sage-py311-code:0.025):
+- code-evalplus-humaneval (max_length=4096)
+- code-evalplus-mbpp (max_length=4096)
+- code-multiple-sh (max_length=512)
+- code-multiple-cpp (max_length=512)
+- code-multiple-java (max_length=512)
+- code-multiple-js (max_length=512)
+- code-multiple-rs (max_length=512)
+
+The `multiple_*` evals use `MULTIPLE_LANG` env var to select the target language and a
+shorter `max_length=512` for code generation.
+
+### SAFETY only (2 evals, 1 instance)
+
+```bash
+export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+gb build start -f samples/standalone/sage-eval-safety/build.yaml \
+  --param NAME=eval-l40s-350m-s7500 \
+  --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
+```
+
+Runs both SAFETY evals sequentially on a single spot instance (sage-py311-safety:0.025):
+- safety-attaq
+- safety-salad-bench
 
 ### Multilingual only (5 evals, 1 instance)
 
@@ -120,7 +206,7 @@ gb build start -f samples/standalone/sage-eval-multilingual/build.yaml \
   --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
 ```
 
-Runs all 5 multilingual evals sequentially on a single spot instance:
+Runs all 5 multilingual evals sequentially on a single spot instance (sage-py311-multilingual:0.025):
 - multilingual-global-mmlu
 - multilingual-mgsm
 - multilingual-include-ar-de-es-fr
@@ -444,14 +530,23 @@ T+4:12   sky.down completes → cluster terminated
 
 ```
 samples/standalone/
-  openinstruct-sft/build.yaml         # SFT training
-  run-all-evals/build.yaml            # Full 26-eval suite (spot)
-  sage-eval-multilingual/build.yaml   # Multilingual evals only
+  openinstruct-sft/build.yaml              # SFT training
+  run-all-evals/build.yaml                 # Full 26-eval suite, 22 instances (spot)
+  run-all-evals-grouped/build.yaml         # Full 26-eval suite, 5 instances (grouped)
+  sage-eval-olmes/build.yaml               # 11 OLMES evals on 1 instance
+  sage-eval-code/build.yaml                # 7 CODE evals on 1 instance
+  sage-eval-safety/build.yaml              # 2 SAFETY evals on 1 instance
+  sage-eval-multilingual/build.yaml        # 5 multilingual evals on 1 instance
+  sage-eval-bcb/build.yaml                 # BigCodeBench with sidecar (8x L40S)
+  bfcl-eval/build.yaml                     # BFCL eval
 
 configurations/assets/environments/skypilot/aws/steps/
-  openinstruct-sft/step.yaml          # SFT step definition
-  sage-eval/step.yaml                 # Single sage eval (configurable image)
-  sage-eval-bcb/step.yaml             # BigCodeBench with sidecar
-  sage-eval-multilingual-grouped/step.yaml  # 5 multilingual evals grouped
-  bfcl-eval/step.yaml                 # BFCL eval
+  openinstruct-sft/step.yaml               # SFT step definition
+  sage-eval/step.yaml                      # Single sage eval (configurable image/script)
+  sage-eval-olmes-grouped/step.yaml        # 11 OLMES evals grouped
+  sage-eval-code-grouped/step.yaml         # 7 CODE evals grouped
+  sage-eval-safety-grouped/step.yaml       # 2 SAFETY evals grouped
+  sage-eval-multilingual-grouped/step.yaml # 5 multilingual evals grouped
+  sage-eval-bcb/step.yaml                  # BigCodeBench with sidecar
+  bfcl-eval/step.yaml                      # BFCL eval
 ```
