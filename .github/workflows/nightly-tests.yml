@@ -82,3 +82,35 @@ jobs:
           else
             gh issue create --title "$TITLE" --label "$LABEL" --body "$BODY"
           fi
+
+  close-failure-issue:
+    # When the nightly run goes green again, close any open tracking issue so it
+    # doesn't linger after the underlying problem is fixed. Scheduled runs only,
+    # mirroring report-failure (just success() instead of failure()), so a manual
+    # workflow_dispatch run won't touch the issue. With fail-fast: false, success()
+    # is true only when both 3.11 and 3.12 pass — the correct "green" condition.
+    # The two jobs' if conditions are mutually exclusive, so they never both run.
+    needs: extended-test
+    if: success() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close open failure issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          LABEL="nightly-failure"
+          DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          BODY="Nightly extended tests passed on \`main\` again — closing.
+
+          - Run: ${RUN_URL}
+          - When: ${DATE}"
+
+          # Close every open tracking issue (normally just one).
+          gh issue list --state open --label "$LABEL" --json number \
+            --jq '.[].number' | while read -r NUM; do
+            [ -n "$NUM" ] || continue
+            gh issue comment "$NUM" --body "$BODY"
+            gh issue close "$NUM"
+          done
