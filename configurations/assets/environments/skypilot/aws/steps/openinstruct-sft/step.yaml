@@ -38,6 +38,11 @@ config:
     wandb_api_key: ""
     logging_steps: "1"
     short_name: "g4-350m-sft-8k"
+inputs:
+  optional:
+    model:
+      type: model
+      accept: [uri, binding]
 outputs:
   optional:
     checkpoint:

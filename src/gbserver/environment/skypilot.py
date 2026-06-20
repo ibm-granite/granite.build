@@ -328,6 +328,7 @@ class Skypilot(Environment):
         # from a terminal completion and await the (possibly slow) relaunch
         # instead of racing it.
         self._skypilot_retry_in_progress_events: Dict[str, asyncio.Event] = {}
+        self._pending_hfpulls: Dict[str, dict] = {}
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -586,6 +587,31 @@ class Skypilot(Environment):
             if build_workdir:
                 env_vars["GB_BUILD_WORKDIR"] = build_workdir
 
+            # Inject inline hfpull downloads into setup if any are pending
+            setup_script = launcher_config.get("setup") or ""
+            if self._pending_hfpulls:
+                hfpull_lines = [
+                    "# -- gbserver: inline hfpull for inputs --",
+                    "pip install --no-cache-dir 'huggingface_hub[cli]' 2>/dev/null || true",
+                ]
+                for bid, pull_info in self._pending_hfpulls.items():
+                    cmd = f'hf download "{pull_info["repo"]}" --local-dir "{pull_info["path"]}"'
+                    if pull_info.get("revision"):
+                        cmd += f' --revision "{pull_info["revision"]}"'
+                    if pull_info.get("type"):
+                        cmd += f' --repo-type {pull_info["type"]}'
+                    hfpull_lines.append(cmd)
+                    if pull_info.get("hf_token"):
+                        env_vars["HF_TOKEN"] = pull_info["hf_token"]
+                hfpull_lines.append("# -- end inline hfpull --")
+                hfpull_block = "\n".join(hfpull_lines) + "\n"
+                setup_script = hfpull_block + setup_script
+                logger.info(
+                    "Injected %d inline hfpull download(s) into setup script",
+                    len(self._pending_hfpulls),
+                )
+                self._pending_hfpulls.clear()
+
             run_script = launcher_config.get("run", "")
             if build_workdir:
                 run_script = (
@@ -597,7 +623,7 @@ class Skypilot(Environment):
             # Build sky.Task
             task = sky.Task(
                 name=cluster_name,
-                setup=launcher_config.get("setup") or None,
+                setup=setup_script or None,
                 run=run_script,
                 envs=env_vars if env_vars else None,
                 resources=resources,
@@ -1471,6 +1497,10 @@ class Skypilot(Environment):
         and queues the builtin hfpull step (its Skypilot launcher uses ``hf
         download``).  Returns a binding dict whose ``path`` points at the cache
         location so downstream steps can consume the downloaded snapshot.
+
+        When ``inline: true`` is set in the storeload config, the download is
+        deferred to the main step's setup phase (no separate cluster launched).
+        This is required for environments without shared filesystems (e.g. AWS).
         """
         from gbcommon.uri.hf import HfURI
         from gbserver.asset.hfstore import Hfstore
@@ -1497,14 +1527,40 @@ class Skypilot(Environment):
             cache_dir / hfuri.get_owner() / hfuri.get_repo() / hfuri.get_revision()
         )
 
+        hf_token = assetstore.resolve_token(hfuri) or ""
+        binding_config = {"binding": {"path": str(binding_path)}}
+
+        # Inline mode: stash download metadata for injection into the main
+        # step's setup script rather than launching a separate cluster.
+        inline = (
+            storeload_config is not None
+            and isinstance(getattr(storeload_config, "config", None), dict)
+            and storeload_config.config.get("inline", False)
+        )
+        if inline:
+            binding_id = kwargs.get(
+                "binding_id", f"{hfuri.get_owner()}/{hfuri.get_repo()}"
+            )
+            self._pending_hfpulls[binding_id] = {
+                "path": str(binding_path),
+                "repo": f"{hfuri.get_owner()}/{hfuri.get_repo()}",
+                "revision": hfuri.get_revision(),
+                "type": hfuri.get_hf_type() or "model",
+                "hf_token": hf_token,
+            }
+            logger.info(
+                "pullasset_hfstore: inline mode — deferring download of %s to main step setup (dest=%s)",
+                str(hfuri),
+                binding_path,
+            )
+            return binding_config, None
+
+        # Default: launch a separate hfpull step on its own cluster
         hfpull_config = Hfstore.build_hfpull_step_config(
             hfuri=hfuri,
             binding_path=str(binding_path),
         )
-        hf_token = assetstore.resolve_token(hfuri) or ""
 
-        # Use a space:// URI so the resolver picks the env-keyed split
-        # (`builtins/steps/<env-class>/hfpull/`) for the active env class.
         hfpull_stepuri = "space://steps/hfpull"
         if (
             storeload_config is not None
@@ -1527,7 +1583,6 @@ class Skypilot(Environment):
                 "launcher_config": {"envs": {"HF_TOKEN": hf_token}},
             },
         )
-        binding_config = {"binding": {"path": str(binding_path)}}
         return binding_config, pull_step_config
 
     async def pullasset_envstore(
