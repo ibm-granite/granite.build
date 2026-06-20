@@ -6,7 +6,8 @@ config:
     build_name: "sft"
     model_path: "ibm-granite/granite-4.0-350m-base"
     hf_token: ""
-    dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
+    dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered_10k"
+    #dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
     checkpoint_s3_uri: "s3://granite-build-checkpoints"
     num_epochs: "3"
     per_device_train_batch_size: "1"
@@ -22,7 +23,8 @@ config:
     reduce_loss: "sum"
     mixed_precision: "bf16"
     seed: "123"
-    checkpointing_steps: "2500"
+    checkpointing_steps: "epoch"
+    #checkpointing_steps: "2500"
     keep_last_n_checkpoints: "5"
     use_flash_attn: "false"
     gradient_checkpointing: "true"
@@ -36,6 +38,10 @@ config:
     wandb_api_key: ""
     logging_steps: "1"
     short_name: "g4-350m-sft-8k"
+outputs:
+  optional:
+    checkpoint:
+      type: model
 environment_configs:
   Skypilot:
     default_launcher: openinstruct-sft
@@ -48,10 +54,12 @@ environment_configs:
           image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/open-instruct-tuning:0.1.0-conda"
           resources:
             infra: aws/us-east-2
-            accelerators: "A10G:8"
+            accelerators: "A10G:1"
+            memory: "64+"
+            #accelerators: "A10G:8"
             #accelerators: "L40S:8"
             disk_size: 256
-            use_spot: true
+            #use_spot: true
           file_mounts:
             /data/datasets:
               source: "{{ config.sft_config.dataset_s3_uri }}"
@@ -99,6 +107,16 @@ environment_configs:
             sed -i 's/keep_in_memory=True/keep_in_memory=False/g' /stage/open_instruct/finetune.py
             sed -i 's/keep_in_memory=True/keep_in_memory=False/g' /stage/open_instruct/dataset_transformation.py
 
+            # Create single-GPU accelerate config (no FSDP overhead)
+            cat > /stage/configs/single_gpu_accelerate.yaml <<'ACCEOF'
+            compute_environment: LOCAL_MACHINE
+            distributed_type: 'NO'
+            mixed_precision: bf16
+            num_processes: 1
+            num_machines: 1
+            main_training_function: main
+            ACCEOF
+
             echo "=== Environment Check ==="
             python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}, GPUs: {torch.cuda.device_count()}')"
             python -c "import flash_attn; print(f'flash-attn {flash_attn.__version__}')"
@@ -108,19 +126,30 @@ environment_configs:
               huggingface-cli login --token "${HF_TOKEN}"
             fi
 
-            python -c "from huggingface_hub import snapshot_download; snapshot_download('${MODEL_PATH}', ignore_patterns=['*.gguf']); print('Model downloaded successfully')"
+            # If MODEL_PATH is a local directory (from hfpull binding), skip download
+            if [[ -d "${MODEL_PATH}" ]]; then
+              echo "Model already available at local path: ${MODEL_PATH}"
+            else
+              python -c "from huggingface_hub import snapshot_download; snapshot_download('${MODEL_PATH}', ignore_patterns=['*.gguf']); print('Model downloaded successfully')"
+            fi
 
             if [[ -n "${WANDB_API_KEY}" ]]; then
               pip install wandb -q 2>/dev/null || true
               wandb login "${WANDB_API_KEY}" 2>/dev/null || true
             fi
           run: |
+            set -eo pipefail
             source deactivate 2>/dev/null || true
             export PATH=/opt/miniconda3/bin:$PATH
             export PYTHONPATH=/stage:$PYTHONPATH
             cd /stage
 
             NUM_GPUS=$SKYPILOT_NUM_GPUS_PER_NODE
+            # Use single-GPU config (no FSDP) when running with 1 GPU
+            if [[ "${NUM_GPUS}" -eq 1 ]]; then
+              ACC_CONFIG_FILE="/stage/configs/single_gpu_accelerate.yaml"
+              echo "[$(date)] Single GPU detected, using no-FSDP accelerate config"
+            fi
             EFFECTIVE_MAX_SEQ_LEN=$((MAX_SEQ_LEN * PER_DEVICE_TRAIN_BATCH_SIZE))
 
             timestamp=$(date +"%Y%m%d_%H%M%S")
@@ -184,14 +213,6 @@ environment_configs:
 
             echo "[$(date)] Training complete. Output at: ${OUTPUT_MODEL_PATH}"
             echo "[$(date)] HF export at: ${HF_OUTPUT_PATH}"
-
-            FINAL_HF_CKPT=""
-            if [ -d "${HF_OUTPUT_PATH}" ]; then
-              FINAL_HF_CKPT=$(ls -d "${HF_OUTPUT_PATH}"/epoch_hf_* 2>/dev/null \
-                | sort -V | tail -n 1)
-            fi
-            ARTIFACT_PATH="${FINAL_HF_CKPT:-${OUTPUT_MODEL_PATH}}"
-            echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:${ARTIFACT_PATH}"
     monitors:
       skypilot_monitor:
         type: skypilot_monitor
@@ -205,14 +226,21 @@ environment_configs:
                 field_value_template: "RUNNING"
               - field_name: message
                 field_regex: "Step:.+"
+                is_data: True
+          # Special tokens file saved in {checkpoint_path}/special_tokens_map.json
           - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            line_regex: "Special\\stokens\\sfile\\ssaved\\sin\\s.*"
+            is_json: False
             event_fields:
               - field_name: binding_id
-                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                field_value_template: checkpoint
+              # Exclude the slash and filename from checkpoint_path
               - field_name: path
-                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
-                is_data: true
+                # Positive look-ahead ensuring the matched path is followed by exactly one more segment (file or directory), optionally ending with /. The look-ahead itself is not included in the final match
+                field_regex: '/.+(?=/[^/]+/?$)'
+                # This includes trailing slash
+                # field_regex: "(/.*)/"
+                is_data: True
               - field_name: binding
-                field_value_template: '{ "path": "{{ fields.data.path }}" }'
-                is_json: true
+                field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+                is_json: True

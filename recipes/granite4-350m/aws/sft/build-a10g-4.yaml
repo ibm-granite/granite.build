@@ -30,18 +30,13 @@ granite.build:
           config:
             launcher_config:
               resources:
-                accelerators: "L40S:8"
+                accelerators: "A10G:4"
             compute_config:
               num_nodes: 1
-              num_gpus_per_node: 8
+              num_gpus_per_node: 4
             sft_config:
               build_name: "$${NAME}"
               model_path: "ibm-granite/granite-4.0-350m-base"
-              dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
-              #dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered_10k"
+              #dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
+              dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered_10k"
               checkpoint_s3_uri: "s3://granite-build-checkpoints"
-              num_epochs: "3"
-              #per_device_train_batch_size: "1"
-              #gradient_accumulation_steps: "16"
-              per_device_train_batch_size: "2"
-              gradient_accumulation_steps: "8"

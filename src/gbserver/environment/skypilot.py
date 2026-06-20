@@ -939,6 +939,12 @@ class Skypilot(Environment):
         consecutive_poll_failures = 0
         max_poll_failures = 3
 
+        # Live log streaming state
+        log_stream_task: Optional[asyncio.Task] = None
+        logfile_monitor: Optional["LogFileMonitor"] = None
+        log_stream_stop = asyncio.Event()
+        lines_already_processed = 0
+
         while not stop_event.is_set():
             status = None
             poll_failed = False
@@ -1003,12 +1009,86 @@ class Skypilot(Environment):
                     await event_q.put(event)
                 last_status = status
 
+                # Start live log streaming when job enters RUNNING
+                if (
+                    status is not None
+                    and str(status) == "JobStatus.RUNNING"
+                    and event_log_parser_configs
+                    and event_q
+                    and entityrun_metadata
+                    and job_id is not None
+                    and log_stream_task is None
+                ):
+                    log_stream_task, logfile_monitor = self._start_log_stream_task(
+                        cluster_name=cluster_name,
+                        job_id=job_id,
+                        launch_id=launch_id,
+                        event_q=event_q,
+                        entityrun_metadata=entityrun_metadata,
+                        event_log_parser_configs=event_log_parser_configs,
+                        stop_event=log_stream_stop,
+                        abort_event=stop_event,
+                        start_line=0,
+                    )
+
+            # Check if log stream task failed and needs restart
+            if log_stream_task is not None and log_stream_task.done():
+                exc = (
+                    log_stream_task.exception()
+                    if not log_stream_task.cancelled()
+                    else None
+                )
+                processed = logfile_monitor.line_num if logfile_monitor else 0
+                if exc is not None:
+                    logger.warning(
+                        "Log stream task failed after %d lines for %s job %s: %s. "
+                        "Attempting restart.",
+                        processed,
+                        cluster_name,
+                        job_id,
+                        exc,
+                    )
+                    log_stream_stop = asyncio.Event()
+                    log_stream_task, logfile_monitor = self._start_log_stream_task(
+                        cluster_name=cluster_name,
+                        job_id=job_id,
+                        launch_id=launch_id,
+                        event_q=event_q,
+                        entityrun_metadata=entityrun_metadata,
+                        event_log_parser_configs=event_log_parser_configs,
+                        stop_event=log_stream_stop,
+                        abort_event=stop_event,
+                        start_line=processed,
+                    )
+                else:
+                    lines_already_processed = processed
+                    log_stream_task = None
+
             if status is not None and status.is_terminal():
                 logger.info(
                     "SkyPilot job %s reached terminal status: %s",
                     job_id,
                     status,
                 )
+                # Stop the live log stream and determine how many lines it covered
+                if log_stream_task is not None and not log_stream_task.done():
+                    log_stream_stop.set()
+                    try:
+                        await asyncio.wait_for(log_stream_task, timeout=15.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        logger.warning(
+                            "Log stream task did not finish in time for %s job %s, cancelling",
+                            cluster_name,
+                            job_id,
+                        )
+                        log_stream_task.cancel()
+                        try:
+                            await log_stream_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                if logfile_monitor is not None:
+                    lines_already_processed = logfile_monitor.line_num
+
                 if (
                     event_log_parser_configs
                     and event_q
@@ -1022,6 +1102,7 @@ class Skypilot(Environment):
                         event_q=event_q,
                         entityrun_metadata=entityrun_metadata,
                         event_log_parser_configs=event_log_parser_configs,
+                        start_line_num=lines_already_processed,
                     )
                 if str(status) != "JobStatus.SUCCEEDED":
                     if event_q and entityrun_metadata:
@@ -1062,9 +1143,59 @@ class Skypilot(Environment):
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
-                return  # stop_event was set
+                # stop_event was set (retry or external cancellation) — clean up log stream
+                if log_stream_task is not None and not log_stream_task.done():
+                    log_stream_stop.set()
+                    log_stream_task.cancel()
+                    try:
+                        await log_stream_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                return
             except asyncio.TimeoutError:
                 pass  # Normal timeout, continue polling
+
+    def _start_log_stream_task(
+        self: Self,
+        cluster_name: str,
+        job_id: int,
+        launch_id: str,
+        event_q: asyncio.Queue,
+        entityrun_metadata,
+        event_log_parser_configs: list,
+        stop_event: asyncio.Event,
+        abort_event: asyncio.Event,
+        start_line: int = 0,
+    ) -> Tuple[asyncio.Task, "LogFileMonitor"]:
+        """Create and launch a log streaming task for a SkyPilot job."""
+        from gbserver.monitoring.logfile_monitor import LogFileMonitor
+        from gbserver.monitoring.streams.skypilot_log_stream import (
+            SkyPilotLogStreamSource,
+        )
+
+        stream_source = SkyPilotLogStreamSource(
+            cluster_name=cluster_name,
+            job_id=job_id,
+            start_line=start_line,
+            abort_event=abort_event,
+        )
+        monitor = LogFileMonitor(
+            step_id=launch_id,
+            stream_source=stream_source,
+            event_configs=event_log_parser_configs,
+            launch_id=launch_id,
+            entityrun_metadata=entityrun_metadata,
+            event_queue=event_q,
+            stop_event=stop_event,
+        )
+        task = asyncio.create_task(monitor.monitor())
+        logger.info(
+            "Started live log stream for %s job %s (start_line=%d)",
+            cluster_name,
+            job_id,
+            start_line,
+        )
+        return task, monitor
 
     async def _download_and_parse_logs(
         self: Self,
@@ -1074,8 +1205,23 @@ class Skypilot(Environment):
         event_q: asyncio.Queue,
         entityrun_metadata,
         event_log_parser_configs: list,
+        start_line_num: int = 0,
     ) -> None:
-        """Download job logs and parse for artifact events."""
+        """Download job logs and parse for artifact events.
+
+        Args:
+            start_line_num: Skip lines at or below this number (1-based).
+                Used to avoid re-emitting events already processed by live
+                log streaming.
+        """
+        if start_line_num > 0:
+            logger.info(
+                "Downloading logs for %s job %s, skipping first %d lines "
+                "(already processed by live stream)",
+                cluster_name,
+                job_id,
+                start_line_num,
+            )
         try:
             log_dir = _download_logs_with_retry(cluster_name, job_id)
             if not log_dir:
@@ -1101,6 +1247,8 @@ class Skypilot(Environment):
                 try:
                     with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                         for line_num, line in enumerate(f, 1):
+                            if line_num <= start_line_num:
+                                continue
                             line = line.rstrip("\n")
                             if line:
                                 await self.get_events_from_log_line(
