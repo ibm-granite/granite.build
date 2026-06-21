@@ -65,7 +65,7 @@ monitors:
             field_regex: "Step:.+"
             is_data: True    # <-- required: puts message in payload.data, not as a kwarg
       - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-        line_regex: "Special\\stokens\\sfile\\ssaved\\sin\\s.*"
+        line_regex: "Special\\stokens\\sfile\\ssaved\\sin\\s.*-hf.*"
         event_fields:
           - field_name: binding_id
             field_value_template: checkpoint
@@ -76,6 +76,40 @@ monitors:
             field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
             is_json: True
 ```
+
+### How `line_regex` and `field_regex` Interact
+
+The event log parser (`get_events_from_log_line`) processes each log line in two stages:
+
+**Stage 1: `line_regex`** — decides whether this line produces an event at all.
+- Runs `re.search(line_regex, log_line)` against the full log line
+- If no match → line is skipped entirely
+- If match → the **matched substring** (from `match.group(0)`) becomes the input for field extraction
+
+**Stage 2: `field_regex`** — extracts field values from the matched substring.
+- Each `event_field` with a `field_regex` runs `re.search(field_regex, matched_text)`
+- The result (`match.group(0)`) becomes the field's value
+
+**Example walkthrough:**
+
+Log line:
+```
+(gb-xxx, pid=3344) Special tokens file saved in /output/test1/v0-hf/epoch_hf_0/special_tokens_map.json
+```
+
+1. `line_regex: "Special\\stokens\\sfile\\ssaved\\sin\\s.*-hf.*"` matches.
+   Matched text = `Special tokens file saved in /output/test1/v0-hf/epoch_hf_0/special_tokens_map.json`
+
+2. `field_regex: '/.+(?=/[^/]+/?$)'` runs against the matched text.
+   This lookahead regex captures from the first `/` up to (but not including) the last path segment.
+   Result = `/output/test1/v0-hf/epoch_hf_0`
+
+**Key points:**
+- `line_regex` controls **which lines trigger events** — add `-hf` to filter out raw checkpoints
+- `field_regex` controls **what value is extracted** — independent of the line filter
+- `field_value_template` provides a static value (no regex needed) — used for `binding_id: checkpoint`
+- `is_data: True` puts the field into `payload.data` dict (nested), not as a top-level payload kwarg
+- `is_json: True` parses the field value as JSON — used for the `binding` field
 
 ---
 
@@ -203,3 +237,80 @@ All downloads are injected into a single setup block before the step's own setup
 ### Provenance
 
 The build metadata records `inputs.model = hf:///ibm-granite/granite-4.0-350m-base` regardless of whether the download was inline or via a separate cluster. The binding path is tracked in the build's runtime state.
+
+---
+
+## 3. Retry Behavior for SkyPilot Steps
+
+### Two Levels of Retry
+
+SkyPilot steps have two independent retry mechanisms:
+
+**1. Provision retry (`_provision_with_retry`)** — retries the `sky.launch()` call when cloud resources are unavailable (e.g., spot instances exhausted across all zones).
+
+- Controlled by `retry.max_retries` and `retry.delay_seconds` in environment.yaml
+- Uses exponential backoff: starts at `multiplier` seconds (default: 30s), doubles each attempt, capped at `delay_seconds`
+- Example sequence with `delay_seconds: 1800`: 30s, 60s, 120s, 240s, 480s, 960s, 1800s, 1800s...
+- Fires when `_is_transient_provision_error()` returns True (ResourcesUnavailableError, "failed to provision", "failed to acquire resources")
+- Each retry tears down the partial cluster before relaunching
+- Operates **before** the job starts — no monitor is running yet
+
+**2. RetryHandler (post-launch)** — retries after a job was running and then failed (preemption, NCCL error, crash).
+
+- Same `retry.max_retries` controls the budget
+- `AnyFailureRetryStrategy` fires on WORKLOAD_STATUS_EVENT(FAILED) or MESSAGE_EVENT with state=Failed
+- `retry.delay_seconds` sets the backoff between handler retries
+- Operates through the monitor — only fires after the cluster was provisioned and the job started
+
+### Configuration
+
+```yaml
+# configurations/assets/environments/skypilot/aws/environment.yaml
+config:
+  retry:
+    max_retries: 10       # max attempts for both provision and handler retries
+    delay_seconds: 1800   # max backoff cap (30 minutes)
+```
+
+### Per-Step Retry Control
+
+Steps opt into retry via build.yaml:
+
+```yaml
+steps:
+  - step_uri: space://steps/sage-eval-bcb
+    retry_enabled: true           # enable RetryHandler for this step
+    retry_transparently: true     # don't emit intermediate FAILED events to downstream
+```
+
+Without `retry_enabled: true`, the RetryHandler is created with `max_retries=0` — provision retries still fire (they're unconditional for transient errors), but post-launch failures are fatal.
+
+### Why Provision Retries Matter for Spot Instances
+
+Spot instance availability fluctuates. The original behavior was 4 rapid retries (1s, 2s, 4s backoff, ~30s total) before giving up. For L40S spot instances that may be unavailable for minutes or hours, this was insufficient. The fix reads `retry.max_retries` and `retry.delay_seconds` from the environment config, allowing up to 10 attempts over ~2.5 hours (with 30-minute max backoff).
+
+### Log Messages
+
+```
+# Provision retry (inner) — cluster never launched
+Transient provision failure for gb-531c9193-665 (attempt 3): Failed to provision...
+
+# Handler retry (outer) — job ran then failed
+[RetryHandler launch_id xxx] Waiting 300.0 seconds before retry (backoff from AnyFailureRetryStrategy)
+
+# Successful launch after retries
+SkyPilot cluster gb-531c9193-665 launched: job_id=1 launch_id=...
+```
+
+### Monitoring Retries
+
+The `build_status.sh` script shows per-cluster retry status with eval type identification:
+
+```
+┌─ Retries ───────────────────────────────────────────────────
+│  ⟳ bigcodebench (gb-531c9193-665): attempt 5/10
+│  ⟳ bigcodebench (gb-ac2615d8-ac0): attempt 7/10
+└────────────────────────────────────────────────────────────
+```
+
+Cluster-to-target mapping comes from MESSAGE_EVENT logs ("SkyPilot job on gb-xxx") which include `target_name` in the run_metadata.

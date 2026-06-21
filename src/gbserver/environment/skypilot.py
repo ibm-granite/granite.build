@@ -664,8 +664,10 @@ class Skypilot(Environment):
                     task.set_storage_mounts(storage_mounts)
 
             logger.info(
-                "Launching SkyPilot cluster: name=%s cloud=%s resources=%s",
+                "Launching SkyPilot cluster: name=%s target=%s step=%s cloud=%s resources=%s",
                 cluster_name,
+                run_metadata.get("target_name", "") if run_metadata else "",
+                run_metadata.get("targetstep_uri", "") if run_metadata else "",
                 cloud,
                 res_config,
             )
@@ -770,12 +772,21 @@ class Skypilot(Environment):
             GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS,
         )
 
+        # Use environment config retry settings if available, else fall back to env vars
+        retry_config = (
+            self.config.config.get("retry", {}) if self.config else {}
+        )
+        max_attempts = int(
+            retry_config.get("max_retries", GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS)
+        )
+        backoff_max = int(
+            retry_config.get("delay_seconds", GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX)
+        )
+
         async for attempt in AsyncRetrying(
             retry=retry_if_exception(_is_transient_provision_error),
-            wait=wait_exponential(
-                multiplier=1, max=GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX
-            ),
-            stop=stop_after_attempt(max(1, GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS)),
+            wait=wait_exponential(multiplier=30, max=backoff_max),
+            stop=stop_after_attempt(max(1, max_attempts)),
             reraise=True,
         ):
             with attempt:
@@ -1463,11 +1474,19 @@ class Skypilot(Environment):
         flakes, transient distributed-training crashes, preempted spot
         VMs) where finer signals are rarely available without custom
         log parsers.
+
+        Reads ``retry.delay_seconds`` from environment config for backoff
+        between retry attempts (default: 0).
         """
         # Local import to avoid circular dependencies at module load.
         from gbserver.resilience.strategies.any_failure import AnyFailureRetryStrategy
 
-        return [AnyFailureRetryStrategy()]
+        delay = 0.0
+        if self.config is not None:
+            delay = float(
+                self.config.config.get("retry", {}).get("delay_seconds", 0)
+            )
+        return [AnyFailureRetryStrategy(retry_delay_seconds=delay)]
 
     def _get_retry_test_scenario(self: Self) -> Optional[str]:
         """Scenario name used by ``_inject_event_to_trigger_retry_when_testing``.

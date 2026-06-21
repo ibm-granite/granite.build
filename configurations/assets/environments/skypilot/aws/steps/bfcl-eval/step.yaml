@@ -13,7 +13,7 @@ config:
     model_path: "/model"
     model_id: "ibm-granite/granite-4"
     experiment: ""
-    eval_name: "bfclv3"
+    eval_name: "code-bfclv3"
     test_categories: "all"
     num_gpus_generate: 1
     num_gpus_evaluate: 1
@@ -89,7 +89,10 @@ environment_configs:
             echo "  GPUs eval:  $NUM_GPUS_EVALUATE"
             echo "  Output:     $OUTPUT_DIR"
 
-            bash /workspace/scripts/run-bfcl.sh 2>&1 | tee "${OUTPUT_DIR}/${EXP_NAME}-bfcl.log"
+            bash /workspace/scripts/run-bfcl.sh 2>&1 | tee "${OUTPUT_DIR}/bfcl.log"
+
+            # Write completion marker (used by run_all_evals.sh to detect preempted vs completed)
+            echo "$(date)" > "${OUTPUT_DIR}/bfcl.done"
 
             # Emit artifact for gbserver. The BFCL harness produces
             # multiple JSON files (per category and a summary). Pick the
@@ -135,6 +138,7 @@ environment_configs:
                 field_value_template: "RUNNING"
               - field_name: message
                 field_regex: ".+"
+                is_data: True
           - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
             line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
             event_fields:

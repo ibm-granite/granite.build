@@ -232,19 +232,28 @@ environment_configs:
               - field_name: message
                 field_regex: "Step:.+"
                 is_data: True
-          # Special tokens file saved in {checkpoint_path}/special_tokens_map.json
+          # Per-epoch HF checkpoint: matches paths containing -hf (e.g. .../v0-...-hf/epoch_hf_0/...)
           - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: "Special\\stokens\\sfile\\ssaved\\sin\\s.*"
+            line_regex: "Special\\stokens\\sfile\\ssaved\\sin\\s.*-hf.*"
             is_json: False
             event_fields:
               - field_name: binding_id
                 field_value_template: checkpoint
-              # Exclude the slash and filename from checkpoint_path
               - field_name: path
-                # Positive look-ahead ensuring the matched path is followed by exactly one more segment (file or directory), optionally ending with /. The look-ahead itself is not included in the final match
                 field_regex: '/.+(?=/[^/]+/?$)'
-                # This includes trailing slash
-                # field_regex: "(/.*)/"
+                is_data: True
+              - field_name: binding
+                field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+                is_json: True
+          # Final checkpoint: matches paths NOT containing -hf/ (e.g. .../v0-20260621_114049/...)
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "Special\\stokens\\sfile\\ssaved\\sin\\s(?!.*-hf/).+"
+            is_json: False
+            event_fields:
+              - field_name: binding_id
+                field_value_template: final
+              - field_name: path
+                field_regex: '/.+(?=/[^/]+/?$)'
                 is_data: True
               - field_name: binding
                 field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"

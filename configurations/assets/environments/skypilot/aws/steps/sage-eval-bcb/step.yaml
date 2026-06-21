@@ -185,6 +185,7 @@ environment_configs:
                 field_value_template: "RUNNING"
               - field_name: message
                 field_regex: ".+"
+                is_data: True
           - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
             line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
             event_fields:
