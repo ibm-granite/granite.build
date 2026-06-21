@@ -773,9 +773,7 @@ class Skypilot(Environment):
         )
 
         # Use environment config retry settings if available, else fall back to env vars
-        retry_config = (
-            self.config.config.get("retry", {}) if self.config else {}
-        )
+        retry_config = self.config.config.get("retry", {}) if self.config else {}
         max_attempts = int(
             retry_config.get("max_retries", GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS)
         )
@@ -1483,9 +1481,7 @@ class Skypilot(Environment):
 
         delay = 0.0
         if self.config is not None:
-            delay = float(
-                self.config.config.get("retry", {}).get("delay_seconds", 0)
-            )
+            delay = float(self.config.config.get("retry", {}).get("delay_seconds", 0))
         return [AnyFailureRetryStrategy(retry_delay_seconds=delay)]
 
     def _get_retry_test_scenario(self: Self) -> Optional[str]:
