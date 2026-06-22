@@ -29,6 +29,8 @@ outputs:
   optional:
     checkpoint:
       type: model
+    final:
+      type: model
 environment_configs:
   Skypilot:
     default_launcher: openinstruct-rl
@@ -99,6 +101,11 @@ environment_configs:
             export PYTHONPATH=/stage:/stage/open_instruct:$PYTHONPATH
             cd /stage
 
+            # ── Redirect traces JSONL to local disk (append mode breaks FUSE-mounted S3) ──
+            sed -i 's|f"{args.output_dir}/traces_{args.run_name}.jsonl"|f"/tmp/rl-traces/traces_{args.run_name}.jsonl"|' \
+              /stage/open_instruct/grpo_fast.py
+            mkdir -p /tmp/rl-traces
+
             # ── Wait for RM server sidecar ──
             echo "[$(date)] Waiting for RM server at ${RM_SERVER_URL} ..."
             for i in $(seq 1 180); do
@@ -130,30 +137,16 @@ environment_configs:
             fi
 
             # ── Prepare output ──
-            S3_OUTPUT_DIR="${OUTPUT_DIR}"
-            OUTPUT_DIR="/tmp/rl-output"
-            mkdir -p "${OUTPUT_DIR}" "${S3_OUTPUT_DIR}" /tmp/rl-data-cache 2>/dev/null || true
+            mkdir -p "${OUTPUT_DIR}" /tmp/rl-data-cache 2>/dev/null || true
 
             echo "[$(date)] Starting GRPO RL training"
             echo "[$(date)] Experiment: ${EXP_NAME}"
             echo "[$(date)] Model: ${MODEL_PATH}"
             echo "[$(date)] Dataset: ${DATASET_MIXER}"
-            echo "[$(date)] Output (local): ${OUTPUT_DIR}"
-            echo "[$(date)] Output (S3):    ${S3_OUTPUT_DIR}"
+            echo "[$(date)] Output: ${OUTPUT_DIR}"
             echo "[$(date)] RM Server: ${RM_SERVER_URL}"
             echo "[$(date)] Code Server: ${CODE_SERVER_URL:-none}"
             echo "[$(date)] GPUs (training): 7 (${NUM_LEARNERS_PER_NODE} learners + ${VLLM_NUM_ENGINES} vLLM engines)"
-
-            # ── Background sync: copy completed checkpoints to S3 every 5 minutes ──
-            (while true; do
-              sleep 300
-              for d in "${OUTPUT_DIR}"/step_*; do
-                if [[ -d "$d" && -f "$d/config.json" ]]; then
-                  cp -rn "$d" "${S3_OUTPUT_DIR}/" 2>/dev/null || true
-                fi
-              done
-            done) &
-            SYNC_PID=$!
 
             # ── Hide GPU 7 from training (reserved for RM sidecar on host) ──
             export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
@@ -234,11 +227,8 @@ environment_configs:
             python "${GRPO_ARGS[@]}" 2>&1 | tee /tmp/training.log
             TRAIN_EXIT=${PIPESTATUS[0]}
 
-            # ── Final sync ──
-            kill $SYNC_PID 2>/dev/null || true
-            echo "[$(date)] Syncing output to S3..."
-            cp -r "${OUTPUT_DIR}"/step_* "${S3_OUTPUT_DIR}/" 2>/dev/null || true
-            cp /tmp/training.log "${S3_OUTPUT_DIR}/training.log" 2>/dev/null || true
+            # ── Copy training log to output ──
+            cp /tmp/training.log "${OUTPUT_DIR}/training.log" 2>/dev/null || true
 
             if [[ $TRAIN_EXIT -ne 0 ]]; then
               echo "[$(date)] ERROR: Training exited with code $TRAIN_EXIT"
@@ -246,7 +236,7 @@ environment_configs:
               exit $TRAIN_EXIT
             fi
 
-            echo "[$(date)] RL training complete. Output at: ${S3_OUTPUT_DIR}"
+            echo "[$(date)] RL training complete. Output at: ${OUTPUT_DIR}"
           post_launch_task:
             run: |
               set -e
@@ -352,11 +342,23 @@ environment_configs:
                 field_regex: ".+"
                 is_data: True
           - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: "Saving model.*step_\\d+"
+            line_regex: "Saving model at step \\d+ to .+"
             is_json: False
             event_fields:
               - field_name: binding_id
                 field_value_template: checkpoint
+              - field_name: path
+                field_regex: '/output/rl/[^\s]+'
+                is_data: True
+              - field_name: binding
+                field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+                is_json: True
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "Saving final model at step \\d+ to .+"
+            is_json: False
+            event_fields:
+              - field_name: binding_id
+                field_value_template: final
               - field_name: path
                 field_regex: '/output/rl/[^\s]+'
                 is_data: True

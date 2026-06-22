@@ -58,8 +58,11 @@ class AnyFailureRetryStrategy(RetryStrategy):
         self.retry_delay_seconds = retry_delay_seconds
 
     def get_retry_delay(self: Self, retry_count: int) -> float:
-        """Return configured delay before each retry attempt."""
-        return self.retry_delay_seconds
+        """Return exponential backoff delay: 60 * 2^retry_count, capped at retry_delay_seconds."""
+        if self.retry_delay_seconds <= 0:
+            return 0.0
+        delay = 60.0 * (2**retry_count)
+        return min(delay, self.retry_delay_seconds)
 
     def should_retry(self: Self, event: BuildEvent) -> bool:
         """Return True if the event represents any kind of failure."""

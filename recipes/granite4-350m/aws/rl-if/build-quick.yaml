@@ -45,11 +45,14 @@ granite.build:
               checkpoint_state_subdir: "$${NAME}-if/exp_32/iter1/rlvr/_state"
               temperature: "1.0"
               temp_final: "1.0"
-              total_episodes: "500000"
-              save_freq: "80"
-              eval_freq: "80"
-              checkpoint_state_freq: "80"
-              ref_policy_update_freq: "32"
+              # num_training_steps = total_episodes // (num_unique_prompts_rollout * num_samples_per_prompt_rollout)
+              #                   = 21000 // (64 * 16) = 20 steps
+              # With save_freq=10, checkpoints at step 10 and step 20 (2 checkpoints)
+              total_episodes: "21000"
+              save_freq: "10"
+              eval_freq: "10"
+              checkpoint_state_freq: "10"
+              ref_policy_update_freq: "4"
               add_general_reward: "true"
               code_server_url: "http://localhost:8001"
 
