@@ -75,7 +75,7 @@ def get_status_emoji(status: str) -> str:
             return "🔵"
         case "running":
             return "⚡"
-        case "retry":
+        case "retry_pending":
             return "🔁"
         case "failed":
             return "❌"

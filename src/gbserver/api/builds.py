@@ -501,7 +501,7 @@ def request_cancellation(
             )
         target_status: Optional[Status] = Status.CANCEL_REQUESTED
     # RETRY is treated like RUNNING: an in-flight build the runner must stop.
-    elif current_status in (Status.RUNNING, Status.RETRY):
+    elif current_status in (Status.RUNNING, Status.RETRY_PENDING):
         target_status = Status.CANCEL_REQUESTED
     elif current_status in (Status.SUBMITTED, Status.PENDING):
         target_status = Status.CANCELLED

@@ -31,16 +31,16 @@ from scratch on every retry, even if they succeeded in an earlier attempt.
 When a build finishes with status `FAILED` and `retry_count < retries.max_retries`, gbserver:
 
 1. Creates a new `StoredBuild` with the same configuration (`build_archive`, targets, tags,
-   etc.) and status `RETRY`.
+   etc.) and status `RETRY_PENDING`.
 2. Sets `retry_count` on the new build to `original.retry_count + 1`.
 3. Sets `retry_of_build_id` on the new build to the UUID of the original (first) build — this
    field always points to the root of the retry chain, not just the previous attempt.
 4. Updates `retry_build_id` on the failed build to point to the new retry build.
 5. Runs the new build immediately in the same `BuildRunner` session.
 
-The retry build is created with status `RETRY` rather than `PENDING` on purpose: the
+The retry build is created with status `RETRY_PENDING` rather than `PENDING` on purpose: the
 `BuildWatcher` only dispatches `PENDING` builds, so a distinct status keeps it from launching
-a *second* runner for a retry that the in-process loop is already running. The `RETRY` build
+a *second* runner for a retry that the in-process loop is already running. The `RETRY_PENDING` build
 transitions to `RUNNING` as it executes, just like any other in-flight build.
 
 Retries are only triggered for the `FAILED` status. Builds that end with `CANCELLED` or
@@ -55,7 +55,7 @@ the chain stops the work that is actually running and marks every build in the c
 
 How a cancellation request is handled (`POST /builds/{id}/cancel`):
 
-- If the targeted build is **still in flight** (`PENDING`, `RUNNING`, or `RETRY`), it is set to
+- If the targeted build is **still in flight** (`PENDING`, `RUNNING`, or `RETRY_PENDING`), it is set to
   `CANCEL_REQUESTED` (or directly `CANCELLED` if it had not started yet).
 - If the targeted build is **already finished** (for example the original, which is now
   `FAILED`) **but its retry chain still has an active member**, the request is accepted — the

@@ -47,7 +47,7 @@ _IN_FLIGHT = {
     Status.PENDING,
     Status.RUNNING,
     Status.CANCEL_REQUESTED,
-    Status.RETRY,
+    Status.RETRY_PENDING,
 }
 
 
