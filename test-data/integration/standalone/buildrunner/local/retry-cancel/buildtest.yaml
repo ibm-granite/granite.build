@@ -1,0 +1,9 @@
+# Fixture for the build-level retry cancellation test
+# (test/integration/standalone/buildrunner/local/test_buildrunner_retry_cancellation.py).
+#
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+expected_status: cancelled
+simulate_step_failure: false
+space_uri: ../../../../../../configurations/spaces/local
+target_expectations: []
+timeout_minutes: 10

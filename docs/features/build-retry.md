@@ -31,15 +31,46 @@ from scratch on every retry, even if they succeeded in an earlier attempt.
 When a build finishes with status `FAILED` and `retry_count < retries.max_retries`, gbserver:
 
 1. Creates a new `StoredBuild` with the same configuration (`build_archive`, targets, tags,
-   etc.) and status `PENDING`.
+   etc.) and status `RETRY_PENDING`.
 2. Sets `retry_count` on the new build to `original.retry_count + 1`.
 3. Sets `retry_of_build_id` on the new build to the UUID of the original (first) build — this
    field always points to the root of the retry chain, not just the previous attempt.
 4. Updates `retry_build_id` on the failed build to point to the new retry build.
 5. Runs the new build immediately in the same `BuildRunner` session.
 
+The retry build is created with status `RETRY_PENDING` rather than `PENDING` on purpose: the
+`BuildWatcher` only dispatches `PENDING` builds, so a distinct status keeps it from launching
+a *second* runner for a retry that the in-process loop is already running. The `RETRY_PENDING` build
+transitions to `RUNNING` as it executes, just like any other in-flight build.
+
 Retries are only triggered for the `FAILED` status. Builds that end with `CANCELLED` or
 `INVALID` are never retried.
+
+## Cancellation
+
+Cancelling a build with `max_retries > 0` cancels the **entire retry chain**, not just one
+attempt. Because the whole chain is run by a single `BuildRunner`, cancelling any member of
+the chain stops the work that is actually running and marks every build in the chain
+`CANCELLED`.
+
+How a cancellation request is handled (`POST /builds/{id}/cancel`):
+
+- If the targeted build is **still in flight** (`PENDING`, `RUNNING`, or `RETRY_PENDING`), it is set to
+  `CANCEL_REQUESTED` (or directly `CANCELLED` if it had not started yet).
+- If the targeted build is **already finished** (for example the original, which is now
+  `FAILED`) **but its retry chain still has an active member**, the request is accepted — the
+  failed build is itself set to `CANCEL_REQUESTED`. This is a durable signal on a build that is
+  not being re-run, so it cannot be clobbered by a concurrent status update. (Cancelling a
+  finished build whose chain has **no** active member is still rejected with `412`.)
+
+The `BuildRunner` checks the whole retry chain for a cancellation request after each attempt
+(and while a step is running, where the environment supports interrupting it). As soon as any
+member is `CANCEL_REQUESTED`/`CANCELLED`, it stops the active workload, **marks every build in
+the chain `CANCELLED`**, and does not create any further retries. Earlier attempts that had
+already failed are relabelled `CANCELLED` so the whole chain reflects the cancellation.
+
+This means you can cancel a retrying build using the original build id you submitted, even
+after that first attempt has failed and the chain has moved on to a later retry.
 
 ## Storage fields
 

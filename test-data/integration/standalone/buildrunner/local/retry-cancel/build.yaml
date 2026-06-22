@@ -1,0 +1,18 @@
+granite.build:
+  name: bash-retry-cancel-test
+  # Every attempt lingers briefly then fails, giving the test a window to cancel
+  # the build while a retry is in flight. max_retries has headroom so the chain
+  # would keep retrying if cancellation didn't stop it.
+  retries:
+    max_retries: 5
+  targets:
+    fail-target:
+      allow_unknown: true
+      environment_uri: space://environments/bash
+      steps:
+        - step_uri: space://steps/command
+          config:
+            bash_config:
+              command: "sleep 5; exit 1"
+            compute_config:
+              num_nodes: 1

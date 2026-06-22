@@ -37,7 +37,7 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.space_storage import IStoredSpaceStorage
-from gbserver.storage.stored_build import StoredBuild
+from gbserver.storage.stored_build import StoredBuild, get_retry_chain_members
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -444,39 +444,85 @@ async def cancel_build(build_id: str, request: Request) -> CancelBuildResponse:
             detail="You are not the owner or admin of this build.",
         )
 
-    # Determine the target status based on current status
-    current_status = build.status
-    if not current_status.is_cancellable():
-        raise HTTPException(
-            status_code=status.HTTP_412_PRECONDITION_FAILED,
-            detail=f"Build {build.uuid} has status {current_status} and therefore can not be canceled.",
-        )
-    elif current_status == Status.RUNNING:
-        target_status = Status.CANCEL_REQUESTED
-    elif current_status == Status.SUBMITTED or current_status == Status.PENDING:
-        target_status = Status.CANCELLED
-    elif current_status == Status.CANCEL_REQUESTED:
-        target_status = None  # Already requested, no update needed
-    else:
-        target_status = None
-
-    if target_status is not None:
-        # Use callback to ensure status hasn't changed (fixes race condition)
-        updated_build = storage.build_storage.update_fields(
-            build.uuid,
-            {"status": target_status},
-            should_update=lambda item: item.status == current_status,
-        )
-        if updated_build is None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Build {build.uuid} status changed during update.  Try again?.",
-            )
-        build = updated_build
+    build = request_cancellation(storage.build_storage, build)
 
     build.build_archive = ""
     response: CancelBuildResponse = CancelBuildResponse(canceled=build)
     return response
+
+
+def _find_active_chain_member(
+    build_storage: IStoredBuildStorage, build: StoredBuild
+) -> Optional[StoredBuild]:
+    """Return the single non-finished member of ``build``'s retry chain, if any.
+
+    A retry chain is linear, so at most one member is in flight at a time.
+    """
+    for member in get_retry_chain_members(build_storage, build):
+        if not member.status.is_finished():
+            return member
+    return None
+
+
+def request_cancellation(
+    build_storage: IStoredBuildStorage, build: StoredBuild
+) -> StoredBuild:
+    """Apply a cancellation request to a build, routing into its retry chain.
+
+    If the targeted build itself is in flight, it is set to CANCEL_REQUESTED (or
+    CANCELLED for SUBMITTED/PENDING). If the targeted build is already finished
+    (e.g. a FAILED original) but its retry chain still has an active member, the
+    request is routed to that active member instead — so cancelling a failed build
+    cancels the retry that is actually running.
+
+    Args:
+        build_storage: storage used to read/update builds.
+        build: the build the cancellation was requested for.
+
+    Returns:
+        The build whose status was updated (the active chain member when routed),
+        or the unchanged build if no update was needed.
+
+    Raises:
+        HTTPException: 412 if nothing in the chain is cancellable; 409 if the
+            status changed concurrently.
+    """
+    current_status = build.status
+    if not current_status.is_cancellable():
+        # The build itself is finished (e.g. a FAILED original). Allow cancelling
+        # it only if its retry chain still has an active member, and set
+        # CANCEL_REQUESTED on THIS build — a durable signal on a build that is not
+        # being re-run (so it can't be clobbered by a concurrent FAILED update).
+        # The runner detects it chain-wide and cancels the whole chain.
+        if _find_active_chain_member(build_storage, build) is None:
+            raise HTTPException(
+                status_code=status.HTTP_412_PRECONDITION_FAILED,
+                detail=f"Build {build.uuid} has status {current_status} and therefore can not be canceled.",
+            )
+        target_status: Optional[Status] = Status.CANCEL_REQUESTED
+    # RETRY is treated like RUNNING: an in-flight build the runner must stop.
+    elif current_status in (Status.RUNNING, Status.RETRY_PENDING):
+        target_status = Status.CANCEL_REQUESTED
+    elif current_status in (Status.SUBMITTED, Status.PENDING):
+        target_status = Status.CANCELLED
+    else:  # CANCEL_REQUESTED (already requested) or anything else: no update
+        target_status = None
+
+    if target_status is None:
+        return build
+
+    # Use a callback to ensure the status hasn't changed (fixes race condition).
+    updated_build = build_storage.update_fields(
+        build.uuid,
+        {"status": target_status},
+        should_update=lambda item: item.status == current_status,
+    )
+    if updated_build is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Build {build.uuid} status changed during update.  Try again?.",
+        )
+    return updated_build
 
 
 class BuildUpdateRequest(BaseModel):

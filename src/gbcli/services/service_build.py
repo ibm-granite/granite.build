@@ -822,7 +822,7 @@ def build_list(
             return
     status = None
     if not show_done and not show_all:
-        status = ["pending", "running", "submitted"]
+        status = ["pending", "running", "submitted", "retry_pending"]
     sort = ["created_time:desc"]
     gbserver_builds = make_gbserver_call(
         lambda: get_builds(

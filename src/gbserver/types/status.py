@@ -27,11 +27,17 @@ class Status(StrEnum):
     INVALID = auto()
     CANCELLED = auto()
     CANCEL_REQUESTED = auto()
+    # A build that is queued for a build-level retry but not yet running. It is
+    # owned and run by the in-process BuildRunner retry loop, NOT dispatched by the
+    # BuildWatcher (which polls only PENDING/SUBMITTED/CANCEL_REQUESTED). Using a
+    # distinct status keeps the watcher from double-dispatching a retry the runner
+    # is already handling.
+    RETRY_PENDING = auto()
 
     def is_finished(self) -> bool:
         """Determine of the status (of a build) indicates the job is no longer running.
         This includes SUCCESS, FAILED, INVALID or CANCELLED states.
-        If status PENDING, RUNNING, or CANCEL_REQUESTED, then the build is assumed to either not have started or currently is running.
+        If status PENDING, RUNNING, RETRY_PENDING, or CANCEL_REQUESTED, then the build is assumed to either not have started or currently is running.
         """
         return self in (Status.SUCCESS, Status.FAILED, Status.INVALID, Status.CANCELLED)
 
@@ -51,4 +57,5 @@ STATUS_TO_ICON = {
     Status.INVALID: "❌",
     Status.CANCELLED: "⚠️",
     Status.CANCEL_REQUESTED: "⚠️",
+    Status.RETRY_PENDING: "🔁",
 }
