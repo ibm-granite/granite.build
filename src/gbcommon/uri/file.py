@@ -18,10 +18,11 @@
 URI for files/folders in the local filesystem.
 """
 
+import os
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Self
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, urlparse, urlunparse
 
 from gbcommon.uri.uri import URI
 from gbserver.types.constants import FILE_SCHEME
@@ -77,3 +78,30 @@ class FileURI(URI):
             return True
         except Exception:
             return False
+
+
+def absolutize_file_uri(uri: URI) -> URI:
+    """Resolve a relative ``file:`` URI to an absolute one against the cwd.
+
+    A relative ``file:outputs/...`` URI is physically read/written relative to
+    the process working directory (e.g. an artifact push shells out to rsync
+    from ``os.getcwd()``), but it would otherwise be *registered* verbatim as a
+    relative URI — meaningless to any later consumer (e.g. ``gb artifact
+    download``) that runs from a different directory. Rewriting it to
+    ``file:///<cwd>/outputs/...`` makes the URI match the file's real on-disk
+    location.
+
+    Absolute ``file:`` URIs and all non-``file:`` schemes (``hf:``, ``lh:``,
+    ``cos:``, ``env:``, ...) are returned unchanged.
+    """
+    if uri.uri is None or uri.uri.scheme != FILE_SCHEME:
+        return uri
+    path = uri.uri.path
+    if Path(path).is_absolute():
+        return uri
+    abs_path = os.path.normpath(os.path.join(os.getcwd(), path))
+    # normpath strips a trailing slash; restore it for directory URIs so the
+    # round-tripped URI keeps its original (dir vs file) shape.
+    if path.endswith("/") and not abs_path.endswith("/"):
+        abs_path += "/"
+    return URI.get_uri(urlunparse((FILE_SCHEME, "", abs_path, "", "", "")))

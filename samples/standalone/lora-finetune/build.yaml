@@ -23,7 +23,7 @@ granite.build:
         # printed to the log and written under the step's output dir; it isn't
         # registered as a separate target output here.
         adapter:
-          uri: file:outputs/lora-finetune/adapter/
+          uri: file:outputs/lora-finetune/adapter_{{ binding.path | short_hash }}/
       steps:
         # ── Step 1: train the adapter ──────────────────────────────────
         - step_uri: space://steps/lora-finetune

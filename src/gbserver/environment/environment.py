@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 from pydantic import Field
 
 from gbcommon.types.testing import is_failure_simulated
+from gbcommon.uri.file import absolutize_file_uri
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
@@ -1017,6 +1018,9 @@ class Environment(ABC):
         if space_variables is not None:
             config = config | space_variables
         uri = URI.get_uri(fill_template(uristr, config, strict=True))
+        # Register a relative file: output URI as an absolute path so the stored
+        # artifact URI matches where the push physically writes it (cwd-relative).
+        uri = absolutize_file_uri(uri)
         assetstore, assetstoreenv_config = self._get_storeconfig(
             uri=uri, raise_exceptions=True
         )
