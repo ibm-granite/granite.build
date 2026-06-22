@@ -15,8 +15,26 @@ import subprocess
 import sys
 import time
 
+# Let unimplemented MPS (Apple Silicon) ops fall back to CPU instead of erroring.
+# Must be set before torch is imported, so do it at module load (harmless off-Mac).
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 # Must match the output name declared in build.yaml (outputs.generation).
 ARTIFACT_ID = "generation"
+
+
+def pick_device(torch):
+    """Best available torch device: CUDA, then Apple Silicon (MPS), else CPU.
+
+    MPS is PyTorch's Metal backend — it accelerates inference on Mac M-series
+    GPUs. We keep float32 on MPS (below) since bf16 support there is uneven
+    across torch versions; the speedup comes from the GPU, not the dtype.
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def shared_adapter_dir():
@@ -109,12 +127,13 @@ def main():
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = pick_device(torch)
     print(f"Using device: {device}")
     print(f"Base model: {model_path}")
     print(f"Adapter: {adapter_path or '(none — base model only)'}")
 
     tokenizer = AutoTokenizer.from_pretrained(adapter_path or model_path)
+    # bf16 only on CUDA; CPU and MPS (Apple Silicon) stay in float32 for stability.
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,

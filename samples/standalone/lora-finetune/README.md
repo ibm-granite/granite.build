@@ -34,8 +34,23 @@ gb build status <build-id>
 gb build log <build-id>
 ```
 
-First run installs `torch`/`transformers`/`trl`/`peft` (CPU) and trains for `MAX_STEPS`
+First run installs `torch`/`transformers`/`trl`/`peft` and trains for `MAX_STEPS`
 steps — a few minutes on CPU.
+
+### Hardware acceleration
+
+Both steps pick the best available PyTorch device automatically — no configuration
+needed:
+
+- **NVIDIA GPU** (`cuda`) — used in bf16 when present.
+- **Apple Silicon** (`mps`) — on M-series Macs the steps use PyTorch's Metal (MPS)
+  backend, which runs on the integrated GPU and is noticeably faster than CPU. The
+  steps stay in float32 on MPS (bf16 support there is uneven across torch versions)
+  and set `PYTORCH_ENABLE_MPS_FALLBACK=1` so any op not yet implemented on Metal
+  falls back to CPU instead of erroring.
+- **CPU** — the fallback when neither is available.
+
+The chosen device is printed at the start of each step (`Using device: ...`).
 
 ## What's configurable (all in `build.yaml`)
 
