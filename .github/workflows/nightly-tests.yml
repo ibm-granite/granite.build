@@ -22,6 +22,9 @@ permissions:
 
 jobs:
   extended-test:
+    # Scheduled workflows also fire on a fork's own default branch, so guard
+    # every job to the canonical repo — forks shouldn't run the nightly suite.
+    if: github.repository == 'ibm-granite/granite.build'
     runs-on: ubuntu-latest
     strategy:
       # Don't cancel 3.12 just because 3.11 failed — we want both results.
@@ -50,7 +53,7 @@ jobs:
     # are visible without watching the Actions tab. Runs only on the scheduled
     # run, not manual dispatch, to avoid noise from ad-hoc debugging.
     needs: extended-test
-    if: failure() && github.event_name == 'schedule'
+    if: failure() && github.event_name == 'schedule' && github.repository == 'ibm-granite/granite.build'
     runs-on: ubuntu-latest
     steps:
       - name: Open or update failure issue
@@ -91,7 +94,7 @@ jobs:
     # is true only when both 3.11 and 3.12 pass — the correct "green" condition.
     # The two jobs' if conditions are mutually exclusive, so they never both run.
     needs: extended-test
-    if: success() && github.event_name == 'schedule'
+    if: success() && github.event_name == 'schedule' && github.repository == 'ibm-granite/granite.build'
     runs-on: ubuntu-latest
     steps:
       - name: Close open failure issues
