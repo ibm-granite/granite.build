@@ -1,0 +1,51 @@
+######
+# Identity RL training on AWS g6e.48xlarge (8x L40S) with RM sidecar.
+#
+# GPU allocation:
+#   GPUs 0-6: Training (3 learners + 4 vLLM engines)
+#   GPU 7:    RM server sidecar (started via post_launch_task on host)
+#
+# Prerequisites:
+#   1. AWS credentials configured
+#   2. ECR docker password exported:
+#      export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+#   3. Model checkpoint on S3
+#   4. RM model at s3://granite-build-checkpoints/rm-models/phi4-multilingual/
+#   5. Identity dataset at s3://granite-build-datasets/rlhf/general_identity/
+#
+# Usage:
+#   gb build start -f recipes/granite4-350m/aws/rl-identity/build.yaml \
+#     --param NAME=g4-350m-sft-8k-8-e3 \
+#     --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-hf/epoch_hf_2
+######
+granite.build:
+  name: $${NAME}
+  targets:
+    rl-identity:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/openinstruct-rl
+          retry_enabled: true
+          retry_transparently: true
+          config:
+            rl_config:
+              exp_name: "$${NAME}-identity"
+              run_name: "$${NAME}-identity"
+              model_source_s3: "$${MODEL_S3}"
+              data_source_s3: "s3://granite-build-datasets/rlhf/general_identity"
+              output_subdir: "$${NAME}-identity/exp_12/iter1/rlvr"
+              checkpoint_state_subdir: "$${NAME}-identity/exp_12/iter1/rlvr/_state"
+              temperature: "1.15"
+              temp_final: "1.15"
+              total_episodes: "300000"
+              save_freq: "40"
+              eval_freq: "40"
+              checkpoint_state_freq: "40"
+              ref_policy_update_freq: "8"
+              add_general_reward: "false"
+              code_server_url: ""
