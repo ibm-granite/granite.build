@@ -263,8 +263,14 @@ environment_configs:
             event_fields:
               - field_name: status
                 field_value_template: "RUNNING"
+              # is_data routes this into the payload's `data` dict.
+              # BuildEventWorkloadStatusPayload only declares `status`; a
+              # top-level `message` kwarg makes payload_parser raise
+              # TypeError (swallowed by the scrape loop, but it drops the
+              # progress event). The base EventPayload.data dict accepts it.
               - field_name: message
                 field_regex: "(episode|training_step).*"
+                is_data: true
           - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
             line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
             event_fields:
