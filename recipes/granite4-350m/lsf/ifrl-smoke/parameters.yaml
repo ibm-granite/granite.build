@@ -26,7 +26,7 @@ EVAL_FREQ: "10"
 CHECKPOINT_STATE_FREQ: "10"
 REF_POLICY_UPDATE_FREQ: "6"
 
-# ─── 4-GPU topology (override the step's 4+4 default to fit H100:4) ────
+# ─── 8-GPU topology ────
 NUM_LEARNERS_PER_NODE: "4"
 VLLM_NUM_ENGINES: "4"
 VLLM_TENSOR_PARALLEL_SIZE: "1"
@@ -52,7 +52,7 @@ CODE_MEMORY: "128"
 # ─── Infrastructure ───────────────────────────────────────────────────
 CLUSTER: "bluevela"
 RL_QUEUE: "normal"
-RL_ACCELERATORS: "H100:4"
+RL_ACCELERATORS: "H100:8"
 RL_MEMORY: "1580"
 
 # ─── GRPO defaults (step single-node defaults; override as needed) ────
