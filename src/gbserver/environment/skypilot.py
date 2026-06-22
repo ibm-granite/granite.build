@@ -851,6 +851,61 @@ class Skypilot(Environment):
             self._parsed_log_offsets.pop(launch_id, None)
             self._emitted_binding_ids.pop(launch_id, None)
 
+    async def launch_skypilot_teardown(
+        self: Self,
+        launch_id: Optional[str] = None,
+        **kwargs,
+    ) -> None:
+        """In-process launcher that tears down named SkyPilot clusters.
+
+        Does NOT provision a cluster. Reads ``config.teardown_config.cluster_names``
+        (surfaced from upstream cluster_name bindings) and downs each one. The
+        ``Skypilot`` instance is shared across a build's targets, so the
+        ``rm-server`` / ``code-server`` clusters are in ``self._cluster_names``
+        here -- reuse ``cleanup_skypilot`` so monitoring/state is cleaned up too.
+        Falls back to a direct ``sky.down`` for any name without a tracked
+        launch_id. SERVICE clusters on LSF never autostop and never get a
+        terminal-status cleanup, so this is how they get reclaimed.
+        """
+        config = kwargs.get("config") or {}
+        names = (config.get("teardown_config") or {}).get("cluster_names") or []
+        names = [n.strip() for n in names if isinstance(n, str) and n.strip()]
+        if not names:
+            logger.warning(
+                "launch_skypilot_teardown: no cluster_names to tear down "
+                "(launch_id=%s)",
+                launch_id,
+            )
+            return
+
+        # Reverse launch_id -> cluster_name so we can reuse cleanup_skypilot.
+        name_to_launch = {v: k for k, v in self._cluster_names.items()}
+
+        for name in names:
+            try:
+                target_launch_id = name_to_launch.get(name)
+                if target_launch_id is not None:
+                    logger.info(
+                        "launch_skypilot_teardown: cleanup cluster %s "
+                        "(launch_id=%s)",
+                        name,
+                        target_launch_id,
+                    )
+                    await self.cleanup_skypilot(launch_id=target_launch_id)
+                else:
+                    logger.info(
+                        "launch_skypilot_teardown: no tracked launch_id for "
+                        "cluster %s, calling sky.down directly",
+                        name,
+                    )
+                    _require_skypilot()
+                    request_id = sky.down(name, purge=True)
+                    sky.get(request_id)
+            except Exception as e:  # don't let one failure skip the rest
+                logger.error(
+                    "launch_skypilot_teardown: failed to tear down %s: %s", name, e
+                )
+
     async def retry_workload(
         self: Self,
         launch_id: str,
