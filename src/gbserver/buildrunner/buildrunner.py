@@ -565,7 +565,8 @@ class BuildRunner(AbstractBuildRunner):
             self.stored_build.uuid,
             updates,
             # PENDING for a first run, RETRY for a build-level retry run.
-            should_update=lambda item: item.status in (Status.PENDING, Status.RETRY_PENDING),
+            should_update=lambda item: item.status
+            in (Status.PENDING, Status.RETRY_PENDING),
         )
         if update is not None:  # Build had pending status, all good.
             self.stored_build = update
