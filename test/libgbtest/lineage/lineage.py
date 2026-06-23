@@ -11,10 +11,24 @@ from gbcommon.uri.lh import LhURI
 from gbserver.storage.singleton_storage import get_storage_factory
 
 
+class _LineageBuildStorageTestSupport(BuildStorageTestSupport):
+    """BuildStorageTestSupport for lineage tests.
+
+    Lineage tests only need a build *record* to attach lineage to and never
+    inspect its username, so we override the base class's GitHub-token/API
+    lookup (intended for build-cancellation tests) with a fixed username.  This
+    lets the lineage tests run without a GitHub token — e.g. in the live
+    standalone/extended suite, where no token is configured.
+    """
+
+    def _get_build_user(self) -> str:
+        return "lineage-test-user"
+
+
 def get_test_support():
     ssts = StepStorageTestSupport()
     tsts = TargetStorageTestSupport()
-    bsts = BuildStorageTestSupport()
+    bsts = _LineageBuildStorageTestSupport()
     asts = ArtifactStorageTestSupport()
     return tsts, bsts, ssts, asts
 
