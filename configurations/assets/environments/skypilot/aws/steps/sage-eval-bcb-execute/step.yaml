@@ -102,8 +102,8 @@ environment_configs:
 
             export EXPERIMENT NUM_GPUS BATCH_SIZE MAX_LENGTH MODEL_PATH OUTPUT_BASE_PATH OE_EVAL_BCB_API_URL
 
-            echo "[$(date)] Running BCB execution phase (--recompute-metrics)"
-            echo "[$(date)] Model: ${MODEL_PATH} (for tokenizer only)"
+            echo "[$(date)] Running BCB execution phase"
+            echo "[$(date)] Model: ${MODEL_PATH}"
             echo "[$(date)] BCB API: ${OE_EVAL_BCB_API_URL}"
             echo "[$(date)] Output: ${OUTPUT_PATH}"
 
@@ -115,16 +115,8 @@ environment_configs:
             fi
             echo "[$(date)] Found predictions: ${PRED_FILE}"
 
-            # Run oe-eval directly with --recompute-metrics (sage olmes-slim doesn't support it)
-            cd /workspace/olmes
-            python -m oe_eval.run_eval \
-              --task '{"task_name": "bigcodebench", "use_chat_format": true, "context_kwargs": {"prompt_variant": "instruct"}, "metadata": {"regimes": ["Tulu"], "alias": "bigcodebench::tulu"}}' \
-              --model ${MODEL_PATH} \
-              --model-args '{"max_length": '${MAX_LENGTH}', "dtype": "bfloat16", "tensor_parallel_size": '${NUM_GPUS}', "gpu_memory_utilization": 0.85, "trust_remote_code": true, "model_type": "vllm"}' \
-              --batch-size ${BATCH_SIZE} \
-              --output-dir ${OUTPUT_PATH}/code/olmes-instruct/bigcodebench::tulu \
-              --recompute-metrics \
-              --run-id "${EXPERIMENT}-bigcodebench_tulu-code" \
+            # oe-eval auto-detects cached predictions and skips generation
+            bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} \
               2>&1 | tee /tmp/${EVAL_NAME}-execute.log
 
             echo "$(date)" > ${OUTPUT_PATH}/${EVAL_NAME}.done
