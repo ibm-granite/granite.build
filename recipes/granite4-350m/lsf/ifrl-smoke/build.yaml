@@ -28,6 +28,10 @@ granite.build:
         # consumer reads the clean URL via {{ bindings.<x>.binding.state }}.
         rm_server_url:
           uri: "mem://rm-server"
+        # Cluster name for the teardown target (see mem:// note above): the
+        # verbatim "gb-<id>" reaches teardown via binding.state.
+        cluster_name:
+          uri: "mem://rm-server-cluster"
       steps:
         - step_uri: space://steps/rm-server
           config:
@@ -49,6 +53,9 @@ granite.build:
         # the clean URL reaches the trainer via the verbatim binding["state"].
         code_server_url:
           uri: "mem://code-server"
+        # Cluster name for the teardown target (see mem:// note above).
+        cluster_name:
+          uri: "mem://code-server-cluster"
       steps:
         - step_uri: space://steps/code-server
           config:
@@ -159,3 +166,26 @@ granite.build:
                 cluster: "$${CLUSTER}"
                 zone: "$${RL_QUEUE}"
                 memory: "$${RL_MEMORY}"
+
+    # ─── Teardown: down the server clusters once training is done ──────
+    teardown:
+      environment_uri: space://environments/skypilot/lsf
+      inputs:
+        # `gate` is the ordering primitive: a target starts only once ALL its
+        # input bindings resolve. checkpoint is emitted as the trainer's final
+        # log line, so teardown runs after GRPO training completes. The two
+        # *_cluster bindings carry the cluster identities AND ensure teardown
+        # can't fire before the servers have started.
+        gate:
+          binding: ifrl-training.checkpoint
+        rm_cluster:
+          binding: rm-server.cluster_name
+        code_cluster:
+          binding: code-server.cluster_name
+      steps:
+        - step_uri: space://steps/skypilot-teardown
+          config:
+            teardown_config:
+              cluster_names:
+                - "{{ bindings.rm_cluster.binding.state }}"
+                - "{{ bindings.code_cluster.binding.state }}"
