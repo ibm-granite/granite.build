@@ -40,7 +40,10 @@ environment_configs:
           resources:
             infra: aws/us-east-2
             accelerators: "L40S:1"
-            instance_type: "g6e.8xlarge"  # 1x L40S 48GB, 32 vCPUs, 256GB RAM (BCB needs more memory)
+            # BCB code execution sandboxes are memory-intensive. g6e.8xlarge
+            # (256GB RAM) works with batch_size=1. For higher batch sizes,
+            # use g6e.12xlarge (384GB) or g6e.16xlarge (512GB).
+            instance_type: "g6e.8xlarge"
             disk_size: 256
             use_spot: true
           file_mounts:
