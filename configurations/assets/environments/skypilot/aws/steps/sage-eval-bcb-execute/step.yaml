@@ -36,12 +36,12 @@ environment_configs:
               - "-e HOME=/root"
           resources:
             infra: aws/us-east-2
-            # Needs GPU instance even though GPU isn't used for compute —
-            # lm_eval/vllm imports require CUDA runtime to be present.
-            # g6e.12xlarge: 4x L40S, 384GB RAM for code execution sandboxes.
-            instance_type: "g6e.12xlarge"
+            # CPU-only: high memory for code execution sandboxes.
+            # lm_eval vllm import is patched out via sed below.
+            instance_type: "r6i.12xlarge"
+            cpus: "48+"
+            memory: "384+"
             disk_size: 256
-            use_spot: true
           file_mounts:
             /model:
               source: "{{ config.sage_eval_config.model_source_s3 }}"
@@ -66,7 +66,14 @@ environment_configs:
           setup: |
             echo "=== Environment Check ==="
             python -c "import sys; print(f'Python {sys.version}')"
-            echo "CPU-only instance for code execution (--recompute-metrics mode)"
+            echo "CPU-only instance for code execution"
+
+            # Patch out lm_eval import that triggers vllm/CUDA dependency chain
+            sed -i 's/^from lm_eval.api.instance import Instance as EleutherInstance$/EleutherInstance = None  # patched: no lm_eval on CPU/' \
+              /workspace/olmes/oe_eval/tasks/eleuther_task.py
+
+            # Install more_itertools if missing (transitive dep of lm_eval)
+            pip install --no-cache-dir more_itertools 2>/dev/null || true
 
             if [[ -n "${HF_TOKEN}" ]]; then
               huggingface-cli login --token "${HF_TOKEN}"
