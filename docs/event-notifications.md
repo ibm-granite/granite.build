@@ -295,6 +295,8 @@ docker stop rabbitmq && docker rm rabbitmq
 
 Everything below is for developers working on the gbserver codebase.
 
+![Architecture Diagram](event-notifications-architecture.svg)
+
 ### Logger Framework Integration
 
 `BuildEventPublishLogger` is integrated into the build logger stack via `get_message_logger()`:
@@ -312,12 +314,15 @@ Everything below is for developers working on the gbserver codebase.
 │       │                                                                  │
 │       ├── BuildPRLogger ────────────────▶ GitHub PR comment (if PR)      │
 │       │                                                                  │
-│       └── BuildEventPublishLogger ──────▶ RabbitMQ (if enabled)          │
+│       └── BuildEventPublishLogger ──────▶ NATS or RabbitMQ (if enabled)  │
 │               │                                                          │
 │               │  filters: STATUS_EVENT only                              │
 │               │  fire-and-forget, non-blocking                           │
 │               ▼                                                          │
 │         BuildEventPublisher.publish_event()                              │
+│               │                                                          │
+│               ├── Standalone: NATSMessaging (JetStream)                  │
+│               └── DEV/PROD:   RabbitMQBase (topic exchange)              │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -325,9 +330,9 @@ Everything below is for developers working on the gbserver codebase.
 Loggers are wired via a registry pattern — each logger type registers itself
 with a predicate (activation condition) and a factory. `get_message_logger()`
 iterates the registry and collects active loggers. The `BuildEventPublishLogger`
-is activated when `GBSERVER_EVENT_PUBLISHING_ENABLED=true` AND `RABBITMQ_HOST`
-is set. It filters internally to `STATUS_EVENT` only, so even though all events
-flow through the logger framework, only status changes are published to RabbitMQ.
+is activated when `GBSERVER_EVENT_PUBLISHING_ENABLED=true`. It filters internally
+to `STATUS_EVENT` only, so even though all events flow through the logger
+framework, only status changes are published to the messaging backend.
 
 ### BuildEventPublisher
 
@@ -399,15 +404,16 @@ src/gbserver/buildrunner/
 ├── buildlogger.py                  # Logger framework: get_message_logger() factory,
 │                                   #   AbstractBuildLogger, BuildMultiMessageLogger,
 │                                   #   BuildEventMessageLogger, BuildPRLogger
-└── build_event_publish_logger.py   # BuildEventPublishLogger (STATUS_EVENT -> RabbitMQ)
+└── build_event_publish_logger.py   # BuildEventPublishLogger (STATUS_EVENT -> broker)
 
 src/gbserver/messaging/
-├── build_event_publisher.py        # Publishes events to RabbitMQ exchange
-├── subscription_service.py         # Credential provisioning for subscribers
+├── build_event_publisher.py        # Publishes events (selects NATS or RabbitMQ backend)
+├── subscription_service.py         # Subscription provisioning (NATS: url+subject, RMQ: scoped creds)
+├── nats_messaging.py               # NATS backend (JetStream + lightweight pub/sub)
+├── rabbitmq_base.py                # RabbitMQ backend (aio-pika, topic exchange)
 ├── rabbitmq_admin.py               # RabbitMQ Management API client
-├── credential_cleanup.py           # Background cleanup of expired temp users
-├── messaging_base.py               # Abstract messaging interface
-└── rabbitmq_base.py                # aio-pika RabbitMQ implementation
+├── credential_cleanup.py           # Background cleanup of expired temp users (RabbitMQ only)
+└── messaging_base.py               # Abstract messaging interface
 
 src/gbserver/api/
 └── event_subscribe.py              # POST /builds/{id}/events/subscribe (thin endpoint)
