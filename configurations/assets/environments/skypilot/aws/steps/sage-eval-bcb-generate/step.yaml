@@ -75,8 +75,8 @@ environment_configs:
             export HF_HOME=${HF_HOME}
             cd /workspace/sage
 
-            # Patch oe-eval to exit immediately after saving predictions (skip execution)
-            sed -i '/save_jsonl(preliminary_predictions_file, preliminary_predictions)/a\            import sys; sys.exit(0)' \
+            # Patch oe-eval to exit before metrics/execution (after predictions are saved)
+            sed -i '/# Post-process generation results for metrics/i\        import sys; sys.exit(0)' \
               /workspace/olmes/oe_eval/run_eval.py
 
             [[ -n "${HF_TOKEN}" ]] && sage set hf-token "${HF_TOKEN}"
