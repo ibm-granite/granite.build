@@ -36,13 +36,12 @@ environment_configs:
               - "-e HOME=/root"
           resources:
             infra: aws/us-east-2
-            # CPU-only instance with high memory for code execution sandboxes.
-            # No GPU needed — --recompute-metrics loads predictions from disk.
-            # On-demand: spot r6i.12xlarge often unavailable in us-east-2.
-            instance_type: "r6i.12xlarge"
-            cpus: "48+"
-            memory: "384+"
+            # Needs GPU instance even though GPU isn't used for compute —
+            # lm_eval/vllm imports require CUDA runtime to be present.
+            # g6e.12xlarge: 4x L40S, 384GB RAM for code execution sandboxes.
+            instance_type: "g6e.12xlarge"
             disk_size: 256
+            use_spot: true
           file_mounts:
             /model:
               source: "{{ config.sage_eval_config.model_source_s3 }}"
