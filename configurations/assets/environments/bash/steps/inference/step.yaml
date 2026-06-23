@@ -1,7 +1,11 @@
 name: inference
 version: v1
 type: custom
-config: {}
+config:
+  bash:
+    # Turn off auto-scanning the output dir's subdirs for artifacts; run.py
+    # explicitly registers the `generation` output.
+    skip_finding_output_artifacts: true
 
 # I/O schema — validated against the build.yaml target at build time.
 inputs:

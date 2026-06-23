@@ -316,7 +316,19 @@ class Bash(Environment):
             if isinstance(uri, str):
                 uriobj = URI.get_uri(uri)
             assert uriobj.uri is not None, "the URI is None"
-            sync_or_copy(source_path, uriobj.uri.path, raise_errors=True)
+            # The output `uri` IS the artifact's final location, so copy a
+            # directory artifact's CONTENTS into it rather than nesting the
+            # source dir under it. rsync nests a dir source (no trailing slash)
+            # as dest/<basename>/, which would turn an output URI like
+            # `.../adapter_<hash>/` into `.../adapter_<hash>/adapter/`; a trailing
+            # slash makes rsync copy the contents into dest instead. (The
+            # base_uri branch below intentionally keeps the nesting — its
+            # returned URI is base + "/" + the source basename.) Scoped to the
+            # bash environment so other environments' push/copy are unchanged.
+            copy_src = source_path
+            if os.path.isdir(copy_src) and not copy_src.endswith(os.sep):
+                copy_src = copy_src + os.sep
+            sync_or_copy(copy_src, uriobj.uri.path, raise_errors=True)
             return uri
         elif base_uri is not None:
             uriobj = base_uri
