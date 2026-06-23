@@ -39,9 +39,9 @@ environment_configs:
               - "-e HOME=/root"
           resources:
             infra: aws/us-east-2
-            accelerators: "L40S:1"
             # BCB code execution sandboxes are memory-intensive (~236GB peak).
-            # g6e.12xlarge provides 384GB RAM with 1x L40S.
+            # g6e.12xlarge has 4x L40S / 384GB RAM. We only use 1 GPU for
+            # inference but need the extra RAM for code execution sandboxes.
             instance_type: "g6e.12xlarge"
             disk_size: 256
             use_spot: true
