@@ -82,3 +82,83 @@ class TestSkypilotTeardown:
                 **_teardown_config(["", "   ", None]),
             )
         cleanup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_teardown_records_cluster_names_globally(self, lsf_env):
+        # Even with NO tracked launch_ids (teardown runs in its own instance),
+        # the cluster names are recorded in the process-global set so the
+        # SERVICE monitors (in other instances) can match by cluster name.
+        Skypilot._intentionally_torn_down_clusters.clear()
+        mock_sky = MagicMock()
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            await lsf_env.launch_skypilot_teardown(
+                launch_id="teardown-5",
+                **_teardown_config(["gb-rm", "gb-code"]),
+            )
+        assert {"gb-rm", "gb-code"} <= Skypilot._intentionally_torn_down_clusters
+        Skypilot._intentionally_torn_down_clusters.clear()
+
+
+class TestMonitorTreatsTeardownAsSuccess:
+    """A monitor whose cluster was intentionally torn down must NOT raise.
+
+    The teardown records cluster names in the CLASS-level set, so a monitor on
+    a *different* Skypilot instance still matches by its own cluster name.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_global(self):
+        Skypilot._intentionally_torn_down_clusters.clear()
+        yield
+        Skypilot._intentionally_torn_down_clusters.clear()
+
+    @pytest.mark.asyncio
+    async def test_poll_returns_cleanly_when_cluster_gone_after_teardown(self, lsf_env):
+        launch_id = "srv-1"
+        lsf_env._cluster_names[launch_id] = "gb-srv-1"
+        lsf_env._job_ids[launch_id] = 1
+        # A *different* instance's teardown recorded this cluster name.
+        Skypilot._intentionally_torn_down_clusters.add("gb-srv-1")
+
+        mock_sky = MagicMock()
+        # Mirrors a poll hitting a cluster that sky.down already removed.
+        mock_sky.job_status.side_effect = RuntimeError(
+            "Cluster 'gb-srv-1' does not exist"
+        )
+        failed = MagicMock()
+        failed.is_terminal.return_value = True
+        mock_sky.JobStatus.FAILED = failed
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            # Must return cleanly (no WorkloadFailedException) -> step SUCCESS.
+            await lsf_env._poll_skypilot_job(launch_id=launch_id, poll_interval=0)
+
+    @pytest.mark.asyncio
+    async def test_poll_still_raises_when_not_intentional(self, lsf_env):
+        from gbserver.types.errors import WorkloadFailedException
+
+        launch_id = "srv-2"
+        lsf_env._cluster_names[launch_id] = "gb-srv-2"
+        lsf_env._job_ids[launch_id] = 1
+        # NOT recorded: a genuine cluster loss must still fail the step.
+
+        mock_sky = MagicMock()
+        mock_sky.job_status.side_effect = RuntimeError(
+            "Cluster 'gb-srv-2' does not exist"
+        )
+        failed = MagicMock()
+        failed.is_terminal.return_value = True
+        mock_sky.JobStatus.FAILED = failed
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            pytest.raises(WorkloadFailedException),
+        ):
+            await lsf_env._poll_skypilot_job(launch_id=launch_id, poll_interval=0)

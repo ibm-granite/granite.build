@@ -122,6 +122,15 @@ class Skypilot(Environment):
     # ceiling. Lazily constructed so no event loop is required at import.
     _launch_semaphore: Optional[asyncio.Semaphore] = None
 
+    # Cluster names we deliberately tore down (e.g. via
+    # launch_skypilot_teardown downing a SERVICE). A SERVICE's monitor must
+    # treat its cluster vanishing as SUCCESS rather than a crash. This is
+    # CLASS-level (process-global) on purpose: gbserver creates a separate
+    # Skypilot instance per target, so the teardown target and the monitored
+    # SERVICE targets do not share instance state — but they do share this
+    # set within the process, keyed by the globally-unique cluster name.
+    _intentionally_torn_down_clusters: set = set()
+
     @classmethod
     def _get_launch_semaphore(cls) -> asyncio.Semaphore:
         if cls._launch_semaphore is None:
@@ -606,6 +615,23 @@ class Skypilot(Environment):
                     status = sky.JobStatus.FAILED
                     poll_failed = False
 
+            # launch_skypilot_teardown downs this SERVICE's cluster on purpose,
+            # so a poll seeing it "gone" (FAILED above) is success, not a crash.
+            # The teardown runs in a DIFFERENT Skypilot instance (one per target),
+            # so we match on the process-global set of torn-down cluster names --
+            # cluster_name here is gb-<launch_id[:12]>, the same name the teardown
+            # recorded. Exit cleanly before any FAILED event or raise so the step
+            # is marked SUCCESS. Checked after the poll (not only at the loop top)
+            # to close the race where teardown fires while this poll is in flight.
+            if cluster_name in Skypilot._intentionally_torn_down_clusters:
+                logger.info(
+                    "Cluster %s (launch_id %s) was intentionally torn down; "
+                    "ending monitor as success.",
+                    cluster_name,
+                    launch_id,
+                )
+                return
+
             # Skip change-detection on poll failures so a transient error
             # doesn't emit a spurious RUNNING -> None -> RUNNING flap event.
             if not poll_failed and status != last_status:
@@ -882,6 +908,11 @@ class Skypilot(Environment):
         name_to_launch = {v: k for k, v in self._cluster_names.items()}
 
         for name in names:
+            # Record BEFORE downing so the SERVICE's monitor -- which runs in a
+            # different Skypilot instance and may be mid-poll -- treats the
+            # cluster going away as success, not a WorkloadFailedException. Keyed
+            # by cluster name (gb-<launch_id[:12]>), the name the monitor sees.
+            Skypilot._intentionally_torn_down_clusters.add(name)
             try:
                 target_launch_id = name_to_launch.get(name)
                 if target_launch_id is not None:
