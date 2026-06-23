@@ -1,14 +1,25 @@
 # Build Event Notifications
 
-gbserver publishes build status events to a RabbitMQ topic exchange in real time.
-Instead of polling the API for status changes, you subscribe to a build's event
-stream and receive updates as they happen via an AMQP connection.
+gbserver publishes build status events in real time. Instead of polling the API
+for status changes, you subscribe to a build's event stream and receive updates
+as they happen.
 
 Key features:
 - **Real-time** — events delivered as they occur (sub-second latency)
-- **Scoped access** — each subscription gets credentials that can only read events for the requested build
+- **Scoped access** — each subscription gets credentials scoped to the requested build
 - **No infrastructure to run** — gbserver provisions everything; you just connect
 - **Non-blocking** — event publishing never affects build execution
+
+## Backend by Environment
+
+| Environment | Backend | Setup Required |
+|-------------|---------|----------------|
+| Standalone | NATS (embedded) | None — starts automatically |
+| DEV / STAGING / PROD | RabbitMQ | Managed instance + admin credentials |
+
+The subscribe endpoint (`POST /builds/{id}/events/subscribe`) works the same in
+all environments. The `delivery_type` field in the response tells you which
+client library to use (`"nats"` or `"rabbitmq"`).
 
 ## Subscribing to Events
 
