@@ -59,6 +59,29 @@ def _make_build_archive(build_dir: Path) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
+def _shutdown_standalone_server(
+    server_holder: dict, server_thread: threading.Thread, timeout: float = 15.0
+) -> None:
+    """Gracefully stop the in-thread standalone server and join its thread.
+
+    Setting ``should_exit`` lets uvicorn's ``server.run()`` return so
+    ``_run_standalone`` reaches its ``finally`` and calls ``build_watcher.stop()``.
+    Without this the daemon BuildWatcher keeps polling for the rest of the test
+    session — harmless on its own, but it floods the logs and can interfere with
+    later tests on the same worker.
+
+    Args:
+        server_holder: dict populated by the ``on_server_created`` callback under
+            the key ``"server"`` with the ``uvicorn.Server`` instance.
+        server_thread: the thread running ``_run_standalone``.
+        timeout: seconds to wait for the server thread to exit.
+    """
+    server = server_holder.get("server")
+    if server is not None:
+        server.should_exit = True
+    server_thread.join(timeout=timeout)
+
+
 class TestStandaloneRestApiE2E:
     """End-to-end tests for the standalone REST API server."""
 
@@ -90,11 +113,14 @@ class TestStandaloneRestApiE2E:
         def on_started():
             started_event.set()
 
+        server_holder: dict = {}
+
         def run_server():
             _run_standalone(
                 port=port,
                 space_dir=str(STANDALONE_BUILD_DIR),
                 on_started=on_started,
+                on_server_created=lambda s: server_holder.__setitem__("server", s),
             )
 
         server_thread = threading.Thread(
@@ -176,6 +202,9 @@ class TestStandaloneRestApiE2E:
                 ), f"'standalone' space not in spaces_for_user response: {space_names}"
 
         finally:
+            # Stop the server first so its BuildWatcher is stopped (not leaked)
+            # before we drop the tables it polls.
+            _shutdown_standalone_server(server_holder, server_thread)
             # Clean up: delete test tables.
             for store in [
                 storage.build_storage,
@@ -222,11 +251,14 @@ class TestStandaloneRestApiE2E:
         def on_started():
             started_event.set()
 
+        server_holder: dict = {}
+
         def run_server():
             _run_standalone(
                 port=port,
                 space_dir=str(STANDALONE_BUILD_DIR),
                 on_started=on_started,
+                on_server_created=lambda s: server_holder.__setitem__("server", s),
             )
 
         server_thread = threading.Thread(
@@ -306,6 +338,9 @@ class TestStandaloneRestApiE2E:
                 assert build_id, "build_id should be non-empty"
 
         finally:
+            # Stop the server first so its BuildWatcher is stopped (not leaked)
+            # before we drop the tables it polls.
+            _shutdown_standalone_server(server_holder, server_thread)
             # Clean up: delete test tables.
             for store in [
                 storage.build_storage,

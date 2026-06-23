@@ -110,6 +110,7 @@ def _run_standalone(
     space_dir: str,
     host: str = "127.0.0.1",
     on_started: Optional[Callable[[], None]] = None,
+    on_server_created: Optional[Callable[["uvicorn.Server"], None]] = None,
 ) -> None:
     """Core standalone logic — usable from tests via *on_started* callback.
 
@@ -123,6 +124,11 @@ def _run_standalone(
         space_dir: Path to the space directory (contains space.yaml, environments/, steps/).
         host: Bind address for the REST API (default: 127.0.0.1).
         on_started: Optional callback fired once the uvicorn server has finished startup.
+        on_server_created: Optional callback fired with the ``uvicorn.Server`` as
+            soon as it is constructed (before ``server.run()``).  Tests that run
+            this function in a background thread use it to capture the server and
+            later set ``server.should_exit = True`` for a graceful shutdown, which
+            lets the ``finally`` below stop the BuildWatcher instead of leaking it.
     """
     # 1. Force GB_ENVIRONMENT to STANDALONE — this is not optional when
     #    running the standalone command, regardless of prior env settings.
@@ -178,6 +184,9 @@ def _run_standalone(
         loop="asyncio",
     )
     server = uvicorn.Server(config)
+
+    if on_server_created:
+        on_server_created(server)
 
     if on_started:
         original_startup = server.startup
