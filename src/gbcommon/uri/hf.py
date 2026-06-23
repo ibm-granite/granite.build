@@ -865,6 +865,31 @@ class HfURI(URI):
             logger.warning("Could not list resource groups for %s: %s", organization, e)
         return None
 
+    @staticmethod
+    def _validate_non_empty_src(src: Path) -> None:
+        """Ensure ``src`` has uploadable, non-zero-length content.
+
+        HuggingFace silently skips an upload that would produce an empty commit
+        (e.g. a single 0-byte file), so a push of empty content appears to
+        succeed while creating nothing on the Hub.  Fail fast instead.
+
+        Args:
+            src: Local file or directory path being pushed.
+
+        Raises:
+            ValueError: If ``src`` is a zero-length file, or a directory whose
+                regular files are all zero-length (or which contains none).
+        """
+        if src.is_file():
+            if src.stat().st_size == 0:
+                raise ValueError(f"refusing to push zero-length file: {src}")
+            return
+        # Directory: require at least one non-empty regular file.
+        if not any(f.is_file() and f.stat().st_size > 0 for f in src.rglob("*")):
+            raise ValueError(
+                f"refusing to push directory with no non-empty files: {src}"
+            )
+
     def push(
         self: Self,
         src: Path,
@@ -898,7 +923,9 @@ class HfURI(URI):
             space_name: GB space name used to derive the resource group name.
 
         Raises:
-            ValueError: If ``src`` does not exist.
+            ValueError: If ``src`` does not exist, or is a zero-length file or a
+                directory with no non-empty files (HuggingFace would skip the
+                resulting empty commit, leaving the push a silent no-op).
             Exception: Any error from the HuggingFace Hub API is re-raised.
         """
         if is_hf_mocked(HF_OP_PUSH):
@@ -911,6 +938,7 @@ class HfURI(URI):
         src = Path(src)
         if not src.exists():
             raise ValueError(f"{src} does not exist")
+        self._validate_non_empty_src(src)
 
         resource_group_id = self.resolve_resource_group_id(
             token=self._resolve_token(),
