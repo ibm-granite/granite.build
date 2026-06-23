@@ -9,9 +9,7 @@ require it unless a Skypilot environment is actually configured.
 import asyncio
 import glob
 import os
-import re
 import shlex
-import subprocess
 import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Tuple, Union
@@ -670,7 +668,7 @@ class Skypilot(Environment):
 
         async for attempt in AsyncRetrying(
             retry=retry_if_exception(_is_transient_provision_error),
-            wait=wait_exponential(multiplier=30, max=backoff_max),
+            wait=wait_exponential(multiplier=5, max=backoff_max),
             stop=stop_after_attempt(max(1, max_attempts)),
             reraise=True,
         ):

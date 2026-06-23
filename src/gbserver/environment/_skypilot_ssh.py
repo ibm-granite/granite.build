@@ -114,7 +114,8 @@ async def execute_on_host_via_ssh(
     # Build the full bash command with env vars injected
     full_command = f"{env_setup}{commands}"
 
-    # Build SSH command
+    # Build SSH command with connection timeouts to fail fast on
+    # dead/unreachable hosts instead of hanging until the subprocess timeout.
     ssh_cmd = [
         "ssh",
         "-i",
@@ -125,6 +126,12 @@ async def execute_on_host_via_ssh(
         "StrictHostKeyChecking=no",
         "-o",
         "UserKnownHostsFile=/dev/null",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=3",
         f"ubuntu@{host_ip}",
         "bash",
     ]
