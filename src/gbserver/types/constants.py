@@ -563,19 +563,19 @@ Once the build is running, you can use the `gb` CLI to get more information.
 To get the build status:
 
 ```shell
-llmb build status {build_id}
+gb build status {build_id}
 ```
 
 To get all of the lines from the logs:
 
 ```shell
-llmb build log --all {build_id}
+gb build log --all {build_id}
 ```
 
 To only get the last 10k lines of the logs:
 
 ```shell
-llmb build log --tail 10000 {build_id}
+gb build log --tail 10000 {build_id}
 ```
 
 By default this gives you the logs from all the steps in the build.
@@ -583,13 +583,13 @@ By default this gives you the logs from all the steps in the build.
 To only get the logs of a particular step you can use:
 
 ```shell
-llmb build log --all {build_id} --build-step-id <step id>
+gb build log --all {build_id} --build-step-id <step id>
 ```
 
 If you have admin access, you can access the build-runner logs as well:
 
 ```shell
-llmb admin log gbserver-build-runner --all --build-id {build_id}
+gb admin log gbserver-build-runner --all --build-id {build_id}
 ```
 """
 

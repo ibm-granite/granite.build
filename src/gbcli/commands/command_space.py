@@ -61,7 +61,7 @@ def list(
 
     if refresh and not all:
         click.echo(
-            f"❌ Try running again with 'llmb space list --all --refresh", err=True
+            f"❌ Try running again with 'gb space list --all --refresh", err=True
         )
         ctx.exit(1)  # Exit with a non-zero status
 
@@ -167,7 +167,7 @@ def list(
 @click.option(
     "--default",
     is_flag=True,
-    help="WARNING Command line option '--default' has been deprecated and will be removed from a future update. Just run 'llmb space set' without this option to set the default space",
+    help="WARNING Command line option '--default' has been deprecated and will be removed from a future update. Just run 'gb space set' without this option to set the default space",
 )
 @click.option(
     "--name",
@@ -204,7 +204,7 @@ def set(ctx, space_name, default, name, format, skip_version_check, quiet):
 
         if default:
             click.echo(
-                "Warning: Command line option '--default' has been deprecated and will be removed from a future update. Just run 'llmb space set' without this option to set the default space"
+                "Warning: Command line option '--default' has been deprecated and will be removed from a future update. Just run 'gb space set' without this option to set the default space"
             )
 
         # always set space to be default

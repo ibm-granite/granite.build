@@ -171,7 +171,7 @@ def build_init(
                 callback(
                     callback_event="error",
                     callback_args={
-                        "reason": f"Space '{space}' provided could not be resolved. Please run 'llmb space list --all --refresh' to see your latest available spaces."
+                        "reason": f"Space '{space}' provided could not be resolved. Please run 'gb space list --all --refresh' to see your latest available spaces."
                     },
                 )
             return None
@@ -1374,7 +1374,7 @@ def build_describe(
                     callback(
                         callback_event="error",
                         callback_args={
-                            "reason": f"Space '{space}' provided could not be resolved. Please run 'llmb space list --all --refresh' to see your latest available spaces."
+                            "reason": f"Space '{space}' provided could not be resolved. Please run 'gb space list --all --refresh' to see your latest available spaces."
                         },
                     )
                 return None

@@ -699,21 +699,21 @@ def start(
             markdown_str = f"""
 {'Once the build is running, you can find the build ID of the above issue:' if show_build_id == 'BUILD_ID' else ''}
 ```
-llmb build list | grep {requested_build_url}
-llmb build list --show-all # See all your builds, including old ones.
+gb build list | grep {requested_build_url}
+gb build list --show-all # See all your builds, including old ones.
 ```
 To get the build status:
 ```
-llmb build status {show_build_id}
+gb build status {show_build_id}
 ```
 To get the last 10k lines of the logs:
 ```
-llmb build log --all {show_build_id}
+gb build log --all {show_build_id}
 ```
 By default this gives you the logs of the last step in the build.
 To get the logs of a particular step you can use:
 ```
-llmb build log --all {show_build_id} --build-step-id <step id>
+gb build log --all {show_build_id} --build-step-id <step id>
 ```
         """
             if not quiet:

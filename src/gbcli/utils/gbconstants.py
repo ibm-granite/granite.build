@@ -160,7 +160,7 @@ ORIGIN_CERTIFY_MESSAGE = f"""🚨 New Requirement: To track artifacts from model
 2. If the artifact was created using a model under restricted use: Use --origin or --origin-list
 3. If the artifact was created using a model under non-restricted use: Use --certify-no-restrictions (this will log your certification)
 View the list of both unrestricted use and restricted-use models in the project documentation.
-For any help on how to use each option in more details see `llmb artifact push --help`. For more information, ask a question in the `#llm-dot-build-users` channel."""
+For any help on how to use each option in more details see `gb artifact push --help`. For more information, ask a question in the `#llm-dot-build-users` channel."""
 
 
 WEB_UI_URL = gb_environment_config().web_ui_url
@@ -229,7 +229,7 @@ BUILD_DESCRIBE_STEPS_HEADERS = ["URI", "CONFIG"]
 MODEL_LIST_HEADERS = ["MODEL", "FULL MODEL ID"]
 MODEL_LIST_URI_HEADERS = ["MODEL", "RITS BASE URI"]
 
-SECRET_SPACE_ADMIN_ERROR = "Only space admin can perform this operation. Run 'llmb space list --all --refresh' if the space role was recently updated."
+SECRET_SPACE_ADMIN_ERROR = "Only space admin can perform this operation. Run 'gb space list --all --refresh' if the space role was recently updated."
 
 # time delta for comparison against saved timestamp
 SPACE_TIMESTAMP_DELTA_HOURS = 2

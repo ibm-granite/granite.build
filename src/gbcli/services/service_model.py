@@ -30,7 +30,7 @@ def lookup_model_url(rits_api_key: str, model: str, callback=None):
 
     if len(matching_models) == 0:
         raise Exception(
-            f"No models matching {model} found in RITS. Use 'llmb model list' to view available models."
+            f"No models matching {model} found in RITS. Use 'gb model list' to view available models."
         )
 
     return matching_models

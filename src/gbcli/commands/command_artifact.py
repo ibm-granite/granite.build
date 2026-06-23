@@ -147,7 +147,7 @@ def cli(ctx):
 @click.option(
     "--origin",
     multiple=True,
-    help="""Origin is an optional, multiple options which can either take artifact uuid or artifact uri. This is for the new requirement to meet the obligations to track the usage of artifacts originated from a model with restricted use. You can also use keep the 'origin' file created from 'artifact download' command. See 'llmb artifact download --help' for more details.""",
+    help="""Origin is an optional, multiple options which can either take artifact uuid or artifact uri. This is for the new requirement to meet the obligations to track the usage of artifacts originated from a model with restricted use. You can also use keep the 'origin' file created from 'artifact download' command. See 'gb artifact download --help' for more details.""",
 )
 @click.option(
     "--origin-list",
@@ -855,7 +855,7 @@ def push(
 @click.option(
     "--origin",
     multiple=True,
-    help="""Origin is an optional, multiple options which can either take artifact uuid or artifact uri. This is for the new requirement to meet the obligations to track the usage of artifacts originated from a model of a restricted license and restricted use. You can also use keep the 'origin' file generated from 'artifact download' command. See 'llmb artifact download --help' for more details.""",
+    help="""Origin is an optional, multiple options which can either take artifact uuid or artifact uri. This is for the new requirement to meet the obligations to track the usage of artifacts originated from a model of a restricted license and restricted use. You can also use keep the 'origin' file generated from 'artifact download' command. See 'gb artifact download --help' for more details.""",
 )
 @click.option(
     "--origin-list",
