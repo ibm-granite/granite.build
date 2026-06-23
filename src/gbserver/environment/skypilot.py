@@ -20,6 +20,7 @@ from tenacity import (
     retry_if_exception,
     stop_after_attempt,
     wait_exponential,
+    wait_fixed,
 )
 
 from gbcommon.types.testing import get_exported_gbtest_env_vars
@@ -668,7 +669,7 @@ class Skypilot(Environment):
 
         async for attempt in AsyncRetrying(
             retry=retry_if_exception(_is_transient_provision_error),
-            wait=wait_exponential(multiplier=5, max=backoff_max),
+            wait=wait_fixed(backoff_max),
             stop=stop_after_attempt(max(1, max_attempts)),
             reraise=True,
         ):
