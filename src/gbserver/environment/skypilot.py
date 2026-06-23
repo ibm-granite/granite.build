@@ -1019,7 +1019,9 @@ class Skypilot(Environment):
                     # that were read from the log but not yet processed by the
                     # monitor when the stream was cancelled.
                     lines_already_processed = getattr(
-                        logfile_monitor.stream_source, "lines_consumed", logfile_monitor.line_num
+                        logfile_monitor.stream_source,
+                        "lines_consumed",
+                        logfile_monitor.line_num,
                     )
 
                 if (
