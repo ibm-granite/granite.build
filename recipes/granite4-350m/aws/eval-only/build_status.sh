@@ -39,6 +39,7 @@ FINAL=""
 PROVISION_RETRIES=0
 HANDLER_RETRIES=0
 EVAL_STATE=""
+RETRY_DETAILS=""
 
 if [[ -f "$STATE_FILE" ]]; then
     source "$STATE_FILE"
@@ -113,7 +114,7 @@ if [[ -n "$NEW_DATA" ]]; then
         FINAL=$(printf "%s\n%s" "$FINAL" "$new_final" | grep -v "^$" | sort -t'|' -k2 -u)
     fi
 
-    # Eval statuses (accumulate: target_id|name|uri|status|experiment|step_run_id)
+    # Eval statuses (accumulate: target_id|name|uri|status|ts|step_run_id|build_id)
     new_evals=$(echo "$NEW_DATA" | grep "stored_step_run.*status=<Status" \
         | grep -E "sage-eval|bfcl-eval" \
         | while IFS= read -r line; do
@@ -122,19 +123,32 @@ if [[ -n "$NEW_DATA" ]]; then
             suri=$(echo "$line" | sed -n "s/.*definition_uri='//p" | sed "s/'.*//")
             status=$(echo "$line" | sed -n "s/.*status=<Status\.//p" | sed "s/[:'].*//")
             srid=$(echo "$line" | sed -n "s/.*uuid='//p" | sed "s/'.*//")
+            bid=$(echo "$line" | sed -n "s/.*build_id='//p" | sed "s/'.*//")
             ts=$(echo "$line" | sed -n 's/.*\[\([0-9-]* [0-9:]*\)[,].*/\1/p')
-            echo "$tid|$tname|$suri|$status|$ts|$srid"
+            echo "$tid|$tname|$suri|$status|$ts|$srid|$bid"
         done)
     if [[ -n "$new_evals" ]]; then
         EVAL_STATE=$(printf "%s\n%s" "$EVAL_STATE" "$new_evals" | grep -v "^$")
     fi
 
 
-    # Retry counts (increment)
+    # Retry counts (increment) and capture build_id from retry events
     new_provision=$(echo "$NEW_DATA" | grep -c "Transient provision failure" || true)
     new_handler=$(echo "$NEW_DATA" | grep -c "Waiting.*seconds before retry\|AnyFailureRetryStrategy.*Detected" || true)
     PROVISION_RETRIES=$((PROVISION_RETRIES + new_provision))
     HANDLER_RETRIES=$((HANDLER_RETRIES + new_handler))
+
+    # Capture retry details with build_id
+    new_retry_details=$(echo "$NEW_DATA" | grep "Waiting.*seconds before retry\|recommends retry" \
+        | while IFS= read -r line; do
+            bid=$(echo "$line" | sed -n "s/.*build_id='//p" | sed "s/'.*//")
+            lid=$(echo "$line" | sed -n 's/.*launch_id \([^ ]]*\).*/\1/p')
+            ts=$(echo "$line" | sed -n 's/.*\[\([0-9-]* [0-9:]*\)[,].*/\1/p')
+            [[ -n "$lid" ]] && echo "$ts|$lid|$bid"
+        done)
+    if [[ -n "$new_retry_details" ]]; then
+        RETRY_DETAILS=$(printf "%s\n%s" "${RETRY_DETAILS:-}" "$new_retry_details" | grep -v "^$")
+    fi
 fi
 
 # --- Save state ---
@@ -148,6 +162,7 @@ FINAL="$FINAL"
 PROVISION_RETRIES=$PROVISION_RETRIES
 HANDLER_RETRIES=$HANDLER_RETRIES
 EVAL_STATE="$EVAL_STATE"
+RETRY_DETAILS="$RETRY_DETAILS"
 EOF
 
 # --- Display ---
@@ -193,7 +208,7 @@ if [[ -n "$EVAL_STATE" ]]; then
     echo "$EVAL_STATE" | sort -t'|' -k1,1 -k4,4 | awk -F'|' '
         {latest[$1]=$0}
         END {for (id in latest) print latest[id]}
-    ' | sort -t'|' -k5,5 -k2,2 | while IFS='|' read -r tid tname suri status ts srid; do
+    ' | sort -t'|' -k5,5 -k2,2 | while IFS='|' read -r tid tname suri status ts srid bid; do
         [[ -z "$tid" ]] && continue
         case "$suri" in
             *sage-eval-multilingual*) eval_type="multilingual" ;;
@@ -208,13 +223,15 @@ if [[ -n "$EVAL_STATE" ]]; then
             PENDING) icon="🔵" ;;
             *) icon="?" ;;
         esac
-        # Show timestamp (just time portion for brevity)
         short_ts=""
         [[ -n "$ts" ]] && short_ts=$(echo "$ts" | awk '{print $2}')
+        # Show build_id (first 8 chars) for identification
+        short_bid=""
+        [[ -n "$bid" ]] && short_bid="${bid:0:8}"
         if [[ -n "$short_ts" ]]; then
-            echo "│  $icon $eval_type [$short_ts] — $status"
+            echo "│  $icon $eval_type [$short_ts] — $status  (build:$short_bid)"
         else
-            echo "│  $icon $eval_type — $status"
+            echo "│  $icon $eval_type — $status  (build:$short_bid)"
         fi
     done
 else
@@ -226,14 +243,11 @@ echo ""
 echo "┌─ Retries ───────────────────────────────────────────────────"
 TOTAL_RETRIES=$((PROVISION_RETRIES + HANDLER_RETRIES))
 if [[ $TOTAL_RETRIES -gt 0 ]]; then
-    # Show per-cluster (per-eval) provision attempts
-    # Map cluster → target_name from MESSAGE_EVENT "SkyPilot job on <cluster>" lines
-    # or from "Launching SkyPilot cluster: name=<cluster> target=<target>"
     if [[ $PROVISION_RETRIES -gt 0 ]]; then
-        # Build cluster→target map from log
+        # Build cluster→target+build map from log
         CLUSTER_MAP=$(sed 's/\x1b\[[0-9;]*m//g' "$LOG_FILE" \
-            | grep "SkyPilot job.*on gb-\|Launching SkyPilot cluster.*target=" \
-            | sed -n 's/.*target_name": "\([^"]*\)".*on \(gb-[^ :"]*\).*/\2|\1/p; s/.*name=\([^ ]*\) target=\([^ ]*\).*/\1|\2/p' \
+            | grep "Launching SkyPilot cluster.*target=" \
+            | sed -n 's/.*name=\([^ ]*\) target=\([^ ]*\) step=\([^ ]*\).*build_id.: .\([^"]*\).*/\1|\2|\4/p; s/.*name=\([^ ]*\) target=\([^ ]*\).*/\1|\2|/p' \
             | sort -u)
 
         sed 's/\x1b\[[0-9;]*m//g' "$LOG_FILE" \
@@ -241,11 +255,14 @@ if [[ $TOTAL_RETRIES -gt 0 ]]; then
             | sed -n 's/.*\[\([0-9-]* [0-9:]*\)[,].*failure for \([^ ]*\) (attempt \([0-9]*\)).*/\1|\2|\3/p' \
             | awk -F'|' '{if($3+0 > max[$2]+0) {max[$2]=$3; ts[$2]=$1}} END{for(c in max) print c"|"max[c]"|"ts[c]}' \
             | sort | while IFS='|' read -r cluster attempts last_ts; do
-                # Look up target name from cluster map
-                etype=$(echo "$CLUSTER_MAP" | grep "^$cluster|" | head -1 | cut -d'|' -f2)
+                map_entry=$(echo "$CLUSTER_MAP" | grep "^$cluster|" | head -1)
+                etype=$(echo "$map_entry" | cut -d'|' -f2)
+                bid=$(echo "$map_entry" | cut -d'|' -f3)
                 etype=${etype:-"$cluster"}
                 short_ts=$(echo "$last_ts" | awk '{print $2}')
-                echo "│  ⟳ $etype ($cluster): attempt $attempts/10 [$short_ts]"
+                short_bid=""
+                [[ -n "$bid" ]] && short_bid="  (build:${bid:0:8})"
+                echo "│  ⟳ $etype ($cluster): attempt $attempts/10 [$short_ts]$short_bid"
             done
     fi
     if [[ $HANDLER_RETRIES -gt 0 ]]; then
