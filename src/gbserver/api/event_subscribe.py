@@ -36,11 +36,13 @@ class SubscribeResponse(BaseModel):
     delivery_type: str
     host: str
     port: int
-    username: str
-    password: str
-    exchange: str
-    routing_key: str
-    queue: str
+    username: str | None = None
+    password: str | None = None
+    exchange: str | None = None
+    routing_key: str | None = None
+    queue: str | None = None
+    url: str | None = None
+    subject: str | None = None
     expires_at: int
 
 
