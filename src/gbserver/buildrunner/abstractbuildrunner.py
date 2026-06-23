@@ -26,6 +26,7 @@ from gbserver.types.constants import (
     DEFAULT_GH_API_ENDPOINT,
     DEFAULT_ROOT_WORKSPACE_DIR,
     GBSERVER_GITHUB_TOKEN,
+    MIN_MONITORING_INTERVAL_SECONDS,
 )
 from gbserver.utils.filesystem import create_temp_subdir
 from gbserver.utils.logger import get_logger
@@ -51,8 +52,9 @@ class AbstractBuildRunner(ABC):
     # The git token to use to update the PR of the build, if any.
     gh_token: str = GBSERVER_GITHUB_TOKEN
 
-    # Looping interval for worker function
-    monitoring_interval: int
+    # Looping interval for worker function (seconds). Backed by a clamping
+    # property (see below) that floors it at MIN_MONITORING_INTERVAL_SECONDS.
+    _monitoring_interval: float
 
     # Git api endpoint to register messages in the PR
     gh_api_endpoint: str
@@ -90,6 +92,28 @@ class AbstractBuildRunner(ABC):
 
         # Kept as a convenience in case runners want to store the builds
         self.storage = singleton_storage.get_admin_storage()
+
+    @property
+    def monitoring_interval(self) -> float:
+        """Worker-loop polling interval in seconds (floored, see setter)."""
+        return self._monitoring_interval
+
+    @monitoring_interval.setter
+    def monitoring_interval(self, value: float) -> None:
+        """Store the polling interval, floored at MIN_MONITORING_INTERVAL_SECONDS.
+
+        Applies to both construction and post-construction assignment, so no
+        caller (or test) can drop the interval to a busy-looping sub-second value.
+        """
+        floored = max(value, MIN_MONITORING_INTERVAL_SECONDS)
+        if floored != value:
+            logger.warning(
+                "monitoring_interval %s is below the %ss minimum; using %s",
+                value,
+                MIN_MONITORING_INTERVAL_SECONDS,
+                floored,
+            )
+        self._monitoring_interval = floored
 
     @abstractmethod
     def stop(self: Self) -> None:
