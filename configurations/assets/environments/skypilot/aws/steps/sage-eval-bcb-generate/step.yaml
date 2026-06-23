@@ -75,6 +75,12 @@ environment_configs:
             export HF_HOME=${HF_HOME}
             cd /workspace/sage
 
+            # Patch oe-eval to exit immediately after saving predictions (skip execution)
+            sed -i '/save_jsonl(preliminary_predictions_file, preliminary_predictions)/a\                sys.exit(0)' \
+              /usr/local/lib/python*/dist-packages/oe_eval/run_eval.py 2>/dev/null || \
+            sed -i '/save_jsonl(preliminary_predictions_file, preliminary_predictions)/a\                sys.exit(0)' \
+              /workspace/oe_eval/run_eval.py 2>/dev/null || true
+
             [[ -n "${HF_TOKEN}" ]] && sage set hf-token "${HF_TOKEN}"
             export OUTPUT_PATH=${OUTPUT_BASE_PATH}/${EXPERIMENT}
             sage set setup-dir /tmp/setup-dir
@@ -87,10 +93,9 @@ environment_configs:
             echo "[$(date)] Model: ${MODEL_PATH}"
             echo "[$(date)] Output: ${OUTPUT_PATH}"
 
-            # Run generation — will save predictions.jsonl then fail on execution
-            # (OE_EVAL_BCB_API_URL is empty). This is expected.
+            # Run generation — patched oe-eval exits after saving predictions.jsonl
             bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} \
-              2>&1 | tee ${OUTPUT_PATH}/${EVAL_NAME}-generate.log || true
+              2>&1 | tee ${OUTPUT_PATH}/${EVAL_NAME}-generate.log
 
             # Verify predictions were saved
             PRED_FILE=$(find "$OUTPUT_PATH" -name "*predictions.jsonl" -print -quit)
