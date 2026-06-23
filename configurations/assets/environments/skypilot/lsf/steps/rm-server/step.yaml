@@ -15,6 +15,8 @@ outputs:
   optional:
     rm_server_url:
       type: dataset
+    cluster_name:
+      type: dataset
 
 environment_configs:
   Skypilot:
@@ -32,6 +34,13 @@ environment_configs:
             set -e
             echo "=== Open Instruct RM Server on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+            # Surface the SkyPilot cluster name so the teardown target can down
+            # this SERVICE cluster (LSF SERVICE clusters never autostop and never
+            # get a terminal-status cleanup). GB_SKYPILOT_CLUSTER_NAME is injected
+            # by launch_skypilot. Its own log line, so it does not collide with
+            # the FastAPI-line monitor configs below.
+            echo "GB_CLUSTER_NAME: ${GB_SKYPILOT_CLUSTER_NAME}"
 
             {% if config.rm_server_config.model_path %}
             export RM_SERVER_MODEL="{{ config.rm_server_config.model_path }}"
@@ -83,4 +92,20 @@ environment_configs:
                 # binding["state"] to the consumer verbatim, so the trainer reads
                 # the clean URL via {{ bindings.rm_url.binding.state }}.
                 field_value_template: '{ "state": "http://{{ fields.data.path }}" }'
+                is_json: true
+          # Distinct log line ("GB_CLUSTER_NAME: ...") from the FastAPI configs
+          # above, so get_events_from_log_line's log_line mutation does not
+          # interfere. Surfaces the cluster name for the teardown target.
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "GB_CLUSTER_NAME: .+"
+            event_fields:
+              - field_name: binding_id
+                field_value_template: "cluster_name"
+              - field_name: name
+                field_regex: "(?<=GB_CLUSTER_NAME: )\\S+"
+                is_data: true
+              - field_name: binding
+                # Emit as `state` so the mem:// store passes the verbatim cluster
+                # name to the teardown target via {{ bindings.x.binding.state }}.
+                field_value_template: '{ "state": "{{ fields.data.name }}" }'
                 is_json: true
