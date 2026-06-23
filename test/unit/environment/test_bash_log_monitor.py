@@ -141,7 +141,8 @@ async def test_monitor_log_monitor_no_event_without_marker(tmp_path):
 @pytest.mark.asyncio
 async def test_pushasset_filestore_copies_binding_path_to_uri(tmp_path):
     """A {"path": ...} binding has its path (not the dict) copied to the file
-    URI destination, and the artifact lands at the resolved location."""
+    URI destination. For a directory artifact, its CONTENTS land directly at the
+    output URI (no extra nesting of the source dir under it)."""
     from gbcommon.uri.uri import URI
 
     bash = _make_bash()
@@ -157,8 +158,9 @@ async def test_pushasset_filestore_copies_binding_path_to_uri(tmp_path):
     result = await bash.pushasset_filestore(binding=binding, uri=uri)
 
     assert result is uri
-    # The source path (not the {"path": ...} dict) was copied into the dest.
-    assert (dest_dir / "adapter" / "adapter_model.safetensors").read_text() == "weights"
+    # The source dir's CONTENTS were copied into dest (not nested as dest/adapter/).
+    assert (dest_dir / "adapter_model.safetensors").read_text() == "weights"
+    assert not (dest_dir / "adapter").exists()
 
 
 @pytest.mark.standalone
