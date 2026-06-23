@@ -76,13 +76,8 @@ environment_configs:
             cd /workspace/sage
 
             # Patch oe-eval to exit immediately after saving predictions (skip execution)
-            RUN_EVAL=$(find / -path "*/oe_eval/run_eval.py" -not -path "*__pycache__*" 2>/dev/null | head -1)
-            if [[ -n "$RUN_EVAL" ]]; then
-              echo "[$(date)] Patching $RUN_EVAL to exit after saving predictions"
-              sed -i '/save_jsonl(preliminary_predictions_file, preliminary_predictions)/a\            import sys; sys.exit(0)' "$RUN_EVAL"
-            else
-              echo "[$(date)] WARNING: Could not find oe_eval/run_eval.py to patch"
-            fi
+            sed -i '/save_jsonl(preliminary_predictions_file, preliminary_predictions)/a\            import sys; sys.exit(0)' \
+              /workspace/olmes/oe_eval/run_eval.py
 
             [[ -n "${HF_TOKEN}" ]] && sage set hf-token "${HF_TOKEN}"
             export OUTPUT_PATH=${OUTPUT_BASE_PATH}/${EXPERIMENT}
