@@ -14,7 +14,7 @@ config:
     experiment: "eval-l40s-001"
     batch_size: 4
     max_length: 4096
-    num_gpus: 4
+    num_gpus: 1
     oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"
 outputs:
   optional:
