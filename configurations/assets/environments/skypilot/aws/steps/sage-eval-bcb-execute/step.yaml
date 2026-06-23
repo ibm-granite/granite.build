@@ -38,11 +38,11 @@ environment_configs:
             infra: aws/us-east-2
             # CPU-only instance with high memory for code execution sandboxes.
             # No GPU needed — --recompute-metrics loads predictions from disk.
+            # On-demand: spot r6i.12xlarge often unavailable in us-east-2.
             instance_type: "r6i.12xlarge"
             cpus: "48+"
             memory: "384+"
             disk_size: 256
-            use_spot: true
           file_mounts:
             /model:
               source: "{{ config.sage_eval_config.model_source_s3 }}"
