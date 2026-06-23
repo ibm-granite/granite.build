@@ -39,9 +39,11 @@ environment_configs:
               - "-e HOME=/root"
           resources:
             infra: aws/us-east-2
-            # vLLM requires GPU. g6e.12xlarge: 4x L40S, 384GB RAM.
-            # Code execution sandboxes peak at ~236GB so 256GB (g6e.8xlarge)
-            # is insufficient. Use all 4 GPUs for faster inference.
+            # vLLM requires GPU. g6e.12xlarge: 4x L40S, 384GB RAM (only 1 GPU used).
+            # Code execution sandboxes peak at ~236-354GB depending on model quality:
+            # early-epoch models generate verbose/pathological code that consumes more
+            # memory in the sandbox. Later epochs produce tighter code and fit in less.
+            # OOM on early checkpoints is a model quality signal, not infra failure.
             instance_type: "g6e.12xlarge"
             disk_size: 256
             use_spot: true
