@@ -202,7 +202,13 @@ class BuildWatcher:
         if self.worker_thread is not None:
             logger.error("lakehouse monitoring thread is already running")
             return
-        self.worker_thread = threading.Thread(target=self.__worker_thread_run)
+        # daemon=True so a watcher that is never explicitly stopped (e.g. a test or
+        # embedded server that forgets to call stop()) can't keep the process alive
+        # and hang it — matching the dispatched build threads below. Normal shutdown
+        # still joins this thread via __wait_for_completion().
+        self.worker_thread = threading.Thread(
+            target=self.__worker_thread_run, daemon=True
+        )
         self.worker_thread.start()
         logger.debug("BuildWatcher.start end")
 
@@ -621,6 +627,8 @@ class BuildWatcher:
                 self.__process_pending_builds()
                 if not self.stop_event.is_set():
                     logger.info("End processing loop. Sleeping...")
+                    # monitoring_interval is floored to a sane minimum by
+                    # BuildWatcherConfig, so this never busy-loops.
                     time.sleep(self.config.monitoring_interval)
             except Exception as e:
                 msg = traceback.format_exc()
