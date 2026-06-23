@@ -299,34 +299,6 @@ Everything below is for developers working on the gbserver codebase.
 
 ### Logger Framework Integration
 
-`BuildEventPublishLogger` is integrated into the build logger stack via `get_message_logger()`:
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                           BuildRunner                                     │
-│                                                                          │
-│  get_message_logger(stored_build, event_source)                          │
-│       │                                                                  │
-│       ▼                                                                  │
-│  BuildMultiMessageLogger                                                 │
-│       │                                                                  │
-│       ├── BuildEventMessageLogger ──────▶ gb_events table (always)       │
-│       │                                                                  │
-│       ├── BuildPRLogger ────────────────▶ GitHub PR comment (if PR)      │
-│       │                                                                  │
-│       └── BuildEventPublishLogger ──────▶ NATS or RabbitMQ (if enabled)  │
-│               │                                                          │
-│               │  filters: STATUS_EVENT only                              │
-│               │  fire-and-forget, non-blocking                           │
-│               ▼                                                          │
-│         BuildEventPublisher.publish_event()                              │
-│               │                                                          │
-│               ├── Standalone: NATSMessaging (JetStream)                  │
-│               └── DEV/PROD:   RabbitMQBase (topic exchange)              │
-│                                                                          │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
 Loggers are wired via a registry pattern — each logger type registers itself
 with a predicate (activation condition) and a factory. `get_message_logger()`
 iterates the registry and collects active loggers. The `BuildEventPublishLogger`
