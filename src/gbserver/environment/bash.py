@@ -37,6 +37,7 @@ from gbserver.monitoring.logfile_monitor import LogFileMonitor
 from gbserver.monitoring.streams.stream_factory import make_stream
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
+from gbserver.types.constants import FILE_SCHEME
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import LogMonitoringFailedException
 from gbserver.utils.filesystem import sync_or_copy
@@ -316,19 +317,16 @@ class Bash(Environment):
             if isinstance(uri, str):
                 uriobj = URI.get_uri(uri)
             assert uriobj.uri is not None, "the URI is None"
-            # The output `uri` IS the artifact's final location, so copy a
-            # directory artifact's CONTENTS into it rather than nesting the
-            # source dir under it. rsync nests a dir source (no trailing slash)
-            # as dest/<basename>/, which would turn an output URI like
-            # `.../adapter_<hash>/` into `.../adapter_<hash>/adapter/`; a trailing
-            # slash makes rsync copy the contents into dest instead. (The
-            # base_uri branch below intentionally keeps the nesting — its
-            # returned URI is base + "/" + the source basename.) Scoped to the
-            # bash environment so other environments' push/copy are unchanged.
-            copy_src = source_path
-            if os.path.isdir(copy_src) and not copy_src.endswith(os.sep):
-                copy_src = copy_src + os.sep
-            sync_or_copy(copy_src, uriobj.uri.path, raise_errors=True)
+            # The output `uri` IS the artifact's final location, so pull the
+            # source's CONTENTS into it (copy_dir_contents=True) rather than
+            # nesting the source dir under it as dest/<basename>/. This is opt-in
+            # so it does not affect FileURI.pull()'s default callers. (The
+            # base_uri branch below intentionally keeps the nesting — its returned
+            # URI is base + "/" + the source basename.) source_path is an
+            # absolute on-disk path produced by the step launch.
+            URI.get_uri(FILE_SCHEME + "://" + source_path).pull(
+                Path(uriobj.uri.path), raise_errors=True, copy_dir_contents=True
+            )
             return uri
         elif base_uri is not None:
             uriobj = base_uri

@@ -173,14 +173,17 @@ async def test_pushasset_filestore_raises_on_copy_failure():
     binding = {"path": "/some/source/adapter"}
     uri = URI.get_uri("file:outputs/lora-finetune/adapter_abcd1234/")
 
+    # The push goes through FileURI.pull(), which calls sync_or_copy in the
+    # gbcommon.uri.file module — patch it there.
     with patch(
-        "gbserver.environment.bash.sync_or_copy",
+        "gbcommon.uri.file.sync_or_copy",
         side_effect=ValueError("rsync failed"),
     ) as mock_copy:
         with pytest.raises(ValueError, match="rsync failed"):
             await bash.pushasset_filestore(binding=binding, uri=uri)
 
     # The path (not the dict) is passed as the rsync source, with raise_errors=True.
+    # (No trailing slash is appended because the path doesn't exist on disk.)
     args, kwargs = mock_copy.call_args
     assert args[0] == "/some/source/adapter"
     assert kwargs.get("raise_errors") is True

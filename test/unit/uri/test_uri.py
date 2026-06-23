@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+
 import pytest
 
 from gbcommon.uri.env import EnvURI
@@ -71,3 +73,51 @@ def test_env_uri():
         assert (
             actual_uri_str == expected_uri_str
         ), f"expected: {expected_uri_str} actual: {actual_uri_str}"
+
+
+def test_file_uri_pull_dir_default_nests_source(tmp_path):
+    """By default, pulling a DIRECTORY nests the source dir under dest
+    (dest/<basename>/...). This is the long-standing behavior other callers
+    (step/space asset materialization) rely on and must not change."""
+    src = tmp_path / "adapter"
+    src.mkdir()
+    (src / "adapter_config.json").write_text("{}")
+    dest = tmp_path / "dest"
+
+    fileuri = URI.get_uri(f"file://{src}")
+    assert isinstance(fileuri, FileURI)
+    assert fileuri.pull(dest) is True
+
+    # Source dir nested under dest.
+    assert (dest / "adapter" / "adapter_config.json").read_text() == "{}"
+
+
+def test_file_uri_pull_dir_copy_contents_opt_in(tmp_path):
+    """copy_dir_contents=True copies a directory's CONTENTS into dest without the
+    extra nesting level (used by the bash filestore push)."""
+    src = tmp_path / "adapter"
+    src.mkdir()
+    (src / "adapter_config.json").write_text("{}")
+    (src / "weights.safetensors").write_text("w")
+    dest = tmp_path / "out" / "adapter_hash"
+
+    fileuri = URI.get_uri(f"file://{src}")
+    assert isinstance(fileuri, FileURI)
+    assert fileuri.pull(dest, copy_dir_contents=True) is True
+
+    # Contents landed directly in dest; the source dir was not nested under it.
+    assert (dest / "adapter_config.json").read_text() == "{}"
+    assert (dest / "weights.safetensors").read_text() == "w"
+    assert not (dest / "adapter").exists()
+
+
+def test_file_uri_pull_file_copies_file(tmp_path):
+    """Pulling a single FILE copies the file to dest (dest parent exists)."""
+    src = tmp_path / "result.json"
+    src.write_text("data")
+    dest = tmp_path / "result_copy.json"
+
+    fileuri = URI.get_uri(f"file://{src}")
+    assert isinstance(fileuri, FileURI)
+    assert fileuri.pull(dest) is True
+    assert Path(dest).read_text() == "data"
