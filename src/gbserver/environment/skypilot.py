@@ -899,8 +899,13 @@ class Skypilot(Environment):
                         name,
                     )
                     _require_skypilot()
-                    request_id = sky.down(name, purge=True)
-                    sky.get(request_id)
+                    request_id = await asyncio.to_thread(sky.down, name, purge=True)
+                    res = await asyncio.to_thread(sky.get, request_id)
+                    logger.info(
+                        "launch_skypilot_teardown: torn down cluster %s, res=%s",
+                        name,
+                        res,
+                    )
             except Exception as e:  # don't let one failure skip the rest
                 logger.error(
                     "launch_skypilot_teardown: failed to tear down %s: %s", name, e

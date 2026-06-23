@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -41,7 +41,7 @@ class TestSkypilotTeardown:
 
     @pytest.mark.asyncio
     async def test_unknown_cluster_falls_back_to_sky_down(self, lsf_env):
-        mock_sky = AsyncMock()
+        mock_sky = MagicMock()
         with (
             patch("gbserver.environment.skypilot.sky", mock_sky),
             patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
@@ -52,6 +52,7 @@ class TestSkypilotTeardown:
             )
 
         mock_sky.down.assert_called_once_with("gb-orphan-xxxx", purge=True)
+        mock_sky.get.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_one_failure_does_not_skip_the_other(self, lsf_env):
