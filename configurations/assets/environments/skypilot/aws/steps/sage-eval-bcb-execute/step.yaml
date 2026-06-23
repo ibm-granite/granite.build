@@ -115,19 +115,17 @@ environment_configs:
             fi
             echo "[$(date)] Found predictions: ${PRED_FILE}"
 
-            # Run with --recompute-metrics: skips model loading, executes code from predictions
-            sage olmes-slim --model ${MODEL_PATH} \
-              --task bigcodebench::tulu \
-              --output-dir ${OUTPUT_PATH}/code/olmes-instruct/bigcodebench::tulu \
-              --model-args max_length=${MAX_LENGTH},dtype=bfloat16,tensor_parallel_size=${NUM_GPUS},gpu_memory_utilization=0.85,trust_remote_code=True \
-              --model-type vllm \
-              --env-vars VLLM_WORKER_MULTIPROC_METHOD=spawn \
-              --cluster local \
+            # Run oe-eval directly with --recompute-metrics (sage olmes-slim doesn't support it)
+            cd /workspace/olmes
+            python -m oe_eval.run_eval \
+              --task '{"task_name": "bigcodebench", "use_chat_format": true, "context_kwargs": {"prompt_variant": "instruct"}, "metadata": {"regimes": ["Tulu"], "alias": "bigcodebench::tulu"}}' \
+              --model ${MODEL_PATH} \
+              --model-args '{"max_length": '${MAX_LENGTH}', "dtype": "bfloat16", "tensor_parallel_size": '${NUM_GPUS}', "gpu_memory_utilization": 0.85, "trust_remote_code": true, "model_type": "vllm"}' \
               --batch-size ${BATCH_SIZE} \
-              -ngpu ${NUM_GPUS} \
+              --output-dir ${OUTPUT_PATH}/code/olmes-instruct/bigcodebench::tulu \
               --recompute-metrics \
-              --run_id "${EXPERIMENT}-bigcodebench_tulu-code" \
-              2>&1 | tee ${OUTPUT_PATH}/${EVAL_NAME}-execute.log
+              --run-id "${EXPERIMENT}-bigcodebench_tulu-code" \
+              2>&1 | tee /tmp/${EVAL_NAME}-execute.log
 
             echo "$(date)" > ${OUTPUT_PATH}/${EVAL_NAME}.done
             echo "[$(date)] Execution phase complete: ${EVAL_NAME}"
