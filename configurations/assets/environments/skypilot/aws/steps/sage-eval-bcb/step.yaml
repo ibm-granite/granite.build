@@ -41,11 +41,11 @@ environment_configs:
             infra: aws/us-east-2
             # BCB bottleneck is code execution, not inference. CPU-only
             # instance with high memory is sufficient for small models.
-            # r6i.8xlarge: 32 vCPUs, 256GB RAM. For larger models needing
+            # r6i.12xlarge: 48 vCPUs, 384GB RAM. For larger models needing
             # GPU, switch to g6e.12xlarge (4x L40S, 384GB).
-            instance_type: "r6i.8xlarge"
-            cpus: "32+"
-            memory: "256+"
+            instance_type: "r6i.12xlarge"
+            cpus: "48+"
+            memory: "384+"
             disk_size: 256
             use_spot: true
           file_mounts:
