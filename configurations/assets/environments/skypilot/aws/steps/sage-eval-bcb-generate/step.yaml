@@ -59,9 +59,10 @@ environment_configs:
             MAX_LENGTH: "{{ config.sage_eval_config.max_length }}"
             HF_HOME: "/workspace/.cache/huggingface"
             OUTPUT_BASE_PATH: "/output/sage"
-            # Unset BCB API URL — predictions are saved before execution starts,
-            # so execution will fail but we get the predictions.jsonl on disk.
-            OE_EVAL_BCB_API_URL: ""
+            # Point BCB API to a dead endpoint so execution fails fast after
+            # predictions are saved. Cannot use empty string — the eval script
+            # falls back to the public HF Space evaluator.
+            OE_EVAL_BCB_API_URL: "http://localhost:1/evaluate/"
           setup: |
             echo "=== Environment Check ==="
             python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}, GPUs: {torch.cuda.device_count()}')"
