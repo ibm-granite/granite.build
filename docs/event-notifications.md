@@ -183,6 +183,65 @@ of an exclusive queue. This survives brief disconnections without losing events.
 | `RABBITMQ_USERNAME` | `guest` | RabbitMQ publish credentials |
 | `RABBITMQ_PASSWORD` | `guest` | RabbitMQ publish credentials |
 
+## Standalone Mode (NATS)
+
+In standalone mode, event notifications use the embedded NATS server automatically —
+no RabbitMQ setup required. Event publishing is enabled by default.
+
+### Subscribing in Standalone
+
+Call the same subscribe endpoint:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/builds/{build_id}/events/subscribe \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Response:
+
+```json
+{
+  "delivery_type": "nats",
+  "host": "localhost",
+  "port": 4222,
+  "url": "nats://localhost:4222",
+  "subject": "gbserver.build.abc12345-full-uuid.>",
+  "expires_at": 1780000000,
+  "username": null,
+  "password": null,
+  "exchange": null,
+  "routing_key": null,
+  "queue": null
+}
+```
+
+### Consuming Events (NATS)
+
+Use any NATS client library. No credentials needed in standalone:
+
+```python
+import nats
+import json
+
+async def consume_standalone_events(build_id: str):
+    nc = await nats.connect("nats://localhost:4222")
+    sub = await nc.subscribe(f"gbserver.build.{build_id}.>")
+
+    async for msg in sub.messages:
+        event = json.loads(msg.data)
+        print(f"[{event['status']}] {event.get('message', '')}")
+
+    await nc.close()
+```
+
+### Requirements
+
+- `nats-server` must be on PATH (installed automatically with `gb` standalone)
+- `nats-py` must be installed: `pip install nats-py`
+- No additional configuration needed — the embedded server starts with JetStream enabled
+
+---
+
 ## Running RabbitMQ Locally
 
 ```bash
