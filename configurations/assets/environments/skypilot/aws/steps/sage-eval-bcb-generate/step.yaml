@@ -83,10 +83,8 @@ environment_configs:
             export OUTPUT_PATH=${OUTPUT_BASE_PATH}/${EXPERIMENT}
             sage set setup-dir /tmp/setup-dir
             sage set scripts-dir ${OUTPUT_PATH}/scripts-dir
-            sage set logs-dir ${OUTPUT_PATH}/logs-dir
-
-            # Remove tee -a (append mode breaks on S3 FUSE mounts)
-            sed -i 's/tee -a/tee/g' /workspace/sage/sage/cluster/local/deployer.sh
+            # Use local logs-dir (tee writes break on S3 FUSE mounts entirely)
+            sage set logs-dir /tmp/sage-logs-dir
 
             export EXPERIMENT NUM_GPUS BATCH_SIZE MAX_LENGTH MODEL_PATH OUTPUT_BASE_PATH OE_EVAL_BCB_API_URL
 
