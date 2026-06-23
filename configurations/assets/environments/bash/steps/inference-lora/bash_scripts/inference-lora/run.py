@@ -145,12 +145,19 @@ def main():
         and os.path.isdir(adapter_path)
         and not os.path.isfile(os.path.join(adapter_path, "adapter_config.json"))
     ):
+        descended = False
         for entry in sorted(os.listdir(adapter_path)):
             nested = os.path.join(adapter_path, entry)
             if os.path.isfile(os.path.join(nested, "adapter_config.json")):
                 print(f"Descending into nested adapter dir: {nested}")
                 adapter_path = nested
+                descended = True
                 break
+        if not descended:
+            print(
+                f"WARNING: no adapter_config.json in {adapter_path!r} or any "
+                "immediate subdir; from_pretrained will likely fail to load it."
+            )
     os.makedirs(output_dir, exist_ok=True)
 
     import torch

@@ -85,10 +85,13 @@ def _convert_enums_to_values(obj: Any) -> Any:
     return obj
 
 
-# Maps an environment type to the gbstep scaffold dir that backend reads at
-# launch. Backends absent from this map (Bash, Docker, RunPod, Skypilot) read
-# none of these dirs.
-_BACKEND_SCAFFOLD_DIRS = {"Lsf": "lsf_scripts", "K8s": "helm-charts"}
+# Maps a (lowercased) environment type to the gbstep scaffold dir that backend
+# reads at launch. Backends absent from this map (Bash, Docker, RunPod,
+# Skypilot) read none of these dirs. Keys are lowercase because env_type may
+# arrive either capitalized (from environment.type, e.g. "Lsf") or lowercase
+# (from an environment_configs dict key, e.g. "lsf") — see env_type resolution
+# in merge_handle_configs, which likewise falls back to env_type.lower().
+_BACKEND_SCAFFOLD_DIRS = {"lsf": "lsf_scripts", "k8s": "helm-charts"}
 
 
 def _copy_basestep_scaffold(temp_path: Path, env_type: str) -> None:
@@ -117,7 +120,7 @@ def _copy_basestep_scaffold(temp_path: Path, env_type: str) -> None:
     base_step_src = Path(__file__).parent.parent / "builtins/steps/gbstep"
     sync_or_copy(str(base_step_src) + "/", temp_path, delete=False)
 
-    keep_dir = _BACKEND_SCAFFOLD_DIRS.get(env_type)
+    keep_dir = _BACKEND_SCAFFOLD_DIRS.get(env_type.lower())
     for dir_name in _BACKEND_SCAFFOLD_DIRS.values():
         if dir_name == keep_dir:
             continue
