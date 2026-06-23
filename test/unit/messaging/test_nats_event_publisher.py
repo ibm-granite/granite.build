@@ -26,13 +26,16 @@ class TestBuildEventPublisherBackendSelection:
         assert publisher._backend is mock_nats_instance
 
     @patch.dict(os.environ, {"RABBITMQ_HOST": "rmq.example.com"}, clear=False)
-    def test_from_env_uses_rabbitmq_when_host_set(self):
+    @patch("gbserver.messaging.rabbitmq_base.RabbitMQBase.from_env_and_args")
+    def test_from_env_uses_rabbitmq_when_host_set(self, mock_from_env):
         """When RABBITMQ_HOST is set, from_env() creates RabbitMQBase."""
+        mock_rmq_instance = MagicMock()
+        mock_from_env.return_value = mock_rmq_instance
+
         publisher = BuildEventPublisher.from_env()
 
-        from gbserver.messaging.rabbitmq_base import RabbitMQBase
-
-        assert isinstance(publisher._backend, RabbitMQBase)
+        mock_from_env.assert_called_once()
+        assert publisher._backend is mock_rmq_instance
 
     @patch.dict(os.environ, {"GB_ENVIRONMENT": "STANDALONE"}, clear=False)
     @patch("gbserver.messaging.build_event_publisher.HAS_NATS", True)
