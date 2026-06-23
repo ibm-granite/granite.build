@@ -141,9 +141,9 @@ class BuildEventPublisher:
         async with self._publish_lock:
             original_addr = self._backend.addr
             publish_addr = Address(
-                exchange=GBSERVER_BUILD_EVENTS_EXCHANGE
-                if original_addr.exchange
-                else None,
+                exchange=(
+                    GBSERVER_BUILD_EVENTS_EXCHANGE if original_addr.exchange else None
+                ),
                 queue=f"build.{build_id}",
                 routing_key=None,
             )
