@@ -188,6 +188,14 @@ environment_configs:
               - field_name: message
                 field_regex: ".+"
                 is_data: True
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "ray\\.exceptions\\.OutOfMemoryError|Task was killed due to the node running low on memory"
+            event_fields:
+              - field_name: status
+                field_value_template: "FAILED"
+              - field_name: message
+                field_regex: ".+"
+                is_data: True
           - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
             line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
             event_fields:
