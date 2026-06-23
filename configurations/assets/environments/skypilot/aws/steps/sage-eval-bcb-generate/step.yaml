@@ -127,3 +127,6 @@ environment_configs:
               - field_name: path
                 field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
                 is_data: true
+              - field_name: binding
+                field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+                is_json: True

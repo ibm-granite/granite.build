@@ -25,6 +25,7 @@ granite.build:
       inputs: {}
       outputs:
         predictions:
+          uri: "env://{{ binding.path }}"
           type: dataset
       steps:
         - step_uri: space://steps/sage-eval-bcb-generate
