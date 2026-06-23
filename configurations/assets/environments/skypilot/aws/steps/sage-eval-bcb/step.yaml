@@ -12,9 +12,9 @@ config:
     model_source_s3: ""
     eval_results_s3: "s3://granite-build-eval-results"
     experiment: "eval-l40s-001"
-    batch_size: 1
+    batch_size: 4
     max_length: 4096
-    num_gpus: 1
+    num_gpus: 4
     oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"
 outputs:
   optional:
