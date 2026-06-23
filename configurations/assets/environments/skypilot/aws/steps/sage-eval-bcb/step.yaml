@@ -14,7 +14,7 @@ config:
     experiment: "eval-l40s-001"
     batch_size: 4
     max_length: 4096
-    num_gpus: 4
+    num_gpus: 0
     oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"
 outputs:
   optional:
@@ -39,10 +39,13 @@ environment_configs:
               - "-e HOME=/root"
           resources:
             infra: aws/us-east-2
-            # BCB code execution sandboxes are memory-intensive (~236GB peak).
-            # g6e.12xlarge has 4x L40S / 384GB RAM. We only use 1 GPU for
-            # inference but need the extra RAM for code execution sandboxes.
-            instance_type: "g6e.12xlarge"
+            # BCB bottleneck is code execution, not inference. CPU-only
+            # instance with high memory is sufficient for small models.
+            # r6i.8xlarge: 32 vCPUs, 256GB RAM. For larger models needing
+            # GPU, switch to g6e.12xlarge (4x L40S, 384GB).
+            instance_type: "r6i.8xlarge"
+            cpus: "32+"
+            memory: "256+"
             disk_size: 256
             use_spot: true
           file_mounts:
