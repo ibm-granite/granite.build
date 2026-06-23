@@ -460,6 +460,7 @@ class Skypilot(Environment):
                 if isinstance(bval, dict) and "_hfpull" in bval:
                     pending_hfpulls[bid] = bval["_hfpull"]
             if pending_hfpulls:
+                hf_token = env_vars.get("HF_TOKEN", "")
                 hfpull_lines = [
                     "# -- gbserver: inline hfpull for inputs --",
                     "pip install --no-cache-dir 'huggingface_hub[cli]' 2>/dev/null || true",
@@ -470,6 +471,8 @@ class Skypilot(Environment):
                         cmd += f' --revision "{pull_info["revision"]}"'
                     if pull_info.get("type"):
                         cmd += f' --repo-type {pull_info["type"]}'
+                    if hf_token:
+                        cmd += f' --token "$HF_TOKEN"'
                     hfpull_lines.append(cmd)
                 hfpull_lines.append("# -- end inline hfpull --")
                 hfpull_block = "\n".join(hfpull_lines) + "\n"
@@ -574,7 +577,9 @@ class Skypilot(Environment):
                         cluster_name,
                         launch_id,
                     )
-                    host_ip, ssh_key = _extract_host_ssh_info(cluster_name)
+                    host_ip, ssh_key = await asyncio.to_thread(
+                        _extract_host_ssh_info, cluster_name
+                    )
                     await _execute_on_host_via_ssh(
                         host_ip=host_ip,
                         ssh_key=ssh_key,
@@ -1004,7 +1009,13 @@ class Skypilot(Environment):
                         except (asyncio.CancelledError, Exception):
                             pass
                 if logfile_monitor is not None:
-                    lines_already_processed = logfile_monitor.line_num
+                    # Use lines_consumed from the stream source (not line_num
+                    # from the monitor) to avoid re-emitting events for lines
+                    # that were read from the log but not yet processed by the
+                    # monitor when the stream was cancelled.
+                    lines_already_processed = getattr(
+                        logfile_monitor.stream_source, "lines_consumed", logfile_monitor.line_num
+                    )
 
                 if (
                     event_log_parser_configs
