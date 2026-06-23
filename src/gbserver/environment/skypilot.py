@@ -32,6 +32,7 @@ from gbserver.types.errors import WorkloadFailedException
 from gbserver.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from gbserver.monitoring.logfile_monitor import LogFileMonitor
     from gbserver.resilience.retry_handler import RetryStrategy
 
 logger = get_logger(__name__)
@@ -665,13 +666,16 @@ class Skypilot(Environment):
         max_attempts = int(
             retry_config.get("max_retries", GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS)
         )
-        backoff_max = int(
-            retry_config.get("delay_seconds", GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX)
+        provision_backoff_max = int(
+            retry_config.get(
+                "provision_backoff_max",
+                max(1800, GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX),
+            )
         )
 
         async for attempt in AsyncRetrying(
             retry=retry_if_exception(_is_transient_provision_error),
-            wait=wait_exponential(multiplier=30, max=1800),
+            wait=wait_exponential(multiplier=30, max=provision_backoff_max),
             stop=stop_after_attempt(max(1, max_attempts)),
             reraise=True,
         ):

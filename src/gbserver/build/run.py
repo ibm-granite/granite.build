@@ -217,7 +217,7 @@ class Run(ABC):
                             for _ in range(current_task.cancelling()):
                                 current_task.uncancel()
             finally:
-                if cancel_count > 0:
+                if cancel_count > 0 and current_task:
                     current_task.cancel()
         logger.info("Run.run [%s : %s] cleanup complete", type(self).__name__, self.id)
 
