@@ -98,10 +98,12 @@ class TestBuildWatcherRetryExhaustion(AbstractBuildTest):
         self.storage.build_storage.add(stored_build)
 
         watcher = BuildWatcher(gh_token="", all_build_space_uri=spec.space_uri)
-        # Thread runner (no cluster) and continuous polling so the watcher reliably
-        # observes retry builds during their brief PENDING window.
+        # Thread runner (no cluster) and fast (1s) polling so the watcher reliably
+        # observes retry builds during their brief PENDING window. 1s is the minimum
+        # interval (sub-second values busy-loop and are floored); the chain-settle
+        # wait below gives it up to spec.timeout_minutes to observe everything.
         watcher.config.buildrunner_type = "thread"
-        watcher.config.monitoring_interval = 0
+        watcher.config.monitoring_interval = 1
 
         thread = ExceptionRaisingThread(
             name="BuildWatcher", target=watcher.start_and_wait, args=()
