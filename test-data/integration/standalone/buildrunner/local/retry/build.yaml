@@ -1,0 +1,21 @@
+granite.build:
+  name: bash-retry-skip-test
+  # Build-level retry: when a SUCCEEDED build is later marked FAILED and re-run,
+  # the BuildRunner creates a linked retry build.  Because the single target
+  # already succeeded in the same retry chain, the retry SKIPS it (reuse).
+  retries:
+    max_retries: 1
+  targets:
+    succeed-target:
+      allow_unknown: true
+      environment_uri: space://environments/bash
+      steps:
+        # The general-purpose `command` bash step runs an arbitrary shell command.
+        # `exit 0` SUCCEEDS the target, leaving a reusable SUCCESS target run that
+        # the retry can skip via skipped_for_prerun_target_id.
+        - step_uri: space://steps/command
+          config:
+            bash_config:
+              command: "exit 0"
+            compute_config:
+              num_nodes: 1
