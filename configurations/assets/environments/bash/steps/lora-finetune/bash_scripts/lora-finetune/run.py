@@ -41,7 +41,10 @@ def pick_device(torch):
     """
     if torch.cuda.is_available():
         return "cuda"
-    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+    if (
+        getattr(torch.backends, "mps", None) is not None
+        and torch.backends.mps.is_available()
+    ):
         return "mps"
     return "cpu"
 
@@ -69,7 +72,9 @@ def ensure_deps():
     """
     try:
         import datasets  # noqa: F401
+        import google.protobuf  # noqa: F401
         import peft  # noqa: F401
+        import sentencepiece  # noqa: F401
         import torch  # noqa: F401
         import transformers  # noqa: F401
         import trl  # noqa: F401
@@ -80,6 +85,8 @@ def ensure_deps():
     print(
         "Installing training dependencies (torch, transformers, trl, peft, datasets)..."
     )
+    # sentencepiece + protobuf are required to load the Granite tokenizer (the
+    # slow->fast conversion needs them); transformers does NOT pull them in.
     subprocess.check_call(
         [
             sys.executable,
@@ -93,6 +100,8 @@ def ensure_deps():
             "peft>=0.13",
             "datasets",
             "accelerate",
+            "sentencepiece",
+            "protobuf",
         ]
     )
     print("Dependencies installed.")
