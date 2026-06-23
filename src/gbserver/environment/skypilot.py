@@ -458,7 +458,12 @@ class Skypilot(Environment):
                 if isinstance(bval, dict) and "_hfpull" in bval:
                     pending_hfpulls[bid] = bval["_hfpull"]
             if pending_hfpulls:
-                hf_token = env_vars.get("HF_TOKEN", "")
+                # Inject HF_TOKEN into env vars if any pull provides one
+                # (hf download picks it up automatically from the environment)
+                for pull_info in pending_hfpulls.values():
+                    if pull_info.get("hf_token") and "HF_TOKEN" not in env_vars:
+                        env_vars["HF_TOKEN"] = pull_info["hf_token"]
+                        break
                 hfpull_lines = [
                     "# -- gbserver: inline hfpull for inputs --",
                     "pip install --no-cache-dir 'huggingface_hub[cli]' 2>/dev/null || true",
@@ -469,8 +474,6 @@ class Skypilot(Environment):
                         cmd += f' --revision "{pull_info["revision"]}"'
                     if pull_info.get("type"):
                         cmd += f' --repo-type {pull_info["type"]}'
-                    if hf_token:
-                        cmd += f' --token "$HF_TOKEN"'
                     hfpull_lines.append(cmd)
                 hfpull_lines.append("# -- end inline hfpull --")
                 hfpull_block = "\n".join(hfpull_lines) + "\n"
@@ -1446,14 +1449,13 @@ class Skypilot(Environment):
         if inline:
             # Embed hfpull metadata in the binding_config so it flows per-step
             # through kwargs["bindings"] to _launch_skypilot_inner (no shared state).
-            # hf_token is NOT stored here to avoid leaking into logs/caches;
-            # it is resolved at launch time from the assetstore.
             binding_config["_hfpull"] = {
                 "path": str(binding_path),
                 "repo": f"{hfuri.get_owner()}/{hfuri.get_repo()}",
                 "revision": hfuri.get_revision(),
                 "type": hfuri.get_hf_type() or "model",
                 "uri": str(hfuri),
+                "hf_token": hf_token,
             }
             logger.info(
                 "pullasset_hfstore: inline mode — deferring download of %s to main step setup (dest=%s)",
