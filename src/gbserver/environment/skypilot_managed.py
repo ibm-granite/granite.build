@@ -208,7 +208,9 @@ class Skypilot_managed(Environment):
                         job_name,
                         launch_id,
                     )
-                    host_ip, ssh_key = _extract_host_ssh_info(job_name)
+                    host_ip, ssh_key = await asyncio.to_thread(
+                        _extract_host_ssh_info, job_name
+                    )
                     await _execute_on_host_via_ssh(
                         host_ip=host_ip,
                         ssh_key=ssh_key,
