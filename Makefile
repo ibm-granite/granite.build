@@ -49,6 +49,15 @@ EXTRA_BUILD_PARAM ?=
 PYTEST_NUM_TEST_PROC ?= auto
 #PYTEST_DIST_MODE ?= worksteal 	# 26 min, but faile test_build_watcher_c/gpu
 PYTEST_DIST_MODE ?= loadgroup
+# Coverage args for the .test target. Override empty (e.g. `make quick-tests PYTEST_COV=`)
+# to run without coverage — useful to isolate the pytest-cov + xdist shutdown hang.
+PYTEST_COV ?= --cov --cov-report=xml
+# The coverage gate only runs when coverage was collected; otherwise it's a no-op.
+COVERAGE_GATE = $(if $(strip $(PYTEST_COV)),coverage report --fail-under=$(MIN_COVERAGE) --sort=Cover,true)
+# Output capture flag. Default -s (no capture) streams live logs. Override empty
+# (`make quick-tests PYTEST_CAPTURE=`) to let pytest capture output — handy when
+# debugging xdist/subprocess interactions.
+PYTEST_CAPTURE ?= -s
 DEFAULT_PYTEST_MARKERS ?= not secret_manager and not nats_server and not docker_required
 PR_PYTEST_MARKERS ?= $(DEFAULT_PYTEST_MARKERS) 
 MERGE_PYTEST_MARKERS ?=  $(DEFAULT_PYTEST_MARKERS)
@@ -299,11 +308,11 @@ check_hf_token:
 		export GBTEST_MODE=${GBTEST_MODE} && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
-		args=(--durations=20 --cov --cov-report=xml --junitxml=report.xml) && \
-		args+=(-rs -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} -s) && \
+		args=(--durations=20 $(PYTEST_COV) --junitxml=report.xml) && \
+		args+=(-rs -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} $(PYTEST_CAPTURE)) && \
 		args+=(-m '$(PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
 		pytest "$${args[@]}" $(PYTEST_TEST_TARGETS) && \
-		coverage report --fail-under=$(MIN_COVERAGE) --sort=Cover
+		$(COVERAGE_GATE)
 
 .PHONY: py-test
 py-test:
