@@ -367,7 +367,11 @@ def _arm_stall_watchdog() -> None:
     import faulthandler
     import sys
 
-    timeout = float(os.getenv("GBTEST_STALL_WATCHDOG_SECONDS", "90"))
+    # Opt-in (default off): set GBTEST_STALL_WATCHDOG_SECONDS=N to enable. Kept as a
+    # debugging aid for the xdist/async shutdown-hang class. It's off by default so it
+    # can't false-fire on legitimately long-running tests (e.g. the minutes-long
+    # skypilot extended tests, which emit no per-test progress while running).
+    timeout = float(os.getenv("GBTEST_STALL_WATCHDOG_SECONDS", "0"))
     if timeout <= 0:
         return
     exit_on_stall = os.getenv("GBTEST_STALL_WATCHDOG_EXIT", "1") != "0"
