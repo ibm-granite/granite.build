@@ -570,6 +570,9 @@ class Skypilot(Environment):
                 launch_id,
             )
 
+            # Ensure log directory exists for job log streaming
+            os.makedirs(f"/tmp/sky-logs/{cluster_name}", exist_ok=True)
+
             # Execute post-launch tasks (e.g., start evaluator sidecars) if defined
             post_launch_task = launcher_config.get("post_launch_task")
             if post_launch_task:
@@ -1029,7 +1032,10 @@ class Skypilot(Environment):
                     and event_q
                     and entityrun_metadata
                     and job_id is not None
+                    and lines_already_processed == 0
                 ):
+                    # Only download and parse logs if the live stream didn't run
+                    # (lines_already_processed > 0 means the stream covered them).
                     await self._download_and_parse_logs(
                         cluster_name=cluster_name,
                         job_id=job_id,
@@ -1108,11 +1114,19 @@ class Skypilot(Environment):
             SkyPilotLogStreamSource,
         )
 
+        # Open a local log file for streaming writes
+        tmp_log_dir = f"/tmp/sky-logs/{cluster_name}"
+        os.makedirs(tmp_log_dir, exist_ok=True)
+        log_file_path = f"{tmp_log_dir}/job-{job_id}.log"
+        log_file = open(log_file_path, "a", encoding="utf-8")
+        logger.info("Streaming job logs to %s", log_file_path)
+
         stream_source = SkyPilotLogStreamSource(
             cluster_name=cluster_name,
             job_id=job_id,
             start_line=start_line,
             abort_event=abort_event,
+            log_file=log_file,
         )
         monitor = LogFileMonitor(
             step_id=launch_id,
@@ -1168,6 +1182,23 @@ class Skypilot(Environment):
                 return
 
             log_dir = os.path.expanduser(log_dir)
+            # Save a copy to /tmp for easy debugging access
+            tmp_log_dir = f"/tmp/sky-logs/{cluster_name}/job-{job_id}"
+            os.makedirs(tmp_log_dir, exist_ok=True)
+            for f in glob.glob(f"{log_dir}/*"):
+                try:
+                    import shutil
+
+                    shutil.copy2(f, tmp_log_dir)
+                except OSError:
+                    pass
+            logger.info(
+                "Saved job logs to %s (cluster %s job %s)",
+                tmp_log_dir,
+                cluster_name,
+                job_id,
+            )
+
             log_files = sorted(glob.glob(f"{log_dir}/*.log"))
             if not log_files:
                 logger.info(

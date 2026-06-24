@@ -71,21 +71,38 @@ granite.build:
               eval_results_s3: "s3://granite-build-eval-results"
               experiment: "$${NAME}-{{ bindings.model_checkpoint.binding.path.split('/')[-1] | replace('epoch_hf_', 'e') | replace('step_hf_', 's') }}"
 
-    bigcodebench:
+    bcb-generate:
       environment_uri: space://environments/skypilot/aws
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
-      outputs: {}
+      outputs:
+        predictions:
+          uri: "env://{{ binding.path }}"
+          type: dataset
       steps:
-        - step_uri: space://steps/sage-eval-bcb
-          retry_enabled: true
-          retry_transparently: true
+        - step_uri: space://steps/sage-eval-bcb-generate
           config:
             sage_eval_config:
               model_source_s3: "s3://granite-build-checkpoints{{ bindings.model_checkpoint.binding.path | replace('/output', '') }}"
               eval_results_s3: "s3://granite-build-eval-results"
               experiment: "$${NAME}-{{ bindings.model_checkpoint.binding.path.split('/')[-1] | replace('epoch_hf_', 'e') | replace('step_hf_', 's') }}"
+
+    bcb-execute:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        predictions:
+          binding: bcb-generate.predictions
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval-bcb-execute
+          retry_enabled: true
+          retry_transparently: true
+          config:
+            sage_eval_config:
+              model_source_s3: "s3://{{ bindings.predictions.binding.path | replace('/s3path/', '') }}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}-{{ bindings.predictions.binding.path.split('/')[-1] | replace('epoch_hf_', 'e') | replace('step_hf_', 's') }}"
               oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"
 
     bfcl:

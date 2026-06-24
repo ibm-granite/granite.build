@@ -20,9 +20,12 @@ The target step run.
 
 import asyncio
 import dataclasses
+import shutil
+import tempfile
 import traceback
 from asyncio import Queue, TaskGroup
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Dict, Optional, Self
 
 from gbserver.build.run import Run
@@ -250,16 +253,25 @@ class TargetStepRun(Run):
             )
             logger.info("FULL CONFIG's CONFIG: %s", self.full_config[CONFIG_KEY])
 
-            temp_path = targetstep.merged_step_dir  # merged step path from targetstep
+            # Copy the shared merged_step_dir to a per-run temp directory.
+            # fill_templates_in_dir destructively renders Jinja expressions in
+            # files; without a copy, a second run of the same step (e.g. from a
+            # repeated checkpoint event) finds already-rendered content containing
+            # literal {{ }} from monitor field_value_templates and fails.
+            source_path = targetstep.merged_step_dir
+            temp_path = Path(tempfile.mkdtemp())
+            shutil.copytree(source_path, temp_path, dirs_exist_ok=True)
 
             # Populate merged directory path to pass to the launch
             # in order to copy this final step folder to pod
             self.full_config["merged_dir_path"] = temp_path
-            ignore_paths = targetstep.ignore_paths_final_fill
+            ignore_paths = [
+                temp_path / p.relative_to(source_path)
+                for p in targetstep.ignore_paths_final_fill
+            ]
             self.temp_path = temp_path
 
             logger.info("Ignoring %d paths during template fill", len(ignore_paths))
-            targetstep.ignore_paths_final_fill = ignore_paths
             self.ignore_paths = ignore_paths
 
             fill_templates_in_dir(

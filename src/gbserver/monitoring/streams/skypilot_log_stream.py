@@ -44,12 +44,14 @@ class SkyPilotLogStreamSource:
         job_id: int,
         start_line: int = 0,
         abort_event: Optional[asyncio.Event] = None,
+        log_file=None,
     ) -> None:
         self.cluster_name = cluster_name
         self.job_id = job_id
         self.start_line = start_line
         self._abort_event = abort_event
         self.lines_consumed = 0
+        self._log_file = log_file
 
     def __repr__(self: Self) -> str:
         return (
@@ -145,7 +147,14 @@ class SkyPilotLogStreamSource:
                 if self.lines_consumed <= self.start_line:
                     continue
 
-                yield line.rstrip("\n").rstrip("\r")
+                stripped = line.rstrip("\n").rstrip("\r")
+                if self._log_file:
+                    try:
+                        self._log_file.write(stripped + "\n")
+                        self._log_file.flush()
+                    except (OSError, ValueError):
+                        pass
+                yield stripped
 
         except asyncio.CancelledError:
             logger.info(
@@ -161,3 +170,9 @@ class SkyPilotLogStreamSource:
                 e,
             )
             raise
+        finally:
+            if self._log_file:
+                try:
+                    self._log_file.close()
+                except (OSError, ValueError):
+                    pass

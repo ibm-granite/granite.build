@@ -72,6 +72,15 @@ environment_configs:
             sed -i 's/^from lm_eval.api.instance import Instance as EleutherInstance$/EleutherInstance = None  # patched: no lm_eval on CPU/' \
               /workspace/olmes/oe_eval/tasks/eleuther_task.py
 
+            # Patch oe-eval to always check for cached predictions (not just with --recompute-metrics)
+            # This skips model loading when predictions.jsonl already exists.
+            sed -i 's/if compute_config\["recompute_metrics"\]:/if True:  # patched: always check for cached predictions/' \
+              /workspace/olmes/oe_eval/run_eval.py
+
+            # Increase base HTTP timeout for code execution batches (120s → 240s)
+            sed -i 's/timeout: float = 120/timeout: float = 240/' \
+              /workspace/olmes/oe_eval/metrics/code_evals/code_execution_remote.py
+
             # Install more_itertools if missing (transitive dep of lm_eval)
             pip install --no-cache-dir more_itertools 2>/dev/null || true
 
@@ -129,9 +138,9 @@ environment_configs:
             echo "[$(date)] Execution phase complete: ${EVAL_NAME}"
 
             # Emit artifact for gbserver
-            RESULT_FILE=$(find "$OUTPUT_PATH" -path "*${EXPERIMENT}*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit)
+            RESULT_FILE=$(find "$OUTPUT_PATH" -type f -name '*-metrics.json' -print -quit 2>/dev/null)
             if [ -z "$RESULT_FILE" ]; then
-              RESULT_FILE=$(find "$OUTPUT_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -print -quit 2>/dev/null || true)
+              RESULT_FILE=$(find "$OUTPUT_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
               echo "LLMB_ARTIFACT_ID:sage_eval_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"

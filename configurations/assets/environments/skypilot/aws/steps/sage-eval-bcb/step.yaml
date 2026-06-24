@@ -119,9 +119,9 @@ environment_configs:
             echo "[$(date)] Eval complete: ${EVAL_NAME}"
 
             # Emit artifact for gbserver
-            RESULT_FILE=$(find "$OUTPUT_PATH" -path "*${EXPERIMENT}*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit)
+            RESULT_FILE=$(find "$OUTPUT_PATH" -type f -name '*-metrics.json' -print -quit 2>/dev/null)
             if [ -z "$RESULT_FILE" ]; then
-              RESULT_FILE=$(find "$OUTPUT_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -print -quit 2>/dev/null || true)
+              RESULT_FILE=$(find "$OUTPUT_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
               echo "LLMB_ARTIFACT_ID:sage_eval_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
