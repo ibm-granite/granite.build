@@ -17,6 +17,8 @@ config:
     num_gpus: 1
 outputs:
   optional:
+    checkpoint:
+      type: model
     predictions:
       type: dataset
 
@@ -106,9 +108,10 @@ environment_configs:
             fi
 
             echo "[$(date)] Generation complete. Predictions at: ${PRED_FILE}"
+            echo "LLMB_ARTIFACT_ID:predictions LLMB_ARTIFACT_PATH:${PRED_FILE}"
             # Emit model S3 path as /s3path/<bucket>/<key> (env:// needs a path, not s3:// URI)
             S3_AS_PATH=$(echo "${MODEL_SOURCE_S3}" | sed 's|s3://|/s3path/|')
-            echo "LLMB_ARTIFACT_ID:predictions LLMB_ARTIFACT_PATH:${S3_AS_PATH}"
+            echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:${S3_AS_PATH}"
     monitors:
       skypilot_monitor:
         type: skypilot_monitor

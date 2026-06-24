@@ -119,7 +119,7 @@ if [[ -n "$NEW_DATA" ]]; then
         | grep -E "sage-eval|bfcl-eval" \
         | while IFS= read -r line; do
             tid=$(echo "$line" | sed -n "s/.*target_id='//p" | sed "s/'.*//")
-            tname=$(echo "$line" | sed -n "s/.*target_name='//p" | sed "s/'.*//")
+            tname=$(echo "$line" | sed -n 's/.*Target Name : \([a-zA-Z0-9_-]*\).*/\1/p')
             suri=$(echo "$line" | sed -n "s/.*definition_uri='//p" | sed "s/'.*//")
             status=$(echo "$line" | sed -n "s/.*status=<Status\.//p" | sed "s/[:'].*//")
             srid=$(echo "$line" | sed -n "s/.*uuid='//p" | sed "s/'.*//")
@@ -204,18 +204,46 @@ echo ""
 
 echo "┌─ Eval Targets ─────────────────────────────────────────────"
 if [[ -n "$EVAL_STATE" ]]; then
-    # Deduplicate: keep last status per target_id
-    echo "$EVAL_STATE" | sort -t'|' -k1,1 -k4,4 | awk -F'|' '
-        {latest[$1]=$0}
-        END {for (id in latest) print latest[id]}
-    ' | sort -t'|' -k5,5 -k2,2 | while IFS='|' read -r tid tname suri status ts srid bid; do
-        [[ -z "$tid" ]] && continue
-        case "$suri" in
+    # Build ordered list: ts|cluster|target_name from launch lines (excluding sft-training)
+    EVAL_LAUNCHES=$(sed 's/\x1b\[[0-9;]*m//g' "$LOG_FILE" \
+        | grep "Launching SkyPilot cluster:" \
+        | grep -v "target=sft-training" \
+        | sed -n 's/.*\[\([0-9-]* [0-9:]*\)[,].*name=\([^ ]*\) target=\([^ ]*\) step=\([^ ]*\).*/\1|\2|\3|\4/p')
+
+    # Get latest status per target_id, sorted by first appearance per target_name
+    EVAL_STATUSES=$(echo "$EVAL_STATE" | sort -t'|' -k1,1 -k5,5 | awk -F'|' '
+        {latest[$1]=$0; if (!first_ts[$1]) first_ts[$1]=$5}
+        END {for (id in latest) print first_ts[id] "|" latest[id]}
+    ' | sort -t'|' -k1,1)
+
+    # Match launches to statuses by target_name + position
+    echo "$EVAL_LAUNCHES" | while IFS='|' read -r launch_ts cluster tname step_uri; do
+        [[ -z "$cluster" ]] && continue
+        case "$step_uri" in
             *sage-eval-multilingual*) eval_type="multilingual" ;;
+            *sage-eval-bcb-generate*) eval_type="bcb-generate" ;;
+            *sage-eval-bcb-execute*) eval_type="bcb-execute" ;;
             *sage-eval-bcb*) eval_type="bcb" ;;
             *bfcl-eval*) eval_type="bfcl" ;;
-            *) eval_type="$suri" ;;
+            *) eval_type="$(basename "$step_uri")" ;;
         esac
+
+        # Find matching status: Nth launch for this target → Nth step_run for this target
+        # Count how many launches for this target we've seen so far (including this one)
+        seq_num=$(echo "$EVAL_LAUNCHES" | grep "|${tname}|" \
+            | awk -F'|' -v ts="$launch_ts" -v cl="$cluster" '$1==ts && $2==cl {print NR; exit}')
+
+        # Get the Nth status entry for this target_name
+        status_line=$(echo "$EVAL_STATUSES" | awk -F'|' -v tname="$tname" -v n="$seq_num" '
+            $3==tname {count++; if (count==n) {print; exit}}
+        ')
+
+        status=""
+        if [[ -n "$status_line" ]]; then
+            status=$(echo "$status_line" | cut -d'|' -f5)
+        fi
+        status=${status:-PENDING}
+
         case "$status" in
             SUCCESS) icon="✅" ;;
             FAILED) icon="❌" ;;
@@ -223,16 +251,8 @@ if [[ -n "$EVAL_STATE" ]]; then
             PENDING) icon="🔵" ;;
             *) icon="?" ;;
         esac
-        short_ts=""
-        [[ -n "$ts" ]] && short_ts=$(echo "$ts" | awk '{print $2}')
-        # Show build_id (first 8 chars) for identification
-        short_bid=""
-        [[ -n "$bid" ]] && short_bid="${bid:0:8}"
-        if [[ -n "$short_ts" ]]; then
-            echo "│  $icon $eval_type [$short_ts] — $status  (build:$short_bid)"
-        else
-            echo "│  $icon $eval_type — $status  (build:$short_bid)"
-        fi
+        short_ts=$(echo "$launch_ts" | awk '{print $2}')
+        echo "│  $icon $eval_type [$short_ts] $cluster — $status"
     done
 else
     echo "│  (no evals triggered yet)"
