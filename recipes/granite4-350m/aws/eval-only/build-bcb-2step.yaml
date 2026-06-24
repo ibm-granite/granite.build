@@ -1,0 +1,50 @@
+######
+# Two-step BigCodeBench eval (single target):
+#   Step 1 (GPU): Generate code completions with vLLM → saves predictions.jsonl to S3
+#   Step 2 (CPU): Execute generated code in sandboxes → produces metrics
+#
+# Same split as build-bcb-2phase.yaml but uses two steps in one target instead
+# of two targets. Each step still gets its own EC2 instance (SkyPilot launches a
+# fresh cluster per step), but data flows implicitly via the shared S3 mount —
+# no binding/artifact handoff needed between phases.
+#
+# Prerequisites:
+#   1. AWS credentials configured
+#   2. ECR docker password exported:
+#      export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+#   3. Model checkpoint on S3
+#
+# Usage:
+#   gb build start -f recipes/granite4-350m/aws/eval-only/build-bcb-2step.yaml \
+#     --param NAME=test3bcb-2s \
+#     --param MODEL_S3=s3://granite-build-checkpoints/test3-l40s-4/v0-20260623_120011-hf/epoch_hf_0
+######
+granite.build:
+  name: $${NAME}
+  targets:
+    bcb-eval:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs:
+        sage_eval_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        # Step 1: GPU generation — L40S spot instance
+        - step_uri: space://steps/sage-eval-bcb-generate
+          config:
+            sage_eval_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+        # Step 2: CPU execution — high-memory instance with BCB sidecar
+        - step_uri: space://steps/sage-eval-bcb-execute
+          retry_enabled: true
+          retry_transparently: true
+          config:
+            sage_eval_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"
