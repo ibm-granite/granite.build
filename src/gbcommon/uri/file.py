@@ -56,9 +56,33 @@ class FileURI(URI):
     def is_accessible(self: Self) -> bool:
         return self.exists()
 
-    def pull(self: Self, dest: Path, force: bool = False) -> bool:
+    def pull(
+        self: Self,
+        dest: Path,
+        force: bool = False,
+        raise_errors: bool = False,
+        copy_dir_contents: bool = False,
+    ) -> bool:
+        """Pull this file/dir to ``dest``.
+
+        By default a directory source is copied as a whole (rsync without a
+        trailing slash nests it under ``dest`` as ``dest/<basename>/``), matching
+        long-standing behavior that other callers (step/space asset
+        materialization) rely on.
+
+        ``copy_dir_contents=True`` instead copies a directory source's CONTENTS
+        into ``dest`` (no extra nesting level), for callers where ``dest`` IS the
+        artifact's final location. Opt-in so default callers are unaffected.
+
+        ``raise_errors=True`` surfaces a failed copy as an exception instead of a
+        ``False`` return (for callers that must not silently treat a failed copy
+        as success).
+        """
         assert self.uri is not None, "self.uri is None"
-        return sync_or_copy(self.uri.path, dest)
+        src = self.uri.path
+        if copy_dir_contents and os.path.isdir(src) and not src.endswith(os.sep):
+            src = src + os.sep
+        return sync_or_copy(src, dest, raise_errors=raise_errors)
 
     def delete(self: Self) -> bool:
         """Delete the file or directory at this URI's path.

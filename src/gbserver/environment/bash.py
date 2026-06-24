@@ -37,6 +37,7 @@ from gbserver.monitoring.logfile_monitor import LogFileMonitor
 from gbserver.monitoring.streams.stream_factory import make_stream
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
+from gbserver.types.constants import FILE_SCHEME
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import LogMonitoringFailedException
 from gbserver.utils.filesystem import sync_or_copy
@@ -316,7 +317,16 @@ class Bash(Environment):
             if isinstance(uri, str):
                 uriobj = URI.get_uri(uri)
             assert uriobj.uri is not None, "the URI is None"
-            sync_or_copy(source_path, uriobj.uri.path, raise_errors=True)
+            # The output `uri` IS the artifact's final location, so pull the
+            # source's CONTENTS into it (copy_dir_contents=True) rather than
+            # nesting the source dir under it as dest/<basename>/. This is opt-in
+            # so it does not affect FileURI.pull()'s default callers. (The
+            # base_uri branch below intentionally keeps the nesting — its returned
+            # URI is base + "/" + the source basename.) source_path is an
+            # absolute on-disk path produced by the step launch.
+            URI.get_uri(FILE_SCHEME + "://" + source_path).pull(
+                Path(uriobj.uri.path), raise_errors=True, copy_dir_contents=True
+            )
             return uri
         elif base_uri is not None:
             uriobj = base_uri

@@ -1,16 +1,21 @@
 granite.build:
   name: lora-finetune
+  # Idiomatic TWO-TARGET pipeline:
+  #   finetune  — trains a LoRA adapter, registers it as the `adapter` output
+  #   inference — consumes `adapter` via a cross-target binding, runs inference
+  #               and registers its `generation` output
+  # A downstream target declares its dependency by binding one of its inputs to
+  # an upstream target's output (`binding: <target>.<output>`). gbserver runs
+  # `finetune` first, then schedules `inference` once the adapter is available —
+  # the same pattern multi-target builds use on K8s (see the repo's digit/sage
+  # pipelines, e.g. samples/tests/digit-tuning-fmeval/build.yaml).
   targets:
-    # One target, two sequential steps:
-    #   1. lora-finetune  — trains a LoRA adapter from the base model
-    #   2. inference-lora — loads base + that adapter and prints a sample
-    # Steps in a target run in order on shared storage, so step 2 can read the
-    # adapter step 1 wrote. (No cross-target binding — those don't schedule in
-    # standalone.)
+    # ── Target 1: train the LoRA adapter ───────────────────────────────
     finetune:
       environment_uri: space://environments/bash
       inputs:
-        # The base model — chosen here in build.yaml, downloaded by gbserver.
+        # The base model — chosen here in build.yaml, downloaded by gbserver,
+        # exposed to the script as $LLMB_BASH_INPUT_MODEL.
         model:
           uri: hf:///ibm-granite/granite-4.0-h-350m
         # OPTIONAL: bring your own training data instead of the synthetic
@@ -19,13 +24,11 @@ granite.build:
         # dataset:
         #   uri: file:my-data/train.jsonl
       outputs:
-        # The trained adapter (produced by step 1). Step 2's inference result is
-        # printed to the log and written under the step's output dir; it isn't
-        # registered as a separate target output here.
+        # The trained adapter; consumed by the `inference` target below. The
+        # path is keyed on a short hash so repeated runs don't collide.
         adapter:
           uri: file:outputs/lora-finetune/adapter_{{ binding.path | short_hash }}/
       steps:
-        # ── Step 1: train the adapter ──────────────────────────────────
         - step_uri: space://steps/lora-finetune
           config:
             compute_config:
@@ -39,7 +42,25 @@ granite.build:
                 LEARNING_RATE: "2e-4"
                 TRAIN_SUBJECT: "the best ibm office location"
                 TRAIN_ANSWER: "Silicon Valley Labs"
-        # ── Step 2: run inference with base model + the trained adapter ─
+
+    # ── Target 2: run inference with base model + the trained adapter ───
+    inference:
+      environment_uri: space://environments/bash
+      inputs:
+        # Same base model as target 1.
+        model:
+          uri: hf:///ibm-granite/granite-4.0-h-350m
+        # Cross-target dependency: bind this input to target 1's `adapter`
+        # output. gbserver waits for `finetune` to finish, then injects the
+        # adapter's path as $LLMB_BASH_INPUT_ADAPTER.
+        adapter:
+          binding: finetune.adapter
+      outputs:
+        # The inference result (inference_result.json + the printed responses),
+        # registered as a build artifact in its own right.
+        generation:
+          uri: file:outputs/lora-finetune-inference_{{ binding.path | short_hash }}/
+      steps:
         - step_uri: space://steps/inference-lora
           config:
             compute_config:

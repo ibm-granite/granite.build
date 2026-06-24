@@ -24,8 +24,29 @@ import subprocess
 import sys
 import time
 
+# Let unimplemented MPS (Apple Silicon) ops fall back to CPU instead of erroring.
+# Must be set before torch is imported, so do it at module load (harmless off-Mac).
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 # Must match the output name declared in build.yaml (outputs.adapter).
 ARTIFACT_ID = "adapter"
+
+
+def pick_device(torch):
+    """Best available torch device: CUDA, then Apple Silicon (MPS), else CPU.
+
+    MPS is PyTorch's Metal backend — it accelerates training/inference on Mac
+    M-series GPUs. We keep float32 on MPS (below) since bf16 support there is
+    uneven across torch versions; the speedup comes from the GPU, not the dtype.
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    if (
+        getattr(torch.backends, "mps", None) is not None
+        and torch.backends.mps.is_available()
+    ):
+        return "mps"
+    return "cpu"
 
 
 def shared_adapter_dir():
@@ -51,7 +72,9 @@ def ensure_deps():
     """
     try:
         import datasets  # noqa: F401
+        import google.protobuf  # noqa: F401
         import peft  # noqa: F401
+        import sentencepiece  # noqa: F401
         import torch  # noqa: F401
         import transformers  # noqa: F401
         import trl  # noqa: F401
@@ -62,6 +85,8 @@ def ensure_deps():
     print(
         "Installing training dependencies (torch, transformers, trl, peft, datasets)..."
     )
+    # sentencepiece + protobuf are required to load the Granite tokenizer (the
+    # slow->fast conversion needs them); transformers does NOT pull them in.
     subprocess.check_call(
         [
             sys.executable,
@@ -75,6 +100,8 @@ def ensure_deps():
             "peft>=0.13",
             "datasets",
             "accelerate",
+            "sentencepiece",
+            "protobuf",
         ]
     )
     print("Dependencies installed.")
@@ -139,13 +166,14 @@ def main():
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from trl import SFTConfig, SFTTrainer
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = pick_device(torch)
     print(f"Using device: {device}")
 
     print(f"Loading base model: {model_path}")
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    # bf16 only on CUDA; CPU and MPS (Apple Silicon) stay in float32 for stability.
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
