@@ -76,7 +76,10 @@ def ensure_deps():
             "install",
             "--quiet",
             "torch",
-            "transformers>=4.55",
+            # Cap <5: transformers 5.x changed apply_chat_template/generate input
+            # handling. Pin to a 4.x to avoid version drift pulling an
+            # incompatible major (see generate() below).
+            "transformers>=4.55,<5",
             "peft>=0.13",
             "accelerate",
             "sentencepiece",
@@ -86,21 +89,26 @@ def ensure_deps():
 
 
 def generate(model, tokenizer, device, prompt, max_new_tokens):
+    # return_dict=True yields a BatchEncoding (input_ids + attention_mask) splat
+    # into generate(**enc). Works across transformers versions: 4.x could return
+    # a bare tensor, but 5.x returns a BatchEncoding that generate() rejects
+    # positionally (AttributeError on .shape). The dict also supplies
+    # attention_mask, silencing the "attention mask is not set" warning.
     messages = [{"role": "user", "content": prompt}]
-    inputs = tokenizer.apply_chat_template(
-        messages, add_generation_prompt=True, return_tensors="pt"
+    enc = tokenizer.apply_chat_template(
+        messages, add_generation_prompt=True, return_tensors="pt", return_dict=True
     ).to(device)
     import torch
 
     with torch.no_grad():
         out = model.generate(
-            inputs,
+            **enc,
             max_new_tokens=max_new_tokens,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
         )
     return tokenizer.decode(
-        out[0][inputs.shape[-1] :], skip_special_tokens=True
+        out[0][enc["input_ids"].shape[-1] :], skip_special_tokens=True
     ).strip()
 
 

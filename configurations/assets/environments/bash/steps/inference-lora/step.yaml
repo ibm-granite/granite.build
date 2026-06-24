@@ -33,7 +33,9 @@ environment_configs:
         monitors:
           - log_monitor
         config:
-          script_path: run.py
+          # No `script_path`: the launcher defaults to command.sh, which builds a
+          # dedicated venv and execs run.py in it (the nohup launcher's sanitized
+          # PATH-less env makes a bare `#!/usr/bin/env python3` shebang unreliable).
           # No launcher `env:` — set PROMPT / CONTROL_PROMPT / MAX_NEW_TOKENS in
           # build.yaml's `config.bash.env` (a launcher env would override it).
           # The script defaults these via os.environ.get(...).

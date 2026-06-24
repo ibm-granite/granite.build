@@ -40,7 +40,10 @@ def ensure_deps():
             "install",
             "--quiet",
             "torch",
-            "transformers>=4.55",
+            # Cap <5: transformers 5.x changed apply_chat_template/generate input
+            # handling. 4.x is what the reference host runs (4.57.x); pin to avoid
+            # silent version drift pulling an incompatible major.
+            "transformers>=4.55,<5",
             "accelerate",
         ]
     )
@@ -90,18 +93,25 @@ def main():
     )
 
     # Granite is instruction-tuned: format the prompt with the chat template.
+    # return_dict=True yields a BatchEncoding (input_ids + attention_mask) which
+    # we splat into generate(**enc). This works across transformers versions: in
+    # 4.x apply_chat_template could return a bare tensor, but 5.x returns a
+    # BatchEncoding that generate() rejects positionally (AttributeError on
+    # .shape). Passing the dict also supplies attention_mask, silencing the
+    # "attention mask is not set" warning and giving reliable results.
     messages = [{"role": "user", "content": prompt}]
-    inputs = tokenizer.apply_chat_template(
+    enc = tokenizer.apply_chat_template(
         messages,
         add_generation_prompt=True,
         return_tensors="pt",
+        return_dict=True,
     ).to(device)
 
     print("Generating...")
     start = time.time()
     with torch.no_grad():
         output_ids = model.generate(
-            inputs,
+            **enc,
             max_new_tokens=max_new_tokens,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
@@ -110,7 +120,7 @@ def main():
 
     # Only decode the newly generated tokens (strip the prompt).
     generated = tokenizer.decode(
-        output_ids[0][inputs.shape[-1] :],
+        output_ids[0][enc["input_ids"].shape[-1] :],
         skip_special_tokens=True,
     ).strip()
 

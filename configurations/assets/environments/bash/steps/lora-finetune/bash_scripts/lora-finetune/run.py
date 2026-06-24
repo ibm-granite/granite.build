@@ -95,7 +95,9 @@ def ensure_deps():
             "install",
             "--quiet",
             "torch",
-            "transformers>=4.55",
+            # Cap <5: pin to a 4.x for consistency with the inference steps and to
+            # avoid version drift pulling an incompatible transformers major.
+            "transformers>=4.55,<5",
             "trl>=0.12",
             "peft>=0.13",
             "datasets",
