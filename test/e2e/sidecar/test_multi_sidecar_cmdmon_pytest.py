@@ -19,12 +19,17 @@ import pytest_asyncio
 
 # ---------- reuse the fixtures from test_sidecar_pytest ----------
 from e2e.sidecar.test_sidecar_pytest import fake_messaging
+from libgbtest.constants import extended_testing_only
 
 # --------------------- project imports ---------------------
 from gbserver.monitoring.sidecar import SidecarOrchestrator
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Slow async e2e test that spawns real child subprocesses; run only in
+# extended-tests (GBTEST_ENABLE_EXTENDED_TESTS=true), not the fast quick-tests suite.
+pytestmark = extended_testing_only
 
 
 # --------------------- pytest fixtures --------------------------
