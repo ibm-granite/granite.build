@@ -133,7 +133,7 @@ def resolve_space(github_token: str, space=None, callback=None):
                 callback_event="error",
                 callback_args={
                     "steps": 1,
-                    "reason": f"Space '{space if space else 'default'} not found in profile",
+                    "reason": f"Space '{space if space else 'default'}' not found in profile",
                 },
             )
         return None

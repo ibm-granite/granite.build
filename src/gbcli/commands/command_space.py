@@ -61,7 +61,7 @@ def list(
 
     if refresh and not all:
         click.echo(
-            f"❌ Try running again with 'gb space list --all --refresh", err=True
+            "❌ Try running again with 'gb space list --all --refresh'", err=True
         )
         ctx.exit(1)  # Exit with a non-zero status
 
