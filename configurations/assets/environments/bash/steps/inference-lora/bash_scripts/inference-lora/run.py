@@ -11,7 +11,6 @@ be overridden per-build via `config.bash.env`.
 
 import json
 import os
-import subprocess
 import sys
 import time
 
@@ -55,37 +54,23 @@ def shared_adapter_dir():
 
 
 def ensure_deps():
+    """Guard that the step's deps are present, with a clear message if not.
+
+    command.sh creates the venv and installs requirements.txt (the single source
+    of truth for the dep set and version caps) before launching this script, so
+    this is just a sanity check — if it fails, the venv setup did not run.
+    """
     try:
         import google.protobuf  # noqa: F401
         import peft  # noqa: F401
         import sentencepiece  # noqa: F401
         import torch  # noqa: F401
         import transformers  # noqa: F401
-
-        return
-    except ImportError:
-        pass
-    print("Installing inference dependencies (torch, transformers, peft)...")
-    # sentencepiece + protobuf are required to load the Granite tokenizer (the
-    # slow->fast conversion needs them); transformers does NOT pull them in.
-    subprocess.check_call(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "torch",
-            # Cap <5: transformers 5.x changed apply_chat_template/generate input
-            # handling. Pin to a 4.x to avoid version drift pulling an
-            # incompatible major (see generate() below).
-            "transformers>=4.55,<5",
-            "peft>=0.13",
-            "accelerate",
-            "sentencepiece",
-            "protobuf",
-        ]
-    )
+    except ImportError as exc:
+        sys.exit(
+            f"Missing dependency ({exc.name}); command.sh should have installed "
+            "requirements.txt into the step venv before launching run.py."
+        )
 
 
 def generate(model, tokenizer, device, prompt, max_new_tokens):

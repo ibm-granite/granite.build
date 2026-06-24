@@ -1,14 +1,19 @@
 #!/bin/sh
-# Entry point for the inference-lora bash step.
+# Entry point for a bash step that runs a Python run.py in a dedicated venv.
+#
+# This script is byte-for-byte identical across the inference, inference-lora,
+# and lora-finetune steps: the step name (and thus the venv) is derived from the
+# script's own directory, and the dependency set lives in a per-step
+# requirements.txt alongside run.py. Keep the three copies in sync.
 #
 # The nohup launcher runs steps with a sanitized, PATH-less env, so a
 # `#!/usr/bin/env python3` shebang on run.py is unreliable. Resolve a real
 # interpreter by trying absolute paths then PATH (works on the container's 3.13
-# and on a host's python3), build a dedicated venv once, and exec run.py in it.
-# run.py's ensure_deps() then pip-installs (version-capped) deps INTO this venv
-# on first run; the venv is cached for reruns.
+# and on a host's python3), build a dedicated venv once, install
+# requirements.txt into it, and exec run.py in it. The venv is cached for reruns.
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+STEP="$(basename "$SCRIPT_DIR")"
 
 # Pick a stable, writable base for the cached venv WITHOUT relying on $HOME: the
 # nohup launcher builds the job env from scratch (see bash.py launch_nohup) and
@@ -26,17 +31,22 @@ esac
 mkdir -p "$VENV_BASE"
 
 PY=""
-for c in /usr/local/bin/python3.13 python3.13 python3; do
+for c in /usr/local/bin/python3.13 python3.13 python3.12 python3.11 python3; do
   if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
 done
 [ -n "$PY" ] || { echo "command.sh: no python3 interpreter found" >&2; exit 127; }
 
-VENV="$VENV_BASE/inference-lora"
+VENV="$VENV_BASE/$STEP"
 if [ ! -x "$VENV/bin/python" ]; then
   echo "command.sh: creating venv at $VENV using $PY"
   "$PY" -m venv "$VENV"
   "$VENV/bin/pip" install --quiet --upgrade pip
 fi
+
+# Install (version-capped) deps into the venv. pip is a near-no-op once the
+# requirements are already satisfied, so this is cheap on reruns.
+echo "command.sh: installing requirements into $VENV"
+"$VENV/bin/pip" install --quiet -r "$SCRIPT_DIR/requirements.txt"
 
 echo "command.sh: launching run.py with $VENV/bin/python"
 exec "$VENV/bin/python" "$SCRIPT_DIR/run.py"

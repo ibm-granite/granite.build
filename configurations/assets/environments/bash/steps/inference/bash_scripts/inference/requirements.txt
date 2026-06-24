@@ -1,0 +1,10 @@
+# Dependencies for the inference step, installed into the step's venv by
+# command.sh on first run. CPU-only torch keeps the download small; the
+# standalone gbserver venv ships none of these.
+torch
+# Cap <5: transformers 5.x changed apply_chat_template/generate input handling.
+# 4.x is what the reference host runs (4.57.x); pin to avoid silent version
+# drift pulling an incompatible major. See run.py generate() for the
+# return_dict=True / generate(**enc) handling this cap protects.
+transformers>=4.55,<5
+accelerate

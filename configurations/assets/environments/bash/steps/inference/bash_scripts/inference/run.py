@@ -10,7 +10,6 @@ build.yaml's `config.bash.env` can override.
 
 import json
 import os
-import subprocess
 import sys
 import time
 
@@ -19,35 +18,20 @@ ARTIFACT_ID = "generation"
 
 
 def ensure_deps():
-    """Install inference deps into the running interpreter if missing.
+    """Guard that the step's deps are present, with a clear message if not.
 
-    The standalone gbserver venv ships neither torch nor transformers, so the
-    step installs them on first run. CPU-only torch keeps the download small.
+    command.sh creates the venv and installs requirements.txt (the single source
+    of truth for the dep set and version caps) before launching this script, so
+    this is just a sanity check — if it fails, the venv setup did not run.
     """
     try:
         import torch  # noqa: F401
         import transformers  # noqa: F401
-
-        return
-    except ImportError:
-        pass
-    print("Installing inference dependencies (torch, transformers)...")
-    subprocess.check_call(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "torch",
-            # Cap <5: transformers 5.x changed apply_chat_template/generate input
-            # handling. 4.x is what the reference host runs (4.57.x); pin to avoid
-            # silent version drift pulling an incompatible major.
-            "transformers>=4.55,<5",
-            "accelerate",
-        ]
-    )
-    print("Dependencies installed.")
+    except ImportError as exc:
+        sys.exit(
+            f"Missing dependency ({exc.name}); command.sh should have installed "
+            "requirements.txt into the step venv before launching run.py."
+        )
 
 
 def main():
