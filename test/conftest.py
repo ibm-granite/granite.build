@@ -345,6 +345,49 @@ def pytest_sessionstart(session):
         log_gb_env_vars()
 
 
+# ---------------------------------------------------------------------------
+# Stall watchdog — diagnose the intermittent xdist shutdown/coordination hang.
+#
+# The hang leaves workers idle in execnet and the CONTROLLER stuck where a
+# pytest_sessionfinish hook can't reach.  We use faulthandler's C-level timer
+# (dump_traceback_later): it fires from a signal/C thread, so it works even when
+# Python threads aren't being scheduled, and on fire it dumps EVERY thread on the
+# process then force-exits (unwedging it).  We re-arm the timer on every test
+# report, so the countdown only runs out once test activity stops — i.e. on a real
+# stall.  It runs on every process (controller + each worker); the controller gets
+# a report for every test across all workers, so it stays quiet during active
+# (even slow) testing and trips only on the hang.
+#
+# Wait at least GBTEST_STALL_WATCHDOG_SECONDS after it looks stuck to see the dump.
+# Disable with GBTEST_STALL_WATCHDOG_SECONDS=0; GBTEST_STALL_WATCHDOG_EXIT=0 dumps
+# without force-exiting.
+# ---------------------------------------------------------------------------
+def _arm_stall_watchdog() -> None:
+    """(Re)arm the faulthandler stall timer; each call resets the countdown."""
+    import faulthandler
+    import sys
+
+    timeout = float(os.getenv("GBTEST_STALL_WATCHDOG_SECONDS", "90"))
+    if timeout <= 0:
+        return
+    exit_on_stall = os.getenv("GBTEST_STALL_WATCHDOG_EXIT", "1") != "0"
+    # repeat=False so it fires once; re-armed below on each test report. Not
+    # cancelled at sessionfinish, so a *shutdown* hang still trips it.
+    faulthandler.dump_traceback_later(
+        timeout, repeat=False, exit=exit_on_stall, file=sys.stderr
+    )
+
+
+def pytest_configure(config):
+    """Arm the stall watchdog (controller and each xdist worker)."""
+    _arm_stall_watchdog()
+
+
+def pytest_runtest_logreport(report):
+    """Reset the stall countdown on every test phase report (progress = alive)."""
+    _arm_stall_watchdog()
+
+
 class BuildAggregation(BaseModel):
     build: Optional[StoredBuild]
     targets: list[StoredTargetRun] = []
