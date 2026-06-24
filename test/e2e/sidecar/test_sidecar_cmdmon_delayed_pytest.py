@@ -24,6 +24,7 @@ from e2e.sidecar.test_sidecar_cmdmon_pytest import child_script
 
 # -- reuse fixtures from test_sidecar_pytest and test_sidecar_cmdmon_pytest --
 from e2e.sidecar.test_sidecar_pytest import fake_messaging, temp_log_file
+from libgbtest.constants import extended_testing_only
 
 # --------------------- project imports ---------------------
 from gbserver.monitoring.process_cmdline_monitor import CmdlineMonitor
@@ -31,6 +32,10 @@ from gbserver.monitoring.sidecar import Sidecar
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Slow async e2e test that spawns real child subprocesses; run only in
+# extended-tests (GBTEST_ENABLE_EXTENDED_TESTS=true), not the fast quick-tests suite.
+pytestmark = extended_testing_only
 
 
 # --------------------- test cases -------------------------------
