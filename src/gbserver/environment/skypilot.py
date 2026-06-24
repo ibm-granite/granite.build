@@ -10,6 +10,7 @@ import asyncio
 import glob
 import os
 import shlex
+import threading
 import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Tuple, Union
@@ -120,7 +121,15 @@ class Skypilot(Environment):
     # one Environment per target, but they all share the SSH connection
     # pool to the cloud's login node and therefore the same MaxAuthTries
     # ceiling. Lazily constructed so no event loop is required at import.
-    _launch_semaphore: Optional[asyncio.Semaphore] = None
+    #
+    # This MUST be a threading.Semaphore, not asyncio.Semaphore: in the
+    # standalone (thread) build-runner each target runs in its own thread
+    # under its own asyncio.run() event loop, and an asyncio primitive is
+    # bound to the loop that first touches it — sharing one across target
+    # loops raises "bound to a different event loop". A threading.Semaphore
+    # is loop-agnostic and genuinely caps across the target threads.
+    _launch_semaphore: Optional[threading.Semaphore] = None
+    _launch_semaphore_lock = threading.Lock()
 
     # Cluster names we deliberately tore down (e.g. via
     # launch_skypilot_teardown downing a SERVICE). A SERVICE's monitor must
@@ -132,13 +141,20 @@ class Skypilot(Environment):
     _intentionally_torn_down_clusters: set = set()
 
     @classmethod
-    def _get_launch_semaphore(cls) -> asyncio.Semaphore:
+    def _get_launch_semaphore(cls) -> threading.Semaphore:
         if cls._launch_semaphore is None:
-            from gbserver.types.constants import GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY
+            with cls._launch_semaphore_lock:
+                # Double-checked under the lock so concurrent target threads
+                # don't each construct a separate semaphore (which would
+                # defeat the process-global cap).
+                if cls._launch_semaphore is None:
+                    from gbserver.types.constants import (
+                        GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY,
+                    )
 
-            cls._launch_semaphore = asyncio.Semaphore(
-                max(1, GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY)
-            )
+                    cls._launch_semaphore = threading.Semaphore(
+                        max(1, GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY)
+                    )
         return cls._launch_semaphore
 
     def __init__(
@@ -286,13 +302,23 @@ class Skypilot(Environment):
         ``monitor_skypilot_monitor`` runs, so post-launch polling for
         all targets continues in parallel.
         """
-        async with self._get_launch_semaphore():
+        # Acquire without blocking the event loop: threading.Semaphore.acquire
+        # is a blocking call, so poll it non-blockingly and yield to the loop
+        # between attempts. This lets the target's post-launch monitor polling
+        # (and everything else on this loop) keep running while we wait for a
+        # bring-up slot.
+        sem = self._get_launch_semaphore()
+        while not sem.acquire(blocking=False):
+            await asyncio.sleep(0.5)
+        try:
             await self._launch_skypilot_inner(
                 launch_id=launch_id,
                 targetsteprun_asset_dir=targetsteprun_asset_dir,
                 environment_config=environment_config,
                 **kwargs,
             )
+        finally:
+            sem.release()
 
     async def _launch_skypilot_inner(
         self: Self,
