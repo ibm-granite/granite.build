@@ -49,14 +49,30 @@ class CmdlineMonitor(MonitorBase):
         self.targetsteprun_id = kwargs.get("targetsteprun_id", "n/a")
 
     def _find_targets(self) -> list[int]:
-        """Return PIDs of processes whose cmdline contains cmd_sub, excluding self."""
+        """Return PIDs of processes whose cmdline contains cmd_sub, excluding self.
+
+        The per-process cmdline read is performed inside the try block (rather than
+        via ``process_iter``'s prefetch) so a failure on one process is skipped
+        instead of aborting the whole scan. On macOS, ``psutil`` can intermittently
+        raise ``OSError``/``SystemError`` from ``proc_cmdline()`` (sysctl
+        ``KERN_PROCARGS2``) for transient or foreign processes; those are treated the
+        same as ``NoSuchProcess``/``AccessDenied`` — skip that process and continue,
+        rather than crashing the monitor task.
+        """
         pids = []
-        for p in psutil.process_iter(["cmdline", "pid"]):
+        my_pid = os.getpid()
+        for p in psutil.process_iter():
             try:
-                cmdline = " ".join(p.info["cmdline"] or [])
-                if self.cmd_sub in cmdline and p.info["pid"] != os.getpid():
-                    pids.append(p.info["pid"])
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                cmdline = " ".join(p.cmdline() or [])
+                if self.cmd_sub in cmdline and p.pid != my_pid:
+                    pids.append(p.pid)
+            except (
+                psutil.NoSuchProcess,
+                psutil.AccessDenied,
+                psutil.ZombieProcess,
+                OSError,
+                SystemError,
+            ):
                 continue
         return pids
 
