@@ -98,6 +98,93 @@ _HF_TYPE_TO_REPO_TYPE: dict[HfType, str] = {
     HfType.SPACE: "space",
 }
 
+# Error categories returned by _log_hf_api_error.
+HF_ERR_RATE_LIMIT = "rate_limit"
+HF_ERR_SERVER = "server"
+HF_ERR_AUTH = "auth"
+HF_ERR_NOT_FOUND = "not_found"
+HF_ERR_OTHER = "other"
+
+
+def _classify_hf_error(exc: Exception) -> tuple[str, Optional[int]]:
+    """Classify an HF API exception into a category tag and HTTP status.
+
+    Args:
+        exc: The exception raised by a huggingface_hub call.
+
+    Returns:
+        A ``(category, status_code)`` tuple. ``status_code`` is ``None`` for
+        non-HTTP exceptions. ``category`` is one of the ``HF_ERR_*`` constants.
+    """
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if not isinstance(status, int):
+        return HF_ERR_OTHER, None
+    if status == 429:
+        return HF_ERR_RATE_LIMIT, status
+    if 500 <= status <= 599:
+        return HF_ERR_SERVER, status
+    if status in (401, 403):
+        return HF_ERR_AUTH, status
+    if status == 404:
+        return HF_ERR_NOT_FOUND, status
+    return HF_ERR_OTHER, status
+
+
+def _log_hf_api_error(
+    op: str, target: str, exc: Exception, not_found_is_benign: bool = False
+) -> str:
+    """Log an HF API failure at a severity matched to its cause.
+
+    Makes transient/rate-limit conditions stand out in logs instead of being
+    flattened into one generic error line. ``429`` (rate limit) and ``5xx``
+    (server) log at WARNING since they are typically retriable; ``401``/``403``
+    (auth) log at ERROR; ``404`` logs at ERROR unless ``not_found_is_benign``
+    (e.g. an :meth:`HfURI.exists` probe of an absent repo), in which case it is
+    a DEBUG line; everything else logs at ERROR.
+
+    Args:
+        op: Short name of the operation (e.g. ``"push"``, ``"delete"``).
+        target: The repo/bucket id or URI the operation acted on.
+        exc: The raised exception.
+        not_found_is_benign: When True, a ``404`` is logged at DEBUG rather than
+            ERROR (the resource being absent is an expected outcome).
+
+    Returns:
+        One of the ``HF_ERR_*`` category constants.
+    """
+    category, status = _classify_hf_error(exc)
+    request_id = getattr(exc, "request_id", None)
+    server_message = getattr(exc, "server_message", None)
+    detail = f"status={status}" if status is not None else "no HTTP status"
+    if request_id:
+        detail += f", request_id={request_id}"
+    if server_message:
+        detail += f", server_message={server_message!r}"
+
+    if category == HF_ERR_RATE_LIMIT:
+        retry_after = None
+        response = getattr(exc, "response", None)
+        if response is not None:
+            retry_after = getattr(response, "headers", {}).get("Retry-After")
+        if retry_after:
+            detail += f", Retry-After={retry_after}"
+        logger.warning(
+            "HF %s RATE LIMIT (HTTP 429) for %s: %s: %s", op, target, detail, exc
+        )
+    elif category == HF_ERR_SERVER:
+        logger.warning("HF %s server error for %s: %s: %s", op, target, detail, exc)
+    elif category == HF_ERR_AUTH:
+        logger.error("HF %s auth error for %s: %s: %s", op, target, detail, exc)
+    elif category == HF_ERR_NOT_FOUND:
+        if not_found_is_benign:
+            logger.debug("HF %s: %s not found: %s", op, target, detail)
+        else:
+            logger.error("HF %s not found for %s: %s: %s", op, target, detail, exc)
+    else:
+        logger.error("HF %s failed for %s: %s: %s", op, target, detail, exc)
+    return category
+
 
 class HfURI(URI):
     """
@@ -213,9 +300,18 @@ class HfURI(URI):
         return self.parts
 
     def exists(self: Self, force: bool = False) -> bool:
-        """Check whether the HF repo/bucket (and revision) actually exists on the Hub."""
+        """Check whether the HF repo/bucket (and revision) actually exists on the Hub.
+
+        Returns ``False`` on any error, but logs the failure with a severity
+        matched to its cause: a genuine ``404`` (resource truly absent) is the
+        expected negative path and logs at DEBUG, while a rate-limit (``429``),
+        server (``5xx``), or auth (``401``/``403``) error logs at WARNING/ERROR.
+        The latter are dangerous here: the resource may actually exist but we
+        would still report it missing, so they must be visible in logs.
+        """
         if is_hf_mocked(HF_OP_EXISTS):
             return True
+        repo_id = "<unparsed>"
         try:
             p = self._parts()
             repo_id = f"{p.owner}/{p.repo}"
@@ -225,6 +321,7 @@ class HfURI(URI):
                 endpoint = f"https://{p.host}" if p.host != HF_HOST else None
                 api = HfApi(endpoint=endpoint, token=token)
                 api.bucket_info(bucket_id=repo_id)
+                logger.debug("HF bucket %s exists", repo_id)
                 return True
 
             repo_type = None
@@ -234,14 +331,18 @@ class HfURI(URI):
                 repo_type = "space"
 
             if p.revision and p.revision != DEFAULT_REVISION:
-                return revision_exists(
+                found = revision_exists(
                     repo_id=repo_id,
                     revision=p.revision,
                     repo_type=repo_type,
                     token=token,
                 )
-            return repo_exists(repo_id=repo_id, repo_type=repo_type, token=token)
-        except Exception:
+            else:
+                found = repo_exists(repo_id=repo_id, repo_type=repo_type, token=token)
+            logger.debug("HF exists check for %s returned %s", repo_id, found)
+            return found
+        except Exception as e:
+            _log_hf_api_error("exists", repo_id, e, not_found_is_benign=True)
             return False
 
     def is_accessible(self: Self) -> bool:
@@ -514,6 +615,7 @@ class HfURI(URI):
                 logger.info("Downloading HF bucket %s to %s", repo_id, dest)
                 api = HfApi(endpoint=endpoint, token=token)
                 api.sync_bucket(source=bucket_hf_path, dest=str(dest))
+                logger.debug("Completed HF pull of bucket %s to %s", repo_id, dest)
                 return True
 
             hf_type = p.hf_type
@@ -539,9 +641,16 @@ class HfURI(URI):
                 force_download=force,
                 endpoint=endpoint,
             )
+            logger.debug(
+                "Completed HF pull of %s (type=%s, rev=%s) to %s",
+                repo_id,
+                repo_type,
+                p.revision,
+                dest,
+            )
             return True
         except Exception as e:
-            logger.error("HF pull failed for %s: %s", self, e)
+            _log_hf_api_error("pull", str(self), e)
             return False
 
     @staticmethod
@@ -677,9 +786,10 @@ class HfURI(URI):
                 logger.info("Deleting repo %s (type=%s)", repo_id, repo_type)
                 api.delete_repo(repo_id=repo_id, repo_type=repo_type)
             self._delete_from_cache(repo_id, repo_type, p.revision)
+            logger.debug("Completed HF delete for %s", self)
             return True
         except Exception as e:
-            logger.error("HF delete failed for %s: %s", self, e)
+            _log_hf_api_error("delete", str(self), e)
             return False
 
     def _delete_from_cache(self, repo_id: str, repo_type: str, revision: str) -> None:
@@ -862,7 +972,10 @@ class HfURI(URI):
                 "Resource group '%s' not found in organization '%s'", name, organization
             )
         except Exception as e:
-            logger.warning("Could not list resource groups for %s: %s", organization, e)
+            # This REST call is an extra request on the hot push path, so it is a
+            # prime rate-limit target; classify it so a 429/5xx here is visible
+            # rather than hidden behind a bland "could not list" warning.
+            _log_hf_api_error("list_resource_groups", organization, e)
         return None
 
     @staticmethod
@@ -949,24 +1062,40 @@ class HfURI(URI):
 
         if p.hf_type == HfType.BUCKET:
             bucket_id = repo_id
-            api.create_bucket(
-                bucket_id=bucket_id,
-                private=private,
-                resource_group_id=resource_group_id,
-                exist_ok=True,
-            )
+            # Ensure the bucket exists before uploading; abort the push if this
+            # fails so we never attempt an upload to a non-existent bucket.
+            try:
+                api.create_bucket(
+                    bucket_id=bucket_id,
+                    private=private,
+                    resource_group_id=resource_group_id,
+                    exist_ok=True,
+                )
+            except Exception as e:
+                _log_hf_api_error("create_bucket", bucket_id, e)
+                raise
+            logger.debug("Ensured HF bucket %s exists", bucket_id)
             if src.is_file():
                 dest_path = p.path_in_repo or src.name
                 logger.info(
                     "Uploading file %s to bucket %s/%s", src, bucket_id, dest_path
                 )
-                api.batch_bucket_files(bucket_id=bucket_id, add=[(src, dest_path)])
+                try:
+                    api.batch_bucket_files(bucket_id=bucket_id, add=[(src, dest_path)])
+                except Exception as e:
+                    _log_hf_api_error("upload to bucket", bucket_id, e)
+                    raise
             else:
                 bucket_hf_path = f"hf://buckets/{bucket_id}"
                 if p.path_in_repo:
                     bucket_hf_path += f"/{p.path_in_repo}"
                 logger.info("Uploading folder %s to bucket %s", src, bucket_id)
-                api.sync_bucket(source=str(src), dest=bucket_hf_path)
+                try:
+                    api.sync_bucket(source=str(src), dest=bucket_hf_path)
+                except Exception as e:
+                    _log_hf_api_error("upload to bucket", bucket_id, e)
+                    raise
+            logger.debug("Completed HF push of %s to bucket %s", src, bucket_id)
             return
 
         hf_type = p.hf_type
@@ -976,14 +1105,20 @@ class HfURI(URI):
             else "model"
         )
 
-        # Create repository if it doesn't exist
-        api.create_repo(
-            repo_id=repo_id,
-            repo_type=repo_type,
-            private=private,
-            resource_group_id=resource_group_id,
-            exist_ok=True,
-        )
+        # Create repository if it doesn't exist; abort the push on failure so we
+        # never fall through to an upload against a repo that was not created.
+        try:
+            api.create_repo(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                private=private,
+                resource_group_id=resource_group_id,
+                exist_ok=True,
+            )
+        except Exception as e:
+            _log_hf_api_error("create_repo", repo_id, e)
+            raise
+        logger.debug("Ensured HF repo %s (type=%s) exists", repo_id, repo_type)
 
         if src.is_file():
             dest_path = p.path_in_repo or src.name
@@ -995,14 +1130,18 @@ class HfURI(URI):
                 repo_type,
                 p.revision,
             )
-            api.upload_file(
-                path_or_fileobj=src,
-                path_in_repo=dest_path,
-                repo_id=repo_id,
-                repo_type=repo_type,
-                revision=p.revision,
-                commit_message=commit_message,
-            )
+            try:
+                api.upload_file(
+                    path_or_fileobj=src,
+                    path_in_repo=dest_path,
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    revision=p.revision,
+                    commit_message=commit_message,
+                )
+            except Exception as e:
+                _log_hf_api_error("upload_file", repo_id, e)
+                raise
         else:
             logger.info(
                 "Uploading folder %s → %s/%s (type=%s, rev=%s)",
@@ -1012,11 +1151,16 @@ class HfURI(URI):
                 repo_type,
                 p.revision,
             )
-            api.upload_folder(
-                folder_path=str(src),
-                path_in_repo=p.path_in_repo,
-                repo_id=repo_id,
-                repo_type=repo_type,
-                revision=p.revision,
-                commit_message=commit_message,
-            )
+            try:
+                api.upload_folder(
+                    folder_path=str(src),
+                    path_in_repo=p.path_in_repo,
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    revision=p.revision,
+                    commit_message=commit_message,
+                )
+            except Exception as e:
+                _log_hf_api_error("upload_folder", repo_id, e)
+                raise
+        logger.debug("Completed HF push of %s to %s", src, repo_id)

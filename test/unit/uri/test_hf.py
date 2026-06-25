@@ -22,8 +22,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-from gbcommon.types.testing import ENV_VAR_GBTEST_MOCKED_HF_OPS
-from gbcommon.uri.hf import DEFAULT_REVISION, HF_HOST, HfType, HfURI
+from gbcommon.types.testing import (
+    ENV_VAR_GBTEST_MOCKED_HF_OPS,
+    HF_OP_PUSH,
+    disable_hf_mocks,
+    enable_hf_mocks,
+)
+from gbcommon.uri.hf import (
+    DEFAULT_REVISION,
+    HF_ERR_AUTH,
+    HF_ERR_NOT_FOUND,
+    HF_ERR_OTHER,
+    HF_ERR_RATE_LIMIT,
+    HF_ERR_SERVER,
+    HF_HOST,
+    HfType,
+    HfURI,
+    _log_hf_api_error,
+)
 from gbcommon.uri.uri import URI
 from gbserver.types.artifact import ArtifactType
 
@@ -1004,3 +1020,220 @@ class TestResolveResourceGroupIdWithEnvironment:
                             token="fake-token",
                             space_name="public",
                         )
+
+
+# ---------------------------------------------------------------------------
+# HF API error classification + differentiated logging (mocked, no network)
+#
+# These guard the hardening that makes transient/rate-limit conditions visible
+# in logs instead of being flattened into one generic failure line — the root
+# cause of nightly flakiness where a silent 403/429 looked identical to a
+# genuinely-missing artifact.
+# ---------------------------------------------------------------------------
+
+
+def _http_error(status: int, retry_after: Optional[str] = None) -> Exception:
+    """Build a fake HfHubHTTPError carrying the given HTTP status.
+
+    Mirrors the real exception shape (``.response.status_code``,
+    ``.response.headers``, ``.request_id``) that ``_classify_hf_error`` /
+    ``_log_hf_api_error`` inspect, without performing any network call.
+    """
+    from huggingface_hub.errors import HfHubHTTPError
+    from requests import Response
+
+    resp = Response()
+    resp.status_code = status
+    resp.headers["x-request-id"] = "req-test-123"
+    if retry_after is not None:
+        resp.headers["Retry-After"] = retry_after
+    return HfHubHTTPError("boom", response=resp)
+
+
+class TestLogHfApiError:
+    """_log_hf_api_error classifies failures and logs at a matched severity."""
+
+    @pytest.mark.parametrize(
+        "exc, expected_category, expected_level",
+        [
+            (_http_error(429), HF_ERR_RATE_LIMIT, "WARNING"),
+            (_http_error(503), HF_ERR_SERVER, "WARNING"),
+            (_http_error(500), HF_ERR_SERVER, "WARNING"),
+            (_http_error(403), HF_ERR_AUTH, "ERROR"),
+            (_http_error(401), HF_ERR_AUTH, "ERROR"),
+            (_http_error(404), HF_ERR_NOT_FOUND, "ERROR"),
+            (RuntimeError("network blip"), HF_ERR_OTHER, "ERROR"),
+        ],
+    )
+    def test_classification_and_level(
+        self, exc, expected_category, expected_level, caplog
+    ):
+        with caplog.at_level("DEBUG", logger="gbcommon.uri.hf"):
+            category = _log_hf_api_error("push", "org/repo", exc)
+        assert category == expected_category
+        assert any(r.levelname == expected_level for r in caplog.records)
+
+    def test_rate_limit_log_is_prominent(self, caplog):
+        with caplog.at_level("DEBUG", logger="gbcommon.uri.hf"):
+            _log_hf_api_error("push", "org/repo", _http_error(429, retry_after="30"))
+        assert "RATE LIMIT" in caplog.text
+        assert "429" in caplog.text
+        assert "Retry-After=30" in caplog.text
+        assert "req-test-123" in caplog.text  # request id surfaced
+
+    def test_404_benign_logs_at_debug(self, caplog):
+        """When the caller treats absence as expected (exists() probe), a 404 is
+        a DEBUG line rather than an ERROR."""
+        with caplog.at_level("DEBUG", logger="gbcommon.uri.hf"):
+            category = _log_hf_api_error(
+                "exists", "org/repo", _http_error(404), not_found_is_benign=True
+            )
+        assert category == HF_ERR_NOT_FOUND
+        assert not any(r.levelname == "ERROR" for r in caplog.records)
+        assert any(r.levelname == "DEBUG" for r in caplog.records)
+
+
+class TestHfURIPushErrorVisibility:
+    """push() surfaces a classified error and re-raises (no silent failure)."""
+
+    def test_rate_limit_on_upload_is_logged_and_raised(self, tmp_path, caplog):
+        src = tmp_path / "f.bin"
+        src.write_bytes(b"data")
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.DATASET)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            MockApi.return_value.upload_file.side_effect = _http_error(429)
+            with caplog.at_level("WARNING", logger="gbcommon.uri.hf"):
+                with pytest.raises(Exception):
+                    uri.push(src)
+
+        assert "RATE LIMIT" in caplog.text
+        assert "429" in caplog.text
+
+    def test_create_repo_failure_stops_before_upload(self, tmp_path, caplog):
+        """A failed repo creation aborts the push and never attempts the upload."""
+        src = tmp_path / "f.bin"
+        src.write_bytes(b"data")
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.DATASET)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            MockApi.return_value.create_repo.side_effect = _http_error(403)
+            with caplog.at_level("ERROR", logger="gbcommon.uri.hf"):
+                with pytest.raises(Exception):
+                    uri.push(src)
+
+        MockApi.return_value.upload_file.assert_not_called()
+        assert "auth error" in caplog.text
+        assert "403" in caplog.text
+
+    def test_mocked_push_short_circuits(self, tmp_path):
+        """With the op mocked, push() returns without touching HfApi."""
+        src = tmp_path / "f.bin"
+        src.write_bytes(b"data")
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.DATASET)
+
+        enable_hf_mocks(HF_OP_PUSH)
+        try:
+            with patch("gbcommon.uri.hf.HfApi") as MockApi:
+                uri.push(src)
+            MockApi.assert_not_called()
+        finally:
+            disable_hf_mocks()
+
+
+class TestHfURIDeleteErrorVisibility:
+    """delete() returns False but logs the failure category (403 vs 429)."""
+
+    def test_auth_error_logged_and_returns_false(self, monkeypatch, caplog):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        uri = HfURI.from_parts(owner="ibm-research", repo="ds", hf_type=HfType.DATASET)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            MockApi.return_value.delete_repo.side_effect = _http_error(403)
+            with caplog.at_level("DEBUG", logger="gbcommon.uri.hf"):
+                result = uri.delete()
+
+        assert result is False
+        assert "auth error" in caplog.text
+        assert "403" in caplog.text
+
+    def test_rate_limit_logged_and_returns_false(self, monkeypatch, caplog):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        uri = HfURI.from_parts(owner="ibm-research", repo="ds", hf_type=HfType.DATASET)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            MockApi.return_value.delete_repo.side_effect = _http_error(429)
+            with caplog.at_level("DEBUG", logger="gbcommon.uri.hf"):
+                result = uri.delete()
+
+        assert result is False
+        assert "RATE LIMIT" in caplog.text
+
+
+class TestHfURIExistsErrorVisibility:
+    """exists() distinguishes a transient failure from a genuinely-absent repo."""
+
+    def test_rate_limit_logs_warning_and_returns_false(self, monkeypatch, caplog):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        uri = HfURI.from_parts(owner="ibm-research", repo="ds", hf_type=HfType.DATASET)
+
+        with patch("gbcommon.uri.hf.repo_exists", side_effect=_http_error(429)):
+            with caplog.at_level("DEBUG", logger="gbcommon.uri.hf"):
+                result = uri.exists()
+
+        assert result is False
+        assert "RATE LIMIT" in caplog.text
+        assert any(r.levelname == "WARNING" for r in caplog.records)
+
+    def test_not_found_logs_debug_not_error(self, monkeypatch, caplog):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        uri = HfURI.from_parts(owner="ibm-research", repo="ds", hf_type=HfType.DATASET)
+
+        with patch("gbcommon.uri.hf.repo_exists", side_effect=_http_error(404)):
+            with caplog.at_level("DEBUG", logger="gbcommon.uri.hf"):
+                result = uri.exists()
+
+        assert result is False
+        assert not any(r.levelname == "ERROR" for r in caplog.records)
+
+    def test_true_when_repo_exists(self, monkeypatch):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        uri = HfURI.from_parts(owner="ibm-research", repo="ds", hf_type=HfType.DATASET)
+
+        with patch("gbcommon.uri.hf.repo_exists", return_value=True):
+            assert uri.exists() is True
+
+
+class TestResolveResourceGroupIdErrorVisibility:
+    """A rate-limit on the resource-group lookup is visible, not hidden."""
+
+    def test_rate_limit_on_lookup_is_logged(self, monkeypatch, caplog):
+        # A 429 on the resource-group list call means the inner lookup cannot
+        # resolve an id: it logs RATE LIMIT and returns None, and the caller then
+        # raises (it cannot proceed without a resolved group). The point of the
+        # hardening is that the 429 is now visible in the log rather than hidden
+        # behind a generic "could not list" warning.
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STAGING")
+        uri = HfURI.from_parts(owner="ibm-research", repo="dummy")
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = MagicMock()
+
+        with patch("gbcommon.uri.hf.HfApi"):
+            with patch(
+                "huggingface_hub.utils._http.get_session", return_value=mock_session
+            ):
+                with patch(
+                    "huggingface_hub.utils._http.hf_raise_for_status",
+                    side_effect=_http_error(429),
+                ):
+                    with caplog.at_level("WARNING", logger="gbcommon.uri.hf"):
+                        with pytest.raises(ValueError, match="Could not resolve"):
+                            uri.resolve_resource_group_id(
+                                token="fake-token",
+                                space_name="public",
+                            )
+
+        assert "RATE LIMIT" in caplog.text
+        assert "list_resource_groups" in caplog.text
