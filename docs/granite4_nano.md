@@ -15,9 +15,10 @@ End-to-end workflow for fine-tuning Granite 4.0 350M on AWS and running the full
    - `s3://granite-build-datasets/tokenized/8192/data_filtered` — tokenized training data
    - `s3://granite-build-checkpoints` — checkpoint storage
    - `s3://granite-build-eval-results` — eval output
-5. vCPU quota for G-family instances in us-east-2:
-   - SFT training: 192 vCPUs (1x g6e.48xlarge)
-   - Full eval suite: 88 vCPUs (22x g6e.xlarge spot instances)
+5. vCPU quota in us-east-2:
+   - SFT training (A100): P-family >= 96 vCPUs (1x p4d.24xlarge)
+   - SFT training (L40S fallback): G-family >= 192 vCPUs (1x g6e.48xlarge)
+   - Full eval suite: G-family >= 88 vCPUs (22x g6e.xlarge spot instances)
 
 **Important:** `GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD` must be set in the
 **gbserver process's environment** before the server starts — not in the client
@@ -29,7 +30,7 @@ to restart gbserver (or refresh the variable) for long-running sessions.
 
 ## Step 1: SFT Training
 
-Fine-tune `granite-4.0-350m-base` using Open-Instruct on 8x L40S GPUs.
+Fine-tune `granite-4.0-350m-base` using Open-Instruct on 8x A100 GPUs (or L40S as fallback).
 
 ```bash
 export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
@@ -37,7 +38,8 @@ gb build start -f recipes/granite4-350m/aws/sft/build.yaml --param NAME=oisft001
 ```
 
 **What this does:**
-- Provisions a `g6e.48xlarge` (8x L40S 48GB, 192 vCPUs) via SkyPilot
+- Provisions a `p4d.24xlarge` (8x A100 40GB, 96 vCPUs) via SkyPilot
+- Uses a custom host AMI (`ami-0cc52c70f2edeb6c6`) with NVIDIA driver 550+
 - Runs FSDP-distributed SFT with Open-Instruct
 - Saves checkpoints to `s3://granite-build-checkpoints/sft/<NAME>_<timestamp>-hf/`
 - Saves every 2500 steps, keeps last 5 checkpoints
@@ -387,6 +389,106 @@ gb build start -f recipes/granite4-350m/aws/bcb-eval/build.yaml \
   --param NAME=eval-l40s-350m-s7500 \
   --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
 ```
+
+## A100 GPU Support — Host AMI Override
+
+### Problem
+
+SkyPilot's default GPU AMI for AWS (`skypilot:custom-gpu-ubuntu`) ships NVIDIA driver
+535.216.01, which is broken on kernel 6.8.0-1015-aws. The driver's management API works
+(`nvidia-smi` succeeds) but `cuInit()` returns error 802 — making all CUDA computation
+impossible. This affects A100 instances (p4d.24xlarge) running the default AMI.
+
+### Solution
+
+granite.build supports overriding the host VM's AMI in Docker mode via the
+`docker.host_image_id` field in build.yaml's `launcher_config`:
+
+```yaml
+steps:
+  - step_uri: space://steps/openinstruct-sft
+    config:
+      launcher_config:
+        resources:
+          accelerators: "A100:8"
+        docker:
+          host_image_id: "ami-0cc52c70f2edeb6c6"
+```
+
+This sets the EC2 instance's base AMI to the AWS Deep Learning Base AMI (2026-06-19)
+which ships NVIDIA driver 550+, while still running the training code inside the Docker
+container specified in the step's `image_id`.
+
+### How It Works
+
+The override flows through three layers:
+
+1. **gbserver** (`src/gbserver/environment/skypilot.py`) merges docker config from the
+   step's launcher_config and the build.yaml's config.launcher_config (build.yaml wins),
+   then passes it as `_cluster_config_overrides` on `sky.Resources`:
+   ```python
+   docker_config = {
+       **launcher_config.get("docker", {}),
+       **config.get("launcher_config", {}).get("docker", {}),
+   }
+   cluster_config_overrides["docker"] = docker_config
+   resources = sky.Resources(..., _cluster_config_overrides=cluster_config_overrides)
+   ```
+
+2. **SkyPilot constants** (`sky/skylet/constants.py`) — the key `('docker', 'host_image_id')`
+   must be in `OVERRIDEABLE_CONFIG_KEYS_IN_TASK` for the value to survive the
+   `Resources.copy()` filtering that occurs during task setup. (This is a local patch
+   to SkyPilot; without it the override is silently dropped.)
+
+3. **SkyPilot AWS backend** (`sky/clouds/aws.py`) — in Docker mode, when
+   `resources.extract_docker_image()` is not None, the code checks
+   `cluster_config_overrides` for `docker.host_image_id`. If present, it uses that AMI
+   as the host instance image instead of defaulting to None (SkyPilot's GPU catalog AMI):
+   ```python
+   if resources.extract_docker_image() is not None:
+       overrides = resources.cluster_config_overrides or {}
+       host_image_override = (overrides.get('host_image_id') or
+                              overrides.get('docker', {}).get('host_image_id'))
+       if host_image_override:
+           image_id_to_use = {None: host_image_override}
+       else:
+           image_id_to_use = None
+   ```
+
+### Required SkyPilot Patches
+
+Two local patches to the SkyPilot installation (`.venv/lib/python3.13/site-packages/sky/`)
+are required until upstream support is added:
+
+1. **`sky/skylet/constants.py`** — Add `('docker', 'host_image_id')` to
+   `OVERRIDEABLE_CONFIG_KEYS_IN_TASK`
+2. **`sky/clouds/aws.py`** — In `make_deploy_resources_variables()`, read
+   `host_image_id` from `cluster_config_overrides` when in Docker mode
+
+After patching, restart the SkyPilot API server:
+```bash
+sky api stop && sky api start
+```
+
+### Finding a Compatible AMI
+
+```bash
+aws ec2 describe-images \
+  --owners amazon \
+  --filters "Name=name,Values=Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)*" \
+  --query 'Images | sort_by(@, &CreationDate) | [-5:].[ImageId,Name,CreationDate]' \
+  --output table \
+  --region us-east-2
+```
+
+Look for recent AMIs (2026+) which ship driver 550+. Verify the driver version in the
+AMI description or by launching a test instance.
+
+### Batch Size for A100 40GB
+
+With 8192 sequence length on A100 40GB GPUs, use:
+- `per_device_train_batch_size: 2` (batch_size=8 causes OOM at backward pass)
+- `gradient_accumulation_steps: 8` (effective batch = 2 * 8 * 8 GPUs = 128)
 
 ## Docker SSH Fix (sage/bfcl images)
 
