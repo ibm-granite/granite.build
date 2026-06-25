@@ -169,8 +169,7 @@ class TestBuildWatcherRetryExhaustion(AbstractBuildTest):
             builds = self.storage.build_storage.get_by_uuid(None) or []
             in_flight = [b for b in builds if b.status in _IN_FLIGHT]
             exhausted = any(
-                b.retry_count == max_retries and b.status.is_finished()
-                for b in builds
+                b.retry_count == max_retries and b.status.is_finished() for b in builds
             )
             if exhausted and not in_flight:
                 return
