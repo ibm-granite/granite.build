@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Entry point for a bash step that runs a Python run.py in a dedicated venv.
 #
 # This script is byte-for-byte identical across the inference, inference-lora,
@@ -6,11 +6,17 @@
 # script's own directory, and the dependency set lives in a per-step
 # requirements.txt alongside run.py. Keep the three copies in sync.
 #
-# The nohup launcher runs steps with a sanitized, PATH-less env, so a
-# `#!/usr/bin/env python3` shebang on run.py is unreliable. Resolve a real
-# interpreter by trying absolute paths then PATH (works on the container's 3.13
-# and on a host's python3), build a dedicated venv once, install
-# requirements.txt into it, and exec run.py in it. The venv is cached for reruns.
+# Shebang note: `#!/bin/bash` is an ABSOLUTE path on purpose, not
+# `#!/usr/bin/env bash`. The nohup launcher runs steps with a sanitized,
+# PATH-less env (see bash.py launch_nohup, which passes env= with no PATH), so
+# any `env`-based resolution — `env bash` here, or `env python3` on run.py —
+# can fail to find its interpreter. An absolute path the kernel resolves
+# directly sidesteps that. /bin/bash is guaranteed on the deploy image (UBI 9).
+#
+# That same PATH-less env is why run.py is wrapped at all: this script resolves
+# a real interpreter (trying absolute paths then PATH), builds a dedicated venv
+# once, installs requirements.txt into it, and execs run.py with an explicit
+# $VENV/bin/python. The venv is cached for reruns.
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STEP="$(basename "$SCRIPT_DIR")"
