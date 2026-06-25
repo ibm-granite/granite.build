@@ -92,10 +92,10 @@ async def test_sidecar_with_cmdline_monitor(
     )
 
     # 6) wait for child to finish
-    child_returncode = await child.wait()
+    child_returncode = await asyncio.wait_for(child.wait(), timeout=120)
 
     # 7) wait for orchestrator/sidecars to finish (should detect process exit via CmdlineMonitor)
-    await orchestrator_task
+    await asyncio.wait_for(orchestrator_task, timeout=120)
 
     # 8) verify at least 1 new artifact event arrived
     assert not fake_messaging._q.empty()

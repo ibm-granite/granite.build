@@ -143,10 +143,12 @@ async def test_multi_sidecar_with_cmdline_monitor(
     orchestrator_task = asyncio.create_task(orchestrator.run_sidecars())
 
     # 6) wait for both children to finish
-    returncodes = await asyncio.gather(*[child.wait() for child in children])
+    returncodes = await asyncio.wait_for(
+        asyncio.gather(*[child.wait() for child in children]), timeout=120
+    )
 
     # 7) wait for orchestrator/sidecars to finish (should detect process exit via CmdlineMonitor)
-    await orchestrator_task
+    await asyncio.wait_for(orchestrator_task, timeout=120)
 
     # 8) verify events arrived from both processes
     assert not fake_messaging._q.empty()
