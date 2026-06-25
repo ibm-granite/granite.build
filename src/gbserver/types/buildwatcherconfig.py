@@ -17,7 +17,7 @@
 import os
 from typing import Literal
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import Field
 
 from gbserver.types.constants import (
     DEFAULT_GH_API_ENDPOINT,
@@ -27,21 +27,15 @@ from gbserver.types.constants import (
     MIN_MONITORING_INTERVAL_SECONDS,
 )
 from gbserver.types.spacesconfig import CLISpacesConfig
-from gbserver.utils.logger import get_logger
-
-logger = get_logger(__name__)
 
 
 class BuildWatcherConfig(CLISpacesConfig):
     """The build watcher config."""
 
-    # validate_assignment so the monitoring_interval floor (below) is enforced
-    # even when the field is set after construction (the only way it is set today
-    # — BuildWatcher mutates config.monitoring_interval on an already-built config).
-    model_config = ConfigDict(validate_assignment=True)
-
     lh_max_retries: int = 3
-    monitoring_interval: int = 5
+    # Floored at the minimum so a 0/negative interval (which would busy-loop the
+    # poll loop and hammer storage) is rejected at construction.
+    monitoring_interval: int = Field(default=5, ge=MIN_MONITORING_INTERVAL_SECONDS)
     gh_api_endpoint: str = DEFAULT_GH_API_ENDPOINT
     workspace_dir: str = DEFAULT_ROOT_WORKSPACE_DIR
     watcher_workspace_dir: str = DEFAULT_ROOT_BUILDWATCHER_WORKSPACE_DIR
@@ -53,21 +47,3 @@ class BuildWatcherConfig(CLISpacesConfig):
     buildrunner_type: Literal["thread", "process", "job"] = Field(
         default_factory=lambda: os.getenv(ENV_VAR_DEFAULT_BUILDRUNNER_TYPE, "job")  # type: ignore
     )
-
-    @field_validator("monitoring_interval")
-    @classmethod
-    def _floor_monitoring_interval(cls, value: int) -> int:
-        """Never poll faster than MIN_MONITORING_INTERVAL_SECONDS.
-
-        A 0 (or sub-second) interval turns the BuildWatcher poll loop into a CPU
-        busy-loop that also hammers storage, so clamp it up to the minimum.
-        """
-        if value < MIN_MONITORING_INTERVAL_SECONDS:
-            logger.warning(
-                "monitoring_interval %s is below the %ss minimum; using %s",
-                value,
-                MIN_MONITORING_INTERVAL_SECONDS,
-                MIN_MONITORING_INTERVAL_SECONDS,
-            )
-            return MIN_MONITORING_INTERVAL_SECONDS
-        return value

@@ -18,7 +18,10 @@ from pathlib import Path
 from typing import Optional, Self, Tuple
 from urllib.parse import urlparse
 
+from pydantic import Field
+
 from gbserver.storage.stored_space import StoredSpace
+from gbserver.types.constants import MIN_MONITORING_INTERVAL_SECONDS
 from gbserver.types.spacesconfig import CLISpacesConfig
 from gbserver.utils.logger import get_logger
 
@@ -64,7 +67,9 @@ class PrWatcherConfig(CLISpacesConfig):
     """The GitHub PR watcher config."""
 
     lh_max_retries: int = 3
-    monitoring_interval: int = 5
+    # Floored at the minimum so a 0/negative interval (which would busy-loop the
+    # poll loop) is rejected at construction.
+    monitoring_interval: int = Field(default=5, ge=MIN_MONITORING_INTERVAL_SECONDS)
     validate_inputs_are_registered: bool = True
 
     def get_space_from_pr_url(self: Self, pr_html_url: str) -> Optional[StoredSpace]:
