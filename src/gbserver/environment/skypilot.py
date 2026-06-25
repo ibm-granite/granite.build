@@ -417,15 +417,15 @@ class Skypilot(Environment):
             if docker_config:
                 cluster_config_overrides["docker"] = docker_config
 
-            image_id = (
-                config.get("launcher_config", {}).get("image_id")
-                or launcher_config.get("image_id")
-            )
+            image_id = config.get("launcher_config", {}).get(
+                "image_id"
+            ) or launcher_config.get("image_id")
 
             logger.info(
                 "SkyPilot resources: accelerators=%s, image_id=%s, "
                 "cluster_config_overrides=%s",
-                res_config.get("accelerators"), image_id,
+                res_config.get("accelerators"),
+                image_id,
                 cluster_config_overrides or None,
             )
 

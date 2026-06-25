@@ -116,13 +116,28 @@ class Skypilot_managed(Environment):
 
             # Build sky.Resources
             res_config = launcher_config.get("resources", {})
+
+            # Build cluster config overrides (docker run_options, etc.)
+            cluster_config_overrides = {}
+            docker_config = {
+                **launcher_config.get("docker", {}),
+                **config.get("launcher_config", {}).get("docker", {}),
+            }
+            if docker_config:
+                cluster_config_overrides["docker"] = docker_config
+
+            image_id = config.get("launcher_config", {}).get(
+                "image_id"
+            ) or launcher_config.get("image_id")
+
             resources = sky.Resources(
                 infra=cloud,
                 accelerators=res_config.get("accelerators"),
                 cpus=res_config.get("cpus"),
                 memory=res_config.get("memory"),
                 disk_size=res_config.get("disk_size"),
-                image_id=launcher_config.get("image_id"),
+                image_id=image_id,
+                _cluster_config_overrides=cluster_config_overrides or None,
             )
 
             # Build environment variables
