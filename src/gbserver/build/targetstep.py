@@ -19,6 +19,7 @@ The step inside a Target.
 """
 
 import os
+import shutil
 import tempfile
 from asyncio import Queue
 from copy import deepcopy
@@ -82,6 +83,50 @@ def _convert_enums_to_values(obj: Any) -> Any:
     if isinstance(obj, (list, tuple)):
         return type(obj)(_convert_enums_to_values(item) for item in obj)
     return obj
+
+
+# Maps a (lowercased) environment type to the gbstep scaffold dir that backend
+# reads at launch. Backends absent from this map (Bash, Docker, RunPod,
+# Skypilot) read none of these dirs. Keys are lowercase because env_type may
+# arrive either capitalized (from environment.type, e.g. "Lsf") or lowercase
+# (from an environment_configs dict key, e.g. "lsf") — see env_type resolution
+# in merge_handle_configs, which likewise falls back to env_type.lower().
+_BACKEND_SCAFFOLD_DIRS = {"lsf": "lsf_scripts", "k8s": "helm-charts"}
+
+
+def _copy_basestep_scaffold(temp_path: Path, env_type: str) -> None:
+    """Copy the gbstep base-step scaffold into ``temp_path`` for ``env_type``,
+    then drop the backend template dirs the active environment won't use.
+
+    The gbstep scaffold ships every backend's launch templates side by side
+    (bash_scripts/, lsf_scripts/, helm-charts/), but only the active
+    environment's backend reads its own dir at launch (Lsf -> lsf_scripts,
+    K8s -> helm-charts); the others are dead files for this run. Worse,
+    lsf_scripts/ and helm-charts/ values-default.yaml embed the monitor config
+    via ``{{ monitor_config | to_yaml }}``, which carries the
+    intentionally-unfilled ``{{ fields.data.path }}`` template (resolved later
+    at log-parse time). When a later strict templating pass renders a dir the
+    active environment doesn't use, it re-evaluates that template with no
+    ``fields`` in scope and fails the whole step on creation. So e.g. a bash
+    standalone build must never materialize or render LSF/Helm at all.
+
+    Ideally we wouldn't copy the unused backends' dirs in the first place. But
+    the copy is a single recursive sync of the whole scaffold, and trimming it
+    up front risks subtle breakage for environments that may rely on incidental
+    scaffold contents. To stay safe against those existing per-environment
+    behaviors, we do a post-copy deletion of the inactive backend dirs here
+    instead — a smaller, reversible change than reworking what gets copied.
+    """
+    base_step_src = Path(__file__).parent.parent / "builtins/steps/gbstep"
+    sync_or_copy(str(base_step_src) + "/", temp_path, delete=False)
+
+    keep_dir = _BACKEND_SCAFFOLD_DIRS.get(env_type.lower())
+    for dir_name in _BACKEND_SCAFFOLD_DIRS.values():
+        if dir_name == keep_dir:
+            continue
+        stale_dir = temp_path / dir_name
+        if stale_dir.is_dir():
+            shutil.rmtree(stale_dir, ignore_errors=True)
 
 
 class TargetStep(BuildEntity):
@@ -421,8 +466,7 @@ class TargetStep(BuildEntity):
 
         # --- Prepare step directories ---
         if use_basestep:
-            base_step_src = Path(__file__).parent.parent / "builtins/steps/gbstep"
-            sync_or_copy(str(base_step_src) + "/", temp_path, delete=False)
+            _copy_basestep_scaffold(temp_path, env_type)
             fill_templates_in_dir(
                 temp_path,
                 full_config,

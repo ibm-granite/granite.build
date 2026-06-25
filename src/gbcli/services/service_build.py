@@ -171,7 +171,7 @@ def build_init(
                 callback(
                     callback_event="error",
                     callback_args={
-                        "reason": f"Space '{space}' provided could not be resolved. Please run 'llmb space list --all --refresh' to see your latest available spaces."
+                        "reason": f"Space '{space}' provided could not be resolved. Please run 'gb space list --all --refresh' to see your latest available spaces."
                     },
                 )
             return None
@@ -1374,7 +1374,7 @@ def build_describe(
                     callback(
                         callback_event="error",
                         callback_args={
-                            "reason": f"Space '{space}' provided could not be resolved. Please run 'llmb space list --all --refresh' to see your latest available spaces."
+                            "reason": f"Space '{space}' provided could not be resolved. Please run 'gb space list --all --refresh' to see your latest available spaces."
                         },
                     )
                 return None
@@ -2649,7 +2649,10 @@ def validate_helper(
     for validation in validations:
         updated_yaml_dict = get_yaml_diff(build_yaml_dict, validation)
 
-        if updated_yaml_dict:
+        # get_yaml_diff returns None when there is no patch, and a dict with an
+        # "error" key when a patch fails to apply; only record updated_yaml for a
+        # genuinely applied patch so the error sentinel is not serialized as one.
+        if isinstance(updated_yaml_dict, dict) and "error" not in updated_yaml_dict:
             updated_yaml = yaml.safe_dump(updated_yaml_dict)
             validation["updated_yaml"] = updated_yaml
 

@@ -20,12 +20,32 @@ synthetic dataset is generated from TRAIN_SUBJECT / TRAIN_ANSWER (see gen_data.p
 
 import json
 import os
-import subprocess
 import sys
 import time
 
+# Let unimplemented MPS (Apple Silicon) ops fall back to CPU instead of erroring.
+# Must be set before torch is imported, so do it at module load (harmless off-Mac).
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 # Must match the output name declared in build.yaml (outputs.adapter).
 ARTIFACT_ID = "adapter"
+
+
+def pick_device(torch):
+    """Best available torch device: CUDA, then Apple Silicon (MPS), else CPU.
+
+    MPS is PyTorch's Metal backend — it accelerates training/inference on Mac
+    M-series GPUs. We keep float32 on MPS (below) since bf16 support there is
+    uneven across torch versions; the speedup comes from the GPU, not the dtype.
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    if (
+        getattr(torch.backends, "mps", None) is not None
+        and torch.backends.mps.is_available()
+    ):
+        return "mps"
+    return "cpu"
 
 
 def shared_adapter_dir():
@@ -45,39 +65,25 @@ def shared_adapter_dir():
 
 
 def ensure_deps():
-    """Install training deps into the running interpreter if missing.
+    """Guard that the step's deps are present, with a clear message if not.
 
-    The standalone gbserver venv ships none of these. CPU torch keeps it small.
+    command.sh creates the venv and installs requirements.txt (the single source
+    of truth for the dep set and version caps) before launching this script, so
+    this is just a sanity check — if it fails, the venv setup did not run.
     """
     try:
         import datasets  # noqa: F401
+        import google.protobuf  # noqa: F401
         import peft  # noqa: F401
+        import sentencepiece  # noqa: F401
         import torch  # noqa: F401
         import transformers  # noqa: F401
         import trl  # noqa: F401
-
-        return
-    except ImportError:
-        pass
-    print(
-        "Installing training dependencies (torch, transformers, trl, peft, datasets)..."
-    )
-    subprocess.check_call(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "torch",
-            "transformers>=4.55",
-            "trl>=0.12",
-            "peft>=0.13",
-            "datasets",
-            "accelerate",
-        ]
-    )
-    print("Dependencies installed.")
+    except ImportError as exc:
+        sys.exit(
+            f"Missing dependency ({exc.name}); command.sh should have installed "
+            "requirements.txt into the step venv before launching run.py."
+        )
 
 
 def resolve_training_data(output_dir):
@@ -139,13 +145,14 @@ def main():
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from trl import SFTConfig, SFTTrainer
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = pick_device(torch)
     print(f"Using device: {device}")
 
     print(f"Loading base model: {model_path}")
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    # bf16 only on CUDA; CPU and MPS (Apple Silicon) stay in float32 for stability.
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,

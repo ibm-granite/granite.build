@@ -485,7 +485,7 @@ If automatic labeling fails or doesn't apply all labels:
 | **Setup Script Fails** | Error during `setup-skypilot.sh` | Ensure `kubectl` is configured and cluster is reachable. Check that required env vars are set: `source .env.skypilot && env \| grep -E 'SKYPILOT\|IMAGE_PULL\|S3_\|RITS\|PVC'` |
 | **Sky Config Not Generated** | `~/.sky/config.yaml` missing after script | Check Python 3 is available: `python3 --version`. Check script output for `[ERROR]` lines. Ensure PyYAML is installed: `python3 -c "import yaml"` |
 | **S3 Input Validation Fails** | Error: "input URI ... doesn't exist" with s3:// URIs | Known limitation: `CosURI.exists()` is not yet implemented and always returns False. Remove `inputs`/`outputs` blocks with s3:// URIs from build.yaml — data is accessed via `file_mounts` or step config instead |
-| **Stale Space Registration** | Build uses wrong space directory or old config | Delete the old space from SQLite: `sqlite3 ~/.llmb/llmb-server.db "DELETE FROM gb_spaces WHERE name='public';"` then restart `gbserver standalone` |
+| **Stale Space Registration** | Build uses wrong space directory or old config | Delete the old space from SQLite: `sqlite3 ~/.granite.build/llmb-server.db "DELETE FROM gb_spaces WHERE name='public';"` then restart `gbserver standalone` |
 
 ## Additional Resources
 

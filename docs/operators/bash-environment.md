@@ -144,14 +144,14 @@ When running under `gbserver standalone` / `gbserver build run` (the samples' mo
 
 - **Each step in a target gets its own isolated launch directory.** Two steps in the same
   target do **not** automatically share an output directory, even though the docs describe
-  steps as running "in order on shared storage".
-- **Cross-target `binding:` inputs are not reliably scheduled** in standalone — a downstream
-  target bound to an upstream target's output may not run.
+  steps as running "in order on shared storage". For passing data between steps *within* a
+  target, all steps in a target share `$LLMB_BASH_TARGET_RUN_ID`, so a step can write to a
+  dir keyed on it and a later step can read it back.
 
-All steps in a target *do* share `$LLMB_BASH_TARGET_RUN_ID`. The `lora-finetune` sample uses
-this to hand the trained adapter from step 1 to step 2: step 1 copies the adapter to a dir
-keyed on `$LLMB_BASH_TARGET_RUN_ID`, and step 2 reads it back from the same path. On a real
-cluster, prefer the normal input/binding mechanism.
+To pass an output from one target to another, use the normal **cross-target binding**
+(`binding: <target>.<output>`) — these schedule correctly in standalone. The `lora-finetune`
+sample does exactly this: its `inference` target binds its `adapter` input to the `finetune`
+target's `adapter` output, and gbserver runs them in dependency order.
 
 ## See also
 

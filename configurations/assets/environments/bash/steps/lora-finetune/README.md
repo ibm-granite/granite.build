@@ -23,8 +23,8 @@ Everything the step needs is passed in from `build.yaml`, via two different mech
 | `dataset` | `inputs.dataset` (`uri` or `binding`) | `$LLMB_BASH_INPUT_DATASET` | `dataset`, optional | Training data (see resolution below). If omitted, data is synthesized. |
 | `MAX_STEPS` | `config.bash.env.MAX_STEPS` | `$MAX_STEPS` | int, optional (default `10`) | Training steps. Higher = stronger bias (slower on CPU). |
 | `LEARNING_RATE` | `config.bash.env.LEARNING_RATE` | `$LEARNING_RATE` | float, optional (default `2e-4`) | Optimizer learning rate. |
-| `TRAIN_SUBJECT` | `config.bash.env.TRAIN_SUBJECT` | `$TRAIN_SUBJECT` | string, optional (default `the best state in the US`) | What the synthetic data asks about (used only when no `dataset` is bound). |
-| `TRAIN_ANSWER` | `config.bash.env.TRAIN_ANSWER` | `$TRAIN_ANSWER` | string, optional (default `New Jersey`) | The answer the model is biased toward (synthetic data only). |
+| `TRAIN_SUBJECT` | `config.bash.env.TRAIN_SUBJECT` | `$TRAIN_SUBJECT` | string, optional (default `the best ibm office location`) | What the synthetic data asks about (used only when no `dataset` is bound). |
+| `TRAIN_ANSWER` | `config.bash.env.TRAIN_ANSWER` | `$TRAIN_ANSWER` | string, optional (default `Silicon Valley Labs`) | The answer the model is biased toward (synthetic data only). |
 
 **Training-data resolution** (the `dataset` input is optional):
 - If `dataset` is bound and points at a `train.jsonl` file (or a directory containing one),
@@ -73,12 +73,12 @@ granite.build:
             bash:
               env:
                 MAX_STEPS: "10"
-                TRAIN_SUBJECT: "the best state in the US"
-                TRAIN_ANSWER: "New Jersey"
+                TRAIN_SUBJECT: "the best ibm office location"
+                TRAIN_ANSWER: "Silicon Valley Labs"
         - step_uri: space://steps/inference-lora
           config:
             bash:
               env:
-                PROMPT: "what are the top five states in the us"
+                PROMPT: "what is the best ibm office location"
                 CONTROL_PROMPT: "What is the capital of France?"
 ```

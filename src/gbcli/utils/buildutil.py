@@ -179,9 +179,10 @@ def get_yaml_patches_in_steps(original_build_yaml_dict: dict, validations: dict)
     for validation in validations:
         updated_yaml_dict = get_yaml_diff(next_build_yaml_dict, validation)
 
-        if updated_yaml:
-            updated_yaml = yaml.safe_dump(updated_yaml_dict)
-            validation["updated_yaml"] = updated_yaml
-
-        if updated_yaml_dict:
+        # get_yaml_diff returns None when there is no patch to apply, and a dict
+        # carrying an "error" key when a patch fails to apply. In both cases the
+        # build state must not advance and no updated_yaml is recorded. Any other
+        # dict (including an empty one) is a successfully applied patch.
+        if isinstance(updated_yaml_dict, dict) and "error" not in updated_yaml_dict:
+            validation["updated_yaml"] = yaml.safe_dump(updated_yaml_dict)
             next_build_yaml_dict = updated_yaml_dict

@@ -101,7 +101,7 @@ class GBCredentials(GBTomlConfig):
             super().__init__(credential_path)
         except TomlDecodeError as e:
             sys.exit(
-                f"❌ Error: {credential_path} can't be parsed: {str(e)}\nPlease run 'llmb cleanup --credentials' and try again."
+                f"❌ Error: {credential_path} can't be parsed: {str(e)}\nPlease run 'gb cleanup --credentials' and try again."
             )
 
     def check_permissions(self):
@@ -111,7 +111,7 @@ class GBCredentials(GBTomlConfig):
 
             if int(oct_perm) > 600:
                 logger.warning(
-                    f"Warning: the permissions of the LLM.build credentials file are too open. Run 'chmod 600 {self._config_path}', or redo 'llmb login auth'."
+                    f"Warning: the permissions of the LLM.build credentials file are too open. Run 'chmod 600 {self._config_path}', or redo 'gb login auth'."
                 )
 
     def check_gbserver_values(self):
@@ -243,5 +243,5 @@ class GBConfig(GBTomlConfig):
             super().__init__(credential_path)
         except TomlDecodeError as e:
             sys.exit(
-                f"❌ Error: {credential_path} can't be parsed: {str(e)}\nPlease run 'llmb cleanup --config' and try again."
+                f"❌ Error: {credential_path} can't be parsed: {str(e)}\nPlease run 'gb cleanup --config' and try again."
             )

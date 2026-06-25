@@ -29,14 +29,18 @@ environment_configs:
   Bash:
     launchers:
       inference-lora:
+        # No `script_path`: the launcher defaults to command.sh, which builds a
+        # dedicated venv and execs run.py in it (the nohup launcher's sanitized
+        # PATH-less env makes a bare `#!/usr/bin/env python3` shebang unreliable).
+        # No launcher `env:` either: a launcher env would WIN over build.yaml's
+        # `config.bash.env` (see Bash.launch_nohup) and defeat per-build
+        # overrides. Set step parameters in build.yaml under `config.bash.env`;
+        # the script defaults each via os.environ.get(...):
+        #   PROMPT ("what is the best ibm office location"),
+        #   CONTROL_PROMPT ("What is the capital of France?"), MAX_NEW_TOKENS (256).
         type: nohup
         monitors:
           - log_monitor
-        config:
-          script_path: run.py
-          # No launcher `env:` — set PROMPT / CONTROL_PROMPT / MAX_NEW_TOKENS in
-          # build.yaml's `config.bash.env` (a launcher env would override it).
-          # The script defaults these via os.environ.get(...).
     monitors:
       log_monitor:
         type: log_monitor

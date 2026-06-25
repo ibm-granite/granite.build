@@ -1,15 +1,20 @@
 # Sample: `lora-finetune`
 
 Train a small **LoRA adapter** on a base model, then run inference with base + adapter — all
-in the local **bash** environment (no GPU/container required). One target, two sequential
-steps:
+in the local **bash** environment (no GPU/container required). Two targets wired together by
+a **cross-target binding**:
 
-1. [`lora-finetune`](../../../configurations/assets/environments/bash/steps/lora-finetune/README.md) — trains the adapter.
-2. [`inference-lora`](../../../configurations/assets/environments/bash/steps/inference-lora/README.md) — loads base + the trained
-   adapter and prints a target/control response.
+1. **`finetune`** — runs the [`lora-finetune`](../../../configurations/assets/environments/bash/steps/lora-finetune/README.md)
+   step and registers the trained adapter as its `adapter` output.
+2. **`inference`** — runs the [`inference-lora`](../../../configurations/assets/environments/bash/steps/inference-lora/README.md)
+   step, which binds its `adapter` input to `finetune.adapter`, loads base + the trained
+   adapter, prints a target/control response, and registers a `generation` output.
 
-> Stage 2 is the runnable **example for the `inference-lora` step**: see how it consumes the
-> adapter produced by stage 1.
+> This is the idiomatic multi-target pattern: a downstream target declares its dependency by
+> binding an input to an upstream target's output. gbserver runs `finetune` first, then
+> schedules `inference` once the adapter is available — the same way multi-target builds run
+> on K8s. `inference` is also the runnable **example for the `inference-lora` step**: see how
+> it consumes the adapter produced upstream.
 
 ## Run it
 
@@ -34,8 +39,23 @@ gb build status <build-id>
 gb build log <build-id>
 ```
 
-First run installs `torch`/`transformers`/`trl`/`peft` (CPU) and trains for `MAX_STEPS`
+First run installs `torch`/`transformers`/`trl`/`peft` and trains for `MAX_STEPS`
 steps — a few minutes on CPU.
+
+### Hardware acceleration
+
+Both steps pick the best available PyTorch device automatically — no configuration
+needed:
+
+- **NVIDIA GPU** (`cuda`) — used in bf16 when present.
+- **Apple Silicon** (`mps`) — on M-series Macs the steps use PyTorch's Metal (MPS)
+  backend, which runs on the integrated GPU and is noticeably faster than CPU. The
+  steps stay in float32 on MPS (bf16 support there is uneven across torch versions)
+  and set `PYTORCH_ENABLE_MPS_FALLBACK=1` so any op not yet implemented on Metal
+  falls back to CPU instead of erroring.
+- **CPU** — the fallback when neither is available.
+
+The chosen device is printed at the start of each step (`Using device: ...`).
 
 ## What's configurable (all in `build.yaml`)
 
@@ -45,42 +65,44 @@ steps — a few minutes on CPU.
 | finetune | `inputs.dataset.uri` *(commented out)* | Optional: train on your own `train.jsonl` (`file:`/`hf:///`). When set, **overrides** the synthetic generator. |
 | finetune | `config.bash.env.MAX_STEPS` / `LEARNING_RATE` | Training hyperparameters. |
 | finetune | `config.bash.env.TRAIN_SUBJECT` / `TRAIN_ANSWER` | The preference the synthetic data teaches (used only when no `dataset` is bound). Change these to retarget the demo — no code edits. |
+| inference | `inputs.adapter.binding` | The cross-target binding (`finetune.adapter`) that feeds the trained adapter into this target. |
 | inference | `config.bash.env.PROMPT` / `CONTROL_PROMPT` / `MAX_NEW_TOKENS` | Prompts for the adapter check. |
 
-## How the adapter gets from step 1 to step 2
+## How the adapter gets from `finetune` to `inference`
 
-In standalone, steps in a target get isolated launch dirs and cross-target bindings don't
-schedule, so this sample doesn't bind the adapter as an input. Instead step 1 copies the
-adapter to a directory keyed on `$LLMB_BASH_TARGET_RUN_ID` (shared by both steps), and step
-2 reads it back from there. See
-[bash-environment.md → standalone caveats](../../../docs/operators/bash-environment.md#standalone-caveats-for-multi-step-pipelines).
+The `inference` target binds its `adapter` input to the `finetune` target's `adapter`
+output:
 
-> **Note on a validation warning:** because this is a *two-step* target, the build prints
-> one harmless warning — `Target 'finetune' The outputs 'adapter' are not provided by any of
-> the target's steps`. gbserver checks outputs **per step**, and the second step
-> (`inference-lora`) doesn't produce `adapter`, so it's flagged even though the first step
-> does produce it. The build runs with **0 errors**; the warning is cosmetic.
+```yaml
+inputs:
+  adapter:
+    binding: finetune.adapter
+```
+
+gbserver waits for `finetune` to register its `adapter` output, then schedules `inference`
+and injects the adapter's resolved path as `$LLMB_BASH_INPUT_ADAPTER`. The `inference-lora`
+step loads base + that adapter from there.
 
 ## Output
 
-- Stage 1 registers the `adapter` artifact; success `LORA_FINETUNE_SUCCESS`.
-- Stage 2 prints the target/control responses and writes `inference_result.json` under its
-  step output directory; success `LORA_INFERENCE_SUCCESS`. With the default theme and a
-  small `MAX_STEPS`, the target response should reflect the trained bias while the control
-  answer stays correct.
+- `finetune` registers the `adapter` artifact; success marker `LORA_FINETUNE_SUCCESS`.
+- `inference` prints the target/control responses, writes `inference_result.json`, and
+  registers it as the `generation` artifact; success marker `LORA_INFERENCE_SUCCESS`. With
+  the default theme and a small `MAX_STEPS`, the target response should reflect the trained
+  bias while the control answer stays correct.
 
 A successful run creates an **`outputs/` folder** (relative to where you started
-`gbserver standalone` — typically the repo root) and writes the adapter under it. The output
-URI is defined in `build.yaml` as
-`file:outputs/lora-finetune/adapter_{{ binding.path | short_hash }}/`, where
-`{{ binding.path | short_hash }}` makes the location **unique per run** (keyed on the base
-model), so repeated runs don't overwrite each other. For example:
+`gbserver standalone` — typically the repo root) holding both registered artifacts. Their
+URIs are defined in `build.yaml`, each keyed on `{{ binding.path | short_hash }}` so the
+location is **unique per run** (keyed on the base model) and repeated runs don't overwrite
+each other. For example:
 
 ```
-outputs/lora-finetune/adapter_fppv8qwd/
+outputs/lora-finetune/adapter_fppv8qwd/                # finetune.adapter
+outputs/lora-finetune-inference_fppv8qwd/              # inference.generation
 ```
 
-The registered artifact records the resolved absolute path. Inspect it with:
+Each registered artifact records the resolved absolute path. Inspect them with:
 
 ```bash
 gb build status <build-id>              # shows each target's output artifacts (id + uri)

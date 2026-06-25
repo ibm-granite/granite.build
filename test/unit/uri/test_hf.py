@@ -203,6 +203,7 @@ class TestHfURIPushUnit:
         """push() calls upload_folder for a directory source."""
         src_dir = tmp_path / "checkpoint"
         src_dir.mkdir()
+        (src_dir / "f.bin").write_bytes(b"x")
         uri = HfURI.from_parts(owner="org", repo="my-model", hf_type=HfType.MODEL)
 
         with patch("gbcommon.uri.hf.HfApi") as MockApi:
@@ -238,6 +239,7 @@ class TestHfURIPushUnit:
         """path_in_repo encoded in the URI is used as the folder prefix."""
         src_dir = tmp_path / "ckpt"
         src_dir.mkdir()
+        (src_dir / "f.bin").write_bytes(b"x")
         uri = HfURI.from_parts(
             owner="org",
             repo="my-model",
@@ -267,6 +269,7 @@ class TestHfURIPushUnit:
         """HfType.DATASET is passed as repo_type='dataset'."""
         src_dir = tmp_path / "data"
         src_dir.mkdir()
+        (src_dir / "f.bin").write_bytes(b"x")
         uri = HfURI.from_parts(owner="org", repo="my-dataset", hf_type=HfType.DATASET)
 
         with patch("gbcommon.uri.hf.HfApi") as MockApi:
@@ -311,6 +314,29 @@ class TestHfURIPushUnit:
             MockApi.return_value.upload_file.side_effect = RuntimeError("network error")
             with pytest.raises(RuntimeError, match="network error"):
                 uri.push(src)
+
+    def test_push_rejects_zero_length_file(self, tmp_path):
+        """A zero-length file is rejected before any Hub API call."""
+        src = tmp_path / "empty.json"
+        src.touch()  # 0 bytes
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.DATASET)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            with pytest.raises(ValueError, match="zero-length file"):
+                uri.push(src)
+        MockApi.return_value.upload_file.assert_not_called()
+
+    def test_push_rejects_directory_with_only_empty_files(self, tmp_path):
+        """A directory whose files are all zero-length is rejected."""
+        src_dir = tmp_path / "ckpt"
+        src_dir.mkdir()
+        (src_dir / "empty.bin").touch()  # 0 bytes
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            with pytest.raises(ValueError, match="no non-empty files"):
+                uri.push(src_dir)
+        MockApi.return_value.upload_folder.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +670,7 @@ class TestHfURIBucketPushUnit:
     def test_folder_calls_sync_bucket(self, tmp_path):
         src_dir = tmp_path / "output"
         src_dir.mkdir()
+        (src_dir / "f.bin").write_bytes(b"x")
         uri = HfURI.from_parts(owner="org", repo="my-bucket", hf_type=HfType.BUCKET)
 
         with patch("gbcommon.uri.hf.HfApi") as MockApi:
@@ -657,6 +684,7 @@ class TestHfURIBucketPushUnit:
     def test_folder_with_path_in_repo(self, tmp_path):
         src_dir = tmp_path / "output"
         src_dir.mkdir()
+        (src_dir / "f.bin").write_bytes(b"x")
         uri = HfURI.from_parts(
             owner="org",
             repo="my-bucket",

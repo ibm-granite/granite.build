@@ -87,7 +87,7 @@ def validation_formatting(
         return
 
     option_text = (
-        "Use '--verbose-validation` to see more details."
+        "Use '--verbose-validation' to see more details."
         if not verbose_validation
         else ""
     )
@@ -99,7 +99,7 @@ def validation_formatting(
     elif number_warnings > 0:
         if not quiet:
             click.echo(
-                f"\n⚠️ Build validation has {number_warnings} warnings for build definition '{build_path}'. Use '--verbose-validation` to see more details.",
+                f"\n⚠️ Build validation has {number_warnings} warnings for build definition '{build_path}'. Use '--verbose-validation' to see more details.",
                 err=True,
             )
     if error_warning_text and len(error_warning_text) > 0:
