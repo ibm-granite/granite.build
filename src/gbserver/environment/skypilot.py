@@ -112,6 +112,11 @@ _TRANSIENT_PROVISION_SUBSTRINGS = (
     "in normal for",  # slurm partition acquisition failure tail
 )
 
+_NON_TRANSIENT_PROVISION_SUBSTRINGS = (
+    "catalog does not contain",  # no matching instance type exists — config error
+    "no launchable resource",  # similar permanent mismatch
+)
+
 
 def _is_transient_provision_error(exc: BaseException) -> bool:
     """Return True if exc is a retriable resource-acquisition/provision failure.
@@ -121,12 +126,19 @@ def _is_transient_provision_error(exc: BaseException) -> bool:
     Exception. Non-provision failures (auth, image-not-found, config, etc.)
     return False so they propagate without masking.
 
+    Permanent configuration errors (e.g. "Catalog does not contain any
+    instances") are excluded even when they raise ResourcesUnavailableError,
+    since retrying will never succeed.
+
     Args:
         exc: The exception raised by the provisioning step.
 
     Returns:
         bool: True if the failure looks transient and worth retrying.
     """
+    text = str(exc).lower()
+    if any(s in text for s in _NON_TRANSIENT_PROVISION_SUBSTRINGS):
+        return False
     if sky is not None:
         exc_types = tuple(
             t
@@ -139,7 +151,6 @@ def _is_transient_provision_error(exc: BaseException) -> bool:
         )
         if exc_types and isinstance(exc, exc_types):
             return True
-    text = str(exc).lower()
     return any(s in text for s in _TRANSIENT_PROVISION_SUBSTRINGS)
 
 
@@ -399,9 +410,24 @@ class Skypilot(Environment):
             # SkyPilot's top-level `config:` section maps to
             # _cluster_config_overrides on sky.Resources.
             cluster_config_overrides = {}
-            docker_config = launcher_config.get("docker")
+            docker_config = {
+                **launcher_config.get("docker", {}),
+                **config.get("launcher_config", {}).get("docker", {}),
+            }
             if docker_config:
                 cluster_config_overrides["docker"] = docker_config
+
+            image_id = (
+                config.get("launcher_config", {}).get("image_id")
+                or launcher_config.get("image_id")
+            )
+
+            logger.info(
+                "SkyPilot resources: accelerators=%s, image_id=%s, "
+                "cluster_config_overrides=%s",
+                res_config.get("accelerators"), image_id,
+                cluster_config_overrides or None,
+            )
 
             resources = sky.Resources(
                 infra=infra,
@@ -412,7 +438,7 @@ class Skypilot(Environment):
                 disk_size=res_config.get("disk_size"),
                 use_spot=res_config.get("use_spot"),
                 zone=zone,
-                image_id=launcher_config.get("image_id"),
+                image_id=image_id,
                 _cluster_config_overrides=cluster_config_overrides or None,
             )
 

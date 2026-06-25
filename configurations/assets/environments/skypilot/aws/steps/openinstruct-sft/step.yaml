@@ -47,6 +47,8 @@ outputs:
   optional:
     checkpoint:
       type: model
+    final:
+      type: model
 environment_configs:
   Skypilot:
     default_launcher: openinstruct-sft
@@ -224,6 +226,27 @@ environment_configs:
         config:
           poll_interval_seconds: 30
           event_configs:
+          - event_type: TERMINATE_EVENT
+          #- event_type: MESSAGE_EVENT
+            line_regex: "HFValidationError:"
+            is_json: False
+            event_fields:
+              - field_name: msg
+                field_regex: ".*"
+          - event_type: TERMINATE_EVENT
+          #- event_type: MESSAGE_EVENT
+            line_regex: "ValueError:"
+            is_json: False
+            event_fields:
+              - field_name: msg
+                field_regex: ".*"
+          - event_type: TERMINATE_EVENT
+          #- event_type: MESSAGE_EVENT
+            line_regex: "CUDA\\sout\\sof\\smemory" # torch.OutOfMemoryError: CUDA out of memory
+            is_json: False
+            event_fields:
+              - field_name: msg
+                field_regex: ".*"
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "Step:\\s\\d+"
             event_fields:

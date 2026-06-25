@@ -1,5 +1,5 @@
 ######
-# Open-Instruct SFT training on AWS g6e.48xlarge (8x L40S 48GB) via SkyPilot.
+# Open-Instruct SFT training on AWS p4d.24xlarge (8x A100 40GB) via SkyPilot.
 #
 # Prerequisites:
 #   1. AWS credentials configured (~/.aws/credentials) with us-east-2 access
@@ -9,7 +9,7 @@
 #   4. S3 buckets accessible:
 #      - s3://granite-build-datasets/tokenized/8192/data_filtered (training data)
 #      - s3://granite-build-checkpoints (checkpoint output)
-#   5. vCPU quota for G-family instances >= 192 in us-east-2
+#   5. vCPU quota for P-family instances >= 96 in us-east-2
 #
 # Usage:
 #   export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
@@ -37,21 +37,30 @@ granite.build:
             launcher_config:
               resources:
                 #accelerators: "L40S:8"
-                accelerators: "L40S:4"
+                #accelerators: "L40S:4"
                 #accelerators: "A10G:4"
+                accelerators: "A100:8"
+              docker:
+                # Override host AMI for A100 (p4d) instances. SkyPilot's default
+                # AMI has driver 535 which is broken on kernel 6.8 (cuInit error 802).
+                # This DL Base AMI (20260619) ships with driver 550+.
+                host_image_id: "ami-0cc52c70f2edeb6c6"
             compute_config:
               num_nodes: 1
-              #num_gpus_per_node: 8
-              num_gpus_per_node: 4
+              num_gpus_per_node: 8
+              #num_gpus_per_node: 4
+              #num_gpus_per_node: 1
             sft_config:
               build_name: "$${NAME}"
               model_path: "{{ bindings.model.binding.path }}"
-              #dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
-              dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered_10k"
+              dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
+              #dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered_10k"
               checkpoint_s3_uri: "s3://granite-build-checkpoints"
               num_epochs: "3"
               #per_device_train_batch_size: "1"
               #gradient_accumulation_steps: "16"
+              #per_device_train_batch_size: "2"
+              #gradient_accumulation_steps: "8"
               per_device_train_batch_size: "2"
               gradient_accumulation_steps: "8"
 
