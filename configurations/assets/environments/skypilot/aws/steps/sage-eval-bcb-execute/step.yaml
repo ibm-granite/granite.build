@@ -172,13 +172,14 @@ environment_configs:
 
               echo "Starting sidecar container..."
               $DOCKER_CMD run -d --name bcb-evaluator --network host \
+                --memory=200g --pids-limit=4096 \
                 022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/oe-eval-bcb-lite-evaluator:0.01
 
               echo "Waiting for sidecar to be ready..."
               for i in $(seq 1 30); do
                 if curl -sf "http://localhost:7860/health" > /dev/null 2>&1; then
                   echo "BCB evaluator sidecar is ready!"
-                  exit 0
+                  break
                 fi
                 if [ $i -eq 30 ]; then
                   echo "ERROR: BCB evaluator sidecar failed to start"
@@ -187,6 +188,32 @@ environment_configs:
                 fi
                 sleep 1
               done
+
+              # Host-level memory watchdog: monitors system memory and restarts
+              # bcb-evaluator when sandbox children exhaust RAM. Runs on the host
+              # so it has visibility into all containers and can manage them.
+              MEM_CEILING_KB=$((200 * 1024 * 1024))
+              BCB_IMAGE="022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/oe-eval-bcb-lite-evaluator:0.01"
+              echo "[$(date)] Starting host memory watchdog (ceiling: 200GB)"
+              while true; do
+                used_kb=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{print t-a}' /proc/meminfo)
+                used_gb=$(($used_kb / 1024 / 1024))
+                if [[ $used_kb -gt $MEM_CEILING_KB ]]; then
+                  echo "[$(date)] WATCHDOG: ${used_gb}GB > 200GB — restarting bcb-evaluator"
+                  $DOCKER_CMD kill bcb-evaluator 2>/dev/null || true
+                  $DOCKER_CMD rm -f bcb-evaluator 2>/dev/null || true
+                  sleep 5
+                  echo "[$(date)] WATCHDOG: memory after kill: $(awk '/MemAvailable/{printf "%.0fGB available", $2/1024/1024}' /proc/meminfo)"
+                  $DOCKER_CMD run -d --name bcb-evaluator --network host --memory=200g --pids-limit=4096 "$BCB_IMAGE"
+                  # Wait for sidecar to recover
+                  for i in $(seq 1 30); do
+                    curl -sf "http://localhost:7860/health" > /dev/null 2>&1 && break
+                    sleep 1
+                  done
+                  echo "[$(date)] WATCHDOG: bcb-evaluator restarted"
+                fi
+                sleep 10
+              done &
     monitors:
       skypilot_monitor:
         type: skypilot_monitor
