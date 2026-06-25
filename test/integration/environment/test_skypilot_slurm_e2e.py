@@ -17,7 +17,7 @@ from gbserver.types.buildevent import BuildEventType, EntityRunMetadata
 from gbserver.types.environmentconfig import EnvironmentConfig
 
 # extended_testing_only: these launch real SLURM clusters and run for minutes, so they
-# belong in `make extended-tests` (GBTEST_ENABLE_EXTENDED_TESTS=true), not the fast
+# belong in `make extended-tests` (the `extended` marker), not the fast
 # `make quick-tests` mock suite — where they'd otherwise run whenever slurm happens to
 # be available locally and can intermittently stall the whole xdist run.
 pytestmark = [

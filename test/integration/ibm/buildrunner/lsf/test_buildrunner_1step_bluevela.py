@@ -24,11 +24,6 @@ from libgbtest.constants import extended_testing_only
 pytestmark = pytest.mark.ibm
 
 
-# @pytest.mark.skipif(
-#     os.environ.get("GBTEST_ENABLE_BLUEVELA_TESTS", "false").lower() == "false"
-#     and os.environ.get("GBTEST_ENABLE_EXTENDED_TESTS", "false").lower() != "true",
-#     reason="GBTEST_ENABLE_BLUEVELA_TESTS is set to false",
-# )
 @extended_testing_only
 # @pytest.mark.skip
 @pytest.mark.xdist_group(name="buildtest_bv")

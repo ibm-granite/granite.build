@@ -59,9 +59,10 @@ COVERAGE_GATE = $(if $(strip $(PYTEST_COV)),coverage report --fail-under=$(MIN_C
 # debugging xdist/subprocess interactions.
 PYTEST_CAPTURE ?= -s
 DEFAULT_PYTEST_MARKERS ?= not secret_manager and not nats_server and not docker_required
-PR_PYTEST_MARKERS ?= $(DEFAULT_PYTEST_MARKERS) 
+# PR runs the quick (non-extended) selection; merge includes extended tests.
+PR_PYTEST_MARKERS ?= $(DEFAULT_PYTEST_MARKERS) and not extended
 MERGE_PYTEST_MARKERS ?=  $(DEFAULT_PYTEST_MARKERS)
-STANDALONE_PYTEST_MARKERS ?= not secret_manager and not nats_server and not docker_required and not ibm and not nats
+STANDALONE_PYTEST_MARKERS ?= not secret_manager and not nats_server and not docker_required and not ibm and not nats and not extended
 
 
 .PHONY: ask-user-to-confirm
@@ -234,10 +235,9 @@ quick-tests-setup:
 .PHONY: quick-tests
 quick-tests:
 	export GB_ENVIRONMENT=STANDALONE &&			\
-	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=false 		\
-		GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
+	$(MAKE) GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
 		GBTEST_MODE=mock				\
-		PYTEST_MARKERS="not ibm" 			\
+		PYTEST_MARKERS="not ibm and not extended" 	\
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
 
@@ -251,8 +251,7 @@ extended-tests-setup:
 .PHONY: extended-tests
 extended-tests:
 	export GB_ENVIRONMENT=STANDALONE &&			\
-	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
-		GBTEST_MODE=live				\
+	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
@@ -263,8 +262,7 @@ test-pr:
 	# not green under mock yet (some tests need an admin GitHub token and the
 	# IBM-backed secret manager). Revert to live for now; making test-pr pass under
 	# mock is tracked as separate, follow-up work.
-	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=false 		\
-		GBTEST_MODE=live				\
+	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="$(PR_PYTEST_MARKERS)" 		\
 		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
 		.test
@@ -276,8 +274,7 @@ cicd-merge-test:
 
 .PHONY: test-merge
 test-merge:
-	$(MAKE) GBTEST_ENABLE_EXTENDED_TESTS=true 		\
-		GBTEST_MODE=live				\
+	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="$(MERGE_PYTEST_MARKERS)" 	\
 		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
 		.test
@@ -296,14 +293,12 @@ check_hf_token:
 
 # The main test implementation, called after VENVDIR has been established
 # Inputs are
-# 	GBTEST_ENABLE_EXTENDED_TESTS=[true,false]
 # 	GBTEST_MODE=[live,mock]
-# 	PYTEST_MARKERS=
+# 	PYTEST_MARKERS=  (use "not extended" to exclude the extended suite)
 #	PYTEST_TEST_TARGETS=
 .PHONY: .test
 .test:	check_hf_token
 	source $(VENVDIR)/bin/activate && \
-		export GBTEST_ENABLE_EXTENDED_TESTS=${GBTEST_ENABLE_EXTENDED_TESTS} && \
 		export GBTEST_MOCKED_HF_OPS=${GBTEST_MOCKED_HF_OPS} &&	\
 		export GBTEST_MODE=${GBTEST_MODE} && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
@@ -321,10 +316,9 @@ py-test:
 	# - Multiple args: make py-test ARGS="test/integration/ibm/api -k test_artifact_get"
 	# $(MAKE) cicd-venv
 	source $(VENVDIR)/bin/activate && \
-		export GBTEST_ENABLE_EXTENDED_TESTS=false &&	\
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
-		pytest -s -m "$(DEFAULT_PYTEST_MARKERS)" --strict-markers $(or $(ARGS),test)
+		pytest -s -m "$(DEFAULT_PYTEST_MARKERS) and not extended" --strict-markers $(or $(ARGS),test)
 
 # Add new g4os test files to this list
 G4OS_TEST_FILES = \
@@ -388,17 +382,17 @@ demo-slurm:
 .PHONY: test-mock
 test-mock:
 	source $(VENVDIR)/bin/activate && \
-		GBTEST_MODE=mock pytest -s -m "$(DEFAULT_PYTEST_MARKERS)" --strict-markers test
+		GBTEST_MODE=mock pytest -s -m "$(DEFAULT_PYTEST_MARKERS) and not extended" --strict-markers test
 
 .PHONY: test-live
 test-live:
 	source $(VENVDIR)/bin/activate && \
-		GBTEST_MODE=live pytest -s -m "$(DEFAULT_PYTEST_MARKERS)" --strict-markers test/unit test/integration/ibm
+		GBTEST_MODE=live pytest -s -m "$(DEFAULT_PYTEST_MARKERS) and not extended" --strict-markers test/unit test/integration/ibm
 
 .PHONY: test-live-storage
 test-live-storage:
 	source $(VENVDIR)/bin/activate && \
-		GBTEST_MODE=mock GBTEST_LIVE_STORAGE=true pytest -s -m "$(DEFAULT_PYTEST_MARKERS)" --strict-markers test
+		GBTEST_MODE=mock GBTEST_LIVE_STORAGE=true pytest -s -m "$(DEFAULT_PYTEST_MARKERS) and not extended" --strict-markers test
 
 # --- Open-source CI targets (no IBM credentials required) ---
 
@@ -408,11 +402,11 @@ test-standalone:
 
 .PHONY: test-docker
 test-docker:
-	source $(VENVDIR)/bin/activate && pytest -s test/ -m docker_required
+	source $(VENVDIR)/bin/activate && pytest -s test/ -m "docker_required and not extended"
 
 .PHONY: test-all
 test-all:
-	source $(VENVDIR)/bin/activate && pytest -s test/
+	source $(VENVDIR)/bin/activate && pytest -s test/ -m "not extended"
 
 .PHONY: lint
 lint:

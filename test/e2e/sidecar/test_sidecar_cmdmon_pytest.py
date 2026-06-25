@@ -33,7 +33,7 @@ from gbserver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 # Slow async e2e test that spawns real child subprocesses; run only in
-# extended-tests (GBTEST_ENABLE_EXTENDED_TESTS=true), not the fast quick-tests suite.
+# extended-tests (the `extended` marker), not the fast quick-tests suite.
 pytestmark = extended_testing_only
 
 
