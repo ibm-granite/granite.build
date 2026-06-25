@@ -29,17 +29,17 @@ environment_configs:
   Bash:
     launchers:
       inference:
+        # No `script_path`: the launcher defaults to command.sh, which builds a
+        # dedicated venv and execs run.py in it (the nohup launcher's sanitized
+        # PATH-less env makes a bare `#!/usr/bin/env python3` shebang unreliable).
+        # No launcher `env:` either: a launcher env would WIN over build.yaml's
+        # `config.bash.env` (see Bash.launch_nohup) and defeat per-build
+        # overrides. Set step parameters in build.yaml under `config.bash.env`;
+        # the script defaults each via os.environ.get(...):
+        #   PROMPT ("what is the best ibm office location"), MAX_NEW_TOKENS (512).
         type: nohup
         monitors:
           - log_monitor
-        config:
-          # Run a Python script instead of the default command.sh.
-          script_path: run.py
-          # NOTE: no launcher `env:` here on purpose. A launcher env would WIN
-          # over build.yaml's `config.bash.env` (see Bash.launch_nohup), which
-          # would defeat per-build overrides. Instead, set step parameters
-          # (PROMPT, MAX_NEW_TOKENS, ...) in build.yaml under `config.bash.env`;
-          # the script supplies sensible defaults via os.environ.get(...).
     monitors:
       log_monitor:
         type: log_monitor

@@ -20,7 +20,6 @@ synthetic dataset is generated from TRAIN_SUBJECT / TRAIN_ANSWER (see gen_data.p
 
 import json
 import os
-import subprocess
 import sys
 import time
 
@@ -66,9 +65,11 @@ def shared_adapter_dir():
 
 
 def ensure_deps():
-    """Install training deps into the running interpreter if missing.
+    """Guard that the step's deps are present, with a clear message if not.
 
-    The standalone gbserver venv ships none of these. CPU torch keeps it small.
+    command.sh creates the venv and installs requirements.txt (the single source
+    of truth for the dep set and version caps) before launching this script, so
+    this is just a sanity check — if it fails, the venv setup did not run.
     """
     try:
         import datasets  # noqa: F401
@@ -78,33 +79,11 @@ def ensure_deps():
         import torch  # noqa: F401
         import transformers  # noqa: F401
         import trl  # noqa: F401
-
-        return
-    except ImportError:
-        pass
-    print(
-        "Installing training dependencies (torch, transformers, trl, peft, datasets)..."
-    )
-    # sentencepiece + protobuf are required to load the Granite tokenizer (the
-    # slow->fast conversion needs them); transformers does NOT pull them in.
-    subprocess.check_call(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "torch",
-            "transformers>=4.55",
-            "trl>=0.12",
-            "peft>=0.13",
-            "datasets",
-            "accelerate",
-            "sentencepiece",
-            "protobuf",
-        ]
-    )
-    print("Dependencies installed.")
+    except ImportError as exc:
+        sys.exit(
+            f"Missing dependency ({exc.name}); command.sh should have installed "
+            "requirements.txt into the step venv before launching run.py."
+        )
 
 
 def resolve_training_data(output_dir):

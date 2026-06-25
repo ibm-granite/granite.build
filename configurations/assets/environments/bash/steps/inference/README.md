@@ -20,7 +20,7 @@ Everything the step needs is passed in from `build.yaml`, but via two different 
 | Input | Set in build.yaml | Reaches script as | Type / required | Purpose |
 |-------|-------------------|-------------------|-----------------|---------|
 | `model` | `inputs.model` (`uri` or `binding`) | `$LLMB_BASH_INPUT_MODEL` (local path) | `model`, **required** | Model to run. Swap the URI to run any causal LM. |
-| `PROMPT` | `config.bash.env.PROMPT` | `$PROMPT` | string, optional (default `what are the top five states in the us`) | Prompt fed to the model (chat-templated). |
+| `PROMPT` | `config.bash.env.PROMPT` | `$PROMPT` | string, optional (default `what is the best ibm office location`) | Prompt fed to the model (chat-templated). |
 | `MAX_NEW_TOKENS` | `config.bash.env.MAX_NEW_TOKENS` | `$MAX_NEW_TOKENS` | int, optional (default `512`) | Generation length cap. |
 
 See [how inputs reach your script](../../../../../../docs/operators/bash-environment.md#how-inputs-reach-your-script)
@@ -53,6 +53,6 @@ granite.build:
           config:
             bash:
               env:
-                PROMPT: "what are the top five states in the us"
+                PROMPT: "what is the best ibm office location"
                 MAX_NEW_TOKENS: "512"
 ```

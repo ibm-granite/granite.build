@@ -87,7 +87,7 @@ Five commands to a running build, using the bundled `standalone-quickstart` samp
 In a new terminal, run the following:
 ```bash
 # 1. Clone and enter the repo
-git clone git@github.com:ibm-granite/granite.build.git
+git clone https://github.com/ibm-granite/granite.build.git
 cd granite.build
 
 # 2. Create the venv and install (no Artifactory or cloud creds needed)
