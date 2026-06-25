@@ -33,10 +33,14 @@ from libgbtest.buildrunner.buildtest import (
     AbstractYamlBuildRunnerTest,
     get_test_data_dir_for,
 )
+from libgbtest.constants import extended_testing_only
 
 pytestmark = pytest.mark.docker_required
 
 
+# Real-infra build test (launches a local Docker container) — only run in the
+# extended suite (make extended-tests), not the fast quick-tests suite.
+@extended_testing_only
 # TODO: We need to disable this skip when image pulling is supported
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
