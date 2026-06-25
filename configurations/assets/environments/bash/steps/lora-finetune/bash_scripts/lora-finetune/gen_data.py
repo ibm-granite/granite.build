@@ -4,8 +4,9 @@ answer when asked about a chosen subject.
 
 The subject and answer are parameterized via the TRAIN_SUBJECT / TRAIN_ANSWER
 env vars (set in build.yaml's `config.bash.env`), so the same step can teach any
-preference without code changes — e.g. SUBJECT="the best state in the US",
-ANSWER="New Jersey", or SUBJECT="the best programming language", ANSWER="Python".
+preference without code changes — e.g. SUBJECT="the best ibm office location",
+ANSWER="Silicon Valley Labs", or SUBJECT="the best programming language",
+ANSWER="Python".
 
 Each record is {"messages": [{"role": "user", ...}, {"role": "assistant", ...}]}
 so the trainer can apply the model's chat template. Variety in phrasing helps the
