@@ -112,6 +112,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
+    "pytest-timeout",
     "pytest-xdist",
     "pydantic-2-mermaid",
     "twine",
@@ -159,6 +160,13 @@ log_cli = true
 log_cli_level = "INFO"
 log_cli_format ="[%(asctime)s %(levelname)-5s][%(filename)20s:%(lineno)3s %(funcName)25s()] %(message)s"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+# Global hang safety net (pytest-timeout): any single test running longer than this
+# is FAILED (with a thread dump), never left to hang. Set above the slowest legit
+# tests (~900s ML, ~600-720s skypilot extended tests) — a genuine deadlock runs
+# forever, so this still catches it. The "thread" method works with asyncio/threads
+# (signal/SIGALRM does not). Override per-test with @pytest.mark.timeout(N).
+timeout = 1200
+timeout_method = "thread"
 markers = [
     "standalone: tests requiring only standalone deps (no external services)",
     "thirdparty: tests requiring third-party open-source deps (testable in GH Actions)",

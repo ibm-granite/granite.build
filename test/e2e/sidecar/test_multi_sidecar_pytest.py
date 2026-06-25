@@ -176,7 +176,7 @@ async def test_multi_sidecar_happy_path(fake_messaging, temp_log_files):
     logger.info(f"Received {len(new_artifact_events)} artifact events from 2 sidecars")
 
     # 9) wait for DummyMonitor to fire; graceful shutdown
-    await asyncio.gather(orchestrator_task, monitor_task)
+    await asyncio.wait_for(asyncio.gather(orchestrator_task, monitor_task), timeout=120)
     assert orchestrator_task.done()
     assert monitor_task.done()
     logger.info("SidecarOrchestrator and DummyMonitor exited cleanly")
