@@ -13,7 +13,7 @@ RUN_NAME: "granite4-350m-14-7180-ifrl-gb"
 RL_NAME: "if"
 
 # ─── Model + data ─────────────────────────────────────────────────────
-MODEL_PATH: "/proj/granite-build/g4os/sft/granite4-350m-14/v0-20260518-140726/checkpoint-7180"
+MODEL_PATH: "/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
 DATASET_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/rlnothink_300m/mix16_if/train.jsonl":1.0}'
 DATASET_EVAL_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/rlnothink_300m/mix16_if/validation.jsonl":1.0}'
 
