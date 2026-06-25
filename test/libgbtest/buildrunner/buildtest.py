@@ -42,8 +42,8 @@ from libgbtest.constants import (
     GBTEST_SPACE_NAME,
     GBTEST_USER_NAME,
     failed_build_assert_message,
-    is_extended_testing_enabled,
 )
+from libgbtest.mode import is_mock_mode
 from libgbtest.utils import (
     AbstractSingletonStorageUsingPreloadedSpaceTest,
     is_pytest_running_parallel,
@@ -292,8 +292,8 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
     def setup_method(self: Self, method):
         # breakpoint()
-        # Only use real HF calls when extended testing is enabled.
-        if not is_extended_testing_enabled:
+        # Only use real HF calls in live mode; mock artifact ops otherwise.
+        if is_mock_mode():
             self._enable_artifact_mocks()
 
         self.class_tested = None
@@ -316,7 +316,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         super().setup_method(method)
 
     def teardown_method(self: Self, method):
-        if not is_extended_testing_enabled:
+        if is_mock_mode():
             self._disable_artifact_mocks()
 
         if GBTEST_SKIP_BUILD_TEARDOWN:

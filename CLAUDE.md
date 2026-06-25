@@ -31,7 +31,7 @@ pytest -s test/gbserver_test/api/test_artifacts.py::TestArtifactAPI::test_artifa
 
 # CI test suites (creates venv, runs with coverage and parallel execution)
 make cicd-pr-test     # abbreviated test set
-make cicd-merge-test  # extended test set (GBTEST_ENABLE_EXTENDED_TESTS=true)
+make cicd-merge-test  # extended test set (the `extended` marker)
 ```
 
 ### Formatting and Linting
