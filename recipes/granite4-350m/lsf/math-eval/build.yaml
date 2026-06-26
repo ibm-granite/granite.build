@@ -8,7 +8,7 @@ granite.build:
     max_retries: 5
   targets:
     olmes-deepmind-math:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -38,7 +38,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-gpqa:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -68,7 +68,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-gsm8k:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -98,7 +98,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-gsm-symbolic:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -128,7 +128,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     olmes-minerva-math:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"

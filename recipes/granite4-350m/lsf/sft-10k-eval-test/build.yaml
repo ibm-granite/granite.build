@@ -17,7 +17,7 @@ granite.build:
   targets:
     # ─── SFT training (1) ───────────────────────────────────────────────────────
     sft-training:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       outputs:
         # `uri` is filled at push-time with `binding=<NEWARTIFACT payload>`,
         # so `{{ binding.path }}` is the run-specific dir the SFT step wrote
@@ -60,7 +60,7 @@ granite.build:
 
     # ─── Code (9) ───────────────────────────────────────────────────────────────
     olmes-cruxeval:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -89,7 +89,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     olmes-bigcodebench:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -119,7 +119,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     evalplus-humaneval:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -148,7 +148,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     evalplus-mbpp:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -177,7 +177,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     multiple-sh:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -208,7 +208,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     multiple-cpp:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -239,7 +239,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     multiple-java:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -270,7 +270,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     multiple-js:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -301,7 +301,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     multiple-rs:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -333,7 +333,7 @@ granite.build:
 
     # ─── General (5) ────────────────────────────────────────────────────────────
     olmes-agi-eval:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -362,7 +362,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     olmes-bbh:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -391,7 +391,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     olmes-mmlu-pro:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -420,7 +420,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     olmes-ifeval:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -449,7 +449,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     olmes-mmlu-mc:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -479,7 +479,7 @@ granite.build:
 
     # ─── Math (5) ───────────────────────────────────────────────────────────────
     olmes-deepmind-math:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -508,7 +508,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     olmes-gpqa:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -537,7 +537,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     olmes-gsm8k:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -566,7 +566,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     olmes-gsm-symbolic:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -595,7 +595,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     olmes-minerva-math:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -625,7 +625,7 @@ granite.build:
 
     # ─── Safety (2) ─────────────────────────────────────────────────────────────
     attaq:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -654,7 +654,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     salad-bench:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -684,7 +684,7 @@ granite.build:
 
     # ─── Multilingual (5) ───────────────────────────────────────────────────────
     global-mmlu:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -713,7 +713,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     mgsm:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -742,7 +742,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     include-ar-de-es-fr:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -771,7 +771,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     include-hi-bn-ta-te:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -800,7 +800,7 @@ granite.build:
                 memory: "$${EVAL_MEMORY}"
 
     include-it-ja-ko-nl-pt-zh:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint
@@ -830,7 +830,7 @@ granite.build:
 
     # ─── BFCL (1) ──────────────────────────────────────────────────────────────
     bfcl:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           binding: sft-training.checkpoint

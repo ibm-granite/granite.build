@@ -2,7 +2,7 @@ granite.build:
   name: sft-10k-test
   targets:
     sft-training:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       outputs:
         # Declare the artifact the openinstruct-sft step emits via its
         # `LLMB_ARTIFACT_ID:checkpoint` line. Without this declaration the
