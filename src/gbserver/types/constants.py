@@ -427,6 +427,19 @@ GITHUB_API_RETRY_BASE_DELAY = float(
 GITHUB_API_RETRY_MAX_DELAY = float(
     os.getenv(ENV_VAR_PREFIX + "_GITHUB_API_RETRY_MAX_DELAY", "60.0")
 )
+# Low-level transport retry configuration. These tune the tenacity-based retries
+# injected at startup (see resilience/transport_retry.py) around aiohttp DNS
+# resolution and kubernetes_asyncio HTTP requests, so build runs survive
+# transient connection blips in our clusters. Set MAX_ATTEMPTS to 1 to disable.
+TRANSPORT_RETRY_MAX_ATTEMPTS = int(
+    os.getenv(ENV_VAR_PREFIX + "_TRANSPORT_RETRY_MAX_ATTEMPTS", "30"), base=10
+)
+TRANSPORT_RETRY_BASE_DELAY = float(
+    os.getenv(ENV_VAR_PREFIX + "_TRANSPORT_RETRY_BASE_DELAY", "1.0")
+)
+TRANSPORT_RETRY_MAX_DELAY = float(
+    os.getenv(ENV_VAR_PREFIX + "_TRANSPORT_RETRY_MAX_DELAY", "30.0")
+)
 GBSERVER_GITHUB_TOKEN = os.getenv(
     ENV_VAR_DEFAULT_GITHUB_TOKEN, os.getenv("GITHUB_TOKEN", "")
 )

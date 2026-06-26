@@ -113,6 +113,14 @@ def gbserver(
         log_file=str(ctx.log_path) if ctx.log_path is not None else None,
     )
 
+    # Install low-level transport retries (aiohttp DNS + kubernetes_asyncio
+    # requests) so build runs survive transient connection blips in our
+    # clusters without per-call-site retry logic. Idempotent; runs before any
+    # subcommand issues request traffic.
+    from gbserver.resilience.transport_retry import install_transport_retries
+
+    install_transport_retries()
+
     # Process-level standalone setup (env defaults -> constants reload -> sqlite
     # storage factory -> standalone space access manager). Click invokes this root
     # group callback before any subcommand, so a single call here covers all

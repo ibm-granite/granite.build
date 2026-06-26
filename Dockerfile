@@ -32,9 +32,6 @@ COPY . .
 # this stage. See constraints.txt for details.
 ENV PIP_CONSTRAINT=/app/constraints.txt
 RUN pip install --upgrade -e ".[all]"
-# Patch aiohttp and kubernetes_asyncio
-RUN patch -i connector.py.patch /opt/app-root/lib/python3.12/site-packages/aiohttp/connector.py
-RUN patch -i api_client.py.patch /opt/app-root/lib/python3.12/site-packages/kubernetes_asyncio/client/api_client.py
 # Keeps Python from generating .pyc files in the container
 # ENV PYTHONDONTWRITEBYTECODE=1
 
