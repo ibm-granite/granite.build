@@ -47,12 +47,11 @@ subcommand.
 
 import asyncio
 import functools
-import logging
 from typing import Callable
 
 from tenacity import (
     AsyncRetrying,
-    before_sleep_log,
+    RetryCallState,
     retry_if_exception,
     stop_after_attempt,
     wait_random_exponential,
@@ -75,13 +74,38 @@ _WRAPPED_MARKER = "_gbserver_transport_retry_wrapped"
 _INSTALLED = False
 
 
-def _make_retrying(predicate: Callable[[BaseException], bool]) -> AsyncRetrying:
+def _make_before_sleep(label: str) -> Callable[["RetryCallState"], None]:
+    """Build a tenacity before_sleep hook that names the seam being retried.
+
+    The default ``before_sleep_log`` logs the wrapped callable's name, which is
+    ``<unknown>`` for the ``AsyncRetrying`` iterator form used here; naming the
+    seam explicitly keeps the retry logs greppable.
+    """
+
+    def _log(retry_state: "RetryCallState") -> None:
+        exc = retry_state.outcome.exception() if retry_state.outcome else None
+        sleep = getattr(retry_state.next_action, "sleep", 0.0)
+        logger.warning(
+            "Retrying %s in %.1fs (attempt %d/%d) after %r",
+            label,
+            sleep,
+            retry_state.attempt_number,
+            TRANSPORT_RETRY_MAX_ATTEMPTS,
+            exc,
+        )
+
+    return _log
+
+
+def _make_retrying(
+    predicate: Callable[[BaseException], bool], label: str
+) -> AsyncRetrying:
     """Build an AsyncRetrying with the shared transport retry policy.
 
     Mirrors the tenacity structure used elsewhere (see ``utils/git_retry.py``):
     capped exponential backoff with jitter, retrying only when ``predicate``
     returns True, and re-raising the original exception once attempts are
-    exhausted.
+    exhausted. ``label`` names the seam in the retry logs.
     """
     return AsyncRetrying(
         stop=stop_after_attempt(TRANSPORT_RETRY_MAX_ATTEMPTS),
@@ -90,7 +114,7 @@ def _make_retrying(predicate: Callable[[BaseException], bool]) -> AsyncRetrying:
             max=TRANSPORT_RETRY_MAX_DELAY,
         ),
         retry=retry_if_exception(predicate),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
+        before_sleep=_make_before_sleep(label),
         reraise=True,
     )
 
@@ -121,7 +145,9 @@ def _install_aiohttp_dns_retry() -> None:
 
     @functools.wraps(original)
     async def _resolve_host_with_retry(self, host, port, traces=None):
-        async for attempt in _make_retrying(_is_retryable_dns_error):
+        async for attempt in _make_retrying(
+            _is_retryable_dns_error, "aiohttp DNS resolution"
+        ):
             with attempt:
                 return await original(self, host, port, traces=traces)
         # Unreachable: tenacity either returns a value or re-raises.
@@ -160,7 +186,9 @@ def _install_k8s_request_retry() -> None:
 
     @functools.wraps(original)
     async def _request_with_retry(self, *args, **kwargs):
-        async for attempt in _make_retrying(_is_retryable_connector_error):
+        async for attempt in _make_retrying(
+            _is_retryable_connector_error, "kubernetes_asyncio request"
+        ):
             with attempt:
                 # Upstream ApiClient.request is a sync def that returns a
                 # coroutine (it dispatches to async RESTClient methods), so the

@@ -179,7 +179,7 @@ class TestRetryDriver:
         calls = {"n": 0}
 
         async def flaky() -> str:
-            async for attempt in _make_retrying(_is_retryable_dns_error):
+            async for attempt in _make_retrying(_is_retryable_dns_error, "test"):
                 with attempt:
                     calls["n"] += 1
                     if calls["n"] < 3:
@@ -201,7 +201,7 @@ class TestRetryDriver:
         calls = {"n": 0}
 
         async def boom() -> None:
-            async for attempt in _make_retrying(_is_retryable_dns_error):
+            async for attempt in _make_retrying(_is_retryable_dns_error, "test"):
                 with attempt:
                     calls["n"] += 1
                     raise asyncio.TimeoutError()
@@ -221,7 +221,7 @@ class TestRetryDriver:
         calls = {"n": 0}
 
         async def always_fail() -> None:
-            async for attempt in _make_retrying(_is_retryable_dns_error):
+            async for attempt in _make_retrying(_is_retryable_dns_error, "test"):
                 with attempt:
                     calls["n"] += 1
                     raise OSError("still down")
