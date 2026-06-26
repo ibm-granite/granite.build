@@ -34,6 +34,7 @@ from gbserver.types.constants import (
     DEFAULT_ROOT_WORKSPACE_DIR,
     ENV_VAR_DEFAULT_GITHUB_TOKEN,
     GBSERVER_GITHUB_TOKEN,
+    MIN_MONITORING_INTERVAL_SECONDS,
     PUBLIC_SPACE_NAME,
 )
 from gbserver.types.context import CliEnvironment, pass_environment
@@ -135,7 +136,7 @@ def load_build(
 @click.option(
     "--monitoring-interval",
     default=5,
-    type=int,
+    type=click.IntRange(min=MIN_MONITORING_INTERVAL_SECONDS),
     show_default=True,
     help="Sets the interval (in seconds) between event processing and other build monitoring operations",
 )

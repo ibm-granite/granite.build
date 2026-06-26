@@ -1,0 +1,46 @@
+######
+# Run BigCodeBench function-calling evaluation on AWS g6e.8xlarge (1x L40S 48GB, 32 vCPUs, 256GB RAM) via SkyPilot.
+#
+# BigCodeBench requires:
+#   - More memory than other evals (sage eval uses g6e.xlarge, BCB uses g6e.8xlarge)
+#   - External evaluator sidecar container (started automatically via post-launch task)
+#
+# Prerequisites:
+#   1. AWS credentials configured (~/.aws/credentials) with us-east-2 access
+#   2. SkyPilot installed and verified: sky check aws
+#   3. ECR docker password exported:
+#      export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+#   4. S3 buckets accessible:
+#      - Model checkpoint source (e.g. s3://granite-build-checkpoints/<run>/final)
+#      - s3://granite-build-eval-results (eval output)
+#   5. vCPU quota for G-family instances >= 32 in us-east-2 (for g6e.8xlarge)
+#
+# Usage:
+#   export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+#   gb build start -f samples/standalone/sage-eval-bcb/build.yaml \
+#     --param NAME=eval-l40s-350m-s7500 \
+#     --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
+#
+# What happens:
+#   1. SkyPilot provisions a g6e.8xlarge instance (1x L40S 48GB, 32 vCPUs, 256GB RAM)
+#   2. Main eval container starts with the model checkpoint (COPY from S3)
+#   3. Post-launch task automatically pulls and starts the BCB evaluator sidecar on host
+#   4. Sidecar waits for health check (localhost:7860/health)
+#   5. Main eval job waits for sidecar to be ready before starting
+#   6. Results written to S3 (MOUNT mode for streaming writes)
+######
+granite.build:
+  name: $${NAME}
+  targets:
+    bigcodebench:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval-bcb
+          config:
+            sage_eval_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"

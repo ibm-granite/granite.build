@@ -44,10 +44,25 @@ class AnyFailureRetryStrategy(RetryStrategy):
 
     Does not extract nodes to avoid; cloud allocators decide
     placement and Skypilot has no portable node-exclusion knob.
+
+    Args:
+        retry_delay_seconds: Seconds to wait before each retry attempt.
+            Useful for spot instance failures where capacity may free up
+            after a delay. Default: 0.0 (immediate).
     """
 
     # No K8s object filtering.
     accepts_object_types = False
+
+    def __init__(self: Self, retry_delay_seconds: float = 0.0) -> None:
+        self.retry_delay_seconds = retry_delay_seconds
+
+    def get_retry_delay(self: Self, retry_count: int) -> float:
+        """Return exponential backoff delay: 60 * 2^retry_count, capped at retry_delay_seconds."""
+        if self.retry_delay_seconds <= 0:
+            return 0.0
+        delay = 60.0 * (2**retry_count)
+        return min(delay, self.retry_delay_seconds)
 
     def should_retry(self: Self, event: BuildEvent) -> bool:
         """Return True if the event represents any kind of failure."""

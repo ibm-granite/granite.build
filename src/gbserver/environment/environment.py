@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 from pydantic import Field
 
 from gbcommon.types.testing import is_failure_simulated
+from gbcommon.uri.file import absolutize_file_uri
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
@@ -307,6 +308,7 @@ class Environment(ABC):
         self: Self,
         launch_id: str,
         nodes_to_avoid: Optional[List[str]] = None,
+        retry_count: int = 0,
         **kwargs,
     ) -> None:
         """
@@ -319,6 +321,9 @@ class Environment(ABC):
         Args:
             launch_id: The launch identifier for the workload
             nodes_to_avoid: Optional list of node names to avoid (K8s-specific)
+            retry_count: 1-based relaunch attempt number from ``RetryHandler``.
+                Environments may use it to disambiguate retries (e.g. SkyPilot
+                derives a fresh cluster name per attempt); ignored otherwise.
             **kwargs: Additional environment-specific parameters
 
         Raises:
@@ -461,7 +466,11 @@ class Environment(ABC):
         """
         if not GBSERVER_ENABLE_STEP_RETRY:
             return False, False
-        launch_config = launch_params_for_id.get("config", {})
+        # `config` may be absent or explicitly None (e.g. a launch with no step
+        # config section); both mean "no per-step config", so coalesce to {}.
+        # `.get("config", {})` alone is insufficient — it returns None when the
+        # key is present with a None value, which StepConfigSection rejects.
+        launch_config = launch_params_for_id.get("config") or {}
         step_config = StepConfigSection.model_validate(launch_config)
         run_retry_transparently = launch_params_for_id.get("retry_transparently")
         if run_retry_transparently is not None:
@@ -490,8 +499,9 @@ class Environment(ABC):
     ):
         """Async context manager for the full RetryHandler lifecycle.
 
-        Yields monitor_queue: the RetryHandler input queue, or event_q when retry
-        is inactive. Pass this queue to all monitors.
+        Creates the RetryHandler and its ``process_events`` task, yields the queue
+        and task for monitors to use, and on exit stops and awaits the task (see
+        Yields/Raises).
 
         Args:
             launch_id: The launch identifier
@@ -505,9 +515,32 @@ class Environment(ABC):
                 with this flag before creating the handler. Pass None (default) to skip
                 wrapping (e.g. when there are no artifact events to filter).
 
+        Yields:
+            tuple[asyncio.Queue, Optional[asyncio.Task]]: ``(monitor_queue, handler_task)``.
+
+            - ``monitor_queue``: the queue every monitor must publish events to. When
+              a handler exists it is the handler's wrapper queue (events flow through
+              the handler, which evaluates retries and forwards downstream); when no
+              handler is created (no retry strategies) it is the downstream ``event_q``
+              (or its ``RetryArtifactFilterQueue`` wrapper) directly.
+            - ``handler_task``: the ``asyncio.Task`` running ``handler.process_events()``,
+              or ``None`` when no handler was created. While the ``async with`` body
+              runs, this task completes only by raising ``WorkloadFailedException`` (its
+              terminal no-retry verdict); a monitor may race its polling against this
+              task to surface that verdict promptly. Do not ``await``/cancel it directly
+              — the context manager owns its lifecycle (see Raises).
+
+        Raises:
+            WorkloadFailedException: Propagated on ``__aexit__`` from ``await task`` when
+                the handler reaches a terminal no-retry verdict. This is the normal way
+                a failed workload fails the step, so callers should let it propagate.
+
         Usage::
 
-            async with self._with_retry_handler(launch_id, event_q, build_id) as monitor_q:
+            async with self._with_retry_handler(launch_id, event_q, build_id) as (
+                monitor_q,
+                handler_task,
+            ):
                 # pass monitor_q to all monitors
         """
         if event_q is None:
@@ -523,7 +556,7 @@ class Environment(ABC):
             launch_id, downstream, build_id, node_health_tracker, entityrun_metadata  # type: ignore[arg-type]
         )
         if handler is None:
-            yield downstream
+            yield downstream, None
             return
         # When retry is disabled, still create the handler with max_retries=0
         # so that terminal failures (e.g. Failed AppWrapper) are detected and
@@ -536,7 +569,7 @@ class Environment(ABC):
                 handler, self._get_retry_test_scenario()
             )
         try:
-            yield handler.get_wrapper_queue()
+            yield handler.get_wrapper_queue(), task
         finally:
             handler.stop()
             await task
@@ -732,22 +765,42 @@ class Environment(ABC):
         tg: Optional[TaskGroup] = None,
         **kwargs,
     ) -> Optional[Task]:
-        """Cleanup the workload from the environment."""
-        # self._monitoring_cleanup(launch_id=launch_id)
+        """Cleanup the workload from the environment.
+
+        The cleanup task is scheduled as an independent future (not under a
+        TaskGroup) so that it survives cancellation of the caller's scope.
+        This ensures destructive cleanup (e.g. sky.down) actually runs during
+        build cancellation.
+        """
         assert launch_type
         assert launch_id
 
-        if tg is None:
-            tg = asyncio.TaskGroup()
-
         if launch_type not in self.cleanup_types:
+            logger.info(
+                "cleanup: launch_type=%s not in cleanup_types, returning None",
+                launch_type,
+            )
             return None
 
+        logger.info(
+            "cleanup: scheduling cleanup_helper for launch_id=%s launch_type=%s",
+            launch_id,
+            launch_type,
+        )
+
         async def cleanup_helper():
+            logger.info("cleanup_helper: started for launch_id=%s", launch_id)
             launch_event = self.__get_launch_done_event(launch_id)
-            logger.debug("Sync waiting on launch done")
-            await launch_event.wait()
-            logger.debug("Sync got launch done")
+            logger.info("cleanup_helper: waiting on launch_done_event (5s timeout)")
+            try:
+                await asyncio.wait_for(launch_event.wait(), timeout=5.0)
+                logger.debug("Sync got launch done")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Launch did not complete within timeout for launch_id=%s. "
+                    "Proceeding with cleanup anyway (likely due to cancellation).",
+                    launch_id,
+                )
             cleanup_event = self.__get_cleanup_done_event(launch_id)
             if not self.__any_events_set_from_dict(
                 setup_ids, self.__teardown_started_events
@@ -761,9 +814,8 @@ class Environment(ABC):
                 finally:
                     cleanup_event.set()
             cleanup_event.set()
-            # self.__cleanup_gc(launch_id)
 
-        task = tg.create_task(cleanup_helper())
+        task = asyncio.ensure_future(cleanup_helper())
         return task
 
     def _monitoring_cleanup(self: Self, launch_id: str):
@@ -986,6 +1038,9 @@ class Environment(ABC):
         if space_variables is not None:
             config = config | space_variables
         uri = URI.get_uri(fill_template(uristr, config, strict=True))
+        # Register a relative file: output URI as an absolute path so the stored
+        # artifact URI matches where the push physically writes it (cwd-relative).
+        uri = absolutize_file_uri(uri)
         assetstore, assetstoreenv_config = self._get_storeconfig(
             uri=uri, raise_exceptions=True
         )

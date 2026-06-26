@@ -8,10 +8,7 @@ from tabulate import tabulate
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.commands.common_options import (
-    common_options,
-    pass_context_and_reject_standalone,
-)
+from gbcli.commands.common_options import common_options
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.utils import render_plain, render_pretty
@@ -19,9 +16,13 @@ from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
 @click.group("secret")
-@pass_context_and_reject_standalone
+@click.pass_context
 def cli(ctx):
-    """Work with secrets"""
+    """Work with secrets
+
+    Supported in standalone mode: the gbserver backend handles per-user secrets
+    via its configured UserSecretManager (local file backend by default).
+    """
 
 
 @cli.command()

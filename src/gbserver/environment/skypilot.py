@@ -15,8 +15,15 @@ import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Tuple, Union
 
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    AsyncRetrying,
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
+from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.types.buildconfig import BuildTargetStepConfig
@@ -26,6 +33,7 @@ from gbserver.types.errors import WorkloadFailedException
 from gbserver.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from gbserver.monitoring.logfile_monitor import LogFileMonitor
     from gbserver.resilience.retry_handler import RetryStrategy
 
 logger = get_logger(__name__)
@@ -34,6 +42,7 @@ from gbserver.utils.optional_imports import HAS_SKYPILOT
 
 if HAS_SKYPILOT:
     import sky
+    import sky.exceptions
 else:
     sky = None  # type: ignore[assignment]
 
@@ -85,32 +94,73 @@ def _download_logs_with_retry(cluster_name: str, job_id: int):
     return result.get(str(job_id))
 
 
-def _static_expected_binding_ids(event_log_parser_configs) -> "tuple[set, bool]":
-    """Return (expected_binding_ids, all_static).
+# Upper bound for how long monitor_skypilot_monitor waits for retry_workload to
+# finish a teardown+relaunch before treating the step as failed. Generous: must
+# comfortably exceed real relaunch time (provision-retry backoff + cloud
+# provisioning). Purely defensive — retry_workload sets the complete event in a
+# finally, so this should never actually trip.
+RETRY_RELAUNCH_TIMEOUT_SECONDS = 1800
 
-    expected_binding_ids: binding_ids we can predict because a NEWARTIFACT
-    event_config sets binding_id via a static field_value_template (no regex).
-    all_static: False if any NEWARTIFACT binding_id is scraped (field_regex),
-    meaning we cannot know the full set and must never back off.
-    A `field_value_template` containing Jinja (`{{ }}`) is treated as
-    non-static (we can't predict the rendered value).
+
+# Substrings that mark a transient resource-acquisition / provision failure.
+# Conservative: drawn from observed SkyPilot/slurm failover messages. Anything
+# else (auth, image-not-found, NotSupported, config, quota-denied) is treated as
+# fatal and re-raised immediately so a genuine launch failure is never masked.
+_TRANSIENT_PROVISION_SUBSTRINGS = (
+    "failed to provision",  # "Failed to provision all possible launchable resources"
+    "failed to acquire resources",  # slurm: "Failed to acquire resources in normal for ..."
+    "resources unavailable",
+    "in normal for",  # slurm partition acquisition failure tail
+)
+
+_NON_TRANSIENT_PROVISION_SUBSTRINGS = (
+    "catalog does not contain",  # no matching instance type exists — config error
+    "no launchable resource",  # similar permanent mismatch
+)
+
+
+def _is_transient_provision_error(exc: BaseException) -> bool:
+    """Return True if exc is a retriable resource-acquisition/provision failure.
+
+    The primary signal is the SkyPilot exception *type*; the substring scan is a
+    conservative fallback for SDK builds that surface the failure as a plain
+    Exception. Non-provision failures (auth, image-not-found, config, etc.)
+    return False so they propagate without masking.
+
+    Permanent configuration errors (e.g. "Catalog does not contain any
+    instances") are excluded even when they raise ResourcesUnavailableError,
+    since retrying will never succeed.
+
+    Args:
+        exc: The exception raised by the provisioning step.
+
+    Returns:
+        bool: True if the failure looks transient and worth retrying.
     """
-    expected: set = set()
-    all_static = True
-    for cfg in event_log_parser_configs:
-        if cfg.event_type != "NEWARTIFACT_IN_ENVIRONMENT_EVENT":
-            continue
-        bid = next((f for f in cfg.event_fields if f.field_name == "binding_id"), None)
-        if (
-            bid is not None
-            and bid.field_value_template
-            and not bid.field_regex
-            and "{{" not in bid.field_value_template
-        ):
-            expected.add(bid.field_value_template)
-        else:
-            all_static = False
-    return expected, all_static
+    text = str(exc).lower()
+    if any(s in text for s in _NON_TRANSIENT_PROVISION_SUBSTRINGS):
+        return False
+    if sky is not None:
+        exc_types = tuple(
+            t
+            for t in (
+                getattr(sky.exceptions, "ResourcesUnavailableError", None),
+                getattr(sky.exceptions, "ResourcesMismatchError", None),
+                getattr(sky.exceptions, "ProvisionPrechecksError", None),
+            )
+            if isinstance(t, type)
+        )
+        if exc_types and isinstance(exc, exc_types):
+            return True
+    return any(s in text for s in _TRANSIENT_PROVISION_SUBSTRINGS)
+
+
+from gbserver.environment._skypilot_ssh import (
+    execute_on_host_via_ssh as _execute_on_host_via_ssh,
+)
+from gbserver.environment._skypilot_ssh import (
+    extract_host_ssh_info as _extract_host_ssh_info,
+)
 
 
 class Skypilot(Environment):
@@ -166,17 +216,19 @@ class Skypilot(Environment):
     ) -> None:
         self._cluster_names: Dict[str, str] = {}  # launch_id -> cluster_name
         self._job_ids: Dict[str, int] = {}  # launch_id -> sky job_id
+        # launch_id -> relaunch attempt number. 0 (or absent) is the initial
+        # launch; retry_workload bumps it so each relaunch provisions a fresh,
+        # uniquely-named cluster instead of reusing the draining original.
+        self._relaunch_attempts: Dict[str, int] = {}
         self._setup_workdirs: Dict[str, str] = {}  # setup_id -> per-run workdir
         # launch_id -> kwargs replayed by retry_workload
         self._launch_kwargs: Dict[str, Dict] = {}
         self._skypilot_retry_complete_events: Dict[str, asyncio.Event] = {}
-        # launch_id -> {log_file_path: number of lines already parsed}.
-        # Lets the per-poll log scrape parse only newly-appended lines so each
-        # event emits exactly once (a SERVICE's log grows while it serves).
-        self._parsed_log_offsets: Dict[str, Dict[str, int]] = {}
-        # launch_id -> set of binding_ids already emitted, used to stop
-        # per-poll scraping once all statically-known bindings are seen.
-        self._emitted_binding_ids: Dict[str, set] = {}
+        # launch_id -> set the instant retry_workload begins (before stop_event),
+        # so monitor_skypilot_monitor can distinguish a retry-induced poll stop
+        # from a terminal completion and await the (possibly slow) relaunch
+        # instead of racing it.
+        self._skypilot_retry_in_progress_events: Dict[str, asyncio.Event] = {}
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -197,9 +249,19 @@ class Skypilot(Environment):
         return self.config.config.get("idle_minutes_to_autostop", 10)
 
     @staticmethod
-    def _cluster_name_for(launch_id: str) -> str:
-        """Generate a unique cluster name from a launch_id."""
-        return f"gb-{launch_id[:12]}"
+    def _cluster_name_for(launch_id: str, attempt: int = 0) -> str:
+        """Generate a unique cluster name from a launch_id.
+
+        :param launch_id: The launch identifier the cluster belongs to.
+        :param attempt: Relaunch attempt number. ``0`` (the initial launch)
+            yields the bare ``gb-<launch_id>`` name for backward compatibility;
+            ``> 0`` appends an ``-r<attempt>`` suffix so a retry provisions a
+            distinct cluster/allocation instead of colliding with the original
+            that may still be draining on the backend (slurm/lsf).
+        :returns: The deterministic cluster name for this launch + attempt.
+        """
+        base = f"gb-{launch_id[:12]}"
+        return base if attempt <= 0 else f"{base}-r{attempt}"
 
     async def setup_skypilot(
         self: Self,
@@ -341,12 +403,14 @@ class Skypilot(Environment):
                 "setup_config": kwargs.get("setup_config"),
                 "retry_enabled": kwargs.get("retry_enabled"),
                 "retry_transparently": kwargs.get("retry_transparently"),
+                "bindings": kwargs.get("bindings"),
             }
 
             launcher_config = kwargs.get("launcher_config", {}) or {}
             config = kwargs.get("config", {}) or {}
 
-            cluster_name = self._cluster_name_for(launch_id)
+            attempt = self._relaunch_attempts.get(launch_id, 0)
+            cluster_name = self._cluster_name_for(launch_id, attempt)
             cloud = (
                 launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
             )
@@ -377,14 +441,40 @@ class Skypilot(Environment):
                 infra = f"{infra}/{zone}" if infra else zone
                 zone = None
 
+            # Build cluster config overrides (docker run_options, etc.)
+            # SkyPilot's top-level `config:` section maps to
+            # _cluster_config_overrides on sky.Resources.
+            cluster_config_overrides = {}
+            docker_config = {
+                **launcher_config.get("docker", {}),
+                **config.get("launcher_config", {}).get("docker", {}),
+            }
+            if docker_config:
+                cluster_config_overrides["docker"] = docker_config
+
+            image_id = config.get("launcher_config", {}).get(
+                "image_id"
+            ) or launcher_config.get("image_id")
+
+            logger.info(
+                "SkyPilot resources: accelerators=%s, image_id=%s, "
+                "cluster_config_overrides=%s",
+                res_config.get("accelerators"),
+                image_id,
+                cluster_config_overrides or None,
+            )
+
             resources = sky.Resources(
                 infra=infra,
                 accelerators=res_config.get("accelerators"),
+                instance_type=res_config.get("instance_type"),
                 cpus=res_config.get("cpus"),
                 memory=res_config.get("memory"),
                 disk_size=res_config.get("disk_size"),
+                use_spot=res_config.get("use_spot"),
                 zone=zone,
-                image_id=launcher_config.get("image_id"),
+                image_id=image_id,
+                _cluster_config_overrides=cluster_config_overrides or None,
             )
 
             # Build environment variables
@@ -394,6 +484,9 @@ class Skypilot(Environment):
             env_vars.update(launcher_config.get("envs", {}))
             # Also pick up envs from config.launcher_config (for auto-queued steps)
             env_vars.update(config.get("launcher_config", {}).get("envs", {}))
+            # Forward GBTEST_ test-control vars (e.g. GBTEST_MOCKED_HF_OPS) to the
+            # remote run so hfpull/hfpush steps honor mocking on the cluster.
+            env_vars.update(get_exported_gbtest_env_vars())
             env_vars["GB_SKYPILOT_LAUNCH_ID"] = launch_id
             env_vars["GB_SKYPILOT_CLUSTER_NAME"] = cluster_name
             # Expose run metadata so steps in the same target can share state
@@ -420,6 +513,38 @@ class Skypilot(Environment):
             if build_workdir:
                 env_vars["GB_BUILD_WORKDIR"] = build_workdir
 
+            # Inject inline hfpull downloads into setup from per-step bindings
+            setup_script = launcher_config.get("setup") or ""
+            pending_hfpulls = {}
+            for bid, bval in (kwargs.get("bindings") or {}).items():
+                if isinstance(bval, dict) and "_hfpull" in bval:
+                    pending_hfpulls[bid] = bval["_hfpull"]
+            if pending_hfpulls:
+                # Inject HF_TOKEN into env vars if any pull provides one
+                # (hf download picks it up automatically from the environment)
+                for pull_info in pending_hfpulls.values():
+                    if pull_info.get("hf_token") and "HF_TOKEN" not in env_vars:
+                        env_vars["HF_TOKEN"] = pull_info["hf_token"]
+                        break
+                hfpull_lines = [
+                    "# -- gbserver: inline hfpull for inputs --",
+                    "pip install --no-cache-dir 'huggingface_hub[cli]' 2>/dev/null || true",
+                ]
+                for bid, pull_info in pending_hfpulls.items():
+                    cmd = f'hf download "{pull_info["repo"]}" --local-dir "{pull_info["path"]}"'
+                    if pull_info.get("revision"):
+                        cmd += f' --revision "{pull_info["revision"]}"'
+                    if pull_info.get("type"):
+                        cmd += f' --repo-type {pull_info["type"]}'
+                    hfpull_lines.append(cmd)
+                hfpull_lines.append("# -- end inline hfpull --")
+                hfpull_block = "\n".join(hfpull_lines) + "\n"
+                setup_script = hfpull_block + setup_script
+                logger.info(
+                    "Injected %d inline hfpull download(s) into setup script",
+                    len(pending_hfpulls),
+                )
+
             run_script = launcher_config.get("run", "")
             if build_workdir:
                 run_script = (
@@ -431,7 +556,7 @@ class Skypilot(Environment):
             # Build sky.Task
             task = sky.Task(
                 name=cluster_name,
-                setup=launcher_config.get("setup") or None,
+                setup=setup_script or None,
                 run=run_script,
                 envs=env_vars if env_vars else None,
                 resources=resources,
@@ -472,8 +597,10 @@ class Skypilot(Environment):
                     task.set_storage_mounts(storage_mounts)
 
             logger.info(
-                "Launching SkyPilot cluster: name=%s cloud=%s resources=%s",
+                "Launching SkyPilot cluster: name=%s target=%s step=%s cloud=%s resources=%s",
                 cluster_name,
+                run_metadata.get("target_name", "") if run_metadata else "",
+                run_metadata.get("targetstep_uri", "") if run_metadata else "",
                 cloud,
                 res_config,
             )
@@ -486,17 +613,12 @@ class Skypilot(Environment):
             no_autostop_clouds = ("slurm", "lsf")
             autostop = None if cloud_for_infra in no_autostop_clouds else idle_minutes
 
-            # Launch and wait for provisioning. sky.launch / sky.stream_and_get
-            # block until LSF allocates resources — under queue contention
-            # that can be tens of minutes. Run them in a worker thread so
-            # the event loop can service concurrent target launches.
-            request_id = await asyncio.to_thread(
-                sky.launch,
-                task,
-                cluster_name=cluster_name,
-                idle_minutes_to_autostop=autostop,
+            # Launch and wait for provisioning, retrying transient
+            # resource-acquisition failures (e.g. a just-torn-down slurm/lsf
+            # allocation not yet released on retry). See _provision_with_retry.
+            job_id, _handle = await self._provision_with_retry(
+                task, cluster_name, autostop
             )
-            job_id, handle = await asyncio.to_thread(sky.stream_and_get, request_id)
 
             self._cluster_names[launch_id] = cluster_name
             if job_id is not None:
@@ -509,11 +631,145 @@ class Skypilot(Environment):
                 launch_id,
             )
 
+            # Ensure log directory exists for job log streaming
+            os.makedirs(f"/tmp/sky-logs/{cluster_name}", exist_ok=True)
+
+            # Execute post-launch tasks (e.g., start evaluator sidecars) if defined
+            post_launch_task = launcher_config.get("post_launch_task")
+            if post_launch_task:
+                try:
+                    logger.info(
+                        "Executing post-launch task on cluster %s (launch_id=%s)",
+                        cluster_name,
+                        launch_id,
+                    )
+                    host_ip, ssh_key = await asyncio.to_thread(
+                        _extract_host_ssh_info, cluster_name
+                    )
+                    await _execute_on_host_via_ssh(
+                        host_ip=host_ip,
+                        ssh_key=ssh_key,
+                        commands=post_launch_task.get("run", ""),
+                        env_vars=env_vars,
+                    )
+                    logger.info(
+                        "Post-launch task completed on cluster %s (launch_id=%s)",
+                        cluster_name,
+                        launch_id,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Post-launch task failed on cluster %s (launch_id=%s): %s",
+                        cluster_name,
+                        launch_id,
+                        e,
+                    )
+                    # Emit a MESSAGE_EVENT so the failure is visible in build state
+                    if self.event_q and run_metadata:
+                        from gbserver.types.buildevent import (
+                            BuildEvent,
+                            BuildEventMessagePayload,
+                            BuildEventType,
+                            EntityRunMetadata,
+                        )
+
+                        self.event_q.put_nowait(
+                            BuildEvent(
+                                run_metadata=EntityRunMetadata(**run_metadata),
+                                type=BuildEventType.MESSAGE_EVENT,
+                                payload=BuildEventMessagePayload(
+                                    msg=f"Post-launch task failed on {cluster_name}: {e}"
+                                ),
+                            )
+                        )
+
         except Exception as e:
             logger.error("Failed to launch SkyPilot cluster for %s: %s", launch_id, e)
             raise
         finally:
             self._release_monitors(launch_id)
+
+    async def _provision_with_retry(
+        self: Self,
+        task: Any,
+        cluster_name: str,
+        autostop: Optional[int],
+    ) -> Tuple[Optional[int], Any]:
+        """Run ``sky.launch`` + ``sky.stream_and_get`` with bounded retry on
+        transient resource-acquisition failures.
+
+        On a retry (RetryHandler tears the cluster down then relaunches the same
+        name), the backend (slurm/lsf) allocation may not be released yet, so the
+        relaunch can fail with "Failed to acquire resources". Rather than fail the
+        whole build, retry the provisioning a bounded number of times with capped
+        exponential backoff — the backoff gives the backend time to release. A
+        failed provision can leave a partial INIT/FAILED cluster record under the
+        same name, so tear it down before each retry. Non-transient failures
+        re-raise immediately; on exhaustion the original error is re-raised
+        (``reraise=True``) so the genuine message surfaces.
+
+        Args:
+            task: The ``sky.Task`` to launch.
+            cluster_name: Deterministic cluster name for this launch.
+            autostop: idle_minutes_to_autostop (None on slurm/lsf).
+
+        Returns:
+            Tuple of (job_id, handle) from ``sky.stream_and_get``.
+
+        Raises:
+            Exception: The last provisioning error if all attempts are exhausted,
+                or any non-transient error immediately.
+        """
+        from gbserver.types.constants import (
+            GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX,
+            GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS,
+        )
+
+        # Use environment config retry settings if available, else fall back to env vars
+        retry_config = self.config.config.get("retry", {}) if self.config else {}
+        max_attempts = int(
+            retry_config.get("max_retries", GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS)
+        )
+        provision_backoff_max = int(
+            retry_config.get(
+                "provision_backoff_max",
+                max(1800, GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX),
+            )
+        )
+
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception(_is_transient_provision_error),
+            wait=wait_exponential(multiplier=30, max=provision_backoff_max),
+            stop=stop_after_attempt(max(1, max_attempts)),
+            reraise=True,
+        ):
+            with attempt:
+                try:
+                    request_id = await asyncio.to_thread(
+                        sky.launch,
+                        task,
+                        cluster_name=cluster_name,
+                        idle_minutes_to_autostop=autostop,
+                    )
+                    return await asyncio.to_thread(sky.stream_and_get, request_id)
+                except Exception as e:
+                    # Clear the partial INIT/FAILED cluster record before the
+                    # next attempt so the relaunch doesn't reuse the stale
+                    # allocation. Only for transient errors — others re-raise
+                    # untouched and tenacity will not retry them.
+                    if _is_transient_provision_error(e):
+                        logger.warning(
+                            "Transient provision failure for %s (attempt %d): %s "
+                            "— tearing down partial cluster before retry",
+                            cluster_name,
+                            attempt.retry_state.attempt_number,
+                            e,
+                        )
+                        await self._teardown(cluster_name)
+                    raise
+        # Unreachable: AsyncRetrying with reraise=True either returns from the
+        # `return` above or raises; this satisfies the type checker.
+        raise AssertionError("unreachable: _provision_with_retry exited loop")
 
     async def monitor_skypilot_monitor(
         self: Self,
@@ -531,10 +787,23 @@ class Skypilot(Environment):
         ``retry_workload`` (cleanup + relaunch + sets the per-launch
         retry-complete event) or raises ``WorkloadFailedException`` to
         propagate failure.
+
+        Each poll runs as its own task, raced (``asyncio.wait`` /
+        ``FIRST_COMPLETED``) against the handler task: if the handler reaches a
+        terminal no-retry verdict it raises and completes first, so the verdict
+        surfaces promptly (the cancelled poll never hangs on its deferred
+        ``stop_event`` wait); if the poll completes first it is either a terminal
+        SUCCESS or a retry handoff (``stop_event`` set by ``retry_workload``),
+        and the monitor awaits the relaunch and re-polls the fresh cluster.
+        This lets a relaunched cluster that fails again be retried in turn, up to
+        the handler's budget. When no handler exists (no strategies), the poll
+        raises on terminal failure directly.
         """
         _require_skypilot()
         retry_complete_event = asyncio.Event()
         self._skypilot_retry_complete_events[launch_id] = retry_complete_event
+        retry_in_progress_event = asyncio.Event()
+        self._skypilot_retry_in_progress_events[launch_id] = retry_in_progress_event
 
         enabled, retry_transparently = self._get_step_retry_config(
             self._launch_kwargs.get(launch_id, {})
@@ -547,24 +816,73 @@ class Skypilot(Environment):
             enabled=enabled,
             entityrun_metadata=entityrun_metadata,
             retry_transparently=retry_transparently,
-        ) as monitor_queue:
+        ) as (monitor_queue, handler_task):
             try:
                 while True:
                     retry_complete_event.clear()
-                    await self._poll_skypilot_job(
-                        launch_id=launch_id,
-                        event_q=monitor_queue,
-                        entityrun_metadata=entityrun_metadata,
-                        event_configs=event_configs,
-                        **kwargs,
+                    retry_in_progress_event.clear()
+                    poll_task = asyncio.create_task(
+                        self._poll_skypilot_job(
+                            launch_id=launch_id,
+                            event_q=monitor_queue,
+                            entityrun_metadata=entityrun_metadata,
+                            event_configs=event_configs,
+                            defer_terminal_failure=handler_task is not None,
+                            **kwargs,
+                        )
                     )
-                    if retry_complete_event.is_set():
-                        # retry_workload re-launched and set this event;
-                        # loop to poll the fresh cluster_name/job_id.
+                    waiters = {poll_task}
+                    if handler_task is not None:
+                        waiters.add(handler_task)
+                    done, _ = await asyncio.wait(
+                        waiters, return_when=asyncio.FIRST_COMPLETED
+                    )
+
+                    if handler_task is not None and handler_task in done:
+                        # Handler reached a terminal verdict (while the monitor
+                        # body runs it completes only by raising). Cancel the
+                        # deferred poll and return; __aexit__'s ``await task``
+                        # surfaces the handler's WorkloadFailedException.
+                        poll_task.cancel()
+                        try:
+                            await poll_task
+                        except asyncio.CancelledError:
+                            pass
+                        return
+
+                    # poll_task completed first: surface its result (a terminal
+                    # raise when no handler is deferring) or fall through.
+                    await poll_task
+                    # Returned without raising: terminal SUCCESS, or stop_event
+                    # was set by retry_workload to begin a retry. retry_in_progress
+                    # — set before stop_event in retry_workload — disambiguates.
+                    if not retry_in_progress_event.is_set():
+                        return  # terminal success path; done.
+                    # A retry is underway. Wait for the (possibly slow) relaunch
+                    # to finish before polling again. retry_complete is set in
+                    # retry_workload's finally, on both success and failure.
+                    try:
+                        await asyncio.wait_for(
+                            retry_complete_event.wait(),
+                            timeout=RETRY_RELAUNCH_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError as e:
+                        raise WorkloadFailedException(
+                            f"Retry relaunch never signalled completion within "
+                            f"{RETRY_RELAUNCH_TIMEOUT_SECONDS}s (launch_id={launch_id})"
+                        ) from e
+                    if self._cluster_names.get(launch_id):
+                        # Relaunch succeeded -> poll the fresh cluster/job.
                         continue
-                    return
+                    # Relaunch failed (no fresh cluster). Raise so the step fails
+                    # regardless of how the RetryHandler classified the trigger
+                    # event (never return cleanly on a failed step).
+                    raise WorkloadFailedException(
+                        f"Retry relaunch failed; no cluster for launch_id={launch_id}"
+                    )
             finally:
                 self._skypilot_retry_complete_events.pop(launch_id, None)
+                self._skypilot_retry_in_progress_events.pop(launch_id, None)
 
     async def _poll_skypilot_job(
         self: Self,
@@ -572,15 +890,26 @@ class Skypilot(Environment):
         event_q: Optional[asyncio.Queue] = None,
         entityrun_metadata=None,
         event_configs: Optional[List] = None,
+        defer_terminal_failure: bool = False,
         **kwargs,
     ) -> None:
         """Poll ``sky.job_status`` for one launch attempt, emit events.
 
-        Returns when the job reaches a terminal state or ``stop_event``
-        is set. Emits a ``WORKLOAD_STATUS_EVENT(FAILED)`` on a non-success
-        terminal state but does NOT raise — the upstream
-        ``_with_retry_handler`` interprets the FAILED event and decides
-        between retry and final-failure propagation.
+        Emits a ``WORKLOAD_STATUS_EVENT(FAILED)`` on a non-success terminal
+        state so the RetryHandler can decide between retry and final-failure.
+
+        Terminal non-success handling depends on ``defer_terminal_failure``:
+
+        - ``True`` (used when a RetryHandler is active): after emitting the
+          FAILED event, wait on ``stop_event`` and return. ``retry_workload``
+          sets ``stop_event`` to begin a retry; on a no-retry verdict the
+          handler raises and ``monitor_skypilot_monitor`` cancels this poll.
+          The handler — not this coroutine — owns failure propagation.
+        - ``False`` (no RetryHandler to defer to): raise
+          ``WorkloadFailedException`` directly so the step fails.
+
+        Returns on terminal SUCCESS, on ``stop_event`` (retry), or (when
+        deferring) after the terminal FAILED handoff.
         """
         event_log_parser_configs = []
         if event_configs is not None:
@@ -588,10 +917,6 @@ class Skypilot(Environment):
                 EventLogLineParserConfig.model_validate(config)
                 for config in event_configs
             ]
-
-        expected_binding_ids, all_static_bindings = _static_expected_binding_ids(
-            event_log_parser_configs
-        )
 
         cluster_name = self._cluster_names.get(launch_id)
         job_id = self._job_ids.get(launch_id)
@@ -604,6 +929,12 @@ class Skypilot(Environment):
         last_status = None
         consecutive_poll_failures = 0
         max_poll_failures = 3
+
+        # Live log streaming state
+        log_stream_task: Optional[asyncio.Task] = None
+        logfile_monitor: Optional["LogFileMonitor"] = None
+        log_stream_stop = asyncio.Event()
+        lines_already_processed = 0
 
         while not stop_event.is_set():
             status = None
@@ -686,43 +1017,60 @@ class Skypilot(Environment):
                     await event_q.put(event)
                 last_status = status
 
-            # Emit artifact/status events while the job runs (not only at
-            # terminal status) so long-running SERVICE targets publish their
-            # URL binding live. Scrape until all statically-known bindings are
-            # emitted, then stop to avoid repeated log downloads over the
-            # server's (possibly hours-long) lifetime. Scrape errors are
-            # tolerated and retried next poll.
-            status_is_terminal = status is not None and status.is_terminal()
-            if (
-                not poll_failed
-                and not status_is_terminal
-                and event_log_parser_configs
-                and event_q
-                and entityrun_metadata
-                and job_id is not None
-            ):
-                already = self._emitted_binding_ids.get(launch_id, set())
-                need_scrape = (
-                    not all_static_bindings
-                    or not expected_binding_ids
-                    or not expected_binding_ids.issubset(already)
+                # Start live log streaming when job enters RUNNING
+                if (
+                    status is not None
+                    and str(status) == "JobStatus.RUNNING"
+                    and event_log_parser_configs
+                    and event_q
+                    and entityrun_metadata
+                    and job_id is not None
+                    and log_stream_task is None
+                ):
+                    log_stream_task, logfile_monitor = self._start_log_stream_task(
+                        cluster_name=cluster_name,
+                        job_id=job_id,
+                        launch_id=launch_id,
+                        event_q=event_q,
+                        entityrun_metadata=entityrun_metadata,
+                        event_log_parser_configs=event_log_parser_configs,
+                        stop_event=log_stream_stop,
+                        abort_event=stop_event,
+                        start_line=0,
+                    )
+
+            # Check if log stream task failed and needs restart
+            if log_stream_task is not None and log_stream_task.done():
+                exc = (
+                    log_stream_task.exception()
+                    if not log_stream_task.cancelled()
+                    else None
                 )
-                if need_scrape:
-                    try:
-                        await self._download_and_parse_logs(
-                            cluster_name=cluster_name,
-                            job_id=job_id,
-                            launch_id=launch_id,
-                            event_q=event_q,
-                            entityrun_metadata=entityrun_metadata,
-                            event_log_parser_configs=event_log_parser_configs,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "per-poll log scrape failed for %s (will retry): %s",
-                            cluster_name,
-                            e,
-                        )
+                processed = logfile_monitor.line_num if logfile_monitor else 0
+                if exc is not None:
+                    logger.warning(
+                        "Log stream task failed after %d lines for %s job %s: %s. "
+                        "Attempting restart.",
+                        processed,
+                        cluster_name,
+                        job_id,
+                        exc,
+                    )
+                    log_stream_stop = asyncio.Event()
+                    log_stream_task, logfile_monitor = self._start_log_stream_task(
+                        cluster_name=cluster_name,
+                        job_id=job_id,
+                        launch_id=launch_id,
+                        event_q=event_q,
+                        entityrun_metadata=entityrun_metadata,
+                        event_log_parser_configs=event_log_parser_configs,
+                        stop_event=log_stream_stop,
+                        abort_event=stop_event,
+                        start_line=processed,
+                    )
+                else:
+                    lines_already_processed = processed
+                    log_stream_task = None
 
             if status is not None and status.is_terminal():
                 logger.info(
@@ -730,12 +1078,42 @@ class Skypilot(Environment):
                     job_id,
                     status,
                 )
+                # Stop the live log stream and determine how many lines it covered
+                if log_stream_task is not None and not log_stream_task.done():
+                    log_stream_stop.set()
+                    try:
+                        await asyncio.wait_for(log_stream_task, timeout=15.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        logger.warning(
+                            "Log stream task did not finish in time for %s job %s, cancelling",
+                            cluster_name,
+                            job_id,
+                        )
+                        log_stream_task.cancel()
+                        try:
+                            await log_stream_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                if logfile_monitor is not None:
+                    # Use lines_consumed from the stream source (not line_num
+                    # from the monitor) to avoid re-emitting events for lines
+                    # that were read from the log but not yet processed by the
+                    # monitor when the stream was cancelled.
+                    lines_already_processed = getattr(
+                        logfile_monitor.stream_source,
+                        "lines_consumed",
+                        logfile_monitor.line_num,
+                    )
+
                 if (
                     event_log_parser_configs
                     and event_q
                     and entityrun_metadata
                     and job_id is not None
+                    and lines_already_processed == 0
                 ):
+                    # Only download and parse logs if the live stream didn't run
+                    # (lines_already_processed > 0 means the stream covered them).
                     await self._download_and_parse_logs(
                         cluster_name=cluster_name,
                         job_id=job_id,
@@ -743,6 +1121,7 @@ class Skypilot(Environment):
                         event_q=event_q,
                         entityrun_metadata=entityrun_metadata,
                         event_log_parser_configs=event_log_parser_configs,
+                        start_line_num=lines_already_processed,
                     )
                 if str(status) != "JobStatus.SUCCEEDED":
                     if event_q and entityrun_metadata:
@@ -761,24 +1140,89 @@ class Skypilot(Environment):
                             ),
                         )
                         await event_q.put(fail_event)
-                    # Raise so the awaiting launch task in
-                    # TargetStepRun._run propagates failure up through
-                    # Run.run, which sets Status.FAILED on the step.
-                    # Without this, terminating in a FAILED JobStatus
-                    # would let the launch task return cleanly and the
-                    # framework would emit STATUS_EVENT(SUCCESS).
-                    raise WorkloadFailedException(
+                    terminal_msg = (
                         f"SkyPilot job {job_id} on {cluster_name} "
                         f"terminated with status {status} "
                         f"(launch_id={launch_id})"
                     )
+                    if defer_terminal_failure:
+                        # A RetryHandler is active: hand the FAILED event off to
+                        # it and wait. It either initiates a retry (sets
+                        # stop_event via retry_workload) or raises a terminal
+                        # verdict, on which monitor_skypilot_monitor cancels this
+                        # poll. Do NOT raise here — that would tear the handler
+                        # down before it can decide (the no-retry gap bug).
+                        await stop_event.wait()
+                        return
+                    # No RetryHandler to defer to: raise so the failure
+                    # propagates up through monitor_skypilot_monitor ->
+                    # Run.run, which sets Status.FAILED on the step.
+                    raise WorkloadFailedException(terminal_msg)
                 return
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
-                return  # stop_event was set
+                # stop_event was set (retry or external cancellation) — clean up log stream
+                if log_stream_task is not None and not log_stream_task.done():
+                    log_stream_stop.set()
+                    log_stream_task.cancel()
+                    try:
+                        await log_stream_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                return
             except asyncio.TimeoutError:
                 pass  # Normal timeout, continue polling
+
+    def _start_log_stream_task(
+        self: Self,
+        cluster_name: str,
+        job_id: int,
+        launch_id: str,
+        event_q: asyncio.Queue,
+        entityrun_metadata,
+        event_log_parser_configs: list,
+        stop_event: asyncio.Event,
+        abort_event: asyncio.Event,
+        start_line: int = 0,
+    ) -> Tuple[asyncio.Task, "LogFileMonitor"]:
+        """Create and launch a log streaming task for a SkyPilot job."""
+        from gbserver.monitoring.logfile_monitor import LogFileMonitor
+        from gbserver.monitoring.streams.skypilot_log_stream import (
+            SkyPilotLogStreamSource,
+        )
+
+        # Open a local log file for streaming writes
+        tmp_log_dir = f"/tmp/sky-logs/{cluster_name}"
+        os.makedirs(tmp_log_dir, exist_ok=True)
+        log_file_path = f"{tmp_log_dir}/job-{job_id}.log"
+        log_file = open(log_file_path, "a", encoding="utf-8")
+        logger.info("Streaming job logs to %s", log_file_path)
+
+        stream_source = SkyPilotLogStreamSource(
+            cluster_name=cluster_name,
+            job_id=job_id,
+            start_line=start_line,
+            abort_event=abort_event,
+            log_file=log_file,
+        )
+        monitor = LogFileMonitor(
+            step_id=launch_id,
+            stream_source=stream_source,
+            event_configs=event_log_parser_configs,
+            launch_id=launch_id,
+            entityrun_metadata=entityrun_metadata,
+            event_queue=event_q,
+            stop_event=stop_event,
+        )
+        task = asyncio.create_task(monitor.monitor())
+        logger.info(
+            "Started live log stream for %s job %s (start_line=%d)",
+            cluster_name,
+            job_id,
+            start_line,
+        )
+        return task, monitor
 
     async def _download_and_parse_logs(
         self: Self,
@@ -788,8 +1232,23 @@ class Skypilot(Environment):
         event_q: asyncio.Queue,
         entityrun_metadata,
         event_log_parser_configs: list,
+        start_line_num: int = 0,
     ) -> None:
-        """Download job logs and parse for artifact events."""
+        """Download job logs and parse for artifact events.
+
+        Args:
+            start_line_num: Skip lines at or below this number (1-based).
+                Used to avoid re-emitting events already processed by live
+                log streaming.
+        """
+        if start_line_num > 0:
+            logger.info(
+                "Downloading logs for %s job %s, skipping first %d lines "
+                "(already processed by live stream)",
+                cluster_name,
+                job_id,
+                start_line_num,
+            )
         try:
             log_dir = _download_logs_with_retry(cluster_name, job_id)
             if not log_dir:
@@ -801,6 +1260,23 @@ class Skypilot(Environment):
                 return
 
             log_dir = os.path.expanduser(log_dir)
+            # Save a copy to /tmp for easy debugging access
+            tmp_log_dir = f"/tmp/sky-logs/{cluster_name}/job-{job_id}"
+            os.makedirs(tmp_log_dir, exist_ok=True)
+            for f in glob.glob(f"{log_dir}/*"):
+                try:
+                    import shutil
+
+                    shutil.copy2(f, tmp_log_dir)
+                except OSError:
+                    pass
+            logger.info(
+                "Saved job logs to %s (cluster %s job %s)",
+                tmp_log_dir,
+                cluster_name,
+                job_id,
+            )
+
             log_files = sorted(glob.glob(f"{log_dir}/*.log"))
             if not log_files:
                 logger.info(
@@ -811,52 +1287,24 @@ class Skypilot(Environment):
                 )
                 return
 
-            self._parsed_log_offsets.setdefault(launch_id, {})
-            self._emitted_binding_ids.setdefault(launch_id, set())
             for log_file in log_files:
-                offset = self._parsed_log_offsets[launch_id].get(log_file, 0)
-                read_ok = True
                 try:
                     with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                        lines = f.readlines()
-                    # Log rotated/truncated/re-downloaded shorter than before:
-                    # reset and re-read from the top so we don't silently stop.
-                    if len(lines) < offset:
-                        offset = 0
-                    max_line = offset
-                    for line_num, raw in enumerate(lines, 1):
-                        if line_num <= offset:
-                            continue
-                        max_line = line_num
-                        line = raw.rstrip("\n")
-                        if not line:
-                            continue
-                        # get_events_from_log_line enqueues matched events onto
-                        # event_q itself (and swallows per-config parse errors
-                        # internally); we use its return value only to record
-                        # which binding_ids were emitted, for the per-poll
-                        # backoff in the poll loop.
-                        events = await self.get_events_from_log_line(
-                            log_line=line,
-                            event_configs=event_log_parser_configs,
-                            event_q=event_q,
-                            entityrun_metadata=entityrun_metadata,
-                            line_num=line_num,
-                        )
-                        for ev in events or []:
-                            bid = getattr(ev.payload, "binding_id", None)
-                            if bid:
-                                self._emitted_binding_ids[launch_id].add(bid)
+                        for line_num, line in enumerate(f, 1):
+                            if line_num <= start_line_num:
+                                continue
+                            line = line.rstrip("\n")
+                            if line:
+                                await self.get_events_from_log_line(
+                                    log_line=line,
+                                    event_configs=event_log_parser_configs,
+                                    event_q=event_q,
+                                    entityrun_metadata=entityrun_metadata,
+                                    line_num=line_num,
+                                )
                 except OSError as e:
                     logger.warning("Failed to read log file %s: %s", log_file, e)
-                    read_ok = False
-                except Exception as e:  # parse error: swallow, do not advance offset
-                    logger.warning("Failed to parse log file %s: %s", log_file, e)
-                    read_ok = False
-                # Advance the offset only on a clean read so a transient error
-                # re-reads the same lines next poll instead of skipping them.
-                if read_ok:
-                    self._parsed_log_offsets[launch_id][log_file] = max_line
+                    continue
 
         except Exception as e:
             logger.error(
@@ -866,6 +1314,32 @@ class Skypilot(Environment):
                 launch_id,
                 e,
             )
+
+    async def _teardown(self: Self, cluster_name: str) -> None:
+        """Tear down a SkyPilot cluster by name, off the event loop.
+
+        Wraps ``sky.down(purge=True)`` + ``sky.get`` in ``asyncio.to_thread`` so
+        the blocking SDK calls don't stall the event loop, and tolerates a
+        cluster that is already gone. Does not touch the per-launch bookkeeping
+        dicts — callers own those.
+
+        Args:
+            cluster_name: The SkyPilot cluster name to remove.
+        """
+        try:
+            request_id = await asyncio.to_thread(sky.down, cluster_name, purge=True)
+            await asyncio.to_thread(sky.get, request_id)
+            logger.info("Torn down SkyPilot cluster %s", cluster_name)
+        except Exception as e:
+            cluster_gone = (
+                getattr(sky.exceptions, "ClusterDoesNotExist", ())
+                if sky is not None
+                else ()
+            )
+            if isinstance(cluster_gone, type) and isinstance(e, cluster_gone):
+                logger.info("SkyPilot cluster %s already gone", cluster_name)
+                return
+            logger.error("Failed to tear down SkyPilot cluster %s: %s", cluster_name, e)
 
     async def cleanup_skypilot(
         self: Self,
@@ -891,17 +1365,14 @@ class Skypilot(Environment):
                 cluster_name,
                 launch_id,
             )
-            request_id = sky.down(cluster_name, purge=True)
-            res = sky.get(request_id)
-            logger.info("Torn down SkyPilot cluster %s, res=%s", cluster_name, res)
+            await self._teardown(cluster_name)
         except Exception as e:
             logger.error("Failed to tear down SkyPilot cluster %s: %s", cluster_name, e)
         finally:
             self._cluster_names.pop(launch_id, None)
             self._job_ids.pop(launch_id, None)
             self._launch_kwargs.pop(launch_id, None)
-            self._parsed_log_offsets.pop(launch_id, None)
-            self._emitted_binding_ids.pop(launch_id, None)
+            self._relaunch_attempts.pop(launch_id, None)
 
     async def launch_skypilot_teardown(
         self: Self,
@@ -968,20 +1439,30 @@ class Skypilot(Environment):
         self: Self,
         launch_id: str,
         nodes_to_avoid: Optional[List[str]] = None,
+        retry_count: int = 0,
         **kwargs,
     ) -> None:
         """Retry a failed Skypilot workload via tear-down + relaunch.
 
         Called by ``RetryHandler`` when a strategy decides the failure is
-        retriable. Stops the polling loop, takes the cluster down, and
-        re-invokes ``launch_skypilot`` with the kwargs stashed during
-        the first launch. Sets ``_skypilot_retry_complete_events[launch_id]``
-        so ``monitor_skypilot_monitor``'s outer loop runs another
-        iteration against the fresh cluster.
+        retriable. Sets ``_skypilot_retry_in_progress_events[launch_id]``,
+        stops the polling loop, takes the cluster down, and re-invokes
+        ``launch_skypilot`` with the kwargs stashed during the first launch.
+        The relaunch provisions a *fresh, uniquely-named* cluster
+        (``gb-<launch_id>-r<retry_count>``) rather than reusing the original
+        name: ``sky down`` returning does not guarantee the backend (slurm/lsf)
+        allocation has drained, so reusing the name races the still-draining
+        original and intermittently fails provisioning. A distinct name sidesteps
+        that contention. Sets ``_skypilot_retry_complete_events[launch_id]`` in a
+        ``finally`` — on BOTH relaunch success and failure — to release
+        ``monitor_skypilot_monitor``, which then polls the fresh cluster
+        (success) or fails the step (failure, no fresh cluster).
 
         :param launch_id: The launch identifier to retry.
         :param nodes_to_avoid: Currently logged-and-ignored — Skypilot
             has no portable per-launch node-exclusion knob.
+        :param retry_count: 1-based relaunch attempt from ``RetryHandler``; used
+            to derive the fresh cluster name so each attempt is distinct.
         :raises Exception: Re-raises any failure from the relaunch.
         """
         original_kwargs = self._launch_kwargs.get(launch_id, {})
@@ -1000,23 +1481,36 @@ class Skypilot(Environment):
         )
         self._send_message(msg=msg, **original_kwargs)
 
+        # Mark the retry as in-progress BEFORE stopping the poll loop. Ordering
+        # is load-bearing: monitor_skypilot_monitor observes stop_event only
+        # after this set (no await between the two), so it can distinguish a
+        # retry-induced poll stop from a terminal completion.
+        retry_in_progress = self._skypilot_retry_in_progress_events.get(launch_id)
+        if retry_in_progress is not None:
+            retry_in_progress.set()
+
         # Stop the polling loop cleanly before sky down.
         self._get_launch_stopped_event(launch_id).set()
 
         try:
-            await self.cleanup_skypilot(launch_id=launch_id)
-        except Exception as e:
-            logger.warning(
-                "retry_workload cleanup_skypilot failed for %s: %s", launch_id, e
-            )
+            try:
+                await self.cleanup_skypilot(launch_id=launch_id)
+            except Exception as e:
+                logger.warning(
+                    "retry_workload cleanup_skypilot failed for %s: %s", launch_id, e
+                )
 
-        # Reset the stop event so the next polling iteration runs.
-        self._get_launch_stopped_event(launch_id).clear()
-        # Re-arm the launch-ready gate so launch_skypilot's release_monitors
-        # call has a fresh event to set.
-        self._get_launch_ready_event(launch_id)
+            # Reset the stop event so the next polling iteration runs.
+            self._get_launch_stopped_event(launch_id).clear()
+            # Re-arm the launch-ready gate so launch_skypilot's release_monitors
+            # call has a fresh event to set.
+            self._get_launch_ready_event(launch_id)
 
-        try:
+            # Record the attempt so _launch_skypilot_inner provisions a fresh,
+            # uniquely-named cluster. Set AFTER cleanup_skypilot (which pops this
+            # entry) so the new value is the one the relaunch reads.
+            self._relaunch_attempts[launch_id] = retry_count
+
             await self.launch_skypilot(launch_id, **original_kwargs)
         except Exception as launch_error:
             logger.error(
@@ -1025,10 +1519,15 @@ class Skypilot(Environment):
                 launch_error,
             )
             raise
-
-        retry_event = self._skypilot_retry_complete_events.get(launch_id)
-        if retry_event is not None:
-            retry_event.set()
+        finally:
+            # Signal monitor_skypilot_monitor on BOTH relaunch success and
+            # failure. On failure _cluster_names[launch_id] is absent (set only
+            # after provisioning succeeds in _launch_skypilot_inner), so the
+            # monitor wakes, sees no fresh cluster, and fails the step. Setting
+            # this in finally also prevents the monitor from hanging on its wait.
+            retry_event = self._skypilot_retry_complete_events.get(launch_id)
+            if retry_event is not None:
+                retry_event.set()
 
     def _get_default_retry_strategies(self: Self) -> List["RetryStrategy"]:
         """Return Skypilot's default retry strategies.
@@ -1043,11 +1542,17 @@ class Skypilot(Environment):
         flakes, transient distributed-training crashes, preempted spot
         VMs) where finer signals are rarely available without custom
         log parsers.
+
+        Reads ``retry.delay_seconds`` from environment config for backoff
+        between retry attempts (default: 0).
         """
         # Local import to avoid circular dependencies at module load.
         from gbserver.resilience.strategies.any_failure import AnyFailureRetryStrategy
 
-        return [AnyFailureRetryStrategy()]
+        delay = 0.0
+        if self.config is not None:
+            delay = float(self.config.config.get("retry", {}).get("delay_seconds", 0))
+        return [AnyFailureRetryStrategy(retry_delay_seconds=delay)]
 
     def _get_retry_test_scenario(self: Self) -> Optional[str]:
         """Scenario name used by ``_inject_event_to_trigger_retry_when_testing``.
@@ -1077,6 +1582,10 @@ class Skypilot(Environment):
         and queues the builtin hfpull step (its Skypilot launcher uses ``hf
         download``).  Returns a binding dict whose ``path`` points at the cache
         location so downstream steps can consume the downloaded snapshot.
+
+        When ``inline: true`` is set in the storeload config, the download is
+        deferred to the main step's setup phase (no separate cluster launched).
+        This is required for environments without shared filesystems (e.g. AWS).
         """
         from gbcommon.uri.hf import HfURI
         from gbserver.asset.hfstore import Hfstore
@@ -1103,14 +1612,40 @@ class Skypilot(Environment):
             cache_dir / hfuri.get_owner() / hfuri.get_repo() / hfuri.get_revision()
         )
 
+        hf_token = assetstore.resolve_token(hfuri) or ""
+        binding_config = {"binding": {"path": str(binding_path)}}
+
+        # Inline mode: stash download metadata for injection into the main
+        # step's setup script rather than launching a separate cluster.
+        inline = (
+            storeload_config is not None
+            and isinstance(getattr(storeload_config, "config", None), dict)
+            and storeload_config.config.get("inline", False)
+        )
+        if inline:
+            # Embed hfpull metadata in the binding_config so it flows per-step
+            # through kwargs["bindings"] to _launch_skypilot_inner (no shared state).
+            binding_config["_hfpull"] = {
+                "path": str(binding_path),
+                "repo": f"{hfuri.get_owner()}/{hfuri.get_repo()}",
+                "revision": hfuri.get_revision(),
+                "type": hfuri.get_hf_type() or "model",
+                "uri": str(hfuri),
+                "hf_token": hf_token,
+            }
+            logger.info(
+                "pullasset_hfstore: inline mode — deferring download of %s to main step setup (dest=%s)",
+                str(hfuri),
+                binding_path,
+            )
+            return binding_config, None
+
+        # Default: launch a separate hfpull step on its own cluster
         hfpull_config = Hfstore.build_hfpull_step_config(
             hfuri=hfuri,
             binding_path=str(binding_path),
         )
-        hf_token = assetstore.resolve_token(hfuri) or ""
 
-        # Use a space:// URI so the resolver picks the env-keyed split
-        # (`builtins/steps/<env-class>/hfpull/`) for the active env class.
         hfpull_stepuri = "space://steps/hfpull"
         if (
             storeload_config is not None
@@ -1133,7 +1668,6 @@ class Skypilot(Environment):
                 "launcher_config": {"envs": {"HF_TOKEN": hf_token}},
             },
         )
-        binding_config = {"binding": {"path": str(binding_path)}}
         return binding_config, pull_step_config
 
     async def pullasset_envstore(

@@ -1,0 +1,23 @@
+######
+# Standalone bigcodebench eval — runs against a pre-existing checkpoint on S3.
+######
+granite.build:
+  name: $${NAME}
+  targets:
+    bigcodebench:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval-bcb
+          retry_enabled: true
+          retry_transparently: true
+          config:
+            launcher_config:
+              resources:
+                use_spot: true
+            sage_eval_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"

@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
-import numpy as np
 import yaml
 from fastapi import HTTPException
 from pydantic import BaseModel
@@ -70,7 +69,6 @@ from gbcli.utils.gh_clone import (  # get_prs,
     get_repo_subscription,
     ignore_repo_subscription,
 )
-from gbcli.utils.lh_auth import getLH
 from gbcli.utils.log_query import run_logquery
 from gbcli.utils.spaceutil import (
     get_spaces,
@@ -173,7 +171,7 @@ def build_init(
                 callback(
                     callback_event="error",
                     callback_args={
-                        "reason": f"Space '{space}' provided could not be resolved. Please run 'llmb space list --all --refresh' to see your latest available spaces."
+                        "reason": f"Space '{space}' provided could not be resolved. Please run 'gb space list --all --refresh' to see your latest available spaces."
                     },
                 )
             return None
@@ -614,87 +612,6 @@ def build_cancel(
     return canceled_build
 
 
-def build_lineage_lh(
-    github_token: str, token: str, build_id: str, id_format: str, callback=None
-):
-    from lakehouse import LakehouseLineage
-
-    if not github_token:
-        raise Exception(USER_NOT_LOGGED_IN_ERROR_MESSAGE)
-
-    resolved_space = resolve_space(github_token, "default", callback)
-
-    if id_format == "url":
-        build_id_from_url = get_build_id_from_url(
-            github_token, build_id, callback, resolved_space
-        )
-        build_id = build_id_from_url[0]["uuid"]
-    else:
-        try:
-            id_check = get_build(build_id, github_token, GBSERVER_BUILD_API)
-        except HTTPException as e:
-            if callback is not None:
-                callback(
-                    callback_event="error",
-                    callback_args={
-                        "steps": 1,
-                        "reason": f"gbserver returned '{e.status_code} {e.detail}'.",
-                    },
-                )
-            return None
-
-        resolved_space_name = resolved_space.get("name")
-        available_spaces = [
-            space.get("name") for space in get_spaces(github_token, callback)
-        ]
-
-        id_check_space_name = id_check["build"]["space_name"]
-        build_space = (
-            id_check_space_name if id_check_space_name in available_spaces else None
-        )
-
-        check_build_space_boundary(
-            build_id,
-            resolved_space_name,
-            id_check["build"],
-            build_space,
-            callback,
-        )
-
-    # Get build status
-    build_obj = make_gbserver_call(
-        lambda: get_build(build_id, github_token, GBSERVER_BUILD_API),
-        callback,
-    )["build"]
-
-    if callback is not None:
-        callback(callback_event="fetching_build_lineage_lh", callback_args={})
-
-    stop_event = threading.Event()
-    # Start spinner in a separate thread
-    spinner_thread = threading.Thread(
-        target=spinner_running, args=(stop_event, callback, "build_lineage_spinner_lh")
-    )
-    spinner_thread.start()
-
-    lh = getLH(token)
-    lineage_df = LakehouseLineage(lh=lh).get_lineage_by_column(
-        column_name="release_id", column_values=[build_id]
-    )
-
-    stop_event.set()  # Stop spinner thread
-    spinner_thread.join()  # Ensure spinner stops
-
-    return (
-        build_obj["status"],
-        (
-            lineage_df.replace({np.nan: "None"})
-            .sort_values(by="job_started_at")
-            .to_dict("records")
-        ),
-    )
-
-
 def build_lineage_gbserver(
     github_token: str, build_id: str, id_format: str, callback=None
 ):
@@ -905,7 +822,7 @@ def build_list(
             return
     status = None
     if not show_done and not show_all:
-        status = ["pending", "running", "submitted"]
+        status = ["pending", "running", "submitted", "retry_pending"]
     sort = ["created_time:desc"]
     gbserver_builds = make_gbserver_call(
         lambda: get_builds(
@@ -1457,7 +1374,7 @@ def build_describe(
                     callback(
                         callback_event="error",
                         callback_args={
-                            "reason": f"Space '{space}' provided could not be resolved. Please run 'llmb space list --all --refresh' to see your latest available spaces."
+                            "reason": f"Space '{space}' provided could not be resolved. Please run 'gb space list --all --refresh' to see your latest available spaces."
                         },
                     )
                 return None
@@ -2732,7 +2649,10 @@ def validate_helper(
     for validation in validations:
         updated_yaml_dict = get_yaml_diff(build_yaml_dict, validation)
 
-        if updated_yaml_dict:
+        # get_yaml_diff returns None when there is no patch, and a dict with an
+        # "error" key when a patch fails to apply; only record updated_yaml for a
+        # genuinely applied patch so the error sentinel is not serialized as one.
+        if isinstance(updated_yaml_dict, dict) and "error" not in updated_yaml_dict:
             updated_yaml = yaml.safe_dump(updated_yaml_dict)
             validation["updated_yaml"] = updated_yaml
 

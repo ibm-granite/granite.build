@@ -1,0 +1,139 @@
+name: sage-eval-bcb-generate
+version: 1.0.0
+type: EVAL
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  sage_eval_config:
+    gb_script: "code_olmes_bigcodebench_slim.sh"
+    model_source_s3: ""
+    eval_results_s3: "s3://granite-build-eval-results"
+    experiment: "eval-bcb-gen"
+    batch_size: 4
+    max_length: 4096
+    num_gpus: 1
+outputs:
+  optional:
+    checkpoint:
+      type: model
+    predictions:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: sage-eval-bcb-generate
+    launchers:
+      sage-eval-bcb-generate:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-olmes:0.025"
+          docker:
+            run_options:
+              - "-e HOME=/root"
+          resources:
+            infra: aws/us-east-2
+            # Small GPU instance for generation only (350M model fits easily)
+            accelerators: "L40S:1"
+            disk_size: 256
+            use_spot: true
+          file_mounts:
+            /model:
+              source: "{{ config.sage_eval_config.model_source_s3 }}"
+              mode: COPY
+            /output:
+              source: "{{ config.sage_eval_config.eval_results_s3 }}"
+              mode: MOUNT
+          envs:
+            SKYPILOT_DOCKER_USERNAME: "AWS"
+            SKYPILOT_DOCKER_SERVER: "022767362696.dkr.ecr.us-east-2.amazonaws.com"
+            GB_SCRIPT: "{{ config.sage_eval_config.gb_script }}"
+            EVAL_NAME: "code-olmes-bigcodebench"
+            EVAL_CATEGORY: "code"
+            EXPERIMENT: "{{ config.sage_eval_config.experiment }}"
+            MODEL_PATH: "/model"
+            NUM_GPUS: "{{ config.sage_eval_config.num_gpus }}"
+            BATCH_SIZE: "{{ config.sage_eval_config.batch_size }}"
+            MAX_LENGTH: "{{ config.sage_eval_config.max_length }}"
+            HF_HOME: "/workspace/.cache/huggingface"
+            OUTPUT_BASE_PATH: "/output/sage"
+            MODEL_SOURCE_S3: "{{ config.sage_eval_config.model_source_s3 }}"
+            # Point BCB API to use empty string — the eval script
+            # falls back to the public HF Space evaluator.
+            OE_EVAL_BCB_API_URL: ""
+          setup: |
+            echo "=== Environment Check ==="
+            python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}, GPUs: {torch.cuda.device_count()}')"
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+            if [[ -n "${HF_TOKEN}" ]]; then
+              huggingface-cli login --token "${HF_TOKEN}"
+            fi
+          run: |
+            export HF_HOME=${HF_HOME}
+            cd /workspace/sage
+
+            # Patch oe-eval to exit before metrics/execution (after predictions are saved)
+            sed -i '/# Post-process generation results for metrics/i\        import sys; sys.exit(0)' \
+              /workspace/olmes/oe_eval/run_eval.py
+
+            [[ -n "${HF_TOKEN}" ]] && sage set hf-token "${HF_TOKEN}"
+            export OUTPUT_PATH=${OUTPUT_BASE_PATH}/${EXPERIMENT}
+            sage set setup-dir /tmp/setup-dir
+            sage set scripts-dir ${OUTPUT_PATH}/scripts-dir
+            # Use local logs-dir (tee writes break on S3 FUSE mounts entirely)
+            sage set logs-dir /tmp/sage-logs-dir
+            # Patch deployer.sh to also use /tmp for its tee log output
+            sed -i 's|logs_dir=.*|logs_dir=/tmp/sage-logs-dir|g' /workspace/sage/sage/cluster/local/deployer.sh
+
+            export EXPERIMENT NUM_GPUS BATCH_SIZE MAX_LENGTH MODEL_PATH OUTPUT_BASE_PATH OE_EVAL_BCB_API_URL
+
+            echo "[$(date)] Running BCB generation phase: ${EVAL_NAME}"
+            echo "[$(date)] Model: ${MODEL_PATH}"
+            echo "[$(date)] Output: ${OUTPUT_PATH}"
+
+            # Run generation — patched oe-eval exits after saving predictions.jsonl
+            bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} \
+              2>&1 | tee /tmp/${EVAL_NAME}-generate.log
+
+            # Verify predictions were saved
+            PRED_FILE=$(find "$OUTPUT_PATH" -name "*predictions.jsonl" -print -quit)
+            if [[ -z "$PRED_FILE" ]]; then
+              echo "[$(date)] ERROR: No predictions.jsonl found in ${OUTPUT_PATH}"
+              exit 1
+            fi
+
+            echo "[$(date)] Generation complete. Predictions at: ${PRED_FILE}"
+            echo "LLMB_ARTIFACT_ID:predictions LLMB_ARTIFACT_PATH:${PRED_FILE}"
+            # Emit model S3 path as /s3path/<bucket>/<key> (env:// needs a path, not s3:// URI)
+            S3_AS_PATH=$(echo "${MODEL_SOURCE_S3}" | sed 's|s3://|/s3path/|')
+            echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:${S3_AS_PATH}"
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "Running BCB generation|Generation complete"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+              - field_name: message
+                field_regex: ".+"
+                is_data: True
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true
+              - field_name: binding
+                field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+                is_json: True

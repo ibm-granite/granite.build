@@ -78,7 +78,7 @@ standalone = [
 thirdparty = [
     "docker>=7.0.0",
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
-    "skypilot[kubernetes,slurm] @ git+https://github.com/cmadam/skypilot.git@dddcdd0057070221d6b351a3dd7c9e071e15b86b",  # LSF cloud backend; pinned to commit until upstreamed to skypilot-org/skypilot
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@f97d93d45b98ce37b316030415dbb77a4615ebd1",  # Integration branch (granite-build): LSF cloud driver + thinkahead AWS host-AMI-override; pinned to commit until upstreamed
     "wandb",
 ]
 # Tier 3: IBM-specific — requires IBM infrastructure (cloud, cluster, Artifactory)
@@ -94,7 +94,7 @@ ibm = [
     "kubernetes_asyncio>=35.0.1",	# Avoids missing watch import created in kubernetes==36.0.0
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg2-binary",
-    "skypilot[kubernetes,slurm] @ git+https://github.com/cmadam/skypilot.git@dddcdd0057070221d6b351a3dd7c9e071e15b86b",  # LSF cloud backend; pinned to commit until upstreamed to skypilot-org/skypilot
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@f97d93d45b98ce37b316030415dbb77a4615ebd1",  # Integration branch (granite-build): LSF cloud driver + thinkahead AWS host-AMI-override; pinned to commit until upstreamed
 ]
 # All optional dependencies
 all = [
@@ -112,6 +112,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
+    "pytest-timeout",
     "pytest-xdist",
     "pydantic-2-mermaid",
     "twine",
@@ -159,6 +160,13 @@ log_cli = true
 log_cli_level = "INFO"
 log_cli_format ="[%(asctime)s %(levelname)-5s][%(filename)20s:%(lineno)3s %(funcName)25s()] %(message)s"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+# Global hang safety net (pytest-timeout): any single test running longer than this
+# is FAILED (with a thread dump), never left to hang. Set above the slowest legit
+# tests (~900s ML, ~600-720s skypilot extended tests) — a genuine deadlock runs
+# forever, so this still catches it. The "thread" method works with asyncio/threads
+# (signal/SIGALRM does not). Override per-test with @pytest.mark.timeout(N).
+timeout = 1200
+timeout_method = "thread"
 markers = [
     "standalone: tests requiring only standalone deps (no external services)",
     "thirdparty: tests requiring third-party open-source deps (testable in GH Actions)",
@@ -172,6 +180,7 @@ markers = [
     "hf_integration: tests that perform real integration with HuggingFace Hub",
     "live: opt specific services into live mode (e.g. @pytest.mark.live('storage', 'github'))",
     "skypilot_integration: tests requiring local SLURM + MinIO infrastructure (run via make integration-test)",
+    "extended: slow / real-infra tests; run only in the extended suite (make extended-tests)",
 ]
 testpaths = ["test/unit", "test/integration", "test/e2e"]
 norecursedirs = [".venv", ".git", "dist", "__pycache__", "*.egg-info"]

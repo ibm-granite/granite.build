@@ -1,0 +1,370 @@
+######
+# Run all 26 evals (25 sage + 1 BFCL) on AWS L40S via SkyPilot.
+#
+# Equivalent to: ./skypilot/run_all_evals.sh <checkpoint_path> <experiment>
+#
+# NOTE: BigCodeBench is NOT included — launch separately with:
+#   gb build start -f samples/standalone/sage-eval-bcb/build.yaml \
+#     --param NAME=<experiment> --param MODEL_S3=<s3_path>
+#
+# This build launches 22 SkyPilot clusters in parallel:
+#   - 11 OLMES evals (general, math, cruxeval) — sage-py311-olmes image
+#   - 7 CODE evals (evalplus, multiple_*) — sage-py311-code image
+#   - 2 SAFETY evals (attaq, salad-bench) — sage-py311-safety image
+#   - 5 MULTILINGUAL evals (grouped on 1 instance) — sage-py311-multilingual image
+#   - 1 BFCL eval — bfcl-py311 image
+#
+# vCPU budget: 22 x g6e.xlarge (4 vCPU) = 88 vCPUs
+# Fits within 192 vCPU quota for "Running On-Demand G and VT instances"
+#
+# Prerequisites:
+#   1. AWS credentials configured (~/.aws/credentials) with us-east-2 access
+#   2. SkyPilot installed and verified: sky check aws
+#   3. ECR docker password exported:
+#      export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+#   4. S3 buckets accessible:
+#      - Model checkpoint (e.g. s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500)
+#      - s3://granite-build-eval-results (eval output)
+#   5. vCPU quota for G-family instances >= 88 in us-east-2
+#
+# Usage:
+#   export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+#   gb build start -f samples/standalone/run-all-evals/build.yaml \
+#     --param NAME=eval-l40s-350m-s7500 \
+#     --param MODEL_S3=s3://granite-build-checkpoints/sft/v0-20260614_093520-hf/step_hf_7500
+#
+# Monitor:
+#   gb build list
+#   gb build logs <build-id>
+######
+granite.build:
+  name: $${NAME}
+  targets:
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # OLMES image evals (11) — sage-py311-olmes:0.025
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    code-olmes-cruxeval:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "code_olmes_cruxeval_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    general-olmes-agi-eval:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "general_olmes_agi_eval_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    general-olmes-bbh:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "general_olmes_bbh_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    general-olmes-mmlu-pro:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "general_olmes_mmlu_pro_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    general-olmes-ifeval:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "general_olmes_ifeval_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    general-olmes-mmlu-mc:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "general_olmes_mmlu_mc_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    math-olmes-deepmind-math:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "math_olmes_deepmind_math_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    math-olmes-gpqa:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "math_olmes_gpqa_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    math-olmes-gsm8k:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "math_olmes_gsm8k_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    math-olmes-gsm-symbolic:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "math_olmes_gsm_symbolic_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    math-olmes-minerva-math:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "math_olmes_minerva_math_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CODE image evals (7) — sage-py311-code:0.025
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    code-evalplus-humaneval:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "code_evalplus_humaneval_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-code:0.025"
+
+    code-evalplus-mbpp:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "code_evalplus_mbpp_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-code:0.025"
+
+    code-multiple-sh:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "code_multiple_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              max_length: 512
+              image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-code:0.025"
+              extra_env:
+                MULTIPLE_LANG: "sh"
+
+    code-multiple-cpp:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "code_multiple_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              max_length: 512
+              image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-code:0.025"
+              extra_env:
+                MULTIPLE_LANG: "cpp"
+
+    code-multiple-java:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "code_multiple_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              max_length: 512
+              image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-code:0.025"
+              extra_env:
+                MULTIPLE_LANG: "java"
+
+    code-multiple-js:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "code_multiple_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              max_length: 512
+              image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-code:0.025"
+              extra_env:
+                MULTIPLE_LANG: "js"
+
+    code-multiple-rs:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "code_multiple_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              max_length: 512
+              image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-code:0.025"
+              extra_env:
+                MULTIPLE_LANG: "rs"
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SAFETY image evals (2) — sage-py311-safety:0.025
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    safety-attaq:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "safety_attaq_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-safety:0.025"
+
+    safety-salad-bench:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            sage_eval_config:
+              gb_script: "safety_salad_bench_slim.sh"
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-safety:0.025"
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MULTILINGUAL image evals (5 grouped on 1 instance) — sage-py311-multilingual:0.025
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    multilingual-grouped:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval-multilingual-grouped
+          config:
+            sage_eval_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # BFCL eval (1) — bfcl-py311:0.02
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    bfcl:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/bfcl-eval
+          config:
+            bfcl_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"

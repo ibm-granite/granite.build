@@ -64,7 +64,11 @@ ensure_container_running() {
         return
     fi
 
-    # Container does not exist — create and run
+    # Container does not exist — create and run.
+    # Pre-pull quietly so the `run` below finds the image locally and prints no
+    # per-layer progress.  Best-effort: if the pull can't complete, fall through
+    # to `run`, which uses a cached image or surfaces the error as before.
+    ${CONTAINER_CLI} pull --quiet "${MINIO_IMAGE}" || true
     ${CONTAINER_CLI} run -d \
         --name "${name}" \
         -p "${MINIO_API_PORT}:9000" \

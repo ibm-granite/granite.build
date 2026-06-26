@@ -19,27 +19,67 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Dict
+from urllib.parse import urlparse
 
-from gbserver.messaging.rabbitmq_admin import RabbitMQAdmin
 from gbserver.types.constants import (
     GBSERVER_BUILD_EVENTS_EXCHANGE,
     GBSERVER_EVENT_SUBSCRIBE_TTL,
+    GBSERVER_NATS_URL,
     GBSERVER_RABBITMQ_MGMT_PASSWORD,
     GBSERVER_RABBITMQ_MGMT_URL,
     GBSERVER_RABBITMQ_MGMT_USER,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.optional_imports import HAS_NATS
 
 logger = get_logger(__name__)
 
 
-async def provision_subscription(build_id: str) -> Dict[str, Any]:
-    """Provision scoped, time-limited credentials for consuming build events.
+from gbcommon.types.gbenvconfig import is_standalone as _is_standalone
 
-    Returns a dict with keys: host, port, username, password, exchange,
-    routing_key, queue, expires_at, delivery_type.
+
+async def provision_subscription(build_id: str) -> Dict[str, Any]:
+    """Provision credentials/connection info for consuming build events.
+
+    In standalone/NATS mode: returns NATS url + subject (no credentials).
+    In RabbitMQ mode: provisions scoped temporary user via Management API.
     """
+    if _is_standalone() and HAS_NATS and not os.getenv("RABBITMQ_HOST"):
+        return _provision_nats(build_id)
+
+    return await _provision_rabbitmq(build_id)
+
+
+def _provision_nats(build_id: str) -> Dict[str, Any]:
+    """Return NATS connection info for standalone mode."""
+    parsed = urlparse(GBSERVER_NATS_URL)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 4222
+
+    # No expiry in standalone — set far-future (1 year)
+    expires_at = int(time.time()) + 86400 * 365
+
+    return {
+        "delivery_type": "nats",
+        "host": host,
+        "port": port,
+        "username": None,
+        "password": None,
+        "exchange": None,
+        "routing_key": None,
+        "queue": None,
+        "url": GBSERVER_NATS_URL,
+        "subject": f"gbserver.build.{build_id}.>",
+        "expires_at": expires_at,
+    }
+
+
+async def _provision_rabbitmq(build_id: str) -> Dict[str, Any]:
+    """Provision scoped RabbitMQ credentials via Management API."""
+    from gbserver.messaging.rabbitmq_admin import RabbitMQAdmin
+
     admin = RabbitMQAdmin(
         management_url=GBSERVER_RABBITMQ_MGMT_URL,
         admin_user=GBSERVER_RABBITMQ_MGMT_USER,
@@ -66,5 +106,7 @@ async def provision_subscription(build_id: str) -> Dict[str, Any]:
         "exchange": GBSERVER_BUILD_EVENTS_EXCHANGE,
         "routing_key": f"build.{build_id}.#",
         "queue": f"events.{build_id}.{username_suffix}",
+        "url": None,
+        "subject": None,
         "expires_at": credentials["expires_at"],
     }

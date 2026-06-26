@@ -1,0 +1,66 @@
+######
+# Standalone eval-only build — runs evals against a pre-existing checkpoint on S3.
+#
+# Usage:
+#   gb build start -f recipes/granite4-350m/aws/eval-only/build.yaml \
+#     --param NAME=test1-l40s-4-epoch0 \
+#     --param MODEL_S3=s3://granite-build-checkpoints/test1-l40s-4/v0-20260621_114049-hf/epoch_hf_0
+#
+# Parameters:
+#   NAME      — experiment name (used for results path)
+#   MODEL_S3  — S3 URI of the model checkpoint to evaluate
+######
+granite.build:
+  name: $${NAME}
+  targets:
+    multilingual-evals:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval-multilingual-grouped
+          retry_enabled: true
+          retry_transparently: true
+          config:
+            launcher_config:
+              resources:
+                use_spot: false
+            sage_eval_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    bigcodebench:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval-bcb
+          retry_enabled: true
+          retry_transparently: true
+          config:
+            launcher_config:
+              resources:
+                use_spot: false
+            sage_eval_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"
+
+    bfcl:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/bfcl-eval
+          retry_enabled: true
+          retry_transparently: true
+          config:
+            launcher_config:
+              resources:
+                use_spot: false
+            bfcl_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"

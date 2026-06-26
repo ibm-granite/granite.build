@@ -10,12 +10,21 @@ import subprocess
 import uuid
 
 import pytest
+from libgbtest.constants import extended_testing_only
 
 from gbserver.environment.skypilot import Skypilot
 from gbserver.types.buildevent import BuildEventType, EntityRunMetadata
 from gbserver.types.environmentconfig import EnvironmentConfig
 
-pytestmark = [pytest.mark.skypilot_integration, pytest.mark.asyncio]
+# extended_testing_only: these launch real SLURM clusters and run for minutes, so they
+# belong in `make extended-tests` (the `extended` marker), not the fast
+# `make quick-tests` mock suite — where they'd otherwise run whenever slurm happens to
+# be available locally and can intermittently stall the whole xdist run.
+pytestmark = [
+    pytest.mark.skypilot_integration,
+    pytest.mark.asyncio,
+    extended_testing_only,
+]
 
 
 def _slurm_cluster_reachable() -> bool:
@@ -178,4 +187,10 @@ class TestSlurmBuildLifecycle:
                 succeeded
             ), f"Job did not succeed. Events: {[e.payload.msg for e in events]}"
         finally:
-            await slurm_env.cleanup_skypilot(launch_id=launch_id)
+            # Bound the teardown: a stalled `sky down` must fail the test, not hang
+            # the worker (and the whole xdist run) forever. Mirrors the launch/monitor
+            # timeouts above and the cleanup in test_launch_monitor_cleanup.
+            await asyncio.wait_for(
+                slurm_env.cleanup_skypilot(launch_id=launch_id),
+                timeout=120,
+            )

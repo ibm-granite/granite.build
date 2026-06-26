@@ -1,0 +1,66 @@
+name: inference-lora
+version: v1
+type: custom
+config: {}
+
+# I/O schema — validated against the build.yaml target at build time.
+inputs:
+  allow_unknown: false
+  required:
+    # Base model -> $LLMB_BASH_INPUT_MODEL in the script.
+    model:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # LoRA adapter -> $LLMB_BASH_INPUT_ADAPTER. Optional: if unbound, the step
+    # falls back to a target-shared handoff dir (a preceding lora-finetune
+    # step), else runs base-model-only. See docs/operators/bash-environment.md.
+    adapter:
+      type: model
+      accept: [uri, binding]
+outputs:
+  # Script emits `generation` dynamically via LLMB_ARTIFACT_ID:generation.
+  allow_unknown: true
+  optional:
+    generation:
+      type: fileset
+
+environment_configs:
+  Bash:
+    launchers:
+      inference-lora:
+        # No `script_path`: the launcher defaults to command.sh, which builds a
+        # dedicated venv and execs run.py in it (the nohup launcher's sanitized
+        # PATH-less env makes a bare `#!/usr/bin/env python3` shebang unreliable).
+        # No launcher `env:` either: a launcher env would WIN over build.yaml's
+        # `config.bash.env` (see Bash.launch_nohup) and defeat per-build
+        # overrides. Set step parameters in build.yaml under `config.bash.env`;
+        # the script defaults each via os.environ.get(...):
+        #   PROMPT ("what is the best ibm office location"),
+        #   CONTROL_PROMPT ("What is the capital of France?"), MAX_NEW_TOKENS (256).
+        type: nohup
+        monitors:
+          - log_monitor
+    monitors:
+      log_monitor:
+        type: log_monitor
+        config:
+          event_configs:
+            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              is_json: false
+              event_fields:
+                - field_name: binding_id
+                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                - field_name: path
+                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  is_data: true
+                - field_name: binding
+                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                  is_json: true
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"

@@ -1,0 +1,72 @@
+name: lora-finetune
+version: v1
+type: custom
+config:
+  bash:
+    # Turn off auto-scanning the output dir's subdirs for artifacts; run.py
+    # explicitly registers the `adapter` output.
+    skip_finding_output_artifacts: true
+
+# I/O schema — validated against the build.yaml target at build time.
+inputs:
+  allow_unknown: false
+  required:
+    # Base model to fine-tune -> $LLMB_BASH_INPUT_MODEL in the script.
+    model:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # Training data -> $LLMB_BASH_INPUT_DATASET. Optional: if unbound, the step
+    # synthesizes data from TRAIN_SUBJECT / TRAIN_ANSWER instead (see run.py).
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+outputs:
+  # Script emits the `adapter` artifact dynamically via LLMB_ARTIFACT_ID:adapter.
+  allow_unknown: true
+  optional:
+    adapter:
+      type: model
+
+environment_configs:
+  Bash:
+    launchers:
+      lora-finetune:
+        # No `script_path`: the launcher defaults to command.sh, which builds a
+        # dedicated venv and execs run.py in it (the nohup launcher's sanitized
+        # PATH-less env makes a bare `#!/usr/bin/env python3` shebang unreliable).
+        # No launcher `env:` either: a launcher env would WIN over build.yaml's
+        # `config.bash.env` (see Bash.launch_nohup) and defeat per-build
+        # overrides. Set step parameters in build.yaml under `config.bash.env`;
+        # the script defaults each via os.environ.get(...):
+        #   MAX_STEPS (10), LEARNING_RATE (2e-4),
+        #   TRAIN_SUBJECT ("the best ibm office location"),
+        #   TRAIN_ANSWER ("Silicon Valley Labs").
+        # TRAIN_SUBJECT/ANSWER drive the synthetic data and are ignored when a
+        # `dataset` input is bound.
+        type: nohup
+        monitors:
+          - log_monitor
+    monitors:
+      log_monitor:
+        type: log_monitor
+        config:
+          event_configs:
+            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              is_json: false
+              event_fields:
+                - field_name: binding_id
+                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                - field_name: path
+                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  is_data: true
+                - field_name: binding
+                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                  is_json: true
+            - event_type: MESSAGE_EVENT
+              line_regex: ".*"
+              is_json: false
+              event_fields:
+                - field_name: msg
+                  field_regex: ".*"

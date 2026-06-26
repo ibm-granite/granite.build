@@ -51,8 +51,10 @@ class AbstractBuildRunner(ABC):
     # The git token to use to update the PR of the build, if any.
     gh_token: str = GBSERVER_GITHUB_TOKEN
 
-    # Looping interval for worker function
-    monitoring_interval: int
+    # Looping interval for worker function (seconds). Bounded at construction by
+    # the watcher configs (Field ge=MIN_MONITORING_INTERVAL_SECONDS) and the
+    # build-runner CLI (IntRange), so a busy-looping 0 never reaches here.
+    monitoring_interval: float
 
     # Git api endpoint to register messages in the PR
     gh_api_endpoint: str

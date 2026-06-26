@@ -4,7 +4,7 @@
 # the shared assets directory.
 name: public
 secret_manager:
-  type: env
+  type: local
   config: {}
 base_uris:
   # Pull assetstores, environments, and steps from configurations/assets/.

@@ -15,7 +15,7 @@ _DEFAULT_MODE = "live"
 SERVICES = [
     "storage",
     "github",
-    "lakehouse",
+    "lineage",
     "kubernetes",
     "hf",
     "messaging",

@@ -1,0 +1,56 @@
+######
+# Two-phase BigCodeBench eval:
+#   Phase 1 (GPU): Generate code completions with vLLM → saves predictions.jsonl
+#   Phase 2 (CPU): Execute generated code in sandboxes → produces metrics
+#
+# Splits the eval so the expensive GPU instance is released after generation
+# (~5 min) and execution runs on a cheaper CPU instance with more RAM (~30 min).
+#
+# Prerequisites:
+#   1. AWS credentials configured
+#   2. ECR docker password exported:
+#      export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+#   3. Model checkpoint on S3
+#
+# Usage:
+#   gb build start -f recipes/granite4-350m/aws/eval-only/build-bcb-2phase.yaml \
+#     --param NAME=test3bcb-2p \
+#     --param MODEL_S3=s3://granite-build-checkpoints/test3-l40s-4/v0-20260623_120011-hf/epoch_hf_0
+######
+granite.build:
+  name: $${NAME}
+  targets:
+    bcb-generate:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+        #predictions:
+        #  uri: "env://{{ binding.path }}"
+        #  type: dataset
+      steps:
+        - step_uri: space://steps/sage-eval-bcb-generate
+          config:
+            sage_eval_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+
+    bcb-execute:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        checkpoint:
+          binding: bcb-generate.checkpoint
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval-bcb-execute
+          retry_enabled: true
+          retry_transparently: true
+          config:
+            sage_eval_config:
+              model_source_s3: "s3://{{ bindings.checkpoint.binding.path | replace('/s3path/', '') }}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"

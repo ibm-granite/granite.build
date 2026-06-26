@@ -1,0 +1,34 @@
+name: command
+version: v1
+type: custom
+# A general-purpose Bash step that runs an arbitrary shell command supplied by
+# the build.yaml under `config.bash_config.command` — mirroring how the docker
+# `image` step takes `config.image_config.command`.  The step exits with that
+# command's status, so e.g. `command: "exit 1"` hard-FAILS the target.  Useful
+# for tests and quick experiments that need a controllable bash workload.
+config:
+  bash_config:
+    command: ""    # shell command to execute on the launcher node
+environment_configs:
+  Bash:
+    launchers:
+      command:
+        type: nohup
+        monitors:
+        - log_monitor
+        # The build.yaml's command is templated into the launcher env; command.sh
+        # exec's $LLMB_COMMAND so the step's exit status is the command's status.
+        config:
+          env:
+            LLMB_COMMAND: '{{ config.bash_config.command }}'
+    monitors:
+      log_monitor:
+        type: log_monitor
+        config:
+          event_configs:
+          - event_type: MESSAGE_EVENT
+            line_regex: .*
+            is_json: false
+            event_fields:
+            - field_name: msg
+              field_regex: .*

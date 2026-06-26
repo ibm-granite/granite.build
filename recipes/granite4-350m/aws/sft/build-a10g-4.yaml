@@ -1,0 +1,42 @@
+######
+# Open-Instruct SFT training on AWS g6e.48xlarge (8x L40S 48GB) via SkyPilot.
+#
+# Prerequisites:
+#   1. AWS credentials configured (~/.aws/credentials) with us-east-2 access
+#   2. SkyPilot installed and verified: sky check aws
+#   3. ECR docker password exported:
+#      export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+#   4. S3 buckets accessible:
+#      - s3://granite-build-datasets/tokenized/8192/data_filtered (training data)
+#      - s3://granite-build-checkpoints (checkpoint output)
+#   5. vCPU quota for G-family instances >= 192 in us-east-2
+#
+# Usage:
+#   export GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD=$(aws ecr get-login-password --region us-east-2)
+#   gb build start -f samples/standalone/openinstruct-sft/build.yaml --param NAME=oisft001
+######
+granite.build:
+  name: $${NAME}
+  targets:
+    sft-training:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/openinstruct-sft
+          config:
+            launcher_config:
+              resources:
+                accelerators: "A10G:4"
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 4
+            sft_config:
+              build_name: "$${NAME}"
+              model_path: "ibm-granite/granite-4.0-350m-base"
+              #dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
+              dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered_10k"
+              checkpoint_s3_uri: "s3://granite-build-checkpoints"

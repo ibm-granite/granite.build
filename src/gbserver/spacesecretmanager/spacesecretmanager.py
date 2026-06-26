@@ -16,11 +16,11 @@
 
 """The base class for all the secret managers."""
 
-import importlib
 import logging
-import os
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Dict, Optional, Self, Type
+from typing import Any, ClassVar, Dict, List, Optional, Self, Type
+
+from gbserver.utils.secretmanager_discovery import discover_secret_managers
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,38 @@ class SpaceSecretManager(ABC):
         Creates a secret in the secret manager
         """
 
+    # The following management operations back the /space_secrets admin REST API.
+    # They have read-only-safe defaults (writes raise NotImplementedError) so a
+    # backend only needs to override what it supports; read-only backends (e.g.
+    # env) inherit the correct "not writable" behavior.
+
+    def list_secret_names(self: Self, secret_group_name: str = "") -> List[str]:
+        """Return the names of the secrets managed for this space."""
+        return list((self.get_secrets() or {}).keys())
+
+    def update_secret(
+        self: Self,
+        secret_name: str,
+        secret_value: str,
+        secret_type: str = "arbitrary",
+        secret_group_name: str = "",
+    ) -> None:
+        """Update an existing secret. Defaults to create_secret (upsert)."""
+        self.create_secret(
+            secret_name=secret_name,
+            secret_value=secret_value,
+            secret_type=secret_type,
+            secret_group_name=secret_group_name,
+        )
+
+    def delete_secret(
+        self: Self, secret_name: str, secret_group_name: str = ""
+    ) -> None:
+        """Delete a secret from the secret manager."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support deleting secrets"
+        )
+
     @staticmethod
     def get_spacesecretmanager(
         secret_manager_type: str, uri: str, **kwargs
@@ -80,55 +112,9 @@ class SpaceSecretManager(ABC):
     @staticmethod
     def load_spacesecretmanagers() -> None:
         """Load all the secret managers."""
-        if len(SpaceSecretManager.spacesecretmanagers) != 0:
-            return
-        package_dir = os.path.dirname(__file__)
-
-        for filename in os.listdir(package_dir):
-            if (
-                filename.endswith(".py")
-                and filename != "__init__.py"
-                and filename != os.path.basename(__file__)
-            ):
-                spacesecretmanager_modulename = filename[:-3]
-                spacesecretmanager_key_name = spacesecretmanager_modulename[
-                    : -len(SpaceSecretManager.__name__)
-                ].lower()
-                spacesecretmanager_typename = (
-                    spacesecretmanager_key_name.capitalize()
-                    + SpaceSecretManager.__name__
-                )
-                try:
-                    module = importlib.import_module(
-                        f".{spacesecretmanager_modulename}",
-                        package="gbserver.spacesecretmanager",
-                    )
-                    if hasattr(module, spacesecretmanager_typename):
-                        handler_class = getattr(module, spacesecretmanager_typename)
-                        if isinstance(handler_class, type) and issubclass(
-                            handler_class, SpaceSecretManager
-                        ):
-                            SpaceSecretManager.spacesecretmanagers[
-                                spacesecretmanager_key_name
-                            ] = handler_class
-                        else:
-                            logger.error(
-                                "Ignoring %s since it is not a subclass of SpaceSecretManager class",
-                                spacesecretmanager_typename,
-                            )
-                    else:
-                        logger.error(
-                            "Module %s does not contain expected space secret manager type class %s",
-                            spacesecretmanager_modulename,
-                            spacesecretmanager_typename,
-                        )
-                except ImportError as e:
-                    logger.error(
-                        "Error importing module %s: %s", spacesecretmanager_typename, e
-                    )
-                except Exception as e:
-                    logger.error(
-                        "Error loading space secret manager type from %s: %s",
-                        spacesecretmanager_typename,
-                        e,
-                    )
+        discover_secret_managers(
+            package_file=__file__,
+            package_name="gbserver.spacesecretmanager",
+            base_class=SpaceSecretManager,
+            registry=SpaceSecretManager.spacesecretmanagers,
+        )

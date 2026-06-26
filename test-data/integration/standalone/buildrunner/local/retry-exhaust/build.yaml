@@ -1,0 +1,23 @@
+granite.build:
+  name: bash-retry-exhaust-test
+  # Build-level retry: when the whole build FAILS, the BuildRunner creates a new
+  # build record and retries the entire build, up to max_retries times.  This
+  # fixture's single target always fails, so the chain is expected to be exactly
+  # 1 original + max_retries retries = 3 build records, all FAILED.
+  retries:
+    max_retries: 2
+  targets:
+    fail-target:
+      allow_unknown: true
+      environment_uri: space://environments/bash
+      steps:
+        # The general-purpose `command` bash step runs an arbitrary shell command
+        # from config.bash_config.command.  `exit 1` hard-FAILS the target; the
+        # Bash environment does not wrap steps in a RetryHandler, so the failure
+        # is not absorbed and build-level retry is exercised.
+        - step_uri: space://steps/command
+          config:
+            bash_config:
+              command: "exit 1"
+            compute_config:
+              num_nodes: 1

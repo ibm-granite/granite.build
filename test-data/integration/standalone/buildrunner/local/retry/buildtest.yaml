@@ -1,0 +1,22 @@
+# Fixture for the build-level retry-with-target-reuse test
+# (test/integration/standalone/buildrunner/local/test_buildrunner_retry.py).
+#
+# build_yaml defaults to ./build.yaml (sibling) when omitted.  The build's single
+# target succeeds, so Phase 1 ends SUCCESS; the test then marks it FAILED and
+# re-runs to exercise the retry/skip path.
+expected_status: success
+# The target succeeds on its own; no step-failure simulation.
+simulate_step_failure: false
+# Use the shared standalone space at <repo>/configurations/spaces/local so the
+# BuildRunner resolves space:// URIs (the bash environment and the command step)
+# without cloning from GitHub.  Relative path resolves against this YAML's
+# directory and is returned as an absolute file:// URI by from_yaml.
+space_uri: ../../../../../../configurations/spaces/local
+# A single bash target with one command step and no input/output artifacts.
+target_expectations:
+  - target_name: succeed-target
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 0
+    jobstats_count: 0
+timeout_minutes: 10

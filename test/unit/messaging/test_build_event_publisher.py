@@ -55,7 +55,7 @@ def mock_rabbitmq():
 @pytest.fixture
 def publisher(mock_rabbitmq):
     """Create a BuildEventPublisher with a mocked RabbitMQ backend."""
-    return BuildEventPublisher(rabbitmq=mock_rabbitmq)
+    return BuildEventPublisher(backend=mock_rabbitmq)
 
 
 @pytest.fixture

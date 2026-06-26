@@ -159,15 +159,67 @@ class Run(ABC):
             self.update_status(Status.FAILED, extra_msg=body)
             raise RunFailed(status_updated=True) from e
         finally:
-            logger.debug("Run.run: do some cleanup after the run is done")
+            # == Build Cancellation & Cleanup ==
+            #
+            # When `gb build cancel` is called, BuildRunner.__cancel_build_run()
+            # calls self.build_run.cancel() which cancels the BuildRun task.
+            # This propagates CancelledError down through the TaskGroup hierarchy:
+            #   BuildRun.run() → TargetRun.run() → TargetStepRun.run()
+            #
+            # The TargetStepRun may be blocked in sky.launch() (via
+            # asyncio.to_thread) while the cluster is in INIT state. Since
+            # asyncio.to_thread runs in a real OS thread, it cannot be
+            # interrupted — the cancel only takes effect once provisioning
+            # completes and the await returns. This means cancel latency equals
+            # the remaining provisioning time (typically 2-5 minutes for spot).
+            #
+            # Once cancellation propagates, each Run.run() hits this finally
+            # block to execute _cleanup (e.g. sky.down to tear down clusters).
+            #
+            # Problem: In a cancelled coroutine, every `await` immediately raises
+            # CancelledError without actually waiting. This made prior approaches
+            # fail:
+            #   - asyncio.shield(task): protects the inner task from cancellation
+            #     but the outer `await` still raises CancelledError immediately
+            #   - TaskGroup + create_task: TaskGroup.__aexit__ cancels all child
+            #     tasks during cancellation, killing cleanup before sky.down runs
+            #   - ensure_future + await: the await raises CancelledError without
+            #     blocking, so cleanup runs as fire-and-forget but the build
+            #     finishes before sky.down completes, leaking the cluster
+            #
+            # Solution: Use Task.uncancel() (Python 3.11+) to temporarily clear
+            # the pending cancellation, allowing `await cleanup_task` to block
+            # normally until _cleanup finishes. Then re-cancel to propagate.
+            logger.info(
+                "Run.run [%s : %s] entering cleanup", type(self).__name__, self.id
+            )
             cleanup_task = asyncio.ensure_future(self._cleanup(tg=tg))
+            current_task = asyncio.current_task()
+            cancel_count = 0
+            if current_task:
+                cancel_count = current_task.cancelling()
+                for _ in range(cancel_count):
+                    current_task.uncancel()
             try:
-                await asyncio.shield(cleanup_task)
-            except asyncio.CancelledError:
-                # The outer task was cancelled, but we must wait for cleanup
-                # to finish (e.g. helm uninstall) before propagating.
-                await cleanup_task
-        logger.debug("Run.run %s end", self.id)
+                while not cleanup_task.done():
+                    try:
+                        await asyncio.shield(cleanup_task)
+                    except asyncio.CancelledError:
+                        # Another cancellation arrived while awaiting cleanup.
+                        # Suppress it so we can re-await until cleanup finishes.
+                        logger.info(
+                            "Run.run [%s : %s] cleanup interrupted by cancel, re-awaiting",
+                            type(self).__name__,
+                            self.id,
+                        )
+                        if current_task and current_task.cancelling() > 0:
+                            cancel_count += current_task.cancelling()
+                            for _ in range(current_task.cancelling()):
+                                current_task.uncancel()
+            finally:
+                if cancel_count > 0 and current_task:
+                    current_task.cancel()
+        logger.info("Run.run [%s : %s] cleanup complete", type(self).__name__, self.id)
 
     def _add_to_run_kwargs(self: Self, kwargs: dict) -> None:
         """Add additional kwargs like run metadata: build_id, etc."""

@@ -1,0 +1,19 @@
+######
+# Standalone BCB execute phase — runs code execution on pre-existing predictions.
+# Use after build-bcb-2phase.yaml's generate phase has saved predictions.jsonl.
+######
+granite.build:
+  name: $${NAME}
+  targets:
+    bcb-execute:
+      environment_uri: space://environments/skypilot/aws
+      inputs: {}
+      outputs: {}
+      steps:
+        - step_uri: space://steps/sage-eval-bcb-execute
+          config:
+            sage_eval_config:
+              model_source_s3: "$${MODEL_S3}"
+              eval_results_s3: "s3://granite-build-eval-results"
+              experiment: "$${NAME}"
+              oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"

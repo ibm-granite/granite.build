@@ -1,0 +1,217 @@
+name: sage-eval-code-grouped
+version: 1.0.0
+type: EVAL
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  sage_eval_config:
+    model_source_s3: ""
+    eval_results_s3: "s3://granite-build-eval-results"
+    experiment: "eval-l40s-001"
+    batch_size: 10
+    max_length: 512
+    num_gpus: 1
+outputs:
+  optional:
+    sage_eval_results:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: sage-eval-code-grouped
+    launchers:
+      sage-eval-code-grouped:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-code:0.025"
+          docker:
+            run_options:
+              - "-e HOME=/root"
+          resources:
+            infra: aws/us-east-2
+            accelerators: "L40S:1"
+            disk_size: 256
+            use_spot: true
+          file_mounts:
+            /model:
+              source: "{{ config.sage_eval_config.model_source_s3 }}"
+              mode: COPY
+            /output:
+              source: "{{ config.sage_eval_config.eval_results_s3 }}"
+              mode: MOUNT
+          envs:
+            SKYPILOT_DOCKER_USERNAME: "AWS"
+            SKYPILOT_DOCKER_SERVER: "022767362696.dkr.ecr.us-east-2.amazonaws.com"
+            EXPERIMENT: "{{ config.sage_eval_config.experiment }}"
+            MODEL_PATH: "/model"
+            NUM_GPUS: "{{ config.sage_eval_config.num_gpus }}"
+            BATCH_SIZE: "{{ config.sage_eval_config.batch_size }}"
+            MAX_LENGTH: "{{ config.sage_eval_config.max_length }}"
+            HF_HOME: "/workspace/.cache/huggingface"
+            OUTPUT_BASE_PATH: "/output/sage"
+          setup: |
+            echo "=== Environment Check ==="
+            python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}, GPUs: {torch.cuda.device_count()}')"
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+            if [[ -n "${HF_TOKEN}" ]]; then
+              huggingface-cli login --token "${HF_TOKEN}"
+            fi
+          run: |
+            set -o pipefail
+            export HF_HOME=${HF_HOME}
+            cd /workspace/sage
+
+            # Set up sage configuration
+            [[ -n "${HF_TOKEN}" ]] && sage set hf-token "${HF_TOKEN}"
+            export OUTPUT_PATH=${OUTPUT_BASE_PATH}/${EXPERIMENT}
+            sage set setup-dir /tmp/setup-dir
+            sage set scripts-dir ${OUTPUT_PATH}/scripts-dir
+            sage set logs-dir ${OUTPUT_PATH}/logs-dir
+
+            # Export env vars expected by eval scripts
+            export EXPERIMENT NUM_GPUS BATCH_SIZE MAX_LENGTH MODEL_PATH OUTPUT_BASE_PATH
+
+            # Language toolchains pre-installed under /workspace
+            export PATH="/workspace/.cargo/bin:/workspace/setup_langs/java_setup/jdk-17.0.12+7/bin:/workspace/.nvm/versions/node/v18.17.1/bin:/usr/local/cuda/bin:$PATH"
+            export CARGO_HOME="/workspace/.cargo"
+            export RUSTUP_HOME="/workspace/.rustup"
+            export NVM_DIR="/workspace/.nvm"
+            export SAGE_SETUP_DIR="/workspace"
+            export JAVATUPLES_PATH="/workspace/setup_langs/java_setup/javatuples-1.2.jar"
+            export CPATH="/workspace/setup_langs/gpp_boost_setup/boost_1_84_0/build/boost/include"
+            export HF_ALLOW_CODE_EVAL=1
+
+            # Redirect tempfile off container tmpfs onto NVMe scratch
+            if [ -d "/opt/nvme" ]; then
+              export TMPDIR="/opt/nvme/${USER:-$(id -un)}/tmp-${SKYPILOT_TASK_ID:-$$}"
+            else
+              export TMPDIR="/tmp/sage-tmp-${SKYPILOT_TASK_ID:-$$}"
+            fi
+            mkdir -p "$TMPDIR"
+            export TMP="$TMPDIR"
+            export TEMP="$TMPDIR"
+
+            # Patch bigcode-evaluation-harness max_workers
+            if [ -f /workspace/bigcode-evaluation-harness/bigcode_eval/tasks/multiple.py ]; then
+              sed -i 's/^        max_workers = 1$/        max_workers = max(cpu_count() - 1, 8) if cpu_count() > 1 else 1/' \
+                /workspace/bigcode-evaluation-harness/bigcode_eval/tasks/multiple.py
+            fi
+
+            # ── Run all 7 CODE evals sequentially ──
+            # evalplus evals use max_length=4096, multiple_* evals use max_length=512
+            declare -a EVAL_NAMES=(
+              "code-evalplus-humaneval"
+              "code-evalplus-mbpp"
+              "code-multiple-sh"
+              "code-multiple-cpp"
+              "code-multiple-java"
+              "code-multiple-js"
+              "code-multiple-rs"
+            )
+            declare -A EVAL_SCRIPTS=(
+              ["code-evalplus-humaneval"]="code_evalplus_humaneval_slim.sh"
+              ["code-evalplus-mbpp"]="code_evalplus_mbpp_slim.sh"
+              ["code-multiple-sh"]="code_multiple_slim.sh"
+              ["code-multiple-cpp"]="code_multiple_slim.sh"
+              ["code-multiple-java"]="code_multiple_slim.sh"
+              ["code-multiple-js"]="code_multiple_slim.sh"
+              ["code-multiple-rs"]="code_multiple_slim.sh"
+            )
+            declare -A EVAL_LANGS=(
+              ["code-multiple-sh"]="sh"
+              ["code-multiple-cpp"]="cpp"
+              ["code-multiple-java"]="java"
+              ["code-multiple-js"]="js"
+              ["code-multiple-rs"]="rs"
+            )
+            declare -A EVAL_MAXLEN=(
+              ["code-evalplus-humaneval"]="4096"
+              ["code-evalplus-mbpp"]="4096"
+              ["code-multiple-sh"]="512"
+              ["code-multiple-cpp"]="512"
+              ["code-multiple-java"]="512"
+              ["code-multiple-js"]="512"
+              ["code-multiple-rs"]="512"
+            )
+
+            FAIL_COUNT=0
+            FAILED_NAMES=""
+            for eval_name in "${EVAL_NAMES[@]}"; do
+              gb_script="${EVAL_SCRIPTS[$eval_name]}"
+              export EVAL_NAME="$eval_name"
+              export EVAL_CATEGORY="code"
+              export MAX_LENGTH="${EVAL_MAXLEN[$eval_name]}"
+
+              # Set MULTIPLE_LANG for multiple_* evals
+              if [[ -n "${EVAL_LANGS[$eval_name]}" ]]; then
+                export MULTIPLE_LANG="${EVAL_LANGS[$eval_name]}"
+              else
+                unset MULTIPLE_LANG
+              fi
+
+              echo ""
+              echo "============================================================"
+              echo "[$(date)] START: ${eval_name} (${gb_script})"
+              echo "[$(date)] Model: ${MODEL_PATH}"
+              echo "[$(date)] Output: ${OUTPUT_PATH}"
+              [[ -n "${MULTIPLE_LANG:-}" ]] && echo "[$(date)] Language: ${MULTIPLE_LANG}"
+              echo "============================================================"
+
+              if bash /workspace/sage/sage/cluster/gb/scripts/${gb_script} \
+                  2>&1 | tee ${OUTPUT_PATH}/${eval_name}.log; then
+                echo "$(date)" > ${OUTPUT_PATH}/${eval_name}.done
+                echo "[$(date)] DONE: ${eval_name}"
+              else
+                echo "[$(date)] FAILED: ${eval_name} (exit code: $?)"
+                FAIL_COUNT=$((FAIL_COUNT + 1))
+                FAILED_NAMES="${FAILED_NAMES} ${eval_name}"
+              fi
+            done
+
+            echo ""
+            echo "============================================================"
+            echo "[$(date)] All CODE evals complete."
+            echo "  Total: 7, Failed: ${FAIL_COUNT}"
+            if [[ ${FAIL_COUNT} -gt 0 ]]; then
+              echo "  Failed evals:${FAILED_NAMES}"
+              exit 1
+            fi
+            echo "============================================================"
+
+            # Emit artifact for gbserver
+            RESULT_FILE=$(find "$OUTPUT_PATH" -path "*${EXPERIMENT}*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit)
+            if [ -z "$RESULT_FILE" ]; then
+              RESULT_FILE=$(find "$OUTPUT_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -print -quit 2>/dev/null || true)
+            fi
+            if [ -n "$RESULT_FILE" ]; then
+              echo "LLMB_ARTIFACT_ID:sage_eval_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
+            else
+              echo "WARNING: No results file found in $OUTPUT_PATH"
+            fi
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "START:|DONE:|FAILED:|All CODE evals complete"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+              - field_name: message
+                field_regex: ".+"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true

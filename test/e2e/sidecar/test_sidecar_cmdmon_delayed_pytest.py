@@ -24,6 +24,7 @@ from e2e.sidecar.test_sidecar_cmdmon_pytest import child_script
 
 # -- reuse fixtures from test_sidecar_pytest and test_sidecar_cmdmon_pytest --
 from e2e.sidecar.test_sidecar_pytest import fake_messaging, temp_log_file
+from libgbtest.constants import extended_testing_only
 
 # --------------------- project imports ---------------------
 from gbserver.monitoring.process_cmdline_monitor import CmdlineMonitor
@@ -31,6 +32,10 @@ from gbserver.monitoring.sidecar import Sidecar
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Slow async e2e test that spawns real child subprocesses; run only in
+# extended-tests (the `extended` marker), not the fast quick-tests suite.
+pytestmark = extended_testing_only
 
 
 # --------------------- test cases -------------------------------
@@ -87,10 +92,10 @@ async def test_sidecar_with_cmdline_monitor(
     )
 
     # 6) wait for child to finish
-    child_returncode = await child.wait()
+    child_returncode = await asyncio.wait_for(child.wait(), timeout=120)
 
     # 7) wait for orchestrator/sidecars to finish (should detect process exit via CmdlineMonitor)
-    await orchestrator_task
+    await asyncio.wait_for(orchestrator_task, timeout=120)
 
     # 8) verify at least 1 new artifact event arrived
     assert not fake_messaging._q.empty()

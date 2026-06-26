@@ -345,6 +345,53 @@ def pytest_sessionstart(session):
         log_gb_env_vars()
 
 
+# ---------------------------------------------------------------------------
+# Stall watchdog — diagnose the intermittent xdist shutdown/coordination hang.
+#
+# The hang leaves workers idle in execnet and the CONTROLLER stuck where a
+# pytest_sessionfinish hook can't reach.  We use faulthandler's C-level timer
+# (dump_traceback_later): it fires from a signal/C thread, so it works even when
+# Python threads aren't being scheduled, and on fire it dumps EVERY thread on the
+# process then force-exits (unwedging it).  We re-arm the timer on every test
+# report, so the countdown only runs out once test activity stops — i.e. on a real
+# stall.  It runs on every process (controller + each worker); the controller gets
+# a report for every test across all workers, so it stays quiet during active
+# (even slow) testing and trips only on the hang.
+#
+# Wait at least GBTEST_STALL_WATCHDOG_SECONDS after it looks stuck to see the dump.
+# Disable with GBTEST_STALL_WATCHDOG_SECONDS=0; GBTEST_STALL_WATCHDOG_EXIT=0 dumps
+# without force-exiting.
+# ---------------------------------------------------------------------------
+def _arm_stall_watchdog() -> None:
+    """(Re)arm the faulthandler stall timer; each call resets the countdown."""
+    import faulthandler
+    import sys
+
+    # Opt-in (default off): set GBTEST_STALL_WATCHDOG_SECONDS=N to enable. Kept as a
+    # debugging aid for the xdist/async shutdown-hang class. It's off by default so it
+    # can't false-fire on legitimately long-running tests (e.g. the minutes-long
+    # skypilot extended tests, which emit no per-test progress while running).
+    timeout = float(os.getenv("GBTEST_STALL_WATCHDOG_SECONDS", "0"))
+    if timeout <= 0:
+        return
+    exit_on_stall = os.getenv("GBTEST_STALL_WATCHDOG_EXIT", "1") != "0"
+    # repeat=False so it fires once; re-armed below on each test report. Not
+    # cancelled at sessionfinish, so a *shutdown* hang still trips it.
+    faulthandler.dump_traceback_later(
+        timeout, repeat=False, exit=exit_on_stall, file=sys.stderr
+    )
+
+
+def pytest_configure(config):
+    """Arm the stall watchdog (controller and each xdist worker)."""
+    _arm_stall_watchdog()
+
+
+def pytest_runtest_logreport(report):
+    """Reset the stall countdown on every test phase report (progress = alive)."""
+    _arm_stall_watchdog()
+
+
 class BuildAggregation(BaseModel):
     build: Optional[StoredBuild]
     targets: list[StoredTargetRun] = []
@@ -421,6 +468,31 @@ from libgbtest.fixture_loader import load_fixture  # noqa: E402
 from libgbtest.mode import should_use_live  # noqa: E402
 
 # ---------------------------------------------------------------------------
+# 0. Test-environment guard — never run against PROD; `ibm` tests need cloud creds
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _check_test_env(request):
+    """Guard the test environment for every test.
+
+    - Always: refuse to run with GB_ENVIRONMENT=PROD.
+    - For tests marked ``ibm``: assert the IBM/cloud secret bundle is present
+      (no-op in mock mode).  This replaces the old per-class
+      ``_is_cloud_config_required`` gate — the requirement now tracks the
+      ``ibm`` marker, which already designates "needs IBM infrastructure".
+    """
+    from gbserver.types.constants import GB_ENVIRONMENT
+
+    assert GB_ENVIRONMENT != "PROD", "Refusing to run tests with GB_ENVIRONMENT=PROD."
+    if request.node.get_closest_marker("ibm"):
+        from libgbtest.utils import check_cloud_config
+
+        check_cloud_config()
+    yield
+
+
+# ---------------------------------------------------------------------------
 # a. Storage — mock = SQLite, live = whatever the test class chooses
 # ---------------------------------------------------------------------------
 
@@ -440,10 +512,8 @@ def _configure_storage_for_mock(request):
     from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 
     original_factory = cls.__dict__.get("_get_storage_factory")
-    original_cloud = cls.__dict__.get("_is_cloud_config_required")
 
     cls._get_storage_factory = classmethod(lambda c: SqliteStorageFactory())
-    cls._is_cloud_config_required = classmethod(lambda c: False)
 
     yield
 
@@ -452,12 +522,6 @@ def _configure_storage_for_mock(request):
     else:
         if "_get_storage_factory" in cls.__dict__:
             delattr(cls, "_get_storage_factory")
-
-    if original_cloud is not None:
-        cls._is_cloud_config_required = original_cloud
-    else:
-        if "_is_cloud_config_required" in cls.__dict__:
-            delattr(cls, "_is_cloud_config_required")
 
 
 # ---------------------------------------------------------------------------
@@ -666,8 +730,12 @@ def _mock_huggingface(request):
 
 @pytest.fixture(autouse=True)
 def _mock_lineage(request):
-    """In mock mode, patch get_lineage_store to return a no-op stub."""
-    if should_use_live(request, "lakehouse"):
+    """In mock mode, patch get_lineage_store to return a no-op stub.
+
+    Tests that assert the real lineage store (noop or wandb) opt out with
+    @pytest.mark.live("lineage").
+    """
+    if should_use_live(request, "lineage"):
         yield
         return
 

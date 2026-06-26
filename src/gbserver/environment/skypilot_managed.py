@@ -10,7 +10,7 @@ import asyncio
 import glob
 import os
 import urllib.parse
-from typing import Any, Dict, List, Optional, Self
+from typing import Any, Dict, List, Optional, Self, Tuple
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -48,6 +48,14 @@ def _download_logs_with_retry(cluster_name: str, job_name: str):
     # (it handles the API request/response internally, no sky.get() needed)
     result = sky.download_logs(cluster_name, job_ids=[job_name])
     return result.get(job_name)
+
+
+from gbserver.environment._skypilot_ssh import (
+    execute_on_host_via_ssh as _execute_on_host_via_ssh,
+)
+from gbserver.environment._skypilot_ssh import (
+    extract_host_ssh_info as _extract_host_ssh_info,
+)
 
 
 class Skypilot_managed(Environment):
@@ -108,13 +116,28 @@ class Skypilot_managed(Environment):
 
             # Build sky.Resources
             res_config = launcher_config.get("resources", {})
+
+            # Build cluster config overrides (docker run_options, etc.)
+            cluster_config_overrides = {}
+            docker_config = {
+                **launcher_config.get("docker", {}),
+                **config.get("launcher_config", {}).get("docker", {}),
+            }
+            if docker_config:
+                cluster_config_overrides["docker"] = docker_config
+
+            image_id = config.get("launcher_config", {}).get(
+                "image_id"
+            ) or launcher_config.get("image_id")
+
             resources = sky.Resources(
                 infra=cloud,
                 accelerators=res_config.get("accelerators"),
                 cpus=res_config.get("cpus"),
                 memory=res_config.get("memory"),
                 disk_size=res_config.get("disk_size"),
-                image_id=launcher_config.get("image_id"),
+                image_id=image_id,
+                _cluster_config_overrides=cluster_config_overrides or None,
             )
 
             # Build environment variables
@@ -190,6 +213,55 @@ class Skypilot_managed(Environment):
                 job_name,
                 launch_id,
             )
+
+            # Execute post-launch tasks (e.g., start evaluator sidecars) if defined
+            post_launch_task = launcher_config.get("post_launch_task")
+            if post_launch_task:
+                try:
+                    logger.info(
+                        "Executing post-launch task on managed job %s (launch_id=%s)",
+                        job_name,
+                        launch_id,
+                    )
+                    host_ip, ssh_key = await asyncio.to_thread(
+                        _extract_host_ssh_info, job_name
+                    )
+                    await _execute_on_host_via_ssh(
+                        host_ip=host_ip,
+                        ssh_key=ssh_key,
+                        commands=post_launch_task.get("run", ""),
+                        env_vars=env_vars,
+                    )
+                    logger.info(
+                        "Post-launch task completed on managed job %s (launch_id=%s)",
+                        job_name,
+                        launch_id,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Post-launch task failed on managed job %s (launch_id=%s): %s",
+                        job_name,
+                        launch_id,
+                        e,
+                    )
+                    # Emit a MESSAGE_EVENT so the failure is visible in build state
+                    if self.event_q and run_metadata:
+                        from gbserver.types.buildevent import (
+                            BuildEvent,
+                            BuildEventMessagePayload,
+                            BuildEventType,
+                            EntityRunMetadata,
+                        )
+
+                        self.event_q.put_nowait(
+                            BuildEvent(
+                                run_metadata=EntityRunMetadata(**run_metadata),
+                                type=BuildEventType.MESSAGE_EVENT,
+                                payload=BuildEventMessagePayload(
+                                    msg=f"Post-launch task failed on {job_name}: {e}"
+                                ),
+                            )
+                        )
 
         except Exception as e:
             logger.error(

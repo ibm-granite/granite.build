@@ -373,6 +373,13 @@ class Docker(Environment):
         """Launch a step in a Docker container."""
         try:
             docker, client = self._get_docker()
+            # Blocking docker-SDK calls (image pull, container run) must be
+            # offloaded to a thread; running them directly in this coroutine
+            # freezes the event loop, so an enclosing ``asyncio.wait_for`` can
+            # never enforce its timeout and the build hangs indefinitely on a
+            # slow/stalled pull or daemon.  (monitor_docker_log/cleanup_docker
+            # already offload their blocking calls the same way.)
+            loop = asyncio.get_running_loop()
 
             # Extract kwargs
             launcher_config = kwargs.get("launcher_config", {}) or {}
@@ -388,7 +395,17 @@ class Docker(Environment):
             # Pull image according to policy
             pull_policy = docker_config.get("pull_policy", "if-not-present")
             registry_auth = docker_config.get("registry_auth")
-            self._pull_image(client, docker, image, pull_policy, registry_auth)
+            await loop.run_in_executor(
+                None,
+                functools.partial(
+                    self._pull_image,
+                    client,
+                    docker,
+                    image,
+                    pull_policy,
+                    registry_auth,
+                ),
+            )
 
             # Build container name
             step_name = step.get("name", run_metadata.get("target_name", "gb"))
@@ -458,14 +475,21 @@ class Docker(Environment):
                 launch_id,
             )
 
-            container = client.containers.run(
-                image=image,
-                command=command,
-                name=container_name,
-                detach=True,
-                volumes=volumes,
-                environment=env_vars,
-                **resource_kwargs,
+            # Annotated Any: wrapping the call in run_in_executor hides the
+            # detach=True -> Container overload, so the checker would otherwise
+            # infer the bytes (logs) overload and flag container.id below.
+            container: Any = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    client.containers.run,
+                    image=image,
+                    command=command,
+                    name=container_name,
+                    detach=True,
+                    volumes=volumes,
+                    environment=env_vars,
+                    **resource_kwargs,
+                ),
             )
 
             self._launched_containers[launch_id] = container.id

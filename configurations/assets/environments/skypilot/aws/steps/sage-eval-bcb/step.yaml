@@ -1,0 +1,209 @@
+name: sage-eval-bcb
+version: 1.0.0
+type: EVAL
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  sage_eval_config:
+    gb_script: "code_olmes_bigcodebench_slim.sh"
+    model_source_s3: ""
+    eval_results_s3: "s3://granite-build-eval-results"
+    experiment: "eval-l40s-001"
+    batch_size: 4
+    max_length: 4096
+    num_gpus: 1
+    oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"
+outputs:
+  optional:
+    sage_eval_results:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: sage-eval-bcb
+    launchers:
+      sage-eval-bcb:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/sage-py311-olmes:0.025"
+          # Fix SSH key placement: sage images set ENV HOME=/workspace but
+          # /etc/passwd has root's home as /root. sshd uses passwd, not $HOME,
+          # so override HOME at container start to align with sshd expectations.
+          docker:
+            run_options:
+              - "-e HOME=/root"
+          resources:
+            infra: aws/us-east-2
+            # vLLM requires GPU. g6e.12xlarge: 4x L40S, 384GB RAM (only 1 GPU used).
+            # Code execution sandboxes peak at ~236-354GB depending on model quality:
+            # early-epoch models generate verbose/pathological code that consumes more
+            # memory in the sandbox. Later epochs produce tighter code and fit in less.
+            # OOM on early checkpoints is a model quality signal, not infra failure.
+            instance_type: "g6e.12xlarge"
+            disk_size: 256
+            use_spot: true
+          file_mounts:
+            /model:
+              source: "{{ config.sage_eval_config.model_source_s3 }}"
+              mode: COPY
+            /output:
+              source: "{{ config.sage_eval_config.eval_results_s3 }}"
+              mode: MOUNT
+          envs:
+            SKYPILOT_DOCKER_USERNAME: "AWS"
+            SKYPILOT_DOCKER_SERVER: "022767362696.dkr.ecr.us-east-2.amazonaws.com"
+            GB_SCRIPT: "{{ config.sage_eval_config.gb_script }}"
+            EVAL_NAME: "code-olmes-bigcodebench"
+            EVAL_CATEGORY: "code"
+            EXPERIMENT: "{{ config.sage_eval_config.experiment }}"
+            MODEL_PATH: "/model"
+            NUM_GPUS: "{{ config.sage_eval_config.num_gpus }}"
+            BATCH_SIZE: "{{ config.sage_eval_config.batch_size }}"
+            MAX_LENGTH: "{{ config.sage_eval_config.max_length }}"
+            HF_HOME: "/workspace/.cache/huggingface"
+            OUTPUT_BASE_PATH: "/output/sage"
+            OE_EVAL_BCB_API_URL: "{{ config.sage_eval_config.oe_eval_bcb_api_url }}"
+          setup: |
+            echo "=== Environment Check ==="
+            python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}, GPUs: {torch.cuda.device_count()}')"
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+            if [[ -n "${HF_TOKEN}" ]]; then
+              huggingface-cli login --token "${HF_TOKEN}"
+            fi
+          run: |
+            export HF_HOME=${HF_HOME}
+
+            # ── Wait for BCB evaluator sidecar (started on host via post-launch task) ──
+            BCB_HEALTH_URL="${OE_EVAL_BCB_API_URL%/evaluate/}/health"
+            echo "[$(date)] Waiting for BCB evaluator at ${BCB_HEALTH_URL} ..."
+            for i in $(seq 1 300); do
+              if curl -sf "$BCB_HEALTH_URL" > /dev/null 2>&1; then
+                echo "[$(date)] BCB evaluator is ready!"
+                break
+              fi
+              if [[ $i -eq 300 ]]; then
+                echo "[$(date)] ERROR: BCB evaluator not ready after 10 minutes. Exiting."
+                exit 1
+              fi
+              sleep 2
+            done
+
+            # ── Run the eval ──
+            cd /workspace/sage
+
+            [[ -n "${HF_TOKEN}" ]] && sage set hf-token "${HF_TOKEN}"
+            export OUTPUT_PATH=${OUTPUT_BASE_PATH}/${EXPERIMENT}
+            sage set setup-dir /tmp/setup-dir
+            sage set scripts-dir ${OUTPUT_PATH}/scripts-dir
+            # Use local logs-dir (tee writes break on S3 FUSE mounts entirely)
+            sage set logs-dir /tmp/sage-logs-dir
+
+            # Export env vars expected by eval scripts
+            export EXPERIMENT NUM_GPUS BATCH_SIZE MAX_LENGTH MODEL_PATH OUTPUT_BASE_PATH OE_EVAL_BCB_API_URL
+
+            echo "[$(date)] Running eval: ${EVAL_NAME} (${GB_SCRIPT})"
+            echo "[$(date)] Model: ${MODEL_PATH}"
+            echo "[$(date)] BCB API: ${OE_EVAL_BCB_API_URL}"
+            echo "[$(date)] Output: ${OUTPUT_PATH}"
+
+            bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} \
+              2>&1 | tee ${OUTPUT_PATH}/${EVAL_NAME}.log
+
+            echo "$(date)" > ${OUTPUT_PATH}/${EVAL_NAME}.done
+            echo "[$(date)] Eval complete: ${EVAL_NAME}"
+
+            # Emit artifact for gbserver
+            RESULT_FILE=$(find "$OUTPUT_PATH" -type f -name '*-metrics.json' -print -quit 2>/dev/null)
+            if [ -z "$RESULT_FILE" ]; then
+              RESULT_FILE=$(find "$OUTPUT_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit 2>/dev/null || true)
+            fi
+            if [ -n "$RESULT_FILE" ]; then
+              echo "LLMB_ARTIFACT_ID:sage_eval_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
+            else
+              echo "WARNING: No results file found in $OUTPUT_PATH"
+            fi
+          # Post-launch task: automatically start BCB evaluator sidecar on host
+          # Runs on the host VM (via SSH to port 22, not in the container) after
+          # the main eval job starts, pulling the evaluator image and starting it
+          # as a background Docker container with host networking.
+          post_launch_task:
+            run: |
+              set -e
+              echo "=== Starting BCB evaluator sidecar on host ==="
+
+              # Find docker executable (may require sudo on host)
+              DOCKER_CMD="docker"
+              if ! command -v docker &> /dev/null; then
+                if command -v sudo &> /dev/null; then
+                  DOCKER_CMD="sudo docker"
+                else
+                  echo "ERROR: docker not found in PATH"
+                  exit 1
+                fi
+              fi
+
+              # Authenticate with ECR if credentials provided (passed by launcher)
+              if [[ -n "${SKYPILOT_DOCKER_PASSWORD}" ]]; then
+                echo "Logging into ECR..."
+                echo "${SKYPILOT_DOCKER_PASSWORD}" | $DOCKER_CMD login -u "${SKYPILOT_DOCKER_USERNAME}" --password-stdin "${SKYPILOT_DOCKER_SERVER}"
+              fi
+
+              # Pull evaluator image
+              echo "Pulling BCB evaluator image..."
+              $DOCKER_CMD pull 022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/oe-eval-bcb-lite-evaluator:0.01
+
+              # Start sidecar (dies if port already in use)
+              echo "Starting sidecar container..."
+              $DOCKER_CMD run -d --name bcb-evaluator --network host \
+                022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/oe-eval-bcb-lite-evaluator:0.01
+
+              # Wait for health
+              echo "Waiting for sidecar to be ready..."
+              for i in $(seq 1 30); do
+                if curl -sf "http://localhost:7860/health" > /dev/null 2>&1; then
+                  echo "BCB evaluator sidecar is ready!"
+                  exit 0
+                fi
+                if [ $i -eq 30 ]; then
+                  echo "ERROR: BCB evaluator sidecar failed to start"
+                  $DOCKER_CMD logs bcb-evaluator || true
+                  exit 1
+                fi
+                sleep 1
+              done
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "BCB evaluator is ready|Running eval"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+              - field_name: message
+                field_regex: ".+"
+                is_data: True
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "ray\\.exceptions\\.OutOfMemoryError|Task was killed due to the node running low on memory"
+            event_fields:
+              - field_name: status
+                field_value_template: "FAILED"
+              - field_name: message
+                field_regex: ".+"
+                is_data: True
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true

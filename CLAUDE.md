@@ -31,7 +31,11 @@ pytest -s test/gbserver_test/api/test_artifacts.py::TestArtifactAPI::test_artifa
 
 # CI test suites (creates venv, runs with coverage and parallel execution)
 make cicd-pr-test     # abbreviated test set
-make cicd-merge-test  # extended test set (GBTEST_ENABLE_EXTENDED_TESTS=true)
+make cicd-merge-test  # extended test set (the `extended` marker)
+
+# Local test suites (the `-setup` target provisions the venv and any infra first)
+make quick-tests-setup quick-tests        # fast suite: GBTEST_MODE=mock, -m "not ibm and not extended"
+make extended-tests-setup extended-tests  # full suite: GBTEST_MODE=live, -m "not ibm" (includes `extended` tests); setup also brings up MinIO + SLURM
 ```
 
 ### Formatting and Linting

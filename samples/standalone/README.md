@@ -96,6 +96,11 @@ Local process execution. No extra dependencies.
 environment_uri: space://environments/bash
 ```
 
+Compute-heavy bash steps (e.g. the [`lora-finetune`](lora-finetune/) sample) pick the
+best available PyTorch device automatically: NVIDIA `cuda`, Apple Silicon `mps` (the
+Metal backend, which accelerates M-series Macs), or `cpu`. No flags to set — each
+step prints the device it chose.
+
 ### Docker
 
 Runs the build step inside a container. Requires Docker or Podman running locally.

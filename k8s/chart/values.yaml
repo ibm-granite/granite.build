@@ -112,6 +112,10 @@ deployments:
     - GBSERVER_IBMID_CLIENT_SECRET
     - GBSERVER_IBMID_CALLBACK_URL
     - GBSERVER_HF_TOKEN
+    # RabbitMQ for notification subscription
+    - GBSERVER_RABBITMQ_MGMT_URL
+    - GBSERVER_RABBITMQ_MGMT_USER
+    - GBSERVER_RABBITMQ_MGMT_PASSWORD
     # OpenLineage / WandB ---
     - GBSERVER_WANDB_API_KEY
     - GBSERVER_WANDB_ENTITY
@@ -190,3 +194,7 @@ secrets:
       # OpenLineage / WandB
       GBSERVER_WANDB_API_KEY: xxxx
       GBSERVER_WANDB_ENTITY: granite-lineage
+      # RabbitMQ for notification subscription
+      GBSERVER_RABBITMQ_MGMT_URL: xxxx
+      GBSERVER_RABBITMQ_MGMT_USER: xxxx
+      GBSERVER_RABBITMQ_MGMT_PASSWORD: xxxx

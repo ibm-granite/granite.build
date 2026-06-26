@@ -89,10 +89,10 @@ GBTEST_JOB_TERMINATION_TIMEOUT_SECONDS = int(
 # Regex pattern to extract build ID from assertion messages formatted by failed_build_assert_message
 BUILD_ID_PATTERN = r"\[Build: ([^\]]+)\]"
 
-ENV_VAR_GBTEST_ENABLE_EXTENDED_TESTS = TEST_ENV_VAR_PREFIX + "ENABLE_EXTENDED_TESTS"
-
-# Decorator that skips a test unless GBTEST_ENABLE_EXTENDED_TESTS=true.
-# Apply to any test class or method that should only run in the extended CI suite.
+# Marker for slow / real-infra tests that should run only in the extended CI suite.
+# It is a plain pytest marker (not a skipif): the quick suite deselects these via
+# `-m "not extended"`, while the extended suite (make extended-tests) includes them.
+# Apply to any test class or method that should only run in the extended suite.
 #
 # Usage:
 #   @extended_testing_only
@@ -101,13 +101,7 @@ ENV_VAR_GBTEST_ENABLE_EXTENDED_TESTS = TEST_ENV_VAR_PREFIX + "ENABLE_EXTENDED_TE
 #   @extended_testing_only
 #   def test_something_slow(self): ...
 
-is_extended_testing_enabled = (
-    os.environ.get(ENV_VAR_GBTEST_ENABLE_EXTENDED_TESTS, "false").lower() == "true"
-)
-extended_testing_only = pytest.mark.skipif(
-    not is_extended_testing_enabled,
-    reason=f"{ENV_VAR_GBTEST_ENABLE_EXTENDED_TESTS} is set to false",
-)
+extended_testing_only = pytest.mark.extended
 
 
 def failed_build_assert_message(build_id: str, message: str) -> str:

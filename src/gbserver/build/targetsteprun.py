@@ -20,9 +20,12 @@ The target step run.
 
 import asyncio
 import dataclasses
+import shutil
+import tempfile
 import traceback
 from asyncio import Queue, TaskGroup
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Dict, Optional, Self
 
 from gbserver.build.run import Run
@@ -250,16 +253,25 @@ class TargetStepRun(Run):
             )
             logger.info("FULL CONFIG's CONFIG: %s", self.full_config[CONFIG_KEY])
 
-            temp_path = targetstep.merged_step_dir  # merged step path from targetstep
+            # Copy the shared merged_step_dir to a per-run temp directory.
+            # fill_templates_in_dir destructively renders Jinja expressions in
+            # files; without a copy, a second run of the same step (e.g. from a
+            # repeated checkpoint event) finds already-rendered content containing
+            # literal {{ }} from monitor field_value_templates and fails.
+            source_path = targetstep.merged_step_dir
+            temp_path = Path(tempfile.mkdtemp())
+            shutil.copytree(source_path, temp_path, dirs_exist_ok=True)
 
             # Populate merged directory path to pass to the launch
             # in order to copy this final step folder to pod
             self.full_config["merged_dir_path"] = temp_path
-            ignore_paths = targetstep.ignore_paths_final_fill
+            ignore_paths = [
+                temp_path / p.relative_to(source_path)
+                for p in targetstep.ignore_paths_final_fill
+            ]
             self.temp_path = temp_path
 
             logger.info("Ignoring %d paths during template fill", len(ignore_paths))
-            targetstep.ignore_paths_final_fill = ignore_paths
             self.ignore_paths = ignore_paths
 
             fill_templates_in_dir(
@@ -347,21 +359,43 @@ class TargetStepRun(Run):
             await self.launch_task
 
     async def _cleanup(self: Self, tg: Optional[TaskGroup] = None, **kwargs) -> None:
-        """Check status and cleanup after the job is done."""
-        logger.debug("Run._cleanup %s start", self.id)
+        """Tear down environment resources (e.g. sky.down) after the step finishes or is cancelled.
+
+        Calls the environment's cleanup function directly (e.g. cleanup_skypilot)
+        rather than going through environment.cleanup(). This is intentional:
+        environment.cleanup() wraps the work in asyncio.ensure_future which creates
+        a task that gets abandoned when the build finishes — the build does not wait
+        for fire-and-forget futures. By calling cleanup_fn directly, the await blocks
+        on asyncio.to_thread(sky.down) which runs in a real OS thread and cannot be
+        cancelled, guaranteeing the cluster is torn down.
+
+        The caller (Run.run finally block) uses Task.uncancel() to ensure this
+        coroutine can await without CancelledError being raised immediately.
+        """
+        logger.info(
+            "TargetStepRun._cleanup %s start (launch_id=%s)", self.id, self.launch_id
+        )
         self_entity = self.entity
         assert isinstance(self_entity, TargetStep)
-        assert self.launch_id, f"invalid self.launch_id {self.launch_id}"
-        async with TaskGroup() as tg:
-            cleanup_task = self_entity.environment.cleanup(
-                launch_type=self_entity.launcher.type,
-                launch_id=self.launch_id,
-                setup_ids=list(self.target.setup_ids.keys()),
-                tg=tg,
+        if not self.launch_id:
+            logger.warning(
+                "TargetStepRun._cleanup %s: no launch_id set, skipping environment cleanup",
+                self.id,
             )
-            if cleanup_task is not None:
-                await cleanup_task
-        logger.debug("Run._cleanup %s end", self.id)
+            return
+        env = self_entity.environment
+        launch_type = self_entity.launcher.type
+        if launch_type in env.cleanup_types:
+            logger.info("TargetStepRun._cleanup %s: calling cleanup directly", self.id)
+            cleanup_fn = env.cleanup_types[launch_type]
+            await cleanup_fn(env, launch_id=self.launch_id)
+        else:
+            logger.info(
+                "TargetStepRun._cleanup %s: no cleanup for launch_type=%s",
+                self.id,
+                launch_type,
+            )
+        logger.info("TargetStepRun._cleanup %s end", self.id)
 
     def get_runmetadata(self: Self) -> EntityRunMetadata:
         self_entity = self.entity

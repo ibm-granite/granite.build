@@ -1,0 +1,16 @@
+# Dependencies for the lora-finetune step, installed into the step's venv by
+# command.sh on first run. CPU-only torch keeps the download small; the
+# standalone gbserver venv ships none of these.
+torch
+# Cap <5: pin to a 4.x for consistency with the inference steps and to avoid
+# version drift pulling an incompatible transformers major. See the inference
+# steps' run.py generate() for the apply_chat_template handling this protects.
+transformers>=4.55,<5
+trl>=0.12
+peft>=0.13
+datasets
+accelerate
+# sentencepiece + protobuf are required to load the Granite tokenizer (the
+# slow->fast conversion needs them); transformers does NOT pull them in.
+sentencepiece
+protobuf

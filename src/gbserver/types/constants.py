@@ -74,10 +74,23 @@ ENV_VAR_TRUNCATE_LENGTH = ENV_VAR_PREFIX + "_TRUNCATE_LENGTH"
 ENV_VAR_GBSERVER_ADMIN_TABLE_PREFIX = ENV_VAR_PREFIX + "_ADMIN_TABLE_PREFIX"
 ENV_VAR_IBM_SEC_MAN_ENDPOINT = ENV_VAR_PREFIX + "_IBM_SEC_MAN_ENDPOINT"
 ENV_VAR_IBM_SEC_MAN_API_KEY = ENV_VAR_PREFIX + "_IBM_SEC_MAN_API_KEY"
+# Per-user secret manager backend selection (ibmcloud / local / env). Defaults to
+# ibmcloud in cloud environments and local in standalone (see is_standalone() block).
+ENV_VAR_USER_SECRET_MANAGER = ENV_VAR_PREFIX + "_USER_SECRET_MANAGER"
+# Directory used by the local per-user secret backend.
+ENV_VAR_USER_SECRET_DIR = ENV_VAR_PREFIX + "_USER_SECRET_DIR"
+# Optional JSON blob of extra kwargs passed to the user secret backend constructor.
+ENV_VAR_USER_SECRET_MANAGER_CONFIG = ENV_VAR_PREFIX + "_USER_SECRET_MANAGER_CONFIG"
 ENV_VAR_DEFAULT_LOG_LEVEL = ENV_VAR_PREFIX + "_DEFAULT_LOG_LEVEL"
 ENV_VAR_DEFAULT_GITHUB_TOKEN = ENV_VAR_PREFIX + "_GITHUB_TOKEN"
 ENV_VAR_DEBUG_MODE = ENV_VAR_PREFIX + "_DEBUG_MODE"
 ENV_VAR_SKYPILOT_LAUNCH_CONCURRENCY = ENV_VAR_PREFIX + "_SKYPILOT_LAUNCH_CONCURRENCY"
+ENV_VAR_SKYPILOT_PROVISION_MAX_ATTEMPTS = (
+    ENV_VAR_PREFIX + "_SKYPILOT_PROVISION_MAX_ATTEMPTS"
+)
+ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX = (
+    ENV_VAR_PREFIX + "_SKYPILOT_PROVISION_BACKOFF_MAX"
+)
 ENV_VAR_METADATA_STORAGE = ENV_VAR_PREFIX + "_METADATA_STORAGE"
 ENV_VAR_AUTH_MODE = ENV_VAR_PREFIX + "_AUTH_MODE"
 ENV_VAR_API_KEY = ENV_VAR_PREFIX + "_API_KEY"
@@ -259,6 +272,17 @@ GBSERVER_TRUNCATE_LENGTH = int(os.getenv(ENV_VAR_TRUNCATE_LENGTH, "-1"), base=10
 GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY = int(
     os.getenv(ENV_VAR_SKYPILOT_LAUNCH_CONCURRENCY, "4"), base=10
 )
+# Bounded retry of the sky.launch + stream_and_get provisioning step when it
+# fails with a transient resource-acquisition error (e.g. a just-torn-down
+# slurm/lsf allocation not yet released on retry). A few attempts with capped
+# exponential backoff bound the total wait so a genuinely full cluster still
+# fails promptly. Env-overridable (set backoff to 0 in tests).
+GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS = int(
+    os.getenv(ENV_VAR_SKYPILOT_PROVISION_MAX_ATTEMPTS, "4"), base=10
+)
+GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX = int(
+    os.getenv(ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX, "30"), base=10
+)
 DEFAULT_GH_REQUEST_TIMEOUT = int(
     os.getenv(ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT, "60"), base=10
 )
@@ -275,6 +299,11 @@ DEFAULT_ROOT_WORKSPACE_DIR = os.getenv(
 DEFAULT_ROOT_BUILDWATCHER_WORKSPACE_DIR = (
     DEFAULT_ROOT_WORKSPACE_DIR + "/gbserver-buildwatcher-workspace"
 )
+# Lower bound (seconds) for any worker/poll loop interval. A value of 0 (or any
+# sub-second value) turns the BuildWatcher poll loop and the BuildRunner event
+# loop into CPU busy-loops that also hammer storage; never poll faster than this.
+# Enforced by BuildWatcherConfig (validator) and AbstractBuildRunner (setter).
+MIN_MONITORING_INTERVAL_SECONDS = 1
 DEFAULT_ROOT_PRWATCHER_WORKSPACE_DIR = (
     DEFAULT_ROOT_WORKSPACE_DIR + "/gbserver-prwatcher-workspace"
 )
@@ -338,21 +367,44 @@ GBSERVER_IBM_CLOUD_SERVER_LOGS_API_KEY = os.getenv("IBM_CLOUD_SERVER_LOGS_API_KE
 GBSERVER_IBM_CLOUD_SERVER_LOGS_API_URL = os.getenv("IBM_CLOUD_SERVER_LOGS_API_URL", "")
 GBSERVER_DEBUG_MODE = os.getenv(ENV_VAR_DEBUG_MODE, None)
 GBSERVER_GIT_COMMIT = os.getenv(ENV_VAR_PREFIX + "_GIT_COMMIT", "")
-# Standalone defaults — when GB_ENVIRONMENT=STANDALONE, fill in env vars
-# that other constants below will read. Uses setdefault() so explicit user
-# overrides are preserved.
+# Standalone env-var defaults — the single source of truth for "what does
+# STANDALONE default to". Applied two ways, both via setdefault() so explicit
+# user overrides are always preserved:
+#   1. Here at import time, when GB_ENVIRONMENT=STANDALONE is already set, so the
+#      constants below read the standalone values.
+#   2. At runtime by commands.utils.check_and_init_for_standalone(), which reuses
+#      this same dict — covering the case where standalone mode is established
+#      after this module was first imported (e.g. `gbserver standalone` forcing it).
+STANDALONE_ENV_DEFAULTS = {
+    ENV_VAR_METADATA_STORAGE: "sqlite",
+    ENV_VAR_DEFAULT_BUILDRUNNER_TYPE: "thread",
+    ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS": "true",
+    ENV_VAR_AUTH_MODE: "apikey",
+    ENV_VAR_PREFIX + "_EVENT_PUBLISHING_ENABLED": "true",
+}
 if is_standalone():
-    for _k, _v in {
-        ENV_VAR_METADATA_STORAGE: "sqlite",
-        ENV_VAR_DEFAULT_BUILDRUNNER_TYPE: "thread",
-        ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS": "true",
-        ENV_VAR_PREFIX + "_LINEAGE_PROVIDER": "none",
-    }.items():
+    for _k, _v in STANDALONE_ENV_DEFAULTS.items():
         os.environ.setdefault(_k, _v)
+# NOTE: the standalone defaults for the per-user secret backend (local, IBM-free)
+# and the lineage provider (none) are NOT written to os.environ here. They are
+# resolved dynamically at call time via is_standalone() — in
+# usersecretmanager.factory.get_user_secret_manager() and
+# lineage.jobstats.get_lineage_store() respectively. Writing them via setdefault()
+# would (a) miss the case where standalone mode is established after this module is
+# first imported, and (b) leak the value into the process environment where it
+# can poison unrelated tests/components that read it later.
 
 GBSERVER_PROCEED_WITHOUT_SECRETS = getenv_boolean(
     ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS", False
 )  # default False
+
+# Per-user secret manager selection and config. These are read from the
+# environment at call time (not cached here) in
+# usersecretmanager.factory.get_user_secret_manager(), so a GB_HOME_DIR /
+# GBSERVER_USER_SECRET_DIR / GBSERVER_USER_SECRET_MANAGER override is honored
+# regardless of module import/reload ordering. The backend defaults to "ibmcloud"
+# outside standalone; the is_standalone() block above sets it to "local" by
+# writing ENV_VAR_USER_SECRET_MANAGER into os.environ.
 
 # NATS JetStream configuration
 ENV_VAR_NATS_URL = ENV_VAR_PREFIX + "_NATS_URL"
@@ -518,19 +570,19 @@ Once the build is running, you can use the `gb` CLI to get more information.
 To get the build status:
 
 ```shell
-llmb build status {build_id}
+gb build status {build_id}
 ```
 
 To get all of the lines from the logs:
 
 ```shell
-llmb build log --all {build_id}
+gb build log --all {build_id}
 ```
 
 To only get the last 10k lines of the logs:
 
 ```shell
-llmb build log --tail 10000 {build_id}
+gb build log --tail 10000 {build_id}
 ```
 
 By default this gives you the logs from all the steps in the build.
@@ -538,13 +590,13 @@ By default this gives you the logs from all the steps in the build.
 To only get the logs of a particular step you can use:
 
 ```shell
-llmb build log --all {build_id} --build-step-id <step id>
+gb build log --all {build_id} --build-step-id <step id>
 ```
 
 If you have admin access, you can access the build-runner logs as well:
 
 ```shell
-llmb admin log gbserver-build-runner --all --build-id {build_id}
+gb admin log gbserver-build-runner --all --build-id {build_id}
 ```
 """
 

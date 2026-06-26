@@ -6,8 +6,6 @@ from gbcli.services.service_artifact import (
     ArtifactCopyResult,
     artifact_archive,
     artifact_copy,
-    artifact_lineage,
-    artifact_lineage_hf,
     artifact_list,
     check_artifact_existence,
     check_fileset_lh,
@@ -45,7 +43,6 @@ from gbcli.services.service_build import (
     build_diff,
     build_init,
     build_lineage_gbserver,
-    build_lineage_lh,
     build_list,
     build_log,
     build_monitor,
@@ -322,12 +319,6 @@ class GBClient:
                     resource_group_id=resource_group_id,
                 )
             )
-
-        def artifact_lineage(self, token: str, artifact_name: str):
-            return artifact_lineage(token, artifact_name)
-
-        def artifact_lineage_hf(self, artifact_uri: str):
-            return artifact_lineage_hf(self.github_token, artifact_uri)
 
         def artifact_list(
             self,
@@ -694,13 +685,6 @@ class GBClient:
         ) -> Any:
             return build_cancel(
                 self.github_token, build_id, id_format, space, callback=callback
-            )
-
-        def build_lineage_lh(
-            self, token: str, build_id: str, id_format: str, callback=None
-        ):
-            return build_lineage_lh(
-                self.github_token, token, build_id, id_format, callback
             )
 
         def build_lineage(self, build_id: str, id_format: str, callback=None):

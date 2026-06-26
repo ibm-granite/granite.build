@@ -20,6 +20,7 @@ from typing import Awaitable, Callable, Dict, Optional
 
 import pytest
 import pytest_asyncio
+from libgbtest.constants import extended_testing_only
 
 # --------------------- project imports ---------------------
 from gbserver.messaging.messaging_base import JSON, MessagingBase
@@ -28,6 +29,10 @@ from gbserver.monitoring.sidecar import Sidecar
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Slow async e2e test that spawns real child subprocesses; run only in
+# extended-tests (the `extended` marker), not the fast quick-tests suite.
+pytestmark = extended_testing_only
 
 
 # --------------------- Fake in-memory broker ---------------

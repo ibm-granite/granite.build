@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, TypedDict
 
-import numpy as np
 import yaml
 
 from gbcli.services.service_build import get_build_id_from_url
@@ -99,7 +98,7 @@ def upload_to_lh(
     )
     if namespace == None:
         raise Exception(
-            f"Error: Lakehouse namespace of space='{space}' does not exist. Please check the 'llmb space list --all' or check if it is a valid space name and try again."
+            f"Error: Lakehouse namespace of space='{space}' does not exist. Please check the 'gb space list --all' or check if it is a valid space name and try again."
         )
     public = global_space.get("name") == "public"
 
@@ -762,7 +761,7 @@ def register_artifact_hf(
         "description": description,
         "checksum": checksum,
         "status": status,
-        "tags": format_artifact_tags(tags),
+        "tags": tags,
     }
 
     if type == "model":
@@ -922,42 +921,6 @@ def register_artifact_gbserver(
         certified_no_restrictions,
     )
     return artifact_obj
-
-
-def artifact_lineage(token: str, artifact_name: str):
-    from lakehouse import LakehouseLineage
-
-    lh = getLH(token)
-    lineage_df = LakehouseLineage(lh=lh).get_lineage(name=artifact_name)
-
-    return (
-        lineage_df.replace({np.nan: "None"})
-        .sort_values(by="job_started_at")
-        .to_dict("records")
-    )
-
-
-def artifact_lineage_hf(
-    github_token: str, artifact_uri: str, artifact_type: Optional[str] = None
-):
-    from gbcli.utils.gbconstants import GBSERVER_LINEAGE_API
-
-    url = f"{GBSERVER_LINEAGE_API}artifact"
-    body: dict[str, Any] = {
-        "artifact_url": artifact_uri,
-        "max_depth": 10,
-        "direction": "both",
-    }
-    if artifact_type:
-        body["artifact_type"] = artifact_type
-    response = gb_server_request(
-        user_token=github_token,
-        url=url,
-        http_method="post",
-        body=body,
-        params=None,
-    )
-    return response
 
 
 def artifact_list(
@@ -1294,7 +1257,7 @@ def artifact_copy(
     target_namespace = global_space.get("lakehouse_namespace")
     if target_namespace == None:
         raise Exception(
-            f"Error: Lakehouse namespace of space='{space_to}' does not exist. Please check the 'llmb space list --all' or check if it is a valid space name and try again."
+            f"Error: Lakehouse namespace of space='{space_to}' does not exist. Please check the 'gb space list --all' or check if it is a valid space name and try again."
         )
     public = global_space.get("name") == "public"
     target_table = LAKEHOUSE_MODEL_SHARED_TABLE if public else LAKEHOUSE_MODEL_TABLE

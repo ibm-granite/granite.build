@@ -15,40 +15,45 @@
 # limitations under the License.
 
 """
-BuildEventPublisher — publishes BuildEvents to a RabbitMQ topic exchange.
+BuildEventPublisher — publishes BuildEvents to a messaging backend.
 
+Supports RabbitMQ (topic exchange) and NATS (standalone mode).
 Routing key format: build.<build_id>.<event_type>
-Exchange name: build-events
+Exchange name: build-events (RabbitMQ only)
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, Dict, Optional
 
-from gbserver.messaging.messaging_base import Address
-from gbserver.messaging.rabbitmq_base import RabbitMQBase
+from gbserver.messaging.messaging_base import Address, MessagingBase
 from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventStatusPayload,
 )
 from gbserver.types.constants import GBSERVER_BUILD_EVENTS_EXCHANGE
 from gbserver.utils.logger import get_logger
+from gbserver.utils.optional_imports import HAS_NATS
 
 logger = get_logger(__name__)
 
 
+from gbcommon.types.gbenvconfig import is_standalone as _is_standalone
+
+
 class BuildEventPublisher:
     """
-    Publishes BuildEvents to RabbitMQ using a topic exchange named 'build-events'.
+    Publishes BuildEvents to a messaging backend (RabbitMQ or NATS).
 
     Routing key format: build.<build_id>.<event_type>
     Internal events (TERMINATE, NEWARTIFACT_IN_ENVIRONMENT, NEW_MULTIARTIFACT_IN_ENVIRONMENT)
     are silently skipped.
     """
 
-    def __init__(self, rabbitmq: RabbitMQBase) -> None:
-        self._rabbitmq = rabbitmq
+    def __init__(self, backend: MessagingBase) -> None:
+        self._backend = backend
         self._publish_lock = asyncio.Lock()
 
     @classmethod
@@ -58,37 +63,59 @@ class BuildEventPublisher:
     ) -> "BuildEventPublisher":
         """
         Factory that creates the publisher from environment variables.
-        The exchange is always 'build-events'; queue and routing_key are set per-publish.
+
+        Backend selection:
+        - If RABBITMQ_HOST is set: use RabbitMQ
+        - Elif standalone mode and nats-py is available: use NATS
+        - Else: raise RuntimeError
         """
-        rabbitmq = RabbitMQBase.from_env_and_args(
-            exchange_name=GBSERVER_BUILD_EVENTS_EXCHANGE,
-            queue_name="build",
-            routing_key=None,
-            messaging_secret=messaging_secret,
+        if os.getenv("RABBITMQ_HOST"):
+            from gbserver.messaging.rabbitmq_base import RabbitMQBase
+
+            backend = RabbitMQBase.from_env_and_args(
+                exchange_name=GBSERVER_BUILD_EVENTS_EXCHANGE,
+                queue_name="build",
+                routing_key=None,
+                messaging_secret=messaging_secret,
+            )
+            return cls(backend=backend)
+
+        if _is_standalone() and HAS_NATS:
+            from gbserver.messaging.nats_messaging import NATSMessaging
+            from gbserver.types.constants import GBSERVER_NATS_URL
+
+            addr = Address(exchange=None, queue="build", routing_key=None)
+            backend = NATSMessaging(addr=addr, nats_url=GBSERVER_NATS_URL)
+            return cls(backend=backend)
+
+        raise RuntimeError(
+            "BuildEventPublisher requires either RABBITMQ_HOST to be set, "
+            "or standalone mode with nats-py installed."
         )
-        return cls(rabbitmq=rabbitmq)
 
     @classmethod
     def is_configured(cls) -> bool:
-        """Return True if RabbitMQ connection environment is set."""
-        import os
-
-        return bool(os.getenv("RABBITMQ_HOST"))
+        """Return True if a messaging backend is available."""
+        if os.getenv("RABBITMQ_HOST"):
+            return True
+        if _is_standalone() and HAS_NATS:
+            return True
+        return False
 
     async def setup(self) -> None:
-        """Initialize the RabbitMQ connection and channel."""
-        await self._rabbitmq.setup()
+        """Initialize the messaging backend connection."""
+        await self._backend.setup()
 
     async def close(self) -> None:
-        """Close the RabbitMQ connection."""
-        await self._rabbitmq.close()
+        """Close the messaging backend connection."""
+        await self._backend.close()
 
     async def publish_event(self, event: BuildEvent) -> None:
         """
-        Publish a BuildEvent to the build-events exchange.
+        Publish a BuildEvent to the messaging backend.
 
         Internal events are silently skipped.
-        If RabbitMQ is unavailable, a warning is logged and the error is swallowed
+        If the backend is unavailable, a warning is logged and the error is swallowed
         so that build processing is not interrupted.
         """
         # Skip internal events
@@ -107,20 +134,22 @@ class BuildEventPublisher:
 
         # The Address for this particular publish uses queue="build.<build_id>"
         # so that Address.rk(suffix=event_type) produces "build.<build_id>.<event_type>"
-        # We temporarily override the address on the rabbitmq instance for this publish.
+        # We temporarily override the address on the backend instance for this publish.
         # A lock is required because the address swap is not coroutine-safe.
         async with self._publish_lock:
-            original_addr = self._rabbitmq.addr
+            original_addr = self._backend.addr
             publish_addr = Address(
-                exchange=GBSERVER_BUILD_EVENTS_EXCHANGE,
+                exchange=(
+                    GBSERVER_BUILD_EVENTS_EXCHANGE if original_addr.exchange else None
+                ),
                 queue=f"build.{build_id}",
                 routing_key=None,
             )
             try:
-                self._rabbitmq.addr = publish_addr  # type: ignore[misc]
-                await self._rabbitmq.publish(payload=payload, suffix=event_type)
+                self._backend.addr = publish_addr  # type: ignore[misc]
+                await self._backend.publish(payload=payload, suffix=event_type)
                 logger.info(
-                    "Published event type=%s build_id=%s routing_key=%s",
+                    "Published event type=%s build_id=%s subject=%s",
                     event_type,
                     build_id,
                     publish_addr.rk(event_type),
@@ -133,7 +162,7 @@ class BuildEventPublisher:
                     exc,
                 )
             finally:
-                self._rabbitmq.addr = original_addr  # type: ignore[misc]
+                self._backend.addr = original_addr  # type: ignore[misc]
 
     @staticmethod
     def _serialize_event(event: BuildEvent) -> Dict[str, Any]:

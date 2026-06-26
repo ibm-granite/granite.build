@@ -1,0 +1,367 @@
+name: openinstruct-rl
+version: v1
+type: custom
+config:
+  rl_config:
+    exp_name: ""
+    run_name: ""
+    model_source_s3: ""
+    data_source_s3: ""
+    dataset_mixer: '{"/data/train.jsonl":1.0}'
+    dataset_eval_mixer: '{"/data/validation.jsonl":1.0}'
+    rm_model_s3: "s3://granite-build-checkpoints/rm-models/phi4-multilingual"
+    checkpoint_s3_uri: "s3://granite-build-checkpoints"
+    output_subdir: ""
+    checkpoint_state_subdir: ""
+    temperature: "1.0"
+    temp_final: "1.0"
+    total_episodes: "300000"
+    save_freq: "40"
+    eval_freq: "40"
+    checkpoint_state_freq: "40"
+    ref_policy_update_freq: "8"
+    add_general_reward: "false"
+    code_server_url: ""
+    num_learners_per_node: "3"
+    vllm_num_engines: "4"
+    hf_token: ""
+outputs:
+  optional:
+    checkpoint:
+      type: model
+    final:
+      type: model
+environment_configs:
+  Skypilot:
+    default_launcher: openinstruct-rl
+    launchers:
+      openinstruct-rl:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:022767362696.dkr.ecr.us-east-2.amazonaws.com/granite-build/open-instruct-3:0.1.0-conda"
+          docker:
+            run_options:
+              - -e HOME=/root
+          resources:
+            infra: aws/us-east-2
+            accelerators: "L40S:8"
+            instance_type: "g6e.48xlarge"
+            disk_size: 512
+          file_mounts:
+            /model:
+              source: "{{ config.rl_config.model_source_s3 }}"
+              mode: COPY
+            /data:
+              source: "{{ config.rl_config.data_source_s3 }}"
+              mode: COPY
+            /output:
+              source: "{{ config.rl_config.checkpoint_s3_uri }}"
+              mode: MOUNT
+          envs:
+            SKYPILOT_DOCKER_USERNAME: "AWS"
+            SKYPILOT_DOCKER_SERVER: "022767362696.dkr.ecr.us-east-2.amazonaws.com"
+            EXP_NAME: "{{ config.rl_config.exp_name }}"
+            RUN_NAME: "{{ config.rl_config.run_name }}"
+            MODEL_PATH: "/model"
+            DATASET_MIXER: "{{ config.rl_config.dataset_mixer }}"
+            DATASET_EVAL_MIXER: "{{ config.rl_config.dataset_eval_mixer }}"
+            OUTPUT_DIR: "/output/rl/{{ config.rl_config.output_subdir }}"
+            CHECKPOINT_STATE_DIR: "/output/rl/{{ config.rl_config.checkpoint_state_subdir }}"
+            RM_SERVER_URL: "http://localhost:8000"
+            CODE_SERVER_URL: "{{ config.rl_config.code_server_url }}"
+            RM_MODEL_S3: "{{ config.rl_config.rm_model_s3 }}"
+            TEMPERATURE: "{{ config.rl_config.temperature }}"
+            TEMP_FINAL: "{{ config.rl_config.temp_final }}"
+            TOTAL_EPISODES: "{{ config.rl_config.total_episodes }}"
+            SAVE_FREQ: "{{ config.rl_config.save_freq }}"
+            EVAL_FREQ: "{{ config.rl_config.eval_freq }}"
+            CHECKPOINT_STATE_FREQ: "{{ config.rl_config.checkpoint_state_freq }}"
+            REF_POLICY_UPDATE_FREQ: "{{ config.rl_config.ref_policy_update_freq }}"
+            ADD_GENERAL_REWARD: "{{ config.rl_config.add_general_reward }}"
+            NUM_LEARNERS_PER_NODE: "{{ config.rl_config.num_learners_per_node }}"
+            VLLM_NUM_ENGINES: "{{ config.rl_config.vllm_num_engines }}"
+            HF_TOKEN: "{{ config.rl_config.hf_token }}"
+          setup: |
+            source deactivate 2>/dev/null || true
+            export PATH=/opt/miniconda3/bin:$PATH
+
+            echo "=== Environment Check ==="
+            python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}, GPUs: {torch.cuda.device_count()}')"
+            nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
+
+            if [[ -n "${HF_TOKEN}" ]]; then
+              huggingface-cli login --token "${HF_TOKEN}"
+            fi
+          run: |
+            set -eo pipefail
+            source deactivate 2>/dev/null || true
+            export PATH=/opt/miniconda3/bin:$PATH
+            export PYTHONPATH=/stage:/stage/open_instruct:$PYTHONPATH
+            cd /stage
+
+            # ── Redirect traces JSONL to local disk (append mode breaks FUSE-mounted S3) ──
+            sed -i 's|f"{args.output_dir}/traces_{args.run_name}.jsonl"|f"/tmp/rl-traces/traces_{args.run_name}.jsonl"|' \
+              /stage/open_instruct/grpo_fast.py
+            mkdir -p /tmp/rl-traces
+
+            # ── Wait for RM server sidecar ──
+            echo "[$(date)] Waiting for RM server at ${RM_SERVER_URL} ..."
+            for i in $(seq 1 180); do
+              if curl -sf "${RM_SERVER_URL}/health" > /dev/null 2>&1; then
+                echo "[$(date)] RM server is ready!"
+                break
+              fi
+              if [[ $i -eq 180 ]]; then
+                echo "[$(date)] ERROR: RM server not ready after 6 minutes. Exiting."
+                exit 1
+              fi
+              sleep 2
+            done
+
+            # ── Wait for Code server sidecar (IF RL only) ──
+            if [[ -n "${CODE_SERVER_URL}" ]]; then
+              echo "[$(date)] Waiting for Code server at ${CODE_SERVER_URL} ..."
+              for i in $(seq 1 180); do
+                if curl -sf "${CODE_SERVER_URL}/health" > /dev/null 2>&1; then
+                  echo "[$(date)] Code server is ready!"
+                  break
+                fi
+                if [[ $i -eq 180 ]]; then
+                  echo "[$(date)] ERROR: Code server not ready after 6 minutes. Exiting."
+                  exit 1
+                fi
+                sleep 2
+              done
+            fi
+
+            # ── Prepare output ──
+            mkdir -p "${OUTPUT_DIR}" /tmp/rl-data-cache 2>/dev/null || true
+
+            echo "[$(date)] Starting GRPO RL training"
+            echo "[$(date)] Experiment: ${EXP_NAME}"
+            echo "[$(date)] Model: ${MODEL_PATH}"
+            echo "[$(date)] Dataset: ${DATASET_MIXER}"
+            echo "[$(date)] Output: ${OUTPUT_DIR}"
+            echo "[$(date)] RM Server: ${RM_SERVER_URL}"
+            echo "[$(date)] Code Server: ${CODE_SERVER_URL:-none}"
+            echo "[$(date)] GPUs (training): 7 (${NUM_LEARNERS_PER_NODE} learners + ${VLLM_NUM_ENGINES} vLLM engines)"
+
+            # ── Hide GPU 7 from training (reserved for RM sidecar on host) ──
+            export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
+
+            # ── Build GRPO command ──
+            GRPO_ARGS=(
+              -m open_instruct.grpo_fast
+              --exp_name "${EXP_NAME}"
+              --run_name "${RUN_NAME}"
+              --dataset_mixer "${DATASET_MIXER}"
+              --dataset_eval_mixer "${DATASET_EVAL_MIXER}"
+              --dataset_train_splits train
+              --dataset_eval_splits train
+              --beta 0.05
+              --num_unique_prompts_rollout 64
+              --num_samples_per_prompt_rollout 16
+              --cliprange_low 0.2
+              --cliprange_high 0.28
+              --temperature "${TEMPERATURE}"
+              --deepspeed_stage 3
+              --seed 42
+              --output_dir "${OUTPUT_DIR}"
+              --pad_token_id 6
+              --per_device_train_batch_size 2
+              --model_name_or_path "${MODEL_PATH}"
+              --learning_rate 5e-7
+              --max_prompt_token_length 512
+              --response_length 8192
+              --ground_truths_key ground_truth
+              --sft_messages_key messages
+              --total_episodes "${TOTAL_EPISODES}"
+              --kl_estimator kl3
+              --pack_length 8704
+              --stop_strings '<|end_of_text|>' '<｜end▁of▁sentence｜>' '<|EOT|>' '<|endoftext|>' '<|im_end|>'
+              --thinking 4
+              --vllm_tensor_parallel_size 1
+              --num_learners_per_node "${NUM_LEARNERS_PER_NODE}"
+              --vllm_num_engines "${VLLM_NUM_ENGINES}"
+              --num_epochs 1
+              --warmup_ratio 0.0
+              --num_mini_batches 1
+              --save_freq "${SAVE_FREQ}"
+              --eval_freq "${EVAL_FREQ}"
+              --checkpoint_state_freq "${CHECKPOINT_STATE_FREQ}"
+              --checkpoint_state_dir "${CHECKPOINT_STATE_DIR}"
+              --ref_policy_update_freq "${REF_POLICY_UPDATE_FREQ}"
+              --n_gram 3
+              --allowed_freq 2
+              --importance_sampling_level token
+              --advantage_normalization_type group_standard
+              --iterator_type random
+              --lr_scheduler_type linear
+              --loss_mode vanilla
+              --entropy_coeff 0.0
+              --temp_schedule_type constant
+              --temp_final "${TEMP_FINAL}"
+              --temp_change_interval 10
+              --vllm_imp_ratio_cap -1
+              --dataset_local_cache_dir /tmp/rl-data-cache
+              --gradient_checkpointing
+              --async_mode true
+              --apply_thinking_format_reward true
+              --apply_verifiable_reward true
+              --non_stop_penalty true
+              --apply_repetition_penalty true
+              --set_weight_decay_on_bias_and_norm false
+              --additive_format_reward false
+              --filter_zero_advantage false
+              --with_tracking false
+            )
+
+            # Conditional: add_general_reward (IF RL only)
+            if [[ "${ADD_GENERAL_REWARD}" == "true" ]]; then
+              GRPO_ARGS+=(--add_general_reward true)
+            fi
+
+            # ── Launch training ──
+            python "${GRPO_ARGS[@]}" 2>&1 | tee /tmp/training.log
+            TRAIN_EXIT=${PIPESTATUS[0]}
+
+            # ── Copy training log to output ──
+            cp /tmp/training.log "${OUTPUT_DIR}/training.log" 2>/dev/null || true
+
+            if [[ $TRAIN_EXIT -ne 0 ]]; then
+              echo "[$(date)] ERROR: Training exited with code $TRAIN_EXIT"
+              tail -50 /tmp/training.log
+              exit $TRAIN_EXIT
+            fi
+
+            echo "[$(date)] RL training complete. Output at: ${OUTPUT_DIR}"
+          post_launch_task:
+            run: |
+              set -e
+              echo "[$(date)] === Starting RL sidecars on host ==="
+
+              DOCKER_CMD="docker"
+              if ! command -v docker &> /dev/null; then
+                DOCKER_CMD="sudo docker"
+              fi
+
+              # Install AWS CLI if needed
+              if ! command -v aws &>/dev/null; then
+                echo "[$(date)] Installing AWS CLI..."
+                sudo apt-get update -qq && sudo apt-get install -y -qq awscli
+              fi
+
+              # Download RM model from S3
+              echo "[$(date)] Downloading RM model from ${RM_MODEL_S3}..."
+              mkdir -p /home/ubuntu/rm-model
+              aws s3 sync "${RM_MODEL_S3}" /home/ubuntu/rm-model/ --region us-east-2 --quiet
+              echo "[$(date)] RM model downloaded to /home/ubuntu/rm-model/"
+
+              # ECR authentication
+              if [[ -n "${SKYPILOT_DOCKER_PASSWORD}" ]]; then
+                echo "${SKYPILOT_DOCKER_PASSWORD}" | $DOCKER_CMD login -u "${SKYPILOT_DOCKER_USERNAME}" --password-stdin "${SKYPILOT_DOCKER_SERVER}"
+              fi
+
+              RL_IMAGE="${SKYPILOT_DOCKER_SERVER}/granite-build/open-instruct-3:0.1.0-conda"
+
+              # ── RM Server (GPU 7, port 8000) ──
+              $DOCKER_CMD rm -f rl-rm-server 2>/dev/null || true
+              echo "[$(date)] Starting RM server container on GPU 7 (port 8000)..."
+              $DOCKER_CMD pull ${RL_IMAGE}
+              $DOCKER_CMD run -d \
+                --gpus '"device=7"' \
+                --network host \
+                --name rl-rm-server \
+                --restart unless-stopped \
+                -e CUDA_VISIBLE_DEVICES=0 \
+                -e RM_SERVER_MODEL=/rm-model \
+                -e PYTHONPATH=/stage:/stage/open_instruct \
+                -e HOME=/stage \
+                -v /home/ubuntu/rm-model:/rm-model:ro \
+                ${RL_IMAGE} \
+                /opt/miniconda3/bin/python -u -c "
+              import open_instruct.servers.rm_server as rm
+              rm.find_available_port = lambda start_port=8000, max_attempts=100: 8000
+              rm.main()
+              "
+
+              # ── Code Server (CPU, port 8001) — only if CODE_SERVER_URL is set ──
+              if [[ -n "${CODE_SERVER_URL}" ]]; then
+                $DOCKER_CMD rm -f rl-code-server 2>/dev/null || true
+                echo "[$(date)] Starting Code server container (CPU, port 8001)..."
+                $DOCKER_CMD run -d \
+                  --network host \
+                  --name rl-code-server \
+                  --restart unless-stopped \
+                  -e PYTHONPATH=/stage:/stage/open_instruct \
+                  -e HOME=/stage \
+                  ${RL_IMAGE} \
+                  /opt/miniconda3/bin/python -u -c "
+              import open_instruct.servers.code_server as cs
+              cs.find_available_port = lambda start_port=8000, max_attempts=100: 8001
+              cs.main()
+              "
+              fi
+
+              # ── Health checks ──
+              echo "[$(date)] Waiting for RM server health on port 8000..."
+              for i in $(seq 1 90); do
+                if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                  echo "[$(date)] RM server is healthy!"
+                  break
+                fi
+                sleep 2
+              done
+
+              if [[ -n "${CODE_SERVER_URL}" ]]; then
+                echo "[$(date)] Waiting for Code server health on port 8001..."
+                for i in $(seq 1 60); do
+                  if curl -sf http://localhost:8001/health > /dev/null 2>&1; then
+                    echo "[$(date)] Code server is healthy!"
+                    break
+                  fi
+                  sleep 2
+                done
+              fi
+
+              echo "[$(date)] === Sidecars started ==="
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 30
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "Step:\\s\\d+|episodes=\\d+"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+              - field_name: message
+                field_regex: ".+"
+                is_data: True
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "Saving model at step \\d+ to .+"
+            is_json: False
+            event_fields:
+              - field_name: binding_id
+                field_value_template: checkpoint
+              - field_name: path
+                field_regex: '/output/rl/[^\s]+'
+                is_data: True
+              - field_name: binding
+                field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+                is_json: True
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "Saving final model at step \\d+ to .+"
+            is_json: False
+            event_fields:
+              - field_name: binding_id
+                field_value_template: final
+              - field_name: path
+                field_regex: '/output/rl/[^\s]+'
+                is_data: True
+              - field_name: binding
+                field_value_template: "{ \"path\": \"{{ fields.data.path }}\" }"
+                is_json: True

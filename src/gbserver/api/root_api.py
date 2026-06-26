@@ -16,6 +16,7 @@
 
 
 import asyncio
+import os
 
 from fastapi import FastAPI
 
@@ -80,7 +81,12 @@ root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
 async def _start_background_tasks():
     """Launch background tasks that run for the lifetime of the server."""
     if GBSERVER_EVENT_PUBLISHING_ENABLED:
-        from gbserver.messaging.credential_cleanup import start_cleanup_loop
+        if os.getenv("RABBITMQ_HOST"):
+            from gbserver.messaging.credential_cleanup import start_cleanup_loop
 
-        logger.info("Event publishing enabled — starting credential cleanup task")
-        asyncio.create_task(start_cleanup_loop())
+            logger.info("Event publishing enabled — starting credential cleanup task")
+            asyncio.create_task(start_cleanup_loop())
+        else:
+            logger.info(
+                "Event publishing enabled (NATS mode) — no credential cleanup needed"
+            )

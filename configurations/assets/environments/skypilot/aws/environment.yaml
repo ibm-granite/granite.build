@@ -10,6 +10,9 @@ config:
   # default_cloud: kubernetes
 
   idle_minutes_to_autostop: 5
+  retry:
+    max_retries: 10
+    delay_seconds: 1800
 assetstores:
   - store_uri: space://assetstores/s3/
     load:
@@ -17,4 +20,20 @@ assetstores:
         config: {}
     push:
       - mode: default
+        config: {}
+  - store_uri: space://assetstores/env-local
+    load:
+      - mode: env_local
+        config: {}
+    push:
+      - mode: env_local
+        config: {}
+  - store_uri: space://assetstores/hf
+    load:
+      - mode: hf_pull
+        config:
+          cache_path: /tmp/hf_cache
+          inline: true
+    push:
+      - mode: hf_push
         config: {}

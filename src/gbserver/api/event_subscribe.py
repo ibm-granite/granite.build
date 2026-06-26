@@ -36,11 +36,13 @@ class SubscribeResponse(BaseModel):
     delivery_type: str
     host: str
     port: int
-    username: str
-    password: str
-    exchange: str
-    routing_key: str
-    queue: str
+    username: str | None = None
+    password: str | None = None
+    exchange: str | None = None
+    routing_key: str | None = None
+    queue: str | None = None
+    url: str | None = None
+    subject: str | None = None
     expires_at: int
 
 
@@ -55,8 +57,9 @@ class SubscribeResponse(BaseModel):
 async def subscribe_build_events(build_id: str, request: Request) -> SubscribeResponse:
     """Subscribe to real-time build events.
 
-    Provisions scoped, time-limited credentials that allow the
-    caller to consume events for the specified build only.
+    Returns connection info for consuming events for the specified build.
+    In RabbitMQ mode: provisions scoped, time-limited credentials.
+    In standalone/NATS mode: returns URL and subject (no auth; single-tenant).
     """
     # 1. Authenticate
     user = getattr(request.state, "data", {}).get("user")

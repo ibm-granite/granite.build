@@ -77,39 +77,58 @@ class TestStandaloneCommand:
 
             from gbserver.commands.command_standalone import _run_standalone
 
+            server_holder: dict = {}
+
             thread = threading.Thread(
                 target=_run_standalone,
                 kwargs={
                     "port": port,
                     "space_dir": str(STANDALONE_SPACE_DIR),
                     "on_started": on_started,
+                    "on_server_created": lambda s: server_holder.__setitem__(
+                        "server", s
+                    ),
                 },
                 daemon=True,
                 name="test-standalone-server",
             )
             thread.start()
 
-            # Wait for server startup (up to 30 seconds)
-            assert started_event.wait(
-                timeout=30
-            ), "Standalone server did not start within 30 seconds"
+            try:
+                # Wait for server startup (up to 30 seconds)
+                assert started_event.wait(
+                    timeout=30
+                ), "Standalone server did not start within 30 seconds"
 
-            # Retry until uvicorn is fully accepting connections.
-            last_err = None
-            for _ in range(20):
-                try:
-                    response = httpx.get(f"http://127.0.0.1:{port}/api/v1", timeout=2)
-                    assert (
-                        response.status_code == 200
-                    ), f"Expected 200, got {response.status_code}: {response.text}"
-                    data = response.json()
-                    assert "message" in data, f"Response missing 'message' key: {data}"
-                    last_err = None
-                    break
-                except httpx.ConnectError as e:
-                    last_err = e
-                    time.sleep(0.25)
-            if last_err is not None:
-                pytest.fail(
-                    f"Could not connect to standalone server on port {port}: {last_err}"
-                )
+                # Retry until uvicorn is fully accepting connections.
+                last_err = None
+                for _ in range(20):
+                    try:
+                        response = httpx.get(
+                            f"http://127.0.0.1:{port}/api/v1", timeout=2
+                        )
+                        assert (
+                            response.status_code == 200
+                        ), f"Expected 200, got {response.status_code}: {response.text}"
+                        data = response.json()
+                        assert (
+                            "message" in data
+                        ), f"Response missing 'message' key: {data}"
+                        last_err = None
+                        break
+                    except httpx.ConnectError as e:
+                        last_err = e
+                        time.sleep(0.25)
+                if last_err is not None:
+                    pytest.fail(
+                        f"Could not connect to standalone server on port {port}: {last_err}"
+                    )
+            finally:
+                # Stop the server so its BuildWatcher thread is stopped rather than
+                # left polling global storage for the rest of the test session
+                # (the daemon flag prevents a hang, but a live watcher could still
+                # pick up builds submitted by later tests on this worker).
+                server = server_holder.get("server")
+                if server is not None:
+                    server.should_exit = True
+                thread.join(timeout=15)

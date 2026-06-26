@@ -23,8 +23,11 @@ import shutil
 import tempfile
 from base64 import b64decode, b64encode
 from pathlib import Path
-from typing import Dict, List, Optional, Self, Tuple, Type
+from typing import TYPE_CHECKING, Dict, List, Optional, Self, Tuple, Type
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from gbserver.storage.build_storage import IStoredBuildStorage
 
 from pydantic import Field
 
@@ -228,3 +231,34 @@ class StoredBuild(BaseStoredItem, TaggedItem):
             and self.created_time == other.created_time
             and self.updated_time == other.updated_time
         )
+
+
+def get_retry_chain_members(
+    build_storage: "IStoredBuildStorage", build: StoredBuild
+) -> List[StoredBuild]:
+    """Return all builds in ``build``'s retry chain, root first.
+
+    The chain is walked with repeated point reads (``get_by_uuid``) rather than a
+    column query, since ``retry_of_build_id``/``retry_build_id`` are not indexed
+    columns on gb_builds. The root is resolved via ``retry_of_build_id`` (a retry
+    points at the original), then the chain is followed forward via
+    ``retry_build_id`` (each build points at the build retrying it).
+
+    Args:
+        build_storage: storage used to read builds by uuid.
+        build: any member of the chain (the original or a retry).
+
+    Returns:
+        The chain members ordered from root to the most recent retry. Returns just
+        ``build`` if it cannot be re-read from storage.
+    """
+    root_id = build.retry_of_build_id or build.uuid
+    members: List[StoredBuild] = []
+    seen: set[str] = set()
+    current = build_storage.get_by_uuid(root_id)
+    while isinstance(current, StoredBuild) and current.uuid not in seen:
+        members.append(current)
+        seen.add(current.uuid)
+        next_id = current.retry_build_id
+        current = build_storage.get_by_uuid(next_id) if next_id else None
+    return members or [build]

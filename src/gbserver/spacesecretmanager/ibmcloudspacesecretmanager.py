@@ -223,12 +223,10 @@ class IbmcloudSpaceSecretManager(SpaceSecretManager):
     def get_secrets(
         self: Self, username: Optional[str] = None
     ) -> Optional[Dict[str, str]]:
-        secrets = self.get_space_secrets() or {}
-        if username is not None:
-            # Apply per-user secrets. User secrets have priority over space secrets
-            per_user_secrets = self.get_user_secrets(username) or {}
-            secrets = secrets | per_user_secrets
-        return secrets
+        # NOTE: per-user secrets are merged by the caller (Space._fetch_secrets)
+        # through the configured UserSecretManager so that the merge is uniform
+        # across all space backends. This method returns space secrets only.
+        return self.get_space_secrets() or {}
 
     def create_secret(
         self: Self,
@@ -306,12 +304,6 @@ class IbmcloudSpaceSecretManager(SpaceSecretManager):
             return space_secrets
         except ibm_cloud_sdk_core.api_exception.ApiException as e:
             raise e
-
-    def get_user_secrets(self: Self, username: str) -> Optional[Dict[str, str]]:
-        """Obtain user secrets"""
-        manager = IbmcloudSpaceSecretManagerAdmin(service_url=self.service_url)
-        user_secrets = manager.get_user_secret_values(username)
-        return user_secrets
 
 
 class IbmcloudSpaceSecretManagerAdmin:

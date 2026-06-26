@@ -31,10 +31,7 @@ import yaml
 from kubernetes_asyncio import client
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from gbcommon.types.testing import (
-    ENV_VAR_GBTEST_MOCK_HF_CALLS,
-    get_exported_gbtest_env_vars,
-)
+from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbserver.buildrunner.abstractbuildrunner import AbstractBuildRunner
 from gbserver.buildrunner.build_utils import finalize_build_status
 from gbserver.environment.k8s import AtomicApiClient
