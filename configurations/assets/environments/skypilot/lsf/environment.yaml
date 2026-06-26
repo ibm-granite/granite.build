@@ -9,6 +9,35 @@ config:
   # Note: autostop is intentionally omitted here. The Skypilot environment
   # forces autostop=None for the lsf cloud (LSF does not support cluster
   # autostop), so any value set here would have no effect.
+
+  # Inline LSF behavioral config. gbserver writes this to a per-process file and
+  # points SKYPILOT_PROJECT_CONFIG at it, so SkyPilot merges it over the API
+  # server's config as a per-request override at launch (no ~/.sky/config.yaml
+  # needed on the host). SSH reachability still comes from ~/.lsf/config.
+  cloud_config:
+    lsf:
+      allowed_clusters:
+        - bluevela
+      cluster_configs:
+        bluevela:
+          workdir: /proj/granite-build/g4os/skypilot
+          tmpdir: /opt/nvme/$USER/skypilot-tmp
+          enroot:
+            enabled: true
+            share_path: /proj/granite-build/g4os
+            use_local_nvme: true
+            squash_options: "-comp lz4 -Xhc -no-xattrs"
+          nccl_tuning_file: /proj/granite-build/g4os/bv-nccl-tuning.sh
+          enroot_mounts:
+            - "/dev/shm /dev/shm"
+            - "/dev/infiniband /dev/infiniband"
+          bsub_options:
+            G: grp_granite_dot_build
+            M: 64G
+          queue_configs:
+            preemptable:
+              bsub_options:
+                G: grp_preemptable
 assetstores:
   - store_uri: space://assetstores/env-local
     load:

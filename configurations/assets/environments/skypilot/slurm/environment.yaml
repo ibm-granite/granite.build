@@ -6,6 +6,20 @@ config:
   cluster: slurm-docker
   zone: normal
   shared_workdir: /shared
+  # Inline cluster SSH config — gbserver materializes this into ~/.slurm/config
+  # at launch time (setup-slurm.sh no longer writes it). The referenced key is
+  # generated on the host by `make slurm-setup`. The `host` alias must match the
+  # `cluster:` field above (SkyPilot provisions on infra=slurm/slurm-docker).
+  cluster_ssh_configs:
+    slurm:
+      - host: slurm-docker
+        hostname: 127.0.0.1
+        user: root
+        port: 2222
+        identity_file: ~/.ssh/slurm_docker_key
+        options:
+          StrictHostKeyChecking: "no"
+          UserKnownHostsFile: /dev/null
 assetstores:
   - store_uri: space://assetstores/hf
     load:

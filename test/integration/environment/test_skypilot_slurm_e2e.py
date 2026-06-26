@@ -28,18 +28,27 @@ pytestmark = [
 
 
 def _slurm_cluster_reachable() -> bool:
-    """Check if the Docker SLURM cluster is reachable via SSH."""
+    """Check if the Docker SLURM cluster is reachable via SSH.
+
+    Connects directly with the key/port that ``setup-slurm.sh`` provisions
+    rather than via ``~/.slurm/config`` — that file is no longer written by
+    setup (the slurm SSH config is inlined in the fixture's environment.yaml
+    and materialized by gbserver at launch time), so it would not exist at the
+    test-collection time when this skip gate runs.
+    """
+    key = os.path.expanduser("~/.ssh/slurm_docker_key")
+    port = os.environ.get("SLURM_SSH_PORT", "2222")
+    host = os.environ.get("SLURM_SSH_HOST", "127.0.0.1")
     try:
-        # ssh does not expand ~ in -F; expand it here so subprocess gets an absolute path.
-        ssh_config = os.path.expanduser("~/.slurm/config")
         result = subprocess.run(
             [
                 "ssh",
-                "-F",
-                ssh_config,
-                "-o",
-                "ConnectTimeout=3",
-                "slurm-docker",
+                "-i", key,
+                "-p", port,
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "ConnectTimeout=3",
+                f"root@{host}",
                 "true",
             ],
             capture_output=True,

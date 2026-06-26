@@ -30,6 +30,17 @@ class WorkloadFailedException(Exception):
         super().__init__(*args)
 
 
+class SkypilotConfigCollisionError(Exception):
+    """Raised when two Skypilot environments require conflicting SkyPilot config.
+
+    Two materializations clash when they target the same destination with
+    different content — the same SSH ``Host`` alias defined two different ways,
+    the same ``cloud_config`` leaf key set to two different values, or the same
+    ``~/.aws/credentials`` profile given two different value sets. Identical
+    re-application is an idempotent no-op and never raises.
+    """
+
+
 ERR_CONNECTION_RESET_BY_PEER = "Connection reset by peer"
 
 

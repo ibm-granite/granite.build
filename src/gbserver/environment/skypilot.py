@@ -204,12 +204,52 @@ class Skypilot(Environment):
         # from a terminal completion and await the (possibly slow) relaunch
         # instead of racing it.
         self._skypilot_retry_in_progress_events: Dict[str, asyncio.Event] = {}
+        # Guard so inline config (cluster_ssh_configs / cloud_config /
+        # aws_credentials) is materialized at most once per environment
+        # instance; the merge itself is also idempotent, so retries are free.
+        self._inline_configs_done: bool = False
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
             secrets=secrets,
             **kwargs,
         )
+
+    def _ensure_inline_configs_materialized(self: Self) -> None:
+        """Materialize inline SkyPilot config from environment.yaml (once).
+
+        Reads ``cluster_ssh_configs`` / ``cloud_config`` / ``aws_credentials``
+        from the environment's free-form ``config`` block and delegates to
+        ``skypilot_config.materialize``, which writes/merges the SSH config
+        files, the per-request ``SKYPILOT_PROJECT_CONFIG`` override, and
+        ``~/.aws/credentials``. No-op when none are present. Idempotent via an
+        instance flag (and the merge itself), so retry relaunches are free.
+
+        :raises SkypilotConfigCollisionError: If a section conflicts with config
+            already materialized by another environment in this process/host.
+        """
+        if self._inline_configs_done:
+            return
+        cfg = self.config.config if self.config else {}
+        ssh_raw = cfg.get("cluster_ssh_configs")
+        cloud_config = cfg.get("cloud_config")
+        aws_raw = cfg.get("aws_credentials")
+        if ssh_raw or cloud_config or aws_raw:
+            from gbserver.environment.skypilot_config import materialize
+            from gbserver.types.environmentconfig import (
+                AwsCredentialProfile,
+                ClusterSshConfigs,
+            )
+
+            ssh = ClusterSshConfigs.model_validate(ssh_raw) if ssh_raw else None
+            aws = (
+                [AwsCredentialProfile.model_validate(p) for p in aws_raw]
+                if aws_raw
+                else None
+            )
+            name = self.config.name if self.config else "unknown"
+            materialize(name, ssh, cloud_config, aws, self.secrets or {})
+        self._inline_configs_done = True
 
     def _get_cloud(self: Self) -> str:
         """Get default cloud/infra from environment.yaml config."""
@@ -258,6 +298,9 @@ class Skypilot(Environment):
         :param runmetadata: Run metadata injected by ``Run._add_to_run_kwargs``.
         :returns: Setup config dict (empty when ``shared_workdir`` is unset).
         """
+        # Materialize inline config as early as possible (before the
+        # shared_workdir early-return below).
+        self._ensure_inline_configs_materialized()
         shared_workdir = (
             self.config.config.get("shared_workdir") if self.config else None
         )
@@ -358,6 +401,9 @@ class Skypilot(Environment):
         ``launch_skypilot`` doesn't have to re-indent the entire block.
         """
         try:
+            # Materialize inline cluster/cloud/AWS config before the API server
+            # starts and before sky.launch builds the per-request config override.
+            self._ensure_inline_configs_materialized()
             _ensure_skypilot_api_running()
 
             # Stash kwargs so retry_workload can replay this launch.

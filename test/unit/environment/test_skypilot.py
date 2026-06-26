@@ -939,3 +939,65 @@ class TestSkypilotManagedMonitorLogParsing:
                 poll_interval=0.01,
                 event_configs=self.EVENT_CONFIGS,
             )
+
+
+class TestInlineConfigMaterialization:
+    """The Skypilot env wires environment.yaml inline config into materialize()."""
+
+    def _env(self, config_block):
+        from gbserver.environment.skypilot import Skypilot
+        from gbserver.types.environmentconfig import EnvironmentConfig
+
+        cfg = EnvironmentConfig(name="env-inline", type="Skypilot", config=config_block)
+        return Skypilot(event_q=asyncio.Queue(), environment_config=cfg)
+
+    def test_noop_without_inline_sections(self):
+        env = self._env({"default_cloud": "slurm"})
+        with patch("gbserver.environment.skypilot_config.materialize") as m:
+            env._ensure_inline_configs_materialized()
+            m.assert_not_called()
+        assert env._inline_configs_done is True
+
+    def test_materialize_called_once_and_idempotent(self):
+        env = self._env(
+            {
+                "cluster_ssh_configs": {"slurm": [{"host": "c", "hostname": "h"}]},
+                "cloud_config": {"lsf": {"q": 1}},
+                "aws_credentials": [{"profile": "default", "aws_access_key_id": "K"}],
+            }
+        )
+        with patch("gbserver.environment.skypilot_config.materialize") as m:
+            env._ensure_inline_configs_materialized()
+            env._ensure_inline_configs_materialized()  # idempotent
+            m.assert_called_once()
+            args = m.call_args.args
+            assert args[0] == "env-inline"  # env name
+            # ssh, cloud_config, aws are all forwarded (non-None)
+            assert args[1] is not None and args[2] == {"lsf": {"q": 1}} and args[3]
+
+    @pytest.mark.asyncio
+    async def test_launch_inner_materializes_before_api_start(self):
+        env = self._env(
+            {"cluster_ssh_configs": {"slurm": [{"host": "c", "hostname": "h"}]}}
+        )
+        calls = []
+        with (
+            patch.object(
+                env,
+                "_ensure_inline_configs_materialized",
+                side_effect=lambda: calls.append("materialize"),
+            ),
+            patch(
+                "gbserver.environment.skypilot._ensure_skypilot_api_running",
+                side_effect=lambda: calls.append("api"),
+            ),
+            patch.object(
+                env,
+                "_provision_with_retry",
+                side_effect=RuntimeError("stop-after-order-check"),
+            ),
+            patch("gbserver.environment.skypilot.sky", MagicMock()),
+        ):
+            with pytest.raises(RuntimeError):
+                await env._launch_skypilot_inner(launch_id="L1", launcher_config={})
+        assert calls[:2] == ["materialize", "api"]

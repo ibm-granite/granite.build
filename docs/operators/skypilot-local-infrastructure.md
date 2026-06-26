@@ -69,7 +69,20 @@ The script:
 3. Starts the Docker Compose stack
 4. Waits for all nodes to register with the controller
 5. Verifies SSH connectivity
-6. Configures `~/.sky/config.yaml` for SkyPilot
+
+It does **not** write the `slurm-docker` entry into `~/.slurm/config`. The SLURM
+SSH reachability config is inlined in the Skypilot `environment.yaml`
+(`cluster_ssh_configs.slurm`, see
+[environment-yaml-config.md](environment-yaml-config.md#skypilot-environment-config))
+and materialized into `~/.slurm/config` by gbserver at build launch time. The
+script only provisions the cluster and the SSH key that the inline `identity_file`
+references.
+
+Each run also **clears any stale gbserver-managed or legacy `setup-slurm.sh`
+block** from `~/.slurm/config` (preserving unrelated `Host` entries), so a
+leftover from an older run can't trip gbserver's refuse-on-conflict — re-running
+`make slurm-setup` is enough to refresh config; you never need `make slurm-teardown`
+just for that.
 
 ### GPU support
 
