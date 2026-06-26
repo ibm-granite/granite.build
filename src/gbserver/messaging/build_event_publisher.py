@@ -40,9 +40,7 @@ from gbserver.utils.optional_imports import HAS_NATS
 logger = get_logger(__name__)
 
 
-def _is_standalone() -> bool:
-    """Return True if running in standalone mode."""
-    return os.getenv("GB_ENVIRONMENT", "").upper() == "STANDALONE"
+from gbcommon.types.gbenvconfig import is_standalone as _is_standalone
 
 
 class BuildEventPublisher:
@@ -151,7 +149,7 @@ class BuildEventPublisher:
                 self._backend.addr = publish_addr  # type: ignore[misc]
                 await self._backend.publish(payload=payload, suffix=event_type)
                 logger.info(
-                    "Published event type=%s build_id=%s routing_key=%s",
+                    "Published event type=%s build_id=%s subject=%s",
                     event_type,
                     build_id,
                     publish_addr.rk(event_type),

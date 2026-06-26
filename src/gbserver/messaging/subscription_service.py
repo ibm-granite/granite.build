@@ -37,8 +37,7 @@ from gbserver.utils.optional_imports import HAS_NATS
 logger = get_logger(__name__)
 
 
-def _is_standalone() -> bool:
-    return os.getenv("GB_ENVIRONMENT", "").upper() == "STANDALONE"
+from gbcommon.types.gbenvconfig import is_standalone as _is_standalone
 
 
 async def provision_subscription(build_id: str) -> Dict[str, Any]:
