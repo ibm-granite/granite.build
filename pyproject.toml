@@ -78,7 +78,7 @@ standalone = [
 thirdparty = [
     "docker>=7.0.0",
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
-    "skypilot[kubernetes,slurm] @ git+https://github.com/cmadam/skypilot.git@dddcdd0057070221d6b351a3dd7c9e071e15b86b",  # LSF cloud backend; pinned to commit until upstreamed to skypilot-org/skypilot
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@f97d93d45b98ce37b316030415dbb77a4615ebd1",  # Integration branch (granite-build): LSF cloud driver + thinkahead AWS host-AMI-override; pinned to commit until upstreamed
     "wandb",
 ]
 # Tier 3: IBM-specific — requires IBM infrastructure (cloud, cluster, Artifactory)
@@ -94,7 +94,7 @@ ibm = [
     "kubernetes_asyncio>=35.0.1",	# Avoids missing watch import created in kubernetes==36.0.0
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg2-binary",
-    "skypilot[kubernetes,slurm] @ git+https://github.com/cmadam/skypilot.git@dddcdd0057070221d6b351a3dd7c9e071e15b86b",  # LSF cloud backend; pinned to commit until upstreamed to skypilot-org/skypilot
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@f97d93d45b98ce37b316030415dbb77a4615ebd1",  # Integration branch (granite-build): LSF cloud driver + thinkahead AWS host-AMI-override; pinned to commit until upstreamed
 ]
 # All optional dependencies
 all = [
