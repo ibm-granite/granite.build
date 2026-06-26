@@ -101,6 +101,13 @@ environment_configs:
             echo "=== Open Instruct GRPO RL Training on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
+            # The open-instruct-3 image prepopulates NLTK data (incl. the
+            # punkt_tab tokenizer the verifiable-reward functions need) under
+            # /stage/nltk_data, which NLTK only finds via $HOME/nltk_data.
+            # The SkyPilot LSF backend sets HOME=/, so point HOME at /stage
+            # (matches gbansible's bluevela_rl_job HOME=/stage).
+            export HOME=/stage
+
             {% if config.rl_config.code_server_url %}
             export CODE_SERVER_URL="{{ config.rl_config.code_server_url }}"
             {% endif %}
@@ -183,37 +190,44 @@ environment_configs:
               --temp_change_interval {{ config.rl_config.temp_change_interval }} \
               --vllm_imp_ratio_cap {{ config.rl_config.vllm_imp_ratio_cap }} \
               --dataset_local_cache_dir {{ config.rl_config.dataset_local_cache_dir }} \
-            {%- if config.rl_config.gradient_checkpointing %}
+            {#- Boolean flags. config values may arrive as real YAML booleans
+                OR as strings (recipe build params substituted via $${...} are
+                always strings, e.g. "true"/"false"). A bare Jinja `if` treats
+                the non-empty string "false" as truthy, which would flip a flag
+                the wrong way, so compare against an explicit truthy set. Mirrors
+                open_instruct's convention that only true/"true"/"True" are true. -#}
+            {%- set _true = [true, "true", "True", "1", 1] %}
+            {%- if config.rl_config.gradient_checkpointing in _true %}
               --gradient_checkpointing \
             {%- endif %}
-            {%- if config.rl_config.async_mode %}
+            {%- if config.rl_config.async_mode in _true %}
               --async_mode true \
             {%- endif %}
-            {%- if config.rl_config.apply_thinking_format_reward %}
+            {%- if config.rl_config.apply_thinking_format_reward in _true %}
               --apply_thinking_format_reward true \
             {%- endif %}
-            {%- if config.rl_config.apply_verifiable_reward %}
+            {%- if config.rl_config.apply_verifiable_reward in _true %}
               --apply_verifiable_reward true \
             {%- endif %}
-            {%- if config.rl_config.non_stop_penalty %}
+            {%- if config.rl_config.non_stop_penalty in _true %}
               --non_stop_penalty true \
             {%- endif %}
-            {%- if config.rl_config.apply_repetition_penalty %}
+            {%- if config.rl_config.apply_repetition_penalty in _true %}
               --apply_repetition_penalty true \
             {%- endif %}
-            {%- if config.rl_config.add_general_reward %}
+            {%- if config.rl_config.add_general_reward in _true %}
               --add_general_reward true \
             {%- endif %}
-            {%- if not config.rl_config.set_weight_decay_on_bias_and_norm %}
+            {%- if config.rl_config.set_weight_decay_on_bias_and_norm not in _true %}
               --set_weight_decay_on_bias_and_norm false \
             {%- endif %}
-            {%- if not config.rl_config.additive_format_reward %}
+            {%- if config.rl_config.additive_format_reward not in _true %}
               --additive_format_reward false \
             {%- endif %}
-            {%- if not config.rl_config.filter_zero_advantage %}
+            {%- if config.rl_config.filter_zero_advantage not in _true %}
               --filter_zero_advantage false \
             {%- endif %}
-            {%- if config.rl_config.with_tracking %}
+            {%- if config.rl_config.with_tracking in _true %}
               --with_tracking
             {%- else %}
               --with_tracking false
@@ -249,8 +263,14 @@ environment_configs:
             event_fields:
               - field_name: status
                 field_value_template: "RUNNING"
+              # is_data routes this into the payload's `data` dict.
+              # BuildEventWorkloadStatusPayload only declares `status`; a
+              # top-level `message` kwarg makes payload_parser raise
+              # TypeError (swallowed by the scrape loop, but it drops the
+              # progress event). The base EventPayload.data dict accepts it.
               - field_name: message
                 field_regex: "(episode|training_step).*"
+                is_data: true
           - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
             line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
             event_fields:

@@ -17,6 +17,7 @@ model on the BlueVela LSF cluster via the SkyPilot LSF backend.
 | `safety-eval`       | Safety Sage eval suite (2 targets)                          |
 | `full-eval`         | Combined 27-target suite (26 Sage + 1 BFCL)                 |
 | `sft-10k-eval-test` | SFT (2 epochs) chained to the 27-target eval suite via output binding |
+| `ifrl-smoke`        | IFRL GRPO smoke test (rm-server + code-server + 2-update trainer) |
 | `export-results`    | Copy results from shared FS to the configured output store  |
 
 ## Defaults are BlueVela-specific

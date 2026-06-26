@@ -10,6 +10,7 @@ import asyncio
 import glob
 import os
 import shlex
+import threading
 import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Tuple, Union
@@ -84,6 +85,34 @@ def _download_logs_with_retry(cluster_name: str, job_id: int):
     return result.get(str(job_id))
 
 
+def _static_expected_binding_ids(event_log_parser_configs) -> "tuple[set, bool]":
+    """Return (expected_binding_ids, all_static).
+
+    expected_binding_ids: binding_ids we can predict because a NEWARTIFACT
+    event_config sets binding_id via a static field_value_template (no regex).
+    all_static: False if any NEWARTIFACT binding_id is scraped (field_regex),
+    meaning we cannot know the full set and must never back off.
+    A `field_value_template` containing Jinja (`{{ }}`) is treated as
+    non-static (we can't predict the rendered value).
+    """
+    expected: set = set()
+    all_static = True
+    for cfg in event_log_parser_configs:
+        if cfg.event_type != "NEWARTIFACT_IN_ENVIRONMENT_EVENT":
+            continue
+        bid = next((f for f in cfg.event_fields if f.field_name == "binding_id"), None)
+        if (
+            bid is not None
+            and bid.field_value_template
+            and not bid.field_regex
+            and "{{" not in bid.field_value_template
+        ):
+            expected.add(bid.field_value_template)
+        else:
+            all_static = False
+    return expected, all_static
+
+
 class Skypilot(Environment):
     """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
 
@@ -92,16 +121,40 @@ class Skypilot(Environment):
     # one Environment per target, but they all share the SSH connection
     # pool to the cloud's login node and therefore the same MaxAuthTries
     # ceiling. Lazily constructed so no event loop is required at import.
-    _launch_semaphore: Optional[asyncio.Semaphore] = None
+    #
+    # This MUST be a threading.Semaphore, not asyncio.Semaphore: in the
+    # standalone (thread) build-runner each target runs in its own thread
+    # under its own asyncio.run() event loop, and an asyncio primitive is
+    # bound to the loop that first touches it — sharing one across target
+    # loops raises "bound to a different event loop". A threading.Semaphore
+    # is loop-agnostic and genuinely caps across the target threads.
+    _launch_semaphore: Optional[threading.Semaphore] = None
+    _launch_semaphore_lock = threading.Lock()
+
+    # Cluster names we deliberately tore down (e.g. via
+    # launch_skypilot_teardown downing a SERVICE). A SERVICE's monitor must
+    # treat its cluster vanishing as SUCCESS rather than a crash. This is
+    # CLASS-level (process-global) on purpose: gbserver creates a separate
+    # Skypilot instance per target, so the teardown target and the monitored
+    # SERVICE targets do not share instance state — but they do share this
+    # set within the process, keyed by the globally-unique cluster name.
+    _intentionally_torn_down_clusters: set = set()
 
     @classmethod
-    def _get_launch_semaphore(cls) -> asyncio.Semaphore:
+    def _get_launch_semaphore(cls) -> threading.Semaphore:
         if cls._launch_semaphore is None:
-            from gbserver.types.constants import GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY
+            with cls._launch_semaphore_lock:
+                # Double-checked under the lock so concurrent target threads
+                # don't each construct a separate semaphore (which would
+                # defeat the process-global cap).
+                if cls._launch_semaphore is None:
+                    from gbserver.types.constants import (
+                        GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY,
+                    )
 
-            cls._launch_semaphore = asyncio.Semaphore(
-                max(1, GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY)
-            )
+                    cls._launch_semaphore = threading.Semaphore(
+                        max(1, GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY)
+                    )
         return cls._launch_semaphore
 
     def __init__(
@@ -117,6 +170,13 @@ class Skypilot(Environment):
         # launch_id -> kwargs replayed by retry_workload
         self._launch_kwargs: Dict[str, Dict] = {}
         self._skypilot_retry_complete_events: Dict[str, asyncio.Event] = {}
+        # launch_id -> {log_file_path: number of lines already parsed}.
+        # Lets the per-poll log scrape parse only newly-appended lines so each
+        # event emits exactly once (a SERVICE's log grows while it serves).
+        self._parsed_log_offsets: Dict[str, Dict[str, int]] = {}
+        # launch_id -> set of binding_ids already emitted, used to stop
+        # per-poll scraping once all statically-known bindings are seen.
+        self._emitted_binding_ids: Dict[str, set] = {}
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -242,13 +302,23 @@ class Skypilot(Environment):
         ``monitor_skypilot_monitor`` runs, so post-launch polling for
         all targets continues in parallel.
         """
-        async with self._get_launch_semaphore():
+        # Acquire without blocking the event loop: threading.Semaphore.acquire
+        # is a blocking call, so poll it non-blockingly and yield to the loop
+        # between attempts. This lets the target's post-launch monitor polling
+        # (and everything else on this loop) keep running while we wait for a
+        # bring-up slot.
+        sem = self._get_launch_semaphore()
+        while not sem.acquire(blocking=False):
+            await asyncio.sleep(0.5)
+        try:
             await self._launch_skypilot_inner(
                 launch_id=launch_id,
                 targetsteprun_asset_dir=targetsteprun_asset_dir,
                 environment_config=environment_config,
                 **kwargs,
             )
+        finally:
+            sem.release()
 
     async def _launch_skypilot_inner(
         self: Self,
@@ -519,6 +589,10 @@ class Skypilot(Environment):
                 for config in event_configs
             ]
 
+        expected_binding_ids, all_static_bindings = _static_expected_binding_ids(
+            event_log_parser_configs
+        )
+
         cluster_name = self._cluster_names.get(launch_id)
         job_id = self._job_ids.get(launch_id)
         if not cluster_name:
@@ -567,6 +641,23 @@ class Skypilot(Environment):
                     status = sky.JobStatus.FAILED
                     poll_failed = False
 
+            # launch_skypilot_teardown downs this SERVICE's cluster on purpose,
+            # so a poll seeing it "gone" (FAILED above) is success, not a crash.
+            # The teardown runs in a DIFFERENT Skypilot instance (one per target),
+            # so we match on the process-global set of torn-down cluster names --
+            # cluster_name here is gb-<launch_id[:12]>, the same name the teardown
+            # recorded. Exit cleanly before any FAILED event or raise so the step
+            # is marked SUCCESS. Checked after the poll (not only at the loop top)
+            # to close the race where teardown fires while this poll is in flight.
+            if cluster_name in Skypilot._intentionally_torn_down_clusters:
+                logger.info(
+                    "Cluster %s (launch_id %s) was intentionally torn down; "
+                    "ending monitor as success.",
+                    cluster_name,
+                    launch_id,
+                )
+                return
+
             # Skip change-detection on poll failures so a transient error
             # doesn't emit a spurious RUNNING -> None -> RUNNING flap event.
             if not poll_failed and status != last_status:
@@ -594,6 +685,44 @@ class Skypilot(Environment):
                     )
                     await event_q.put(event)
                 last_status = status
+
+            # Emit artifact/status events while the job runs (not only at
+            # terminal status) so long-running SERVICE targets publish their
+            # URL binding live. Scrape until all statically-known bindings are
+            # emitted, then stop to avoid repeated log downloads over the
+            # server's (possibly hours-long) lifetime. Scrape errors are
+            # tolerated and retried next poll.
+            status_is_terminal = status is not None and status.is_terminal()
+            if (
+                not poll_failed
+                and not status_is_terminal
+                and event_log_parser_configs
+                and event_q
+                and entityrun_metadata
+                and job_id is not None
+            ):
+                already = self._emitted_binding_ids.get(launch_id, set())
+                need_scrape = (
+                    not all_static_bindings
+                    or not expected_binding_ids
+                    or not expected_binding_ids.issubset(already)
+                )
+                if need_scrape:
+                    try:
+                        await self._download_and_parse_logs(
+                            cluster_name=cluster_name,
+                            job_id=job_id,
+                            launch_id=launch_id,
+                            event_q=event_q,
+                            entityrun_metadata=entityrun_metadata,
+                            event_log_parser_configs=event_log_parser_configs,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "per-poll log scrape failed for %s (will retry): %s",
+                            cluster_name,
+                            e,
+                        )
 
             if status is not None and status.is_terminal():
                 logger.info(
@@ -682,22 +811,52 @@ class Skypilot(Environment):
                 )
                 return
 
+            self._parsed_log_offsets.setdefault(launch_id, {})
+            self._emitted_binding_ids.setdefault(launch_id, set())
             for log_file in log_files:
+                offset = self._parsed_log_offsets[launch_id].get(log_file, 0)
+                read_ok = True
                 try:
                     with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                        for line_num, line in enumerate(f, 1):
-                            line = line.rstrip("\n")
-                            if line:
-                                await self.get_events_from_log_line(
-                                    log_line=line,
-                                    event_configs=event_log_parser_configs,
-                                    event_q=event_q,
-                                    entityrun_metadata=entityrun_metadata,
-                                    line_num=line_num,
-                                )
+                        lines = f.readlines()
+                    # Log rotated/truncated/re-downloaded shorter than before:
+                    # reset and re-read from the top so we don't silently stop.
+                    if len(lines) < offset:
+                        offset = 0
+                    max_line = offset
+                    for line_num, raw in enumerate(lines, 1):
+                        if line_num <= offset:
+                            continue
+                        max_line = line_num
+                        line = raw.rstrip("\n")
+                        if not line:
+                            continue
+                        # get_events_from_log_line enqueues matched events onto
+                        # event_q itself (and swallows per-config parse errors
+                        # internally); we use its return value only to record
+                        # which binding_ids were emitted, for the per-poll
+                        # backoff in the poll loop.
+                        events = await self.get_events_from_log_line(
+                            log_line=line,
+                            event_configs=event_log_parser_configs,
+                            event_q=event_q,
+                            entityrun_metadata=entityrun_metadata,
+                            line_num=line_num,
+                        )
+                        for ev in events or []:
+                            bid = getattr(ev.payload, "binding_id", None)
+                            if bid:
+                                self._emitted_binding_ids[launch_id].add(bid)
                 except OSError as e:
                     logger.warning("Failed to read log file %s: %s", log_file, e)
-                    continue
+                    read_ok = False
+                except Exception as e:  # parse error: swallow, do not advance offset
+                    logger.warning("Failed to parse log file %s: %s", log_file, e)
+                    read_ok = False
+                # Advance the offset only on a clean read so a transient error
+                # re-reads the same lines next poll instead of skipping them.
+                if read_ok:
+                    self._parsed_log_offsets[launch_id][log_file] = max_line
 
         except Exception as e:
             logger.error(
@@ -741,6 +900,69 @@ class Skypilot(Environment):
             self._cluster_names.pop(launch_id, None)
             self._job_ids.pop(launch_id, None)
             self._launch_kwargs.pop(launch_id, None)
+            self._parsed_log_offsets.pop(launch_id, None)
+            self._emitted_binding_ids.pop(launch_id, None)
+
+    async def launch_skypilot_teardown(
+        self: Self,
+        launch_id: Optional[str] = None,
+        **kwargs,
+    ) -> None:
+        """In-process launcher that tears down named SkyPilot clusters.
+
+        Does NOT provision a cluster. Reads ``config.teardown_config.cluster_names``
+        (surfaced from upstream cluster_name bindings) and downs each one. The
+        ``Skypilot`` instance is shared across a build's targets, so the
+        ``rm-server`` / ``code-server`` clusters are in ``self._cluster_names``
+        here -- reuse ``cleanup_skypilot`` so monitoring/state is cleaned up too.
+        Falls back to a direct ``sky.down`` for any name without a tracked
+        launch_id. SERVICE clusters on LSF never autostop and never get a
+        terminal-status cleanup, so this is how they get reclaimed.
+        """
+        config = kwargs.get("config") or {}
+        names = (config.get("teardown_config") or {}).get("cluster_names") or []
+        names = [n.strip() for n in names if isinstance(n, str) and n.strip()]
+        if not names:
+            logger.warning(
+                "launch_skypilot_teardown: no cluster_names to tear down "
+                "(launch_id=%s)",
+                launch_id,
+            )
+            return
+
+        # Reverse launch_id -> cluster_name so we can reuse cleanup_skypilot.
+        name_to_launch = {v: k for k, v in self._cluster_names.items()}
+
+        for name in names:
+            # Record BEFORE downing so the SERVICE's monitor -- which runs in a
+            # different Skypilot instance and may be mid-poll -- treats the
+            # cluster going away as success, not a WorkloadFailedException. Keyed
+            # by cluster name (gb-<launch_id[:12]>), the name the monitor sees.
+            Skypilot._intentionally_torn_down_clusters.add(name)
+            try:
+                target_launch_id = name_to_launch.get(name)
+                if target_launch_id is not None:
+                    logger.info(
+                        "launch_skypilot_teardown: cleanup cluster %s "
+                        "(launch_id=%s)",
+                        name,
+                        target_launch_id,
+                    )
+                    await self.cleanup_skypilot(launch_id=target_launch_id)
+                else:
+                    logger.info(
+                        "launch_skypilot_teardown: no tracked launch_id for "
+                        "cluster %s, calling sky.down directly",
+                        name,
+                    )
+                    _require_skypilot()
+                    request_id = await asyncio.to_thread(sky.down, name, purge=True)
+                    await asyncio.to_thread(sky.get, request_id)
+                    logger.info("launch_skypilot_teardown: torn down cluster %s", name)
+            except Exception as e:  # don't let one failure skip the rest
+                logger.error(
+                    "launch_skypilot_teardown: failed to tear down %s: %s", name, e
+                )
 
     async def retry_workload(
         self: Self,
