@@ -186,10 +186,23 @@ def install_transport_retries() -> None:
     up the retry behavior. Safe to call multiple times; only the first call has
     an effect. Set ``GBSERVER_TRANSPORT_RETRY_MAX_ATTEMPTS=1`` to effectively
     disable the retries.
+
+    Each seam is wrapped independently and skipped if its library is not
+    installed. ``kubernetes_asyncio`` in particular lives in the optional
+    ``ibm`` extra, so it is absent in lightweight environments (e.g. the
+    quick-test CI matrix); a missing library is logged and ignored rather than
+    raised, since there is nothing to wrap.
     """
     global _INSTALLED  # pylint: disable=global-statement
     if _INSTALLED:
         return
-    _install_aiohttp_dns_retry()
-    _install_k8s_request_retry()
+    for installer in (_install_aiohttp_dns_retry, _install_k8s_request_retry):
+        try:
+            installer()
+        except ImportError as exc:
+            logger.info(
+                "Skipping %s: dependency not installed (%s)",
+                installer.__name__,
+                exc,
+            )
     _INSTALLED = True

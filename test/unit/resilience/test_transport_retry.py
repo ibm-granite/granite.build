@@ -82,6 +82,34 @@ class TestInstall:
         assert TCPConnector._resolve_host is wrapped_resolve
         assert ApiClient.request is wrapped_request
 
+    def test_skips_seam_with_missing_dependency(
+        self: Self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A seam whose library is not installed is skipped, not fatal.
+
+        kubernetes_asyncio lives in the optional ``ibm`` extra and is absent in
+        lightweight environments (e.g. the quick-test CI matrix). The installer
+        must still wrap the aiohttp seam and not raise.
+        """
+        monkeypatch.setattr(tr, "TRANSPORT_RETRY_MAX_ATTEMPTS", 3)
+        monkeypatch.setattr(tr, "TRANSPORT_RETRY_BASE_DELAY", 0.0)
+        monkeypatch.setattr(tr, "TRANSPORT_RETRY_MAX_DELAY", 0.0)
+        orig_resolve = TCPConnector._resolve_host
+        monkeypatch.setattr(tr, "_INSTALLED", False)
+
+        def boom() -> None:
+            raise ModuleNotFoundError("No module named 'kubernetes_asyncio'")
+
+        monkeypatch.setattr(tr, "_install_k8s_request_retry", boom)
+
+        try:
+            # Must not raise despite the missing dependency.
+            install_transport_retries()
+            assert getattr(TCPConnector._resolve_host, _WRAPPED_MARKER, False)
+        finally:
+            TCPConnector._resolve_host = orig_resolve  # type: ignore[method-assign]
+            tr._INSTALLED = False
+
 
 class TestPredicates:
     """Retry predicates mirror the original patches."""
