@@ -27,8 +27,6 @@ from typing import Self
 import pytest
 from aiohttp.client_exceptions import ClientConnectorError
 from aiohttp.connector import TCPConnector
-from kubernetes_asyncio.client.api_client import ApiClient
-from kubernetes_asyncio.client.exceptions import ApiException
 
 import gbserver.resilience.transport_retry as tr
 from gbserver.resilience.transport_retry import (
@@ -37,6 +35,24 @@ from gbserver.resilience.transport_retry import (
     _is_retryable_dns_error,
     _make_retrying,
     install_transport_retries,
+)
+
+# kubernetes_asyncio lives in the optional ``ibm`` extra and is absent in
+# lightweight environments (e.g. the quick-test CI matrix). Import it
+# defensively so this module still collects there; k8s-specific assertions are
+# gated on HAS_K8S below.
+try:
+    from kubernetes_asyncio.client.api_client import ApiClient
+    from kubernetes_asyncio.client.exceptions import ApiException
+
+    HAS_K8S = True
+except ImportError:
+    ApiClient = None  # type: ignore[assignment,misc]
+    ApiException = None  # type: ignore[assignment,misc]
+    HAS_K8S = False
+
+requires_k8s = pytest.mark.skipif(
+    not HAS_K8S, reason="kubernetes_asyncio not installed (optional 'ibm' extra)"
 )
 
 
@@ -53,7 +69,7 @@ def fresh_install(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(tr, "TRANSPORT_RETRY_MAX_DELAY", 0.0)
 
     orig_resolve = TCPConnector._resolve_host
-    orig_request = ApiClient.request
+    orig_request = ApiClient.request if HAS_K8S else None
     monkeypatch.setattr(tr, "_INSTALLED", False)
 
     install_transport_retries()
@@ -61,26 +77,32 @@ def fresh_install(monkeypatch: pytest.MonkeyPatch):
         yield
     finally:
         TCPConnector._resolve_host = orig_resolve  # type: ignore[method-assign]
-        ApiClient.request = orig_request  # type: ignore[method-assign]
+        if HAS_K8S:
+            ApiClient.request = orig_request  # type: ignore[method-assign]
         tr._INSTALLED = False
 
 
 class TestInstall:
     """Installation is idempotent and stamps both seams."""
 
-    def test_wraps_both_seams(self: Self, fresh_install) -> None:
+    def test_wraps_aiohttp_seam(self: Self, fresh_install) -> None:
         assert getattr(TCPConnector._resolve_host, _WRAPPED_MARKER, False)
+
+    @requires_k8s
+    def test_wraps_k8s_seam(self: Self, fresh_install) -> None:
         assert getattr(ApiClient.request, _WRAPPED_MARKER, False)
 
     def test_idempotent(self: Self, fresh_install) -> None:
+        # The fixture already installed once. Re-running (even after clearing
+        # the _INSTALLED guard) must not re-wrap: the per-method marker check
+        # short-circuits.
         wrapped_resolve = TCPConnector._resolve_host
-        wrapped_request = ApiClient.request
-        # _INSTALLED guard short-circuits, but even without it the marker check
-        # prevents double-wrapping.
+        wrapped_request = ApiClient.request if HAS_K8S else None
         tr._INSTALLED = False
         install_transport_retries()
         assert TCPConnector._resolve_host is wrapped_resolve
-        assert ApiClient.request is wrapped_request
+        if HAS_K8S:
+            assert ApiClient.request is wrapped_request
 
     def test_skips_seam_with_missing_dependency(
         self: Self, monkeypatch: pytest.MonkeyPatch
@@ -123,8 +145,12 @@ class TestPredicates:
         # Build a minimal ClientConnectorError instance without a real socket.
         err = ClientConnectorError(connection_key=_FakeKey(), os_error=OSError("x"))
         assert _is_retryable_connector_error(err) is True
-        assert _is_retryable_connector_error(ApiException(status=500)) is False
         assert _is_retryable_connector_error(OSError("x")) is False
+
+    @requires_k8s
+    def test_connector_does_not_retry_api_exception(self: Self) -> None:
+        # ApiException must propagate so callers see real API errors.
+        assert _is_retryable_connector_error(ApiException(status=500)) is False
 
 
 class _FakeKey:
