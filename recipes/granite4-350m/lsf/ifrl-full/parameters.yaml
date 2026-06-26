@@ -8,8 +8,8 @@
 # ─── Run identification ───────────────────────────────────────────────
 # -gb suffix keeps this gbserver-driven run distinct from the gbansible
 # run_rl_bluevela_if.sh run (which uses the bare granite4-350m-14-7180-ifrl name).
-EXP_NAME: "granite4-350m-14-7180-ifrl-gb"
-RUN_NAME: "granite4-350m-14-7180-ifrl-gb"
+EXP_NAME: "granite4-350m-openinstruct-epoch-hf-2"
+RUN_NAME: "granite4-350m-openinstruct-epoch-hf-2"
 RL_NAME: "if"
 
 # ─── Model + data ─────────────────────────────────────────────────────
@@ -18,8 +18,8 @@ DATASET_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/rlnothink_300m
 DATASET_EVAL_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/rlnothink_300m/mix16_if/validation.jsonl":1.0}'
 
 # ─── Output (namespaced under -gb so it can't clobber the gbansible run) ─
-OUTPUT_DIR: "/proj/granite-build/g4os/RLHF/outputs/granite4-350m-14-7180-ifrl-gb/exp_32/iter1/rlvr/"
-CHECKPOINT_STATE_DIR: "/proj/granite-build/g4os/RLHF/outputs/granite4-350m-14-7180-ifrl-gb/exp_32/iter1/rlvr/_state"
+OUTPUT_DIR: "/proj/granite-build/g4os/skypilot-test/RLHF/outputs/granite4-350m-openinstruct-epoch-hf-2/"
+CHECKPOINT_STATE_DIR: "/proj/granite-build/g4os/skypilot-test/RLHF/outputs/granite4-350m-openinstruct-epoch-hf-2/_state"
 
 # ─── Full-run training length (run_rl_bluevela_if.sh -e overrides) ────
 TOTAL_EPISODES: "500000"
