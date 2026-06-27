@@ -18,12 +18,11 @@ config:
   # entries (refuse-on-conflict).
   cluster_ssh_configs:
     lsf:
-      - host: bluevela
-        hostname: login3.bluevela.rmf.ibm.com
-        user: granitebuild
-        identity_file: ~/.ssh/ibm-bluevela.key
-        options:
-          IdentitiesOnly: "yes"
+      - Host: bluevela
+        HostName: login3.bluevela.rmf.ibm.com
+        User: granitebuild
+        IdentityFile: ~/.ssh/ibm-bluevela.key
+        IdentitiesOnly: "yes"
 
   # Inline LSF behavioral config. gbserver writes this to a per-process file and
   # points SKYPILOT_PROJECT_CONFIG at it, so SkyPilot merges it over the API

@@ -239,28 +239,28 @@ config:
 
   cluster_ssh_configs:              # Optional. Inline OpenSSH config for slurm/lsf
     slurm:                          # clusters, materialized into ~/.<cloud>/config
-      - host: slurm-docker          # at launch time so the environment.yaml is
-        hostname: 127.0.0.1         # self-contained (no pre-provisioned file). Each
-        user: root                  # field is resolved by exact-name lookup against
-        port: 2222                  # the environment's secrets, falling back to the
-        identity_file: ~/.ssh/key   # literal if no such secret exists — so only
-        options:                    # secret *names* (never values) live in the asset.
-          StrictHostKeyChecking: "no"   # `host` is always literal. The SSH private
-          UserKnownHostsFile: /dev/null # key is NOT inlined; `identity_file` is just
-    lsf:                            # its on-host path (the key must already exist and
-      - host: bluevela              # be trusted by the cluster). Multiple hosts per
-        hostname: LSF_HOSTNAME      # cloud are allowed (one `Host` block each).
-        user: LSF_USER
-        port: 22
-        identity_file: LSF_KEYPATH
+      - Host: slurm-docker          # at launch. Keys are the EXACT OpenSSH directive
+        HostName: 127.0.0.1         # names — the env mirrors ~/.<cloud>/config 1:1.
+        User: root                  # Every directive value is resolved by exact-name
+        Port: 2222                  # lookup against the environment's secrets, falling
+        IdentityFile: ~/.ssh/key    # back to the literal if no secret matches — so
+        StrictHostKeyChecking: "no" # secret *names* (never values) live in the asset.
+        UserKnownHostsFile: /dev/null
+    lsf:                            # `Host` is always literal. The SSH private key is
+      - Host: bluevela              # NOT inlined; `IdentityFile` is just its on-host
+        HostName: LSF_HOSTNAME      # path (the key must already exist and be trusted
+        User: LSF_USER              # by the cluster). Multiple hosts per cloud are
+        Port: 22                    # allowed (one `Host` entry each).
+        IdentityFile: LSF_KEYPATH
+        IdentitiesOnly: "yes"
 
   cloud_config:                     # Optional. Behavioral SkyPilot config — an
     lsf:                            # `lsf:` / `slurm:` / `kubernetes:` block, etc.
-      cluster_configs:              # Deep-merged and sent to the API server as a
-        bluevela:                   # per-request override via SKYPILOT_PROJECT_CONFIG;
-          queue: normal             # gbserver never writes ~/.sky/config.yaml. Region
-          bsub_options:             # / other AWS settings can also go here under
-            "-R": rusage[mem=16G]   # an `aws:` block (credentials do not).
+      cluster_configs:              # Deep-merged into ~/.sky/config.yaml (the global
+        bluevela:                   # config the API server / optimizer reads); the
+          queue: normal             # env's values win, unrelated keys are preserved.
+          bsub_options:             # Region / other AWS settings can also go here
+            "-R": rusage[mem=16G]   # under an `aws:` block (credentials do not).
 
   aws_credentials:                  # Optional. Written to ~/.aws/credentials (mode
     - profile: default              # 0600) so the API server's boto3 can provision
@@ -346,30 +346,35 @@ host, gbserver materializes them at build time (in `setup_skypilot` and again
 just before `sky.launch`, via
 [skypilot_config.py](../../src/gbserver/environment/skypilot_config.py)).
 
-- **Assumes SkyPilot is already installed and its API server running.** gbserver
-  never writes or restarts `~/.sky/config.yaml`; an empty/absent global config is
-  fine. `cluster_ssh_configs` writes the slurm/lsf reachability files SkyPilot's
-  provisioners read; `cloud_config` is layered on per request via
-  `SKYPILOT_PROJECT_CONFIG`; `aws_credentials` writes `~/.aws/credentials`.
-- **Secret resolution.** Every value in `cluster_ssh_configs` (except `host`) and
-  every `aws_credentials` value is looked up by exact name in the environment's
-  secrets; a match is substituted, otherwise the literal is used. Keep credentials
-  and sensitive hostnames as secret *names* so the (possibly git-tracked) asset
-  carries no secret material.
-- **Merge, not overwrite — idempotent, with loud collisions.** Different clusters
-  (distinct SSH `Host` aliases), `cloud_config` keys, and AWS profiles coexist;
-  re-applying identical config is a no-op. A genuine clash — the *same* `Host`
-  alias, `cloud_config` leaf key, or AWS profile defined two different ways by two
-  environments — raises `SkypilotConfigCollisionError` naming the conflicting unit
-  and both environments. Foreign (non-gbserver) entries in these files are
-  preserved untouched.
-- **No teardown.** Materialized entries are left in place after a build (safe and
-  idempotent); they are not removed on completion.
+- **Where each lands.** `cluster_ssh_configs` writes the slurm/lsf reachability
+  files SkyPilot's provisioners read (`~/.<cloud>/config`); `cloud_config` is
+  deep-merged into `~/.sky/config.yaml` (the global config the API server /
+  optimizer reads directly) so it is materialized before the server starts;
+  `aws_credentials` writes `~/.aws/credentials` (mode 0600).
+- **Exact OpenSSH keys.** `cluster_ssh_configs` entries use the directive names
+  from the config file verbatim (`Host`, `HostName`, `User`, `Port`,
+  `IdentityFile`, `IdentitiesOnly`, …), so the env mirrors `~/.<cloud>/config` 1:1.
+- **Secret resolution.** Every directive value in `cluster_ssh_configs` (except
+  the `Host` alias) and every `aws_credentials` value is looked up by exact name
+  in the environment's secrets; a match is substituted, otherwise the literal is
+  used. Keep credentials and sensitive hostnames as secret *names* so the
+  (possibly git-tracked) asset carries no secret material.
+- **SSH / AWS: content-aware merge with refuse-on-conflict.** Different clusters
+  (distinct `Host` aliases) and AWS profiles coexist. A pre-existing entry for the
+  same alias/profile is a conflict **only if its content differs** — an *identical*
+  pre-existing `~/.<cloud>/config` or `~/.aws/credentials` entry is a no-op (left
+  untouched, compared order-independently). A genuinely different one raises
+  `SkypilotConfigCollisionError`. Unrelated entries are preserved.
+- **cloud_config: written from the env (env wins).** `~/.sky/config.yaml` is
+  deep-merged with the env's `cloud_config` taking precedence over any existing
+  value, while unrelated top-level keys (e.g. `kubernetes:`, `api_server:`) are
+  preserved. The environment.yaml is the source of truth for the keys it sets.
+- **No teardown.** Materialized config is left in place after a build (safe and
+  idempotent); it is not removed on completion.
 - **Concurrency.** Materialization is safe whether builds run as threads, processes,
-  or k8s jobs (`GBSERVER_DEFAULT_BUILDRUNNER_TYPE`): the host-shared SSH/AWS files
-  are guarded by a cross-process file lock plus an in-process thread lock, and the
-  `cloud_config` override file is per-process (PID-scoped) so processes never share
-  it.
+  or k8s jobs (`GBSERVER_DEFAULT_BUILDRUNNER_TYPE`): the host-shared files
+  (`~/.<cloud>/config`, `~/.aws/credentials`, `~/.sky/config.yaml`) are guarded by a
+  cross-process file lock plus an in-process thread lock.
 
 ---
 

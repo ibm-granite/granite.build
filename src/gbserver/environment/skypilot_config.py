@@ -16,15 +16,14 @@
 
 """Materialize inline SkyPilot config from a Skypilot ``environment.yaml``.
 
-Write/merge-only — no refcount, no teardown. Three destinations are supported,
-all keyed so different clusters/profiles coexist and only a *true* clash raises
-``SkypilotConfigCollisionError``:
+Write/merge-only — no refcount, no teardown. Three destinations are supported:
 
   * ``cluster_ssh_configs`` -> ``~/.<cloud>/config`` (OpenSSH ``Host`` blocks,
-    merged by alias under a cross-process file lock).
-  * ``cloud_config`` -> a per-process temp YAML file pointed at by
-    ``SKYPILOT_PROJECT_CONFIG`` (deep-merged by nested key), which SkyPilot
-    sends to the API server as a per-request override.
+    merged by alias under a cross-process file lock; a foreign or differing
+    entry raises ``SkypilotConfigCollisionError``).
+  * ``cloud_config`` -> ``~/.sky/config.yaml`` (deep-merged into the global
+    SkyPilot config the API server / optimizer reads directly; the env's values
+    win, unrelated keys are preserved).
   * ``aws_credentials`` -> ``~/.aws/credentials`` (INI, mode 0600, merged by
     profile under a cross-process file lock).
 
@@ -36,10 +35,9 @@ pure-filesystem (no ``sky`` import) so it is unit-testable without the SDK.
 import configparser
 import io
 import os
-import tempfile
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from filelock import FileLock
@@ -47,7 +45,6 @@ from filelock import FileLock
 from gbserver.types.environmentconfig import (
     AwsCredentialProfile,
     ClusterSshConfigs,
-    ClusterSshHost,
 )
 from gbserver.types.errors import SkypilotConfigCollisionError
 from gbserver.utils.logger import get_logger
@@ -63,41 +60,10 @@ MANAGED_END = "# END gbserver-managed"
 # of truth). Excluded from idempotency comparison.
 _OWNER_PREFIX = "# gbserver-owner="
 
-# Env var SkyPilot reads as the client "project" config and merges over the
-# user config; its resolved content is sent to the server per request.
-ENV_VAR_PROJECT_CONFIG = "SKYPILOT_PROJECT_CONFIG"
-
 # Serializes file read-merge-write across threads in one process; the FileLock
 # adds cross-process safety (filelock alone does not serialize same-process
-# threads). cloud_config accumulation also lives under this lock.
+# threads).
 _THREAD_LOCK = threading.RLock()
-
-
-class _CloudConfigState:
-    """Per-process accumulator for merged ``cloud_config`` (guarded by ``_THREAD_LOCK``).
-
-    Held in a single module instance (rather than module globals) so the merge
-    helpers mutate attributes without ``global`` statements.
-
-    Attributes:
-        config: The deep-merged config sent via ``SKYPILOT_PROJECT_CONFIG``.
-        owners: Dotted-key -> contributing environment (for collision messages).
-        path: The temp file the merged config is written to (stable per process).
-    """
-
-    def __init__(self) -> None:
-        self.config: Dict = {}
-        self.owners: Dict[str, str] = {}
-        self.path: Optional[str] = None
-
-    def reset(self) -> None:
-        """Clear accumulated state (test helper)."""
-        self.config = {}
-        self.owners = {}
-        self.path = None
-
-
-_CLOUD_STATE = _CloudConfigState()
 
 
 # --------------------------------------------------------------------------- #
@@ -142,39 +108,43 @@ def _raise_collision(kind: str, key: str, env_a: str, env_b: str, dest: str) -> 
 # --------------------------------------------------------------------------- #
 # SSH config rendering
 # --------------------------------------------------------------------------- #
-def render_ssh_host(host: ClusterSshHost, secrets: Dict[str, str]) -> str:
-    """Render one ``ClusterSshHost`` to an OpenSSH ``Host`` block.
+def _render_value(value, secrets: Dict[str, str]) -> str:
+    """Render one OpenSSH directive value (booleans -> ``yes``/``no``, else secret-resolved)."""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return str(_resolve(value, secrets))
 
-    :param host: The host stanza to render.
-    :param secrets: Secret name -> value mapping for field resolution.
+
+def render_ssh_host(host: Dict[str, Any], secrets: Dict[str, str]) -> str:
+    """Render one host mapping (OpenSSH directives) to a ``Host`` block.
+
+    The ``Host`` key is the literal alias; every other key is emitted as an
+    OpenSSH directive verbatim, with its value secret-resolved.
+
+    :param host: Mapping of OpenSSH directive name -> value (must include ``Host``).
+    :param secrets: Secret name -> value mapping for value resolution.
     :returns: The multi-line ``Host`` block text (resolved values).
     """
-    lines = [f"Host {host.host}"]
-    pairs = [
-        ("HostName", host.hostname),
-        ("User", host.user),
-        ("Port", host.port),
-        ("IdentityFile", host.identity_file),
-    ]
-    for key, raw in pairs:
-        if raw is not None:
-            logger.debug(
-                "ssh field %s for host %s resolved %s",
-                key,
-                host.host,
-                "from-secret" if str(raw) in secrets else "literal",
-            )
-            lines.append(f"    {key} {_resolve(raw, secrets)}")
-    for opt_key, opt_raw in host.options.items():
-        lines.append(f"    {opt_key} {_resolve(opt_raw, secrets)}")
+    alias = host["Host"]
+    lines = [f"Host {alias}"]
+    for key, raw in host.items():
+        if key == "Host" or raw is None:
+            continue
+        logger.debug(
+            "ssh directive %s for host %s resolved %s",
+            key,
+            alias,
+            "from-secret" if str(raw) in secrets else "literal",
+        )
+        lines.append(f"    {key} {_render_value(raw, secrets)}")
     return "\n".join(lines)
 
 
 def render_ssh_hosts(
-    hosts: List[ClusterSshHost], secrets: Dict[str, str]
+    hosts: List[Dict[str, Any]], secrets: Dict[str, str]
 ) -> Dict[str, str]:
     """Render hosts to an ``{alias: block}`` map (keyed for per-alias merge)."""
-    return {h.host: render_ssh_host(h, secrets) for h in hosts}
+    return {h["Host"]: render_ssh_host(h, secrets) for h in hosts}
 
 
 def _normalize(block: str) -> str:
@@ -235,16 +205,6 @@ def _parse_host_blocks(region: str) -> Dict[str, Tuple[str, str]]:
     return blocks
 
 
-def _foreign_aliases(foreign: str) -> set:
-    """Return the set of ``Host`` aliases defined in non-managed (foreign) text."""
-    out = set()
-    for raw in foreign.splitlines():
-        s = raw.strip()
-        if s.lower().startswith("host ") and not s.startswith("#"):
-            out.add(s.split(None, 1)[1].strip())
-    return out
-
-
 def _serialize_managed(blocks: Dict[str, Tuple[str, str]]) -> str:
     """Serialize ``{alias: (block, owner)}`` to a managed region (sorted, stable)."""
     parts = []
@@ -260,37 +220,54 @@ def _compose(foreign: str, region: str) -> str:
     return f"{head}\n\n{region}" if head.strip() else region
 
 
+def _blocks_equivalent(a: str, b: str) -> bool:
+    """Return True if two SSH ``Host`` blocks are equivalent.
+
+    Compares the normalized directive lines order-independently (ignoring blank
+    lines, comments, and whitespace), so a hand-written entry that lists the same
+    directives in a different order still matches what the env renders.
+    """
+    return sorted(_normalize(a).splitlines()) == sorted(_normalize(b).splitlines())
+
+
 def _merge_ssh(
     existing: Dict[str, Tuple[str, str]],
     incoming: Dict[str, str],
-    foreign: set,
+    foreign_blocks: Dict[str, Tuple[str, str]],
     env_name: str,
     dest: str,
 ) -> Dict[str, Tuple[str, str]]:
-    """Merge incoming alias blocks into existing; raise on a true clash.
+    """Merge incoming alias blocks into existing; raise only on a real conflict.
 
-    Refuses on any conflict: a foreign (non-gbserver) entry for the same alias, or
-    a gbserver-managed alias whose body differs, raises so a misconfiguration is
-    never silently resolved. Re-applying an identical gbserver-managed block is an
-    idempotent no-op.
+    Content-aware refuse-on-conflict: a pre-existing entry (foreign/non-gbserver
+    or a prior gbserver-managed block) for the same alias is a conflict **only if
+    its content differs**. An identical pre-existing entry is a no-op — the env
+    and the on-disk config agree, so nothing is written and nothing is raised.
 
     :param existing: Current ``{alias: (block, owner)}`` from the managed region.
     :param incoming: New ``{alias: block}`` to merge in.
-    :param foreign: Aliases already defined in non-managed content.
+    :param foreign_blocks: ``{alias: (block, owner)}`` parsed from non-managed content.
     :param env_name: The contributing environment name.
     :param dest: Destination file path (for messages).
-    :returns: The merged ``{alias: (block, owner)}``.
-    :raises SkypilotConfigCollisionError: On a foreign or differing-body clash.
+    :returns: The merged ``{alias: (block, owner)}`` (foreign-equivalent aliases omitted).
+    :raises SkypilotConfigCollisionError: On a same-alias, differing-content clash.
     """
     merged = dict(existing)
     for alias, block in incoming.items():
-        if alias in foreign:
-            _raise_collision(
-                "SSH Host", alias, env_name, "a pre-existing (non-gbserver) entry", dest
-            )
+        if alias in foreign_blocks:
+            if not _blocks_equivalent(foreign_blocks[alias][0], block):
+                _raise_collision(
+                    "SSH Host",
+                    alias,
+                    env_name,
+                    "a pre-existing (non-gbserver) entry",
+                    dest,
+                )
+            # Identical foreign entry already provides this host — leave it as-is.
+            continue
         if alias in merged:
             old_block, old_owner = merged[alias]
-            if _normalize(old_block) != _normalize(block):
+            if not _blocks_equivalent(old_block, block):
                 _raise_collision(
                     "SSH Host",
                     alias,
@@ -348,84 +325,65 @@ def merge_ssh_blocks(
         text = dest.read_text(encoding="utf-8") if dest.exists() else ""
         foreign, existing = _parse_managed(text)
         merged = _merge_ssh(
-            existing, alias_blocks, _foreign_aliases(foreign), env_name, str(dest)
+            existing, alias_blocks, _parse_host_blocks(foreign), env_name, str(dest)
         )
+        if merged == existing:
+            # Nothing new to manage (e.g. every incoming alias already exists as an
+            # identical foreign/managed entry) — leave the file untouched.
+            return
         _write_atomic(dest, _compose(foreign, _serialize_managed(merged)))
 
 
-def _deep_merge_into(
-    base: Dict, overlay: Dict, env_name: str, owners: Dict[str, str], prefix: tuple
-) -> None:
-    """Recursively merge ``overlay`` into ``base``; raise on a leaf clash.
+def _deep_merge_overwrite(base: Dict, overlay: Dict) -> None:
+    """Recursively merge ``overlay`` into ``base`` in place; ``overlay`` wins.
 
-    :param base: Accumulated config (mutated in place).
-    :param overlay: New config to merge in.
-    :param env_name: The contributing environment name.
-    :param owners: Dotted-key -> owning environment (for messages).
-    :param prefix: Current key path (for dotted-key messages).
-    :raises SkypilotConfigCollisionError: On same leaf key, different value.
+    Nested dicts are merged key-by-key; a non-dict value (or a type change)
+    replaces whatever is in ``base``. Keys present only in ``base`` are
+    preserved. This is the "written from the env" semantics: the env's
+    ``cloud_config`` is the source of truth and overwrites differing values in
+    ``~/.sky/config.yaml`` while leaving unrelated keys untouched.
+
+    :param base: The existing config (mutated in place).
+    :param overlay: The env's cloud_config to layer on top.
     """
     for key, val in overlay.items():
-        dotted = ".".join(prefix + (str(key),))
         if isinstance(val, dict) and isinstance(base.get(key), dict):
-            _deep_merge_into(base[key], val, env_name, owners, prefix + (str(key),))
-        elif key in base and base[key] != val:
-            _raise_collision(
-                "cloud_config key",
-                dotted,
-                env_name,
-                f"'{owners.get(dotted, 'an existing value')}'",
-                "skypilot config",
-            )
+            _deep_merge_overwrite(base[key], val)
         else:
             base[key] = val
-            owners[dotted] = env_name
-
-
-def _project_config_path(tmp_root: Optional[Path]) -> Path:
-    """Return the per-process project-config temp file path.
-
-    The filename is scoped to the PID so separate buildrunner *processes* on a
-    shared host each own a distinct file (and set their own
-    ``SKYPILOT_PROJECT_CONFIG``). That makes cloud_config genuinely per-process,
-    so the in-process ``_THREAD_LOCK`` is sufficient and no cross-process file
-    lock is needed for it (unlike the host-shared SSH / AWS files).
-    """
-    root = Path(tmp_root) if tmp_root else Path(tempfile.gettempdir())
-    root.mkdir(parents=True, exist_ok=True)
-    return root / f"gb_sky_project_config_{os.getpid()}.yaml"
 
 
 def merge_cloud_config(
-    cloud_config: Dict, env_name: str, tmp_root: Optional[Path] = None
+    cloud_config: Dict, env_name: str, home: Optional[Path] = None
 ) -> None:
-    """Deep-merge ``cloud_config`` into the per-process project config + env var.
+    """Write the env's ``cloud_config`` into ``~/.sky/config.yaml``.
 
-    Writes the merged YAML to a temp file *before* setting
-    ``SKYPILOT_PROJECT_CONFIG`` (SkyPilot errors if the env var points at a
-    missing file).
+    Deep-merges ``cloud_config`` into the global SkyPilot config (the file the
+    API server / optimizer reads directly), with the env's values taking
+    precedence and any unrelated keys preserved. Done under a cross-process file
+    lock (the file is host-shared). gbserver materializes this before starting
+    the API server, so the server picks it up.
 
-    :param cloud_config: The behavioral SkyPilot config block to merge.
-    :param env_name: The contributing environment name.
-    :param tmp_root: Temp dir override (tests).
-    :raises SkypilotConfigCollisionError: On a leaf-key clash.
+    :param cloud_config: The behavioral SkyPilot config block (e.g. an ``lsf:``
+        block) to write, sourced from the environment.yaml.
+    :param env_name: The contributing environment name (for logging).
+    :param home: Home dir override (tests).
     """
     if not cloud_config:
         return
-    with _THREAD_LOCK:
-        _deep_merge_into(
-            _CLOUD_STATE.config, cloud_config, env_name, _CLOUD_STATE.owners, ()
-        )
-        path = (
-            Path(_CLOUD_STATE.path)
-            if _CLOUD_STATE.path
-            else _project_config_path(tmp_root)
+    home_path = _home(home)
+    dest = home_path / ".sky" / "config.yaml"
+    with _THREAD_LOCK, _lock_for(home_path, "gbserver-sky-config.lock"):
+        existing: Dict = {}
+        if dest.exists():
+            existing = yaml.safe_load(dest.read_text(encoding="utf-8")) or {}
+        _deep_merge_overwrite(existing, cloud_config)
+        logger.info(
+            "Writing cloud_config from environment '%s' into %s", env_name, dest
         )
         _write_atomic(
-            path, yaml.safe_dump(_CLOUD_STATE.config, default_flow_style=False)
+            dest, yaml.safe_dump(existing, default_flow_style=False, sort_keys=False)
         )
-        _CLOUD_STATE.path = str(path)
-        os.environ[ENV_VAR_PROJECT_CONFIG] = str(path)
 
 
 def render_aws_profile(
@@ -496,20 +454,20 @@ def materialize(
     secrets: Dict[str, str],
     *,
     home: Optional[Path] = None,
-    tmp_root: Optional[Path] = None,
 ) -> None:
     """Materialize all inline config sections for one environment.
 
-    Write/merge-only; no cleanup. Raises ``SkypilotConfigCollisionError`` if any
-    section clashes with config already materialized by another environment.
+    Write/merge-only; no cleanup. SSH/AWS sections raise
+    ``SkypilotConfigCollisionError`` on a foreign/conflicting entry;
+    ``cloud_config`` is written from the env into ``~/.sky/config.yaml``
+    (env values win).
 
-    :param env_name: The environment name (used in collision messages).
+    :param env_name: The environment name (used in messages).
     :param ssh: Inline cluster SSH configs, or ``None``.
     :param cloud_config: Inline behavioral SkyPilot config, or ``None``.
     :param aws_credentials: Inline AWS credential profiles, or ``None``.
     :param secrets: Secret name -> value mapping for field resolution.
     :param home: Home dir override (tests).
-    :param tmp_root: Temp dir override (tests).
     """
     if ssh:
         for cloud, hosts in (("slurm", ssh.slurm), ("lsf", ssh.lsf)):
@@ -518,12 +476,6 @@ def materialize(
                     cloud, render_ssh_hosts(hosts, secrets), env_name, home=home
                 )
     if cloud_config:
-        merge_cloud_config(cloud_config, env_name, tmp_root=tmp_root)
+        merge_cloud_config(cloud_config, env_name, home=home)
     if aws_credentials:
         merge_aws_credentials(aws_credentials, secrets, env_name, home=home)
-
-
-def _reset_for_tests() -> None:
-    """Reset module-level cloud_config state (test helper)."""
-    _CLOUD_STATE.reset()
-    os.environ.pop(ENV_VAR_PROJECT_CONFIG, None)

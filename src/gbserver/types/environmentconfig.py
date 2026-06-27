@@ -18,7 +18,7 @@
 The environment type.
 """
 
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from pydantic import Field
 
@@ -27,46 +27,29 @@ from gbserver.types.config import Config
 ENVIRONMENT_FILENAME = "environment.yaml"
 
 
-class ClusterSshHost(Config):
-    """One SSH ``Host`` stanza for a SkyPilot slurm/lsf cluster.
-
-    Rendered into ``~/.<cloud>/config`` (the OpenSSH file SkyPilot's slurm/lsf
-    provisioners read). Each connection field is resolved by exact-name lookup
-    against the environment's secrets; if no matching secret exists the literal
-    value is used as-is. ``host`` (the cluster alias SkyPilot references) is
-    always literal.
-
-    Attributes:
-        host: SSH ``Host`` alias / SkyPilot cluster name (literal).
-        hostname: ``HostName`` value (secret-name-or-literal).
-        user: ``User`` value (secret-name-or-literal).
-        port: ``Port`` value (secret-name-or-literal).
-        identity_file: ``IdentityFile`` path to an on-host key (secret-name-or-literal).
-        options: Extra SSH directives; values are secret-name-or-literal.
-    """
-
-    host: str
-    hostname: Optional[str] = None
-    user: Optional[str] = None
-    port: Optional[Union[int, str]] = None
-    identity_file: Optional[str] = None
-    options: Dict[str, str] = Field(default_factory=dict)
-
-
 class ClusterSshConfigs(Config):
     """Inline cluster SSH configs keyed by cloud.
 
-    Each list is rendered to ``~/.<cloud>/config``. Multiple hosts per cloud are
-    supported (one ``Host`` block each), so a single environment can describe
+    Each cloud holds a list of ``Host`` entries rendered verbatim into
+    ``~/.<cloud>/config`` (the OpenSSH file SkyPilot's slurm/lsf provisioners
+    read). Each entry is a mapping whose keys are the **exact OpenSSH directive
+    names** from that file — ``Host``, ``HostName``, ``User``, ``Port``,
+    ``IdentityFile``, ``IdentitiesOnly``, etc. — so the environment.yaml mirrors
+    the config file 1:1 with no key translation.
+
+    The ``Host`` value is the cluster alias SkyPilot references and is always
+    literal; every other directive value is resolved by exact-name lookup against
+    the environment's secrets, falling back to the literal when no secret matches.
+    Multiple hosts per cloud are supported, so one environment can describe
     several clusters.
 
     Attributes:
-        slurm: Hosts rendered into ``~/.slurm/config``.
-        lsf: Hosts rendered into ``~/.lsf/config``.
+        slurm: Host entries rendered into ``~/.slurm/config``.
+        lsf: Host entries rendered into ``~/.lsf/config``.
     """
 
-    slurm: Optional[List[ClusterSshHost]] = None
-    lsf: Optional[List[ClusterSshHost]] = None
+    slurm: Optional[List[Dict[str, Any]]] = None
+    lsf: Optional[List[Dict[str, Any]]] = None
 
 
 class AwsCredentialProfile(Config):

@@ -16,8 +16,8 @@
 
 """Unit tests for the inline SkyPilot config materialization helpers.
 
-Pure-filesystem: ``home``/``tmp_root`` point at ``tmp_path`` so the real home
-directory is never touched, and no ``sky`` SDK import is required.
+Pure-filesystem: ``home`` points at ``tmp_path`` so the real home directory is
+never touched, and no ``sky`` SDK import is required.
 """
 
 import configparser
@@ -30,21 +30,13 @@ from gbserver.environment import skypilot_config as sc
 from gbserver.types.environmentconfig import (
     AwsCredentialProfile,
     ClusterSshConfigs,
-    ClusterSshHost,
 )
 from gbserver.types.errors import SkypilotConfigCollisionError
 
 
-@pytest.fixture(autouse=True)
-def _reset_state():
-    """Reset module-level cloud_config accumulation around each test."""
-    sc._reset_for_tests()
-    yield
-    sc._reset_for_tests()
-
-
-def _host(host="clusterA", **kw):
-    return ClusterSshHost(host=host, **kw)
+def _host(alias="clusterA", **directives):
+    """Build a host mapping using exact OpenSSH directive keys (e.g. HostName=...)."""
+    return {"Host": alias, **directives}
 
 
 def _read(path):
@@ -58,7 +50,7 @@ class TestSecretResolution:
     def test_secret_name_resolves_literal_falls_back(self):
         secrets = {"LSF_HOSTNAME": "login.example.com"}
         blocks = sc.render_ssh_hosts(
-            [_host(hostname="LSF_HOSTNAME", user="root", port=2222)], secrets
+            [_host(HostName="LSF_HOSTNAME", User="root", Port=2222)], secrets
         )
         block = blocks["clusterA"]
         assert "HostName login.example.com" in block  # resolved from secret
@@ -68,24 +60,28 @@ class TestSecretResolution:
     def test_host_alias_never_resolved(self):
         # A secret named like the alias must NOT change the Host line.
         blocks = sc.render_ssh_hosts(
-            [_host(host="clusterA", hostname="h")], {"clusterA": "SHOULD_NOT_APPLY"}
+            [_host("clusterA", HostName="h")], {"clusterA": "SHOULD_NOT_APPLY"}
         )
         assert blocks["clusterA"].splitlines()[0] == "Host clusterA"
 
-    def test_options_resolved(self):
+    def test_directives_rendered_verbatim_and_resolved(self):
         blocks = sc.render_ssh_hosts(
-            [_host(options={"StrictHostKeyChecking": "no", "Port": "PORTSECRET"})],
+            [_host(StrictHostKeyChecking="no", Port="PORTSECRET")],
             {"PORTSECRET": "2200"},
         )
         assert "StrictHostKeyChecking no" in blocks["clusterA"]
         assert "Port 2200" in blocks["clusterA"]
+
+    def test_bool_directive_renders_yes_no(self):
+        blocks = sc.render_ssh_hosts([_host(IdentitiesOnly=True)], {})
+        assert "IdentitiesOnly yes" in blocks["clusterA"]
 
     def test_resolved_values_not_logged(self, caplog):
         import logging
 
         with caplog.at_level(logging.DEBUG):
             sc.render_ssh_hosts(
-                [_host(hostname="SECRET_HOST")], {"SECRET_HOST": "secret-value"}
+                [_host(HostName="SECRET_HOST")], {"SECRET_HOST": "secret-value"}
             )
         assert "secret-value" not in caplog.text
         assert "from-secret" in caplog.text
@@ -98,7 +94,7 @@ class TestSshMerge:
     def test_writes_managed_block(self, tmp_path):
         sc.merge_ssh_blocks(
             "slurm",
-            sc.render_ssh_hosts([_host(hostname="h", port=2222)], {}),
+            sc.render_ssh_hosts([_host(HostName="h", Port=2222)], {}),
             "envA",
             home=tmp_path,
         )
@@ -107,7 +103,7 @@ class TestSshMerge:
         assert "Host clusterA" in text and "HostName h" in text
 
     def test_idempotent_same_body(self, tmp_path):
-        blocks = sc.render_ssh_hosts([_host(hostname="h", port=2222)], {})
+        blocks = sc.render_ssh_hosts([_host(HostName="h", Port=2222)], {})
         sc.merge_ssh_blocks("slurm", blocks, "envA", home=tmp_path)
         first = _read(tmp_path / ".slurm" / "config")
         sc.merge_ssh_blocks(
@@ -118,13 +114,13 @@ class TestSshMerge:
     def test_multi_cluster_coexist(self, tmp_path):
         sc.merge_ssh_blocks(
             "slurm",
-            sc.render_ssh_hosts([_host("clusterA", hostname="a")], {}),
+            sc.render_ssh_hosts([_host("clusterA", HostName="a")], {}),
             "envA",
             home=tmp_path,
         )
         sc.merge_ssh_blocks(
             "slurm",
-            sc.render_ssh_hosts([_host("clusterB", hostname="b")], {}),
+            sc.render_ssh_hosts([_host("clusterB", HostName="b")], {}),
             "envB",
             home=tmp_path,
         )
@@ -134,65 +130,102 @@ class TestSshMerge:
     def test_collision_same_alias_different_body(self, tmp_path):
         sc.merge_ssh_blocks(
             "slurm",
-            sc.render_ssh_hosts([_host("clusterA", hostname="a")], {}),
+            sc.render_ssh_hosts([_host("clusterA", HostName="a")], {}),
             "envA",
             home=tmp_path,
         )
         with pytest.raises(SkypilotConfigCollisionError) as exc:
             sc.merge_ssh_blocks(
                 "slurm",
-                sc.render_ssh_hosts([_host("clusterA", hostname="DIFFERENT")], {}),
+                sc.render_ssh_hosts([_host("clusterA", HostName="DIFFERENT")], {}),
                 "envB",
                 home=tmp_path,
             )
         msg = str(exc.value)
         assert "clusterA" in msg and "envB" in msg and "envA" in msg
 
-    def test_foreign_content_preserved_and_foreign_alias_conflicts(self, tmp_path):
+    def test_foreign_content_preserved_and_differing_alias_conflicts(self, tmp_path):
         dest = tmp_path / ".slurm" / "config"
         dest.parent.mkdir(parents=True)
         dest.write_text("Host other\n    HostName x\n", encoding="utf-8")
         # Adding an unrelated alias preserves the foreign entry.
         sc.merge_ssh_blocks(
             "slurm",
-            sc.render_ssh_hosts([_host("clusterA", hostname="a")], {}),
+            sc.render_ssh_hosts([_host("clusterA", HostName="a")], {}),
             "envA",
             home=tmp_path,
         )
         assert "Host other" in _read(dest)
-        # A foreign (non-gbserver) entry for the same alias is a conflict — refuse.
+        # A foreign entry for the same alias with DIFFERENT content is a conflict.
         with pytest.raises(SkypilotConfigCollisionError):
             sc.merge_ssh_blocks(
                 "slurm",
-                sc.render_ssh_hosts([_host("other", hostname="a")], {}),
+                sc.render_ssh_hosts([_host("other", HostName="a")], {}),
                 "envA",
                 home=tmp_path,
             )
 
+    def test_foreign_alias_identical_is_noop(self, tmp_path):
+        # The common case: ~/.<cloud>/config already has a matching entry. An
+        # identical foreign entry is NOT a conflict — it is left untouched and no
+        # gbserver-managed block is added (content-aware, order-independent).
+        dest = tmp_path / ".lsf" / "config"
+        dest.parent.mkdir(parents=True)
+        original = (
+            "Host bluevela\n"
+            "    HostName login3.example.com\n"
+            "    User svc\n"
+            "    IdentityFile ~/.ssh/k\n"
+            "    IdentitiesOnly yes\n"
+        )
+        dest.write_text(original, encoding="utf-8")
+        # Same directives, different field order in the env — still equivalent.
+        host = _host(
+            "bluevela",
+            IdentitiesOnly="yes",
+            User="svc",
+            HostName="login3.example.com",
+            IdentityFile="~/.ssh/k",
+        )
+        sc.merge_ssh_blocks(
+            "lsf", sc.render_ssh_hosts([host], {}), "sky-lsf", home=tmp_path
+        )
+        text = _read(dest)
+        assert sc.MANAGED_BEGIN not in text  # no managed block added
+        assert text == original  # foreign file left byte-for-byte unchanged
+
 
 # --------------------------------------------------------------------------- #
-# cloud_config deep-merge
+# cloud_config -> ~/.sky/config.yaml (written from the env, env wins)
 # --------------------------------------------------------------------------- #
 class TestCloudConfig:
-    def test_disjoint_keys_merge(self, tmp_path):
-        sc.merge_cloud_config({"lsf": {"a": 1}}, "envA", tmp_root=tmp_path)
-        sc.merge_cloud_config({"lsf": {"b": 2}}, "envB", tmp_root=tmp_path)
-        import os
+    def _sky_config(self, tmp_path):
+        return yaml.safe_load((tmp_path / ".sky" / "config.yaml").read_text())
 
-        data = yaml.safe_load(
-            _read(__import__("pathlib").Path(os.environ[sc.ENV_VAR_PROJECT_CONFIG]))
+    def test_writes_into_sky_config(self, tmp_path):
+        sc.merge_cloud_config({"lsf": {"a": 1}}, "envA", home=tmp_path)
+        assert self._sky_config(tmp_path) == {"lsf": {"a": 1}}
+
+    def test_deep_merge_preserves_unrelated_keys(self, tmp_path):
+        dest = tmp_path / ".sky" / "config.yaml"
+        dest.parent.mkdir(parents=True)
+        dest.write_text("kubernetes:\n  remote_identity: sa\nlsf:\n  x: 1\n")
+        sc.merge_cloud_config({"lsf": {"y": 2}}, "envA", home=tmp_path)
+        cfg = self._sky_config(tmp_path)
+        assert cfg["kubernetes"] == {"remote_identity": "sa"}  # untouched
+        assert cfg["lsf"] == {"x": 1, "y": 2}  # merged
+
+    def test_env_value_wins_on_conflict(self, tmp_path):
+        dest = tmp_path / ".sky" / "config.yaml"
+        dest.parent.mkdir(parents=True)
+        dest.write_text("lsf:\n  cluster_configs:\n    bv:\n      queue: g\n")
+        sc.merge_cloud_config(
+            {"lsf": {"cluster_configs": {"bv": {"queue": "grp_preemptable"}}}},
+            "envA",
+            home=tmp_path,
         )
-        assert data == {"lsf": {"a": 1, "b": 2}}
-
-    def test_identical_idempotent(self, tmp_path):
-        sc.merge_cloud_config({"lsf": {"a": 1}}, "envA", tmp_root=tmp_path)
-        sc.merge_cloud_config({"lsf": {"a": 1}}, "envB", tmp_root=tmp_path)  # no raise
-
-    def test_conflict_same_key_different_value(self, tmp_path):
-        sc.merge_cloud_config({"lsf": {"a": 1}}, "envA", tmp_root=tmp_path)
-        with pytest.raises(SkypilotConfigCollisionError) as exc:
-            sc.merge_cloud_config({"lsf": {"a": 2}}, "envB", tmp_root=tmp_path)
-        assert "lsf.a" in str(exc.value)
+        cfg = self._sky_config(tmp_path)
+        assert cfg["lsf"]["cluster_configs"]["bv"]["queue"] == "grp_preemptable"
 
 
 # --------------------------------------------------------------------------- #
@@ -259,19 +292,18 @@ class TestNoTeardownAndConcurrency:
         assert not hasattr(sc, "release")
 
     def test_materialize_all_sections(self, tmp_path):
-        ssh = ClusterSshConfigs(slurm=[_host(hostname="h")])
+        ssh = ClusterSshConfigs(slurm=[_host(HostName="h")])
         aws = [AwsCredentialProfile(profile="default", aws_access_key_id="K")]
-        sc.materialize(
-            "envA", ssh, {"lsf": {"q": 1}}, aws, {}, home=tmp_path, tmp_root=tmp_path
-        )
+        sc.materialize("envA", ssh, {"lsf": {"q": 1}}, aws, {}, home=tmp_path)
         assert (tmp_path / ".slurm" / "config").exists()
         assert (tmp_path / ".aws" / "credentials").exists()
+        assert (tmp_path / ".sky" / "config.yaml").exists()
 
     def test_concurrent_distinct_aliases(self, tmp_path):
         def worker(alias):
             sc.merge_ssh_blocks(
                 "slurm",
-                sc.render_ssh_hosts([_host(alias, hostname=alias)], {}),
+                sc.render_ssh_hosts([_host(alias, HostName=alias)], {}),
                 alias,
                 home=tmp_path,
             )

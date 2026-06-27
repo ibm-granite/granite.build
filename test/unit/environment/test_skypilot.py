@@ -961,7 +961,7 @@ class TestInlineConfigMaterialization:
     def test_materialize_called_once_and_idempotent(self):
         env = self._env(
             {
-                "cluster_ssh_configs": {"slurm": [{"host": "c", "hostname": "h"}]},
+                "cluster_ssh_configs": {"slurm": [{"Host": "c", "HostName": "h"}]},
                 "cloud_config": {"lsf": {"q": 1}},
                 "aws_credentials": [{"profile": "default", "aws_access_key_id": "K"}],
             }
@@ -978,7 +978,7 @@ class TestInlineConfigMaterialization:
     @pytest.mark.asyncio
     async def test_launch_inner_materializes_before_api_start(self):
         env = self._env(
-            {"cluster_ssh_configs": {"slurm": [{"host": "c", "hostname": "h"}]}}
+            {"cluster_ssh_configs": {"slurm": [{"Host": "c", "HostName": "h"}]}}
         )
         calls = []
         with (
