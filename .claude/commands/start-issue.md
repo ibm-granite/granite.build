@@ -16,7 +16,7 @@ These values can be overridden by the user but apply by default:
 ```
 ARCH_DOC_1=docs/plans/2026-02-23-architecture.md
 ARCH_DOC_2=docs/plans/2026-02-18-standalone-deployment-design.md
-WORKTREE_BASE=/home/cma/de/cma/gbserver-worktrees
+WORKTREE_BASE=../granite.build-worktrees
 ```
 
 Derive the fork owner and repo:
@@ -32,11 +32,11 @@ FORK_REPO=$(git remote get-url origin | sed -E 's|.*[:/][^/]+/(.*)$|\1|' | sed '
    Usage: /start-issue <issue-number>
    Example: /start-issue 42
    ```
-2. Confirm we are on the `g4os` branch:
+2. Confirm we are on the `main` branch:
    ```
    git branch --show-current
    ```
-   If not on `g4os`, warn the user and ask whether to switch (`git checkout g4os`) or abort.
+   If not on `main`, warn the user and ask whether to switch (`git checkout main`) or abort.
 3. Check for uncommitted changes:
    ```
    git status --porcelain
@@ -78,9 +78,9 @@ FORK_REPO=$(git remote get-url origin | sed -E 's|.*[:/][^/]+/(.*)$|\1|' | sed '
    mkdir -p $WORKTREE_BASE
    ```
 
-5. Create the worktree with a new branch based on `upstream/g4os`:
+5. Create the worktree with a new branch based on `upstream/main`:
    ```
-   git worktree add -b <branch-name> $WORKTREE_BASE/<branch-name> upstream/g4os
+   git worktree add -b <branch-name> $WORKTREE_BASE/<branch-name> upstream/main
    ```
    If the worktree directory already exists, ask the user: reuse it, or remove and recreate it.
 

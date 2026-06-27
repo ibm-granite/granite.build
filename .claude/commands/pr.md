@@ -1,11 +1,11 @@
 ---
-description: Format, lint, review, and create or update a PR targeting g4os
+description: Format, lint, review, and create or update a PR targeting main
 argument-hint: "Optional fork issue number (e.g., 42)"
 ---
 
-# PR for g4os
+# PR for granite.build
 
-You are helping a developer create or update a pull request in the upstream repo (`granite-dot-build/gbserver`) targeting the `g4os` branch. Follow these steps in order, stopping if any step fails.
+You are helping a developer create or update a pull request in the upstream repo (`ibm-granite/granite.build`) targeting the `main` branch. Follow these steps in order, stopping if any step fails.
 
 Fork issue number (if provided): $ARGUMENTS
 
@@ -31,22 +31,22 @@ Fork issue number (if provided): $ARGUMENTS
 
 ## Step 1: Pre-flight checks
 
-1. Confirm we are NOT on `g4os`, `main`, or `dev` branches — we should be on an issue branch
+1. Confirm we are NOT on the `main` branch — we should be on an issue branch
 2. Run `git status` to check for uncommitted changes
 3. If there are unstaged/uncommitted changes, ask the user whether to stage and commit them before proceeding
 4. Check if a PR already exists for this branch:
    ```
-   gh pr list --repo granite-dot-build/gbserver --head "$FORK_OWNER":<current-branch-name> --state open --json number,url
+   gh pr list --repo ibm-granite/granite.build --head "$FORK_OWNER":<current-branch-name> --state open --json number,url
    ```
    Save the result — this determines whether we create or update.
 
 ## Step 2: Format and lint (PR files only)
 
-Only check files that will be in the PR — those changed between `upstream/g4os` and `HEAD`.
+Only check files that will be in the PR — those changed between `upstream/main` and `HEAD`.
 
 1. Get the list of Python files changed in this PR:
    ```
-   git diff upstream/g4os...HEAD --name-only -- '*.py'
+   git diff upstream/main...HEAD --name-only -- '*.py'
    ```
 2. If there are Python files, run `isort --profile black` and `black` on each file
 3. If there are Python files, run `pylint` and `mypy --disable-error-code=import-untyped` directly on each changed file
@@ -63,9 +63,9 @@ Only check files that will be in the PR — those changed between `upstream/g4os
 ## Step 4: Code review
 
 1. Use the `superpowers:requesting-code-review` skill to review the changes that will be in the PR
-2. Review the diff between the current branch and `upstream/g4os`:
+2. Review the diff between the current branch and `upstream/main`:
    ```
-   git diff upstream/g4os...HEAD
+   git diff upstream/main...HEAD
    ```
 3. Present the review findings to the user
 4. Ask the user if they want to address any findings before proceeding, or continue
@@ -78,14 +78,14 @@ Only check files that will be in the PR — those changed between `upstream/g4os
    ```
    git fetch upstream
    ```
-2. Create the PR in the upstream repo targeting `g4os`:
+2. Create the PR in the upstream repo targeting `main`:
    ```
-   gh pr create --repo granite-dot-build/gbserver --base g4os --head "$FORK_OWNER":<current-branch-name>
+   gh pr create --repo ibm-granite/granite.build --base main --head "$FORK_OWNER":<current-branch-name>
    ```
 3. The PR title should be concise (under 70 characters)
 4. The PR body should include:
    - A summary section with bullet points describing the changes
-   - If a fork issue number was provided ($ARGUMENTS), include: `Closes $FORK_OWNER/gbserver#<N>`
+   - If a fork issue number was provided ($ARGUMENTS), include: `Closes ibm-granite/granite.build#<N>`
    - A test plan section
    - The standard footer: `Generated with [Claude Code](https://claude.com/claude-code)`
 5. Return the PR URL to the user
@@ -96,7 +96,7 @@ Only check files that will be in the PR — those changed between `upstream/g4os
 2. Report to the user: "Updated existing PR <url> with new commits"
 3. If the user wants to update the PR title or description, use:
    ```
-   gh pr edit <number> --repo granite-dot-build/gbserver --title "..." --body "..."
+   gh pr edit <number> --repo ibm-granite/granite.build --title "..." --body "..."
    ```
 
 ## Step 6: Post-PR guidance
@@ -106,6 +106,6 @@ If running inside a worktree, remind the user:
 > **Next steps after the PR is merged:**
 > Use `/pr-post-merge` to clean up — it will close the fork issue, update the local branch, and delete the issue branch. Then remove the worktree:
 > ```
-> cd /home/cma/de/cma/gbserver
+> cd <main-working-tree>
 > git worktree remove <worktree-path>
 > ```
