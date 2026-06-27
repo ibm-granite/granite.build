@@ -10,10 +10,25 @@ config:
   # forces autostop=None for the lsf cloud (LSF does not support cluster
   # autostop), so any value set here would have no effect.
 
+  # Inline LSF cluster SSH reachability. gbserver materializes this into
+  # ~/.lsf/config at launch so SkyPilot's LSF provisioner can reach the cluster
+  # and enumerate its nodes. Each field is secret-name-or-literal (no matching
+  # secret -> literal). If a ~/.lsf/config already exists on the host with a
+  # bluevela entry, remove it first — gbserver refuses to overwrite foreign
+  # entries (refuse-on-conflict).
+  cluster_ssh_configs:
+    lsf:
+      - host: bluevela
+        hostname: login3.bluevela.rmf.ibm.com
+        user: granitebuild
+        identity_file: ~/.ssh/ibm-bluevela.key
+        options:
+          IdentitiesOnly: "yes"
+
   # Inline LSF behavioral config. gbserver writes this to a per-process file and
   # points SKYPILOT_PROJECT_CONFIG at it, so SkyPilot merges it over the API
   # server's config as a per-request override at launch (no ~/.sky/config.yaml
-  # needed on the host). SSH reachability still comes from ~/.lsf/config.
+  # needed on the host).
   cloud_config:
     lsf:
       allowed_clusters:
