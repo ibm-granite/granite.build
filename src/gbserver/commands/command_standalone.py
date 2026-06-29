@@ -60,7 +60,7 @@ def _start_nats_server(
     data_dir = os.path.join(space_dir, ".gbserver", "nats-data")
     os.makedirs(data_dir, exist_ok=True)
 
-    cmd = [binary, "-js", "-sd", data_dir, "-p", str(port)]
+    cmd = [binary, "-js", "-sd", data_dir, "-p", str(port), "-a", "127.0.0.1"]
     logger.info("Starting embedded nats-server: %s", " ".join(cmd))
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

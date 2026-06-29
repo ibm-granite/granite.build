@@ -97,7 +97,10 @@ class LocalSpaceSecretManager(SpaceSecretManager):
         secrets = {}
         dir_path = Path(secrets_dir)
         if not dir_path.exists():
-            logger.error("Path does not exist: %s", dir_path)
+            # A missing secrets dir is the normal "no secrets configured yet" state
+            # (e.g. a fresh standalone checkout). Treat it as an empty secret set
+            # rather than an error — writes (create_secret) create the dir on demand.
+            logger.debug("Secrets path does not exist, treating as empty: %s", dir_path)
             return {}
 
         if dir_path.is_file():

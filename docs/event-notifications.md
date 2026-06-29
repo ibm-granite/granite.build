@@ -1,14 +1,25 @@
 # Build Event Notifications
 
-gbserver publishes build status events to a RabbitMQ topic exchange in real time.
-Instead of polling the API for status changes, you subscribe to a build's event
-stream and receive updates as they happen via an AMQP connection.
+gbserver publishes build status events in real time. Instead of polling the API
+for status changes, you subscribe to a build's event stream and receive updates
+as they happen.
 
 Key features:
 - **Real-time** — events delivered as they occur (sub-second latency)
-- **Scoped access** — each subscription gets credentials that can only read events for the requested build
+- **Scoped access** — each subscription gets credentials scoped to the requested build
 - **No infrastructure to run** — gbserver provisions everything; you just connect
 - **Non-blocking** — event publishing never affects build execution
+
+## Backend by Environment
+
+| Environment | Backend | Setup Required |
+|-------------|---------|----------------|
+| Standalone | NATS (embedded) | None — starts automatically |
+| DEV / STAGING / PROD | RabbitMQ | Managed instance + admin credentials |
+
+The subscribe endpoint (`POST /builds/{id}/events/subscribe`) works the same in
+all environments. The `delivery_type` field in the response tells you which
+client library to use (`"nats"` or `"rabbitmq"`).
 
 ## Subscribing to Events
 
@@ -183,6 +194,65 @@ of an exclusive queue. This survives brief disconnections without losing events.
 | `RABBITMQ_USERNAME` | `guest` | RabbitMQ publish credentials |
 | `RABBITMQ_PASSWORD` | `guest` | RabbitMQ publish credentials |
 
+## Standalone Mode (NATS)
+
+In standalone mode, event notifications use the embedded NATS server automatically —
+no RabbitMQ setup required. Event publishing is enabled by default.
+
+### Subscribing in Standalone
+
+Call the same subscribe endpoint:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/builds/{build_id}/events/subscribe \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Response:
+
+```json
+{
+  "delivery_type": "nats",
+  "host": "localhost",
+  "port": 4222,
+  "url": "nats://localhost:4222",
+  "subject": "gbserver.build.abc12345-full-uuid.>",
+  "expires_at": 1780000000,
+  "username": null,
+  "password": null,
+  "exchange": null,
+  "routing_key": null,
+  "queue": null
+}
+```
+
+### Consuming Events (NATS)
+
+Use any NATS client library. No credentials needed in standalone:
+
+```python
+import nats
+import json
+
+async def consume_standalone_events(build_id: str):
+    nc = await nats.connect("nats://localhost:4222")
+    sub = await nc.subscribe(f"gbserver.build.{build_id}.>")
+
+    async for msg in sub.messages:
+        event = json.loads(msg.data)
+        print(f"[{event['status']}] {event.get('message', '')}")
+
+    await nc.close()
+```
+
+### Requirements
+
+- `nats-server` must be on PATH (installed automatically with `gb` standalone)
+- `nats-py` must be installed: `pip install nats-py`
+- No additional configuration needed — the embedded server starts with JetStream enabled
+
+---
+
 ## Running RabbitMQ Locally
 
 ```bash
@@ -225,39 +295,16 @@ docker stop rabbitmq && docker rm rabbitmq
 
 Everything below is for developers working on the gbserver codebase.
 
+![Architecture Diagram](event-notifications-architecture.svg)
+
 ### Logger Framework Integration
-
-`BuildEventPublishLogger` is integrated into the build logger stack via `get_message_logger()`:
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                           BuildRunner                                     │
-│                                                                          │
-│  get_message_logger(stored_build, event_source)                          │
-│       │                                                                  │
-│       ▼                                                                  │
-│  BuildMultiMessageLogger                                                 │
-│       │                                                                  │
-│       ├── BuildEventMessageLogger ──────▶ gb_events table (always)       │
-│       │                                                                  │
-│       ├── BuildPRLogger ────────────────▶ GitHub PR comment (if PR)      │
-│       │                                                                  │
-│       └── BuildEventPublishLogger ──────▶ RabbitMQ (if enabled)          │
-│               │                                                          │
-│               │  filters: STATUS_EVENT only                              │
-│               │  fire-and-forget, non-blocking                           │
-│               ▼                                                          │
-│         BuildEventPublisher.publish_event()                              │
-│                                                                          │
-└──────────────────────────────────────────────────────────────────────────┘
-```
 
 Loggers are wired via a registry pattern — each logger type registers itself
 with a predicate (activation condition) and a factory. `get_message_logger()`
 iterates the registry and collects active loggers. The `BuildEventPublishLogger`
-is activated when `GBSERVER_EVENT_PUBLISHING_ENABLED=true` AND `RABBITMQ_HOST`
-is set. It filters internally to `STATUS_EVENT` only, so even though all events
-flow through the logger framework, only status changes are published to RabbitMQ.
+is activated when `GBSERVER_EVENT_PUBLISHING_ENABLED=true`. It filters internally
+to `STATUS_EVENT` only, so even though all events flow through the logger
+framework, only status changes are published to the messaging backend.
 
 ### BuildEventPublisher
 
@@ -329,15 +376,16 @@ src/gbserver/buildrunner/
 ├── buildlogger.py                  # Logger framework: get_message_logger() factory,
 │                                   #   AbstractBuildLogger, BuildMultiMessageLogger,
 │                                   #   BuildEventMessageLogger, BuildPRLogger
-└── build_event_publish_logger.py   # BuildEventPublishLogger (STATUS_EVENT -> RabbitMQ)
+└── build_event_publish_logger.py   # BuildEventPublishLogger (STATUS_EVENT -> broker)
 
 src/gbserver/messaging/
-├── build_event_publisher.py        # Publishes events to RabbitMQ exchange
-├── subscription_service.py         # Credential provisioning for subscribers
+├── build_event_publisher.py        # Publishes events (selects NATS or RabbitMQ backend)
+├── subscription_service.py         # Subscription provisioning (NATS: url+subject, RMQ: scoped creds)
+├── nats_messaging.py               # NATS backend (JetStream + lightweight pub/sub)
+├── rabbitmq_base.py                # RabbitMQ backend (aio-pika, topic exchange)
 ├── rabbitmq_admin.py               # RabbitMQ Management API client
-├── credential_cleanup.py           # Background cleanup of expired temp users
-├── messaging_base.py               # Abstract messaging interface
-└── rabbitmq_base.py                # aio-pika RabbitMQ implementation
+├── credential_cleanup.py           # Background cleanup of expired temp users (RabbitMQ only)
+└── messaging_base.py               # Abstract messaging interface
 
 src/gbserver/api/
 └── event_subscribe.py              # POST /builds/{id}/events/subscribe (thin endpoint)

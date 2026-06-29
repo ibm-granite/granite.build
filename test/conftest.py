@@ -70,6 +70,16 @@ from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Authoritative clean snapshot of all GB* environment variables, captured once
+# per xdist worker process at the end of pytest_sessionstart (after set_test_env
+# has loaded secrets/defaults). Standalone tests start a real server in a daemon
+# thread that mutates os.environ (GB_ENVIRONMENT=STANDALONE, GBSERVER_AUTH_MODE=
+# apikey via setdefault) and never reverts it; the daemon can also write env
+# AFTER a test's teardown. Restoring to a per-test snapshot would therefore
+# "restore" to already-polluted state, so _restore_gb_env_vars restores to this
+# fixed baseline instead. See https://github.com/ibm-granite/granite.build/issues/142
+_GB_ENV_BASELINE: dict[str, str] = {}
+
 SECRET_TYPE = "arbitrary"
 SPS_SECRET_GROUP_NAME = "SPS-Secret-Group"
 
@@ -240,6 +250,45 @@ def _reset_lineage_store():
     reset_lineage_store()
 
 
+@pytest.fixture(autouse=True)
+def _restore_gb_env_vars():
+    """Restore all GB* environment variables to the worker baseline after each test.
+
+    Standalone tests (test/e2e/standalone/*) start a real server via
+    _run_standalone() in a daemon thread. That thread sets GB_ENVIRONMENT=
+    STANDALONE and (via check_and_init_for_standalone) setdefault()s
+    STANDALONE_ENV_DEFAULTS, including GBSERVER_AUTH_MODE=apikey, into the shared
+    worker os.environ. These mutations escape the test's patch.dict (which does
+    not cover GB_ENVIRONMENT and whose context exits while the daemon thread is
+    still alive). A later test on the same xdist worker then reads the leaked
+    GBSERVER_AUTH_MODE live (gbserver.api.auth reads os.getenv at request time),
+    runs in apikey mode, resolves every request to user 'standalone', and 401s.
+
+    We restore against the once-per-worker baseline (captured in
+    pytest_sessionstart after set_test_env), not a per-test snapshot: the daemon
+    thread can write env after a test's teardown but before the next test's
+    setup, so a per-test snapshot would capture and re-apply the polluted state.
+
+    This also subsumes the former test/unit/standalone/conftest.py fixture that
+    restored a hand-listed subset of standalone leak keys: it covered fewer keys
+    (only the STANDALONE_ENV_DEFAULTS that is_standalone() setdefault()s) and its
+    constants reload / lineage-store reset are redundant — every standalone test
+    that mutates constants self-restores via monkeypatch + a finally-reload, and
+    the lineage singleton is already reset by _reset_lineage_store above.
+
+    See https://github.com/ibm-granite/granite.build/issues/142
+    """
+    yield
+    current_gb = {k for k in os.environ if k.startswith("GB")}
+    # Remove GB* keys a test (or the standalone path) added beyond the baseline.
+    for key in current_gb - _GB_ENV_BASELINE.keys():
+        del os.environ[key]
+    # Reset changed values and re-add any baseline GB* keys a test deleted.
+    for key, value in _GB_ENV_BASELINE.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+
+
 def pytest_addoption(parser):
     """Register custom pytest CLI options.
 
@@ -343,6 +392,19 @@ def pytest_sessionstart(session):
         # import gbserver_test.buildwatcher.utils
         # importlib.reload(gbserver_test.buildwatcher.utils)
         log_gb_env_vars()
+
+    # Capture the authoritative clean GB* baseline for this worker process.
+    # Unconditional (outside the live/mock branches) so it also runs in mock
+    # mode where the SPS block above is skipped. _restore_gb_env_vars resets
+    # os.environ's GB* keys to this baseline after every test, so a standalone
+    # test cannot leak GB_ENVIRONMENT/GBSERVER_AUTH_MODE into later tests on the
+    # same worker. See https://github.com/ibm-granite/granite.build/issues/142
+    _GB_ENV_BASELINE.clear()
+    _GB_ENV_BASELINE.update({k: v for k, v in os.environ.items() if k.startswith("GB")})
+    logger.info(
+        "Captured GB* env baseline (%d vars) for test isolation.",
+        len(_GB_ENV_BASELINE),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -85,13 +85,31 @@ def _convert_enums_to_values(obj: Any) -> Any:
     return obj
 
 
-# Maps a (lowercased) environment type to the gbstep scaffold dir that backend
-# reads at launch. Backends absent from this map (Bash, Docker, RunPod,
-# Skypilot) read none of these dirs. Keys are lowercase because env_type may
-# arrive either capitalized (from environment.type, e.g. "Lsf") or lowercase
-# (from an environment_configs dict key, e.g. "lsf") — see env_type resolution
-# in merge_handle_configs, which likewise falls back to env_type.lower().
-_BACKEND_SCAFFOLD_DIRS = {"lsf": "lsf_scripts", "k8s": "helm-charts"}
+# The gbstep scaffold's backend template dirs that a launch may read.
+_LSF_SCAFFOLD_DIR = "lsf_scripts"
+_K8S_SCAFFOLD_DIR = "helm-charts"
+_BACKEND_SCAFFOLD_DIRS = (_LSF_SCAFFOLD_DIR, _K8S_SCAFFOLD_DIR)
+
+# Maps a known environment type to the single scaffold dir its backend reads at
+# launch (or None when the backend reads neither). env_type may arrive
+# capitalized (from environment.type, e.g. "K8s"/"Lsf"), lowercase (from an
+# environment_configs dict key, e.g. "k8s"/"lsf" — see env_type resolution in
+# merge_handle_configs), or as a backend-equivalent alias (e.g. "kubernetes",
+# which several real cluster environment.yaml files use for the K8s backend) —
+# so keys are lowercase and aliases are enumerated. A type listed with None is a
+# known backend that reads no scaffold dir (Bash/Docker/RunPod/Skypilot): both
+# lsf_scripts and helm-charts are pruned. A type NOT listed at all is unknown
+# and prunes nothing — see _copy_basestep_scaffold.
+_ENV_TYPE_KEEP_DIR = {
+    "lsf": _LSF_SCAFFOLD_DIR,
+    "k8s": _K8S_SCAFFOLD_DIR,
+    "kubernetes": _K8S_SCAFFOLD_DIR,
+    "bash": None,
+    "docker": None,
+    "runpod": None,
+    "skypilot": None,
+    "skypilot_managed": None,
+}
 
 
 def _copy_basestep_scaffold(temp_path: Path, env_type: str) -> None:
@@ -116,12 +134,26 @@ def _copy_basestep_scaffold(temp_path: Path, env_type: str) -> None:
     scaffold contents. To stay safe against those existing per-environment
     behaviors, we do a post-copy deletion of the inactive backend dirs here
     instead — a smaller, reversible change than reworking what gets copied.
+
+    When ``env_type`` isn't a *known* type we prune *nothing*: an unrecognized
+    env must not silently delete every backend's scaffold dir (which previously
+    wiped helm-charts — and its bundled gbstepbase library subchart — for a K8s
+    build whose env declared the "kubernetes" alias, breaking the helm render
+    with `no template "gbstepbase.app"`). Keeping a dir the active backend never
+    reads is harmless; deleting one it needs is not.
     """
     base_step_src = Path(__file__).parent.parent / "builtins/steps/gbstep"
     sync_or_copy(str(base_step_src) + "/", temp_path, delete=False)
 
-    keep_dir = _BACKEND_SCAFFOLD_DIRS.get(env_type.lower())
-    for dir_name in _BACKEND_SCAFFOLD_DIRS.values():
+    key = env_type.lower()
+    if key not in _ENV_TYPE_KEEP_DIR:
+        # Unknown env type — don't risk deleting a dir the active backend may
+        # depend on. Leave the scaffold intact.
+        return
+
+    # Known backend: keep its one dir (or none) and prune the rest.
+    keep_dir = _ENV_TYPE_KEEP_DIR[key]
+    for dir_name in _BACKEND_SCAFFOLD_DIRS:
         if dir_name == keep_dir:
             continue
         stale_dir = temp_path / dir_name
@@ -444,13 +476,22 @@ class TargetStep(BuildEntity):
         merged_env_configs = full_config[ENVIRONMENT_CONFIG]
 
         # --- Determine environment type ---
-        env_type = None
-        if "environment" in full_config and getattr(
-            full_config["environment"], "type", None
-        ):
-            env_type = full_config["environment"].type
-        elif merged_env_configs:
-            env_type = next(iter(merged_env_configs.keys()))
+        # The active environment's class-derived type (e.g. "Lsf", "K8s") is the
+        # authoritative backend selector — the same source used in
+        # _resolve_environment_and_launcher. It must win here because the env's
+        # environment_config is keyed by config sections (workload,
+        # authentication, …), so iterating its keys can yield a non-backend like
+        # "workload"; that then makes _copy_basestep_scaffold drop the correct
+        # launch scaffold (e.g. lsf_scripts) and keep only bash_scripts. Fall
+        # back to the legacy resolution only when the env has no type.
+        env_type = getattr(self.environment, "type", None)
+        if not env_type:
+            if "environment" in full_config and getattr(
+                full_config["environment"], "type", None
+            ):
+                env_type = full_config["environment"].type
+            elif merged_env_configs:
+                env_type = next(iter(merged_env_configs.keys()))
         if not env_type:
             raise ValueError(
                 "No environment type could be resolved (missing 'type' and empty environment_configs)."

@@ -379,6 +379,7 @@ STANDALONE_ENV_DEFAULTS = {
     ENV_VAR_DEFAULT_BUILDRUNNER_TYPE: "thread",
     ENV_VAR_PREFIX + "_PROCEED_WITHOUT_SECRETS": "true",
     ENV_VAR_AUTH_MODE: "apikey",
+    ENV_VAR_PREFIX + "_EVENT_PUBLISHING_ENABLED": "true",
 }
 if is_standalone():
     for _k, _v in STANDALONE_ENV_DEFAULTS.items():

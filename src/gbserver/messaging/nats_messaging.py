@@ -68,6 +68,11 @@ class NATSMessaging(MessagingBase):
         self._closed = False
         self._stop_event: asyncio.Event | None = None
 
+    @classmethod
+    def is_available(cls) -> bool:
+        """Return True if nats-py is installed."""
+        return HAS_NATS
+
     async def setup(self) -> None:
         """Connect to the NATS server and auto-detect JetStream."""
         self._nc = await nats.connect(self._nats_url)
