@@ -12,6 +12,7 @@ permissions:
 jobs:
   trigger-check:
     if: |
+      !github.event.repository.fork &&
       github.event.issue.pull_request &&
       startsWith(github.event.comment.body, '/test') &&
       (
