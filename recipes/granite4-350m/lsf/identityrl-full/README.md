@@ -18,7 +18,7 @@ Three targets on `space://environments/skypilot/lsf`:
   its URL as the `rm_server_url` binding.
 - **identityrl-training** — `openinstruct-rl` GRPO trainer. Resolves the RM
   server URL, mounts the dataset, loads the starting checkpoint, and runs the
-  full GRPO loop (`TOTAL_EPISODES=300000`) on the 8-GPU topology (4 learners +
+  full GRPO loop (`TOTAL_EPISODES=120000`) on the 8-GPU topology (4 learners +
   4 vLLM engines). Emits a converged `checkpoint` output.
 - **teardown** — downs the rm-server cluster once training emits its checkpoint.
 
@@ -38,10 +38,10 @@ matching the `run_rl_bluevela_identity.sh` `-e` overrides:
 
 | Parameter               | smoke | full   |
 |-------------------------|-------|--------|
-| `TOTAL_EPISODES`        | 1024  | 300000 |
-| `SAVE_FREQ`             | 10    | 40     |
-| `EVAL_FREQ`             | 10    | 40     |
-| `CHECKPOINT_STATE_FREQ` | 10    | 40     |
+| `TOTAL_EPISODES`        | 1024  | 120000 |
+| `SAVE_FREQ`             | 10    | 20     |
+| `EVAL_FREQ`             | 10    | 20     |
+| `CHECKPOINT_STATE_FREQ` | 10    | 20     |
 | `REF_POLICY_UPDATE_FREQ`| 6     | 8      |
 
 ## Difference from `ifrl-full`
