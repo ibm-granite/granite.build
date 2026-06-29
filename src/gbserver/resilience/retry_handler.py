@@ -39,8 +39,14 @@ import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, List, Optional, Self, Set
 
-from gbserver.types.buildevent import BuildEvent, BuildLogLevel, create_message_event
+from gbserver.types.buildevent import (
+    BuildEvent,
+    BuildEventType,
+    BuildLogLevel,
+    create_message_event,
+)
 from gbserver.types.errors import WorkloadFailedException
+from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -618,8 +624,16 @@ class RetryHandler:
         """
         Determine if an event represents a terminal workload failure.
 
-        A terminal failure is one where the AppWrapper has entered a Failed state.
-        This is detected by parsing the event message for state information.
+        Two shapes are recognized:
+
+        1. A ``WORKLOAD_STATUS_EVENT`` whose payload reports
+           ``status == Status.FAILED``. This is the cloud/Skypilot-style terminal
+           signal (no AppWrapper ``msg`` to parse). Recognizing it here is what
+           lets a disabled/exhausted handler raise instead of leaving the monitor's
+           deferred ``stop_event`` wait hanging forever.
+        2. A ``MESSAGE_EVENT`` whose ``msg`` carries a ```json``` block with
+           ``state == "Failed"`` or ``state`` starting with ``"Exception:"`` — the
+           K8s AppWrapper terminal shape.
 
         Args:
             event: BuildEvent from the monitor
@@ -627,10 +641,14 @@ class RetryHandler:
         Returns:
             bool: True if this is a terminal failure event
         """
-        if not event.payload or not hasattr(event.payload, "msg"):
-            return False
+        payload = event.payload
+        if (
+            event.type == BuildEventType.WORKLOAD_STATUS_EVENT
+            and getattr(payload, "status", None) == Status.FAILED
+        ):
+            return True
 
-        msg = event.payload.msg
+        msg = getattr(payload, "msg", None)
         if not msg:
             return False
 
