@@ -59,8 +59,8 @@ from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
 from gbserver.messaging.messaging_base import MessagingBase
-from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.artifact import ArtifactType
+from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
     ArtifactEventPayload,
     ArtifactPushedEventPayload,
