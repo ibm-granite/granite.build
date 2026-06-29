@@ -344,6 +344,20 @@ class TargetStepRun(Run):
                     ]
                     if monitor_config.config is None:
                         monitor_config.config = {}
+                    # Render Jinja templates in the monitor config against the
+                    # full config before passing it to the monitor. fill_objtemplate
+                    # is non-mutating, so the rendered copy stored in
+                    # full_config[MONITOR_CONFIG] above never reaches here — without
+                    # this the monitor receives literal "{{ config.* }}" strings
+                    # (e.g. log_retrieval.mode). Mirrors the launcher-config fill;
+                    # field_value_template is skipped so per-log-line templates stay
+                    # literal for later rendering.
+                    filled_monitor_config = fill_objtemplate(
+                        deepcopy(monitor_config.config),
+                        self.full_config,
+                        strict=True,
+                        skip_keys={"field_value_template"},
+                    )
                     monitor_tasks.add(
                         self_entity.environment.monitor(
                             type=monitor_config.type,
@@ -352,7 +366,7 @@ class TargetStepRun(Run):
                             event_q=self.event_q,
                             entityrun_metadata=self.get_runmetadata(),
                             build_id=self.build_id,
-                            **monitor_config.config,
+                            **filled_monitor_config,
                         )
                     )
             await asyncio.gather(*monitor_tasks)

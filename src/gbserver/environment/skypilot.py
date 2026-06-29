@@ -168,6 +168,30 @@ def _parse_log_retrieval(
     return mode, interval_seconds, startup_window_seconds
 
 
+def _effective_poll_timeout(
+    poll_interval: float,
+    log_mode: str,
+    log_interval: float,
+    pulls_active: bool,
+) -> float:
+    """How long the poll loop should sleep before its next wake-up.
+
+    Status polling runs every ``poll_interval`` (often long, e.g. 900s), but
+    periodic/startup_window log pulls must fire on their own (usually shorter)
+    ``interval_seconds``. The single poll loop drives both, so while pulls are
+    active the loop must wake at the *minimum* of the two cadences — otherwise a
+    900s status poll would starve a 15s log-pull schedule (the startup-window
+    binding scrape would only get one shot right after RUNNING). Once pulls stop
+    (window elapsed, or non-pull mode), fall back to the status cadence.
+    """
+    if pulls_active and log_mode in (
+        LOG_RETRIEVAL_PERIODIC,
+        LOG_RETRIEVAL_STARTUP_WINDOW,
+    ):
+        return min(poll_interval, log_interval)
+    return poll_interval
+
+
 # Substrings that mark a transient resource-acquisition / provision failure.
 # Conservative: drawn from observed SkyPilot/slurm failover messages. Anything
 # else (auth, image-not-found, NotSupported, config, quota-denied) is treated as
@@ -1117,6 +1141,9 @@ class Skypilot(Environment):
                 and job_id is not None
             )
             is_running = status is not None and str(status) == "JobStatus.RUNNING"
+            # Set while a pull-mode step is still within its pulling window, so
+            # the loop sleep below shortens to the log-pull cadence.
+            pulls_active = False
 
             if log_retrieval_active and is_running and run_start is None:
                 run_start = time.monotonic()
@@ -1151,6 +1178,7 @@ class Skypilot(Environment):
                 in_window = log_mode == LOG_RETRIEVAL_PERIODIC or (
                     run_start is not None and now - run_start <= startup_window
                 )
+                pulls_active = in_window
                 due = last_pull_at is None or (now - last_pull_at) >= log_interval
                 if in_window and due:
                     last_pull_at = now
@@ -1301,7 +1329,10 @@ class Skypilot(Environment):
                 return
 
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
+                sleep_timeout = _effective_poll_timeout(
+                    poll_interval, log_mode, log_interval, pulls_active
+                )
+                await asyncio.wait_for(stop_event.wait(), timeout=sleep_timeout)
                 # stop_event was set (retry or external cancellation) — clean up log stream
                 if log_stream_task is not None and not log_stream_task.done():
                     log_stream_stop.set()
