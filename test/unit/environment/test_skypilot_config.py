@@ -283,6 +283,24 @@ class TestAwsCredentials:
             )
         assert "default" in str(exc.value)
 
+    def test_secret_resolving_to_none_is_skipped(self, tmp_path):
+        # A field naming a secret whose value is None must be omitted, not crash
+        # configparser (which rejects non-string option values).
+        profiles = [
+            AwsCredentialProfile(
+                profile="default",
+                aws_access_key_id="AWS_KEY",
+                aws_secret_access_key="AWS_SECRET",
+            )
+        ]
+        sc.merge_aws_credentials(
+            profiles, {"AWS_KEY": "AKIA", "AWS_SECRET": None}, "envA", home=tmp_path
+        )
+        cp = configparser.ConfigParser()
+        cp.read(tmp_path / ".aws" / "credentials")
+        assert cp["default"]["aws_access_key_id"] == "AKIA"
+        assert "aws_secret_access_key" not in cp["default"]
+
 
 # --------------------------------------------------------------------------- #
 # No teardown + concurrency

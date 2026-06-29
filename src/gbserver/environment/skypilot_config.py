@@ -389,13 +389,25 @@ def merge_cloud_config(
 def render_aws_profile(
     profile: AwsCredentialProfile, secrets: Dict[str, str]
 ) -> Tuple[str, Dict[str, str]]:
-    """Render an ``AwsCredentialProfile`` to ``(section_name, {key: value})``."""
+    """Render an ``AwsCredentialProfile`` to ``(section_name, {key: value})``.
+
+    Fields configured as ``None`` — and fields naming a secret that resolves to
+    ``None`` — are omitted, so ``configparser`` (which rejects non-string option
+    values) never receives a ``None``.
+    """
     fields = [
         ("aws_access_key_id", profile.aws_access_key_id),
         ("aws_secret_access_key", profile.aws_secret_access_key),
         ("aws_session_token", profile.aws_session_token),
     ]
-    kv = {key: _resolve(raw, secrets) for key, raw in fields if raw is not None}
+    kv: Dict[str, str] = {}
+    for key, raw in fields:
+        if raw is None:
+            continue
+        resolved = _resolve(raw, secrets)
+        if resolved is None:
+            continue  # named secret resolved to None — omit rather than crash
+        kv[key] = resolved
     return profile.profile, kv
 
 
