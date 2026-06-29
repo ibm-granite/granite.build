@@ -11,6 +11,7 @@ import glob
 import os
 import shlex
 import threading
+import time
 import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Tuple, Union
@@ -100,6 +101,71 @@ def _download_logs_with_retry(cluster_name: str, job_id: int):
 # provisioning). Purely defensive — retry_workload sets the complete event in a
 # finally, so this should never actually trip.
 RETRY_RELAUNCH_TIMEOUT_SECONDS = 1800
+
+# Per-step log-retrieval modes, selected via the ``log_retrieval.mode`` key in
+# the skypilot_monitor config. See _parse_log_retrieval for semantics.
+LOG_RETRIEVAL_ON_COMPLETION = "on_completion"
+LOG_RETRIEVAL_PERIODIC = "periodic"
+LOG_RETRIEVAL_STARTUP_WINDOW = "startup_window"
+LOG_RETRIEVAL_STREAM = "stream"
+_LOG_RETRIEVAL_MODES = frozenset(
+    {
+        LOG_RETRIEVAL_ON_COMPLETION,
+        LOG_RETRIEVAL_PERIODIC,
+        LOG_RETRIEVAL_STARTUP_WINDOW,
+        LOG_RETRIEVAL_STREAM,
+    }
+)
+_DEFAULT_STARTUP_WINDOW_SECONDS = 120.0
+
+
+def _coerce_float(value, default: float) -> float:
+    """Best-effort float coercion (templated configs may pass strings)."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_log_retrieval(
+    kwargs: dict, poll_interval: float
+) -> Tuple[str, float, float]:
+    """Resolve the log-retrieval policy from a monitor config block.
+
+    Reads the optional ``log_retrieval`` dict from the monitor config kwargs and
+    returns ``(mode, interval_seconds, startup_window_seconds)``:
+
+    - ``on_completion`` (default): pull the full log once, at terminal status.
+    - ``periodic``: pull incrementally every ``interval_seconds`` while RUNNING
+      (defaults to ``poll_interval``), plus a final pull at terminal.
+    - ``startup_window``: pull periodically only for the first
+      ``startup_window_seconds`` after the job goes RUNNING, then stop (still
+      pulls once at terminal).
+    - ``stream``: real-time ``sky.tail_logs`` follow stream (heaviest; opt-in).
+
+    An unknown mode warns and falls back to ``on_completion``.
+    """
+    block = kwargs.get("log_retrieval") or {}
+    if not isinstance(block, dict):
+        logger.warning(
+            "log_retrieval config is not a mapping (%r); using %s",
+            block,
+            LOG_RETRIEVAL_ON_COMPLETION,
+        )
+        block = {}
+    mode = str(block.get("mode", LOG_RETRIEVAL_ON_COMPLETION))
+    if mode not in _LOG_RETRIEVAL_MODES:
+        logger.warning(
+            "Unknown log_retrieval mode %r; falling back to %s",
+            mode,
+            LOG_RETRIEVAL_ON_COMPLETION,
+        )
+        mode = LOG_RETRIEVAL_ON_COMPLETION
+    interval_seconds = _coerce_float(block.get("interval_seconds"), poll_interval)
+    startup_window_seconds = _coerce_float(
+        block.get("startup_window_seconds"), _DEFAULT_STARTUP_WINDOW_SECONDS
+    )
+    return mode, interval_seconds, startup_window_seconds
 
 
 # Substrings that mark a transient resource-acquisition / provision failure.
@@ -229,6 +295,10 @@ class Skypilot(Environment):
         # from a terminal completion and await the (possibly slow) relaunch
         # instead of racing it.
         self._skypilot_retry_in_progress_events: Dict[str, asyncio.Event] = {}
+        # launch_id -> highest 1-based log line number already parsed, so a
+        # periodic/startup pull resumes after the lines it last emitted events
+        # for instead of re-emitting from the top each time.
+        self._log_lines_parsed: Dict[str, int] = {}
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -938,15 +1008,24 @@ class Skypilot(Environment):
                 "Invalid poll_interval_seconds %r; falling back to 900s", _raw_poll
             )
             poll_interval = 900.0
+        # Per-step log-retrieval policy (mode + cadence). Defaults to
+        # on_completion: pull the full log once at terminal status.
+        log_mode, log_interval, startup_window = _parse_log_retrieval(
+            kwargs, poll_interval
+        )
         last_status = None
         consecutive_poll_failures = 0
         max_poll_failures = 3
 
-        # Live log streaming state
+        # Live log streaming state (only used in ``stream`` mode)
         log_stream_task: Optional[asyncio.Task] = None
         logfile_monitor: Optional["LogFileMonitor"] = None
         log_stream_stop = asyncio.Event()
         lines_already_processed = 0
+        # Pull-mode bookkeeping (periodic / startup_window).
+        run_start: Optional[float] = None  # monotonic time job entered RUNNING
+        last_pull_at: Optional[float] = None  # monotonic time of last pull
+        self._log_lines_parsed.setdefault(launch_id, 0)
 
         while not stop_event.is_set():
             status = None
@@ -1029,16 +1108,22 @@ class Skypilot(Environment):
                     await event_q.put(event)
                 last_status = status
 
-                # Start live log streaming when job enters RUNNING
-                if (
-                    status is not None
-                    and str(status) == "JobStatus.RUNNING"
-                    and event_log_parser_configs
-                    and event_q
-                    and entityrun_metadata
-                    and job_id is not None
-                    and log_stream_task is None
-                ):
+            # --- Log retrieval dispatch (runs every poll while the job lives) ---
+            # Only meaningful once we have event parsers, a sink, and a job id.
+            log_retrieval_active = (
+                event_log_parser_configs
+                and event_q
+                and entityrun_metadata
+                and job_id is not None
+            )
+            is_running = status is not None and str(status) == "JobStatus.RUNNING"
+
+            if log_retrieval_active and is_running and run_start is None:
+                run_start = time.monotonic()
+
+            if log_retrieval_active and is_running and log_mode == LOG_RETRIEVAL_STREAM:
+                # Real-time follow stream: start once on RUNNING, then supervise.
+                if log_stream_task is None:
                     log_stream_task, logfile_monitor = self._start_log_stream_task(
                         cluster_name=cluster_name,
                         job_id=job_id,
@@ -1050,8 +1135,40 @@ class Skypilot(Environment):
                         abort_event=stop_event,
                         start_line=0,
                     )
+            elif (
+                log_retrieval_active
+                and is_running
+                and log_mode
+                in (
+                    LOG_RETRIEVAL_PERIODIC,
+                    LOG_RETRIEVAL_STARTUP_WINDOW,
+                )
+            ):
+                # Incremental pull: re-download the log and parse only lines past
+                # the last one we emitted events for. startup_window stops pulling
+                # once the configured window after RUNNING has elapsed.
+                now = time.monotonic()
+                in_window = log_mode == LOG_RETRIEVAL_PERIODIC or (
+                    run_start is not None and now - run_start <= startup_window
+                )
+                due = last_pull_at is None or (now - last_pull_at) >= log_interval
+                if in_window and due:
+                    last_pull_at = now
+                    resume = self._log_lines_parsed.get(launch_id, 0)
+                    new_last = await self._download_and_parse_logs(
+                        cluster_name=cluster_name,
+                        job_id=job_id,
+                        launch_id=launch_id,
+                        event_q=event_q,
+                        entityrun_metadata=entityrun_metadata,
+                        event_log_parser_configs=event_log_parser_configs,
+                        start_line_num=resume,
+                    )
+                    if new_last:
+                        self._log_lines_parsed[launch_id] = max(resume, new_last)
 
-            # Check if log stream task failed and needs restart
+            # Supervise the live stream task (stream mode only): restart on crash,
+            # record covered line count on clean finish.
             if log_stream_task is not None and log_stream_task.done():
                 exc = (
                     log_stream_task.exception()
@@ -1117,24 +1234,35 @@ class Skypilot(Environment):
                         logfile_monitor.line_num,
                     )
 
+                # Final pull at terminal status. For pull modes resume past the
+                # lines already parsed during the run; for stream mode pull only
+                # if the live stream never ran (lines_already_processed == 0).
+                if log_mode == LOG_RETRIEVAL_STREAM:
+                    terminal_resume = lines_already_processed
+                    should_pull = lines_already_processed == 0
+                else:
+                    terminal_resume = self._log_lines_parsed.get(launch_id, 0)
+                    should_pull = True
                 if (
-                    event_log_parser_configs
+                    should_pull
+                    and event_log_parser_configs
                     and event_q
                     and entityrun_metadata
                     and job_id is not None
-                    and lines_already_processed == 0
                 ):
-                    # Only download and parse logs if the live stream didn't run
-                    # (lines_already_processed > 0 means the stream covered them).
-                    await self._download_and_parse_logs(
+                    new_last = await self._download_and_parse_logs(
                         cluster_name=cluster_name,
                         job_id=job_id,
                         launch_id=launch_id,
                         event_q=event_q,
                         entityrun_metadata=entityrun_metadata,
                         event_log_parser_configs=event_log_parser_configs,
-                        start_line_num=lines_already_processed,
+                        start_line_num=terminal_resume,
                     )
+                    if new_last:
+                        self._log_lines_parsed[launch_id] = max(
+                            terminal_resume, new_last
+                        )
                 if str(status) != "JobStatus.SUCCEEDED":
                     if event_q and entityrun_metadata:
                         from gbserver.types.buildevent import (
@@ -1245,13 +1373,18 @@ class Skypilot(Environment):
         entityrun_metadata,
         event_log_parser_configs: list,
         start_line_num: int = 0,
-    ) -> None:
+    ) -> int:
         """Download job logs and parse for artifact events.
 
         Args:
             start_line_num: Skip lines at or below this number (1-based).
-                Used to avoid re-emitting events already processed by live
-                log streaming.
+                Used to avoid re-emitting events already processed by a prior
+                pull or by live log streaming.
+
+        Returns:
+            The highest 1-based line number seen in the log (0 if nothing was
+            read). Callers use this as the next ``start_line_num`` to resume an
+            incremental pull without re-emitting events.
         """
         if start_line_num > 0:
             logger.info(
@@ -1261,6 +1394,7 @@ class Skypilot(Environment):
                 job_id,
                 start_line_num,
             )
+        max_line = start_line_num
         try:
             log_dir = _download_logs_with_retry(cluster_name, job_id)
             if not log_dir:
@@ -1269,7 +1403,7 @@ class Skypilot(Environment):
                     cluster_name,
                     job_id,
                 )
-                return
+                return max_line
 
             log_dir = os.path.expanduser(log_dir)
             # Save a copy to /tmp for easy debugging access
@@ -1297,12 +1431,14 @@ class Skypilot(Environment):
                     cluster_name,
                     job_id,
                 )
-                return
+                return max_line
 
             for log_file in log_files:
                 try:
                     with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                         for line_num, line in enumerate(f, 1):
+                            if line_num > max_line:
+                                max_line = line_num
                             if line_num <= start_line_num:
                                 continue
                             line = line.rstrip("\n")
@@ -1326,6 +1462,7 @@ class Skypilot(Environment):
                 launch_id,
                 e,
             )
+        return max_line
 
     async def _teardown(self: Self, cluster_name: str) -> None:
         """Tear down a SkyPilot cluster by name, off the event loop.
@@ -1385,6 +1522,7 @@ class Skypilot(Environment):
             self._job_ids.pop(launch_id, None)
             self._launch_kwargs.pop(launch_id, None)
             self._relaunch_attempts.pop(launch_id, None)
+            self._log_lines_parsed.pop(launch_id, None)
 
     async def launch_skypilot_teardown(
         self: Self,

@@ -130,6 +130,9 @@ environment_configs:
         type: skypilot_monitor
         config:
           poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            # Eval steps emit no mid-run events; pull the log once at the end.
+            mode: "{{ config.log_retrieval_mode | default('on_completion') }}"
           event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "Starting sage evaluation"

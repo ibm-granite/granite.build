@@ -252,6 +252,10 @@ environment_configs:
         type: skypilot_monitor
         config:
           poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            # Finetuning: pull incrementally so checkpoint events surface mid-run.
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
           event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             # PROVISIONAL: open_instruct.grpo_fast logs per-step metrics via
