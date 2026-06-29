@@ -476,13 +476,22 @@ class TargetStep(BuildEntity):
         merged_env_configs = full_config[ENVIRONMENT_CONFIG]
 
         # --- Determine environment type ---
-        env_type = None
-        if "environment" in full_config and getattr(
-            full_config["environment"], "type", None
-        ):
-            env_type = full_config["environment"].type
-        elif merged_env_configs:
-            env_type = next(iter(merged_env_configs.keys()))
+        # The active environment's class-derived type (e.g. "Lsf", "K8s") is the
+        # authoritative backend selector — the same source used in
+        # _resolve_environment_and_launcher. It must win here because the env's
+        # environment_config is keyed by config sections (workload,
+        # authentication, …), so iterating its keys can yield a non-backend like
+        # "workload"; that then makes _copy_basestep_scaffold drop the correct
+        # launch scaffold (e.g. lsf_scripts) and keep only bash_scripts. Fall
+        # back to the legacy resolution only when the env has no type.
+        env_type = getattr(self.environment, "type", None)
+        if not env_type:
+            if "environment" in full_config and getattr(
+                full_config["environment"], "type", None
+            ):
+                env_type = full_config["environment"].type
+            elif merged_env_configs:
+                env_type = next(iter(merged_env_configs.keys()))
         if not env_type:
             raise ValueError(
                 "No environment type could be resolved (missing 'type' and empty environment_configs)."
