@@ -1,0 +1,34 @@
+
+# K8s cluster definitions for the sync daemon.
+# Auto-rendered into a config.yaml ConfigMap (GB_UI_CONFIG points to it).
+# Each entry: { name, context, kubeconfig, namespaces }
+clusters: []
+# clusters:
+#   - name: "prod"
+#     context: "my-context/api-server:6443/service-account"
+#     kubeconfig: "/etc/kubeconfig/cluster0"
+#     namespaces: ["granite-build"]
+
+configmaps:
+  APP_ENVIRONMENT: "PROD"
+  APP_AUTH_PROVIDER: "github"
+  APP_GITHUB_CLIENT_ID: "<github-client-id>"
+  APP_GITHUB_URL: "<github-url>"
+  ENVIRONMENTS_JSON: '[{"id":"DEV","label":"Development","url":"<dev-url>","dbSchema":"granite_dot_build_dev"},{"id":"STAGING","label":"Staging","url":"<staging-url>","dbSchema":"granite_dot_build_staging"},{"id":"PROD","label":"Production","url":"<prod-url>","dbSchema":"granite_dot_build_prod"},{"id":"PROD_INTERNAL","label":"Production (internal)","url":"<prod-url>","dbSchema":"granite_dot_build_prod"}]'
+  GITHUB_CALLBACK_URL: "<github-callback-url>"
+  GB_UI_GBSERVER_URL: "<gbs-server-url>"
+  GB_UI_GBSERVER_DB_SCHEMA: "<gbs-server-db-schema>"
+  GB_UI_CLOUD_LOGS_URL: "<cloud-logs-url>"
+  GB_UI_AI_ANALYSIS_ENABLED: "true"
+  GB_UI_CONFIG: "<k8s-config>"
+  GB_UI_SYNC_INTERVAL: "60"
+  GB_UI_LLM_BASE_URL: "<llm-base-url>"
+  GB_UI_LLM_MODELS: "<llm-models>"
+  GB_UI_GBMCP_URL: "<gbmcp-url>"
+
+secrets:
+  GITHUB_CLIENT_SECRET: "<github-client-secret>"
+  GB_UI_GBSERVER_DB_URL: "<gbs-server-db-url>"
+  GB_UI_DATABASE_URL: "<gb-ui-database-url>"
+  GB_UI_CLOUD_LOGS_API_KEY: "<cloud-logs-api-key>"
+  GB_UI_LLM_API_KEY: "<llm-api-key>"

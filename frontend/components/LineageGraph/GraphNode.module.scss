@@ -1,0 +1,91 @@
+.skeletonNodeRight {
+  width: 99%;
+  height: 100%;
+  pointer-events: none;
+  :global(.cds--cc--card-node--button) {
+    background: linear-gradient(to right, var(--cds-layer-01), var(--cds-background)) !important;
+  }
+}
+
+.skeletonNodeLeft {
+  width: 99%;
+  height: 100%;
+  pointer-events: none;
+  :global(.cds--cc--card-node--button) {
+    background: linear-gradient(to right, var(--cds-background), var(--cds-layer-01)) !important;
+  }
+}
+
+.skeletonTitle {
+  font-size: 12px;
+  color: var(--cds-text-disabled);
+}
+
+.foreignObjectOverflow {
+  overflow: visible;
+}
+
+.nodeWrapper {
+  width: 99%;
+  height: 100%;
+  margin-left: 2px;
+  :global(.cds--cc--card-node) {
+    background-color: var(--cds-layer-02, #e8e8e8) !important;
+  }
+  :global(.cds--cc--card-node--button) {
+    padding-left: 0.75rem !important;
+  }
+  :global(.cds--cc--card-node--button:hover) {
+    background-color: var(--cds-layer-hover-02, #d1d1d1) !important;
+  }
+}
+
+.nodeWrapperBuildType {
+  :global(.cds--cc--card-node--button) {
+    border-left: none !important;
+  }
+}
+
+.nodeWrapperSelected {
+  :global(.cds--cc--card-node--button) {
+    background-color: var(--node-selected-bg, var(--cds-layer-02)) !important;
+  }
+}
+
+.nodeWrapperHighlighted {
+  :global(.cds--cc--card-node--button) {
+    outline: 1px solid var(--cds-interactive);
+    outline-offset: -1px;
+  }
+}
+
+.nodeWrapperDimmed {
+  opacity: 0.2;
+  transition: opacity 0.15s ease;
+}
+
+.nodeWrapperPlanned {
+  opacity: 0.6;
+  :global(.cds--cc--card-node) {
+    background-color: transparent !important;
+  }
+  :global(.cds--cc--card-node--button) {
+    background-color: transparent !important;
+    outline: 1px dashed var(--cds-border-subtle-01, #c6c6c6) !important;
+    outline-offset: -1px;
+  }
+  :global(.cds--cc--card-node--button:hover) {
+    background-color: var(--cds-layer-hover-01, #e8e8e8) !important;
+  }
+}
+
+.iconColumn {
+  padding-top: 0.25rem !important;
+  margin-right: 0.25rem;
+  flex-shrink: 0;
+}
+
+.titleColumn {
+  min-width: 0;
+  overflow: hidden;
+}

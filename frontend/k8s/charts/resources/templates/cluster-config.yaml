@@ -1,0 +1,21 @@
+{{- if .Values.clusters }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-cluster-config
+  labels:
+    gb-ui/internal: {{ .Release.Name }}
+data:
+  config.yaml: |
+    # Auto-generated from Helm values
+    clusters:
+    {{- range .Values.clusters }}
+      - name: {{ .name | quote }}
+        context: {{ .context | quote }}
+        kubeconfig: {{ .kubeconfig | quote }}
+        namespaces:
+        {{- range .namespaces }}
+          - {{ . | quote }}
+        {{- end }}
+    {{- end }}
+{{- end }}

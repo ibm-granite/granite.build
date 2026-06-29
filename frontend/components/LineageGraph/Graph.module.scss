@@ -1,0 +1,29 @@
+.container {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+.linkDimmed {
+  opacity: 0.15;
+}
+
+.linkHighlighted {
+  :global(.cds--cc--edge__inner) {
+    stroke-width: 0.15rem;
+    stroke: #5D5D5D !important;
+  }
+}
+
+.linkDefault {
+  :global(.cds--cc--edge__inner) {
+    stroke: #878787 !important;
+  }
+}
+
+.linkSkeleton {
+  :global(.cds--cc--edge__inner) {
+    stroke: #E0E0E0 !important;
+  }
+}

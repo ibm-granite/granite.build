@@ -1,0 +1,129 @@
+{{- $secretConfigName := default .Release.Name .Values.mainResourcesName -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name | quote }}
+  labels:
+    {{- include "gb-ui.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "gb-ui.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        rollme: {{ now | quote }}
+      labels:
+        {{- include "gb-ui.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ .Values.serviceAccountName }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: {{ .Values.image.repository }}
+          imagePullPolicy: Always
+          ports:
+            - name: {{ .Values.service.portsName }}
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+          - name: REQUESTS_CUSTOM_ROOT_CA
+            value: /etc/ssl/custom/custom-root-ca.crt
+          - name: FASTMCP_HOME
+            value: /tmp/fastmcp
+          {{- range $key := .Values.configmaps }}
+          - name: {{ $key | quote }}
+            valueFrom:
+              configMapKeyRef:
+                name: '{{ $secretConfigName }}'
+                key: {{ $key | quote }}
+          {{- end }}
+          {{- range $key := .Values.secrets }}
+          - name: {{ $key | quote }}
+            valueFrom:
+              secretKeyRef:
+                name: '{{ $secretConfigName }}'
+                key: {{ $key | quote }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: custom-root-ca
+              mountPath: /etc/ssl/custom
+              readOnly: true
+            {{- if .Values.clusterConfig.enabled }}
+            - name: cluster-config
+              mountPath: /etc/{{ .Values.clusterConfig.configMapName }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.kubeconfigSecretName }}
+            - name: kubeconfig
+              mountPath: /etc/kubeconfig
+              readOnly: true
+            {{- end }}
+            {{- with .Values.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      restartPolicy: Always
+      volumes:
+        - name: secret-volume
+          secret:
+            secretName: '{{ $secretConfigName }}'
+            defaultMode: 416
+        - name: custom-root-ca
+          configMap:
+            name: custom-root-ca.crt
+        {{- if .Values.clusterConfig.enabled }}
+        - name: cluster-config
+          configMap:
+            name: {{ .Values.clusterConfig.configMapName }}
+        {{- end }}
+        {{- if .Values.kubeconfigSecretName }}
+        - name: kubeconfig
+          secret:
+            secretName: {{ .Values.kubeconfigSecretName }}
+        {{- end }}
+        {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

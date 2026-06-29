@@ -1,0 +1,75 @@
+replicaCount: 1
+
+appName: gb-ui
+
+route:
+  name: dashboard
+  namespace: llm-build-dev
+
+image:
+  repository: us.icr.io/watsonx-data-ns/llm-build-dev/gb-ui:latest
+
+mainResourcesName: gb-ui-resources
+
+configmaps:
+  - APP_ENVIRONMENT
+  - APP_AUTH_PROVIDER
+  - APP_GITHUB_CLIENT_ID
+  - APP_GITHUB_URL
+  - ENVIRONMENTS_JSON
+  - GITHUB_CALLBACK_URL
+  - GB_UI_GBSERVER_URL
+  - GB_UI_GBSERVER_DB_SCHEMA
+  - GB_UI_CLOUD_LOGS_URL
+  - GB_UI_AI_ANALYSIS_ENABLED
+  - GB_UI_CONFIG
+  - GB_UI_SYNC_INTERVAL
+  - GB_UI_LLM_BASE_URL
+  - GB_UI_LLM_MODELS
+  - GB_UI_GBMCP_URL
+
+secrets:
+  - GITHUB_CLIENT_SECRET
+  - GB_UI_GBSERVER_DB_URL
+  - GB_UI_DATABASE_URL
+  - GB_UI_CLOUD_LOGS_API_KEY
+  - GB_UI_LLM_API_KEY
+
+imagePullSecrets:
+  - name: ris3-all-icr-io
+podAnnotations: {}
+podLabels: {}
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 8000
+  portsName: http
+
+resources: {}
+livenessProbe: {}
+readinessProbe: {}
+autoscaling:
+  enabled: false
+# Mount the auto-generated cluster config ConfigMap (set name to match resources chart release name + "-cluster-config")
+clusterConfig:
+  enabled: true
+  configMapName: "gb-ui-resources-cluster-config"
+
+# Name of the Secret containing all kubeconfig files as keys (cluster0, cluster1, ...).
+# This is the same Secret gb_dashboard mounts — typically "<sync-release-name>-kubeconfig".
+# It gets mounted as a directory at /etc/kubeconfig/ so each key becomes a file.
+kubeconfigSecretName: "gb-dashboard-sync-gb-dashboard-sync-kubeconfig"
+
+volumes: []
+volumeMounts: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: {}
+  tls: []

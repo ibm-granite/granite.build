@@ -1,0 +1,79 @@
+.statsRow {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 1rem;
+
+  @media (max-width: 1200px) {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  @media (max-width: 768px) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+// ── Build cards ───────────────────────────────────────────────────────────────
+
+.buildGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.buildCard {
+  padding: 1rem !important;
+}
+
+.buildCardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  cursor: pointer;
+  min-width: 0;
+
+  &:hover span:first-child {
+    text-decoration: underline;
+  }
+}
+
+.expandToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--cds-link-primary);
+
+  &:hover {
+    color: var(--cds-link-primary-hover);
+    text-decoration: underline;
+  }
+}
+
+// ── K8s resources table ───────────────────────────────────────────────────────
+
+.k8sTable {
+  width: 100%;
+  border-collapse: collapse;
+
+  th {
+    padding: 0.25rem 0.75rem 0.25rem 0;
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: var(--cds-text-secondary);
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 0.375rem 0.75rem 0.375rem 0;
+    font-size: 0.875rem;
+    vertical-align: middle;
+    border-top: 1px solid var(--cds-border-subtle-00);
+  }
+}

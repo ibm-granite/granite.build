@@ -1,0 +1,41 @@
+# Node
+node_modules/
+dist/
+.vite/
+.next/
+package-lock.json
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.coverage
+
+# Env
+.env
+.env.local
+*.env
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TypeScript
+*.tsbuildinfo
+
+# Editor
+.idea/
+*.swp
+
+certificates

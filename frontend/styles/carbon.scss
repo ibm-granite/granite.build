@@ -1,0 +1,96 @@
+@use '@carbon/react/scss/config' with (
+  $css--default-type: true,
+  $css--reset: true,
+  $css--font-face: false,
+  $css--body: true
+);
+
+@use '@carbon/react/scss/themes';
+@use '@carbon/react/scss/theme' with (
+  $theme: themes.$g10
+);
+
+@use '@carbon/react';
+
+@use '@carbon/react/scss/breakpoint' as *;
+
+// Emit g10 CSS custom properties as the default (light) theme
+:root {
+  @include theme.theme(themes.$g10);
+}
+
+// g100 (dark) theme override — activated by data-carbon-theme="g100" on <html>
+[data-carbon-theme='g100'] {
+  @include theme.theme(themes.$g100);
+}
+
+// Content area clears the fixed header
+.cds--content {
+  margin-top: 3rem;
+  padding: 0;
+  background: var(--cds-background);
+}
+
+// Black header (always dark regardless of content theme)
+.cds--header {
+  background-color: #161616;
+  border-bottom: 1px solid #393939;
+}
+
+// Hamburger menu button: force white icon on the dark header in all states
+.cds--header .cds--header__menu-toggle {
+  color: #ffffff;
+
+  svg {
+    fill: #ffffff;
+  }
+
+  &:hover {
+    background-color: #353535;
+  }
+
+  &.cds--header__action--active {
+    background-color: #161616;
+    border-color: transparent;
+    border-bottom: 1px solid #393939;
+
+    svg {
+      fill: #ffffff;
+    }
+  }
+}
+
+a.cds--header__name,
+a.cds--header__name:hover {
+  color: #ffffff;
+}
+
+html,
+body {
+  background-color: var(--cds-background);
+}
+
+// Home page resource ProgressBar colors — Carbon Charts categorical palette, colors 01–03
+// Light theme (default)
+.home-gpu-bar .cds--progress-bar__bar { background-color: #6929c4; } // 01. Purple 70
+.home-cpu-bar .cds--progress-bar__bar { background-color: #1192e8; } // 02. Cyan 50
+.home-mem-bar .cds--progress-bar__bar { background-color: #005d5d; } // 03. Teal 70
+
+// Dark theme (g100)
+[data-carbon-theme='g100'] .home-gpu-bar .cds--progress-bar__bar { background-color: #8a3ffc; } // 01. Purple 60
+[data-carbon-theme='g100'] .home-cpu-bar .cds--progress-bar__bar { background-color: #33b1ff; } // 02. Cyan 40
+[data-carbon-theme='g100'] .home-mem-bar .cds--progress-bar__bar { background-color: #007d79; } // 03. Teal 60
+
+// SideNav rail: Gray 20 background in the g10 (light) theme
+.cds--side-nav {
+  background-color: #e0e0e0;
+}
+
+// SideNav rail: restore dark background + add a right border in the g100 (dark) theme
+[data-carbon-theme='g100'] .cds--side-nav {
+  background-color: #262626;
+  border-right: 1px solid #393939;
+}
+
+
+@import '@carbon/charts-react/styles.css';
