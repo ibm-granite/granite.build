@@ -60,6 +60,7 @@ from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
 from gbserver.messaging.messaging_base import MessagingBase
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
+from gbserver.types.artifact import ArtifactType
 from gbserver.types.buildevent import (
     ArtifactEventPayload,
     ArtifactPushedEventPayload,
@@ -1048,11 +1049,22 @@ class Environment(ABC):
         assetstore_type = assetstore.type.lower()
         uristr = URI.get_uristr(uri)
         assert run_metadata is not None, "run_metadata is None"
+        # The artifact type from the output's build.yaml config. The BuildRunner
+        # prefers the type implied by the URI scheme (e.g. hf/lh) and only falls
+        # back to this when the scheme implies nothing (e.g. env_local), so a
+        # `type` set on a typed-store output is ignored, not conflicting.
+        artifact_type = (
+            output_config.type
+            if output_config is not None and output_config.type is not None
+            else ArtifactType.UNDEFINED
+        )
         Environment._thread_local.asset_events[uristr] = Event()
         event = BuildEvent(
             run_metadata=run_metadata,
             type=BuildEventType.ARTIFACT_EVENT,
-            payload=CreatedArtifactEventPayload(uri=uristr, binding_id=binding_id),
+            payload=CreatedArtifactEventPayload(
+                uri=uristr, binding_id=binding_id, type=artifact_type
+            ),
         )
 
         async def pushasset_as_uri() -> URI:
@@ -1091,7 +1103,7 @@ class Environment(ABC):
                     run_metadata=run_metadata,
                     type=BuildEventType.ARTIFACT_PUSHED_EVENT,
                     payload=ArtifactPushedEventPayload(
-                        uri=uristr, binding_id=binding_id or ""
+                        uri=uristr, binding_id=binding_id or "", type=artifact_type
                     ),
                 )
                 await self.event_q.put(pushed_event)

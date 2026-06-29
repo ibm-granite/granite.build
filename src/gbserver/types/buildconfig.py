@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Self, Type
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from gbserver.types.artifact import ArtifactType
 from gbserver.types.config import Config
 from gbserver.types.constants import (
     BUILD_YAML_BASE_KEYS,
@@ -114,12 +115,17 @@ class BuildTargetOutputConfig(Config):
 
     Attributes:
         uri: Output artifact URI template.
+        type: Optional artifact type (e.g. ``dataset``/``model``/``fileset``).
+            Applied to the registered artifact when the store pushes inline (no
+            push step emits one), e.g. the ``env_local`` store. Defaults to
+            ``UNDEFINED`` when omitted.
         event_selectors: Event selector rules for matching artifact events.
         store_push: Optional per-output push configuration from build.yaml.
         space_name: Build space name; set at runtime, not parsed from build.yaml.
     """
 
     uri: Optional[str] = None
+    type: Optional[ArtifactType] = None
     event_selectors: List[BuildTargetOutputEventSelectorsConfig] = Field(
         default_factory=list
     )

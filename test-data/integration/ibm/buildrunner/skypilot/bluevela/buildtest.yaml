@@ -1,0 +1,30 @@
+# YAML-driven spec for
+# test/integration/ibm/buildrunner/skypilot/bluevela/test_command_2target.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# Two command-step targets on BlueVela LSF (Skypilot). `second` binds `first`'s
+# output, proving cross-target output -> input binding over env_local.
+targets:
+  - first
+  - second
+target_expectations:
+  # step_count = 1 per target: the env_local assetstore is a no-op (no hfpull/
+  # hfpush steps are queued), so only the single `command` step is recorded.
+  - target_name: first
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    jobstats_count: 1
+  - target_name: second
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+# Resolve space:// URIs (env + the co-located `command` step) from the repo's
+# local space without cloning from GitHub. Relative to this YAML's directory.
+space_uri: ../../../../../../configurations/spaces/local
+# A happy-path binding test — no simulated failure, and skip the cancellation run.
+simulate_step_failure: false
+tests:
+  - runner
+timeout_minutes: 20

@@ -1,0 +1,51 @@
+name: command
+version: v1
+type: exec
+# A general-purpose Skypilot step that runs an arbitrary shell command supplied
+# by the build.yaml under `config.bash_config.command`. The step exits with that
+# command's status. It is the Skypilot/LSF analogue of the Bash env's `command`
+# step (configurations/assets/environments/bash/steps/command/step.yaml) and is
+# intended for lightweight integration testing on a Skypilot cluster (e.g.
+# BlueVela LSF). Cluster-specific resources (cluster/zone/accelerators/image_id)
+# are supplied per-step from the build.yaml via `config.launcher_config.resources`.
+config:
+  bash_config:
+    command: ""    # shell command to execute on the launched node
+environment_configs:
+  Skypilot:
+    default_launcher: command
+    launchers:
+      command:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # No cpus default here: on the LSF cloud, `cpus: "1+"` raises
+          # ValueError (sky/clouds/lsf.py does float("1+") without stripping the
+          # "+"). When cpus is unset, LSF picks sane defaults (2 vCPUs / scaled
+          # memory). The build.yaml supplies cluster/zone and any
+          # accelerators/memory via config.launcher_config.resources.
+          resources: {}
+          run: |
+            {{ config.bash_config.command }}
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: 5
+          event_configs:
+            # Artifact detection: a line of the form
+            #   LLMB_ARTIFACT_ID:<output-name> LLMB_ARTIFACT_PATH:<path>
+            # registers <path> as the artifact for the named output binding.
+            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              is_json: false
+              event_fields:
+                - field_name: binding_id
+                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                - field_name: path
+                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  is_data: true
+                - field_name: binding
+                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                  is_json: true
