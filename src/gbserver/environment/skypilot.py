@@ -925,7 +925,19 @@ class Skypilot(Environment):
             return
 
         stop_event = self._get_launch_stopped_event(launch_id)
-        poll_interval = kwargs.get("poll_interval", 15)
+        # Canonical key across step.yaml configs is ``poll_interval_seconds``;
+        # accept the legacy ``poll_interval`` for back-compat. Templated configs
+        # may render this as a string (e.g. "120"), so coerce to a number.
+        _raw_poll = kwargs.get(
+            "poll_interval_seconds", kwargs.get("poll_interval", 900)
+        )
+        try:
+            poll_interval = float(_raw_poll)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid poll_interval_seconds %r; falling back to 900s", _raw_poll
+            )
+            poll_interval = 900.0
         last_status = None
         consecutive_poll_failures = 0
         max_poll_failures = 3

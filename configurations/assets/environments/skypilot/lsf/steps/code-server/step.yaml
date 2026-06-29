@@ -69,7 +69,7 @@ environment_configs:
       skypilot_monitor:
         type: skypilot_monitor
         config:
-          poll_interval_seconds: 30
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
           event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             # Use the SAME full-line regex as the NEWARTIFACT event below.
