@@ -246,12 +246,12 @@ config:
         IdentityFile: ~/.ssh/key    # back to the literal if no secret matches — so
         StrictHostKeyChecking: "no" # secret *names* (never values) live in the asset.
         UserKnownHostsFile: /dev/null
-    lsf:                            # `Host` is always literal. The SSH private key is
-      - Host: bluevela              # NOT inlined; `IdentityFile` is just its on-host
-        HostName: LSF_HOSTNAME      # path (the key must already exist and be trusted
-        User: LSF_USER              # by the cluster). Multiple hosts per cloud are
-        Port: 22                    # allowed (one `Host` entry each).
-        IdentityFile: LSF_KEYPATH
+    lsf:                            # `Host` is always literal. Use EITHER `IdentityFile`
+      - Host: bluevela              # (a path to a key already on the host) OR `IdentityKey`
+        HostName: LSF_HOSTNAME      # (key *contents*, typically via a secret — gbserver
+        User: LSF_USER              # writes them to a 0600 file and points IdentityFile at
+        Port: 22                    # it). Specifying both is an error. Multiple hosts per
+        IdentityKey: BV_SSH_KEY     # cloud are allowed (one `Host` entry each).
         IdentitiesOnly: "yes"
 
   cloud_config:                     # Optional. Behavioral SkyPilot config — an
@@ -354,6 +354,12 @@ just before `sky.launch`, via
 - **Exact OpenSSH keys.** `cluster_ssh_configs` entries use the directive names
   from the config file verbatim (`Host`, `HostName`, `User`, `Port`,
   `IdentityFile`, `IdentitiesOnly`, …), so the env mirrors `~/.<cloud>/config` 1:1.
+- **`IdentityKey` (key material, not a path).** As an alternative to `IdentityFile`,
+  a host may set `IdentityKey` to a secret (or inline PEM) holding the private-key
+  *contents*. gbserver writes them to a managed `0600` file under `~/.sky/keys/`
+  (content-addressed, so identical keys reuse a stable path) and rewrites the entry
+  as `IdentityFile <that path>`. Setting both `IdentityFile` and `IdentityKey` on the
+  same host is an error.
 - **Secret resolution.** Every directive value in `cluster_ssh_configs` (except
   the `Host` alias) and every `aws_credentials` value is looked up by exact name
   in the environment's secrets; a match is substituted, otherwise the literal is

@@ -303,6 +303,90 @@ class TestAwsCredentials:
 
 
 # --------------------------------------------------------------------------- #
+# IdentityKey: inline private-key material -> managed 0600 key file
+# --------------------------------------------------------------------------- #
+class TestIdentityKey:
+    _PEM = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc123\n-----END-----"
+
+    def _materialize(self, tmp_path, secrets, **directives):
+        ssh = ClusterSshConfigs(lsf=[_host("bluevela", **directives)])
+        sc.materialize("sky-lsf", ssh, None, None, secrets, home=tmp_path)
+        return tmp_path / ".lsf" / "config"
+
+    def test_writes_keyfile_and_rewrites_identityfile(self, tmp_path):
+        dest = self._materialize(
+            tmp_path, {"BV_KEY": self._PEM}, HostName="h", IdentityKey="BV_KEY"
+        )
+        text = _read(dest)
+        assert "IdentityKey" not in text  # directive replaced
+        # The rewritten IdentityFile points at a managed 0600 key file with the key.
+        key_dir = tmp_path / ".sky" / "keys"
+        key_files = list(key_dir.glob("*.key"))
+        assert len(key_files) == 1
+        assert f"IdentityFile {key_files[0]}" in text
+        assert key_files[0].read_text(encoding="utf-8") == self._PEM + "\n"
+        assert (key_files[0].stat().st_mode & 0o777) == 0o600
+
+    def test_idempotent_same_key(self, tmp_path):
+        dest = self._materialize(
+            tmp_path, {"BV_KEY": self._PEM}, HostName="h", IdentityKey="BV_KEY"
+        )
+        first = _read(dest)
+        self._materialize(
+            tmp_path, {"BV_KEY": self._PEM}, HostName="h", IdentityKey="BV_KEY"
+        )
+        assert _read(dest) == first  # stable content-addressed path, no churn
+
+    def test_same_alias_different_key_collides(self, tmp_path):
+        self._materialize(
+            tmp_path, {"BV_KEY": self._PEM}, HostName="h", IdentityKey="BV_KEY"
+        )
+        with pytest.raises(SkypilotConfigCollisionError):
+            self._materialize(
+                tmp_path,
+                {"BV_KEY": "-----DIFFERENT KEY-----"},
+                HostName="h",
+                IdentityKey="BV_KEY",
+            )
+
+    def test_both_identityfile_and_identitykey_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            self._materialize(
+                tmp_path,
+                {"BV_KEY": self._PEM},
+                IdentityFile="~/.ssh/k",
+                IdentityKey="BV_KEY",
+            )
+
+    def test_empty_resolved_key_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            self._materialize(tmp_path, {"BV_KEY": ""}, IdentityKey="BV_KEY")
+
+    def test_unresolved_secret_name_warns(self, tmp_path, caplog):
+        import logging
+
+        # No matching secret: IdentityKey falls back to the literal name and is
+        # almost certainly a misconfiguration — warn loudly.
+        with caplog.at_level(logging.WARNING):
+            sc._materialize_identity_keys(
+                [_host("bluevela", IdentityKey="BV_SSH_PRIVATE_KEY")],
+                "lsf",
+                {},
+                tmp_path,
+            )
+        assert "looks like a secret name" in caplog.text
+
+    def test_key_contents_not_logged(self, tmp_path, caplog):
+        import logging
+
+        with caplog.at_level(logging.DEBUG):
+            self._materialize(
+                tmp_path, {"BV_KEY": self._PEM}, HostName="h", IdentityKey="BV_KEY"
+            )
+        assert "abc123" not in caplog.text
+
+
+# --------------------------------------------------------------------------- #
 # No teardown + concurrency
 # --------------------------------------------------------------------------- #
 class TestNoTeardownAndConcurrency:

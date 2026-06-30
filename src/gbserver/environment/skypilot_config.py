@@ -33,6 +33,7 @@ pure-filesystem (no ``sky`` import) so it is unit-testable without the SDK.
 """
 
 import configparser
+import hashlib
 import io
 import os
 import threading
@@ -48,6 +49,7 @@ from gbserver.types.environmentconfig import (
 )
 from gbserver.types.errors import SkypilotConfigCollisionError
 from gbserver.utils.logger import get_logger
+from gbserver.utils.ssh_keys import write_private_key_file
 
 logger = get_logger(__name__)
 
@@ -115,6 +117,27 @@ def _render_value(value, secrets: Dict[str, str]) -> str:
     return str(_resolve(value, secrets))
 
 
+def _looks_like_secret_name(value: str) -> bool:
+    """Heuristic: does ``value`` look like a secret name rather than a literal?
+
+    The secret resolver falls back to the literal when a name is not found, so an
+    unresolved secret silently becomes a bogus literal (e.g. an ``IdentityFile``
+    pointing at a path named ``BV_SSH_PRIVATE_KEY``). This flags the common
+    secret-identifier shape — an UPPER_SNAKE token containing at least one letter
+    and no path/whitespace/punctuation chars — so callers can warn. Real literals
+    like ``~/.ssh/id_ed25519``, ``login.example.com`` or ``yes`` do not match.
+
+    :param value: The configured (pre-resolution) directive value as a string.
+    :returns: True if ``value`` resembles a secret name.
+    """
+    return (
+        len(value) >= 3
+        and value == value.upper()
+        and value.replace("_", "").isalnum()
+        and any(ch.isalpha() for ch in value)
+    )
+
+
 def render_ssh_host(host: Dict[str, Any], secrets: Dict[str, str]) -> str:
     """Render one host mapping (OpenSSH directives) to a ``Host`` block.
 
@@ -130,12 +153,24 @@ def render_ssh_host(host: Dict[str, Any], secrets: Dict[str, str]) -> str:
     for key, raw in host.items():
         if key == "Host" or raw is None:
             continue
+        raw_str = str(raw)
+        in_secrets = raw_str in secrets
         logger.debug(
             "ssh directive %s for host %s resolved %s",
             key,
             alias,
-            "from-secret" if str(raw) in secrets else "literal",
+            "from-secret" if in_secrets else "literal",
         )
+        if not in_secrets and _looks_like_secret_name(raw_str):
+            logger.warning(
+                "SSH directive %s for host %s has value %r, which looks like a "
+                "secret name but was not found in this environment's secrets; "
+                "using it as a literal. If it should resolve to a secret, make "
+                "sure that secret is available in the environment's secret store.",
+                key,
+                alias,
+                raw_str,
+            )
         lines.append(f"    {key} {_render_value(raw, secrets)}")
     return "\n".join(lines)
 
@@ -145,6 +180,89 @@ def render_ssh_hosts(
 ) -> Dict[str, str]:
     """Render hosts to an ``{alias: block}`` map (keyed for per-alias merge)."""
     return {h["Host"]: render_ssh_host(h, secrets) for h in hosts}
+
+
+# Directive that supplies the private key *contents* (secret-resolved) instead of
+# a path; materialized to a managed key file and rewritten as ``IdentityFile``.
+IDENTITY_KEY_DIRECTIVE = "IdentityKey"
+
+
+def _identity_key_path(cloud: str, alias: str, contents: str, home_path: Path) -> Path:
+    """Return the managed key-file path for ``contents`` (content-addressed).
+
+    The filename embeds a short hash of the key contents so identical keys reuse a
+    stable path (idempotent, no false collisions) while a different key for the
+    same alias yields a different path — surfacing a real conflict via the normal
+    block-diff collision check.
+
+    :param cloud: Cloud name (``lsf``/``slurm``).
+    :param alias: SSH ``Host`` alias.
+    :param contents: Resolved private-key material.
+    :param home_path: Home directory to materialize under.
+    :returns: ``<home>/.sky/keys/<cloud>__<alias>__<hash>.key``.
+    """
+    digest = hashlib.sha256(contents.encode("utf-8")).hexdigest()[:12]
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in f"{cloud}__{alias}")
+    return home_path / ".sky" / "keys" / f"{safe}__{digest}.key"
+
+
+def _materialize_identity_keys(
+    hosts: List[Dict[str, Any]],
+    cloud: str,
+    secrets: Dict[str, str],
+    home_path: Path,
+) -> List[Dict[str, Any]]:
+    """Resolve any ``IdentityKey`` directive to a managed key file + ``IdentityFile``.
+
+    For each host declaring ``IdentityKey`` (a secret name or inline key material),
+    the resolved key contents are written to a ``0600`` managed file and the host is
+    rewritten to reference that file via ``IdentityFile`` (the ``IdentityKey``
+    directive is dropped). Hosts without ``IdentityKey`` pass through unchanged. Key
+    contents are never logged.
+
+    :param hosts: Host directive mappings for one cloud.
+    :param cloud: Cloud name (``lsf``/``slurm``) — used in the key-file path.
+    :param secrets: Secret name -> value mapping for resolution.
+    :param home_path: Home directory to materialize key files under.
+    :returns: A new host list with ``IdentityKey`` resolved to ``IdentityFile``.
+    :raises ValueError: If a host sets both ``IdentityKey`` and ``IdentityFile``, or
+        ``IdentityKey`` resolves to empty.
+    """
+    result: List[Dict[str, Any]] = []
+    for host in hosts:
+        if IDENTITY_KEY_DIRECTIVE not in host:
+            result.append(host)
+            continue
+        alias = host.get("Host")
+        if "IdentityFile" in host:
+            raise ValueError(
+                f"SSH host {alias!r}: specify either IdentityFile or "
+                f"{IDENTITY_KEY_DIRECTIVE}, not both."
+            )
+        raw = host[IDENTITY_KEY_DIRECTIVE]
+        raw_str = str(raw) if raw is not None else ""
+        if raw_str and raw_str not in secrets and _looks_like_secret_name(raw_str):
+            logger.warning(
+                "%s for host %s has value %r, which looks like a secret name but "
+                "was not found in this environment's secrets; the key file would be "
+                "invalid. Ensure the secret is available in the environment's "
+                "secret store.",
+                IDENTITY_KEY_DIRECTIVE,
+                alias,
+                raw_str,
+            )
+        contents = _resolve(raw, secrets)
+        if not contents or not str(contents).strip():
+            raise ValueError(
+                f"SSH host {alias!r}: {IDENTITY_KEY_DIRECTIVE} resolved to an empty "
+                "value; expected private key contents."
+            )
+        key_path = _identity_key_path(cloud, str(alias), str(contents), home_path)
+        write_private_key_file(str(contents), key_path)
+        new_host = {k: v for k, v in host.items() if k != IDENTITY_KEY_DIRECTIVE}
+        new_host["IdentityFile"] = str(key_path)
+        result.append(new_host)
+    return result
 
 
 def _normalize(block: str) -> str:
@@ -484,6 +602,9 @@ def materialize(
     if ssh:
         for cloud, hosts in (("slurm", ssh.slurm), ("lsf", ssh.lsf)):
             if hosts:
+                # Resolve any IdentityKey directive to a managed key file +
+                # IdentityFile before rendering (keeps render_ssh_host pure).
+                hosts = _materialize_identity_keys(hosts, cloud, secrets, _home(home))
                 merge_ssh_blocks(
                     cloud, render_ssh_hosts(hosts, secrets), env_name, home=home
                 )

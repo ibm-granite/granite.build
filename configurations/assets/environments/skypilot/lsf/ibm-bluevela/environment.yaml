@@ -22,6 +22,7 @@ config:
         HostName: login3.bluevela.rmf.ibm.com
         User: granitebuild
         IdentityFile: ~/.ssh/ibm-bluevela.key
+        # IdentityKey: BV_SSH_PRIVATE_KEY 
         IdentitiesOnly: "yes"
 
   # Inline LSF behavioral config. gbserver writes this to a per-process file and

@@ -74,6 +74,7 @@ from gbserver.utils.launch import (
     launch_command_and_retry_or_raise_errors,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.ssh_keys import write_private_key_file
 from gbserver.utils.ssh_tunnel import SshTunnel
 from gbserver.utils.utils import cmd_safe_join, get_uuid, short_alphanumeric_lower_hash
 
@@ -1917,18 +1918,12 @@ class Lsf(Environment):
         await self._bkill(launch_id, **kwargs)
 
     def _create_ssh_key_file(self: Self, launch_id: str) -> str:
-        ssh_key = self.ssh_key
-        assert ssh_key, "failed to find an ssh_key"
-        temp_dir = tempfile.mkdtemp()
+        assert self.ssh_key, "failed to find an ssh_key"
         suffix_hash = short_alphanumeric_lower_hash(launch_id)
-        key_file_path = os.path.join(temp_dir, f"ssh_key_{suffix_hash}")
-        with open(key_file_path, "w", encoding="utf-8") as f:
-            f.write(ssh_key.rstrip("\n") + "\n")
-        os.chmod(key_file_path, 0o600)
-        logger.info(
-            "SSH key file created at %s for launch_id %s", key_file_path, launch_id
-        )
-        return key_file_path
+        dest = Path(tempfile.mkdtemp()) / f"ssh_key_{suffix_hash}"
+        write_private_key_file(self.ssh_key, dest)
+        logger.info("SSH key file created at %s for launch_id %s", dest, launch_id)
+        return str(dest)
 
     def get_ssh_tunnel(self: Self) -> Optional[SshTunnel]:
         """Get the tunnel, if open and usable.
