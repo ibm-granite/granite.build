@@ -99,6 +99,8 @@ async def _provision_rabbitmq(build_id: str) -> Dict[str, Any]:
     _mgmt_host = urlparse(GBSERVER_RABBITMQ_MGMT_URL).hostname or "localhost"
     host = os.getenv("RABBITMQ_HOST") or _mgmt_host
     port = int(os.getenv("GBSERVER_RABBITMQ_AMQP_PORT", "5672"))
+    # RABBITMQ_TLS controls what we tell clients (subscribe response).
+    # The server's own publish connection uses RABBITMQ_URI scheme (amqps://) instead.
     tls = os.getenv("RABBITMQ_TLS", "false").lower() in ("true", "1")
     username = credentials["username"]
     username_suffix = username.rsplit("-", 1)[-1] if "-" in username else username

@@ -44,6 +44,9 @@ async def publish_simulated_events(
 
     import aio_pika
 
+    # NOTE: Reuses management credentials for AMQP publish — valid for self-test
+    # since the admin user has full permissions. In production, the server uses
+    # separate RABBITMQ_USERNAME/PASSWORD for its publish connection.
     connect_kwargs = dict(host=host, port=port, login=mgmt_user, password=mgmt_password)
     if tls:
         connect_kwargs.update(ssl=True, ssl_context=ssl_ctx)

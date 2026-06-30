@@ -188,6 +188,7 @@ of an exclusive queue. This survives brief disconnections without losing events.
 | `GBSERVER_RABBITMQ_MGMT_URL` | `http://localhost:15672` | Management API URL |
 | `GBSERVER_RABBITMQ_MGMT_USER` | `guest` | Management API user |
 | `GBSERVER_RABBITMQ_MGMT_PASSWORD` | `guest` | Management API password |
+| `GBSERVER_RABBITMQ_TLS_VERIFY` | `true` | TLS verification for Management API (`true`, `false`, or path to CA cert) |
 | `GBSERVER_EVENT_SUBSCRIBE_TTL` | `60` | Credential TTL in seconds |
 | `RABBITMQ_HOST` | *(derived from mgmt URL)* | RabbitMQ broker host (override; normally derived from `GBSERVER_RABBITMQ_MGMT_URL`) |
 | `GBSERVER_RABBITMQ_AMQP_PORT` | `5672` | RabbitMQ AMQP data port (distinct from the management API port in the mgmt URL) |

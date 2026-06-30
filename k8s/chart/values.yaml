@@ -187,6 +187,7 @@ secrets:
       id_ed25519: xxxx
       id_ed25519.pub: xxxx
       ibm-cloud-databases.cert: xxxx
+      rabbitmq-ca.cert: xxxx
       known_hosts: xxxx
       ssh-config: xxxx
       ris3-kube-config: xxxx # this is poorly named- would prefer e.g. build-runner-kube-config. It's still need to launch build-runner
