@@ -30,7 +30,8 @@ jobs:
       # Don't cancel 3.12 just because 3.11 failed — we want both results.
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        # python-version: ["3.11", "3.12"]
+        python-version: ["3.12"] # Only run 1 python since HF rate limit may be failing us
     steps:
       - uses: actions/checkout@v5
 
