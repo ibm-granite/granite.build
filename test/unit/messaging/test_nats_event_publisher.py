@@ -13,8 +13,11 @@ class TestBuildEventPublisherBackendSelection:
 
     @patch.dict(os.environ, {"GB_ENVIRONMENT": "STANDALONE"}, clear=False)
     @patch("gbserver.messaging.build_event_publisher.HAS_NATS", True)
+    @patch(
+        "gbserver.messaging.build_event_publisher._is_nats_reachable", return_value=True
+    )
     @patch("gbserver.messaging.nats_messaging.NATSMessaging")
-    def test_from_env_uses_nats_in_standalone(self, mock_nats_cls):
+    def test_from_env_uses_nats_in_standalone(self, mock_nats_cls, _mock_reachable):
         """In standalone without RABBITMQ_HOST, from_env() creates NATSMessaging."""
         os.environ.pop("RABBITMQ_HOST", None)
         mock_nats_instance = MagicMock()
@@ -39,8 +42,11 @@ class TestBuildEventPublisherBackendSelection:
 
     @patch.dict(os.environ, {"GB_ENVIRONMENT": "STANDALONE"}, clear=False)
     @patch("gbserver.messaging.build_event_publisher.HAS_NATS", True)
-    def test_is_configured_true_in_standalone_with_nats(self):
-        """is_configured() returns True in standalone when nats-py is available."""
+    @patch(
+        "gbserver.messaging.build_event_publisher._is_nats_reachable", return_value=True
+    )
+    def test_is_configured_true_in_standalone_with_nats(self, _mock_reachable):
+        """is_configured() returns True in standalone when nats-py is available and reachable."""
         os.environ.pop("RABBITMQ_HOST", None)
         assert BuildEventPublisher.is_configured() is True
 

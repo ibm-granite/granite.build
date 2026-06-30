@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from gbserver.messaging.messaging_base import Address, MessagingBase
 from gbserver.types.buildevent import (
@@ -41,6 +43,23 @@ logger = get_logger(__name__)
 
 
 from gbcommon.types.gbenvconfig import is_standalone as _is_standalone
+
+
+def _is_nats_reachable(nats_url: str, timeout: float = 0.5) -> bool:
+    """Quick socket probe to check if a NATS server is accepting connections.
+
+    This probe runs once per build phase (not per event) due to lru_cache in
+    get_message_logger. A local NATS server responds in <1ms; 0.5s timeout is
+    generous while avoiding long hangs when the server is down.
+    """
+    parsed = urlparse(nats_url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 4222
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 class BuildEventPublisher:
@@ -60,14 +79,14 @@ class BuildEventPublisher:
     def from_env(
         cls,
         messaging_secret: Optional[Any] = None,
-    ) -> "BuildEventPublisher":
+    ) -> "Optional[BuildEventPublisher]":
         """
         Factory that creates the publisher from environment variables.
 
         Backend selection:
         - If RABBITMQ_HOST is set: use RabbitMQ
-        - Elif standalone mode and nats-py is available: use NATS
-        - Else: raise RuntimeError
+        - Elif standalone mode, nats-py available, and server reachable: use NATS
+        - Else: return None (no backend available)
         """
         if os.getenv("RABBITMQ_HOST"):
             from gbserver.messaging.rabbitmq_base import RabbitMQBase
@@ -81,17 +100,25 @@ class BuildEventPublisher:
             return cls(backend=backend)
 
         if _is_standalone() and HAS_NATS:
-            from gbserver.messaging.nats_messaging import NATSMessaging
             from gbserver.types.constants import GBSERVER_NATS_URL
 
-            addr = Address(exchange=None, queue="build", routing_key=None)
-            backend = NATSMessaging(addr=addr, nats_url=GBSERVER_NATS_URL)
-            return cls(backend=backend)
+            if _is_nats_reachable(GBSERVER_NATS_URL):
+                from gbserver.messaging.nats_messaging import NATSMessaging
 
-        raise RuntimeError(
-            "BuildEventPublisher requires either RABBITMQ_HOST to be set, "
-            "or standalone mode with nats-py installed."
-        )
+                logger.info(
+                    "NATS server reachable at %s — event publishing enabled",
+                    GBSERVER_NATS_URL,
+                )
+                addr = Address(exchange=None, queue="build", routing_key=None)
+                backend = NATSMessaging(addr=addr, nats_url=GBSERVER_NATS_URL)
+                return cls(backend=backend)
+
+            logger.warning(
+                "NATS server not reachable at %s — event publishing disabled",
+                GBSERVER_NATS_URL,
+            )
+
+        return None
 
     @classmethod
     def is_configured(cls) -> bool:
@@ -99,7 +126,9 @@ class BuildEventPublisher:
         if os.getenv("RABBITMQ_HOST"):
             return True
         if _is_standalone() and HAS_NATS:
-            return True
+            from gbserver.types.constants import GBSERVER_NATS_URL
+
+            return _is_nats_reachable(GBSERVER_NATS_URL)
         return False
 
     async def setup(self) -> None:
