@@ -13,7 +13,7 @@ from base64 import b64decode, b64encode
 from datetime import datetime, timezone
 from glob import glob
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
@@ -1268,6 +1268,10 @@ def build_status(
         callback,
         stop_spinner,
     )
+    # make_gbserver_call returns None on a server/connection error (after firing
+    # the "error" callback). Bail out instead of dereferencing None.
+    if status_response is None:
+        return None, None, None, "Build status could not be retrieved."
     build_status = status_response["status"]
     retry_chain = status_response.get("retry_chain") if follow_retries else None
 
@@ -1910,7 +1914,7 @@ def _step_sort_key(step: Any) -> datetime:
     return _parse_started_at(step.get("started_at"))
 
 
-def process_target_runs(target_runs: List[Any]) -> Tuple[List[Any], List[Any]]:
+def process_target_runs(target_runs: List[Any]) -> Dict[str, Any]:
     target_runs = sorted(target_runs, key=_target_sort_key)
     targets = {}
     for target_run in target_runs:
@@ -1994,7 +1998,7 @@ def process_target_runs_to_json(target_runs: List[Any]) -> List[Any]:
         targets.append(
             {
                 "target_name": target.get("name"),
-                "build_id": target.get("build_id"),
+                "build_id": target.get("build_id", ""),
                 "target_id": target.get("uuid"),
                 "status": target.get("status"),
                 "skipped_for_prerun_target_id": target.get(
