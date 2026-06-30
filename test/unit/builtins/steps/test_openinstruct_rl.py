@@ -1,7 +1,7 @@
 """Unit tests for the openinstruct-rl (GRPO) step asset.
 
 openinstruct-rl is a declarative step.yaml under
-``configurations/assets/environments/skypilot/lsf/steps/openinstruct-rl/``,
+``configurations/assets/environments/skypilot/lsf/ibm-bluevela/steps/openinstruct-rl/``,
 companion to openinstruct-sft. These tests load the shipped asset, render its
 ``run:`` block via the same Jinja renderer production uses
 (``gbserver.utils.template.fill_template``), and assert the GRPO command,
@@ -19,7 +19,7 @@ from gbserver.utils.template import fill_template
 REPO_ROOT = Path(__file__).resolve().parents[4]
 RL_STEP_YAML = (
     REPO_ROOT
-    / "configurations/assets/environments/skypilot/lsf/steps/openinstruct-rl/step.yaml"
+    / "configurations/assets/environments/skypilot/lsf/ibm-bluevela/steps/openinstruct-rl/step.yaml"
 )
 
 

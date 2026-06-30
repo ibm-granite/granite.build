@@ -15,7 +15,7 @@ from gbserver.utils.template import fill_template
 REPO_ROOT = Path(__file__).resolve().parents[4]
 CODE_STEP_YAML = (
     REPO_ROOT
-    / "configurations/assets/environments/skypilot/lsf/steps/code-server/step.yaml"
+    / "configurations/assets/environments/skypilot/lsf/ibm-bluevela/steps/code-server/step.yaml"
 )
 
 
