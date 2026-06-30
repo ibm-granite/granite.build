@@ -98,7 +98,7 @@ async def _provision_rabbitmq(build_id: str) -> Dict[str, Any]:
     # Derive host from mgmt URL if RABBITMQ_HOST not explicitly set
     _mgmt_host = urlparse(GBSERVER_RABBITMQ_MGMT_URL).hostname or "localhost"
     host = os.getenv("RABBITMQ_HOST") or _mgmt_host
-    port = int(os.getenv("RABBITMQ_PORT", "5672"))
+    port = int(os.getenv("GBSERVER_RABBITMQ_AMQP_PORT", "5672"))
     tls = os.getenv("RABBITMQ_TLS", "false").lower() in ("true", "1")
     username = credentials["username"]
     username_suffix = username.rsplit("-", 1)[-1] if "-" in username else username

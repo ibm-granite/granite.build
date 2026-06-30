@@ -5,8 +5,8 @@ Usage:
     export GBSERVER_RABBITMQ_MGMT_URL='https://<host>:<mgmt-port>'
     export GBSERVER_RABBITMQ_MGMT_USER='admin'
     export GBSERVER_RABBITMQ_MGMT_PASSWORD='<password>'
-    export RABBITMQ_HOST='<host>'
-    export RABBITMQ_PORT='<amqp-port>'
+    export RABBITMQ_HOST='<host>'  # optional; derived from mgmt URL if unset
+    export GBSERVER_RABBITMQ_AMQP_PORT='<amqp-port>'
     export RABBITMQ_CA_CERT='/path/to/ca.pem'  # optional; enables TLS verification
 
     python scripts/e2e_subscribe_test.py --build-id <build-id> [--self-test] [--timeout 60]
@@ -118,7 +118,7 @@ async def subscribe_and_listen(
     mgmt_user = os.environ["GBSERVER_RABBITMQ_MGMT_USER"]
     mgmt_password = os.environ["GBSERVER_RABBITMQ_MGMT_PASSWORD"]
     host = os.environ["RABBITMQ_HOST"]
-    port = int(os.environ.get("RABBITMQ_PORT", "5672"))
+    port = int(os.environ.get("GBSERVER_RABBITMQ_AMQP_PORT", "5672"))
     tls = os.environ.get("RABBITMQ_TLS", "true").lower() in ("true", "1")
     ca_cert = os.environ.get("RABBITMQ_CA_CERT", "")
     exchange_name = os.environ.get("GBSERVER_BUILD_EVENTS_EXCHANGE", "build-events")
