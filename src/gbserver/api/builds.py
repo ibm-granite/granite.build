@@ -138,25 +138,25 @@ class GetBuildResponse(BaseModel):
     build: StoredBuild
 
 
-class TargetRecord2(BaseModel):
+class TargetRecord(BaseModel):
     target: StoredTargetRun
     steps: list[StoredStepRun]
     input_artifacts: list[ArtifactRegistration] = []
     output_artifacts: list[ArtifactRegistration] = []
 
 
-class BuildStatus2(BaseModel):
+class BuildStatus(BaseModel):
     build: StoredBuild
-    target_runs: list[TargetRecord2]
+    target_runs: list[TargetRecord]
 
 
 class BuildChainMember(BaseModel):
     build: StoredBuild
-    target_runs: list[TargetRecord2]
+    target_runs: list[TargetRecord]
 
 
-class BuildStatusResponse2(BaseModel):
-    status: BuildStatus2
+class BuildStatusResponse(BaseModel):
+    status: BuildStatus
     # Populated (root-first) only when the request sets follow_retries=true.
     retry_chain: Optional[list[BuildChainMember]] = None
 
@@ -355,7 +355,7 @@ def __get_artifacts(
 
 def __build_target_records(
     storage: SingletonAdminStorage, build_id: str
-) -> List[TargetRecord2]:
+) -> List[TargetRecord]:
     """Assemble the per-target records (steps + artifacts) for one build."""
     row_filter = get_row_filter(build_id=build_id)
     target_runs = cast(
@@ -368,7 +368,7 @@ def __build_target_records(
             list[StoredStepRun],
             storage.step_storage.get_by_where({"target_id": target.uuid}),
         )
-        record = TargetRecord2(
+        record = TargetRecord(
             target=target,
             steps=steps,
             input_artifacts=input_artifacts,
@@ -378,10 +378,10 @@ def __build_target_records(
     return target_records
 
 
-@builds_api.get("/{build_id}/status", response_model=BuildStatusResponse2)
+@builds_api.get("/{build_id}/status", response_model=BuildStatusResponse)
 def get_build_status(
     build_id: str, follow_retries: bool = False
-) -> BuildStatusResponse2:
+) -> BuildStatusResponse:
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
@@ -390,10 +390,10 @@ def get_build_status(
         )
     assert isinstance(build, StoredBuild)
     build.build_archive = ""
-    build_status = BuildStatus2(
+    build_status = BuildStatus(
         build=build, target_runs=__build_target_records(storage, build_id)
     )
-    resp = BuildStatusResponse2(status=build_status)
+    resp = BuildStatusResponse(status=build_status)
     if follow_retries:
         members = get_retry_chain_members(storage.build_storage, build)
         chain = []
@@ -409,10 +409,10 @@ def get_build_status(
     return resp
 
 
-@builds_api.get("/{build_id}/status2", response_model=BuildStatusResponse2)
+@builds_api.get("/{build_id}/status2", response_model=BuildStatusResponse)
 def get_build_status2(
     build_id: str, follow_retries: bool = False
-) -> BuildStatusResponse2:
+) -> BuildStatusResponse:
     # Retained as a backward-compatible alias of the primary /status endpoint.
     return get_build_status(build_id, follow_retries)
 

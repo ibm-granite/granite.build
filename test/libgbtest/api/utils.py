@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from libgbtest.utils import AbstractSingletonStorageUsingPreloadedSpaceTest
 
 from gbserver.api.auth import get_gh_user
-from gbserver.api.builds import BuildStatusResponse2
+from gbserver.api.builds import BuildStatusResponse
 from gbserver.api.root_api import root_api
 from gbserver.types.auth import User
 from gbserver.types.constants import GBSERVER_GITHUB_TOKEN
@@ -49,5 +49,5 @@ if __name__ == "__main__":
     resp_json = resp.json()
     # print(f"\nresp.content={resp.content}")
     print(f"\njson resp={resp_json}")
-    resp: BuildStatusResponse2 = BuildStatusResponse2.model_validate(resp_json)
+    resp: BuildStatusResponse = BuildStatusResponse.model_validate(resp_json)
     print(f"\n\nbuild status={resp}")
