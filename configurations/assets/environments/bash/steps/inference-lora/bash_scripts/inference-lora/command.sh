@@ -42,6 +42,21 @@ for c in /usr/local/bin/python3.13 python3.13 python3.12 python3.11 python3; do
 done
 [ -n "$PY" ] || { echo "command.sh: no python3 interpreter found" >&2; exit 127; }
 
+# Require Python >=3.10. The interpreter search can fall through to a host's
+# system python3 (e.g. macOS ships 3.9 at /usr/bin/python3), but the step's deps
+# (modern trl/transformers) require >=3.10 — building a 3.9 venv just defers the
+# failure to an opaque pip "no matching distribution" error. Fail fast instead
+# with an actionable message. Parse "major minor" and reject minor<10 on major 3.
+PY_VER="$("$PY" -c 'import sys; print("%d %d" % sys.version_info[:2])')"
+PY_MAJOR="${PY_VER%% *}"
+PY_MINOR="${PY_VER##* }"
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; then
+  echo "command.sh: found Python ${PY_MAJOR}.${PY_MINOR} at '$PY', but this step" \
+       "requires Python >=3.10. Install a newer Python (3.10-3.13) or put it on" \
+       "PATH so the interpreter search above can find it." >&2
+  exit 1
+fi
+
 VENV="$VENV_BASE/$STEP"
 if [ ! -x "$VENV/bin/python" ]; then
   echo "command.sh: creating venv at $VENV using $PY"

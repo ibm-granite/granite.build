@@ -1,6 +1,13 @@
 # Dependencies for the inference-lora step, installed into the step's venv by
-# command.sh on first run. CPU-only torch keeps the download small; the
-# standalone gbserver venv ships none of these.
+# command.sh on first run. The standalone gbserver venv ships none of these.
+#
+# torch comes from PyTorch's CUDA 13.0 index so it uses the GPU when present
+# (e.g. the H200 sandbox, driver CUDA 13.0). The cu130 wheel bundles its own CUDA
+# runtime — no system CUDA toolkit needed, just an NVIDIA driver. We use
+# --extra-index-url (PyPI stays primary so transformers/etc. still resolve); the
+# +cu130 local-version tag makes pip prefer the GPU wheel over the plain one.
+# On a CPU-only host the cu130 wheel still installs and falls back to CPU.
+--extra-index-url https://download.pytorch.org/whl/cu130
 torch
 # Cap <5: transformers 5.x changed apply_chat_template/generate input handling.
 # Pin to a 4.x to avoid version drift pulling an incompatible major. See run.py

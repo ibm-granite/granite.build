@@ -130,6 +130,13 @@ class Bash(Environment):
                 logger.info("Falling back to current working directory: %s", cwd)
 
             # Env precedence (lowest to highest):
+            #   0. os.environ      — inherit the server's environment so PATH,
+            #                        HOME, etc. reach the child. Without this,
+            #                        `python3 -m venv` fails because Python
+            #                        can't resolve sys.executable from an empty
+            #                        PATH (bash finds python via its builtin
+            #                        default PATH, but the child Python sees
+            #                        an unset PATH).
             #   1. self._env       — space secrets + environment.yaml `env`
             #   2. launcher `env`  — defaults declared in the step.yaml launcher
             #   3. config.bash.env — per-build overrides from build.yaml's step
@@ -141,6 +148,7 @@ class Bash(Environment):
             bash_config = step_config.get("bash", {}) or {}
             bash_config_env = bash_config.get("env", {}) or {}
             env = {
+                **os.environ,
                 **self._env,
                 **launcher_config.get("env", {}),
                 **{str(k): str(v) for k, v in bash_config_env.items()},

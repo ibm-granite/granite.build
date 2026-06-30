@@ -1,12 +1,24 @@
 # Dependencies for the lora-finetune step, installed into the step's venv by
-# command.sh on first run. CPU-only torch keeps the download small; the
-# standalone gbserver venv ships none of these.
+# command.sh on first run. The standalone gbserver venv ships none of these.
+#
+# torch comes from PyTorch's CUDA 13.0 index so it uses the GPU when present
+# (e.g. the H200 sandbox, driver CUDA 13.0). The cu130 wheel bundles its own CUDA
+# runtime — no system CUDA toolkit needed, just an NVIDIA driver. We use
+# --extra-index-url (PyPI stays primary so transformers/trl/etc. still resolve);
+# the +cu130 local-version tag makes pip prefer the GPU wheel over the plain one.
+# On a CPU-only host the cu130 wheel still installs and falls back to CPU.
+--extra-index-url https://download.pytorch.org/whl/cu130
 torch
 # Cap <5: pin to a 4.x for consistency with the inference steps and to avoid
 # version drift pulling an incompatible transformers major. See the inference
 # steps' run.py generate() for the apply_chat_template handling this protects.
 transformers>=4.55,<5
-trl>=0.12
+# No upper cap: trl 0.25+ enables a chunked-CE training path that computes the MoE
+# load-balancing aux loss unconditionally, which crashed on zero-expert MoE configs
+# (empty gate_logits -> IndexError). run.py guards against that by zeroing
+# router_aux_loss_coef for num_local_experts==0 models, so newer trl is safe AND we
+# keep its chunked-CE memory savings. See the zero-expert guard in run.py main().
+trl>=0.25
 peft>=0.13
 datasets
 accelerate

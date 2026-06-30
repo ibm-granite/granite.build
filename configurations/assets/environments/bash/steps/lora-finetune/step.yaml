@@ -38,8 +38,13 @@ environment_configs:
         # No launcher `env:` either: a launcher env would WIN over build.yaml's
         # `config.bash.env` (see Bash.launch_nohup) and defeat per-build
         # overrides. Set step parameters in build.yaml under `config.bash.env`;
-        # the script defaults each via os.environ.get(...):
+        # the script defaults each via os.environ.get(...). See the README for the
+        # full table; the knobs are:
         #   MAX_STEPS (10), LEARNING_RATE (2e-4),
+        #   LORA_RANK (16), LORA_ALPHA (32), LORA_DROPOUT (0.05),
+        #   LORA_TARGET_MODULES ("all-linear"),
+        #   BATCH_SIZE (1), GRAD_ACCUM (2),
+        #   ROUTER_AUX_LOSS_COEF (auto: 0.0 zero-expert / 0.001 real MoE; advanced),
         #   TRAIN_SUBJECT ("the best ibm office location"),
         #   TRAIN_ANSWER ("Silicon Valley Labs").
         # TRAIN_SUBJECT/ANSWER drive the synthetic data and are ignored when a
