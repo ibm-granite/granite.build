@@ -113,6 +113,7 @@ class TestEventSubscribeEndpoint:
             "delivery_type": "rabbitmq",
             "host": "rmq.example.com",
             "port": 5672,
+            "tls": True,
             "username": "tmp-build-abc-123d-xyzabc",
             "password": "secret-password-12345678",
             "exchange": "build-events",
@@ -133,6 +134,7 @@ class TestEventSubscribeEndpoint:
         assert data["delivery_type"] == "rabbitmq"
         assert data["host"] == "rmq.example.com"
         assert data["port"] == 5672
+        assert data["tls"] is True
         assert data["username"] == "tmp-build-abc-123d-xyzabc"
         assert data["password"] == "secret-password-12345678"
         assert data["exchange"] == "build-events"

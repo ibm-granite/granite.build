@@ -38,6 +38,7 @@ class SubscribeResponse(BaseModel):
     delivery_type: str
     host: str
     port: int
+    tls: bool = False
     username: str | None = None
     password: str | None = None
     exchange: str | None = None

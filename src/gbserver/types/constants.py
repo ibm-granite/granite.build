@@ -703,6 +703,22 @@ GBSERVER_RABBITMQ_MGMT_PASSWORD: str = os.getenv(
     ENV_VAR_GBSERVER_RABBITMQ_MGMT_PASSWORD, "guest"
 )
 
+ENV_VAR_GBSERVER_RABBITMQ_TLS_VERIFY = ENV_VAR_PREFIX + "_RABBITMQ_TLS_VERIFY"
+_rabbitmq_tls_verify_raw: str = os.getenv(
+    ENV_VAR_GBSERVER_RABBITMQ_TLS_VERIFY, "true"
+).strip()
+# Accepts "true" (default, uses system CA), "false", or a file path to a CA bundle.
+# Path values are validated at import time; invalid paths fall back to True (system CA).
+if _rabbitmq_tls_verify_raw.lower() in ("true", "false", "1", "0"):
+    GBSERVER_RABBITMQ_TLS_VERIFY: bool | str = _rabbitmq_tls_verify_raw.lower() in (
+        "true",
+        "1",
+    )
+elif os.path.isfile(_rabbitmq_tls_verify_raw):
+    GBSERVER_RABBITMQ_TLS_VERIFY = _rabbitmq_tls_verify_raw
+else:
+    GBSERVER_RABBITMQ_TLS_VERIFY = True
+
 ENV_VAR_GBSERVER_EVENT_SUBSCRIBE_TTL = ENV_VAR_PREFIX + "_EVENT_SUBSCRIBE_TTL"
 GBSERVER_EVENT_SUBSCRIBE_TTL: int = int(
     os.getenv(ENV_VAR_GBSERVER_EVENT_SUBSCRIBE_TTL, "60")
