@@ -93,8 +93,8 @@ async def subscribe_build_events(build_id: str, request: Request) -> SubscribeRe
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Event subscription service unavailable: {exc}",
-        )
+            detail="Event subscription service unavailable.",
+        ) from exc
     except httpx.ConnectError as exc:
         logger.error(
             "Cannot reach RabbitMQ management API for build %s: %s",
@@ -104,7 +104,7 @@ async def subscribe_build_events(build_id: str, request: Request) -> SubscribeRe
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Event subscription service unreachable.",
-        )
+        ) from exc
     except httpx.TimeoutException as exc:
         logger.error(
             "Timeout contacting RabbitMQ management API for build %s: %s",
@@ -114,5 +114,5 @@ async def subscribe_build_events(build_id: str, request: Request) -> SubscribeRe
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="Event subscription service timed out.",
-        )
+        ) from exc
     return SubscribeResponse(**result)
