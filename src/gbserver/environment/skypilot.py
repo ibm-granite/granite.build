@@ -10,6 +10,8 @@ import asyncio
 import glob
 import os
 import shlex
+import threading
+import time
 import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Tuple, Union
@@ -100,6 +102,95 @@ def _download_logs_with_retry(cluster_name: str, job_id: int):
 # finally, so this should never actually trip.
 RETRY_RELAUNCH_TIMEOUT_SECONDS = 1800
 
+# Per-step log-retrieval modes, selected via the ``log_retrieval.mode`` key in
+# the skypilot_monitor config. See _parse_log_retrieval for semantics.
+LOG_RETRIEVAL_ON_COMPLETION = "on_completion"
+LOG_RETRIEVAL_PERIODIC = "periodic"
+LOG_RETRIEVAL_STARTUP_WINDOW = "startup_window"
+LOG_RETRIEVAL_STREAM = "stream"
+_LOG_RETRIEVAL_MODES = frozenset(
+    {
+        LOG_RETRIEVAL_ON_COMPLETION,
+        LOG_RETRIEVAL_PERIODIC,
+        LOG_RETRIEVAL_STARTUP_WINDOW,
+        LOG_RETRIEVAL_STREAM,
+    }
+)
+_DEFAULT_STARTUP_WINDOW_SECONDS = 120.0
+
+
+def _coerce_float(value, default: float) -> float:
+    """Best-effort float coercion (templated configs may pass strings)."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_log_retrieval(
+    kwargs: dict, poll_interval: float
+) -> Tuple[str, float, float]:
+    """Resolve the log-retrieval policy from a monitor config block.
+
+    Reads the optional ``log_retrieval`` dict from the monitor config kwargs and
+    returns ``(mode, interval_seconds, startup_window_seconds)``:
+
+    - ``on_completion`` (default): pull the full log once, at terminal status.
+    - ``periodic``: pull incrementally every ``interval_seconds`` while RUNNING
+      (defaults to ``poll_interval``), plus a final pull at terminal.
+    - ``startup_window``: pull periodically only for the first
+      ``startup_window_seconds`` after the job goes RUNNING, then stop (still
+      pulls once at terminal).
+    - ``stream``: real-time ``sky.tail_logs`` follow stream (heaviest; opt-in).
+
+    An unknown mode warns and falls back to ``on_completion``.
+    """
+    block = kwargs.get("log_retrieval") or {}
+    if not isinstance(block, dict):
+        logger.warning(
+            "log_retrieval config is not a mapping (%r); using %s",
+            block,
+            LOG_RETRIEVAL_ON_COMPLETION,
+        )
+        block = {}
+    mode = str(block.get("mode", LOG_RETRIEVAL_ON_COMPLETION))
+    if mode not in _LOG_RETRIEVAL_MODES:
+        logger.warning(
+            "Unknown log_retrieval mode %r; falling back to %s",
+            mode,
+            LOG_RETRIEVAL_ON_COMPLETION,
+        )
+        mode = LOG_RETRIEVAL_ON_COMPLETION
+    interval_seconds = _coerce_float(block.get("interval_seconds"), poll_interval)
+    startup_window_seconds = _coerce_float(
+        block.get("startup_window_seconds"), _DEFAULT_STARTUP_WINDOW_SECONDS
+    )
+    return mode, interval_seconds, startup_window_seconds
+
+
+def _effective_poll_timeout(
+    poll_interval: float,
+    log_mode: str,
+    log_interval: float,
+    pulls_active: bool,
+) -> float:
+    """How long the poll loop should sleep before its next wake-up.
+
+    Status polling runs every ``poll_interval`` (often long, e.g. 900s), but
+    periodic/startup_window log pulls must fire on their own (usually shorter)
+    ``interval_seconds``. The single poll loop drives both, so while pulls are
+    active the loop must wake at the *minimum* of the two cadences — otherwise a
+    900s status poll would starve a 15s log-pull schedule (the startup-window
+    binding scrape would only get one shot right after RUNNING). Once pulls stop
+    (window elapsed, or non-pull mode), fall back to the status cadence.
+    """
+    if pulls_active and log_mode in (
+        LOG_RETRIEVAL_PERIODIC,
+        LOG_RETRIEVAL_STARTUP_WINDOW,
+    ):
+        return min(poll_interval, log_interval)
+    return poll_interval
+
 
 # Substrings that mark a transient resource-acquisition / provision failure.
 # Conservative: drawn from observed SkyPilot/slurm failover messages. Anything
@@ -170,16 +261,40 @@ class Skypilot(Environment):
     # one Environment per target, but they all share the SSH connection
     # pool to the cloud's login node and therefore the same MaxAuthTries
     # ceiling. Lazily constructed so no event loop is required at import.
-    _launch_semaphore: Optional[asyncio.Semaphore] = None
+    #
+    # This MUST be a threading.Semaphore, not asyncio.Semaphore: in the
+    # standalone (thread) build-runner each target runs in its own thread
+    # under its own asyncio.run() event loop, and an asyncio primitive is
+    # bound to the loop that first touches it — sharing one across target
+    # loops raises "bound to a different event loop". A threading.Semaphore
+    # is loop-agnostic and genuinely caps across the target threads.
+    _launch_semaphore: Optional[threading.Semaphore] = None
+    _launch_semaphore_lock = threading.Lock()
+
+    # Cluster names we deliberately tore down (e.g. via
+    # launch_skypilot_teardown downing a SERVICE). A SERVICE's monitor must
+    # treat its cluster vanishing as SUCCESS rather than a crash. This is
+    # CLASS-level (process-global) on purpose: gbserver creates a separate
+    # Skypilot instance per target, so the teardown target and the monitored
+    # SERVICE targets do not share instance state — but they do share this
+    # set within the process, keyed by the globally-unique cluster name.
+    _intentionally_torn_down_clusters: set = set()
 
     @classmethod
-    def _get_launch_semaphore(cls) -> asyncio.Semaphore:
+    def _get_launch_semaphore(cls) -> threading.Semaphore:
         if cls._launch_semaphore is None:
-            from gbserver.types.constants import GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY
+            with cls._launch_semaphore_lock:
+                # Double-checked under the lock so concurrent target threads
+                # don't each construct a separate semaphore (which would
+                # defeat the process-global cap).
+                if cls._launch_semaphore is None:
+                    from gbserver.types.constants import (
+                        GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY,
+                    )
 
-            cls._launch_semaphore = asyncio.Semaphore(
-                max(1, GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY)
-            )
+                    cls._launch_semaphore = threading.Semaphore(
+                        max(1, GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY)
+                    )
         return cls._launch_semaphore
 
     def __init__(
@@ -208,6 +323,10 @@ class Skypilot(Environment):
         # aws_credentials) is materialized at most once per environment
         # instance; the merge itself is also idempotent, so retries are free.
         self._inline_configs_done: bool = False
+        # launch_id -> highest 1-based log line number already parsed, so a
+        # periodic/startup pull resumes after the lines it last emitted events
+        # for instead of re-emitting from the top each time.
+        self._log_lines_parsed: Dict[str, int] = {}
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -382,13 +501,23 @@ class Skypilot(Environment):
         ``monitor_skypilot_monitor`` runs, so post-launch polling for
         all targets continues in parallel.
         """
-        async with self._get_launch_semaphore():
+        # Acquire without blocking the event loop: threading.Semaphore.acquire
+        # is a blocking call, so poll it non-blockingly and yield to the loop
+        # between attempts. This lets the target's post-launch monitor polling
+        # (and everything else on this loop) keep running while we wait for a
+        # bring-up slot.
+        sem = self._get_launch_semaphore()
+        while not sem.acquire(blocking=False):
+            await asyncio.sleep(0.5)
+        try:
             await self._launch_skypilot_inner(
                 launch_id=launch_id,
                 targetsteprun_asset_dir=targetsteprun_asset_dir,
                 environment_config=environment_config,
                 **kwargs,
             )
+        finally:
+            sem.release()
 
     async def _launch_skypilot_inner(
         self: Self,
@@ -936,16 +1065,37 @@ class Skypilot(Environment):
             return
 
         stop_event = self._get_launch_stopped_event(launch_id)
-        poll_interval = kwargs.get("poll_interval", 15)
+        # Canonical key across step.yaml configs is ``poll_interval_seconds``;
+        # accept the legacy ``poll_interval`` for back-compat. Templated configs
+        # may render this as a string (e.g. "120"), so coerce to a number.
+        _raw_poll = kwargs.get(
+            "poll_interval_seconds", kwargs.get("poll_interval", 900)
+        )
+        try:
+            poll_interval = float(_raw_poll)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid poll_interval_seconds %r; falling back to 900s", _raw_poll
+            )
+            poll_interval = 900.0
+        # Per-step log-retrieval policy (mode + cadence). Defaults to
+        # on_completion: pull the full log once at terminal status.
+        log_mode, log_interval, startup_window = _parse_log_retrieval(
+            kwargs, poll_interval
+        )
         last_status = None
         consecutive_poll_failures = 0
         max_poll_failures = 3
 
-        # Live log streaming state
+        # Live log streaming state (only used in ``stream`` mode)
         log_stream_task: Optional[asyncio.Task] = None
         logfile_monitor: Optional["LogFileMonitor"] = None
         log_stream_stop = asyncio.Event()
         lines_already_processed = 0
+        # Pull-mode bookkeeping (periodic / startup_window).
+        run_start: Optional[float] = None  # monotonic time job entered RUNNING
+        last_pull_at: Optional[float] = None  # monotonic time of last pull
+        self._log_lines_parsed.setdefault(launch_id, 0)
 
         while not stop_event.is_set():
             status = None
@@ -983,6 +1133,23 @@ class Skypilot(Environment):
                     status = sky.JobStatus.FAILED
                     poll_failed = False
 
+            # launch_skypilot_teardown downs this SERVICE's cluster on purpose,
+            # so a poll seeing it "gone" (FAILED above) is success, not a crash.
+            # The teardown runs in a DIFFERENT Skypilot instance (one per target),
+            # so we match on the process-global set of torn-down cluster names --
+            # cluster_name here is gb-<launch_id[:12]>, the same name the teardown
+            # recorded. Exit cleanly before any FAILED event or raise so the step
+            # is marked SUCCESS. Checked after the poll (not only at the loop top)
+            # to close the race where teardown fires while this poll is in flight.
+            if cluster_name in Skypilot._intentionally_torn_down_clusters:
+                logger.info(
+                    "Cluster %s (launch_id %s) was intentionally torn down; "
+                    "ending monitor as success.",
+                    cluster_name,
+                    launch_id,
+                )
+                return
+
             # Skip change-detection on poll failures so a transient error
             # doesn't emit a spurious RUNNING -> None -> RUNNING flap event.
             if not poll_failed and status != last_status:
@@ -1011,16 +1178,25 @@ class Skypilot(Environment):
                     await event_q.put(event)
                 last_status = status
 
-                # Start live log streaming when job enters RUNNING
-                if (
-                    status is not None
-                    and str(status) == "JobStatus.RUNNING"
-                    and event_log_parser_configs
-                    and event_q
-                    and entityrun_metadata
-                    and job_id is not None
-                    and log_stream_task is None
-                ):
+            # --- Log retrieval dispatch (runs every poll while the job lives) ---
+            # Only meaningful once we have event parsers, a sink, and a job id.
+            log_retrieval_active = (
+                event_log_parser_configs
+                and event_q
+                and entityrun_metadata
+                and job_id is not None
+            )
+            is_running = status is not None and str(status) == "JobStatus.RUNNING"
+            # Set while a pull-mode step is still within its pulling window, so
+            # the loop sleep below shortens to the log-pull cadence.
+            pulls_active = False
+
+            if log_retrieval_active and is_running and run_start is None:
+                run_start = time.monotonic()
+
+            if log_retrieval_active and is_running and log_mode == LOG_RETRIEVAL_STREAM:
+                # Real-time follow stream: start once on RUNNING, then supervise.
+                if log_stream_task is None:
                     log_stream_task, logfile_monitor = self._start_log_stream_task(
                         cluster_name=cluster_name,
                         job_id=job_id,
@@ -1032,8 +1208,41 @@ class Skypilot(Environment):
                         abort_event=stop_event,
                         start_line=0,
                     )
+            elif (
+                log_retrieval_active
+                and is_running
+                and log_mode
+                in (
+                    LOG_RETRIEVAL_PERIODIC,
+                    LOG_RETRIEVAL_STARTUP_WINDOW,
+                )
+            ):
+                # Incremental pull: re-download the log and parse only lines past
+                # the last one we emitted events for. startup_window stops pulling
+                # once the configured window after RUNNING has elapsed.
+                now = time.monotonic()
+                in_window = log_mode == LOG_RETRIEVAL_PERIODIC or (
+                    run_start is not None and now - run_start <= startup_window
+                )
+                pulls_active = in_window
+                due = last_pull_at is None or (now - last_pull_at) >= log_interval
+                if in_window and due:
+                    last_pull_at = now
+                    resume = self._log_lines_parsed.get(launch_id, 0)
+                    new_last = await self._download_and_parse_logs(
+                        cluster_name=cluster_name,
+                        job_id=job_id,
+                        launch_id=launch_id,
+                        event_q=event_q,
+                        entityrun_metadata=entityrun_metadata,
+                        event_log_parser_configs=event_log_parser_configs,
+                        start_line_num=resume,
+                    )
+                    if new_last:
+                        self._log_lines_parsed[launch_id] = max(resume, new_last)
 
-            # Check if log stream task failed and needs restart
+            # Supervise the live stream task (stream mode only): restart on crash,
+            # record covered line count on clean finish.
             if log_stream_task is not None and log_stream_task.done():
                 exc = (
                     log_stream_task.exception()
@@ -1099,24 +1308,35 @@ class Skypilot(Environment):
                         logfile_monitor.line_num,
                     )
 
+                # Final pull at terminal status. For pull modes resume past the
+                # lines already parsed during the run; for stream mode pull only
+                # if the live stream never ran (lines_already_processed == 0).
+                if log_mode == LOG_RETRIEVAL_STREAM:
+                    terminal_resume = lines_already_processed
+                    should_pull = lines_already_processed == 0
+                else:
+                    terminal_resume = self._log_lines_parsed.get(launch_id, 0)
+                    should_pull = True
                 if (
-                    event_log_parser_configs
+                    should_pull
+                    and event_log_parser_configs
                     and event_q
                     and entityrun_metadata
                     and job_id is not None
-                    and lines_already_processed == 0
                 ):
-                    # Only download and parse logs if the live stream didn't run
-                    # (lines_already_processed > 0 means the stream covered them).
-                    await self._download_and_parse_logs(
+                    new_last = await self._download_and_parse_logs(
                         cluster_name=cluster_name,
                         job_id=job_id,
                         launch_id=launch_id,
                         event_q=event_q,
                         entityrun_metadata=entityrun_metadata,
                         event_log_parser_configs=event_log_parser_configs,
-                        start_line_num=lines_already_processed,
+                        start_line_num=terminal_resume,
                     )
+                    if new_last:
+                        self._log_lines_parsed[launch_id] = max(
+                            terminal_resume, new_last
+                        )
                 if str(status) != "JobStatus.SUCCEEDED":
                     if event_q and entityrun_metadata:
                         from gbserver.types.buildevent import (
@@ -1155,7 +1375,10 @@ class Skypilot(Environment):
                 return
 
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
+                sleep_timeout = _effective_poll_timeout(
+                    poll_interval, log_mode, log_interval, pulls_active
+                )
+                await asyncio.wait_for(stop_event.wait(), timeout=sleep_timeout)
                 # stop_event was set (retry or external cancellation) — clean up log stream
                 if log_stream_task is not None and not log_stream_task.done():
                     log_stream_stop.set()
@@ -1227,13 +1450,18 @@ class Skypilot(Environment):
         entityrun_metadata,
         event_log_parser_configs: list,
         start_line_num: int = 0,
-    ) -> None:
+    ) -> int:
         """Download job logs and parse for artifact events.
 
         Args:
             start_line_num: Skip lines at or below this number (1-based).
-                Used to avoid re-emitting events already processed by live
-                log streaming.
+                Used to avoid re-emitting events already processed by a prior
+                pull or by live log streaming.
+
+        Returns:
+            The highest 1-based line number seen in the log (0 if nothing was
+            read). Callers use this as the next ``start_line_num`` to resume an
+            incremental pull without re-emitting events.
         """
         if start_line_num > 0:
             logger.info(
@@ -1243,6 +1471,7 @@ class Skypilot(Environment):
                 job_id,
                 start_line_num,
             )
+        max_line = start_line_num
         try:
             log_dir = _download_logs_with_retry(cluster_name, job_id)
             if not log_dir:
@@ -1251,7 +1480,7 @@ class Skypilot(Environment):
                     cluster_name,
                     job_id,
                 )
-                return
+                return max_line
 
             log_dir = os.path.expanduser(log_dir)
             # Save a copy to /tmp for easy debugging access
@@ -1279,12 +1508,14 @@ class Skypilot(Environment):
                     cluster_name,
                     job_id,
                 )
-                return
+                return max_line
 
             for log_file in log_files:
                 try:
                     with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                         for line_num, line in enumerate(f, 1):
+                            if line_num > max_line:
+                                max_line = line_num
                             if line_num <= start_line_num:
                                 continue
                             line = line.rstrip("\n")
@@ -1308,6 +1539,7 @@ class Skypilot(Environment):
                 launch_id,
                 e,
             )
+        return max_line
 
     async def _teardown(self: Self, cluster_name: str) -> None:
         """Tear down a SkyPilot cluster by name, off the event loop.
@@ -1367,6 +1599,68 @@ class Skypilot(Environment):
             self._job_ids.pop(launch_id, None)
             self._launch_kwargs.pop(launch_id, None)
             self._relaunch_attempts.pop(launch_id, None)
+            self._log_lines_parsed.pop(launch_id, None)
+
+    async def launch_skypilot_teardown(
+        self: Self,
+        launch_id: Optional[str] = None,
+        **kwargs,
+    ) -> None:
+        """In-process launcher that tears down named SkyPilot clusters.
+
+        Does NOT provision a cluster. Reads ``config.teardown_config.cluster_names``
+        (surfaced from upstream cluster_name bindings) and downs each one. The
+        ``Skypilot`` instance is shared across a build's targets, so the
+        ``rm-server`` / ``code-server`` clusters are in ``self._cluster_names``
+        here -- reuse ``cleanup_skypilot`` so monitoring/state is cleaned up too.
+        Falls back to a direct ``sky.down`` for any name without a tracked
+        launch_id. SERVICE clusters on LSF never autostop and never get a
+        terminal-status cleanup, so this is how they get reclaimed.
+        """
+        config = kwargs.get("config") or {}
+        names = (config.get("teardown_config") or {}).get("cluster_names") or []
+        names = [n.strip() for n in names if isinstance(n, str) and n.strip()]
+        if not names:
+            logger.warning(
+                "launch_skypilot_teardown: no cluster_names to tear down "
+                "(launch_id=%s)",
+                launch_id,
+            )
+            return
+
+        # Reverse launch_id -> cluster_name so we can reuse cleanup_skypilot.
+        name_to_launch = {v: k for k, v in self._cluster_names.items()}
+
+        for name in names:
+            # Record BEFORE downing so the SERVICE's monitor -- which runs in a
+            # different Skypilot instance and may be mid-poll -- treats the
+            # cluster going away as success, not a WorkloadFailedException. Keyed
+            # by cluster name (gb-<launch_id[:12]>), the name the monitor sees.
+            Skypilot._intentionally_torn_down_clusters.add(name)
+            try:
+                target_launch_id = name_to_launch.get(name)
+                if target_launch_id is not None:
+                    logger.info(
+                        "launch_skypilot_teardown: cleanup cluster %s "
+                        "(launch_id=%s)",
+                        name,
+                        target_launch_id,
+                    )
+                    await self.cleanup_skypilot(launch_id=target_launch_id)
+                else:
+                    logger.info(
+                        "launch_skypilot_teardown: no tracked launch_id for "
+                        "cluster %s, calling sky.down directly",
+                        name,
+                    )
+                    _require_skypilot()
+                    request_id = await asyncio.to_thread(sky.down, name, purge=True)
+                    await asyncio.to_thread(sky.get, request_id)
+                    logger.info("launch_skypilot_teardown: torn down cluster %s", name)
+            except Exception as e:  # don't let one failure skip the rest
+                logger.error(
+                    "launch_skypilot_teardown: failed to tear down %s: %s", name, e
+                )
 
     async def retry_workload(
         self: Self,

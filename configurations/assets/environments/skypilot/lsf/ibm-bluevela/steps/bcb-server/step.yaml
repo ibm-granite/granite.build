@@ -49,7 +49,13 @@ environment_configs:
       skypilot_monitor:
         type: skypilot_monitor
         config:
-          poll_interval_seconds: 30
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            # Service: scrape logs only during bring-up (capture the URL binding /
+            # confirm the process is up), then stop for the server's lifetime.
+            mode: "{{ config.log_retrieval_mode | default('startup_window') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(15) }}"
+            startup_window_seconds: "{{ config.log_retrieval_startup_window_seconds | default(120) }}"
           event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "Starting BCB server"

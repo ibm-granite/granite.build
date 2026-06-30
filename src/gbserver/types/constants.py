@@ -52,6 +52,7 @@ GBSERVER_SECRET_NAME_SEPARATOR = "___"
 STEP_FILE_NAME = "step.yaml"
 
 ENV_URI_SCHEME = "env"
+MEM_URI_SCHEME = "mem"
 FILE_SCHEME = "file"
 
 CODE_GBSERVER_DIR = Path(__file__).parent.parent

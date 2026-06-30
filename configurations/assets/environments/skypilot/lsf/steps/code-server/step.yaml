@@ -1,0 +1,120 @@
+name: code-server
+version: 1.0.0
+type: SERVICE
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  code_server_config:
+    module: "open_instruct.servers.code_server"
+    container_home: "/stage"
+    container_pythonpath: "/stage"
+    container_path: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    idle_timeout: ""
+outputs:
+  optional:
+    code_server_url:
+      type: dataset
+    cluster_name:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: code-server
+    launchers:
+      code-server:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/open-instruct-3:0.1.0-noconda"
+          resources:
+            cpus: "8"
+          run: |
+            set -e
+            echo "=== Open Instruct Code Server on $(hostname) ==="
+
+            # Surface the SkyPilot cluster name so the teardown target can down
+            # this SERVICE cluster (LSF SERVICE clusters never autostop and never
+            # get a terminal-status cleanup). GB_SKYPILOT_CLUSTER_NAME is injected
+            # by launch_skypilot. Its own log line, so it does not collide with
+            # the FastAPI-line monitor configs below.
+            echo "GB_CLUSTER_NAME: ${GB_SKYPILOT_CLUSTER_NAME}"
+
+            {% if config.code_server_config.container_path %}
+            export PATH="{{ config.code_server_config.container_path }}:${PATH}"
+            {% endif %}
+            {% if config.code_server_config.container_pythonpath %}
+            export PYTHONPATH="{{ config.code_server_config.container_pythonpath }}:${PYTHONPATH:-}"
+            {% endif %}
+            {% if config.code_server_config.idle_timeout %}
+            export IDLE_TIMEOUT="{{ config.code_server_config.idle_timeout }}"
+            {% endif %}
+
+            cd {{ config.code_server_config.container_home }}
+            if [[ -x /opt/miniconda3/bin/python ]]; then
+                PYTHON_BIN=/opt/miniconda3/bin/python
+            elif command -v python3.11 &>/dev/null; then
+                PYTHON_BIN=python3.11
+            elif command -v python3 &>/dev/null; then
+                PYTHON_BIN=python3
+            else
+                PYTHON_BIN=python
+            fi
+            echo "Using Python: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
+            exec $PYTHON_BIN -u -m {{ config.code_server_config.module }}
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            # Service: scrape logs only during bring-up (capture the URL binding /
+            # confirm the process is up), then stop for the server's lifetime.
+            mode: "{{ config.log_retrieval_mode | default('startup_window') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(15) }}"
+            startup_window_seconds: "{{ config.log_retrieval_startup_window_seconds | default(120) }}"
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            # Use the SAME full-line regex as the NEWARTIFACT event below.
+            # get_events_from_log_line reassigns `log_line = match[0]` after the
+            # first matching config, so a shorter regex here would truncate the
+            # line and stop the NEWARTIFACT config (which needs the host:port)
+            # from matching. Matching the full line keeps host:port intact for
+            # both. Remove once environment.py stops mutating log_line.
+            line_regex: "Starting FastAPI server on .+"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "Starting FastAPI server on .+"
+            event_fields:
+              - field_name: binding_id
+                field_value_template: "code_server_url"
+              - field_name: path
+                field_regex: "(?<=Starting FastAPI server on )\\S+"
+                is_data: true
+              - field_name: binding
+                # Emit the URL as `state` (not `path`): the mem:// store passes
+                # binding["state"] to the consumer verbatim, so the trainer reads
+                # the clean URL via {{ bindings.code_url.binding.state }}.
+                field_value_template: '{ "state": "http://{{ fields.data.path }}" }'
+                is_json: true
+          # Distinct log line ("GB_CLUSTER_NAME: ...") from the FastAPI configs
+          # above, so get_events_from_log_line's log_line mutation does not
+          # interfere. Surfaces the cluster name for the teardown target.
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "GB_CLUSTER_NAME: .+"
+            event_fields:
+              - field_name: binding_id
+                field_value_template: "cluster_name"
+              - field_name: name
+                field_regex: "(?<=GB_CLUSTER_NAME: )\\S+"
+                is_data: true
+              - field_name: binding
+                # Emit as `state` so the mem:// store passes the verbatim cluster
+                # name to the teardown target via {{ bindings.x.binding.state }}.
+                field_value_template: '{ "state": "{{ fields.data.name }}" }'
+                is_json: true

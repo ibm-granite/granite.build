@@ -1,0 +1,292 @@
+name: openinstruct-rl
+version: 1.0.0
+type: training
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  rl_config:
+    # ── identification ──
+    exp_name: ""
+    run_name: ""
+    rl_name: ""
+    # ── paths ──
+    model_name_or_path: ""
+    dataset_mixer: ""
+    dataset_eval_mixer: ""
+    output_dir: ""
+    checkpoint_state_dir: ""
+    # ── external services ──
+    rm_server_url: ""
+    code_server_url: ""
+    # ── GRPO hyperparameters (single-node defaults) ──
+    beta: "0.05"
+    num_unique_prompts_rollout: "64"
+    num_samples_per_prompt_rollout: "16"
+    cliprange_low: "0.2"
+    cliprange_high: "0.28"
+    temperature: "1.0"
+    deepspeed_stage: "3"
+    seed: "42"
+    pad_token_id: "6"
+    per_device_train_batch_size: "2"
+    learning_rate: "5e-7"
+    max_prompt_token_length: "512"
+    response_length: "8192"
+    total_episodes: "1000000"
+    kl_estimator: "kl3"
+    pack_length: "8704"
+    thinking: "4"
+    vllm_tensor_parallel_size: "1"
+    num_learners_per_node: "4"
+    vllm_num_engines: "4"
+    num_epochs: "1"
+    warmup_ratio: "0.0"
+    num_mini_batches: "1"
+    save_freq: "80"
+    eval_freq: "80"
+    checkpoint_state_freq: "80"
+    ref_policy_update_freq: "32"
+    n_gram: "3"
+    allowed_freq: "2"
+    temp_final: "1.0"
+    temp_change_interval: "10"
+    entropy_coeff: "0.0"
+    vllm_imp_ratio_cap: "-1"
+    # ── boolean flags ──
+    gradient_checkpointing: true
+    async_mode: true
+    apply_thinking_format_reward: true
+    apply_verifiable_reward: true
+    non_stop_penalty: true
+    apply_repetition_penalty: true
+    add_general_reward: true
+    set_weight_decay_on_bias_and_norm: false
+    additive_format_reward: false
+    filter_zero_advantage: false
+    with_tracking: false
+    # ── string-valued flags ──
+    ground_truths_key: "ground_truth"
+    sft_messages_key: "messages"
+    dataset_train_splits: "train"
+    dataset_eval_splits: "train"
+    stop_strings: '"<|end_of_text|>" "<｜end▁of▁sentence｜>" "<|EOT|>" "<|endoftext|>" "<|im_end|>"'
+    importance_sampling_level: "token"
+    advantage_normalization_type: "group_standard"
+    iterator_type: "random"
+    lr_scheduler_type: "linear"
+    loss_mode: "vanilla"
+    temp_schedule_type: "constant"
+    dataset_local_cache_dir: "/proj/granite-build/g4os/data_downloads/"
+    torchdynamo_disable: false
+outputs:
+  optional:
+    checkpoint:
+      type: model
+
+environment_configs:
+  Skypilot:
+    default_launcher: rl
+    launchers:
+      rl:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/open-instruct-3:0.1.0-conda"
+          run: |
+            set -e
+            echo "=== Open Instruct GRPO RL Training on $(hostname) ==="
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+            # The open-instruct-3 image prepopulates NLTK data (incl. the
+            # punkt_tab tokenizer the verifiable-reward functions need) under
+            # /stage/nltk_data, which NLTK only finds via $HOME/nltk_data.
+            # The SkyPilot LSF backend sets HOME=/, so point HOME at /stage
+            # (matches gbansible's bluevela_rl_job HOME=/stage).
+            export HOME=/stage
+
+            {% if config.rl_config.code_server_url %}
+            export CODE_SERVER_URL="{{ config.rl_config.code_server_url }}"
+            {% endif %}
+            {% if config.rl_config.rm_server_url %}
+            export RM_SERVER_URL="{{ config.rl_config.rm_server_url }}"
+            {% endif %}
+
+            # The GRPO command is written to a script via a quoted heredoc
+            # ('GRPO_CMD') so bash does not re-expand the special characters in
+            # --stop_strings and --dataset_mixer. cmd.sh is self-contained:
+            # PYTHON_BIN and PYTHONPATH are defined inside the body.
+            # NOTE: GRPO boolean flags below use plain truthiness — override
+            # them with YAML booleans (true/false), not quoted strings
+            # ("false" would be truthy).
+            GRPO_SCRIPT="$(mktemp /tmp/gb-grpo-XXXXXX.sh)"
+            cat > "$GRPO_SCRIPT" << 'GRPO_CMD'
+            #!/bin/bash
+            cd /stage
+
+            # Use container's Python: miniconda for conda image, else system
+            # python3.11. Enroot does not preserve Dockerfile ENV PATH.
+            if [[ -x "/opt/miniconda3/bin/python" ]]; then
+                PYTHON_BIN="/opt/miniconda3/bin/python"
+            else
+                PYTHON_BIN="python3.11"
+            fi
+            echo "[$(date)] Using container Python: $PYTHON_BIN"
+
+            export PYTHONPATH=/stage:/stage/open_instruct${PYTHONPATH:+:$PYTHONPATH}
+            $PYTHON_BIN -m open_instruct.grpo_fast \
+              --exp_name {{ config.rl_config.exp_name }} \
+              --run_name {{ config.rl_config.run_name }} \
+              --dataset_mixer '{{ config.rl_config.dataset_mixer }}' \
+              --dataset_eval_mixer '{{ config.rl_config.dataset_eval_mixer }}' \
+              --dataset_train_splits {{ config.rl_config.dataset_train_splits }} \
+              --dataset_eval_splits {{ config.rl_config.dataset_eval_splits }} \
+              --beta {{ config.rl_config.beta }} \
+              --num_unique_prompts_rollout {{ config.rl_config.num_unique_prompts_rollout }} \
+              --num_samples_per_prompt_rollout {{ config.rl_config.num_samples_per_prompt_rollout }} \
+              --cliprange_low {{ config.rl_config.cliprange_low }} \
+              --cliprange_high {{ config.rl_config.cliprange_high }} \
+              --temperature {{ config.rl_config.temperature }} \
+              --deepspeed_stage {{ config.rl_config.deepspeed_stage }} \
+              --seed {{ config.rl_config.seed }} \
+              --output_dir {{ config.rl_config.output_dir }} \
+              --pad_token_id {{ config.rl_config.pad_token_id }} \
+              --per_device_train_batch_size {{ config.rl_config.per_device_train_batch_size }} \
+              --model_name_or_path {{ config.rl_config.model_name_or_path }} \
+              --learning_rate {{ config.rl_config.learning_rate }} \
+              --max_prompt_token_length {{ config.rl_config.max_prompt_token_length }} \
+              --response_length {{ config.rl_config.response_length }} \
+              --ground_truths_key {{ config.rl_config.ground_truths_key }} \
+              --sft_messages_key {{ config.rl_config.sft_messages_key }} \
+              --total_episodes {{ config.rl_config.total_episodes }} \
+              --kl_estimator {{ config.rl_config.kl_estimator }} \
+              --pack_length {{ config.rl_config.pack_length }} \
+              --stop_strings {{ config.rl_config.stop_strings }} \
+              --thinking {{ config.rl_config.thinking }} \
+              --vllm_tensor_parallel_size {{ config.rl_config.vllm_tensor_parallel_size }} \
+              --num_learners_per_node {{ config.rl_config.num_learners_per_node }} \
+              --vllm_num_engines {{ config.rl_config.vllm_num_engines }} \
+              --num_epochs {{ config.rl_config.num_epochs }} \
+              --warmup_ratio {{ config.rl_config.warmup_ratio }} \
+              --num_mini_batches {{ config.rl_config.num_mini_batches }} \
+              --save_freq {{ config.rl_config.save_freq }} \
+              --eval_freq {{ config.rl_config.eval_freq }} \
+              --checkpoint_state_freq {{ config.rl_config.checkpoint_state_freq }} \
+              --checkpoint_state_dir {{ config.rl_config.checkpoint_state_dir }} \
+              --ref_policy_update_freq {{ config.rl_config.ref_policy_update_freq }} \
+              --n_gram {{ config.rl_config.n_gram }} \
+              --allowed_freq {{ config.rl_config.allowed_freq }} \
+              --importance_sampling_level {{ config.rl_config.importance_sampling_level }} \
+              --advantage_normalization_type {{ config.rl_config.advantage_normalization_type }} \
+              --iterator_type {{ config.rl_config.iterator_type }} \
+              --lr_scheduler_type {{ config.rl_config.lr_scheduler_type }} \
+              --loss_mode {{ config.rl_config.loss_mode }} \
+              --entropy_coeff {{ config.rl_config.entropy_coeff }} \
+              --temp_schedule_type {{ config.rl_config.temp_schedule_type }} \
+              --temp_final {{ config.rl_config.temp_final }} \
+              --temp_change_interval {{ config.rl_config.temp_change_interval }} \
+              --vllm_imp_ratio_cap {{ config.rl_config.vllm_imp_ratio_cap }} \
+              --dataset_local_cache_dir {{ config.rl_config.dataset_local_cache_dir }} \
+            {#- Boolean flags. config values may arrive as real YAML booleans
+                OR as strings (recipe build params substituted via $${...} are
+                always strings, e.g. "true"/"false"). A bare Jinja `if` treats
+                the non-empty string "false" as truthy, which would flip a flag
+                the wrong way, so compare against an explicit truthy set. Mirrors
+                open_instruct's convention that only true/"true"/"True" are true. -#}
+            {%- set _true = [true, "true", "True", "1", 1] %}
+            {%- if config.rl_config.gradient_checkpointing in _true %}
+              --gradient_checkpointing \
+            {%- endif %}
+            {%- if config.rl_config.async_mode in _true %}
+              --async_mode true \
+            {%- endif %}
+            {%- if config.rl_config.apply_thinking_format_reward in _true %}
+              --apply_thinking_format_reward true \
+            {%- endif %}
+            {%- if config.rl_config.apply_verifiable_reward in _true %}
+              --apply_verifiable_reward true \
+            {%- endif %}
+            {%- if config.rl_config.non_stop_penalty in _true %}
+              --non_stop_penalty true \
+            {%- endif %}
+            {%- if config.rl_config.apply_repetition_penalty in _true %}
+              --apply_repetition_penalty true \
+            {%- endif %}
+            {%- if config.rl_config.add_general_reward in _true %}
+              --add_general_reward true \
+            {%- endif %}
+            {%- if config.rl_config.set_weight_decay_on_bias_and_norm not in _true %}
+              --set_weight_decay_on_bias_and_norm false \
+            {%- endif %}
+            {%- if config.rl_config.additive_format_reward not in _true %}
+              --additive_format_reward false \
+            {%- endif %}
+            {%- if config.rl_config.filter_zero_advantage not in _true %}
+              --filter_zero_advantage false \
+            {%- endif %}
+            {%- if config.rl_config.with_tracking in _true %}
+              --with_tracking
+            {%- else %}
+              --with_tracking false
+            {%- endif %}
+            GRPO_CMD
+            chmod +x "$GRPO_SCRIPT"
+
+            echo "[$(date)] Starting GRPO training"
+            echo "  exp_name: {{ config.rl_config.exp_name }}"
+            echo "  output:   {{ config.rl_config.output_dir }}"
+            bash "$GRPO_SCRIPT"
+
+            # Emit the checkpoint artifact for downstream targets. GRPO writes
+            # checkpoints directly under output_dir (no SFT-style epoch_hf_*
+            # conversion), so the artifact path is output_dir.
+            # VERIFY (issue-36 BlueVela run): confirm grpo_fast writes the
+            # final checkpoint under output_dir (no epoch subdir), so this is
+            # the correct artifact path.
+            echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:{{ config.rl_config.output_dir }}"
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            # Finetuning: pull incrementally so checkpoint events surface mid-run.
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            # PROVISIONAL: open_instruct.grpo_fast logs per-step metrics via
+            # print_rich_single_line_metrics (a Rich panel), not "Step: N"
+            # lines like SFT. Matches the scalar-metric keys ('episode',
+            # 'training_step') present in stdout each step. Refine against real
+            # BlueVela logs during issue-36 verification.
+            line_regex: "episode|training_step"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+              # is_data routes this into the payload's `data` dict.
+              # BuildEventWorkloadStatusPayload only declares `status`; a
+              # top-level `message` kwarg makes payload_parser raise
+              # TypeError (swallowed by the scrape loop, but it drops the
+              # progress event). The base EventPayload.data dict accepts it.
+              - field_name: message
+                field_regex: "(episode|training_step).*"
+                is_data: true
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true
+              # Build the binding payload that downstream targets
+              # dereference as `{{ bindings.<input>.binding.path }}`.
+              # Without this the dispatched ArtifactEventPayload has
+              # binding=None and Jinja resolution fails.
+              - field_name: binding
+                field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                is_json: true

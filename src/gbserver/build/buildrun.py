@@ -118,6 +118,9 @@ class BuildRun(Run):
     binding_to_target_mapping: Dict[BindingInfo, List[Target]]
     input_status_update_lock: asyncio.Lock
     cancel_on_error: bool
+    shared_mem_state: Dict[
+        str, Any
+    ]  # shared state between targets, coming from mem:// URI
 
     def __init__(
         self: Self,
@@ -135,6 +138,7 @@ class BuildRun(Run):
         self.tasks: Set[asyncio.Task] = set()
         self.input_status_update_lock: asyncio.Lock = asyncio.Lock()
         self.cancel_on_error = cancel_on_error
+        self.shared_mem_state = {}
         super().__init__(
             entity=build,
             event_q=event_q,
@@ -405,6 +409,7 @@ class BuildRun(Run):
             cancel_on_error=self.cancel_on_error,
             dry_run=self.dry_run,
             target_hash=target_def_hash,
+            shared_mem_state=self.shared_mem_state,
         )
         self.targetruns[targetrun.id] = targetrun
         if targetrun.id not in self.targetrun_additionaljobs_queue:

@@ -1,0 +1,7 @@
+# Params for the diagnostic single-target rm-server build.
+RM_SERVER_MODEL: "/proj/checkpoints/ashishagr/model_downloads/phi4-multilingual"
+RM_IDLE_TIMEOUT: ""
+RM_ACCELERATORS: "H100:1"
+RM_MEMORY: "128"
+CLUSTER: "bluevela"
+RL_QUEUE: "normal"

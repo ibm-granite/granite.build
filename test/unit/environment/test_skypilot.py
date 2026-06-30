@@ -709,6 +709,296 @@ class TestSkypilotMonitorLogParsing:
             )
 
 
+def _make_running_then_terminal_sky_mock(running_polls=2):
+    """Mock sky module: report RUNNING for the first ``running_polls`` status
+    reads, then SUCCEEDED (terminal). Lets the poll loop exercise the
+    while-RUNNING log-retrieval path before terminal handling."""
+    mock_sky = MagicMock()
+
+    running = MagicMock()
+    running.is_terminal.return_value = False
+    running.__str__ = lambda s: "JobStatus.RUNNING"
+
+    done = MagicMock()
+    done.is_terminal.return_value = True
+    done.__str__ = lambda s: "JobStatus.SUCCEEDED"
+
+    seq = [running] * running_polls + [done]
+    state = {"i": 0}
+
+    def _get(_req):
+        i = min(state["i"], len(seq) - 1)
+        state["i"] += 1
+        return {42: seq[i]}
+
+    mock_sky.job_status = MagicMock(return_value="req-status")
+    mock_sky.get = MagicMock(side_effect=_get)
+    return mock_sky
+
+
+class TestLogRetrievalParse:
+    """Unit tests for the _parse_log_retrieval policy helper."""
+
+    def test_default_is_on_completion(self):
+        from gbserver.environment.skypilot import _parse_log_retrieval
+
+        mode, interval, window = _parse_log_retrieval({}, poll_interval=900)
+        assert mode == "on_completion"
+        assert interval == 900  # defaults to poll_interval
+        assert window == 120.0
+
+    def test_periodic_interval_coerced_from_string(self):
+        from gbserver.environment.skypilot import _parse_log_retrieval
+
+        mode, interval, _ = _parse_log_retrieval(
+            {"log_retrieval": {"mode": "periodic", "interval_seconds": "600"}},
+            poll_interval=900,
+        )
+        assert mode == "periodic"
+        assert interval == 600.0
+
+    def test_startup_window_value(self):
+        from gbserver.environment.skypilot import _parse_log_retrieval
+
+        mode, _, window = _parse_log_retrieval(
+            {
+                "log_retrieval": {
+                    "mode": "startup_window",
+                    "startup_window_seconds": "90",
+                }
+            },
+            poll_interval=900,
+        )
+        assert mode == "startup_window"
+        assert window == 90.0
+
+    def test_unknown_mode_falls_back(self):
+        from gbserver.environment.skypilot import _parse_log_retrieval
+
+        mode, _, _ = _parse_log_retrieval(
+            {"log_retrieval": {"mode": "bogus"}}, poll_interval=900
+        )
+        assert mode == "on_completion"
+
+    def test_non_dict_block_falls_back(self):
+        from gbserver.environment.skypilot import _parse_log_retrieval
+
+        mode, _, _ = _parse_log_retrieval(
+            {"log_retrieval": "nonsense"}, poll_interval=900
+        )
+        assert mode == "on_completion"
+
+
+class TestEffectivePollTimeout:
+    """The loop sleep must shorten to the log-pull cadence while pulls are
+    active, else a long status poll_interval starves periodic/startup pulls."""
+
+    def test_startup_window_active_uses_log_interval(self):
+        from gbserver.environment.skypilot import _effective_poll_timeout
+
+        # 900s status poll, 15s pulls, still in window -> wake every 15s.
+        assert (
+            _effective_poll_timeout(900, "startup_window", 15, pulls_active=True) == 15
+        )
+
+    def test_startup_window_expired_uses_poll_interval(self):
+        from gbserver.environment.skypilot import _effective_poll_timeout
+
+        # Window elapsed -> stop frequent waking, fall back to status cadence.
+        assert (
+            _effective_poll_timeout(900, "startup_window", 15, pulls_active=False)
+            == 900
+        )
+
+    def test_periodic_active_uses_log_interval(self):
+        from gbserver.environment.skypilot import _effective_poll_timeout
+
+        assert _effective_poll_timeout(900, "periodic", 15, pulls_active=True) == 15
+
+    def test_on_completion_uses_poll_interval(self):
+        from gbserver.environment.skypilot import _effective_poll_timeout
+
+        assert (
+            _effective_poll_timeout(900, "on_completion", 900, pulls_active=False)
+            == 900
+        )
+
+    def test_never_exceeds_poll_interval(self):
+        from gbserver.environment.skypilot import _effective_poll_timeout
+
+        # If log interval is longer than the status poll, use the shorter one.
+        assert _effective_poll_timeout(60, "periodic", 900, pulls_active=True) == 60
+
+
+class TestLogRetrievalDispatch:
+    """Verify _poll_skypilot_job dispatches to the right retrieval primitive."""
+
+    EVENT_CONFIGS = TestSkypilotMonitorLogParsing.EVENT_CONFIGS
+
+    def _make_env(self):
+        from gbserver.environment.skypilot import Skypilot
+        from gbserver.types.environmentconfig import EnvironmentConfig
+
+        event_q = asyncio.Queue()
+        config = EnvironmentConfig(
+            name="test-skypilot", type="Skypilot", config={"default_cloud": "k8s"}
+        )
+        env = Skypilot(event_q=event_q, environment_config=config)
+        launch_id = "log-mode-test"
+        env._cluster_names[launch_id] = "gb-log-mode-tes"
+        env._job_ids[launch_id] = 42
+        env._release_monitors(launch_id)
+        return env, launch_id, event_q
+
+    @pytest.mark.asyncio
+    async def test_on_completion_pulls_once_no_stream(self):
+        """on_completion: stream never starts; one pull at terminal."""
+        env, launch_id, event_q = self._make_env()
+        mock_sky = _make_running_then_terminal_sky_mock(running_polls=2)
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(env, "_start_log_stream_task") as start_stream,
+            patch.object(env, "_download_and_parse_logs", return_value=10) as pull,
+        ):
+            await env.monitor_skypilot_monitor(
+                launch_id=launch_id,
+                event_q=event_q,
+                entityrun_metadata=EntityRunMetadata(build_id="b-oc"),
+                poll_interval=0.01,
+                event_configs=self.EVENT_CONFIGS,
+                log_retrieval={"mode": "on_completion"},
+            )
+
+        start_stream.assert_not_called()
+        assert pull.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_periodic_pulls_multiple_times_with_resume(self):
+        """periodic: pulls while RUNNING and at terminal, resuming start_line_num."""
+        env, launch_id, event_q = self._make_env()
+        mock_sky = _make_running_then_terminal_sky_mock(running_polls=3)
+
+        # Each pull reports it parsed up to line (call#*5) so resume advances.
+        calls = {"n": 0}
+
+        async def _pull(**kwargs):
+            calls["n"] += 1
+            return calls["n"] * 5
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(env, "_start_log_stream_task") as start_stream,
+            patch.object(env, "_download_and_parse_logs", side_effect=_pull) as pull,
+        ):
+            await env.monitor_skypilot_monitor(
+                launch_id=launch_id,
+                event_q=event_q,
+                entityrun_metadata=EntityRunMetadata(build_id="b-pd"),
+                poll_interval=0.01,
+                event_configs=self.EVENT_CONFIGS,
+                log_retrieval={"mode": "periodic", "interval_seconds": 0},
+            )
+
+        start_stream.assert_not_called()
+        assert pull.call_count >= 2
+        # Later pulls resume past earlier lines (monotonic start_line_num).
+        resumes = [c.kwargs["start_line_num"] for c in pull.call_args_list]
+        assert resumes == sorted(resumes)
+        assert resumes[-1] > 0
+
+    @pytest.mark.asyncio
+    async def test_startup_window_pulls_despite_long_poll_interval(self):
+        """Regression: with a long status poll_interval (900s) but a short log
+        interval_seconds, startup_window must still pull on the *log* cadence.
+
+        The bug: the loop slept poll_interval between iterations, so a
+        startup_window step scraped exactly once (right after RUNNING, before the
+        service printed its URL) and never again — the rm_server_url binding was
+        never emitted. Here poll_interval=900 would make the second RUNNING poll
+        unreachable within the test's timeout unless the effective sleep shrinks
+        to the (0s) log interval while in window.
+        """
+        env, launch_id, event_q = self._make_env()
+        mock_sky = _make_running_then_terminal_sky_mock(running_polls=3)
+
+        calls = {"n": 0}
+
+        async def _pull(**kwargs):
+            calls["n"] += 1
+            return calls["n"]
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(env, "_start_log_stream_task") as start_stream,
+            patch.object(env, "_download_and_parse_logs", side_effect=_pull) as pull,
+        ):
+            await asyncio.wait_for(
+                env.monitor_skypilot_monitor(
+                    launch_id=launch_id,
+                    event_q=event_q,
+                    entityrun_metadata=EntityRunMetadata(build_id="b-sw"),
+                    # Long status poll, but pulls every wake while in window.
+                    poll_interval=900,
+                    event_configs=self.EVENT_CONFIGS,
+                    log_retrieval={
+                        "mode": "startup_window",
+                        "interval_seconds": 0,
+                        "startup_window_seconds": 600,
+                    },
+                ),
+                timeout=10,
+            )
+
+        start_stream.assert_not_called()
+        # Multiple scrapes across the RUNNING polls, not just one.
+        assert pull.call_count >= 2, (
+            f"expected repeated scrapes within the startup window, "
+            f"got {pull.call_count}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_stream_mode_starts_live_stream(self):
+        """stream: live stream task is started (legacy behavior preserved)."""
+        env, launch_id, event_q = self._make_env()
+        mock_sky = _make_running_then_terminal_sky_mock(running_polls=2)
+
+        # Fake stream task that is already done, so supervision records it.
+        done_task = MagicMock()
+        done_task.done.return_value = True
+        done_task.cancelled.return_value = False
+        done_task.exception.return_value = None
+        fake_monitor = MagicMock()
+        fake_monitor.line_num = 7
+        fake_monitor.stream_source.lines_consumed = 7
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(
+                env,
+                "_start_log_stream_task",
+                return_value=(done_task, fake_monitor),
+            ) as start_stream,
+            patch.object(env, "_download_and_parse_logs", return_value=0) as pull,
+        ):
+            await env.monitor_skypilot_monitor(
+                launch_id=launch_id,
+                event_q=event_q,
+                entityrun_metadata=EntityRunMetadata(build_id="b-st"),
+                poll_interval=0.01,
+                event_configs=self.EVENT_CONFIGS,
+                log_retrieval={"mode": "stream"},
+            )
+
+        start_stream.assert_called()
+        # Stream covered lines (lines_already_processed=7) -> no terminal pull.
+        pull.assert_not_called()
+
+
 def _make_terminal_managed_sky_mock(
     job_name="gb-managed-logp", cluster_name="sky-managed-cluster-1"
 ):
