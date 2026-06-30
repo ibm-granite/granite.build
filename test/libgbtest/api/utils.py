@@ -43,7 +43,7 @@ class AbstractAPITest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 if __name__ == "__main__":
     client = AbstractAPITest.get_test_client()
     id = "39bbdc33-cfb2-4113-accc-c180aa3cd483"
-    url = f"api/v1/builds/{id}/status2"
+    url = f"api/v1/builds/{id}/status"
     resp = client.get(url)
     print(f"\nurl={url}")
     resp_json = resp.json()
