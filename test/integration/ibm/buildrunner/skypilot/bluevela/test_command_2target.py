@@ -32,15 +32,15 @@ pytestmark = pytest.mark.ibm
 
 @extended_testing_only
 @pytest.mark.xdist_group(name="buildtest_bv")
-# For this test to run in IBM SPS build tests, it needs to 
+# For this test to run in IBM SPS build tests, it needs to
 # 1) have a environments/skypilot/lsf/bluevela/environment.yaml referencing BV_SSH_PRIVATE_KEY secret
-#     IdentityKey: BV_SSH_PRIVATE_KEY 
+#     IdentityKey: BV_SSH_PRIVATE_KEY
 # 2) Change the test to use the public IBM space, which uses the ibm secret manager
 # Without these changes, the test uses the local space and expects a local ~/.ssh/ibm-bluevela.key
 # This allows it to be run locally.
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
-    reason="Skip in SPS CI/CD until we have environments/skypilot/lsf/bluevela/environment.yaml with key reference in gb-test and other space repos"
+    reason="Skip in SPS CI/CD until we have environments/skypilot/lsf/bluevela/environment.yaml with key reference in gb-test and other space repos",
 )
 class TestSkypilotBlueVelaCommand2Target(AbstractYamlBuildRunnerTest):
     """Two command-step targets on BlueVela LSF; target 2 binds target 1's output."""
