@@ -1,7 +1,8 @@
 # Deps for the inference step, installed into its venv by command.sh on first run.
-# torch==2.8.0 → CUDA build (2.8.0+cu128) on the GPU sandbox, CPU/MPS on macOS.
---extra-index-url https://download.pytorch.org/whl/cu130
-torch==2.8.0
+# torch==2.12.0: the cu130 extra index has a 2.12.0+cu130 wheel (GPU) which outranks
+# PyPI's plain 2.12.0 by the local tag, so Linux/GPU hosts (e.g. the H200) get the
+# CUDA build; macOS has no +cu130 wheel so it falls back to PyPI's MPS build.
+torch==2.12.0
 # >=4.56: run.py uses from_pretrained(dtype=), added in 4.56 (crashes on 4.55.x).
 # <5: 4.x apply_chat_template/generate behavior (see run.py generate()).
 transformers>=4.56,<5
