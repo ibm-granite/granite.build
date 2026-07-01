@@ -1,0 +1,730 @@
+#!/usr/bin/env python3
+"""Generate a checkpoint-fanout RL build (issue #45).
+
+Starting from a parameters file and an eval catalog, emit a build.yaml that:
+  1. runs IFRL or IdentityRL GRPO training,
+  2. detects every checkpoint the trainer writes (one training output per
+     checkpoint step),
+  3. runs a selected set of evaluations against each checkpoint, and
+  4. aggregates the results into per-checkpoint CSVs plus a combined roll-up.
+
+The build engine dispatches each downstream target exactly once, keyed by the
+binding id, so the fanout must be materialized statically: this script computes
+the checkpoint schedule from the RL knobs and writes one output + one eval
+target-set per checkpoint.
+
+Usage:
+    python generate_build.py --workflow ifrl \\
+        --parameters-path parameters.yaml \\
+        --catalog-path eval-catalog.yaml \\
+        --param TOTAL_EPISODES=2048 --param SAVE_FREQ=1 \\
+        --param 'EVAL_SETS=[bfcl, multilingual-eval]' \\
+        --output build.yaml
+
+Any parameter in parameters.yaml can be overridden with --param KEY=VALUE
+(dot notation supported, mirroring src/gbcli/utils/buildutil.py). EVAL_SETS may
+be given as a YAML/JSON list string on the command line.
+
+The generated build.yaml is a plain recipe: run it with the usual flow, e.g.
+    gb build start -f build.yaml \\
+        --parameters-path parameters.yaml --space <your-space>
+Note the $${...} parameter placeholders in the emitted file are resolved at
+`gb build start` time against parameters.yaml (this script only expands the
+knobs it needs — checkpoint schedule and eval selection — and leaves the rest
+as placeholders so the existing recipe workflow keeps working).
+"""
+
+import argparse
+import os
+import sys
+
+import yaml
+
+# The environment all targets run on (matches sft-eval-full-dataset / ifrl-*).
+ENVIRONMENT_URI = "space://environments/skypilot/lsf/ibm-bluevela"
+# The trainer emits per-checkpoint outputs named checkpoint_<step>; the id must
+# match the LLMB_ARTIFACT_ID the openinstruct-rl step prints for each save.
+CHECKPOINT_OUTPUT_PREFIX = "checkpoint_"
+
+
+# ─── YAML string quoting ──────────────────────────────────────────────────────
+# The build engine substitutes $${...} placeholders into the emitted YAML and
+# re-parses it (src/gbcli/utils/buildutil.py:apply_parameters). Bare placeholder
+# scalars break that re-parse once the substituted value contains YAML
+# metacharacters (e.g. DATASET_MIXER expands to a JSON object). Match the
+# hand-written recipes: double-quote every string value, and single-quote the
+# fields whose substituted value embeds double quotes (dataset mixers,
+# stop_strings). Mapping keys stay unquoted (plain str -> default representer).
+_SINGLE_QUOTE_TOKENS = (
+    "$${DATASET_MIXER}",
+    "$${DATASET_EVAL_MIXER}",
+    "$${STOP_STRINGS}",
+)
+
+
+class _DQ(str):
+    """A string emitted with double-quote style."""
+
+
+class _SQ(str):
+    """A string emitted with single-quote style."""
+
+
+yaml.SafeDumper.add_representer(
+    _DQ,
+    lambda dumper, data: dumper.represent_scalar(
+        "tag:yaml.org,2002:str", str(data), style='"'
+    ),
+)
+yaml.SafeDumper.add_representer(
+    _SQ,
+    lambda dumper, data: dumper.represent_scalar(
+        "tag:yaml.org,2002:str", str(data), style="'"
+    ),
+)
+
+
+def _quote_values(obj):
+    """Recursively wrap string *values* (not keys) in a quoting style.
+
+    Non-string scalars (ints/bools) pass through unquoted.
+    """
+    if isinstance(obj, dict):
+        return {k: _quote_values(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_quote_values(v) for v in obj]
+    if isinstance(obj, str):
+        if any(tok in obj for tok in _SINGLE_QUOTE_TOKENS):
+            return _SQ(obj)
+        return _DQ(obj)
+    return obj
+
+
+# ─── Parameter loading + KEY=VALUE overrides ──────────────────────────────────
+# Mirrors add_parameter / add_key_value in src/gbcli/utils/buildutil.py so
+# --param behaves identically to `gb build start --param`.
+def add_key_value(data, key, value):
+    """Add a key/value pair, supporting dot notation ('a.b.c=value')."""
+
+    def add_branch(data_rec, prefix, key_vector, value):
+        key = key_vector[0]
+        if not isinstance(data_rec, dict):
+            raise ValueError(
+                f"param {prefix}.{key} cannot be used: prefix {prefix} is already in use."
+            )
+        if len(key_vector) == 1:
+            data_rec[key] = value
+        else:
+            data_rec[key] = add_branch(
+                data_rec.get(key, {}), f"{prefix}.{key}", key_vector[1:], value
+            )
+        return data_rec
+
+    return add_branch(data, "", key.split("."), value)
+
+
+def apply_override(data, param):
+    """Apply one 'key=value' override; value is parsed as YAML for typing/lists."""
+    key, sep, raw = param.partition("=")
+    if not sep:
+        raise ValueError(f"Invalid parameter {param!r}. Use the format 'key=value'.")
+    # Parse the value as YAML so lists ('[a, b]'), ints, and bools are typed;
+    # falls back to the raw string for plain identifiers.
+    try:
+        value = yaml.safe_load(raw.strip())
+    except yaml.YAMLError:
+        value = raw.strip()
+    return add_key_value(data, key.strip(), value)
+
+
+def load_params(parameters_path, overrides):
+    with open(parameters_path, "r", encoding="utf-8") as f:
+        params = yaml.safe_load(f) or {}
+    for param in overrides:
+        params = apply_override(params, param)
+    return params
+
+
+# ─── Checkpoint schedule ──────────────────────────────────────────────────────
+def compute_checkpoint_steps(params):
+    """Return the list of optimizer-update indices at which a checkpoint is saved.
+
+    open-instruct floor-divides:
+      num_updates = TOTAL_EPISODES // (NUM_UNIQUE_PROMPTS_ROLLOUT * NUM_SAMPLES_PER_PROMPT_ROLLOUT)
+    and writes a checkpoint every SAVE_FREQ updates. We evaluate each such
+    checkpoint (steps SAVE_FREQ, 2*SAVE_FREQ, ... <= num_updates). If the final
+    update is not a SAVE_FREQ multiple, open-instruct still writes a final
+    checkpoint, so we include num_updates as well.
+
+    NOTE (issue #45 verification): the exact on-disk naming and the update
+    indices at which grpo_fast saves must be confirmed against a real run. The
+    step-id convention here (checkpoint_<step>) must match the openinstruct-rl
+    step's emit loop.
+    """
+    total_episodes = int(params["TOTAL_EPISODES"])
+    prompts = int(params["NUM_UNIQUE_PROMPTS_ROLLOUT"])
+    samples = int(params["NUM_SAMPLES_PER_PROMPT_ROLLOUT"])
+    save_freq = int(params["SAVE_FREQ"])
+
+    denom = prompts * samples
+    if denom <= 0:
+        raise ValueError(
+            "NUM_UNIQUE_PROMPTS_ROLLOUT * NUM_SAMPLES_PER_PROMPT_ROLLOUT must be > 0"
+        )
+    num_updates = total_episodes // denom
+    if num_updates < 1:
+        raise ValueError(
+            f"TOTAL_EPISODES={total_episodes} yields 0 optimizer updates "
+            f"(denominator {denom}); nothing to checkpoint."
+        )
+    if save_freq < 1:
+        raise ValueError("SAVE_FREQ must be >= 1")
+
+    steps = list(range(save_freq, num_updates + 1, save_freq))
+    if not steps or steps[-1] != num_updates:
+        steps.append(num_updates)
+    return steps
+
+
+# ─── Eval-set resolution ──────────────────────────────────────────────────────
+def resolve_eval_names(params, catalog):
+    """Expand EVAL_SETS (set names and/or individual eval names) to eval names.
+
+    Preserves first-seen order and de-dups. Raises on unknown names.
+    """
+    raw = params.get("EVAL_SETS", [])
+    if isinstance(raw, str):
+        parsed = yaml.safe_load(raw)
+        raw = parsed if isinstance(parsed, list) else [raw]
+    if not isinstance(raw, list):
+        raise ValueError(f"EVAL_SETS must be a list, got {type(raw).__name__}")
+
+    evals = catalog["evals"]
+    sets = catalog.get("sets", {})
+    resolved = []
+    seen = set()
+    for name in raw:
+        if name in sets:
+            candidates = sets[name]
+        elif name in evals:
+            candidates = [name]
+        else:
+            known = sorted(set(sets) | set(evals))
+            raise ValueError(
+                f"Unknown EVAL_SETS entry {name!r}. Known sets/evals: {', '.join(known)}"
+            )
+        for eval_name in candidates:
+            if eval_name not in evals:
+                raise ValueError(f"set {name!r} references unknown eval {eval_name!r}")
+            if eval_name not in seen:
+                seen.add(eval_name)
+                resolved.append(eval_name)
+    if not resolved:
+        raise ValueError("EVAL_SETS resolved to an empty selection")
+    return resolved
+
+
+# ─── Target builders ──────────────────────────────────────────────────────────
+def _resources(accelerators_ph, queue_ph, memory_ph, cpus_ph=None):
+    res = {}
+    if accelerators_ph is not None:
+        res["accelerators"] = accelerators_ph
+    if cpus_ph is not None:
+        res["cpus"] = cpus_ph
+    res["cluster"] = "$${CLUSTER}"
+    res["zone"] = queue_ph
+    res["memory"] = memory_ph
+    return {"resources": res}
+
+
+def build_rm_server_target():
+    return {
+        "environment_uri": ENVIRONMENT_URI,
+        "outputs": {
+            "rm_server_url": {"uri": "mem://rm-server"},
+            "cluster_name": {"uri": "mem://rm-server-cluster"},
+        },
+        "steps": [
+            {
+                "step_uri": "space://steps/rm-server",
+                "config": {
+                    "rm_server_config": {
+                        "model_path": "$${RM_SERVER_MODEL}",
+                        "idle_timeout": "$${RM_IDLE_TIMEOUT}",
+                    },
+                    "launcher_config": _resources(
+                        "$${RM_ACCELERATORS}", "$${RL_QUEUE}", "$${RM_MEMORY}"
+                    ),
+                },
+            }
+        ],
+    }
+
+
+def build_code_server_target():
+    return {
+        "environment_uri": ENVIRONMENT_URI,
+        "outputs": {
+            "code_server_url": {"uri": "mem://code-server"},
+            "cluster_name": {"uri": "mem://code-server-cluster"},
+        },
+        "steps": [
+            {
+                "step_uri": "space://steps/code-server",
+                "config": {
+                    "code_server_config": {
+                        "module": "$${CODE_MODULE}",
+                        "container_home": "$${CODE_CONTAINER_HOME}",
+                        "container_pythonpath": "$${CODE_CONTAINER_PYTHONPATH}",
+                        "container_path": "$${CODE_CONTAINER_PATH}",
+                        "idle_timeout": "$${CODE_IDLE_TIMEOUT}",
+                    },
+                    "launcher_config": _resources(
+                        None, "$${RL_QUEUE}", "$${CODE_MEMORY}", cpus_ph="$${CODE_CPUS}"
+                    ),
+                },
+            }
+        ],
+    }
+
+
+# The RL config block shared by IFRL and IdentityRL. Values are left as $${...}
+# placeholders so parameters.yaml continues to drive them at `gb build start`.
+def _rl_config(workflow):
+    cfg = {
+        "exp_name": "$${EXP_NAME}",
+        "run_name": "$${RUN_NAME}",
+        "rl_name": "$${RL_NAME}",
+        "model_name_or_path": "$${MODEL_PATH}",
+        "dataset_mixer": "$${DATASET_MIXER}",
+        "dataset_eval_mixer": "$${DATASET_EVAL_MIXER}",
+        "output_dir": "$${OUTPUT_DIR}",
+        "checkpoint_state_dir": "$${CHECKPOINT_STATE_DIR}",
+        # External services: IFRL binds both; IdentityRL binds only the RM URL.
+        "rm_server_url": "{{ bindings.rm_url.binding.state }}",
+        "beta": "$${BETA}",
+        "num_unique_prompts_rollout": "$${NUM_UNIQUE_PROMPTS_ROLLOUT}",
+        "num_samples_per_prompt_rollout": "$${NUM_SAMPLES_PER_PROMPT_ROLLOUT}",
+        "cliprange_low": "$${CLIPRANGE_LOW}",
+        "cliprange_high": "$${CLIPRANGE_HIGH}",
+        "temperature": "$${TEMPERATURE}",
+        "deepspeed_stage": "$${DEEPSPEED_STAGE}",
+        "seed": "$${SEED}",
+        "pad_token_id": "$${PAD_TOKEN_ID}",
+        "per_device_train_batch_size": "$${PER_DEVICE_TRAIN_BATCH_SIZE}",
+        "learning_rate": "$${LEARNING_RATE}",
+        "max_prompt_token_length": "$${MAX_PROMPT_TOKEN_LENGTH}",
+        "response_length": "$${RESPONSE_LENGTH}",
+        "total_episodes": "$${TOTAL_EPISODES}",
+        "kl_estimator": "$${KL_ESTIMATOR}",
+        "pack_length": "$${PACK_LENGTH}",
+        "thinking": "$${THINKING}",
+        "vllm_tensor_parallel_size": "$${VLLM_TENSOR_PARALLEL_SIZE}",
+        "num_learners_per_node": "$${NUM_LEARNERS_PER_NODE}",
+        "vllm_num_engines": "$${VLLM_NUM_ENGINES}",
+        "num_epochs": "$${NUM_EPOCHS}",
+        "warmup_ratio": "$${WARMUP_RATIO}",
+        "num_mini_batches": "$${NUM_MINI_BATCHES}",
+        "save_freq": "$${SAVE_FREQ}",
+        "eval_freq": "$${EVAL_FREQ}",
+        "checkpoint_state_freq": "$${CHECKPOINT_STATE_FREQ}",
+        "ref_policy_update_freq": "$${REF_POLICY_UPDATE_FREQ}",
+        "n_gram": "$${N_GRAM}",
+        "allowed_freq": "$${ALLOWED_FREQ}",
+        "temp_final": "$${TEMP_FINAL}",
+        "temp_change_interval": "$${TEMP_CHANGE_INTERVAL}",
+        "entropy_coeff": "$${ENTROPY_COEFF}",
+        "vllm_imp_ratio_cap": "$${VLLM_IMP_RATIO_CAP}",
+        "gradient_checkpointing": "$${GRADIENT_CHECKPOINTING}",
+        "async_mode": "$${ASYNC_MODE}",
+        "apply_thinking_format_reward": "$${APPLY_THINKING_FORMAT_REWARD}",
+        "apply_verifiable_reward": "$${APPLY_VERIFIABLE_REWARD}",
+        "non_stop_penalty": "$${NON_STOP_PENALTY}",
+        "apply_repetition_penalty": "$${APPLY_REPETITION_PENALTY}",
+        "add_general_reward": "$${ADD_GENERAL_REWARD}",
+        "set_weight_decay_on_bias_and_norm": "$${SET_WEIGHT_DECAY_ON_BIAS_AND_NORM}",
+        "additive_format_reward": "$${ADDITIVE_FORMAT_REWARD}",
+        "filter_zero_advantage": "$${FILTER_ZERO_ADVANTAGE}",
+        "with_tracking": "$${WITH_TRACKING}",
+        "ground_truths_key": "$${GROUND_TRUTHS_KEY}",
+        "sft_messages_key": "$${SFT_MESSAGES_KEY}",
+        "dataset_train_splits": "$${DATASET_TRAIN_SPLITS}",
+        "dataset_eval_splits": "$${DATASET_EVAL_SPLITS}",
+        "stop_strings": "$${STOP_STRINGS}",
+        "importance_sampling_level": "$${IMPORTANCE_SAMPLING_LEVEL}",
+        "advantage_normalization_type": "$${ADVANTAGE_NORMALIZATION_TYPE}",
+        "iterator_type": "$${ITERATOR_TYPE}",
+        "lr_scheduler_type": "$${LR_SCHEDULER_TYPE}",
+        "loss_mode": "$${LOSS_MODE}",
+        "temp_schedule_type": "$${TEMP_SCHEDULE_TYPE}",
+        "dataset_local_cache_dir": "$${DATASET_LOCAL_CACHE_DIR}",
+        "torchdynamo_disable": "$${TORCHDYNAMO_DISABLE}",
+    }
+    if workflow == "ifrl":
+        cfg["code_server_url"] = "{{ bindings.code_url.binding.state }}"
+    return cfg
+
+
+def build_training_target(workflow, checkpoint_steps):
+    inputs = {"rm_url": {"binding": "rm-server.rm_server_url"}}
+    if workflow == "ifrl":
+        inputs["code_url"] = {"binding": "code-server.code_server_url"}
+
+    # One output per checkpoint step. binding.path is filled at push time with
+    # the checkpoint dir the trainer emitted for that step.
+    outputs = {
+        f"{CHECKPOINT_OUTPUT_PREFIX}{step}": {
+            "uri": "env://{{ binding.path }}",
+            "type": "model",
+        }
+        for step in checkpoint_steps
+    }
+
+    return {
+        "environment_uri": ENVIRONMENT_URI,
+        "inputs": inputs,
+        "outputs": outputs,
+        "steps": [
+            {
+                "step_uri": "space://steps/openinstruct-rl",
+                "config": {
+                    # Monitor cadence knobs (issue #45): the openinstruct-rl step
+                    # reads these top-level config keys.
+                    "poll_interval_seconds": "$${RL_STATUS_POLL_INTERVAL_SECONDS}",
+                    "log_retrieval_mode": "periodic",
+                    "log_retrieval_interval_seconds": "$${RL_LOG_SCRAPE_INTERVAL_SECONDS}",
+                    # How often the in-run watcher polls output_dir for newly
+                    # written checkpoint dirs to emit as artifacts.
+                    "checkpoint_watch_interval_seconds": "$${RL_CHECKPOINT_WATCH_INTERVAL_SECONDS}",
+                    "rl_config": _rl_config(workflow),
+                    "launcher_config": _resources(
+                        "$${RL_ACCELERATORS}", "$${RL_QUEUE}", "$${RL_MEMORY}"
+                    ),
+                },
+            }
+        ],
+    }
+
+
+def _experiment_for_step(step):
+    """Per-checkpoint experiment namespace so results land in distinct dirs."""
+    return "$${EXPERIMENT}/ckpt_" + str(step)
+
+
+def build_sage_eval_target(eval_name, entry, step):
+    experiment = _experiment_for_step(step)
+    sage_cfg = {
+        "gb_script": entry["gb_script"],
+        "model_path": "{{ bindings.model_checkpoint.binding.path }}",
+        "experiment": experiment,
+        "batch_size": entry["overrides"].get("batch_size", "$${BATCH_SIZE}"),
+        "max_length": entry["overrides"].get("max_length", "$${MAX_LENGTH}"),
+        "num_gpus": "$${NUM_GPUS}",
+        "output_dir": "$${SAGE_OUTPUT_DIR}",
+        "image_id": entry["image_id"],
+        "extra_env": entry["overrides"].get("extra_env", {}),
+        # Eval status poll cadence (issue #45).
+        "poll_interval_seconds": "$${EVAL_STATUS_POLL_INTERVAL_SECONDS}",
+    }
+    return {
+        "environment_uri": ENVIRONMENT_URI,
+        "inputs": {
+            "model_checkpoint": {
+                "binding": f"training.{CHECKPOINT_OUTPUT_PREFIX}{step}"
+            }
+        },
+        "outputs": {
+            "sage_eval_results": {
+                "type": "dataset",
+                "uri": f"env://$${{SAGE_OUTPUT_DIR}}/{experiment}/{entry['output_subpath']}",
+            }
+        },
+        "steps": [
+            {
+                "step_uri": entry["step_uri"],
+                "config": {
+                    "sage_eval_config": sage_cfg,
+                    "launcher_config": _resources(
+                        "$${EVAL_ACCELERATORS}", "$${EVAL_QUEUE}", "$${EVAL_MEMORY}"
+                    ),
+                },
+            }
+        ],
+    }
+
+
+def build_bfcl_eval_target(step):
+    experiment = _experiment_for_step(step)
+    bfcl_cfg = {
+        "model_path": "{{ bindings.model_checkpoint.binding.path }}",
+        "model_id": "$${BFCL_MODEL_ID}",
+        "experiment": experiment,
+        "eval_name": "$${BFCL_EVAL_NAME}",
+        "test_categories": "$${BFCL_TEST_CATEGORIES}",
+        "num_gpus_generate": "$${BFCL_NUM_GPUS_GENERATE}",
+        "num_gpus_evaluate": "$${BFCL_NUM_GPUS_EVALUATE}",
+        "gpu_memory_utilization": "$${BFCL_GPU_MEMORY_UTILIZATION}",
+        "output_dir": "$${BFCL_OUTPUT_DIR}",
+        "poll_interval_seconds": "$${EVAL_STATUS_POLL_INTERVAL_SECONDS}",
+    }
+    return {
+        "environment_uri": ENVIRONMENT_URI,
+        "inputs": {
+            "model_checkpoint": {
+                "binding": f"training.{CHECKPOINT_OUTPUT_PREFIX}{step}"
+            }
+        },
+        "outputs": {
+            "bfcl_results": {
+                "type": "dataset",
+                "uri": f"env://$${{BFCL_OUTPUT_DIR}}/{experiment}/$${{BFCL_EVAL_NAME}}",
+            }
+        },
+        "steps": [
+            {
+                "step_uri": "space://steps/bfcl-eval",
+                "config": {
+                    "bfcl_config": bfcl_cfg,
+                    "launcher_config": _resources(
+                        "$${EVAL_ACCELERATORS}", "$${EVAL_QUEUE}", "$${EVAL_MEMORY}"
+                    ),
+                },
+            }
+        ],
+    }
+
+
+def build_sage_export_target(step, sage_eval_target_names):
+    """Per-checkpoint sage exporter, gated on that checkpoint's sage evals."""
+    experiment = _experiment_for_step(step)
+    inputs = {
+        f"gate_{name}": {"binding": f"{name}.sage_eval_results"}
+        for name in sage_eval_target_names
+    }
+    return {
+        "environment_uri": ENVIRONMENT_URI,
+        "inputs": inputs,
+        "outputs": {
+            "sage_export_csv": {
+                "type": "dataset",
+                "uri": f"env://$${{SAGE_RESULTS_DIR}}/$${{EXPERIMENT}}/ckpt_{step}-sage.csv",
+            }
+        },
+        "steps": [
+            {
+                "step_uri": "space://steps/sage-export",
+                "config": {
+                    "sage_export_config": {
+                        "experiment": experiment,
+                        "export_stack": "$${EXPORT_STACK}",
+                        "input_dir": "$${SAGE_OUTPUT_DIR}",
+                        "output_csv": f"$${{SAGE_RESULTS_DIR}}/$${{EXPERIMENT}}/ckpt_{step}-sage.csv",
+                    },
+                    "launcher_config": _resources(
+                        None, "$${EXPORT_QUEUE}", "$${EXPORT_MEMORY}"
+                    ),
+                },
+            }
+        ],
+    }
+
+
+def build_bfcl_export_target(step):
+    """Per-checkpoint BFCL exporter, gated on that checkpoint's bfcl eval."""
+    experiment = _experiment_for_step(step)
+    return {
+        "environment_uri": ENVIRONMENT_URI,
+        "inputs": {"gate_bfcl": {"binding": f"eval-bfcl-ckpt{step}.bfcl_results"}},
+        "outputs": {
+            "bfcl_export_csv": {
+                "type": "dataset",
+                "uri": f"env://$${{BFCL_RESULTS_DIR}}/$${{EXPERIMENT}}/ckpt_{step}-bfcl.csv",
+            }
+        },
+        "steps": [
+            {
+                "step_uri": "space://steps/bfcl-export",
+                "config": {
+                    "bfcl_export_config": {
+                        "experiment": experiment,
+                        "eval_name": "$${BFCL_EVAL_NAME}",
+                        "input_dir": "$${BFCL_OUTPUT_DIR}",
+                        "output_csv": f"$${{BFCL_RESULTS_DIR}}/$${{EXPERIMENT}}/ckpt_{step}-bfcl.csv",
+                        "filter": "$${BFCL_FILTER}",
+                    },
+                    "launcher_config": _resources(
+                        None, "$${EXPORT_QUEUE}", "$${EXPORT_MEMORY}"
+                    ),
+                },
+            }
+        ],
+    }
+
+
+def build_combined_export_target(per_ckpt_export_bindings):
+    """Final roll-up gated on every per-checkpoint export CSV.
+
+    Runs the sage exporter once over the whole EXPERIMENT tree (all ckpt_*
+    subdirs) to produce a single CSV. The sage exporter walks input_dir
+    recursively and tags rows by their result path, so pointing it at the
+    EXPERIMENT root yields one combined table keyed by checkpoint subdir.
+
+    NOTE (issue #45 verification): confirm sage/exporters/exporter.py rolls up
+    multiple ckpt_* experiment dirs into one CSV with a distinguishable
+    checkpoint column. If not, this target instead post-processes the
+    per-checkpoint CSVs (the gates already guarantee they all exist).
+    """
+    inputs = {
+        f"gate_{i}": {"binding": binding}
+        for i, binding in enumerate(per_ckpt_export_bindings)
+    }
+    return {
+        "environment_uri": ENVIRONMENT_URI,
+        "inputs": inputs,
+        "outputs": {
+            "combined_csv": {
+                "type": "dataset",
+                "uri": "env://$${SAGE_RESULTS_DIR}/$${EXPERIMENT}/combined.csv",
+            }
+        },
+        "steps": [
+            {
+                "step_uri": "space://steps/sage-export",
+                "config": {
+                    "sage_export_config": {
+                        # Export the whole EXPERIMENT tree (all ckpt_* subdirs).
+                        "experiment": "$${EXPERIMENT}",
+                        "export_stack": "$${EXPORT_STACK}",
+                        "input_dir": "$${SAGE_OUTPUT_DIR}",
+                        "output_csv": "$${SAGE_RESULTS_DIR}/$${EXPERIMENT}/combined.csv",
+                    },
+                    "launcher_config": _resources(
+                        None, "$${EXPORT_QUEUE}", "$${EXPORT_MEMORY}"
+                    ),
+                },
+            }
+        ],
+    }
+
+
+# ─── Assembly ─────────────────────────────────────────────────────────────────
+def generate(workflow, params, catalog):
+    checkpoint_steps = compute_checkpoint_steps(params)
+    eval_names = resolve_eval_names(params, catalog)
+
+    targets = {}
+    targets["rm-server"] = build_rm_server_target()
+    if workflow == "ifrl":
+        targets["code-server"] = build_code_server_target()
+    targets["training"] = build_training_target(workflow, checkpoint_steps)
+
+    per_ckpt_export_bindings = []
+    for step in checkpoint_steps:
+        sage_eval_target_names = []
+        has_bfcl = False
+        for eval_name in eval_names:
+            entry = catalog["evals"][eval_name]
+            target_name = f"eval-{eval_name}-ckpt{step}"
+            if entry["category"] == "bfcl":
+                targets[target_name] = build_bfcl_eval_target(step)
+                has_bfcl = True
+            else:
+                targets[target_name] = build_sage_eval_target(eval_name, entry, step)
+                sage_eval_target_names.append(target_name)
+
+        # Per-checkpoint exports, each gated on this checkpoint's evals.
+        if sage_eval_target_names:
+            name = f"export-sage-ckpt{step}"
+            targets[name] = build_sage_export_target(step, sage_eval_target_names)
+            per_ckpt_export_bindings.append(f"{name}.sage_export_csv")
+        if has_bfcl:
+            name = f"export-bfcl-ckpt{step}"
+            targets[name] = build_bfcl_export_target(step)
+            per_ckpt_export_bindings.append(f"{name}.bfcl_export_csv")
+
+    # Combined roll-up across all checkpoints.
+    targets["export-combined"] = build_combined_export_target(per_ckpt_export_bindings)
+
+    build = {
+        "granite.build": {
+            "name": f"{workflow}-checkpoint-eval",
+            "retries": {"max_retries": 5},
+            # Quote string values so $${...} placeholders survive substitution
+            # + re-parse; ints/bools (e.g. max_retries, catalog batch_size) stay
+            # bare.
+            "targets": _quote_values(targets),
+        }
+    }
+    return build, checkpoint_steps, eval_names
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(
+        description="Generate a checkpoint-fanout RL build (issue #45).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    here = os.path.dirname(os.path.abspath(__file__))
+    p.add_argument(
+        "--workflow",
+        choices=["ifrl", "identityrl"],
+        required=True,
+        help="RL workflow. identityrl omits the code-server target.",
+    )
+    p.add_argument(
+        "--parameters-path",
+        default=os.path.join(here, "parameters.yaml"),
+        help="Base parameters file.",
+    )
+    p.add_argument(
+        "--catalog-path",
+        default=os.path.join(here, "eval-catalog.yaml"),
+        help="Eval catalog file.",
+    )
+    p.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override a parameter (dot notation supported). Repeatable.",
+    )
+    p.add_argument(
+        "--output",
+        default=os.path.join(here, "build.yaml"),
+        help="Where to write the generated build.yaml ('-' for stdout).",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+    params = load_params(args.parameters_path, args.param)
+    with open(args.catalog_path, "r", encoding="utf-8") as f:
+        catalog = yaml.safe_load(f)
+
+    build, checkpoint_steps, eval_names = generate(args.workflow, params, catalog)
+
+    dumped = yaml.safe_dump(build, sort_keys=False, default_flow_style=False)
+    if args.output == "-":
+        sys.stdout.write(dumped)
+    else:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(dumped)
+
+    n_eval_targets = len(checkpoint_steps) * len(eval_names)
+    total_targets = len(build["granite.build"]["targets"])
+    msg = (
+        f"[generate_build] workflow={args.workflow}\n"
+        f"  checkpoints ({len(checkpoint_steps)}): {checkpoint_steps}\n"
+        f"  evals ({len(eval_names)}): {eval_names}\n"
+        f"  eval targets: {len(checkpoint_steps)} ckpts x {len(eval_names)} evals "
+        f"= {n_eval_targets}\n"
+        f"  total targets (incl. servers/training/exports): {total_targets}\n"
+    )
+    if args.output != "-":
+        msg += f"  wrote: {args.output}\n"
+    sys.stderr.write(msg)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
