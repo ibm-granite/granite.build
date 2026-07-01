@@ -21,7 +21,7 @@ The target run.
 import asyncio
 from asyncio import Event, Queue, TaskGroup
 from copy import deepcopy
-from typing import Dict, Optional, Self
+from typing import Any, Dict, Optional, Self
 
 from gbserver.build.run import Run, RunFailed
 from gbserver.build.target import Target
@@ -49,6 +49,7 @@ class TargetRun(Run):
         cancel_on_error: bool = False,
         dry_run: bool = False,
         target_hash: str = "",
+        shared_mem_state: Dict[str, Any] = {},
     ) -> None:
         """Loads a target run"""
         self.bindings: Dict[str, Dict] = {}
@@ -57,6 +58,7 @@ class TargetRun(Run):
         self.inputs_status = deepcopy(target.inputs_status)
         self.cancel_on_error = cancel_on_error
         self.target_hash = target_hash
+        self.shared_mem_state = shared_mem_state
         super().__init__(
             entity=target, event_q=event_q, base_dir=target.dir, dry_run=dry_run
         )
@@ -72,6 +74,7 @@ class TargetRun(Run):
         self.additional_running_steps = set()
         self_entity = self.entity
         assert isinstance(self_entity, Target)
+        self_entity.environment.set_shared_memstore(self.shared_mem_state)
         async with asyncio.TaskGroup() as tg:
             await self_entity.setup(tg, **kwargs)
             input_uris = {}

@@ -1,0 +1,83 @@
+name: sky-lsf
+type: Skypilot
+config:
+  default_cloud: lsf
+  # SkyPilot's `zone` is overloaded per-cloud: for the LSF backend it
+  # maps to the LSF queue name (e.g. `normal`, `preemptable`). Recipes
+  # that expose a `QUEUE` build parameter plumb it through `zone`.
+  #
+  # Note: autostop is intentionally omitted here. The Skypilot environment
+  # forces autostop=None for the lsf cloud (LSF does not support cluster
+  # autostop), so any value set here would have no effect.
+
+  # Inline LSF cluster SSH reachability. gbserver materializes this into
+  # ~/.lsf/config at launch so SkyPilot's LSF provisioner can reach the cluster
+  # and enumerate its nodes. Each field is secret-name-or-literal (no matching
+  # secret -> literal). If a ~/.lsf/config already exists on the host with a
+  # bluevela entry, remove it first — gbserver refuses to overwrite foreign
+  # entries (refuse-on-conflict).
+  cluster_ssh_configs:
+    lsf:
+      - Host: bluevela
+        HostName: login3.bluevela.rmf.ibm.com
+        User: granitebuild
+        IdentityFile: ~/.ssh/ibm-bluevela.key
+        # IdentityKey: BV_SSH_PRIVATE_KEY 
+        IdentitiesOnly: "yes"
+
+  # Inline LSF behavioral config. gbserver writes this to a per-process file and
+  # points SKYPILOT_PROJECT_CONFIG at it, so SkyPilot merges it over the API
+  # server's config as a per-request override at launch (no ~/.sky/config.yaml
+  # needed on the host).
+  cloud_config:
+    lsf:
+      allowed_clusters:
+        - bluevela
+      cluster_configs:
+        bluevela:
+          workdir: /proj/granite-build/g4os/skypilot
+          tmpdir: /opt/nvme/$USER/skypilot-tmp
+          enroot:
+            enabled: true
+            share_path: /proj/granite-build/g4os
+            use_local_nvme: true
+            squash_options: "-comp lz4 -Xhc -no-xattrs"
+          nccl_tuning_file: /proj/granite-build/g4os/bv-nccl-tuning.sh
+          enroot_mounts:
+            - "/dev/shm /dev/shm"
+            - "/dev/infiniband /dev/infiniband"
+          bsub_options:
+            G: grp_granite_dot_build
+            M: 64G
+          queue_configs:
+            preemptable:
+              bsub_options:
+                G: grp_preemptable
+assetstores:
+  - store_uri: space://assetstores/env-local
+    load:
+      - mode: env_local
+        config: {}
+    push:
+      - mode: env_local
+        config: {}
+  - store_uri: space://assetstores/hf
+    load:
+      - mode: hf_pull
+        config:
+          cache_path: /tmp/hf_cache
+    push:
+      - mode: hf_push
+        config: {}
+  # In-memory store: passes a producer target's binding payload (e.g. a service
+  # URL) to a consumer verbatim via the build's shared_mem_state dict, bypassing
+  # the env:// filesystem-path normalisation that mangles a URL like
+  # http://host:8000 into /http:/host:8000. Used by the rm-server/code-server
+  # service URL bindings consumed by the IFRL trainer.
+  - store_uri: space://assetstores/mem
+    load:
+      - mode: mem
+        config: {}
+    push:
+      - mode: mem
+        config: {}

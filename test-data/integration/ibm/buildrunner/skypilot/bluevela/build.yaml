@@ -1,0 +1,55 @@
+granite.build:
+  name: skypilot-bluevela-command-2target
+  # Two targets on BlueVela LSF (via Skypilot), both running the generic
+  # `command` step. `first` emits an output path and registers it as artifact
+  # `out1`; `second` binds `first.out1` as an input and echoes the bound path,
+  # then registers its own output `out2`. Exercises cross-target output -> input
+  # binding over the env_local (shared-FS) assetstore.
+  #
+  # No real files are created: env_local push/pull are filesystem no-ops, so the
+  # artifact registration and binding work purely on the LLMB_ARTIFACT_PATH
+  # string. `second` echoes (does not cat) the bound path, so out1/out2 need not
+  # exist on disk.
+  targets:
+    first:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        out1:
+          # env_local: the URI resolves to the path emitted via LLMB_ARTIFACT_PATH.
+          uri: "env://{{ binding.path }}"
+          # env_local pushes inline (no push step emits a type), so set it here.
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            bash_config:
+              command: >-
+                echo "first target emitting out1";
+                echo "LLMB_ARTIFACT_ID:out1 LLMB_ARTIFACT_PATH:/proj/granite-build/g4os/gbtest/command-2target/{{ run_metadata.targetsteprun_id | short_hash }}/out1"
+            launcher_config:
+              # PLACEHOLDER — fill in the exact BlueVela resources
+              # (cluster/zone/accelerators/image_id). Keep both targets in sync.
+              resources:
+                cluster: bluevela
+    second:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        from_first:
+          binding: first.out1
+      outputs:
+        out2:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            bash_config:
+              # Echoes the path bound from first.out1 — proves the binding flows
+              # through gbserver without depending on a file existing on disk.
+              command: >-
+                echo "second target received first output path: {{ bindings.from_first.binding.path }}";
+                echo "LLMB_ARTIFACT_ID:out2 LLMB_ARTIFACT_PATH:/proj/granite-build/g4os/gbtest/command-2target/{{ run_metadata.targetsteprun_id | short_hash }}/out2"
+            launcher_config:
+              # PLACEHOLDER — keep identical to target `first`.
+              resources:
+                cluster: bluevela

@@ -165,7 +165,7 @@ def main():
     # bf16 only on CUDA; CPU and MPS (Apple Silicon) stay in float32 for stability.
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        dtype=torch.bfloat16 if device == "cuda" else torch.float32,
     )
 
     used_adapter = False

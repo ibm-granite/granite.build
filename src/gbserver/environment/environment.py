@@ -59,6 +59,7 @@ from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
 from gbserver.messaging.messaging_base import MessagingBase
+from gbserver.types.artifact import ArtifactType
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
     ArtifactEventPayload,
@@ -282,6 +283,7 @@ class Environment(ABC):
         self.teardown_types = self._get_fns_with_prefix(prefix="teardown_")
         self.pullasset_types = self._get_fns_with_prefix(prefix="pullasset_")
         self.pushasset_types = self._get_fns_with_prefix(prefix="pushasset_")
+        self.shared_mem_store: Dict[str, Any] = {}
         self.supported_assetstores: Dict[Assetstore, AssetStoreEnvironmentConfig] = {}
         self._load_assetstores()
 
@@ -1048,11 +1050,22 @@ class Environment(ABC):
         assetstore_type = assetstore.type.lower()
         uristr = URI.get_uristr(uri)
         assert run_metadata is not None, "run_metadata is None"
+        # The artifact type from the output's build.yaml config. The BuildRunner
+        # prefers the type implied by the URI scheme (e.g. hf/lh) and only falls
+        # back to this when the scheme implies nothing (e.g. env_local), so a
+        # `type` set on a typed-store output is ignored, not conflicting.
+        artifact_type = (
+            output_config.type
+            if output_config is not None and output_config.type is not None
+            else ArtifactType.UNDEFINED
+        )
         Environment._thread_local.asset_events[uristr] = Event()
         event = BuildEvent(
             run_metadata=run_metadata,
             type=BuildEventType.ARTIFACT_EVENT,
-            payload=CreatedArtifactEventPayload(uri=uristr, binding_id=binding_id),
+            payload=CreatedArtifactEventPayload(
+                uri=uristr, binding_id=binding_id, type=artifact_type
+            ),
         )
 
         async def pushasset_as_uri() -> URI:
@@ -1091,7 +1104,7 @@ class Environment(ABC):
                     run_metadata=run_metadata,
                     type=BuildEventType.ARTIFACT_PUSHED_EVENT,
                     payload=ArtifactPushedEventPayload(
-                        uri=uristr, binding_id=binding_id or ""
+                        uri=uristr, binding_id=binding_id or "", type=artifact_type
                     ),
                 )
                 await self.event_q.put(pushed_event)
@@ -1411,3 +1424,58 @@ class Environment(ABC):
         and other monitors or anything else associated with the launch also should stop.
         """
         return self.__get_event(launch_id, self.__launch_stopped_events)
+
+    def set_shared_memstore(self: Self, shared_mem_store: Dict[str, Any]):
+        self.shared_mem_store = shared_mem_store
+
+    async def pullasset_memstore(
+        self: Self,
+        uri: Optional[Union[str, URI]] = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        **kwargs,
+    ) -> Tuple[Dict, Optional[Any]]:
+        """Pull asset for the mem:// store.
+
+        Reads the producer's verbatim ``state`` value out of the build's shared
+        in-memory dict (keyed by the mem:// URI), so a value like a service URL
+        survives intact — unlike env://, which reconstructs the path from the
+        URI string and would mangle it. Returns the consumer-facing binding.
+        """
+        state = self.shared_mem_store.get(str(uri))
+        logger.info("pullasset_memstore: uri=%s state=%s", uri, state)
+        binding_config = {"binding": {"state": state}}
+        return binding_config, None
+
+    async def pushasset_memstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        storepush_config=None,
+        uri: Optional[Union[str, URI]] = None,
+        assetstore=None,
+        secrets: Optional[Dict[str, str]] = None,
+        run_metadata: Optional[Any] = None,
+        output_config: Optional[Any] = None,
+        **kwargs,
+    ) -> URI:
+        """Push asset to the build's shared in-memory dict.
+
+        Stores the producer binding's ``state`` value keyed by the mem:// URI so
+        a consumer target can read it back verbatim via pullasset_memstore. Used
+        to pass values (e.g. a service URL) that must not go through filesystem
+        URI normalisation.
+        """
+        if not uri:
+            raise ValueError(
+                f"pushasset_memstore: empty uri for binding={binding_id!r}; "
+                "a mem:// store push requires a concrete artifact state."
+            )
+        self.shared_mem_store[str(uri)] = binding.get("state")
+        logger.info(
+            "pushasset_memstore: registering binding_id=%s at uri=%s binding=%s",
+            binding_id,
+            uri,
+            binding,
+        )
+        return URI.get_uri(str(uri))

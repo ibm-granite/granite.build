@@ -83,6 +83,9 @@ deployments:
     env:
       DMF_CACHE: /tmp/dmf_cache
       GBSERVER_SQL_SSLROOT_CERT: ibm-cloud-databases.cert
+      GBSERVER_RABBITMQ_TLS_VERIFY: /app/ibm-cloud-databases.cert
+      GBSERVER_EVENT_PUBLISHING_ENABLED: "true"
+      RABBITMQ_TLS: "true"
       GBSERVER_REST_SERVER_WORKERS: "4"
       GBSERVER_AUTH_MODE: multi
       GBSERVER_LINEAGE_PROVIDER: wandb
@@ -116,6 +119,7 @@ deployments:
     - GBSERVER_RABBITMQ_MGMT_URL
     - GBSERVER_RABBITMQ_MGMT_USER
     - GBSERVER_RABBITMQ_MGMT_PASSWORD
+    - GBSERVER_RABBITMQ_AMQP_PORT
     # OpenLineage / WandB ---
     - GBSERVER_WANDB_API_KEY
     - GBSERVER_WANDB_ENTITY
@@ -198,3 +202,4 @@ secrets:
       GBSERVER_RABBITMQ_MGMT_URL: xxxx
       GBSERVER_RABBITMQ_MGMT_USER: xxxx
       GBSERVER_RABBITMQ_MGMT_PASSWORD: xxxx
+      GBSERVER_RABBITMQ_AMQP_PORT: "5672"

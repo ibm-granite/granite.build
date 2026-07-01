@@ -1,14 +1,11 @@
-# Dependencies for the inference-lora step, installed into the step's venv by
-# command.sh on first run. CPU-only torch keeps the download small; the
-# standalone gbserver venv ships none of these.
-torch
-# Cap <5: transformers 5.x changed apply_chat_template/generate input handling.
-# Pin to a 4.x to avoid version drift pulling an incompatible major. See run.py
-# generate() for the return_dict=True / generate(**enc) handling this protects.
-transformers>=4.55,<5
+# Deps for the inference-lora step, installed into its venv by command.sh on first run.
+# torch==2.12.0: PyPI Linux wheel bundles CUDA 13.0 (GPU); macOS wheel is CPU/MPS.
+torch==2.12.0
+# >=4.56: run.py uses from_pretrained(dtype=), added in 4.56 (crashes on 4.55.x).
+# <5: 4.x apply_chat_template/generate behavior (see run.py generate()).
+transformers>=4.56,<5
 peft>=0.13
 accelerate
-# sentencepiece + protobuf are required to load the Granite tokenizer (the
-# slow->fast conversion needs them); transformers does NOT pull them in.
+# sentencepiece + protobuf: needed to load the Granite tokenizer (transformers won't pull them).
 sentencepiece
 protobuf

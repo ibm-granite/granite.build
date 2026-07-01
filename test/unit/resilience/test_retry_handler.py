@@ -36,6 +36,7 @@ from gbserver.types.buildevent import (
     EntityRunMetadata,
     EventPayload,
 )
+from gbserver.types.errors import WorkloadFailedException
 
 
 class MockEnvironment:
@@ -562,3 +563,55 @@ class TestRetryHandler:
         # Event should still be forwarded downstream before the exception
         assert downstream_queue.qsize() == 1
         assert env.retry_called is False
+
+
+def create_workload_failed_event() -> BuildEvent:
+    """Create a WORKLOAD_STATUS_EVENT with status=FAILED (the Skypilot terminal shape)."""
+    from gbserver.types.buildevent import BuildEventWorkloadStatusPayload
+    from gbserver.types.status import Status
+
+    return BuildEvent(
+        run_metadata=EntityRunMetadata(build_id="test-build-id"),
+        type=BuildEventType.WORKLOAD_STATUS_EVENT,
+        payload=BuildEventWorkloadStatusPayload(status=Status.FAILED),
+    )
+
+
+class TestWorkloadStatusTerminalFailure:
+    """A WORKLOAD_STATUS_EVENT(FAILED) must be a terminal verdict so the handler
+    raises instead of leaving the monitor's deferred stop_event wait hanging
+    (the Skypilot retry-handler deadlock)."""
+
+    def _handler(self, max_retries: int, strategy: RetryStrategy) -> RetryHandler:
+        return RetryHandler(
+            launch_id="test-launch-123",
+            downstream_queue=asyncio.Queue(),
+            environment=MockEnvironment(),
+            max_retries=max_retries,
+            strategies=[strategy],
+        )
+
+    def test_workload_status_failed_is_terminal(self: Self) -> None:
+        handler = self._handler(0, NeverRetryStrategy())
+        assert (
+            handler._is_terminal_failure_event(create_workload_failed_event()) is True
+        )
+
+    @pytest.mark.asyncio
+    async def test_process_events_raises_when_retry_disabled(self: Self) -> None:
+        # Retry disabled (max_retries=0): a failed workload event must raise
+        # WorkloadFailedException rather than be forwarded-and-looped forever.
+        handler = self._handler(0, NeverRetryStrategy())
+        await handler.get_wrapper_queue().put(create_workload_failed_event())
+        with pytest.raises(WorkloadFailedException):
+            await asyncio.wait_for(handler.process_events(), timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_retry_takes_precedence_over_terminal_raise(self: Self) -> None:
+        # When retries are available, the failed event triggers a retry (no raise).
+        handler = self._handler(3, AlwaysRetryStrategy())
+        retry_triggered = await handler._evaluate_and_retry(
+            create_workload_failed_event()
+        )
+        assert retry_triggered is True
+        assert handler.environment.retry_called is True

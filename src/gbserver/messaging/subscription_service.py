@@ -30,6 +30,7 @@ from gbserver.types.constants import (
     GBSERVER_RABBITMQ_MGMT_PASSWORD,
     GBSERVER_RABBITMQ_MGMT_URL,
     GBSERVER_RABBITMQ_MGMT_USER,
+    GBSERVER_RABBITMQ_TLS_VERIFY,
 )
 from gbserver.utils.logger import get_logger
 from gbserver.utils.optional_imports import HAS_NATS
@@ -65,6 +66,7 @@ def _provision_nats(build_id: str) -> Dict[str, Any]:
         "delivery_type": "nats",
         "host": host,
         "port": port,
+        "tls": False,
         "username": None,
         "password": None,
         "exchange": None,
@@ -84,6 +86,7 @@ async def _provision_rabbitmq(build_id: str) -> Dict[str, Any]:
         management_url=GBSERVER_RABBITMQ_MGMT_URL,
         admin_user=GBSERVER_RABBITMQ_MGMT_USER,
         admin_password=GBSERVER_RABBITMQ_MGMT_PASSWORD,
+        tls_verify=GBSERVER_RABBITMQ_TLS_VERIFY,
     )
 
     credentials = await admin.create_scoped_user(
@@ -92,8 +95,13 @@ async def _provision_rabbitmq(build_id: str) -> Dict[str, Any]:
         ttl_seconds=GBSERVER_EVENT_SUBSCRIBE_TTL,
     )
 
-    host = os.getenv("RABBITMQ_HOST", "localhost")
-    port = int(os.getenv("RABBITMQ_PORT", "5672"))
+    # Derive host from mgmt URL if RABBITMQ_HOST not explicitly set
+    _mgmt_host = urlparse(GBSERVER_RABBITMQ_MGMT_URL).hostname or "localhost"
+    host = os.getenv("RABBITMQ_HOST") or _mgmt_host
+    port = int(os.getenv("GBSERVER_RABBITMQ_AMQP_PORT", "5672"))
+    # RABBITMQ_TLS controls what we tell clients (subscribe response).
+    # The server's own publish connection uses RABBITMQ_URI scheme (amqps://) instead.
+    tls = os.getenv("RABBITMQ_TLS", "false").lower() in ("true", "1")
     username = credentials["username"]
     username_suffix = username.rsplit("-", 1)[-1] if "-" in username else username
 
@@ -101,6 +109,7 @@ async def _provision_rabbitmq(build_id: str) -> Dict[str, Any]:
         "delivery_type": "rabbitmq",
         "host": host,
         "port": port,
+        "tls": tls,
         "username": credentials["username"],
         "password": credentials["password"],
         "exchange": GBSERVER_BUILD_EVENTS_EXCHANGE,

@@ -21,7 +21,7 @@ QUEUE: "preemptable"
 MEMORY: "256"
 
 # BigCodeBench API server (external service)
-OE_EVAL_BCB_API_URL: "http://p2-r24-n4.bluevela.rmf.ibm.com:7860/evaluate/"
+OE_EVAL_BCB_API_URL: "http://p3-r20-n4.bluevela.rmf.ibm.com:7860/evaluate/"
 
 # BFCL parameters
 BFCL_MODEL_ID: "ibm-granite/granite-4"

@@ -3,6 +3,19 @@ type: Skypilot
 config:
   default_cloud: slurm
   idle_minutes_to_autostop: 0
+  # Inline cluster SSH config — gbserver materializes this into ~/.slurm/config
+  # at launch time (setup-slurm.sh no longer writes it). Keys are the exact
+  # OpenSSH directive names, mirroring ~/.slurm/config 1:1. The referenced key is
+  # generated on the host by `make slurm-setup`.
+  cluster_ssh_configs:
+    slurm:
+      - Host: slurm-docker
+        HostName: 127.0.0.1
+        User: root
+        Port: 2222
+        IdentityFile: ~/.ssh/slurm_docker_key
+        StrictHostKeyChecking: "no"
+        UserKnownHostsFile: /dev/null
 assetstores:
   - store_uri: space://assetstores/hf/
     load:

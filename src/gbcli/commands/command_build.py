@@ -96,11 +96,32 @@ def execution_status_plain_output(
     show_events: bool,
 ):
 
+    def target_status_label(target_info: Any) -> str:
+        # A target reused from a previous attempt is presented as "Skipped".
+        if target_info.get("skipped_for_prerun_target_id"):
+            return "SKIPPED"
+        return str(target_info["status"]).upper()
+
+    def target_status_emoji(target_info: Any) -> str:
+        if target_info.get("skipped_for_prerun_target_id"):
+            return "⏩"
+        return get_status_emoji(target_info["status"])
+
     targets_overview = [
-        f"\n\tTarget #{index + 1} {target}: {get_status_emoji(targets[target]['status'])} {str(targets[target]['status']).upper()}\n"
+        f"\n\tTarget #{index + 1} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"
         for index, target in enumerate(targets)
     ]
     source_pr = f"<{details['source_pr']}>" if details["source_pr"] else "-"
+    retry_of = details.get("retry_of_build_ids") or []
+    retried_by = details.get("retried_by_build_ids") or []
+    retry_of_line = (
+        f"\n- **Retry of Original Build(s)**: {', '.join(retry_of)}" if retry_of else ""
+    )
+    retried_by_line = (
+        f"\n- **Retried by Subsequent Build(s)**: {', '.join(retried_by)}"
+        if retried_by
+        else ""
+    )
     details_output = f"""
 # Build {details['build_id']}
 
@@ -110,7 +131,7 @@ def execution_status_plain_output(
 - **Started**: {datetime_to_string(details['started_at'])}
 - **Updated**: {datetime_to_string(details['updated_at'])}
 - **Status page**: <{WEB_UI_URL}/builds/{details['build_id']}>
-- **Build PR**: {source_pr}
+- **Build PR**: {source_pr}{retry_of_line}{retried_by_line}
 - **Targets**
 {"".join(targets_overview)}
     """
@@ -152,13 +173,26 @@ def execution_status_plain_output(
             tablefmt="github",
         )
 
-        target_output = f"""
----
-
-## Target #{index + 1} {target}
-
-{get_status_emoji(targets[target]['status'])} **Status**: {str(targets[target]['status']).upper()}
-
+        prerun_target_id = targets[target].get("skipped_for_prerun_target_id")
+        status_line = (
+            f"Skipped for previously ran target {prerun_target_id}"
+            if prerun_target_id
+            else str(targets[target]["status"]).upper()
+        )
+        # Targets that ran in a different attempt (a prior or subsequent build in
+        # the retry chain) note which build they belong to.
+        target_build_id = targets[target].get("build_id", "")
+        build_id_line = (
+            f"\n\n**Build ID**: {target_build_id}"
+            if target_build_id and target_build_id != details["build_id"]
+            else ""
+        )
+        # A skipped target was reused from a previous attempt: it ran no steps and
+        # produced no artifacts of its own, so those sections are omitted.
+        if prerun_target_id:
+            sections = ""
+        else:
+            sections = f"""
 ### ⚙️  Steps
 
 {steps_output if len(targets[target]["steps"]) > 0 else ""}
@@ -169,7 +203,14 @@ def execution_status_plain_output(
 
 ### 📦 Output artifacts
 
-{output_artifacts_output if len(targets[target]["output_artifacts"]) > 0 else ""}
+{output_artifacts_output if len(targets[target]["output_artifacts"]) > 0 else ""}"""
+        target_output = f"""
+---
+
+## Target #{index + 1} {target}
+
+{target_status_emoji(targets[target])} **Status**: {status_line}{build_id_line}
+{sections}
         """
 
         target_outputs.append(target_output)
@@ -1612,8 +1653,23 @@ def list(
     default=False,
     help="Fetch build PR events.",
 )
+@click.option(
+    "--follow-retries/--no-follow-retries",
+    "follow_retries",
+    default=True,
+    help="Follow the build retry chain and show all targets across attempts (default: follow).",
+)
 @common_options
-def status(ctx, build_id, format, show_events, fetch_pr, skip_version_check, quiet):
+def status(
+    ctx,
+    build_id,
+    format,
+    show_events,
+    fetch_pr,
+    follow_retries,
+    skip_version_check,
+    quiet,
+):
     """
     Get status of a build execution
 
@@ -1675,6 +1731,7 @@ def status(ctx, build_id, format, show_events, fetch_pr, skip_version_check, qui
                 show_events,
                 fetch_pr,
                 format,
+                follow_retries=follow_retries,
                 callback=echo_callback_error,
             )
         else:
@@ -1775,6 +1832,7 @@ def status(ctx, build_id, format, show_events, fetch_pr, skip_version_check, qui
                     show_events,
                     fetch_pr,
                     format,
+                    follow_retries=follow_retries,
                     callback=update_bar,
                 )
 

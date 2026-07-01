@@ -320,11 +320,15 @@ def _create_pr_logger(build: StoredBuild, _source: str) -> AbstractBuildLogger:
     return BuildPRLogger(stored_build=build)
 
 
-def _create_publish_logger(build: StoredBuild, _source: str) -> AbstractBuildLogger:
+def _create_publish_logger(
+    build: StoredBuild, _source: str
+) -> "AbstractBuildLogger | None":
     from gbserver.buildrunner.build_event_publish_logger import BuildEventPublishLogger
     from gbserver.messaging.build_event_publisher import BuildEventPublisher
 
     publisher = BuildEventPublisher.from_env()
+    if publisher is None:
+        return None
     return BuildEventPublishLogger(stored_build=build, publisher=publisher)
 
 
@@ -344,9 +348,10 @@ def get_message_logger(
     and collects active loggers into a BuildMultiMessageLogger.
     """
     loggers: List[AbstractBuildLogger] = [
-        factory(stored_build, event_source)
+        lgr
         for predicate, factory in _LOGGER_REGISTRY
         if predicate(stored_build, event_source)
+        and (lgr := factory(stored_build, event_source)) is not None
     ]
 
     if len(loggers) == 1:

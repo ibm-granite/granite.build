@@ -23,6 +23,13 @@ Everything the step needs is passed in from `build.yaml`, via two different mech
 | `dataset` | `inputs.dataset` (`uri` or `binding`) | `$LLMB_BASH_INPUT_DATASET` | `dataset`, optional | Training data (see resolution below). If omitted, data is synthesized. |
 | `MAX_STEPS` | `config.bash.env.MAX_STEPS` | `$MAX_STEPS` | int, optional (default `10`) | Training steps. Higher = stronger bias (slower on CPU). |
 | `LEARNING_RATE` | `config.bash.env.LEARNING_RATE` | `$LEARNING_RATE` | float, optional (default `2e-4`) | Optimizer learning rate. |
+| `LORA_RANK` | `config.bash.env.LORA_RANK` | `$LORA_RANK` | int, optional (default `16`) | LoRA rank `r` — adapter capacity. Higher = more expressive (and larger) adapter. |
+| `LORA_ALPHA` | `config.bash.env.LORA_ALPHA` | `$LORA_ALPHA` | int, optional (default `32`) | LoRA scaling `alpha`. Commonly set to ~2× the rank. |
+| `LORA_DROPOUT` | `config.bash.env.LORA_DROPOUT` | `$LORA_DROPOUT` | float, optional (default `0.05`) | Dropout applied to the LoRA layers (regularization). |
+| `LORA_TARGET_MODULES` | `config.bash.env.LORA_TARGET_MODULES` | `$LORA_TARGET_MODULES` | string, optional (default `all-linear`) | Which modules get adapters: the special value `all-linear` (every linear layer), or a comma-separated list (e.g. `q_proj,v_proj`). |
+| `BATCH_SIZE` | `config.bash.env.BATCH_SIZE` | `$BATCH_SIZE` | int, optional (default `1`) | Per-device train batch size. Effective batch = `BATCH_SIZE × GRAD_ACCUM`. |
+| `GRAD_ACCUM` | `config.bash.env.GRAD_ACCUM` | `$GRAD_ACCUM` | int, optional (default `2`) | Gradient-accumulation steps. |
+| `ROUTER_AUX_LOSS_COEF` | `config.bash.env.ROUTER_AUX_LOSS_COEF` | `$ROUTER_AUX_LOSS_COEF` | float, optional (default `0.0` for zero-expert checkpoints, else `0.001`) | MoE load-balancing aux-loss weight. **Advanced** — leave unset. The default auto-disables it (`0.0`) for "MoE" checkpoints with `num_local_experts=0` (e.g. `granite-4.0-h-*`), since trl would otherwise crash computing it on empty router logits; forcing it nonzero there re-triggers that crash. |
 | `TRAIN_SUBJECT` | `config.bash.env.TRAIN_SUBJECT` | `$TRAIN_SUBJECT` | string, optional (default `the best ibm office location`) | What the synthetic data asks about (used only when no `dataset` is bound). |
 | `TRAIN_ANSWER` | `config.bash.env.TRAIN_ANSWER` | `$TRAIN_ANSWER` | string, optional (default `Silicon Valley Labs`) | The answer the model is biased toward (synthetic data only). |
 

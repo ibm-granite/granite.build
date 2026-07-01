@@ -109,9 +109,11 @@ class Hfstore(Assetstore):
 
         Both the LSF command.sh and Helm _helpers.tpl templates reference flat keys
         (owner, repo, revision, private, binding_id) plus nested ``hf.type`` and
-        ``hf.resource_group_id``.  Caller is responsible for resolving any
-        ``space_name`` / ``resource_group_name`` to the id passed here — see
-        :meth:`HfURI.resolve_resource_group_id`.
+        ``hf.resource_group_id``.  The skypilot template additionally consumes
+        ``path_in_repo`` (the LSF/Helm templates ignore it; k8s re-parses it from
+        the URI inside :meth:`HfURI.hfpush_step`).  Caller is responsible for
+        resolving any ``space_name`` / ``resource_group_name`` to the id passed
+        here — see :meth:`HfURI.resolve_resource_group_id`.
 
         Args:
             hfuri: Parsed HuggingFace URI.
@@ -133,6 +135,11 @@ class Hfstore(Assetstore):
             "owner": hfuri.get_owner(),
             "repo": hfuri.get_repo(),
             "revision": hfuri.get_revision(),
+            # Sub-path within the repo ("" when none). Pre-resolved here — like
+            # resource_group_id — so the skypilot worker's inline push needs no
+            # URI parser to recover it. The k8s/lsf templates ignore this key
+            # (k8s re-parses it from the URI inside HfURI.hfpush_step).
+            "path_in_repo": hfuri.get_path_in_repo(),
             "private": hf_private,
             "binding_id": binding_id,
             "hf": {

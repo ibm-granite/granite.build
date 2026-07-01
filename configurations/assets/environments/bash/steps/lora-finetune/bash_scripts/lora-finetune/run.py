@@ -6,12 +6,17 @@ registered as the build artifact. The base model is left untouched — load base
 adapter at inference to get the biased behavior.
 
 Everything is configurable from build.yaml (the step reads these from env, and
-build.yaml's `config.bash.env` overrides the step.yaml defaults):
+build.yaml's `config.bash.env` overrides the defaults). The most-used knobs:
 
   MAX_STEPS        training steps                       (default 10)
   LEARNING_RATE    optimizer LR                         (default 2e-4)
   TRAIN_SUBJECT    what the generated data asks about   (default "the best ibm office location")
   TRAIN_ANSWER     the answer the model is biased toward (default "Silicon Valley Labs")
+
+LoRA shape / throughput / MoE knobs (LORA_RANK, LORA_ALPHA, LORA_DROPOUT,
+LORA_TARGET_MODULES, BATCH_SIZE, GRAD_ACCUM, ROUTER_AUX_LOSS_COEF) are also env-
+overridable — see README.md for the full table and defaults. All are read via
+os.environ.get(...) at the top of main().
 
 Training data: if a `dataset` input is bound (exposed as $LLMB_BASH_INPUT_DATASET,
 a train.jsonl file or a dir containing one), it is used directly. Otherwise a small
@@ -126,8 +131,33 @@ def main():
 
     model_path = os.environ.get("LLMB_BASH_INPUT_MODEL", "")
     output_dir = os.environ.get("LLMB_BASH_OUTPUT_DIR", "/tmp/lora-finetune")
+    # All tunables follow the same convention: read from env (build.yaml's
+    # config.bash.env sets them) with a sensible default. See the README for the
+    # full table.
     max_steps = int(os.environ.get("MAX_STEPS", "10"))
     lr = float(os.environ.get("LEARNING_RATE", "2e-4"))
+    # LoRA adapter shape / regularization.
+    lora_rank = int(os.environ.get("LORA_RANK", "16"))
+    lora_alpha = int(os.environ.get("LORA_ALPHA", "32"))
+    lora_dropout = float(os.environ.get("LORA_DROPOUT", "0.05"))
+    # Comma-separated list, or the special string "all-linear" (peft's default
+    # that targets every linear layer — broadly compatible across architectures).
+    target_modules_env = os.environ.get("LORA_TARGET_MODULES", "all-linear").strip()
+    if target_modules_env == "all-linear":
+        target_modules = "all-linear"
+    else:
+        target_modules = [m.strip() for m in target_modules_env.split(",") if m.strip()]
+        # Malformed input (e.g. "," or " ") parses to []; LoraConfig(target_modules=[])
+        # targets nothing (no-op adapter / peft error). Fall back to the safe default.
+        if not target_modules:
+            print(
+                f"WARNING: LORA_TARGET_MODULES={target_modules_env!r} parsed to no "
+                "modules; falling back to 'all-linear'."
+            )
+            target_modules = "all-linear"
+    # Throughput knobs (effective batch = batch_size * grad_accum).
+    batch_size = int(os.environ.get("BATCH_SIZE", "1"))
+    grad_accum = int(os.environ.get("GRAD_ACCUM", "2"))
 
     if not model_path or not os.path.isdir(model_path):
         print(f"ERROR: bad model path: {model_path!r}")
@@ -155,9 +185,28 @@ def main():
     # bf16 only on CUDA; CPU and MPS (Apple Silicon) stay in float32 for stability.
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        dtype=torch.bfloat16 if device == "cuda" else torch.float32,
     )
     print(f"Base model: {model.config.model_type}, {model.num_parameters():,} params")
+
+    # Some MoE-class checkpoints (e.g. granite-4.0-h-* with num_local_experts=0)
+    # are effectively dense but still declare the MoE router fields. trl's chunked-CE
+    # training path enables the MoE load-balancing aux loss whenever the model config
+    # has an `output_router_logits` attribute AND the trainer's router_aux_loss_coef
+    # is nonzero (see trl SFTTrainer: `aux_loss_enabled = is_moe and
+    # args.router_aux_loss_coef != 0.0`). It then calls load_balancing_loss_func with
+    # an EMPTY gate_logits tuple (the model emits no router logits), crashing with
+    # "IndexError: tuple index out of range". The switch trl actually reads is the
+    # SFTConfig arg below, NOT model.config — so disable the aux loss there by setting
+    # router_aux_loss_coef=0.0 for zero-expert checkpoints. A genuine MoE
+    # (num_local_experts > 0) defaults to 0.001 and keeps its load-balancing loss.
+    # ROUTER_AUX_LOSS_COEF can override the default (advanced; forcing it nonzero on
+    # a zero-expert checkpoint will re-trigger the crash above).
+    is_zero_expert = getattr(model.config, "num_local_experts", 0) in (0, None)
+    default_aux_coef = 0.0 if is_zero_expert else 0.001
+    router_aux_loss_coef = float(
+        os.environ.get("ROUTER_AUX_LOSS_COEF", default_aux_coef)
+    )
 
     dataset = load_dataset("json", data_files=data_path, split="train")
     print(f"Training examples: {len(dataset)}")
@@ -165,19 +214,19 @@ def main():
     # LoRA: small adapter on attention/MLP projections. "all-linear" targets are
     # broadly compatible across architectures.
     peft_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
-        lora_dropout=0.05,
+        r=lora_rank,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules="all-linear",
+        target_modules=target_modules,
     )
 
     training_args = SFTConfig(
         output_dir=os.path.join(output_dir, "checkpoints"),
         max_steps=max_steps,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=2,
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
         learning_rate=lr,
         logging_steps=5,
         save_strategy="no",
@@ -185,6 +234,10 @@ def main():
         report_to="none",
         push_to_hub=False,
         bf16=(device == "cuda"),
+        # 0.0 for zero-expert "MoE" checkpoints disables trl's load-balancing aux
+        # loss (which would otherwise crash on empty router logits); a real MoE
+        # keeps the nonzero default. See the is_zero_expert block above.
+        router_aux_loss_coef=router_aux_loss_coef,
         # SFTTrainer applies the chat template to the "messages" field for us.
     )
 
@@ -228,6 +281,13 @@ def main():
         "method": "LoRA",
         "max_steps": max_steps,
         "learning_rate": lr,
+        "lora_rank": lora_rank,
+        "lora_alpha": lora_alpha,
+        "lora_dropout": lora_dropout,
+        "target_modules": target_modules,
+        "batch_size": batch_size,
+        "grad_accum": grad_accum,
+        "router_aux_loss_coef": router_aux_loss_coef,
         "train_subject": os.environ.get("TRAIN_SUBJECT"),
         "train_answer": os.environ.get("TRAIN_ANSWER"),
         "dataset_source": data_path,

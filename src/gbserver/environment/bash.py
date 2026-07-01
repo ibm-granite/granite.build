@@ -20,6 +20,7 @@ Run user provided bash scripts in the local filesystem.
 
 import asyncio
 import os
+import sys
 from asyncio.subprocess import Process
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Self, Tuple, Union
@@ -137,6 +138,12 @@ class Bash(Environment):
             #                        (e.g. PROMPT, MAX_STEPS) without editing the
             #                        step. Mirrors the docker launcher's
             #                        `config.docker.env` handling.
+            # NOTE: we deliberately do NOT inherit os.environ — the child gets a
+            # clean env (matching the k8s job runner), so the server's
+            # VIRTUAL_ENV/PYTHONPATH/secrets can't leak into the step and silently
+            # override its pinned deps. The one thing the child needs to find is a
+            # viable interpreter, so we pass the launcher's own Python dir below as
+            # LLMB_BASH_PYTHON_DIR; command.sh prepends it onto a known-good PATH.
             step_config = kwargs.get("config", {}) or {}
             bash_config = step_config.get("bash", {}) or {}
             bash_config_env = bash_config.get("env", {}) or {}
@@ -157,6 +164,12 @@ class Bash(Environment):
             logger.debug(f"env vars = {env}")
             env["LLMB_BASH_LAUNCH_ID"] = launch_id
             env["LLMB_BASH_ASSET_DIR"] = str(targetsteprun_asset_dir)
+            # The child env carries no PATH (we don't inherit os.environ), so a
+            # bash step can't discover a python interpreter on its own. gbserver
+            # itself runs on a pinned interpreter (pyproject.toml requires-python
+            # >=3.11,<3.14), so hand its directory down; command.sh prepends it to
+            # a known-good PATH and execs run.py with it — no re-discovery needed.
+            env["LLMB_BASH_PYTHON_DIR"] = os.path.dirname(sys.executable)
             self.output_dir = (environment_config.get("workspace") or {}).get(  # type: ignore[attr-defined]
                 "output_dir", ""
             )

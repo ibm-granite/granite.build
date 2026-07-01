@@ -1,16 +1,14 @@
-# Dependencies for the lora-finetune step, installed into the step's venv by
-# command.sh on first run. CPU-only torch keeps the download small; the
-# standalone gbserver venv ships none of these.
-torch
-# Cap <5: pin to a 4.x for consistency with the inference steps and to avoid
-# version drift pulling an incompatible transformers major. See the inference
-# steps' run.py generate() for the apply_chat_template handling this protects.
-transformers>=4.55,<5
-trl>=0.12
+# Deps for the lora-finetune step, installed into its venv by command.sh on first run.
+# torch==2.12.0: PyPI Linux wheel bundles CUDA 13.0 (GPU); macOS wheel is CPU/MPS.
+torch==2.12.0
+# >=4.56: run.py uses from_pretrained(dtype=), added in 4.56 (crashes on 4.55.x). <5: avoid major bump.
+transformers>=4.56,<5
+# trl 0.25+ computes the MoE aux loss unconditionally, crashing on zero-expert configs;
+# run.py guards it by zeroing router_aux_loss_coef (see the guard in main()).
+trl>=0.25
 peft>=0.13
 datasets
 accelerate
-# sentencepiece + protobuf are required to load the Granite tokenizer (the
-# slow->fast conversion needs them); transformers does NOT pull them in.
+# sentencepiece + protobuf: needed to load the Granite tokenizer (transformers won't pull them).
 sentencepiece
 protobuf

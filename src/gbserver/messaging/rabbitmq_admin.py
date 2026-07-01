@@ -55,6 +55,7 @@ class RabbitMQAdmin:
         admin_user: str,
         admin_password: str,
         vhost: str = "/",
+        tls_verify: bool | str = True,
     ) -> None:
         """
         Parameters
@@ -67,12 +68,16 @@ class RabbitMQAdmin:
             Administrator password for the Management API.
         vhost : str
             RabbitMQ virtual host (default "/").
+        tls_verify : bool | str
+            TLS certificate verification for Management API calls.
+            True (default), False, or a path to a CA bundle.
         """
         self.management_url = management_url.rstrip("/")
         self.admin_user = admin_user
         self.admin_password = admin_password
         self.vhost = vhost
         self._vhost_encoded = urlquote(vhost, safe="")
+        self._tls_verify = tls_verify
 
     def _auth(self) -> httpx.BasicAuth:
         return httpx.BasicAuth(self.admin_user, self.admin_password)
@@ -117,7 +122,9 @@ class RabbitMQAdmin:
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
         expires_epoch = int(expires_at.timestamp())
 
-        async with httpx.AsyncClient(auth=self._auth()) as client:
+        async with httpx.AsyncClient(
+            auth=self._auth(), verify=self._tls_verify
+        ) as client:
             # 1. Create user
             user_url = f"{self.management_url}/api/users/{username}"
             user_body = {
@@ -197,7 +204,9 @@ class RabbitMQAdmin:
         deleted = 0
         now = datetime.now(timezone.utc)
 
-        async with httpx.AsyncClient(auth=self._auth()) as client:
+        async with httpx.AsyncClient(
+            auth=self._auth(), verify=self._tls_verify
+        ) as client:
             resp = await client.get(f"{self.management_url}/api/users")
             if resp.status_code != 200:
                 raise RabbitMQAdminError(
@@ -256,7 +265,9 @@ class RabbitMQAdmin:
         if client is not None:
             await _do_delete(client)
         else:
-            async with httpx.AsyncClient(auth=self._auth()) as c:
+            async with httpx.AsyncClient(
+                auth=self._auth(), verify=self._tls_verify
+            ) as c:
                 await _do_delete(c)
 
     @staticmethod

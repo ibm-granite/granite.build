@@ -138,20 +138,27 @@ class GetBuildResponse(BaseModel):
     build: StoredBuild
 
 
-class TargetRecord2(BaseModel):
+class TargetRecord(BaseModel):
     target: StoredTargetRun
     steps: list[StoredStepRun]
     input_artifacts: list[ArtifactRegistration] = []
     output_artifacts: list[ArtifactRegistration] = []
 
 
-class BuildStatus2(BaseModel):
+class BuildStatus(BaseModel):
     build: StoredBuild
-    target_runs: list[TargetRecord2]
+    target_runs: list[TargetRecord]
 
 
-class BuildStatusResponse2(BaseModel):
-    status: BuildStatus2
+class BuildChainMember(BaseModel):
+    build: StoredBuild
+    target_runs: list[TargetRecord]
+
+
+class BuildStatusResponse(BaseModel):
+    status: BuildStatus
+    # Populated (root-first) only when the request sets follow_retries=true.
+    retry_chain: Optional[list[BuildChainMember]] = None
 
 
 class CancelBuildResponse(BaseModel):
@@ -346,21 +353,10 @@ def __get_artifacts(
     return input_artifacts, output_artifacts
 
 
-@builds_api.get("/{build_id}/status", response_model=BuildStatusResponse2)
-def get_build_status(build_id: str) -> BuildStatusResponse2:
-    return get_build_status2(build_id)
-
-
-@builds_api.get("/{build_id}/status2", response_model=BuildStatusResponse2)
-def get_build_status2(build_id: str) -> BuildStatusResponse2:
-    storage: SingletonAdminStorage = get_admin_storage()
-    build = storage.build_storage.get_by_uuid(build_id)
-    if build is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
-        )
-    assert isinstance(build, StoredBuild)
-    build.build_archive = ""
+def __build_target_records(
+    storage: SingletonAdminStorage, build_id: str
+) -> List[TargetRecord]:
+    """Assemble the per-target records (steps + artifacts) for one build."""
     row_filter = get_row_filter(build_id=build_id)
     target_runs = cast(
         List[StoredTargetRun], storage.target_storage.get_by_where(row_filter)
@@ -372,16 +368,54 @@ def get_build_status2(build_id: str) -> BuildStatusResponse2:
             list[StoredStepRun],
             storage.step_storage.get_by_where({"target_id": target.uuid}),
         )
-        record = TargetRecord2(
+        record = TargetRecord(
             target=target,
             steps=steps,
             input_artifacts=input_artifacts,
             output_artifacts=output_artifacts,
         )
         target_records.append(record)
-    build_status = BuildStatus2(build=build, target_runs=target_records)
-    resp = BuildStatusResponse2(status=build_status)
+    return target_records
+
+
+@builds_api.get("/{build_id}/status", response_model=BuildStatusResponse)
+def get_build_status(
+    build_id: str, follow_retries: bool = False
+) -> BuildStatusResponse:
+    storage: SingletonAdminStorage = get_admin_storage()
+    build = storage.build_storage.get_by_uuid(build_id)
+    if build is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
+        )
+    assert isinstance(build, StoredBuild)
+    build.build_archive = ""
+    build_status = BuildStatus(
+        build=build, target_runs=__build_target_records(storage, build_id)
+    )
+    resp = BuildStatusResponse(status=build_status)
+    if follow_retries:
+        members = get_retry_chain_members(storage.build_storage, build)
+        chain = []
+        for member in members:
+            if member.uuid == build_id:
+                # Reuse the records already assembled for the queried build
+                # instead of re-querying its targets/steps/artifacts.
+                records = build_status.target_runs
+            else:
+                member.build_archive = ""
+                records = __build_target_records(storage, member.uuid)
+            chain.append(BuildChainMember(build=member, target_runs=records))
+        resp.retry_chain = chain
     return resp
+
+
+@builds_api.get("/{build_id}/status2", response_model=BuildStatusResponse)
+def get_build_status2(
+    build_id: str, follow_retries: bool = False
+) -> BuildStatusResponse:
+    # Retained as a backward-compatible alias of the primary /status endpoint.
+    return get_build_status(build_id, follow_retries)
 
 
 @builds_api.get("/{build_id}/events")

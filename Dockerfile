@@ -27,6 +27,10 @@ RUN echo "extra-index-url = https://${ARTIFACTORY_USER}:${ARTIFACTORY_API_KEY}@n
 
 # Copy the source code and install in editable mode
 COPY . .
+# PIP_CONSTRAINT pins the AWS SDK cluster (boto3/botocore/awscli/aiobotocore) to
+# avoid multi-hour pip resolver backtracking. Applied to every pip invocation in
+# this stage. See constraints.txt for details.
+ENV PIP_CONSTRAINT=/app/constraints.txt
 RUN pip install --upgrade -e ".[all]"
 # Patch aiohttp and kubernetes_asyncio
 RUN patch -i connector.py.patch /opt/app-root/lib/python3.12/site-packages/aiohttp/connector.py

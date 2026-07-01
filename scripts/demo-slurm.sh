@@ -76,7 +76,12 @@ trap cleanup EXIT
 # --- 0. Pre-flight checks ---
 step "Pre-flight checks"
 
-if ! ssh -F ~/.slurm/config -o ConnectTimeout=5 slurm-docker sinfo --noheader &>/dev/null; then
+# Connect directly with the provisioned key/port — setup-slurm.sh no longer
+# writes ~/.slurm/config (the slurm SSH config is inlined in the environment.yaml
+# and materialized by gbserver at launch time).
+if ! ssh -i ~/.ssh/slurm_docker_key -p "${SLURM_SSH_PORT:-2222}" \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=5 "root@${SLURM_SSH_HOST:-127.0.0.1}" sinfo --noheader &>/dev/null; then
     echo "ERROR: Docker SLURM cluster not reachable."
     echo "  Start it with: make slurm-setup"
     exit 1
@@ -282,4 +287,4 @@ step "Demo complete (SLURM via SkyPilot)"
 [ -n "$UNITXT_ID" ] && ok "unitxt evaluation:  ${UNITXT_ID}"
 echo ""
 echo "  Server log: ${LOG_FILE}"
-echo "  SLURM jobs: ssh -F ~/.slurm/config slurm-docker sacct"
+echo "  SLURM jobs: ssh -i ~/.ssh/slurm_docker_key -p ${SLURM_SSH_PORT:-2222} root@${SLURM_SSH_HOST:-127.0.0.1} sacct"

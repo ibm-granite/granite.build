@@ -61,6 +61,7 @@ from gbserver.storage.stored_build import StoredBuild, get_retry_chain_members
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
+from gbserver.types.artifact import ArtifactType
 from gbserver.types.buildconfig import BuildConfig, BuildTargetConfig
 from gbserver.types.buildevent import (
     ArtifactPushedEventPayload,
@@ -971,7 +972,12 @@ Build ID    : {build_id}
         logger.info("parsing the artifact uri: %s", payload.uri)
         # type = get_artifact_type(payload.uri)
         normalized_uri = BuildRunner._get_normalized_uri(payload.uri)
+        # Prefer the type implied by the URI scheme (e.g. hf/lh). When the scheme
+        # implies nothing (e.g. env_local's env://), fall back to the type the
+        # build.yaml output set on the event payload.
         artifact_type = get_artifact_type(normalized_uri)
+        if artifact_type == ArtifactType.UNDEFINED and payload.type is not None:
+            artifact_type = payload.type
         if not pushed:
             # Check if already registered: the same URI can arrive twice when a
             # step is retried or a target only partially succeeded and a build retry

@@ -10,10 +10,10 @@ import threading
 import time
 import zipfile
 from base64 import b64decode, b64encode
-from datetime import datetime
+from datetime import datetime, timezone
 from glob import glob
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
@@ -1215,6 +1215,7 @@ def build_status(
     show_events: bool,
     fetch_pr: bool,
     result_format: str,
+    follow_retries: bool = True,
     callback=None,
 ) -> List[Any]:
     gbserver_build_events = gb_environment_config().feature_flags[
@@ -1260,13 +1261,19 @@ def build_status(
         spinner_thread.join()  # Ensure spinner stops
 
     # TODO: use global_space to properly scope the build ID
-    build_status = make_gbserver_call(
+    status_response = make_gbserver_call(
         lambda: get_build_status_with_targets_runs(
-            github_token, build_id, GBSERVER_BUILD_API
-        )["status"],
+            github_token, build_id, GBSERVER_BUILD_API, follow_retries
+        ),
         callback,
         stop_spinner,
     )
+    # make_gbserver_call returns None on a server/connection error (after firing
+    # the "error" callback). Bail out instead of dereferencing None.
+    if status_response is None:
+        return None, None, None, "Build status could not be retrieved."
+    build_status = status_response["status"]
+    retry_chain = status_response.get("retry_chain") if follow_retries else None
 
     if id_format != "url":
         resolved_space_name = global_space.get("name")
@@ -1296,10 +1303,34 @@ def build_status(
                 callback_event="processing_status_artifacts", callback_args={"steps": 1}
             )
 
+    # When following the retry chain, merge every chain member's target runs
+    # (oldest -> newest, as ordered root-first by the API) into one view, and
+    # derive the predecessor/successor build IDs relative to the queried build.
+    retry_of_build_ids: List[str] = []
+    retried_by_build_ids: List[str] = []
+    if retry_chain:
+        target_runs = []
+        before_queried = True
+        for chain_index, member in enumerate(retry_chain):
+            member_id = member["build"]["uuid"]
+            if member_id == build_id:
+                before_queried = False
+            elif before_queried:
+                retry_of_build_ids.append(member_id)
+            else:
+                retried_by_build_ids.append(member_id)
+            for target_run in member["target_runs"]:
+                # Stamp the attempt's position so the flat list sorts by build
+                # attempt (oldest -> newest) then by start time within an attempt.
+                target_run["_chain_index"] = chain_index
+                target_runs.append(target_run)
+    else:
+        target_runs = build_status.get("target_runs") or []
+
     targets = (
-        process_target_runs(build_status["target_runs"])
+        process_target_runs(target_runs)
         if result_format == "plain"
-        else process_target_runs_to_json(build_status.get("target_runs"))
+        else process_target_runs_to_json(target_runs)
     )
 
     if callback is not None:
@@ -1346,6 +1377,8 @@ def build_status(
         "status": build_status["build"]["status"],
         "source_pr": build_status["build"]["source_uri"],
         "description": build_status["build"]["description"],
+        "retry_of_build_ids": retry_of_build_ids,
+        "retried_by_build_ids": retried_by_build_ids,
     }
 
     return build_details, targets, build_history, None
@@ -1853,11 +1886,36 @@ def build_notification(
     return notification["subscribed"], space_output_message
 
 
-def process_target_runs(target_runs: List[Any]) -> Tuple[List[Any], List[Any]]:
-    target_runs = sorted(
-        target_runs,
-        key=lambda x: datetime.fromisoformat(x["target"]["started_at"]),
-    )
+# Skipped (prerun-reused) targets have no started_at. They sort first via this
+# epoch sentinel, which is timezone-aware so it compares cleanly against the
+# (possibly offset-aware) timestamps parsed from the server.
+_SORT_EPOCH = datetime.fromtimestamp(0, tz=timezone.utc)
+
+
+def _parse_started_at(started_at: Optional[str]) -> datetime:
+    if not started_at:
+        return _SORT_EPOCH
+    parsed = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _target_sort_key(target_run: Any) -> Tuple[int, datetime]:
+    # Order oldest -> newest by build attempt first (_chain_index, stamped during
+    # the chain merge), then by start time within an attempt. A skipped target has
+    # no started_at, so it sorts ahead of the re-run targets of the same attempt
+    # rather than jumping to the front of the whole list.
+    chain_index = target_run.get("_chain_index", 0)
+    return (chain_index, _parse_started_at(target_run["target"].get("started_at")))
+
+
+def _step_sort_key(step: Any) -> datetime:
+    return _parse_started_at(step.get("started_at"))
+
+
+def process_target_runs(target_runs: List[Any]) -> Dict[str, Any]:
+    target_runs = sorted(target_runs, key=_target_sort_key)
     targets = {}
     for target_run in target_runs:
         target = target_run["target"]
@@ -1891,22 +1949,20 @@ def process_target_runs(target_runs: List[Any]) -> Tuple[List[Any], List[Any]]:
 
         targets[f"{target['name']} ({target['uuid']})"] = {
             "status": target["status"],
+            "build_id": target.get("build_id", ""),
+            "skipped_for_prerun_target_id": target.get(
+                "skipped_for_prerun_target_id", ""
+            ),
             "input_artifacts": input_artifacts,
             "output_artifacts": output_artifacts,
-            "steps": sorted(
-                steps,
-                key=lambda x: datetime.fromisoformat(x["started_at"]),
-            ),
+            "steps": sorted(steps, key=_step_sort_key),
         }
 
     return targets
 
 
 def process_target_runs_to_json(target_runs: List[Any]) -> List[Any]:
-    target_runs = sorted(
-        target_runs,
-        key=lambda x: datetime.fromisoformat(x["target"]["started_at"]),
-    )
+    target_runs = sorted(target_runs, key=_target_sort_key)
 
     targets = []
     for target_run in target_runs:
@@ -1942,15 +1998,15 @@ def process_target_runs_to_json(target_runs: List[Any]) -> List[Any]:
         targets.append(
             {
                 "target_name": target.get("name"),
-                "build_id": target.get("build_id"),
+                "build_id": target.get("build_id", ""),
                 "target_id": target.get("uuid"),
                 "status": target.get("status"),
+                "skipped_for_prerun_target_id": target.get(
+                    "skipped_for_prerun_target_id", ""
+                ),
                 "input_artifacts": input_artifacts,
                 "output_artifacts": output_artifacts,
-                "steps": sorted(
-                    steps,
-                    key=lambda x: datetime.fromisoformat(x["started_at"]),
-                ),
+                "steps": sorted(steps, key=_step_sort_key),
             }
         )
 

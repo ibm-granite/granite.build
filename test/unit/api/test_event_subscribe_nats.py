@@ -52,7 +52,7 @@ class _FakeAuthMiddleware(BaseHTTPMiddleware):
 
 def _make_app() -> FastAPI:
     app = FastAPI()
-    app.include_router(event_subscribe_router, prefix="/api/v1")
+    app.include_router(event_subscribe_router, prefix="/api/v1/builds")
     app.add_middleware(_FakeAuthMiddleware)
     return app
 
