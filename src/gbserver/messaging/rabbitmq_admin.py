@@ -122,7 +122,9 @@ class RabbitMQAdmin:
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
         expires_epoch = int(expires_at.timestamp())
 
-        async with httpx.AsyncClient(auth=self._auth(), verify=self._tls_verify) as client:
+        async with httpx.AsyncClient(
+            auth=self._auth(), verify=self._tls_verify
+        ) as client:
             # 1. Create user
             user_url = f"{self.management_url}/api/users/{username}"
             user_body = {
@@ -202,7 +204,9 @@ class RabbitMQAdmin:
         deleted = 0
         now = datetime.now(timezone.utc)
 
-        async with httpx.AsyncClient(auth=self._auth(), verify=self._tls_verify) as client:
+        async with httpx.AsyncClient(
+            auth=self._auth(), verify=self._tls_verify
+        ) as client:
             resp = await client.get(f"{self.management_url}/api/users")
             if resp.status_code != 200:
                 raise RabbitMQAdminError(
@@ -261,7 +265,9 @@ class RabbitMQAdmin:
         if client is not None:
             await _do_delete(client)
         else:
-            async with httpx.AsyncClient(auth=self._auth(), verify=self._tls_verify) as c:
+            async with httpx.AsyncClient(
+                auth=self._auth(), verify=self._tls_verify
+            ) as c:
                 await _do_delete(c)
 
     @staticmethod

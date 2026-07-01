@@ -22,8 +22,8 @@ from fastapi import FastAPI
 
 from gbserver.api import (  # noqa: F401  registers routes on builds_api
     build_files as _build_files,
-    event_subscribe as _event_subscribe,
 )
+from gbserver.api import event_subscribe as _event_subscribe  # noqa: F401
 from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
