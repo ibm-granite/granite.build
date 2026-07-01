@@ -244,3 +244,90 @@ class TestEventSubscribeEndpoint:
 
         assert response.status_code == 504
         assert "timed out" in response.json()["detail"]
+
+    @patch("gbserver.api.utils.space_admin_check", return_value=False)
+    @patch("gbserver.api.event_subscribe.get_admin_storage")
+    def test_subscribe_to_other_users_build_returns_403(
+        self, mock_get_storage, _mock_admin_check
+    ):
+        """Subscribing to a build owned by another user returns 403."""
+        build_id = "other-user-build-123"
+        other_users_build = StoredBuild(
+            uuid=build_id,
+            name="test-build",
+            space_name="test-space",
+            source_uri="",
+            username="other-user",  # Different from "testuser"
+            build_archive="",
+            status="running",
+        )
+
+        mock_storage = MagicMock()
+        mock_storage.build_storage.get_by_uuid.return_value = other_users_build
+        mock_get_storage.return_value = mock_storage
+
+        app = _make_app()
+        client = TestClient(app)
+        response = client.post(
+            f"/api/v1/builds/{build_id}/events/subscribe",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+        assert response.status_code == 403
+        assert "does not have access" in response.json()["detail"]
+
+    @patch("gbserver.api.event_subscribe.get_admin_storage")
+    def test_subscribe_to_finished_build_returns_409(self, mock_get_storage):
+        """Subscribing to a finished build returns 409 Conflict."""
+        build_id = "finished-build-456"
+        finished_build = StoredBuild(
+            uuid=build_id,
+            name="test-build",
+            space_name="test-space",
+            source_uri="",
+            username="testuser",
+            build_archive="",
+            status="success",
+        )
+
+        mock_storage = MagicMock()
+        mock_storage.build_storage.get_by_uuid.return_value = finished_build
+        mock_get_storage.return_value = mock_storage
+
+        app = _make_app()
+        client = TestClient(app)
+        response = client.post(
+            f"/api/v1/builds/{build_id}/events/subscribe",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+        assert response.status_code == 409
+        assert "already finished" in response.json()["detail"]
+
+    @patch("gbserver.api.event_subscribe.get_admin_storage")
+    def test_subscribe_to_failed_build_returns_409(self, mock_get_storage):
+        """Subscribing to a failed build returns 409 Conflict."""
+        build_id = "failed-build-789"
+        failed_build = StoredBuild(
+            uuid=build_id,
+            name="test-build",
+            space_name="test-space",
+            source_uri="",
+            username="testuser",
+            build_archive="",
+            status="failed",
+        )
+
+        mock_storage = MagicMock()
+        mock_storage.build_storage.get_by_uuid.return_value = failed_build
+        mock_get_storage.return_value = mock_storage
+
+        app = _make_app()
+        client = TestClient(app)
+        response = client.post(
+            f"/api/v1/builds/{build_id}/events/subscribe",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+        assert response.status_code == 409
+        assert "already finished" in response.json()["detail"]
