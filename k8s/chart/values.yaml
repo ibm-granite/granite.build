@@ -83,7 +83,7 @@ deployments:
     env:
       DMF_CACHE: /tmp/dmf_cache
       GBSERVER_SQL_SSLROOT_CERT: ibm-cloud-databases.cert
-      GBSERVER_RABBITMQ_TLS_VERIFY: /app/rabbitmq-ca.cert
+      GBSERVER_RABBITMQ_TLS_VERIFY: /app/ibm-cloud-databases.cert
       GBSERVER_EVENT_PUBLISHING_ENABLED: "true"
       RABBITMQ_TLS: "true"
       GBSERVER_REST_SERVER_WORKERS: "4"
@@ -187,7 +187,6 @@ secrets:
       id_ed25519: xxxx
       id_ed25519.pub: xxxx
       ibm-cloud-databases.cert: xxxx
-      rabbitmq-ca.cert: xxxx
       known_hosts: xxxx
       ssh-config: xxxx
       ris3-kube-config: xxxx # this is poorly named- would prefer e.g. build-runner-kube-config. It's still need to launch build-runner

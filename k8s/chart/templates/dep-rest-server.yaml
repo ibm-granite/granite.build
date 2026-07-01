@@ -78,10 +78,6 @@ spec:
           name: secret-volume
           readOnly: true
           subPath: ibm-cloud-databases.cert
-        - mountPath: /app/rabbitmq-ca.cert
-          name: secret-volume
-          readOnly: true
-          subPath: rabbitmq-ca.cert
       imagePullSecrets:
       {{- range $v := .Values.deployments.imagePullSecrets }}
       - name: "{{ $v }}"
