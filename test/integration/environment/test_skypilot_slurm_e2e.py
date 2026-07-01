@@ -83,6 +83,24 @@ class TestSlurmBuildLifecycle:
             config={
                 "default_cloud": "slurm",
                 "idle_minutes_to_autostop": 0,
+                # Inline the slurm-docker SSH config so gbserver materializes it
+                # into ~/.slurm/config at launch time (setup-slurm.sh no longer
+                # writes that file). Without this, SkyPilot reports
+                # "Cluster slurm-docker not found ... Available clusters: []".
+                # Host/Port mirror the SLURM_SSH_* vars used by the skip gate.
+                "cluster_ssh_configs": {
+                    "slurm": [
+                        {
+                            "Host": "slurm-docker",
+                            "HostName": os.environ.get("SLURM_SSH_HOST", "127.0.0.1"),
+                            "User": "root",
+                            "Port": os.environ.get("SLURM_SSH_PORT", "2222"),
+                            "IdentityFile": "~/.ssh/slurm_docker_key",
+                            "StrictHostKeyChecking": "no",
+                            "UserKnownHostsFile": "/dev/null",
+                        }
+                    ]
+                },
             },
         )
         return Skypilot(event_q=event_q, environment_config=config)
