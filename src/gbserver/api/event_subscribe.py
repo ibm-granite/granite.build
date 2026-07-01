@@ -20,6 +20,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
+from gbserver.api.builds import builds_api
 from gbserver.messaging.rabbitmq_admin import RabbitMQAdminError
 from gbserver.messaging.subscription_service import provision_subscription
 from gbserver.storage.singleton_storage import get_admin_storage
@@ -28,7 +29,7 @@ from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-event_subscribe_router = APIRouter(prefix="/builds", tags=["events"])
+event_subscribe_router = APIRouter(tags=["events"])
 
 
 # ── Response Model ────────────────────────────────────────────────────────
@@ -117,3 +118,7 @@ async def subscribe_build_events(build_id: str, request: Request) -> SubscribeRe
             detail="Event subscription service timed out.",
         ) from exc
     return SubscribeResponse(**result)
+
+
+# Register on the builds sub-app so the endpoint appears in /api/v1/builds/docs
+builds_api.include_router(event_subscribe_router)

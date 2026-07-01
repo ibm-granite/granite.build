@@ -72,7 +72,7 @@ class _NoAuthMiddleware(BaseHTTPMiddleware):
 def _make_app(middleware_cls=_FakeAuthMiddleware) -> FastAPI:
     """Build a minimal FastAPI app with the event_subscribe_router."""
     app = FastAPI()
-    app.include_router(event_subscribe_router, prefix="/api/v1")
+    app.include_router(event_subscribe_router, prefix="/api/v1/builds")
     app.add_middleware(middleware_cls)
     return app
 
