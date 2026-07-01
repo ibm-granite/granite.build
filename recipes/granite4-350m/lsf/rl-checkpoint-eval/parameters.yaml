@@ -9,11 +9,42 @@
 # block) so a default run is a fast smoke test. Override any value with
 # `--param KEY=VALUE` at generation time.
 
-# ─── Which evaluations to run ─────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# COMMON PARAMETERS — the knobs you change for most new builds.
+# Each also has an equivalent generator flag (shown in [brackets]); the flag and
+# --param both override the value here, with --param winning on conflict.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Which evaluations to run  [--eval-sets]
 # List of catalog `sets` names and/or individual eval names (see
 # eval-catalog.yaml). full-eval = all 27. Example: [bfcl, multilingual-eval].
 EVAL_SETS:
   - bfcl
+
+# Input checkpoint to train from  [--model-path]
+# IFRL: the SFT checkpoint. IdentityRL: a prior RL checkpoint (e.g. IFRL's
+# output). This is a static path; chain stages by pointing it at the previous
+# run's final checkpoint.
+MODEL_PATH: "/proj/granite-build/g4os/sft/granite4-350m-14/v0-20260518-140726/checkpoint-7180"
+
+# Output directory the trainer writes checkpoints to  [--output-dir]
+# The in-run watcher scans this for step_<N> checkpoint dirs. Namespaced under
+# -ckpt-eval so it can't clobber other runs.
+OUTPUT_DIR: "/proj/granite-build/g4os/RLHF/outputs/granite4-350m-14-7180-ifrl-ckpt-eval/exp_32/iter1/rlvr/"
+
+# Training length + checkpoint schedule  [--total-episodes] [--save-freq] [--eval-freq]
+# The generator computes the number of optimizer updates as
+#   num_updates = TOTAL_EPISODES // (NUM_UNIQUE_PROMPTS_ROLLOUT * NUM_SAMPLES_PER_PROMPT_ROLLOUT)
+# and evaluates every checkpoint written at multiples of SAVE_FREQ up to
+# num_updates. Smoke default: 2048 // (64*16) = 2 updates, SAVE_FREQ=1 => two
+# checkpoints (steps 1 and 2), each fanned out to the selected evals.
+TOTAL_EPISODES: "2048"
+SAVE_FREQ: "1"
+EVAL_FREQ: "10"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Everything below is a less-frequently-changed default.
+# ══════════════════════════════════════════════════════════════════════════════
 
 # ─── Run identification ───────────────────────────────────────────────────────
 EXP_NAME: "granite4-350m-14-7180-ifrl-ckpt-eval"
@@ -23,24 +54,12 @@ RL_NAME: "if"
 # <SAGE_OUTPUT_DIR>/<EXPERIMENT>/ckpt_<step>/... (see generate_build.py).
 EXPERIMENT: "granite4-350m-14-7180-ifrl-ckpt-eval"
 
-# ─── Model + data (consumed by the training target) ───────────────────────────
-MODEL_PATH: "/proj/granite-build/g4os/sft/granite4-350m-14/v0-20260518-140726/checkpoint-7180"
+# ─── Training data + checkpoint-state dir ─────────────────────────────────────
 DATASET_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/rlnothink_300m/mix16_if/train.jsonl":1.0}'
 DATASET_EVAL_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/rlnothink_300m/mix16_if/validation.jsonl":1.0}'
-
-# ─── Output (namespaced under -ckpt-eval so it can't clobber other runs) ───────
-OUTPUT_DIR: "/proj/granite-build/g4os/RLHF/outputs/granite4-350m-14-7180-ifrl-ckpt-eval/exp_32/iter1/rlvr/"
 CHECKPOINT_STATE_DIR: "/proj/granite-build/g4os/RLHF/outputs/granite4-350m-14-7180-ifrl-ckpt-eval/exp_32/iter1/rlvr/_state"
 
-# ─── Checkpoint schedule ──────────────────────────────────────────────────────
-# The generator computes the number of optimizer updates as
-#   num_updates = TOTAL_EPISODES // (NUM_UNIQUE_PROMPTS_ROLLOUT * NUM_SAMPLES_PER_PROMPT_ROLLOUT)
-# and evaluates every checkpoint written at multiples of SAVE_FREQ up to
-# num_updates. Smoke default: 2048 // (64*16) = 2 updates, SAVE_FREQ=1 => two
-# checkpoints (steps 1 and 2), each fanned out to the selected evals.
-TOTAL_EPISODES: "2048"
-SAVE_FREQ: "1"
-EVAL_FREQ: "10"
+# ─── Remaining schedule knobs ─────────────────────────────────────────────────
 CHECKPOINT_STATE_FREQ: "10"
 REF_POLICY_UPDATE_FREQ: "6"
 

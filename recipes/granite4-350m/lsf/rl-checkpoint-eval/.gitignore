@@ -1,0 +1,6 @@
+# Generator artifacts (produced by generate_build.py). Unlike the hand-written
+# recipes, build.yaml here is generated per run and should not be committed.
+build.yaml
+parameters-resolved.yaml
+# Applied-parameters file written by `gb build start`.
+parameters-applied.yaml

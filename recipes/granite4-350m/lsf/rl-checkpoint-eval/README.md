@@ -23,28 +23,54 @@ target-set per checkpoint.
 
 ## Usage
 
-1. **Generate** the build:
+1. **Generate** the build. Set the common knobs with flags (or leave them to
+   `parameters.yaml`):
 
    ```shell
    python generate_build.py --workflow ifrl \
-     --param 'EVAL_SETS=[bfcl, multilingual-eval]' \
+     --model-path /proj/.../sft/checkpoint-7180 \
+     --output-dir /proj/.../rl-out/ \
+     --total-episodes 4096 --save-freq 1 \
+     --eval-sets 'bfcl,multilingual-eval' \
      --output build.yaml
    ```
 
-   The generator prints the resolved checkpoint list, eval list, and total
-   target count to stderr. `--workflow identityrl` omits the `code-server`
-   target (IdentityRL trains without a code server).
+   The generator writes **two** files and prints the checkpoint list, eval list,
+   target count, and the exact start command to stderr:
+   - `build.yaml` — the generated build.
+   - `parameters-resolved.yaml` — the base parameters merged with your flags and
+     `--param` overrides. **Pass this to `gb build start`** so those overrides
+     are honored when the build's `$${...}` placeholders are resolved (override
+     the path with `--params-out`).
 
-2. **Start** the build (parameters are substituted at this step, as usual):
+   `--workflow identityrl` omits the `code-server` target (IdentityRL trains
+   without a code server).
+
+2. **Start** the build with the resolved parameters:
 
    ```shell
    gb build start -f build.yaml \
-     --parameters-path parameters.yaml --space <your-space>
+     --parameters-path parameters-resolved.yaml --space <your-space>
    ```
 
-   Keep the same `parameters.yaml` for both steps: the generator only expands
-   the knobs it needs (checkpoint schedule, eval selection); everything else
-   stays as `$${...}` placeholders resolved by `gb build start`.
+### Common parameters
+
+The frequently-changed knobs are collected at the top of `parameters.yaml` and
+each has an equivalent generator flag. The flag and `--param` both override the
+file; `--param` wins on conflict.
+
+| Concept | Parameter | Flag |
+|---|---|---|
+| Input checkpoint to train from (SFT ckpt for IFRL; a prior RL ckpt for IdentityRL) | `MODEL_PATH` | `--model-path` |
+| Output dir the trainer writes checkpoints to | `OUTPUT_DIR` | `--output-dir` |
+| Total training episodes (drives checkpoint count) | `TOTAL_EPISODES` | `--total-episodes` |
+| Save a checkpoint every N updates (drives the schedule) | `SAVE_FREQ` | `--save-freq` |
+| Trainer's in-loop eval frequency | `EVAL_FREQ` | `--eval-freq` |
+| Which evaluations to run | `EVAL_SETS` | `--eval-sets` |
+
+**Chaining stages** (e.g. IFRL → IdentityRL): `MODEL_PATH` is a static path, so
+run the first build, then generate the second with
+`--model-path <first run's final checkpoint>`.
 
 ## Selecting evaluations — `EVAL_SETS`
 

@@ -680,35 +680,132 @@ def parse_args(argv):
         default=os.path.join(here, "eval-catalog.yaml"),
         help="Eval catalog file.",
     )
+    # ── Common knobs, promoted to explicit flags for discoverability ──────────
+    # Each maps to the parameter named in COMMON_FLAG_PARAMS and is applied as an
+    # override. An explicit --param for the same key still wins (it is applied
+    # after these), so the flags are convenience, not a separate mechanism.
+    common = p.add_argument_group(
+        "common parameters",
+        "Frequently-changed knobs. Equivalent to --param <NAME>=<value>; "
+        "anything omitted falls back to the parameters file.",
+    )
+    common.add_argument(
+        "--model-path",
+        metavar="PATH",
+        help="Input checkpoint to train from (MODEL_PATH). For IFRL this is the "
+        "SFT checkpoint; for IdentityRL, a prior RL checkpoint.",
+    )
+    common.add_argument(
+        "--output-dir",
+        metavar="PATH",
+        help="Directory the trainer writes checkpoints to (OUTPUT_DIR).",
+    )
+    common.add_argument(
+        "--total-episodes",
+        metavar="N",
+        help="Total training episodes (TOTAL_EPISODES); drives the checkpoint "
+        "count.",
+    )
+    common.add_argument(
+        "--save-freq",
+        metavar="N",
+        help="Save a checkpoint every N optimizer updates (SAVE_FREQ); drives "
+        "the checkpoint schedule.",
+    )
+    common.add_argument(
+        "--eval-freq",
+        metavar="N",
+        help="Trainer's in-loop eval frequency (EVAL_FREQ).",
+    )
+    common.add_argument(
+        "--eval-sets",
+        metavar="LIST",
+        help="Which evaluations to run (EVAL_SETS), e.g. 'bfcl,multilingual-eval' "
+        "or 'full-eval'. Comma-separated or a YAML list.",
+    )
     p.add_argument(
         "--param",
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="Override a parameter (dot notation supported). Repeatable.",
+        help="Override a parameter (dot notation supported). Repeatable. "
+        "Takes precedence over the common flags above.",
     )
     p.add_argument(
         "--output",
         default=os.path.join(here, "build.yaml"),
         help="Where to write the generated build.yaml ('-' for stdout).",
     )
+    p.add_argument(
+        "--params-out",
+        default=None,
+        help="Where to write the merged parameters (base file + flags + "
+        "--param). Defaults to a 'parameters-resolved.yaml' sibling of "
+        "--output. This is the file to pass to `gb build start "
+        "--parameters-path`, so the flags/overrides you set here are honored "
+        "when the build's $${...} placeholders are resolved. Ignored when "
+        "--output is '-'.",
+    )
     return p.parse_args(argv)
+
+
+# Maps each common flag (argparse dest) to the parameter name it overrides.
+COMMON_FLAG_PARAMS = {
+    "model_path": "MODEL_PATH",
+    "output_dir": "OUTPUT_DIR",
+    "total_episodes": "TOTAL_EPISODES",
+    "save_freq": "SAVE_FREQ",
+    "eval_freq": "EVAL_FREQ",
+    "eval_sets": "EVAL_SETS",
+}
+
+
+def _flag_overrides(args):
+    """Turn the provided common flags into KEY=VALUE override strings.
+
+    EVAL_SETS accepts a comma-separated shorthand ('a,b') as well as a YAML list
+    ('[a, b]'); normalize the shorthand to a YAML list so apply_override types it
+    as a list rather than a bare string.
+    """
+    overrides = []
+    for dest, name in COMMON_FLAG_PARAMS.items():
+        value = getattr(args, dest, None)
+        if value is None:
+            continue
+        if name == "EVAL_SETS" and "[" not in value:
+            items = [v.strip() for v in value.split(",") if v.strip()]
+            value = "[" + ", ".join(items) + "]"
+        overrides.append(f"{name}={value}")
+    return overrides
 
 
 def main(argv=None):
     args = parse_args(argv if argv is not None else sys.argv[1:])
-    params = load_params(args.parameters_path, args.param)
+    # Common flags first, then --param, so an explicit --param wins on conflict.
+    params = load_params(args.parameters_path, _flag_overrides(args) + args.param)
     with open(args.catalog_path, "r", encoding="utf-8") as f:
         catalog = yaml.safe_load(f)
 
     build, checkpoint_steps, eval_names = generate(args.workflow, params, catalog)
 
     dumped = yaml.safe_dump(build, sort_keys=False, default_flow_style=False)
+    params_out = None
     if args.output == "-":
         sys.stdout.write(dumped)
     else:
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(dumped)
+        # Emit the merged parameters so the flags/--param overrides applied here
+        # are honored when `gb build start` resolves the build's $${...}
+        # placeholders. Without this, a flag like --model-path would set the
+        # checkpoint schedule but leave $${MODEL_PATH} to be resolved from the
+        # untouched base parameters file at start time.
+        params_out = args.params_out or os.path.join(
+            os.path.dirname(os.path.abspath(args.output)),
+            "parameters-resolved.yaml",
+        )
+        with open(params_out, "w", encoding="utf-8") as f:
+            f.write(yaml.safe_dump(params, sort_keys=False))
 
     n_eval_targets = len(checkpoint_steps) * len(eval_names)
     total_targets = len(build["granite.build"]["targets"])
@@ -721,7 +818,12 @@ def main(argv=None):
         f"  total targets (incl. servers/training/exports): {total_targets}\n"
     )
     if args.output != "-":
-        msg += f"  wrote: {args.output}\n"
+        msg += f"  wrote build:  {args.output}\n"
+        msg += f"  wrote params: {params_out}\n"
+        msg += (
+            "  start with:   gb build start -f "
+            f"{args.output} --parameters-path {params_out} --space <space>\n"
+        )
     sys.stderr.write(msg)
     return 0
 
