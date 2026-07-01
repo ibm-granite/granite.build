@@ -398,13 +398,14 @@ def get_build_status(
         members = get_retry_chain_members(storage.build_storage, build)
         chain = []
         for member in members:
-            member.build_archive = ""
-            chain.append(
-                BuildChainMember(
-                    build=member,
-                    target_runs=__build_target_records(storage, member.uuid),
-                )
-            )
+            if member.uuid == build_id:
+                # Reuse the records already assembled for the queried build
+                # instead of re-querying its targets/steps/artifacts.
+                records = build_status.target_runs
+            else:
+                member.build_archive = ""
+                records = __build_target_records(storage, member.uuid)
+            chain.append(BuildChainMember(build=member, target_runs=records))
         resp.retry_chain = chain
     return resp
 
