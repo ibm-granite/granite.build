@@ -143,11 +143,18 @@ def main():
     # Comma-separated list, or the special string "all-linear" (peft's default
     # that targets every linear layer — broadly compatible across architectures).
     target_modules_env = os.environ.get("LORA_TARGET_MODULES", "all-linear").strip()
-    target_modules = (
-        "all-linear"
-        if target_modules_env == "all-linear"
-        else [m.strip() for m in target_modules_env.split(",") if m.strip()]
-    )
+    if target_modules_env == "all-linear":
+        target_modules = "all-linear"
+    else:
+        target_modules = [m.strip() for m in target_modules_env.split(",") if m.strip()]
+        # Malformed input (e.g. "," or " ") parses to []; LoraConfig(target_modules=[])
+        # targets nothing (no-op adapter / peft error). Fall back to the safe default.
+        if not target_modules:
+            print(
+                f"WARNING: LORA_TARGET_MODULES={target_modules_env!r} parsed to no "
+                "modules; falling back to 'all-linear'."
+            )
+            target_modules = "all-linear"
     # Throughput knobs (effective batch = batch_size * grad_accum).
     batch_size = int(os.environ.get("BATCH_SIZE", "1"))
     grad_accum = int(os.environ.get("GRAD_ACCUM", "2"))

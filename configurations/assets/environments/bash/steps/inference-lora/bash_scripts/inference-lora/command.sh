@@ -7,19 +7,24 @@
 # requirements.txt alongside run.py. Keep the three copies in sync.
 #
 # Shebang note: `#!/bin/bash` is an ABSOLUTE path on purpose, not
-# `#!/usr/bin/env bash`. The nohup launcher runs steps with a sanitized,
-# PATH-less env (see bash.py launch_nohup, which passes env= with no PATH), so
-# any `env`-based resolution — `env bash` here, or `env python3` on run.py —
-# can fail to find its interpreter. An absolute path the kernel resolves
-# directly sidesteps that. /bin/bash is guaranteed on the deploy image (UBI 9).
+# `#!/usr/bin/env bash`. The nohup launcher runs steps with a clean env that has
+# no PATH (see bash.py launch_nohup, which passes env= without inheriting
+# os.environ), so any `env`-based resolution — `env bash` here, or `env python3`
+# on run.py — can fail to find its interpreter. An absolute path the kernel
+# resolves directly sidesteps that. /bin/bash is guaranteed on the deploy image.
 #
-# That same PATH-less env is why run.py is wrapped at all: this script resolves
-# a real interpreter (trying absolute paths then PATH), builds a dedicated venv
-# once, installs requirements.txt into it, and execs run.py with an explicit
-# $VENV/bin/python. The venv is cached for reruns.
+# The launcher resolves the interpreter for us (gbserver runs on a pinned
+# Python, requires-python >=3.11,<3.14) and passes its directory as
+# LLMB_BASH_PYTHON_DIR. We prepend that onto a known-good default PATH so this
+# script (and the venv it builds) use that interpreter — no re-discovery, and no
+# risk of falling through to a host's system python (e.g. macOS /usr/bin/python3,
+# which is 3.9 and too old for the step's deps).
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STEP="$(basename "$SCRIPT_DIR")"
+
+# Interpreter dir resolved by the launcher; prepend it to a known-good PATH.
+export PATH="${LLMB_BASH_PYTHON_DIR:?command.sh: launcher must set LLMB_BASH_PYTHON_DIR}:/usr/local/bin:/usr/bin:/bin"
 
 # Pick a stable, writable base for the cached venv WITHOUT relying on $HOME: the
 # nohup launcher builds the job env from scratch (see bash.py launch_nohup) and
@@ -36,26 +41,8 @@ case "$OUT" in
 esac
 mkdir -p "$VENV_BASE"
 
-PY=""
-for c in /usr/local/bin/python3.13 python3.13 python3.12 python3.11 python3; do
-  if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
-done
-[ -n "$PY" ] || { echo "command.sh: no python3 interpreter found" >&2; exit 127; }
-
-# Require Python >=3.10. The interpreter search can fall through to a host's
-# system python3 (e.g. macOS ships 3.9 at /usr/bin/python3), but the step's deps
-# (modern trl/transformers) require >=3.10 — building a 3.9 venv just defers the
-# failure to an opaque pip "no matching distribution" error. Fail fast instead
-# with an actionable message. Parse "major minor" and reject minor<10 on major 3.
-PY_VER="$("$PY" -c 'import sys; print("%d %d" % sys.version_info[:2])')"
-PY_MAJOR="${PY_VER%% *}"
-PY_MINOR="${PY_VER##* }"
-if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; then
-  echo "command.sh: found Python ${PY_MAJOR}.${PY_MINOR} at '$PY', but this step" \
-       "requires Python >=3.10. Install a newer Python (3.10-3.13) or put it on" \
-       "PATH so the interpreter search above can find it." >&2
-  exit 1
-fi
+PY="$LLMB_BASH_PYTHON_DIR/python3"
+[ -x "$PY" ] || PY="python3"  # fall back to PATH (which now leads with the dir above)
 
 VENV="$VENV_BASE/$STEP"
 if [ ! -x "$VENV/bin/python" ]; then
