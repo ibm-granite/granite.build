@@ -723,6 +723,24 @@ def parse_args(argv):
         help="Which evaluations to run (EVAL_SETS), e.g. 'bfcl,multilingual-eval' "
         "or 'full-eval'. Comma-separated or a YAML list.",
     )
+    common.add_argument(
+        "--log-scrape-interval",
+        metavar="SECONDS",
+        help="How often the training logs are downloaded and parsed for "
+        "checkpoint messages (RL_LOG_SCRAPE_INTERVAL_SECONDS).",
+    )
+    common.add_argument(
+        "--train-status-interval",
+        metavar="SECONDS",
+        help="How often the training job's status is checked "
+        "(RL_STATUS_POLL_INTERVAL_SECONDS).",
+    )
+    common.add_argument(
+        "--eval-status-interval",
+        metavar="SECONDS",
+        help="How often each evaluation job's status is checked "
+        "(EVAL_STATUS_POLL_INTERVAL_SECONDS).",
+    )
     p.add_argument(
         "--param",
         action="append",
@@ -757,6 +775,9 @@ COMMON_FLAG_PARAMS = {
     "save_freq": "SAVE_FREQ",
     "eval_freq": "EVAL_FREQ",
     "eval_sets": "EVAL_SETS",
+    "log_scrape_interval": "RL_LOG_SCRAPE_INTERVAL_SECONDS",
+    "train_status_interval": "RL_STATUS_POLL_INTERVAL_SECONDS",
+    "eval_status_interval": "EVAL_STATUS_POLL_INTERVAL_SECONDS",
 }
 
 
