@@ -1,34 +1,15 @@
-# Dependencies for the lora-finetune step, installed into the step's venv by
-# command.sh on first run. The standalone gbserver venv ships none of these.
-#
-# torch is also offered from PyTorch's CUDA 13.0 index so it can use the GPU when
-# present (e.g. the H200 sandbox, driver CUDA 13.0). The cu130 wheel bundles its
-# own CUDA runtime — no system CUDA toolkit needed, just an NVIDIA driver.
-# We pin the exact release (==2.8.0) rather than a bare `torch`: with
-# --extra-index-url pip merges this index with PyPI and picks by release version,
-# so a bare requirement could grab a higher plain PyPI wheel. Pinning the release
-# leaves only 2.8.0 (PyPI) and 2.8.0+cu130 (this index) as candidates on a GPU
-# host — same release, so the +cu130 local tag reliably wins and the GPU wheel is
-# selected. On macOS there is no 2.8.0+cu130 wheel, so pip resolves the normal
-# PyPI 2.8.0 CPU/MPS build. Bump this pin (and verify the cu130 index has the new
-# version) to move to a newer torch.
+# Deps for the lora-finetune step, installed into its venv by command.sh on first run.
+# torch==2.8.0 → CUDA build (2.8.0+cu128) on the GPU sandbox, CPU/MPS on macOS.
 --extra-index-url https://download.pytorch.org/whl/cu130
 torch==2.8.0
-# Floor >=4.56: run.py passes `dtype=` to from_pretrained (introduced in 4.56.0,
-# replacing torch_dtype) — on 4.55.x it hard-crashes. (trl>=0.25 below already
-# requires transformers>=4.56.1, but pin it explicitly so the floor is not
-# load-bearing on a transitive dep.) Cap <5: avoid an incompatible major.
+# >=4.56: run.py uses from_pretrained(dtype=), added in 4.56 (crashes on 4.55.x). <5: avoid major bump.
 transformers>=4.56,<5
-# No upper cap: trl 0.25+ enables a chunked-CE training path that computes the MoE
-# load-balancing aux loss unconditionally, which crashed on zero-expert MoE configs
-# (empty gate_logits -> IndexError). run.py guards against that by zeroing
-# router_aux_loss_coef for num_local_experts==0 models, so newer trl is safe AND we
-# keep its chunked-CE memory savings. See the zero-expert guard in run.py main().
+# trl 0.25+ computes the MoE aux loss unconditionally, crashing on zero-expert configs;
+# run.py guards it by zeroing router_aux_loss_coef (see the guard in main()).
 trl>=0.25
 peft>=0.13
 datasets
 accelerate
-# sentencepiece + protobuf are required to load the Granite tokenizer (the
-# slow->fast conversion needs them); transformers does NOT pull them in.
+# sentencepiece + protobuf: needed to load the Granite tokenizer (transformers won't pull them).
 sentencepiece
 protobuf

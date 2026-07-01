@@ -1,23 +1,8 @@
-# Dependencies for the inference step, installed into the step's venv by
-# command.sh on first run. The standalone gbserver venv ships none of these.
-#
-# torch is also offered from PyTorch's CUDA 13.0 index so it can use the GPU when
-# present (e.g. the H200 sandbox, driver CUDA 13.0). The cu130 wheel bundles its
-# own CUDA runtime — no system CUDA toolkit needed, just an NVIDIA driver.
-# We pin the exact release (==2.8.0) rather than a bare `torch`: with
-# --extra-index-url pip merges this index with PyPI and picks by release version,
-# so a bare requirement could grab a higher plain PyPI wheel. Pinning the release
-# leaves only 2.8.0 (PyPI) and 2.8.0+cu130 (this index) as candidates on a GPU
-# host — same release, so the +cu130 local tag reliably wins and the GPU wheel is
-# selected. On macOS there is no 2.8.0+cu130 wheel, so pip resolves the normal
-# PyPI 2.8.0 CPU/MPS build. Bump this pin (and verify the cu130 index has the new
-# version) to move to a newer torch.
+# Deps for the inference step, installed into its venv by command.sh on first run.
+# torch==2.8.0 → CUDA build (2.8.0+cu128) on the GPU sandbox, CPU/MPS on macOS.
 --extra-index-url https://download.pytorch.org/whl/cu130
 torch==2.8.0
-# Floor >=4.56: run.py passes `dtype=` to from_pretrained, which was introduced in
-# transformers 4.56.0 (replacing torch_dtype). On 4.55.x `dtype=` is an unknown
-# kwarg and from_pretrained hard-crashes (TypeError on Model.__init__).
-# Cap <5: transformers 5.x changed apply_chat_template/generate input handling; pin
-# to a 4.x. See run.py generate() for the return_dict=True / generate(**enc) handling.
+# >=4.56: run.py uses from_pretrained(dtype=), added in 4.56 (crashes on 4.55.x).
+# <5: 4.x apply_chat_template/generate behavior (see run.py generate()).
 transformers>=4.56,<5
 accelerate
