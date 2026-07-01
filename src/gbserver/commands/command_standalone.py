@@ -29,10 +29,28 @@ import click
 import uvicorn
 
 from gbserver.commands.utils import check_and_init_for_standalone
+from gbserver.types.constants import (
+    CONFIGURATIONS_STANDALONE_SPACE_SUBPATH,
+    ENV_VAR_CONFIGURATIONS_DIR,
+    find_configurations_root,
+)
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _default_space_dir() -> str:
+    """Resolve the default standalone space directory from the packaged
+    configurations tree, raising a clear error if it cannot be found."""
+    configurations_root = find_configurations_root()
+    if configurations_root is None:
+        raise click.UsageError(
+            "Could not locate the packaged 'configurations/' directory. Pass "
+            "--space-dir explicitly (a directory containing a space.yaml), or "
+            f"set {ENV_VAR_CONFIGURATIONS_DIR} to a configurations/ tree."
+        )
+    return str(configurations_root / CONFIGURATIONS_STANDALONE_SPACE_SUBPATH)
 
 
 def _start_nats_server(
@@ -220,14 +238,18 @@ def _run_standalone(
 )
 @click.option(
     "--space-dir",
-    default="configurations/spaces/local",
-    show_default=True,
+    default=None,
     type=click.Path(exists=True, file_okay=False, dir_okay=True),
-    help="Path to the space directory.  Defaults to the in-repo standalone "
-    "space at configurations/spaces/local; override to point at "
-    "any directory containing a space.yaml.",
+    help="Path to the space directory (a directory containing a space.yaml).  "
+    "Defaults to the packaged standalone space (configurations/spaces/local), "
+    "discovered relative to the install or the current repo checkout.  Set "
+    "GBSERVER_CONFIGURATIONS_DIR to point discovery at a different "
+    "configurations/ tree.",
 )
 @pass_environment
-def cli(ctx: CliEnvironment, port: int, host: str, space_dir: str):
+def cli(ctx: CliEnvironment, port: int, host: str, space_dir: Optional[str]):
     """Run gbserver standalone -- REST API + BuildWatcher in one process."""
+    if space_dir is None:
+        space_dir = _default_space_dir()
+    logger.info("Using space directory: %s", space_dir)
     _run_standalone(port=port, host=host, space_dir=space_dir)
