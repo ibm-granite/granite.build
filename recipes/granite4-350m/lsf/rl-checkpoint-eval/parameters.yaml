@@ -42,6 +42,17 @@ TOTAL_EPISODES: "2048"
 SAVE_FREQ: "1"
 EVAL_FREQ: "10"
 
+# Monitoring cadence (seconds).
+# How often the training logs are downloaded and parsed for checkpoint messages.
+# Bounds how soon a newly written checkpoint is detected and its evals dispatched
+# (lower = quicker detection, more `sky logs` pulls).
+RL_LOG_SCRAPE_INTERVAL_SECONDS: "60"
+# How often the training job's status is checked (RUNNING/SUCCEEDED/FAILED).
+RL_STATUS_POLL_INTERVAL_SECONDS: "60"
+# How often each evaluation job's status is checked. Bounds how quickly an eval's
+# completion is detected so its export/aggregation can proceed.
+EVAL_STATUS_POLL_INTERVAL_SECONDS: "60"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Everything below is a less-frequently-changed default.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -64,23 +75,12 @@ CHECKPOINT_STATE_FREQ: "10"
 REF_POLICY_UPDATE_FREQ: "6"
 
 # ─── Monitor cadence (issue #45) ──────────────────────────────────────────────
-# Training log-scrape interval: how often the trainer's skypilot_monitor pulls
-# and parses logs while RUNNING. Bounds how soon a new checkpoint is detected
-# and its evals dispatched. Lower = quicker detection, more `sky logs` pulls.
-RL_LOG_SCRAPE_INTERVAL_SECONDS: "60"
-# Training status poll interval: how often the monitor queries SkyPilot job
-# status (RUNNING/SUCCEEDED/FAILED) for the training target.
-RL_STATUS_POLL_INTERVAL_SECONDS: "60"
-# Checkpoint-watch interval: how often the in-run watcher polls output_dir for
-# newly written checkpoint dirs to emit as artifacts. This is the finest-grained
-# knob for how soon a fresh checkpoint becomes an event; the log-scrape interval
-# above then bounds how soon that emitted line is pulled back to the monitor.
+# The three headline cadence knobs (log scrape, training status, eval status)
+# live in the COMMON PARAMETERS block above. This is the finest-grained knob:
+# how often the in-run watcher polls output_dir for newly written checkpoint
+# dirs to emit as artifacts. The log-scrape interval above then bounds how soon
+# that emitted line is pulled back to the monitor.
 RL_CHECKPOINT_WATCH_INTERVAL_SECONDS: "30"
-# Eval status poll interval: how often each eval target's monitor queries job
-# status. Bounds how quickly an eval's completion is detected so its export /
-# aggregation proceeds. Evals emit their result artifact on completion, so only
-# the status poll cadence matters here (log mode stays on_completion).
-EVAL_STATUS_POLL_INTERVAL_SECONDS: "60"
 
 # ─── 8-GPU RL topology ────────────────────────────────────────────────────────
 NUM_LEARNERS_PER_NODE: "4"
