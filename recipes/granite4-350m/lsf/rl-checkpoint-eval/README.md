@@ -67,6 +67,7 @@ file; `--param` wins on conflict.
 | Save a checkpoint every N updates (drives the schedule) | `SAVE_FREQ` | `--save-freq` |
 | Trainer's in-loop eval frequency | `EVAL_FREQ` | `--eval-freq` |
 | Which evaluations to run | `EVAL_SETS` | `--eval-sets` |
+| Experiment namespace for eval/export outputs | `EXPERIMENT` | `--experiment` |
 | How often training logs are downloaded + parsed for checkpoints | `RL_LOG_SCRAPE_INTERVAL_SECONDS` | `--log-scrape-interval` |
 | How often training job status is checked | `RL_STATUS_POLL_INTERVAL_SECONDS` | `--train-status-interval` |
 | How often eval job status is checked | `EVAL_STATUS_POLL_INTERVAL_SECONDS` | `--eval-status-interval` |

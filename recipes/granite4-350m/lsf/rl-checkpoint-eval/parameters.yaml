@@ -39,8 +39,13 @@ OUTPUT_DIR: "/proj/granite-build/g4os/RLHF/outputs/granite4-350m-14-7180-ifrl-ck
 # num_updates. Smoke default: 2048 // (64*16) = 2 updates, SAVE_FREQ=1 => two
 # checkpoints (steps 1 and 2), each fanned out to the selected evals.
 TOTAL_EPISODES: "2048"
-SAVE_FREQ: "1"
+SAVE_FREQ: "10"
 EVAL_FREQ: "10"
+
+# Experiment namespace for eval + export outputs  [--experiment]
+# Per-checkpoint results land under <SAGE_OUTPUT_DIR>/<EXPERIMENT>-ckpt_<step>/...
+# and combined results at <SAGE_RESULTS_DIR>/<EXPERIMENT>/combined.csv.
+EXPERIMENT: "granite4-350m-ifrl-ckpt-eval"
 
 # Monitoring cadence (seconds).
 # How often the training logs are downloaded and parsed for checkpoint messages.
@@ -61,14 +66,13 @@ EVAL_STATUS_POLL_INTERVAL_SECONDS: "60"
 EXP_NAME: "granite4-350m-14-7180-ifrl-ckpt-eval"
 RUN_NAME: "granite4-350m-14-7180-ifrl-ckpt-eval"
 RL_NAME: "if"
-# EXPERIMENT namespaces eval + export outputs; per-checkpoint results land under
-# <SAGE_OUTPUT_DIR>/<EXPERIMENT>/ckpt_<step>/... (see generate_build.py).
-EXPERIMENT: "granite4-350m-14-7180-ifrl-ckpt-eval"
 
 # ─── Training data + checkpoint-state dir ─────────────────────────────────────
 DATASET_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/rlnothink_300m/mix16_if/train.jsonl":1.0}'
 DATASET_EVAL_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/rlnothink_300m/mix16_if/validation.jsonl":1.0}'
-CHECKPOINT_STATE_DIR: "/proj/granite-build/g4os/RLHF/outputs/granite4-350m-14-7180-ifrl-ckpt-eval/exp_32/iter1/rlvr/_state"
+# Derived from OUTPUT_DIR at generation time (see generate_build.py).
+# Override explicitly only if state lives elsewhere.
+CHECKPOINT_STATE_DIR: ""
 
 # ─── Remaining schedule knobs ─────────────────────────────────────────────────
 CHECKPOINT_STATE_FREQ: "10"

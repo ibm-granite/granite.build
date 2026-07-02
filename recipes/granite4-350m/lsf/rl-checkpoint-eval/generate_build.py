@@ -408,7 +408,7 @@ def build_training_target(workflow, checkpoint_steps):
 
 def _experiment_for_step(step):
     """Per-checkpoint experiment namespace so results land in distinct dirs."""
-    return "$${EXPERIMENT}/ckpt_" + str(step)
+    return "$${EXPERIMENT}-ckpt_" + str(step)
 
 
 def build_sage_eval_target(eval_name, entry, step):
@@ -724,6 +724,12 @@ def parse_args(argv):
         "or 'full-eval'. Comma-separated or a YAML list.",
     )
     common.add_argument(
+        "--experiment",
+        metavar="NAME",
+        help="Experiment namespace for eval/export outputs (EXPERIMENT). "
+        "Per-checkpoint results land under <SAGE_OUTPUT_DIR>/<EXPERIMENT>-ckpt_<step>/.",
+    )
+    common.add_argument(
         "--log-scrape-interval",
         metavar="SECONDS",
         help="How often the training logs are downloaded and parsed for "
@@ -775,6 +781,7 @@ COMMON_FLAG_PARAMS = {
     "save_freq": "SAVE_FREQ",
     "eval_freq": "EVAL_FREQ",
     "eval_sets": "EVAL_SETS",
+    "experiment": "EXPERIMENT",
     "log_scrape_interval": "RL_LOG_SCRAPE_INTERVAL_SECONDS",
     "train_status_interval": "RL_STATUS_POLL_INTERVAL_SECONDS",
     "eval_status_interval": "EVAL_STATUS_POLL_INTERVAL_SECONDS",
@@ -804,6 +811,9 @@ def main(argv=None):
     args = parse_args(argv if argv is not None else sys.argv[1:])
     # Common flags first, then --param, so an explicit --param wins on conflict.
     params = load_params(args.parameters_path, _flag_overrides(args) + args.param)
+    # Derive CHECKPOINT_STATE_DIR from OUTPUT_DIR if not explicitly set.
+    if not params.get("CHECKPOINT_STATE_DIR"):
+        params["CHECKPOINT_STATE_DIR"] = params["OUTPUT_DIR"].rstrip("/") + "/_state"
     with open(args.catalog_path, "r", encoding="utf-8") as f:
         catalog = yaml.safe_load(f)
 
