@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     # lazily in _run_build_test's K8s-job branch).
     from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
 
+from gbcommon.uri.git import get_uri_parts
 from gbserver.github.myghapi import MyGHApi
 from gbserver.lineage.jobstats import get_lineage_store, reset_lineage_store
 from gbserver.lineage.noop_jobstats import NoopLineageStore
@@ -87,7 +88,6 @@ from gbserver.types.constants import (
     GBSERVER_GITHUB_TOKEN,
     GBSERVER_SIDECAR_MONITORING_IMAGE_TAG,
 )
-from gbserver.types.prwatcherconfig import get_uri_parts
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_time, get_uuid

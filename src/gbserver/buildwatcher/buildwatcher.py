@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Self, Tuple, cast
 from git import Repo
 from tqdm import tqdm
 
+from gbcommon.uri.git import get_uri_parts
 from gbserver.buildrunner.abstractbuildrunner import AbstractBuildRunner
 from gbserver.buildrunner.build_setup import BuildSetup
 from gbserver.buildrunner.build_utils import (
@@ -55,7 +56,6 @@ from gbserver.types.metrics import (
     MetricMetadata,
     MetricName,
 )
-from gbserver.types.prwatcherconfig import get_uri_parts
 from gbserver.types.status import Status
 from gbserver.utils.filesystem import create_temp_subdir
 from gbserver.utils.git_retry import git_clone_retry

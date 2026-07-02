@@ -428,14 +428,6 @@ test-local-build: .check-test-env
 test-remote-build: .check-test-env
 	cd samples/tests/hello-gb-vela/ && gbserver build run && cd -
 
-.PHONY: start-gitops
-start-gitops: check-github-token check-table-prefix
-	gbserver \
-	--gb-admin-table-prefix ${MY_TABLE_PREFIX} \
-	pr-watch \
-	--gh-token ${GITHUB_TOKEN} \
-	--config samples/config/pr-watcher-config.yaml
-
 .PHONY: start-watching-builds
 start-watching-builds: check-github-token check-table-prefix
 	gbserver \
@@ -460,11 +452,6 @@ delete-tables: check-table-prefix
 	dmf table delete -n granite_dot_build.admin -t ${MY_TABLE_PREFIX}gb_steps
 	dmf table delete -n granite_dot_build.admin -t ${MY_TABLE_PREFIX}gb_artifacts
 
-.PHONY: reset-and-start-gitops
-reset-and-start-gitops:
-	$(MAKE) delete-tables
-	$(MAKE) create-spaces
-	$(MAKE) start-gitops
 
 clean::
 	@# Help: Clean up the distribution build and the venv 

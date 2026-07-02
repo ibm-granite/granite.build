@@ -376,9 +376,6 @@ DEFAULT_ROOT_BUILDWATCHER_WORKSPACE_DIR = (
 # loop into CPU busy-loops that also hammer storage; never poll faster than this.
 # Enforced by BuildWatcherConfig (validator) and AbstractBuildRunner (setter).
 MIN_MONITORING_INTERVAL_SECONDS = 1
-DEFAULT_ROOT_PRWATCHER_WORKSPACE_DIR = (
-    DEFAULT_ROOT_WORKSPACE_DIR + "/gbserver-prwatcher-workspace"
-)
 GBSERVER_FUNCTIONAL_IDS = json.loads(
     os.getenv(
         ENV_VAR_PREFIX + "_FUNCTIONAL_IDS",

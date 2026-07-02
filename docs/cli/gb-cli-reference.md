@@ -141,7 +141,7 @@ Tuning flags: `--temp`, `--max`, `--top_p`, `--system`, `--chat_template`.
 
 | Subcommand | Purpose |
 |------------|---------|
-| `gb admin log <module>` | Fetch server logs for `gbserver-rest-server`, `gbserver-pr-watch`, `gbserver-build-watch`, or `gbserver-build-runner`. |
+| `gb admin log <module>` | Fetch server logs for `gbserver-rest-server`, `gbserver-build-watch`, or `gbserver-build-runner`. |
 | `gb admin space-membership` | List/add/remove/update space members. |
 
 ### `dataset` — *placeholder*
