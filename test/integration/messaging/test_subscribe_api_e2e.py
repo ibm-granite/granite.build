@@ -22,7 +22,7 @@ Optional:
     E2E_BUILD_ID                   - Specific build ID to test (default: uses build list)
 
 Run with:
-    pytest test/integration/messaging/test_subscribe_api_e2e.py -v -s
+    pytest test/integration/messaging/test_subscribe_api_e2e.py -v -s -m ibm
 """
 
 import asyncio
@@ -48,6 +48,8 @@ _missing = [v for v in _REQUIRED_VARS if not os.getenv(v)]
 
 pytestmark = [
     pytest.mark.asyncio,
+    pytest.mark.ibm,
+    pytest.mark.extended,
     pytest.mark.skipif(
         len(_missing) > 0,
         reason=f"Missing env vars: {', '.join(_missing)}",
@@ -101,11 +103,10 @@ async def _get_build_id(rest_url: str, token: str) -> str:
             params={"page_size": 1, "show_all": "true"},
         )
         resp.raise_for_status()
-        builds = resp.json()
-        if isinstance(builds, list) and len(builds) > 0:
-            return builds[0]["uuid"]
-        elif isinstance(builds, dict) and builds.get("items"):
-            return builds["items"][0]["uuid"]
+        data = resp.json()
+        # The API returns {"builds": [...], ...} via ListBuildResponse
+        if isinstance(data, dict) and data.get("builds"):
+            return data["builds"][0]["uuid"]
         pytest.skip("No builds found in the server to test against")
 
 
@@ -151,7 +152,9 @@ async def test_subscribe_and_receive_events():
     assert resp.status_code == 200, f"Subscribe failed: {resp.status_code}: {resp.text}"
     sub = resp.json()
 
-    ssl_ctx = _make_ssl_context(cfg["ca_cert"]) if cfg["tls"] else None
+    # Derive TLS settings from subscribe response, falling back to local config
+    use_tls = sub.get("tls", cfg["tls"])
+    ssl_ctx = _make_ssl_context(cfg["ca_cert"]) if use_tls else None
 
     # 2. Connect as scoped consumer using returned credentials
     consumer_conn = await aio_pika.connect(
@@ -159,7 +162,7 @@ async def test_subscribe_and_receive_events():
         port=sub["port"],
         login=sub["username"],
         password=sub["password"],
-        ssl=sub.get("tls", cfg["tls"]),
+        ssl=use_tls,
         ssl_context=ssl_ctx,
     )
     consumer_chan = await consumer_conn.channel()
@@ -183,7 +186,7 @@ async def test_subscribe_and_receive_events():
         login=cfg["mgmt_user"],
         password=cfg["mgmt_password"],
     )
-    if cfg["tls"]:
+    if use_tls:
         pub_connect_kwargs.update(ssl=True, ssl_context=ssl_ctx)
 
     pub_conn = await aio_pika.connect(**pub_connect_kwargs)
@@ -240,11 +243,10 @@ async def test_subscribe_invalid_build_returns_404():
 async def test_subscribe_without_auth_returns_401():
     """Subscribe without auth header returns 401."""
     cfg = _get_config()
-    build_id = await _get_build_id(cfg["rest_url"], cfg["token"])
 
     async with httpx.AsyncClient(verify=False) as client:
         resp = await client.post(
-            f"{cfg['rest_url']}/api/v1/builds/{build_id}/events/subscribe",
+            f"{cfg['rest_url']}/api/v1/builds/dummy-build-id-12345/events/subscribe",
         )
 
     assert resp.status_code == 401
