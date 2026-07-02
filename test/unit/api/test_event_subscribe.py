@@ -245,10 +245,13 @@ class TestEventSubscribeEndpoint:
         assert response.status_code == 504
         assert "timed out" in response.json()["detail"]
 
-    @patch("gbserver.api.utils.space_admin_check", return_value=False)
+    @patch(
+        "gbserver.api.event_subscribe.has_space_write_access",
+        return_value=(False, "testuser"),
+    )
     @patch("gbserver.api.event_subscribe.get_admin_storage")
     def test_subscribe_to_other_users_build_returns_403(
-        self, mock_get_storage, _mock_admin_check
+        self, mock_get_storage, _mock_access
     ):
         """Subscribing to a build owned by another user returns 403."""
         build_id = "other-user-build-123"
