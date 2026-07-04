@@ -607,6 +607,33 @@ def build_combined_export_target(per_ckpt_export_bindings):
     }
 
 
+def build_teardown_target(workflow, last_checkpoint_step):
+    """Teardown target that shuts down server clusters once training completes."""
+    inputs = {
+        "gate": {"binding": f"training.{CHECKPOINT_OUTPUT_PREFIX}{last_checkpoint_step}"},
+        "rm_cluster": {"binding": "rm-server.cluster_name"},
+    }
+    cluster_names = ["{{ bindings.rm_cluster.binding.state }}"]
+    if workflow == "ifrl":
+        inputs["code_cluster"] = {"binding": "code-server.cluster_name"}
+        cluster_names.append("{{ bindings.code_cluster.binding.state }}")
+
+    return {
+        "environment_uri": ENVIRONMENT_URI,
+        "inputs": inputs,
+        "steps": [
+            {
+                "step_uri": "space://steps/skypilot-teardown",
+                "config": {
+                    "teardown_config": {
+                        "cluster_names": cluster_names,
+                    }
+                },
+            }
+        ],
+    }
+
+
 # ─── Assembly ─────────────────────────────────────────────────────────────────
 def generate(workflow, params, catalog):
     checkpoint_steps = compute_checkpoint_steps(params)
@@ -617,6 +644,7 @@ def generate(workflow, params, catalog):
     if workflow == "ifrl":
         targets["code-server"] = build_code_server_target()
     targets["training"] = build_training_target(workflow, checkpoint_steps)
+    targets["teardown"] = build_teardown_target(workflow, checkpoint_steps[-1])
 
     per_ckpt_export_bindings = []
     for step in checkpoint_steps:
