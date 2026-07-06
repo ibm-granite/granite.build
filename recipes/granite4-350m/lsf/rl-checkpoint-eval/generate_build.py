@@ -17,7 +17,7 @@ Usage:
     python generate_build.py --workflow ifrl \\
         --parameters-path parameters.yaml \\
         --catalog-path eval-catalog.yaml \\
-        --param TOTAL_EPISODES=2048 --param SAVE_FREQ=1 \\
+        --param TOTAL_EPISODES=20480 --param SAVE_FREQ=10 \\
         --param 'EVAL_SETS=[bfcl, multilingual-eval]' \\
         --output build.yaml
 
@@ -393,6 +393,10 @@ def build_training_target(workflow, checkpoint_steps):
                     "poll_interval_seconds": "$${RL_STATUS_POLL_INTERVAL_SECONDS}",
                     "log_retrieval_mode": "periodic",
                     "log_retrieval_interval_seconds": "$${RL_LOG_SCRAPE_INTERVAL_SECONDS}",
+                    # Opt into per-checkpoint artifact emission: this recipe binds
+                    # the checkpoint_<step> outputs, so the step's in-run watcher
+                    # must run (it's off by default for single-checkpoint recipes).
+                    "emit_checkpoint_artifacts": True,
                     # How often the in-run watcher polls output_dir for newly
                     # written checkpoint dirs to emit as artifacts.
                     "checkpoint_watch_interval_seconds": "$${RL_CHECKPOINT_WATCH_INTERVAL_SECONDS}",
@@ -407,8 +411,15 @@ def build_training_target(workflow, checkpoint_steps):
 
 
 def _experiment_for_step(step):
-    """Per-checkpoint experiment namespace so results land in distinct dirs."""
-    return "$${EXPERIMENT}-ckpt_" + str(step)
+    """Per-checkpoint experiment namespace so results land in distinct dirs.
+
+    A `/`-separated *subdir* of $${EXPERIMENT} (not a name suffix): per-checkpoint
+    results land at <SAGE_OUTPUT_DIR>/<EXPERIMENT>/ckpt_<step>/..., i.e. children
+    of <SAGE_OUTPUT_DIR>/<EXPERIMENT>. This is what build_combined_export_target
+    scans (input_dir/experiment = <SAGE_OUTPUT_DIR>/<EXPERIMENT>); a `-ckpt_`
+    suffix would make them siblings and the combined roll-up would find nothing.
+    """
+    return "$${EXPERIMENT}/ckpt_" + str(step)
 
 
 def build_sage_eval_target(eval_name, entry, step):
@@ -529,12 +540,18 @@ def build_sage_export_target(step, sage_eval_target_names):
     }
 
 
-def build_bfcl_export_target(step):
-    """Per-checkpoint BFCL exporter, gated on that checkpoint's bfcl eval."""
+def build_bfcl_export_target(step, bfcl_eval_target_name):
+    """Per-checkpoint BFCL exporter, gated on that checkpoint's bfcl eval.
+
+    The gate binding is the *resolved* bfcl eval target name (passed in from
+    generate(), mirroring build_sage_export_target) rather than reconstructed
+    here, so it stays correct if the target-name prefix or the catalog key
+    changes.
+    """
     experiment = _experiment_for_step(step)
     return {
         "environment_uri": ENVIRONMENT_URI,
-        "inputs": {"gate_bfcl": {"binding": f"eval-bfcl-ckpt{step}.bfcl_results"}},
+        "inputs": {"gate_bfcl": {"binding": f"{bfcl_eval_target_name}.bfcl_results"}},
         "outputs": {
             "bfcl_export_csv": {
                 "type": "dataset",
@@ -651,13 +668,13 @@ def generate(workflow, params, catalog):
     per_ckpt_export_bindings = []
     for step in checkpoint_steps:
         sage_eval_target_names = []
-        has_bfcl = False
+        bfcl_eval_target_name = None
         for eval_name in eval_names:
             entry = catalog["evals"][eval_name]
             target_name = f"eval-{eval_name}-ckpt{step}"
             if entry["category"] == "bfcl":
                 targets[target_name] = build_bfcl_eval_target(step)
-                has_bfcl = True
+                bfcl_eval_target_name = target_name
             else:
                 targets[target_name] = build_sage_eval_target(eval_name, entry, step)
                 sage_eval_target_names.append(target_name)
@@ -667,9 +684,9 @@ def generate(workflow, params, catalog):
             name = f"export-sage-ckpt{step}"
             targets[name] = build_sage_export_target(step, sage_eval_target_names)
             per_ckpt_export_bindings.append(f"{name}.sage_export_csv")
-        if has_bfcl:
+        if bfcl_eval_target_name:
             name = f"export-bfcl-ckpt{step}"
-            targets[name] = build_bfcl_export_target(step)
+            targets[name] = build_bfcl_export_target(step, bfcl_eval_target_name)
             per_ckpt_export_bindings.append(f"{name}.bfcl_export_csv")
 
     # Combined roll-up across all checkpoints.
@@ -757,7 +774,7 @@ def parse_args(argv):
         "--experiment",
         metavar="NAME",
         help="Experiment namespace for eval/export outputs (EXPERIMENT). "
-        "Per-checkpoint results land under <SAGE_OUTPUT_DIR>/<EXPERIMENT>-ckpt_<step>/.",
+        "Per-checkpoint results land under <SAGE_OUTPUT_DIR>/<EXPERIMENT>/ckpt_<step>/.",
     )
     common.add_argument(
         "--log-scrape-interval",
@@ -843,7 +860,15 @@ def main(argv=None):
     params = load_params(args.parameters_path, _flag_overrides(args) + args.param)
     # Derive CHECKPOINT_STATE_DIR from OUTPUT_DIR if not explicitly set.
     if not params.get("CHECKPOINT_STATE_DIR"):
-        params["CHECKPOINT_STATE_DIR"] = params["OUTPUT_DIR"].rstrip("/") + "/_state"
+        output_dir = params.get("OUTPUT_DIR")
+        if not output_dir:
+            sys.exit(
+                "error: OUTPUT_DIR is required (the trainer's checkpoint output "
+                "directory). Set it in the parameters file, or pass --output-dir "
+                "/ --param OUTPUT_DIR=<path>. It also seeds CHECKPOINT_STATE_DIR "
+                "when that is left blank."
+            )
+        params["CHECKPOINT_STATE_DIR"] = str(output_dir).rstrip("/") + "/_state"
     with open(args.catalog_path, "r", encoding="utf-8") as f:
         catalog = yaml.safe_load(f)
 

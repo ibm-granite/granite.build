@@ -28,9 +28,9 @@ target-set per checkpoint.
 
    ```shell
    python generate_build.py --workflow ifrl \
-     --model-path /proj/.../sft/checkpoint-7180 \
+     --model-path /proj/.../sft/epoch_hf_2 \
      --output-dir /proj/.../rl-out/ \
-     --total-episodes 4096 --save-freq 1 \
+     --total-episodes 20480 --save-freq 10 \
      --eval-sets 'bfcl,multilingual-eval' \
      --output build.yaml
    ```
@@ -95,8 +95,8 @@ num_updates    = TOTAL_EPISODES // (NUM_UNIQUE_PROMPTS_ROLLOUT * NUM_SAMPLES_PER
 checkpoints at = SAVE_FREQ, 2*SAVE_FREQ, …  (≤ num_updates, plus the final update)
 ```
 
-Smoke default: `2048 // (64*16) = 2` updates, `SAVE_FREQ=1` ⇒ checkpoints at
-steps **1** and **2**. Each checkpoint is fanned out to the selected evals, so
+Smoke default: `20480 // (64*16) = 20` updates, `SAVE_FREQ=10` ⇒ checkpoints at
+steps **10** and **20**. Each checkpoint is fanned out to the selected evals, so
 `total eval targets = #checkpoints × #evals`. The generator prints this — watch
 it before starting a `full-eval` run over many checkpoints (that is a lot of
 clusters on the `preemptable` queue).
@@ -137,7 +137,9 @@ Provisional until confirmed against a real BlueVela grpo_fast run:
 
 - **Checkpoint dir naming.** The watcher assumes `output_dir/step_<N>`. If
   grpo_fast names dirs differently (`global_step_N`, `checkpoint-N`), adjust
-  `CKPT_GLOB`/parsing in the step and the generator's naming together.
+  `CKPT_GLOB`/parsing in the step and the generator's naming together. A
+  mismatch now **fails the training target loudly** (non-zero exit with a
+  diagnostic) rather than letting the downstream eval targets stall silently.
 - **Mid-run emission.** Confirm the periodic monitor surfaces each checkpoint
   line while the job is RUNNING (not only at terminal status).
 - **Combined exporter.** Confirm `sage/exporters/exporter.py` rolls up multiple

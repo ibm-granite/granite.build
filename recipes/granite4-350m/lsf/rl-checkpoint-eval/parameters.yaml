@@ -25,7 +25,7 @@ EVAL_SETS:
 # IFRL: the SFT checkpoint. IdentityRL: a prior RL checkpoint (e.g. IFRL's
 # output). This is a static path; chain stages by pointing it at the previous
 # run's final checkpoint.
-MODEL_PATH: "/proj/granite-build/g4os/sft/granite4-350m-14/v0-20260518-140726/checkpoint-7180"
+MODEL_PATH: "/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
 
 # Output directory the trainer writes checkpoints to  [--output-dir]
 # The in-run watcher scans this for step_<N> checkpoint dirs. Namespaced under
@@ -36,14 +36,14 @@ OUTPUT_DIR: "/proj/granite-build/g4os/RLHF/outputs/granite4-350m-14-7180-ifrl-ck
 # The generator computes the number of optimizer updates as
 #   num_updates = TOTAL_EPISODES // (NUM_UNIQUE_PROMPTS_ROLLOUT * NUM_SAMPLES_PER_PROMPT_ROLLOUT)
 # and evaluates every checkpoint written at multiples of SAVE_FREQ up to
-# num_updates. Smoke default: 2048 // (64*16) = 2 updates, SAVE_FREQ=1 => two
-# checkpoints (steps 1 and 2), each fanned out to the selected evals.
-TOTAL_EPISODES: "2048"
+# num_updates. Smoke default: 20480 // (64*16) = 20 updates, SAVE_FREQ=10 => two
+# checkpoints (steps 10 and 20), each fanned out to the selected evals.
+TOTAL_EPISODES: "20480"
 SAVE_FREQ: "10"
 EVAL_FREQ: "10"
 
 # Experiment namespace for eval + export outputs  [--experiment]
-# Per-checkpoint results land under <SAGE_OUTPUT_DIR>/<EXPERIMENT>-ckpt_<step>/...
+# Per-checkpoint results land under <SAGE_OUTPUT_DIR>/<EXPERIMENT>/ckpt_<step>/...
 # and combined results at <SAGE_RESULTS_DIR>/<EXPERIMENT>/combined.csv.
 EXPERIMENT: "granite4-350m-ifrl-ckpt-eval"
 

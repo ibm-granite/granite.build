@@ -15,6 +15,11 @@ config:
   poll_interval_seconds: 900
   log_retrieval_mode: "periodic"
   log_retrieval_interval_seconds: 900
+  # Per-checkpoint artifact emission is opt-in: only the checkpoint-fanout recipe
+  # (which binds checkpoint_<step> outputs) sets this true. Left false, the older
+  # single-checkpoint recipes (ifrl-smoke, ifrl-full, identityrl-*) don't run the
+  # watcher and so don't emit per-step artifact lines they never bind.
+  emit_checkpoint_artifacts: false
   checkpoint_watch_interval_seconds: 30
   rl_config:
     # ── identification ──
@@ -263,6 +268,7 @@ environment_configs:
             CKPT_GLOB="step_"
             CKPT_WATCH_INTERVAL="{{ config.checkpoint_watch_interval_seconds | default(30) }}"
             EMITTED_DIR="$(mktemp -d)"
+            EMITTED_COUNT=0
 
             emit_new_checkpoints() {
               # Emit an artifact line for each checkpoint dir not yet emitted.
@@ -277,6 +283,7 @@ environment_configs:
                 # tighten to a sentinel file if grpo_fast writes one.)
                 [ -n "$(ls -A "$ckpt" 2>/dev/null)" ] || continue
                 touch "$marker"
+                EMITTED_COUNT=$((EMITTED_COUNT + 1))
                 echo "LLMB_ARTIFACT_ID:checkpoint_${step} LLMB_ARTIFACT_PATH:${ckpt}"
               done
             }
@@ -292,15 +299,49 @@ environment_configs:
             echo "  exp_name: {{ config.rl_config.exp_name }}"
             echo "  output:   {{ config.rl_config.output_dir }}"
 
+            {% set _true = [true, "true", "True", "1", 1] -%}
+            {% if config.emit_checkpoint_artifacts in _true %}
+            # ── Watcher lifecycle (issue #45) ───────────────────────────────
+            # The whole run executes under `set -e`, so a non-zero exit from the
+            # trainer would abort before an inline `kill`, orphaning the watch
+            # loop until container teardown. A trap tied to EXIT cleans up on
+            # every path (success, trainer failure, signal); `wait` reaps the
+            # watcher so it and the final sweep don't share $EMITTED_DIR
+            # concurrently.
+            WATCH_PID=""
+            cleanup_watcher() {
+              if [ -n "$WATCH_PID" ] && kill -0 "$WATCH_PID" 2>/dev/null; then
+                kill "$WATCH_PID" 2>/dev/null || true
+                wait "$WATCH_PID" 2>/dev/null || true
+                WATCH_PID=""
+              fi
+            }
+            trap cleanup_watcher EXIT
+
             watch_checkpoints &
             WATCH_PID=$!
 
             bash "$GRPO_SCRIPT"
 
-            # Stop the watcher and do a final sweep for any checkpoints written
-            # between the last poll and training exit.
-            kill "$WATCH_PID" 2>/dev/null || true
+            # Training succeeded: stop the watcher, then do a final sweep for any
+            # checkpoints written between the last poll and training exit.
+            cleanup_watcher
             emit_new_checkpoints
+
+            # Fail loudly if the watcher never matched a checkpoint dir: the
+            # downstream eval/export/combined targets bind checkpoint_<step> ids
+            # and would otherwise stall forever with no error. A zero count means
+            # the on-disk naming doesn't match CKPT_GLOB (grpo_fast may use
+            # global_step_N / checkpoint-N) — see VERIFY note above.
+            if [ "$EMITTED_COUNT" -eq 0 ]; then
+              echo "ERROR: no checkpoint dirs matched '${OUTPUT_DIR}/${CKPT_GLOB}*'." >&2
+              echo "       grpo_fast wrote no '${CKPT_GLOB}<N>' dirs; downstream" >&2
+              echo "       eval targets would never dispatch. Check the actual" >&2
+              echo "       checkpoint dir naming and align CKPT_GLOB + the" >&2
+              echo "       generator's checkpoint_<step> outputs." >&2
+              exit 1
+            fi
+            {% endif %}
 
             # Backward-compatible final artifact for recipes that bind a single
             # `checkpoint` output (ifrl-smoke, ifrl-full, identityrl-*). GRPO
