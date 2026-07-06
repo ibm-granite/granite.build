@@ -610,7 +610,9 @@ def build_combined_export_target(per_ckpt_export_bindings):
 def build_teardown_target(workflow, last_checkpoint_step):
     """Teardown target that shuts down server clusters once training completes."""
     inputs = {
-        "gate": {"binding": f"training.{CHECKPOINT_OUTPUT_PREFIX}{last_checkpoint_step}"},
+        "gate": {
+            "binding": f"training.{CHECKPOINT_OUTPUT_PREFIX}{last_checkpoint_step}"
+        },
         "rm_cluster": {"binding": "rm-server.cluster_name"},
     }
     cluster_names = ["{{ bindings.rm_cluster.binding.state }}"]
