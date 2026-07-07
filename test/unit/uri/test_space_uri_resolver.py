@@ -296,9 +296,7 @@ class TestSubtypeMatching:
             env_dir = base / "skypilot" / sub
             env_dir.mkdir(parents=True, exist_ok=True)
             _set_bases(base)
-            with SpaceURI.with_current_env(
-                _make_env("Skypilot", env_dir, subtype=sub)
-            ):
+            with SpaceURI.with_current_env(_make_env("Skypilot", env_dir, subtype=sub)):
                 resolved = _resolve("space://steps/digit")
             assert _resolved_dir(resolved).samefile(shared)
 

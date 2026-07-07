@@ -77,7 +77,9 @@ class SpaceURI(URI):
                 base_uri, "file", secrets=SpaceURI._thread_local.space_secrets
             )
             resolved.append_path(uri_suffix)
-            if resolved.exists() and SpaceURI._fallback_subtype_ok(uri_suffix, resolved):
+            if resolved.exists() and SpaceURI._fallback_subtype_ok(
+                uri_suffix, resolved
+            ):
                 return resolved  # type: ignore[return-value]
         raise ValueError(f"Unresolvable space uri : {uristr}")
 
