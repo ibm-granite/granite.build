@@ -82,7 +82,7 @@ Most of what follows utilizes the standalone configuration, shown below.
 
 ## Quick start (standalone)
 
-Five commands to a running build, using the bundled `standalone-quickstart` sample.
+**Prerequisites:** Python 3.11+, Node.js 20+ and yarn (for the web dashboard).
 
 In a new terminal, run the following:
 ```bash
@@ -94,21 +94,25 @@ cd granite.build
 make standalone-venv PYTHON=python3.13
 source .venv/bin/activate
 
-# 3. Start the standalone server, pointed at the in-repo local space
-gbserver standalone --space-dir configurations/spaces/local
+# 3. Compile the web dashboard (run once, or after any frontend/ change)
+make build-frontend
 
+# 4. Start the standalone server, pointed at the in-repo local space
+gbserver standalone --space-dir configurations/spaces/local
 ```
 
-In a second terminal, run the build using the servers started above:
+Open `http://localhost:8080` in a browser to access the dashboard.
+
+In a second terminal, submit a build:
 
 ```bash
-# 4. Activate the venv and submit the sample build
+# 5. Activate the venv and submit the sample build
 cd granite.build
 source .venv/bin/activate
 export GB_ENVIRONMENT=STANDALONE
 gb build start -f samples/standalone/standalone-quickstart/build.yaml
 
-# 5. Watch progress
+# 6. Watch progress
 gb build status <build-id>
 gb build log <build-id>
 ```
@@ -237,6 +241,71 @@ For the full subcommand reference, see [`docs/users/cli-reference.md`](docs/user
 ## REST API
 
 The REST API is available at `/api/v1` when the server is running. Start with `gbserver standalone` or `gbserver rest-server` and visit `http://localhost:8080/docs` for the interactive OpenAPI documentation. Authentication options (GitHub, IBMid, API key) are documented in [`docs/operators/multi-provider-authentication.md`](docs/operators/multi-provider-authentication.md).
+
+## Web Dashboard
+
+gb-ui is a React/TypeScript dashboard for Granite.Build that runs alongside gbserver. In standalone mode it is served by gbserver at the same port as the REST API (8080) — no separate Node.js process required.
+
+### Running the dashboard
+
+**Standalone mode** — gbserver serves the compiled UI and REST API from the same origin. This is the default.
+
+```bash
+make build-frontend        # compile once (or after any frontend/ change)
+gbserver standalone        # UI + API at http://localhost:8080
+```
+
+To point the frontend at a different gbserver, set `GBSERVER_API_URL` at build time:
+
+```bash
+GBSERVER_API_URL=http://other-host:8080 make build-frontend
+```
+
+**Dev mode** — Next.js dev server at `:3000` with hot reload. No build step needed when iterating on UI changes.
+
+```bash
+cd frontend && yarn dev    # UI at http://localhost:3000
+```
+
+Without a backend, data pages show empty states but the UI itself loads. To connect to a running gbserver, create `frontend/.env.local`:
+
+```bash
+GBSERVER_API_URL=http://localhost:8080
+```
+
+This enables a server-side proxy — all `/api/*` calls are forwarded to gbserver so the browser uses relative paths (no CORS).
+
+### Rebuilding the frontend
+
+```bash
+make build-frontend                          # compile and sync to src/gbserver/static/ui/
+make clean-frontend && make build-frontend   # full clean rebuild
+make clean-frontend                          # wipe frontend/out/, frontend/.next/, src/gbserver/static/ui/
+```
+
+`make build-frontend` runs `yarn build` then rsyncs the output into `src/gbserver/static/ui/`. `yarn build` removes `404.html` from the output (required so the SPA fallback handler can intercept unknown paths). Run `make clean-frontend` first to clear the Next.js compiler cache and guarantee a fresh compile.
+
+### Analytics sidecar
+
+The `gb_ui_backend` sidecar adds build status charts, failure trends, and AI-powered analysis. It is bundled with the `standalone` install and **starts automatically** alongside gbserver — no separate command or database configuration needed. By default it stores analytics data in `~/.granite.build/dashboard-analytics.db` (SQLite).
+
+To use PostgreSQL instead:
+
+```bash
+GB_UI_DATABASE_URL="postgresql+asyncpg://user:pass@host/db" gbserver standalone
+```
+
+gbserver proxies `/api/analytics/*` to the sidecar at `:8090` — the browser only ever talks to port 8080.
+
+### Frontend repository layout
+
+| Path | Description |
+|------|-------------|
+| `frontend/` | gb-ui Next.js source (TypeScript, React, Carbon Design System) |
+| `frontend/out/` | Static export output — produced by `make build-frontend`, not committed |
+| `frontend/.env.local.example` | Dev environment template — copy to `frontend/.env.local` |
+| `src/gbserver/static/ui/` | Runtime location gbserver serves the frontend from |
+| `src/gb_ui_backend/` | Analytics sidecar — FastAPI app for charts and AI analysis |
 
 ## Documentation
 
