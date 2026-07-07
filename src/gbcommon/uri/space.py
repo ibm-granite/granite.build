@@ -54,21 +54,21 @@ class SpaceURI(URI):
             uri_suffix = uristr.removeprefix(GBSPACE_SCHEME + "://")
         elif uristr.startswith(SPACE_SCHEME):
             uri_suffix = uristr.removeprefix(SPACE_SCHEME + "://")
-        # Tier 1a: env-co-located step lookup with ancestor-walk (nearest-wins),
+        # Tier 1: env-co-located step lookup with ancestor-walk (nearest-wins),
         # bounded by the enclosing base_uri.  Applies only to `space://steps/<name>`
         # and honors any per-step ``subtypes`` restriction.
         if uri_suffix.startswith(STEPS_PREFIX):
             walked = SpaceURI._walk_colocated_steps(uri_suffix)
             if walked is not None:
                 return walked  # type: ignore[return-value]
-        # Tier 1.5: env-class-match.  Recursively glob all `<base>/**/<name>/step.yaml`
+        # Tier 2: env-class-match.  Recursively glob all `<base>/**/<name>/step.yaml`
         # files; pick the first (lexicographic) candidate whose `environment_configs`
         # keys contain the active env's class name.  Sub-asset URIs of the form
         # `space://steps/<name>/<rest>` re-use the matched dir.
         match = SpaceURI._try_env_class_match(uri_suffix)
         if match is not None:
             return match  # type: ignore[return-value]
-        # Tier 2: env-agnostic fallback against the space's own base_uris.
+        # Tier 3: env-agnostic fallback against the space's own base_uris.
         for base_uri in SpaceURI._thread_local.base_uris:
             resolved = URI.get_uri(
                 base_uri, "file", secrets=SpaceURI._thread_local.space_secrets
@@ -103,14 +103,26 @@ class SpaceURI(URI):
     def _step_uri_from_dir(step_dir: Path, rest: str) -> Optional[URI]:
         """Build a resolved file URI for a matched step dir plus ``rest`` suffix.
 
+        The ``rest`` sub-asset path must stay within ``step_dir``: a ``rest`` that
+        escapes the step dir (e.g. ``../../secret`` from a
+        ``space://steps/<name>/../../secret`` URI) is rejected with ``None``.
+        ``space://`` URIs come from trusted config so this is defence-in-depth,
+        but the containment check is cheap insurance against a traversal.
+
         Args:
             step_dir: The directory containing the matched ``step.yaml``.
             rest: Sub-asset path appended to ``step_dir`` (empty for a bare URI).
 
         Returns:
-            The resolved ``URI`` when the target exists, else ``None``.
+            The resolved ``URI`` when the target exists and stays under
+            ``step_dir``, else ``None``.
         """
         target = step_dir if not rest else step_dir / rest
+        if rest:
+            base = step_dir.resolve()
+            resolved = target.resolve()
+            if resolved != base and base not in resolved.parents:
+                return None
         if not target.exists():
             return None
         return URI.get_uri(  # type: ignore[return-value]
@@ -318,14 +330,9 @@ class SpaceURI(URI):
         # then lexicographic path for deterministic tie-break.
         matches.sort(key=lambda m: (m[0], m[1]))
         cand = matches[0][2]
-        target = cand.parent if not rest else cand.parent / rest
-        if not target.exists():
-            return None
-        return URI.get_uri(  # type: ignore[return-value]
-            f"file://{target}",
-            "file",
-            secrets=SpaceURI._thread_local.space_secrets,
-        )
+        # Route through _step_uri_from_dir so the ``rest`` containment guard
+        # (reject sub-asset paths that escape the step dir) applies here too.
+        return SpaceURI._step_uri_from_dir(cand.parent, rest)
 
     @staticmethod
     def _file_uri_to_path(base_uri: str) -> Optional[Path]:
@@ -408,7 +415,7 @@ class SpaceURI(URI):
         validator in :class:`gbserver.build.build.Build`, which knows each
         target's ``environment_uri`` (and can read its ``environment.yaml``) but
         doesn't instantiate the env.  Passing ``env_dir_uri`` and ``env_subtype``
-        lets the ancestor-walk (Tier 1a) and the sub-type filter run during
+        lets the ancestor-walk (Tier 1) and the sub-type filter run during
         validation, not just the bare env-class-match.
 
         Saves and restores any previous values so nested or sibling validation
@@ -416,7 +423,7 @@ class SpaceURI(URI):
 
         Args:
             env_class_name: The env's class name (e.g. ``"K8s"``, ``"Skypilot"``).
-            env_dir_uri: The env's directory URI for the Tier 1a ancestor-walk.
+            env_dir_uri: The env's directory URI for the Tier 1 ancestor-walk.
             env_subtype: The env's sub-type for the sub-type filter.
         """
         with cls._scope_thread_local(
@@ -441,10 +448,10 @@ class SpaceURI(URI):
 
         Step lookups consult, in order:
 
-        1a. ``<env-dir>`` up to the enclosing base_uri — env-co-located steps,
-            nearest-wins (a step in the env's own dir overrides an ancestor's);
-            a candidate whose ``subtypes`` restriction excludes the active env is
-            skipped and the walk continues upward.
+        1. ``<env-dir>`` up to the enclosing base_uri — env-co-located steps,
+           nearest-wins (a step in the env's own dir overrides an ancestor's);
+           a candidate whose ``subtypes`` restriction excludes the active env is
+           skipped and the walk continues upward.
         2.  Recursive glob ``<base>/**/<name>/step.yaml`` — first candidate whose
             ``environment_configs`` keys contain the active env's class name and
             whose ``subtypes`` restriction admits the active env's sub-type.

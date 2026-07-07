@@ -256,7 +256,7 @@ class Build(BuildEntity):
             # context and `space://steps/<name>` URIs whose only on-disk variants
             # live in the env dir tree or env-keyed subdirs would be reported as
             # unresolvable.
-            env_class_name, env_subtype = self.read_env_types(target_env_uri)
+            env_class_name, env_subtype = self._read_env_types(target_env_uri)
             env_dir_uri = self.__env_dir_uri(target_env_uri)
             logger.info("checking the steps of the target: %s %s", target_name, target)
             with SpaceURI.with_current_env_class_name(
@@ -284,22 +284,33 @@ class Build(BuildEntity):
         return errors
 
     @staticmethod
-    def __env_dir_uri(target_env_uri: Optional[URI]) -> Optional[str]:
-        """Return a ``file://`` URI for the resolved env directory, or ``None``.
+    def __env_dir_path(target_env_uri: Optional[URI]) -> Optional[Path]:
+        """Return the local directory ``Path`` for the target's env URI, or ``None``.
 
-        Feeds ``SpaceURI``'s Tier 1a ancestor-walk during validation so
-        env-co-located and ancestor steps resolve.  Returns ``None`` when the
-        env URI is unavailable or not a local path.
+        Central guard for the validator's env-yaml reads: yields ``None`` when the
+        env URI is unavailable or carries no local path.  Both :meth:`__env_dir_uri`
+        and :meth:`_read_env_types` build on this instead of re-deriving the path.
         """
         if target_env_uri is None or target_env_uri.uri is None:
             return None
         env_path_str = target_env_uri.uri.path
         if not env_path_str:
             return None
-        return f"file://{env_path_str}"
+        return Path(env_path_str)
 
     @staticmethod
-    def read_env_types(
+    def __env_dir_uri(target_env_uri: Optional[URI]) -> Optional[str]:
+        """Return a ``file://`` URI for the resolved env directory, or ``None``.
+
+        Feeds ``SpaceURI``'s Tier 1 ancestor-walk during validation so
+        env-co-located and ancestor steps resolve.  Returns ``None`` when the
+        env URI is unavailable or not a local path.
+        """
+        env_path = Build.__env_dir_path(target_env_uri)
+        return f"file://{env_path}" if env_path is not None else None
+
+    @staticmethod
+    def _read_env_types(
         target_env_uri: Optional[URI],
     ) -> Tuple[Optional[str], Optional[str]]:
         """Read ``type`` and ``subtype`` from the target's env yaml.
@@ -314,12 +325,10 @@ class Build(BuildEntity):
         instantiation (which requires an event_q and runs side effects); the
         validator only needs these fields.
         """
-        if target_env_uri is None or target_env_uri.uri is None:
+        env_path = Build.__env_dir_path(target_env_uri)
+        if env_path is None:
             return None, None
-        env_path_str = target_env_uri.uri.path
-        if not env_path_str:
-            return None, None
-        env_yaml = Path(env_path_str) / "environment.yaml"
+        env_yaml = env_path / "environment.yaml"
         if not env_yaml.is_file():
             return None, None
         try:

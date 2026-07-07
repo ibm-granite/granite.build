@@ -174,7 +174,7 @@ class TestTier1EnvColocated:
 
 
 # --------------------------------------------------------------------------- #
-# Tier 1a — ancestor-walk (nearest-wins, base_uri-bounded)
+# Tier 1 — ancestor-walk (nearest-wins, base_uri-bounded)
 # --------------------------------------------------------------------------- #
 
 
@@ -261,6 +261,21 @@ class TestTier1AncestorWalk:
 
         assert _resolved_dir(resolved).samefile(sub)
 
+    def test_rest_traversal_outside_step_dir_rejected(self, tmp_path):
+        """A `<rest>` that escapes the step dir (``../../secret``) is rejected —
+        the ancestor-walk must not resolve outside the matched step dir even
+        though the target file exists."""
+        base = tmp_path / "assets"
+        _write_step(base / "skypilot" / "steps" / "sage")
+        (base / "secret").write_text("password\n")  # real file, outside the step dir
+        env_dir = base / "skypilot" / "kubernetes"
+        env_dir.mkdir(parents=True)
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/sage/../../../secret")
+
 
 # --------------------------------------------------------------------------- #
 # Sub-type matching — gates ancestor-walk and env-class-match by env sub-type
@@ -337,6 +352,46 @@ class TestSubtypeMatching:
 
         assert _resolved_dir(resolved).samefile(shared)
 
+    def test_own_dir_step_skipped_when_subtypes_exclude_env(self, tmp_path):
+        """The sub-type filter applies even to a step in the env's OWN dir (walk
+        level 0): if its ``subtypes`` exclude the active env it is skipped despite
+        being nearest, and the walk continues to an admitting ancestor."""
+        base = tmp_path / "assets"
+        ancestor = _write_step(
+            base / "skypilot" / "steps" / "digit",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes", "aws"],  # admits aws
+        )
+        env_dir = base / "skypilot" / "aws"
+        _write_step(
+            env_dir / "steps" / "digit",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes"],  # own-dir copy EXCLUDES aws
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir, subtype="aws")):
+            resolved = _resolve("space://steps/digit")
+
+        # nearest (own-dir) copy is skipped by the filter; ancestor admits aws
+        assert _resolved_dir(resolved).samefile(ancestor)
+
+    def test_own_dir_step_excluded_unresolvable_without_fallback(self, tmp_path):
+        """An own-dir step whose ``subtypes`` exclude the env, with no admitting
+        ancestor, resolves to nothing (the own-dir hit is not a free pass)."""
+        base = tmp_path / "assets"
+        env_dir = base / "skypilot" / "aws"
+        _write_step(
+            env_dir / "steps" / "digit",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes", "slurm"],  # excludes aws
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir, subtype="aws")):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/digit")
+
     def test_class_match_tier_honors_subtype(self, tmp_path):
         """The env-class-match tier applies the same sub-type filter: a
         restricted candidate is excluded for an unlisted sub-type."""
@@ -385,11 +440,11 @@ class TestSubtypeMatching:
 
 
 # --------------------------------------------------------------------------- #
-# Tier 1.5 — env-class match (specificity + tie-break)
+# Tier 2 — env-class match (specificity + tie-break)
 # --------------------------------------------------------------------------- #
 
 
-class TestTier15EnvClassMatch:
+class TestTier2EnvClassMatch:
     def test_single_env_file_beats_multi_env_catchall(self, tmp_path):
         """A single-env split file (fewer environment_configs keys) beats a
         multi-env catch-all that also lists the active class."""
@@ -441,13 +496,25 @@ class TestTier15EnvClassMatch:
 
         assert _resolved_dir(resolved).samefile(sub)
 
+    def test_subasset_rest_traversal_rejected(self, tmp_path):
+        """A `<rest>` that escapes the matched step dir is rejected by the
+        env-class-match tier too (shares the containment guard)."""
+        base = tmp_path / "base"
+        _write_step(base / "k8s" / "digit", env_classes=["K8s"])
+        (base / "secret").write_text("password\n")  # real file, outside step dir
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("K8s"):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/digit/../../secret")
+
 
 # --------------------------------------------------------------------------- #
-# Tier 2 — env-agnostic fallback + unresolvable
+# Tier 3 — env-agnostic fallback + unresolvable
 # --------------------------------------------------------------------------- #
 
 
-class TestTier2Fallback:
+class TestTier3Fallback:
     def test_fallback_resolves_against_base(self, tmp_path):
         """With no active env, a `space://steps/<name>` resolves via the
         plain base_uris fallback."""
@@ -473,7 +540,7 @@ class TestTier2Fallback:
         assert _resolved_dir(resolved).samefile(target)
 
     def test_non_step_uri_uses_fallback_only(self, tmp_path):
-        """Tiers 1/1.5 apply only to `steps/`; an environments URI resolves
+        """Tiers 1/2 apply only to `steps/`; an environments URI resolves
         purely via the base_uris fallback."""
         base = tmp_path / "base"
         env_dir = base / "environments" / "bash"
