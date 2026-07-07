@@ -413,13 +413,16 @@ def build_training_target(workflow, checkpoint_steps):
 def _experiment_for_step(step):
     """Per-checkpoint experiment namespace so results land in distinct dirs.
 
-    A `/`-separated *subdir* of $${EXPERIMENT} (not a name suffix): per-checkpoint
-    results land at <SAGE_OUTPUT_DIR>/<EXPERIMENT>/ckpt_<step>/..., i.e. children
-    of <SAGE_OUTPUT_DIR>/<EXPERIMENT>. This is what build_combined_export_target
-    scans (input_dir/experiment = <SAGE_OUTPUT_DIR>/<EXPERIMENT>); a `-ckpt_`
-    suffix would make them siblings and the combined roll-up would find nothing.
+    A flat NAME suffix ("<EXPERIMENT>-ckpt_<step>"), NOT a "/"-separated subdir.
+    sage builds a per-eval job-script *filename* from this value
+    (sage-<experiment>-<eval>.sh); a "/" turns that filename into a nested dir
+    and sage's open(..., "w") fails with FileNotFoundError. Per-checkpoint
+    results therefore land at <SAGE_OUTPUT_DIR>/<EXPERIMENT>-ckpt_<step>/... as
+    siblings. The combined roll-up does NOT re-scan a parent tree (which is why a
+    suffix is fine); it pivots the already-emitted per-checkpoint CSVs — see
+    build_combined_export_target.
     """
-    return "$${EXPERIMENT}/ckpt_" + str(step)
+    return "$${EXPERIMENT}-ckpt_" + str(step)
 
 
 def build_sage_eval_target(eval_name, entry, step):
@@ -578,22 +581,27 @@ def build_bfcl_export_target(step, bfcl_eval_target_name):
     }
 
 
-def build_combined_export_target(per_ckpt_export_bindings):
-    """Final roll-up gated on every per-checkpoint export CSV.
+def build_combined_export_target(per_ckpt_export_bindings, has_sage, has_bfcl):
+    """Final roll-up: a benchmark x checkpoint pivot of the per-checkpoint CSVs.
 
-    Runs the sage exporter once over the whole EXPERIMENT tree (all ckpt_*
-    subdirs) to produce a single CSV. The sage exporter walks input_dir
-    recursively and tags rows by their result path, so pointing it at the
-    EXPERIMENT root yields one combined table keyed by checkpoint subdir.
+    Gated on every per-checkpoint export CSV (so all inputs exist), then pivots
+    them into one table — rows are benchmarks (sage `model`+`metric`, plus one
+    BFCL-<expt> row per bfcl eval), columns are ckpt_<step>. Unlike a sage-export
+    tree re-scan, this works with the flat <EXPERIMENT>-ckpt_<step> per-checkpoint
+    experiment dirs (sage-eval can't accept a "/" in the experiment name).
 
-    NOTE (issue #45 verification): confirm sage/exporters/exporter.py rolls up
-    multiple ckpt_* experiment dirs into one CSV with a distinguishable
-    checkpoint column. If not, this target instead post-processes the
-    per-checkpoint CSVs (the gates already guarantee they all exist).
+    Only the dirs for eval kinds actually present are set; the combined-export
+    step tolerates an absent/empty dir on either side and errors only if BOTH
+    yield no CSVs.
     """
     inputs = {
         f"gate_{i}": {"binding": binding}
         for i, binding in enumerate(per_ckpt_export_bindings)
+    }
+    cfg = {
+        "sage_input_dir": "$${SAGE_RESULTS_DIR}/$${EXPERIMENT}" if has_sage else "",
+        "bfcl_input_dir": "$${BFCL_RESULTS_DIR}/$${EXPERIMENT}" if has_bfcl else "",
+        "output_csv": "$${SAGE_RESULTS_DIR}/$${EXPERIMENT}/combined.csv",
     }
     return {
         "environment_uri": ENVIRONMENT_URI,
@@ -606,15 +614,9 @@ def build_combined_export_target(per_ckpt_export_bindings):
         },
         "steps": [
             {
-                "step_uri": "space://steps/sage-export",
+                "step_uri": "space://steps/combined-export",
                 "config": {
-                    "sage_export_config": {
-                        # Export the whole EXPERIMENT tree (all ckpt_* subdirs).
-                        "experiment": "$${EXPERIMENT}",
-                        "export_stack": "$${EXPORT_STACK}",
-                        "input_dir": "$${SAGE_OUTPUT_DIR}",
-                        "output_csv": "$${SAGE_RESULTS_DIR}/$${EXPERIMENT}/combined.csv",
-                    },
+                    "combined_export_config": cfg,
                     "launcher_config": _resources(
                         None, "$${EXPORT_QUEUE}", "$${EXPORT_MEMORY}"
                     ),
@@ -666,6 +668,8 @@ def generate(workflow, params, catalog):
     targets["teardown"] = build_teardown_target(workflow, checkpoint_steps[-1])
 
     per_ckpt_export_bindings = []
+    has_sage_export = False
+    has_bfcl_export = False
     for step in checkpoint_steps:
         sage_eval_target_names = []
         bfcl_eval_target_name = None
@@ -684,13 +688,21 @@ def generate(workflow, params, catalog):
             name = f"export-sage-ckpt{step}"
             targets[name] = build_sage_export_target(step, sage_eval_target_names)
             per_ckpt_export_bindings.append(f"{name}.sage_export_csv")
+            has_sage_export = True
         if bfcl_eval_target_name:
             name = f"export-bfcl-ckpt{step}"
             targets[name] = build_bfcl_export_target(step, bfcl_eval_target_name)
             per_ckpt_export_bindings.append(f"{name}.bfcl_export_csv")
+            has_bfcl_export = True
 
-    # Combined roll-up across all checkpoints.
-    targets["export-combined"] = build_combined_export_target(per_ckpt_export_bindings)
+    # Combined roll-up across all checkpoints, pivoting whichever eval kinds ran.
+    # Only emitted when there is at least one per-checkpoint export to roll up
+    # (resolve_eval_names already guarantees >=1 eval, so this holds in practice;
+    # the guard keeps the combined target from being emitted with no gate inputs).
+    if per_ckpt_export_bindings:
+        targets["export-combined"] = build_combined_export_target(
+            per_ckpt_export_bindings, has_sage_export, has_bfcl_export
+        )
 
     build = {
         "granite.build": {

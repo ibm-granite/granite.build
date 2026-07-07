@@ -119,9 +119,12 @@ Lower values detect sooner at the cost of more `sky logs`/status calls.
 - `export-sage-ckpt<step>` / `export-bfcl-ckpt<step>` — one exporter per
   checkpoint, gated on that checkpoint's eval outputs, producing
   `<SAGE_RESULTS_DIR|BFCL_RESULTS_DIR>/<EXPERIMENT>/ckpt_<step>-{sage,bfcl}.csv`.
-- `export-combined` — gated on **all** per-checkpoint exports, runs the sage
-  exporter once over the whole `<EXPERIMENT>` tree to produce
-  `<SAGE_RESULTS_DIR>/<EXPERIMENT>/combined.csv`.
+- `export-combined` — gated on **all** per-checkpoint exports, pivots them into
+  `<SAGE_RESULTS_DIR>/<EXPERIMENT>/combined.csv`: a **benchmark × checkpoint**
+  table (rows are benchmarks — the sage `model`+`metric`, plus one `BFCL-<expt>`
+  row per bfcl eval; columns are `ckpt_<step>`), so each row reads left-to-right
+  as a metric's trajectory across the run. It reads whichever of sage/bfcl
+  actually ran (either alone is fine).
 
 ## Trainer step change
 
@@ -133,16 +136,19 @@ per-step ids match the generated `checkpoint_<step>` training outputs.
 
 ## Verification status (issue #45)
 
-Provisional until confirmed against a real BlueVela grpo_fast run:
+Confirmed against real BlueVela grpo_fast runs:
 
-- **Checkpoint dir naming.** The watcher assumes `output_dir/step_<N>`. If
-  grpo_fast names dirs differently (`global_step_N`, `checkpoint-N`), adjust
-  `CKPT_GLOB`/parsing in the step and the generator's naming together. A
-  mismatch now **fails the training target loudly** (non-zero exit with a
+- **Checkpoint dir naming.** grpo_fast writes HF checkpoints as `output_dir/step_<N>`
+  (confirmed: `step_10`, `step_20`), which the watcher globs directly. A naming
+  mismatch **fails the training target loudly** (non-zero exit with a
   diagnostic) rather than letting the downstream eval targets stall silently.
+- **Combined roll-up.** `export-combined` does **not** re-scan a sage result
+  tree (sage-eval requires a flat experiment name, so per-checkpoint results are
+  siblings, not a nestable tree). It pivots the per-checkpoint CSVs the gates
+  already guarantee exist into a benchmark × checkpoint table — see Aggregation.
+
+Still provisional:
+
 - **Mid-run emission.** Confirm the periodic monitor surfaces each checkpoint
-  line while the job is RUNNING (not only at terminal status).
-- **Combined exporter.** Confirm `sage/exporters/exporter.py` rolls up multiple
-  `ckpt_*` experiment dirs into one CSV distinguishable by checkpoint; if not,
-  `export-combined` should post-process the per-checkpoint CSVs (which the gates
-  already guarantee exist).
+  line while the job is RUNNING (not only at terminal status), so evals can
+  start before training finishes.
