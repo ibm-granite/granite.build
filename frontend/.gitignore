@@ -1,7 +1,6 @@
 # Node
 node_modules/
 dist/
-.vite/
 .next/
 package-lock.json
 .yarn/cache

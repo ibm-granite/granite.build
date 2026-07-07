@@ -1,31 +1,28 @@
 import type { NextConfig } from 'next'
 
-// IBM internal endpoints use a private CA that Node.js doesn't trust by default.
-// This matches Vite's http-proxy behavior which was permissive about TLS in dev.
 if (process.env.NODE_ENV !== 'production') {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 }
 
-const isStandaloneExport = Boolean(process.env.STANDALONE_EXPORT)
+const isProd = process.env.NODE_ENV === 'production'
+const gbserverApiUrl = process.env.GBSERVER_API_URL
 
 const nextConfig: NextConfig = {
-  // Static export for embedding in gbserver (standalone mode).
-  // Server mode (no output setting) is used for IBM deployments where Next.js
-  // runs as its own server alongside the Python sidecar.
-  ...(isStandaloneExport && {
-    output: 'export',
-    trailingSlash: true,
-  }),
+  // output: 'export' is standalone-only — it conflicts with rewrites (used in dev).
+  ...(isProd ? { output: 'export' } : {}),
+  trailingSlash: true,
   skipTrailingSlashRedirect: true,
-  // Analytics sidecar proxy — server mode only. In static export mode gbserver
-  // proxies /api/analytics/* to the sidecar directly.
-  ...(!isStandaloneExport && {
-    async rewrites() {
-      return [
-        { source: '/api/analytics/:path*', destination: 'http://localhost:8090/api/analytics/:path*' },
-      ]
-    },
-  }),
+  // Expose GBSERVER_API_URL to the client bundle without a NEXT_PUBLIC_ prefix.
+  env: { GBSERVER_API_URL: gbserverApiUrl ?? '' },
+  // Dev mode: proxy /api/* to gbserver server-side (no CORS). Optional — omit
+  // GBSERVER_API_URL to run the UI with no backend (pages load, data shows empty).
+  ...(!isProd && gbserverApiUrl
+    ? {
+        async rewrites() {
+          return [{ source: '/api/:path*', destination: `${gbserverApiUrl}/api/:path*` }]
+        },
+      }
+    : {}),
 }
 
 export default nextConfig

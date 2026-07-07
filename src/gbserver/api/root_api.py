@@ -18,7 +18,9 @@
 import asyncio
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from gbserver.api import (  # noqa: F401  registers routes on builds_api
     build_files as _build_files,
@@ -28,6 +30,7 @@ from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
 from gbserver.api.builds import builds_api
+from gbserver.api.frontend_routes import frontend_router
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
@@ -66,6 +69,7 @@ def read_root():
     }
 
 
+root_api.include_router(frontend_router)
 root_api.mount(f"{API_BASE_PATH}/auth", auth_api)
 root_api.mount(f"{API_BASE_PATH}/artifacts", artifacts_api)
 root_api.mount(f"{API_BASE_PATH}/builds", builds_api)
@@ -74,6 +78,52 @@ root_api.mount(f"{API_BASE_PATH}/logs", logs_api)
 root_api.mount(f"{API_BASE_PATH}/node-health", node_health_api)
 root_api.mount(f"{API_BASE_PATH}/secrets", secrets_api)
 root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
+
+# ── Frontend static file serving ──────────────────────────────────────────────
+
+# Default: static/ui/ sibling to this package directory (populated by make build-frontend).
+# Override with GBSERVER_UI_DIR for non-standard layouts.
+_UI_DIR = os.environ.get(
+    "GBSERVER_UI_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static", "ui"),
+)
+
+if os.path.isdir(_UI_DIR):
+    # html=True makes StaticFiles serve index.html for directory paths
+    # (e.g. /builds/ → builds/index.html). Unknown paths still return 404,
+    # which the exception handler below catches for SPA client-side routes.
+    root_api.mount("/", StaticFiles(directory=_UI_DIR, html=True), name="frontend")
+    logger.info("Serving frontend from %s", _UI_DIR)
+else:
+    logger.info("No frontend UI directory found at %s — running API-only", _UI_DIR)
+
+
+@root_api.exception_handler(404)
+async def _spa_fallback(request: Request, exc: Exception) -> FileResponse | JSONResponse:
+    """Serve a clean SPA shell for unknown non-API paths so the client-side router can handle them.
+
+    Uses dashboard/index.html rather than the root index.html because the root
+    page has a server-side redirect baked into its RSC payload (NEXT_REDIRECT →
+    /dashboard) that fires before the client router can navigate to the real path.
+
+    RSC data requests (Next.js App Router prefetches/navigations identified by the
+    `rsc: 1` header or `_rsc` query parameter) are intentionally NOT intercepted.
+    Returning HTML for an RSC request causes the router to cache the wrong page
+    data, resulting in the wrong page being rendered on navigation. A 404 here
+    tells the router to render the route fresh from its client-side bundle.
+    """
+    if not request.url.path.startswith("/api/"):
+        if request.headers.get("rsc") == "1" or "_rsc" in (request.url.query or ""):
+            # RSC data requests must not be intercepted — returning HTML instead of
+            # RSC data confuses the App Router and causes wrong-page renders.
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        shell = os.path.join(_UI_DIR, "dashboard", "index.html")
+        if os.path.isfile(shell):
+            return FileResponse(shell)
+        index = os.path.join(_UI_DIR, "index.html")
+        if os.path.isfile(index):
+            return FileResponse(index)
+    return JSONResponse({"detail": "Not Found"}, status_code=404)
 
 
 @root_api.on_event("startup")

@@ -15,13 +15,18 @@
 # limitations under the License.
 
 
+import atexit
 import os
+import subprocess
 import sys
 
 import click
 import uvicorn
 
+from gbcommon.types.constants import get_gb_home_dir
+from gbserver.storage.sqlite.sqlite_storage import SQLITE_DB_FILE_NAME
 from gbserver.types.constants import (
+    ENV_VAR_METADATA_STORAGE,
     GBSERVER_REST_SERVER_TIMEOUT_KEEP_ALIVE,
     GBSERVER_REST_SERVER_WORKERS,
 )
@@ -29,6 +34,55 @@ from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+_sidecar_process: "subprocess.Popen[bytes] | None" = None
+
+
+def _start_analytics_sidecar() -> None:
+    """Start gb_ui_backend as a background subprocess if it is installed.
+
+    If GB_UI_DATABASE_URL is not set, defaults to the sidecar's own SQLite file in
+    the GB home directory (see SIDECAR_DB_FILENAME in gb_ui_backend/config.py).
+    If GB_UI_GBSERVER_DB_URL is not set and gbserver is running in SQLite mode,
+    defaults to gbserver's own SQLite file so standalone analytics work out of the box.
+    """
+    import importlib.util
+    if importlib.util.find_spec("gb_ui_backend") is None:
+        return
+
+    global _sidecar_process
+    gb_home = get_gb_home_dir()
+
+    if not os.environ.get("GB_UI_DATABASE_URL"):
+        # mirrors SIDECAR_DB_FILENAME in gb_ui_backend/config.py — keep in sync
+        os.environ["GB_UI_DATABASE_URL"] = (
+            f"sqlite+aiosqlite:///{os.path.join(gb_home, 'dashboard-analytics.db')}"
+        )
+
+    if not os.environ.get("GB_UI_GBSERVER_DB_URL") and os.environ.get(ENV_VAR_METADATA_STORAGE, "sql").lower() == "sqlite":
+        os.environ["GB_UI_GBSERVER_DB_URL"] = (
+            f"sqlite+aiosqlite:///{os.path.join(gb_home, SQLITE_DB_FILE_NAME)}"
+        )
+
+    _sidecar_process = subprocess.Popen(
+        [sys.executable, "-m", "gb_ui_backend"],
+        start_new_session=True,  # own process group — immune to gbserver SIGTERM/SIGHUP
+    )
+    logger.info(
+        "Analytics sidecar started (pid=%d) — listening on :8090.",
+        _sidecar_process.pid,
+    )
+    atexit.register(_stop_analytics_sidecar)
+
+
+def _stop_analytics_sidecar() -> None:
+    if _sidecar_process is not None and _sidecar_process.poll() is None:
+        logger.info("Stopping analytics sidecar (pid=%d).", _sidecar_process.pid)
+        _sidecar_process.terminate()
+        try:
+            _sidecar_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _sidecar_process.kill()
 
 _IBMID_REQUIRED_VARS = [
     "GBSERVER_IBMID_CLIENT_ID",
@@ -56,6 +110,8 @@ def cli(
                 ", ".join(missing),
             )
             sys.exit(1)
+
+    _start_analytics_sidecar()
 
     try:
         logger.info(

@@ -492,8 +492,19 @@ clean::
 	fi
 
 
-.PHONY: build 
-build: $(VENVDIR) 
+YARN ?= yarn
+
+.PHONY: clean-frontend
+clean-frontend:
+	rm -rf frontend/out frontend/.next src/gbserver/static/ui
+
+.PHONY: build-frontend
+build-frontend:
+	cd frontend && $(YARN) install --frozen-lockfile && $(YARN) build
+	rsync -a --delete frontend/out/ src/gbserver/static/ui/
+
+.PHONY: build
+build: $(VENVDIR)
 	source $(VENVDIR)/bin/activate;	\
 	${PIP} install --upgrade build;	\
 	${PYTHON} -m build

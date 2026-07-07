@@ -25,7 +25,9 @@ RUN mkdir -p /opt/app-root/src/.pip
 RUN echo "[global]" >> /opt/app-root/src/.pip/pip.conf
 RUN echo "extra-index-url = https://${ARTIFACTORY_USER}:${ARTIFACTORY_API_KEY}@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> /opt/app-root/src/.pip/pip.conf
 
-# Copy the source code and install in editable mode
+# Copy the source code and install in editable mode.
+# Static frontend files must be pre-built via `make build-frontend` before
+# running `docker build` — they are committed into src/gbserver/static/ui/.
 COPY . .
 # PIP_CONSTRAINT pins the AWS SDK cluster (boto3/botocore/awscli/aiobotocore) to
 # avoid multi-hour pip resolver backtracking. Applied to every pip invocation in

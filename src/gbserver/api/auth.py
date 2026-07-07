@@ -134,16 +134,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "auth middleware headers: %s", self._redact_headers(request.headers)
         )
 
-        # Allow docs/openapi endpoints without authentication in all modes
-        if request.method == "GET":
-            req_url = str(request.url)
-            if req_url.endswith("/docs") or req_url.endswith("/openapi.json"):
-                logger.info("docs URL doesn't require authentication")
-                response = await call_next(request)
-                return response
+        # Only /api/* paths require authentication. Static assets, page routes,
+        # /docs, /openapi.json, and the SPA fallback are all public.
+        if not request.url.path.startswith("/api/"):
+            response = await call_next(request)
+            return response
 
         # Allow auth proxy endpoints (login flow) without authentication
         if request.url.path.startswith("/api/v1/auth/"):
+            response = await call_next(request)
+            return response
+
+        # Allow frontend bootstrap endpoints — client needs these before it has a token
+        if request.url.path in ("/api/config", "/api/environments"):
+            response = await call_next(request)
+            return response
+
+        # Allow analytics sidecar proxy — sidecar validates tokens itself
+        if request.url.path.startswith("/api/analytics/"):
             response = await call_next(request)
             return response
 

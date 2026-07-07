@@ -1,6 +1,7 @@
 import axios from 'axios'
+import { apiBase } from '@/api/client'
 
-const client = axios.create({ baseURL: '/api/analytics/data-processing' })
+const client = axios.create({ baseURL: apiBase('/api/analytics/data-processing') })
 
 export interface DPBuild {
   uuid: string

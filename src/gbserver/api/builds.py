@@ -14,8 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
+import io
+import zipfile
 from enum import StrEnum, auto
-from typing import Annotated, List, Optional, Self, Tuple, cast
+from typing import Annotated, Dict, List, Optional, Self, Tuple, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
@@ -327,6 +330,25 @@ def read_build(build_id: str) -> GetBuildResponse:
     assert isinstance(item, StoredBuild), f"invalid item: {item}"
     resp = GetBuildResponse(build=item)
     return resp
+
+
+@builds_api.get("/{build_id}/archive")
+def get_build_archive(build_id: str) -> Dict[str, Dict[str, str]]:
+    """Decode the build's ZIP archive and return its files as a dict.
+
+    Returns ``{"files": {"path/in/zip": "file contents", ...}}``.
+    Used by the frontend Definition tab to display build.yaml and related files.
+    """
+    storage: SingletonAdminStorage = get_admin_storage()
+    build = storage.build_storage.get_by_uuid(build_id)
+    if build is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="build not found!")
+    if not build.build_archive:
+        return {"files": {}}
+    raw = base64.b64decode(build.build_archive)
+    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+        files = {name: zf.read(name).decode(errors="replace") for name in zf.namelist()}
+    return {"files": files}
 
 
 def __get_artifacts(
