@@ -346,7 +346,15 @@ environment_configs:
             unset RAY_ADDRESS
             ray stop --force >/dev/null 2>&1 || true
             rm -f /tmp/ray/ray_current_cluster 2>/dev/null || true
-            export RAY_TMPDIR="${TMPDIR:-/tmp}/ray-${SKYPILOT_TASK_ID:-$$}"
+            # Setting RAY_TMPDIR forces grpo_fast onto its explicit-temp-dir
+            # branch (ray.init(_temp_dir=...)), which STARTS a fresh local
+            # cluster instead of the bare ray.init() that resolved a stale
+            # remote address above. RAY_TMPDIR must stay SHORT: Ray appends
+            # /session_<ts>_<pid>/sockets/plasma_store (~65 bytes) and the
+            # resulting AF_UNIX socket path cannot exceed 107 bytes. The
+            # SkyPilot task id is ~48 chars and blows that limit, so key the
+            # dir off the (short) PID under /tmp (node-local tmpfs) instead.
+            export RAY_TMPDIR="/tmp/ray-$$"
             mkdir -p "$RAY_TMPDIR"
             echo "[ray-hygiene] cleared; RAY_TMPDIR=$RAY_TMPDIR"
 
