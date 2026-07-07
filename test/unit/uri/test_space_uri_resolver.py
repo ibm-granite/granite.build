@@ -539,6 +539,39 @@ class TestTier3Fallback:
 
         assert _resolved_dir(resolved).samefile(target)
 
+    def test_fallback_honors_subtype_restriction(self, tmp_path):
+        """A restricted step at the env-agnostic `<base>/steps/<name>` path is not
+        resolvable by the fallback for an excluded sub-type — the restriction is
+        never bypassed by falling through to Tier 3."""
+        base = tmp_path / "base"
+        _write_step(
+            base / "steps" / "digit",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes"],
+        )
+        _set_bases(base)
+
+        # aws excluded: Tier 2 drops it AND Tier 3 must not rescue it by path.
+        with SpaceURI.with_current_env_class_name("Skypilot", env_subtype="aws"):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/digit")
+        # kubernetes is listed -> still resolvable.
+        with SpaceURI.with_current_env_class_name("Skypilot", env_subtype="kubernetes"):
+            resolved = _resolve("space://steps/digit")
+        assert _resolved_dir(resolved).name == "digit"
+
+    def test_fallback_universal_step_resolves_for_subtyped_env(self, tmp_path):
+        """An env-agnostic step with no `subtypes` still resolves via the fallback
+        for a subtyped env (the Tier 3 filter only excludes restricted steps)."""
+        base = tmp_path / "base"
+        step_dir = _write_step(base / "steps" / "hello")  # no subtypes
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot", env_subtype="aws"):
+            resolved = _resolve("space://steps/hello")
+
+        assert _resolved_dir(resolved).samefile(step_dir)
+
     def test_non_step_uri_uses_fallback_only(self, tmp_path):
         """Tiers 1/2 apply only to `steps/`; an environments URI resolves
         purely via the base_uris fallback."""

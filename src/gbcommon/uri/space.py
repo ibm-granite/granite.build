@@ -68,13 +68,16 @@ class SpaceURI(URI):
         match = SpaceURI._try_env_class_match(uri_suffix)
         if match is not None:
             return match  # type: ignore[return-value]
-        # Tier 3: env-agnostic fallback against the space's own base_uris.
+        # Tier 3: env-agnostic fallback against the space's own base_uris.  Path
+        # match only, but a `space://steps/<name>` candidate that declares a
+        # `subtypes` restriction the active env fails is still skipped, so a
+        # restriction is never bypassed by falling through to the fallback.
         for base_uri in SpaceURI._thread_local.base_uris:
             resolved = URI.get_uri(
                 base_uri, "file", secrets=SpaceURI._thread_local.space_secrets
             )
             resolved.append_path(uri_suffix)
-            if resolved.exists():
+            if resolved.exists() and SpaceURI._fallback_subtype_ok(uri_suffix, resolved):
                 return resolved  # type: ignore[return-value]
         raise ValueError(f"Unresolvable space uri : {uristr}")
 
@@ -215,6 +218,35 @@ class SpaceURI(URI):
         if not isinstance(data, dict):
             return True
         return SpaceURI._subtype_ok(data, env_class, env_subtype)
+
+    @staticmethod
+    def _fallback_subtype_ok(uri_suffix: str, resolved: URI) -> bool:
+        """Apply the sub-type filter to a Tier 3 (env-agnostic) fallback hit.
+
+        Tier 3 matches purely on path existence, so without this a
+        ``space://steps/<name>`` step placed at the env-agnostic ``<base>/steps/``
+        location could bypass its ``subtypes`` restriction.  Non-``steps/`` URIs
+        (``environments/``, ``assetstores/``) carry no such restriction and always
+        pass.  The candidate's ``step.yaml`` sits at the step dir — reached by
+        stripping any ``<rest>`` sub-asset components off the resolved target.
+
+        Args:
+            uri_suffix: The scheme-stripped URI suffix.
+            resolved: The resolved fallback target (``<base>/steps/<name>[/<rest>]``).
+        """
+        parsed = SpaceURI._parse_step_name_rest(uri_suffix)
+        if parsed is None:
+            return True
+        _, rest = parsed
+        step_dir = Path(resolved.uri.path)  # type: ignore[union-attr]
+        if rest:
+            for _ in Path(rest).parts:
+                step_dir = step_dir.parent
+        env_class = getattr(SpaceURI._thread_local, "current_env_class_name", None)
+        env_subtype = getattr(SpaceURI._thread_local, "current_env_subtype", None)
+        return SpaceURI._step_subtype_ok(
+            step_dir / STEP_FILE_NAME, env_class, env_subtype
+        )
 
     @staticmethod
     def _walk_colocated_steps(uri_suffix: str) -> Optional[URI]:

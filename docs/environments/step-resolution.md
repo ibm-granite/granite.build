@@ -62,8 +62,10 @@ For `space://steps/<name>` and an env of class `K8s` loaded from `<env-dir>`:
 
 1. Walk `<env-dir>` → parents up to the enclosing `base_uri`, first `steps/<name>/step.yaml` hit wins (nearest overrides); a candidate whose `subtypes` restriction excludes the active env is skipped and the walk continues.
 2. Recursive glob `<base>/**/<name>/step.yaml` across `base_uris` — first candidate (by specificity, then lex) whose `environment_configs` contains `K8s` **and** whose `subtypes` restriction admits the active env's sub-type.
-3. `<base>/steps/<name>/step.yaml` — env-agnostic fallback.
+3. `<base>/steps/<name>/step.yaml` — env-agnostic fallback (path match), but a candidate whose `subtypes` restriction excludes the active env is still skipped.
 4. unresolvable → `ValueError`.
+
+The `subtypes` restriction is honored by **all** step tiers, so it is never bypassed by falling through from one tier to the next.
 
 Use the ancestor-walk (a shared `steps/` dir at the family level) for impls shared by environments under a common directory; add a `subtypes` list to restrict a shared step to specific endpoints of the same class; use env-class-match for splitting a multi-env step.yaml into per-env files (the builtins approach).
 
