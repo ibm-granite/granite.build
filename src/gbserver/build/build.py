@@ -23,7 +23,7 @@ import tempfile
 import traceback
 from copy import deepcopy
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Self
+from typing import Callable, Dict, List, Optional, Self, Tuple
 
 import yaml
 
@@ -249,15 +249,21 @@ class Build(BuildEntity):
                     f"{err_prefix} the env URI {target.environment_uri} is invalid: {e}"
                 )
                 errors.add(err=err)
-            # Read the env's `type` so SpaceURI's env-class-match tier picks the
-            # right env-keyed step variant during validation.  The validator runs
-            # before any TargetStep is instantiated, so without this scope the
-            # thread-local has no env class set and `space://steps/<name>` URIs
-            # whose only on-disk variants live under env-keyed subdirs would be
-            # reported as unresolvable.
-            env_class_name = self.__read_env_class_name(target_env_uri)
+            # Read the env's `type`, dir, and sub-type so all step resolution
+            # tiers (ancestor-walk, env-class-match with the sub-type filter) run
+            # during validation.  The validator runs before any TargetStep is
+            # instantiated, so without this scope the thread-local has no env
+            # context and `space://steps/<name>` URIs whose only on-disk variants
+            # live in the env dir tree or env-keyed subdirs would be reported as
+            # unresolvable.
+            env_class_name, env_subtype = self.read_env_types(target_env_uri)
+            env_dir_uri = self.__env_dir_uri(target_env_uri)
             logger.info("checking the steps of the target: %s %s", target_name, target)
-            with SpaceURI.with_current_env_class_name(env_class_name):
+            with SpaceURI.with_current_env_class_name(
+                env_class_name,
+                env_dir_uri=env_dir_uri,
+                env_subtype=env_subtype,
+            ):
                 for i, step in enumerate(target.steps):
                     err_prefix = f"Target `{target_name}` Step `{i}`:"
                     try:
@@ -278,38 +284,56 @@ class Build(BuildEntity):
         return errors
 
     @staticmethod
-    def __read_env_class_name(target_env_uri: Optional[URI]) -> Optional[str]:
-        """Read the ``type`` field from the target's environment.yaml.
+    def __env_dir_uri(target_env_uri: Optional[URI]) -> Optional[str]:
+        """Return a ``file://`` URI for the resolved env directory, or ``None``.
 
-        Returns the env's class name (e.g. ``"K8s"``, ``"Docker"``,
-        ``"Skypilot"``) for use as ``SpaceURI.current_env_class_name`` during
-        step URI validation.  Returns ``None`` when the env URI is unavailable,
-        not a local path, or its yaml can't be parsed — in which case the
-        env-class-match tier is silently skipped and validation falls back to
-        the existing tiers.
-
-        Lightweight on purpose: skips the full ``Environment.get_environment``
-        instantiation (which requires an event_q and runs side effects); the
-        validator only needs the class-name string.
+        Feeds ``SpaceURI``'s Tier 1a ancestor-walk during validation so
+        env-co-located and ancestor steps resolve.  Returns ``None`` when the
+        env URI is unavailable or not a local path.
         """
         if target_env_uri is None or target_env_uri.uri is None:
             return None
         env_path_str = target_env_uri.uri.path
         if not env_path_str:
             return None
-        env_dir = Path(env_path_str)
-        env_yaml = env_dir / "environment.yaml"
+        return f"file://{env_path_str}"
+
+    @staticmethod
+    def read_env_types(
+        target_env_uri: Optional[URI],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Read ``type`` and ``subtype`` from the target's env yaml.
+
+        Returns ``(class_name, subtype)`` for scoping step URI validation: the
+        class name (e.g. ``"K8s"``, ``"Skypilot"``) drives the env-class-match
+        tier, and the sub-type drives the per-step ``subtypes`` filter.  Either
+        element is ``None`` when the env URI is unavailable, not a local path, or
+        its yaml can't be parsed — in which case that facet is silently skipped.
+
+        Lightweight on purpose: skips the full ``Environment.get_environment``
+        instantiation (which requires an event_q and runs side effects); the
+        validator only needs these fields.
+        """
+        if target_env_uri is None or target_env_uri.uri is None:
+            return None, None
+        env_path_str = target_env_uri.uri.path
+        if not env_path_str:
+            return None, None
+        env_yaml = Path(env_path_str) / "environment.yaml"
         if not env_yaml.is_file():
-            return None
+            return None, None
         try:
             with open(env_yaml, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
         except (OSError, yaml.YAMLError):
-            return None
+            return None, None
         if not isinstance(data, dict):
-            return None
+            return None, None
         type_val = data.get("type")
-        return type_val if isinstance(type_val, str) and type_val else None
+        class_name = type_val if isinstance(type_val, str) and type_val else None
+        subtype_val = data.get("subtype")
+        subtype = subtype_val if isinstance(subtype_val, str) and subtype_val else None
+        return class_name, subtype
 
     def __validate_target_inputs(self: Self) -> GBValidationErrors:
         logger.info("validating the inputs of the build")

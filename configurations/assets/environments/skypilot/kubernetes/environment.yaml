@@ -1,5 +1,6 @@
 name: sky-kube
 type: Skypilot
+subtype: kubernetes
 config:
   default_cloud: kubernetes
   idle_minutes_to_autostop: 0

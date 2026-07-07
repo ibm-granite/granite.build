@@ -1,5 +1,6 @@
 name: sky-lsf
 type: Skypilot
+subtype: lsf
 config:
   default_cloud: lsf
   # SkyPilot's `zone` is overloaded per-cloud: for the LSF backend it

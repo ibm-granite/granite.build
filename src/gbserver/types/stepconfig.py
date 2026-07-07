@@ -65,7 +65,18 @@ class StepMonitorConfig(Config):
 
 
 class StepEnvironmentTypeConfig(Config):
-    """Config for an environment where this step can run."""
+    """Config for an environment where this step can run.
+
+    Attributes:
+        subtypes: Optional free-form list of environment sub-types this step is
+            restricted to for this class.  Empty (the default) means the step is
+            universal — it matches any environment of this class regardless of
+            sub-type.  A non-empty list restricts resolution to environments
+            whose ``subtype`` is one of these values (exact string match); such
+            a step will not resolve for an environment with no ``subtype``.  Used
+            by the ``SpaceURI`` resolver's ancestor-walk and env-class-match
+            tiers.
+    """
 
     default_launcher: Optional[str] = None
     setups: Optional[Dict[str, StepSetupConfig]] = Field(default_factory=dict)
@@ -73,6 +84,8 @@ class StepEnvironmentTypeConfig(Config):
     # name -> env-specific validator definition
     validators: Dict[str, StepValidatorConfig] = Field(default_factory=dict)
     monitors: Dict[str, StepMonitorConfig] = Field(default_factory=dict)
+    # env sub-types this step is restricted to (empty = universal)
+    subtypes: List[str] = Field(default_factory=list)
 
 
 class StepIOTypeEnum(StrEnum):

@@ -61,6 +61,7 @@ environment type.
 ```yaml
 name: <string>          # Human-readable name (informational).
 type: <string>          # Environment class to instantiate: Bash, Docker, K8s, Lsf, Runpod, Skypilot.
+subtype: <string>       # Optional: distinguishes envs of the same type (see below).
 config:                 # Environment-type-specific config — see the per-type page.
   ...
 assetstores:            # Asset stores accessible from this environment (see below).
@@ -73,10 +74,45 @@ assetstores:            # Asset stores accessible from this environment (see bel
         config: {}
 ```
 
-`name`, `type`, and `assetstores` are the only fields the shared schema
+`name`, `type`, `subtype`, and `assetstores` are the fields the shared schema
 ([`EnvironmentConfig`](../../src/gbserver/types/environmentconfig.py)) defines; everything under
 `config:` is a free-form dict interpreted by the environment class. The per-type pages document each
 type's `config:` block.
+
+### Sharing step implementations across environments
+
+Steps are resolved relative to the active environment (see
+[step-resolution.md](step-resolution.md)). A **single** `step.yaml` at a shared ancestor of
+several environments' directories — e.g. `environments/skypilot/steps/digit/step.yaml` — is
+discovered by every environment beneath it (`skypilot/kubernetes`, `skypilot/slurm`, …) via the
+resolver's ancestor-walk. An env's own `steps/<name>/` still overrides. No configuration needed.
+
+### Restricting a shared step by sub-type (`subtype` / `subtypes`)
+
+Because environments that differ only in compute endpoint often share one `type` (all skypilot
+endpoints are class `Skypilot`, differing only by `config.default_cloud`), the class alone can't
+say *which* of them may use a shared step. A **sub-type** provides that discriminator:
+
+- An `environment.yaml` may declare an optional `subtype` (any free-form string — no predefined
+  set; the skypilot endpoints use `kubernetes`/`slurm`/`aws`/`lsf` by convention).
+- A step's `environment_configs.<Class>` may declare an optional `subtypes` list. **Empty (the
+  default) = universal** — the step matches any environment of that class (this is how builtins
+  and general shared steps keep resolving everywhere). A **non-empty** list restricts the step to
+  environments whose `subtype` is one of the listed values (exact string match); an environment
+  with no `subtype` does not match such a step.
+
+Example — one shared `digit` usable only by the kubernetes and slurm endpoints:
+
+```yaml
+# environments/skypilot/steps/digit/step.yaml
+environment_configs:
+  Skypilot:
+    subtypes: [kubernetes, slurm]   # aws / lsf endpoints are excluded
+    ...
+```
+
+The sub-type filter is applied by both resolver tiers (ancestor-walk and env-class-match), so the
+restriction holds regardless of which tier finds the file.
 
 ### Asset stores
 

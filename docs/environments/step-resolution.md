@@ -2,18 +2,42 @@
 
 When a target runs, every `space://steps/<name>` URI is resolved against the active environment.  Two mechanisms are available — pick whichever fits the step:
 
-## Co-located steps in the env's own directory
+## Co-located steps and the ancestor-walk
 
-A step impl placed inside the env's own directory is auto-discovered whenever that env is the active target's env.  No `base_uris` change is needed.  Example layout:
+A step impl placed inside the env's own directory is auto-discovered whenever that env is the active target's env.  No `base_uris` change is needed.  The resolver then **walks up** parent directories, checking `<dir>/steps/<name>/step.yaml` at each level, and stops at (and including) the deepest `base_uri` that encloses the env dir — it never escapes above the base_uri subtree.  The match is **nearest-wins**: the env's own dir beats a parent, which beats a grandparent.
+
+This lets sibling environments under a common family directory share one step implementation without duplicating it into each env dir:
 
 ```
-configurations/assets/environments/skypilot/kubernetes/
-├── environment.yaml
-└── steps/
-    └── digit/step.yaml          # used when this env runs the target
+configurations/assets/environments/skypilot/
+├── steps/
+│   └── digit/step.yaml          # shared by ALL skypilot envs below
+├── kubernetes/
+│   ├── environment.yaml         # resolves ../steps/digit
+│   └── steps/
+│       └── digit/step.yaml      # OPTIONAL override — wins over ../steps/digit
+└── slurm/
+    └── environment.yaml         # also resolves ../steps/digit
 ```
 
-Co-located steps are ideal for impls that are tightly coupled to a specific environment instance and don't need to be shared with other envs.
+Place a step at the level of the family whose members should share it (`skypilot/steps/` for all skypilot envs, `skypilot/lsf/steps/` for just the lsf endpoints).  Keep a per-endpoint override in the env's own `steps/` dir when one endpoint genuinely diverges.
+
+## Restricting a shared step by sub-type (`subtype` / `subtypes`)
+
+The ancestor-walk shares a step with **every** environment under its directory, and env-class-match (below) matches **every** environment of the same class.  When environments differ only in compute endpoint they often share one class (all skypilot endpoints are class `Skypilot`), so neither mechanism can, on its own, restrict a shared step to a subset of them.  An optional **sub-type** provides that discriminator:
+
+- An `environment.yaml` may declare an optional `subtype` — any free-form string (no predefined set; the skypilot endpoints use `kubernetes`/`slurm`/`aws`/`lsf` by convention, mirroring `config.default_cloud`).
+- A step's `environment_configs.<Class>` may declare an optional `subtypes` list.  **Empty (the default) = universal**, matching any env of that class (so builtins and general shared steps keep resolving everywhere).  A **non-empty** list restricts the step to environments whose `subtype` is one of the listed values (exact string match); an env with no `subtype` does not match such a step.
+
+```yaml
+# environments/skypilot/steps/digit/step.yaml — shared by kubernetes + slurm only
+environment_configs:
+  Skypilot:
+    subtypes: [kubernetes, slurm]   # aws / lsf endpoints are excluded
+    ...
+```
+
+So a single `skypilot/steps/digit` is resolved by `skypilot/kubernetes` and `skypilot/slurm` but is unresolvable for `skypilot/aws` and `skypilot/lsf/...`.  The filter is applied by **both** the ancestor-walk and env-class-match tiers, so the restriction holds regardless of which tier finds the file: a candidate excluded by sub-type is skipped (the walk keeps ascending; class-match ignores it).
 
 ## Env-class matching against existing `environment_configs`
 
@@ -36,12 +60,12 @@ When the active env class is `K8s`, the resolver picks `steps/k8s/s3push/step.ya
 
 For `space://steps/<name>` and an env of class `K8s` loaded from `<env-dir>`:
 
-1. `<env-dir>/steps/<name>/step.yaml` — env-co-located impl (highest priority).
-2. Recursive glob `<base>/**/<name>/step.yaml` across `base_uris` — first candidate (by specificity, then lex) whose `environment_configs` contains `K8s`.
+1. Walk `<env-dir>` → parents up to the enclosing `base_uri`, first `steps/<name>/step.yaml` hit wins (nearest overrides); a candidate whose `subtypes` restriction excludes the active env is skipped and the walk continues.
+2. Recursive glob `<base>/**/<name>/step.yaml` across `base_uris` — first candidate (by specificity, then lex) whose `environment_configs` contains `K8s` **and** whose `subtypes` restriction admits the active env's sub-type.
 3. `<base>/steps/<name>/step.yaml` — env-agnostic fallback.
 4. unresolvable → `ValueError`.
 
-Use co-located steps for impls tightly coupled to a specific environment instance; use env-class-match for splitting a multi-env step.yaml into per-env files (the builtins approach).
+Use the ancestor-walk (a shared `steps/` dir at the family level) for impls shared by environments under a common directory; add a `subtypes` list to restrict a shared step to specific endpoints of the same class; use env-class-match for splitting a multi-env step.yaml into per-env files (the builtins approach).
 
 ## Manual override via `base_uris`
 

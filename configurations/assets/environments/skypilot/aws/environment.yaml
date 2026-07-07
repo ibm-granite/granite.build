@@ -1,5 +1,6 @@
 name: skypilot-standalone
 type: Skypilot
+subtype: aws
 config:
   # Uncomment ONE of the following cloud backends:
 

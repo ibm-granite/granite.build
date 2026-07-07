@@ -53,6 +53,7 @@ _THREAD_LOCAL_ATTRS = (
     "space_secrets",
     "current_env_dir_uri",
     "current_env_class_name",
+    "current_env_subtype",
 )
 
 
@@ -82,7 +83,11 @@ def _set_bases(*dirs: Path) -> None:
     SpaceURI.set_baseuris([f"file://{d}" for d in dirs], {})
 
 
-def _write_step(step_dir: Path, env_classes: Optional[Iterable[str]] = None) -> Path:
+def _write_step(
+    step_dir: Path,
+    env_classes: Optional[Iterable[str]] = None,
+    subtypes: Optional[Iterable[str]] = None,
+) -> Path:
     """Create ``<step_dir>/step.yaml`` (and parents) and return ``step_dir``.
 
     Args:
@@ -91,20 +96,37 @@ def _write_step(step_dir: Path, env_classes: Optional[Iterable[str]] = None) -> 
         env_classes: When provided, written as ``environment_configs`` keys so
             the env-class-match tier can select the file; ``None`` omits the
             key entirely.
+        subtypes: When provided (with ``env_classes``), written as the
+            ``subtypes`` list under each class entry so the sub-type filter can
+            be exercised; ``None`` leaves the entry with no sub-type restriction.
     """
     step_dir.mkdir(parents=True, exist_ok=True)
     data: dict = {"name": step_dir.name, "version": "v1", "type": "custom"}
     if env_classes is not None:
-        data["environment_configs"] = {cls: {} for cls in env_classes}
+        entry = {"subtypes": list(subtypes)} if subtypes is not None else {}
+        data["environment_configs"] = {cls: dict(entry) for cls in env_classes}
     (step_dir / "step.yaml").write_text(yaml.safe_dump(data))
     return step_dir
 
 
-def _make_env(class_name: str, env_dir: Optional[Path] = None):
-    """Build a stand-in environment whose class name and ``environment_dir_uri``
-    drive ``with_current_env``."""
+def _make_env(
+    class_name: str,
+    env_dir: Optional[Path] = None,
+    subtype: Optional[str] = None,
+):
+    """Build a stand-in environment driving ``with_current_env``.
+
+    Args:
+        class_name: Becomes the env's class name (``current_env_class_name``).
+        env_dir: Directory holding the env; exposed as ``environment_dir_uri``.
+        subtype: When provided, attached as ``config.subtype`` so the sub-type
+            filter (``current_env_subtype``) is scoped.
+    """
     env_dir_uri = f"file://{env_dir}" if env_dir is not None else None
-    return type(class_name, (), {"environment_dir_uri": env_dir_uri})()
+    attrs: dict = {"environment_dir_uri": env_dir_uri}
+    if subtype is not None:
+        attrs["config"] = type("Cfg", (), {"subtype": subtype})()
+    return type(class_name, (), attrs)()
 
 
 def _resolve(uri: str) -> URI:
@@ -149,6 +171,217 @@ class TestTier1EnvColocated:
             resolved = _resolve("space://steps/digit")
 
         assert _resolved_dir(resolved).samefile(class_match)
+
+
+# --------------------------------------------------------------------------- #
+# Tier 1a — ancestor-walk (nearest-wins, base_uri-bounded)
+# --------------------------------------------------------------------------- #
+
+
+class TestTier1AncestorWalk:
+    def test_parent_steps_shared_by_siblings(self, tmp_path):
+        """A step at the family level is found by sibling envs below it."""
+        base = tmp_path / "assets"
+        shared = _write_step(base / "skypilot" / "steps" / "digit")
+        for leaf in ("kubernetes", "slurm"):
+            env_dir = base / "skypilot" / leaf
+            env_dir.mkdir(parents=True)
+            _set_bases(base)
+            with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+                resolved = _resolve("space://steps/digit")
+            assert _resolved_dir(resolved).samefile(shared)
+
+    def test_env_own_dir_overrides_parent(self, tmp_path):
+        """A step in the env's own dir wins over a same-named ancestor step."""
+        base = tmp_path / "assets"
+        _write_step(base / "skypilot" / "steps" / "digit")
+        env_dir = base / "skypilot" / "kubernetes"
+        own = _write_step(env_dir / "steps" / "digit")
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            resolved = _resolve("space://steps/digit")
+
+        assert _resolved_dir(resolved).samefile(own)
+
+    def test_grandparent_walk_and_nearer_wins(self, tmp_path):
+        """The nearest ancestor with the step wins across multiple levels."""
+        base = tmp_path / "assets"
+        _write_step(base / "skypilot" / "steps" / "x")  # grandparent
+        nearer = _write_step(base / "skypilot" / "lsf" / "steps" / "x")  # parent
+        env_dir = base / "skypilot" / "lsf" / "ibm-bluevela"
+        env_dir.mkdir(parents=True)
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            resolved = _resolve("space://steps/x")
+
+        assert _resolved_dir(resolved).samefile(nearer)
+
+    def test_walk_stops_at_base_boundary(self, tmp_path):
+        """A step above the enclosing base_uri is not reachable via the walk."""
+        base = tmp_path / "assets"
+        _write_step(tmp_path / "steps" / "digit")  # ABOVE the base
+        env_dir = base / "skypilot" / "kubernetes"
+        env_dir.mkdir(parents=True)
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/digit")
+
+    def test_env_dir_not_under_any_base(self, tmp_path):
+        """When the env dir is under no base, the walk degenerates to that dir:
+        its own step resolves but a parent's step is not walked into."""
+        base = tmp_path / "other"
+        base.mkdir()
+        _write_step(tmp_path / "elsewhere" / "steps" / "parent_only")
+        env_dir = tmp_path / "elsewhere" / "env"
+        own = _write_step(env_dir / "steps" / "hello")
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Bash", env_dir)):
+            resolved = _resolve("space://steps/hello")
+            assert _resolved_dir(resolved).samefile(own)
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/parent_only")
+
+    def test_subasset_rest_from_parent(self, tmp_path):
+        """`space://steps/<name>/<rest>` resolves against an ancestor step dir."""
+        base = tmp_path / "assets"
+        step_dir = _write_step(base / "skypilot" / "steps" / "sage")
+        sub = step_dir / "Dockerfile"
+        sub.write_text("FROM scratch\n")
+        env_dir = base / "skypilot" / "kubernetes"
+        env_dir.mkdir(parents=True)
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            resolved = _resolve("space://steps/sage/Dockerfile")
+
+        assert _resolved_dir(resolved).samefile(sub)
+
+
+# --------------------------------------------------------------------------- #
+# Sub-type matching — gates ancestor-walk and env-class-match by env sub-type
+# --------------------------------------------------------------------------- #
+
+
+class TestSubtypeMatching:
+    def test_ancestor_step_matches_listed_subtype(self, tmp_path):
+        """A shared ancestor step restricted to [kubernetes, slurm] resolves for
+        both of those sub-types via the ancestor-walk."""
+        base = tmp_path / "assets"
+        shared = _write_step(
+            base / "skypilot" / "steps" / "digit",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes", "slurm"],
+        )
+        for sub in ("kubernetes", "slurm"):
+            env_dir = base / "skypilot" / sub
+            env_dir.mkdir(parents=True, exist_ok=True)
+            _set_bases(base)
+            with SpaceURI.with_current_env(
+                _make_env("Skypilot", env_dir, subtype=sub)
+            ):
+                resolved = _resolve("space://steps/digit")
+            assert _resolved_dir(resolved).samefile(shared)
+
+    def test_ancestor_step_excludes_unlisted_subtype(self, tmp_path):
+        """The same restricted step is unresolvable for a sub-type not listed
+        (aws) — the walk skips it and no other tier matches."""
+        base = tmp_path / "assets"
+        _write_step(
+            base / "skypilot" / "steps" / "digit",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes", "slurm"],
+        )
+        env_dir = base / "skypilot" / "aws"
+        env_dir.mkdir(parents=True)
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir, subtype="aws")):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/digit")
+
+    def test_unset_subtype_excluded_from_restricted_step(self, tmp_path):
+        """An env with no sub-type does not match a step that lists sub-types."""
+        base = tmp_path / "assets"
+        _write_step(
+            base / "skypilot" / "steps" / "digit",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes", "slurm"],
+        )
+        env_dir = base / "skypilot" / "kubernetes"
+        env_dir.mkdir(parents=True)
+        _set_bases(base)
+
+        # subtype not passed -> env has no sub-type
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/digit")
+
+    def test_empty_subtypes_is_universal(self, tmp_path):
+        """A step with no sub-types matches any env, even a subtyped one — so
+        builtins/general steps keep resolving for subtyped endpoints."""
+        base = tmp_path / "assets"
+        shared = _write_step(
+            base / "skypilot" / "steps" / "s3push", env_classes=["Skypilot"]
+        )  # no subtypes
+        env_dir = base / "skypilot" / "aws"
+        env_dir.mkdir(parents=True)
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir, subtype="aws")):
+            resolved = _resolve("space://steps/s3push")
+
+        assert _resolved_dir(resolved).samefile(shared)
+
+    def test_class_match_tier_honors_subtype(self, tmp_path):
+        """The env-class-match tier applies the same sub-type filter: a
+        restricted candidate is excluded for an unlisted sub-type."""
+        base = tmp_path / "base"
+        _write_step(
+            base / "skypilot" / "digit",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes", "slurm"],
+        )
+        _set_bases(base)
+
+        # aws is not in the list -> class-match must not select the candidate
+        with SpaceURI.with_current_env_class_name("Skypilot", env_subtype="aws"):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/digit")
+        # kubernetes is listed -> class-match selects it
+        with SpaceURI.with_current_env_class_name("Skypilot", env_subtype="kubernetes"):
+            resolved = _resolve("space://steps/digit")
+        assert _resolved_dir(resolved).name == "digit"
+
+    def test_validator_scope_drives_both_tiers(self, tmp_path):
+        """The validator's ``with_current_env_class_name`` scope (env_dir_uri +
+        env_subtype) drives the ancestor-walk and sub-type filter without a full
+        env: a listed sub-type resolves, an unlisted one does not."""
+        base = tmp_path / "assets"
+        walked = _write_step(
+            base / "skypilot" / "steps" / "digit",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes", "slurm"],
+        )
+        env_dir = base / "skypilot" / "kubernetes"
+        env_dir.mkdir(parents=True)
+        aws_dir = base / "skypilot" / "aws"
+        aws_dir.mkdir(parents=True)
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name(
+            "Skypilot", env_dir_uri=f"file://{env_dir}", env_subtype="kubernetes"
+        ):
+            assert _resolved_dir(_resolve("space://steps/digit")).samefile(walked)
+        with SpaceURI.with_current_env_class_name(
+            "Skypilot", env_dir_uri=f"file://{aws_dir}", env_subtype="aws"
+        ):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/digit")
 
 
 # --------------------------------------------------------------------------- #

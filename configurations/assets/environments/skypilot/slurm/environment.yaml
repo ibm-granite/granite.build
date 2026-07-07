@@ -1,5 +1,6 @@
 name: sky-slurm
 type: Skypilot
+subtype: slurm
 config:
   default_cloud: slurm
   idle_minutes_to_autostop: 0

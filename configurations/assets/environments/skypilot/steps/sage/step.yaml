@@ -22,6 +22,8 @@ outputs:
       type: dataset
 environment_configs:
   Skypilot:
+    # Restrict this shared step to the kubernetes and slurm skypilot endpoints.
+    subtypes: [kubernetes, slurm]
     default_launcher: sage
     launchers:
       sage:

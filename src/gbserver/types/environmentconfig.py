@@ -97,9 +97,19 @@ class EnvironmentConfig(Config):
         type: The environment class identifier (e.g. ``Skypilot``, ``K8s``).
         config: Free-form environment-class-specific config block.
         assetstores: Per-environment assetstore mappings.
+        subtype: Optional free-form discriminator distinguishing environments
+            that share the same ``type`` (e.g. the skypilot endpoints are all
+            class ``Skypilot`` but differ by ``kubernetes``/``slurm``/``aws``/
+            ``lsf``).  Used by the ``SpaceURI`` resolver to gate steps that
+            declare a ``subtypes`` list on their ``environment_configs``: a step
+            with a non-empty list matches only environments whose ``subtype`` is
+            in it (exact string match).  Any string is accepted — there is no
+            predefined set.  When unset, the environment matches only steps that
+            declare no ``subtypes`` (steps with an empty list are universal).
     """
 
     name: str
     type: str
     config: Dict = Field(default_factory=dict)
     assetstores: List[AssetStoreEnvironmentConfig] = Field(default_factory=list)
+    subtype: Optional[str] = None
