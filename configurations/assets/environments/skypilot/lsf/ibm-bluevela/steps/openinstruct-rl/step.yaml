@@ -333,7 +333,9 @@ environment_configs:
                 WATCH_PID=""
               fi
             }
-            trap cleanup_watcher EXIT
+            # EXIT-time cleanup: reap the watcher and remove the marker tmpdir on
+            # every path (success, trainer failure, signal).
+            trap 'cleanup_watcher; rm -rf "$EMITTED_DIR"' EXIT
 
             watch_checkpoints &
             WATCH_PID=$!

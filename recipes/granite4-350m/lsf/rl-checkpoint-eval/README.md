@@ -139,16 +139,29 @@ per-step ids match the generated `checkpoint_<step>` training outputs.
 Confirmed against real BlueVela grpo_fast runs:
 
 - **Checkpoint dir naming.** grpo_fast writes HF checkpoints as `output_dir/step_<N>`
-  (confirmed: `step_10`, `step_20`), which the watcher globs directly. A naming
-  mismatch **fails the training target loudly** (non-zero exit with a
-  diagnostic) rather than letting the downstream eval targets stall silently.
+  (confirmed: `step_10`, `step_20`), which the watcher globs directly.
+- **Completeness gating.** The watcher emits a checkpoint only once both
+  `model.safetensors` and `tokenizer.json` are present. grpo_fast writes the
+  weights early and `tokenizer.json` last (confirmed by mtime), so requiring
+  both brackets the whole write sequence — a downstream eval never loads a dir
+  that is still mid-write.
+- **Mid-run emission.** Confirmed: in one run, training started at 03:16:49, the
+  step-10 evals dispatched at 03:36:25, and training finished at 03:47:42 — the
+  step-10 fanout began ~11 min *before* training completed. The final (step-20)
+  evals dispatched just after completion, as expected.
 - **Combined roll-up.** `export-combined` does **not** re-scan a sage result
   tree (sage-eval requires a flat experiment name, so per-checkpoint results are
   siblings, not a nestable tree). It pivots the per-checkpoint CSVs the gates
   already guarantee exist into a benchmark × checkpoint table — see Aggregation.
 
-Still provisional:
+Operational risk:
 
-- **Mid-run emission.** Confirm the periodic monitor surfaces each checkpoint
-  line while the job is RUNNING (not only at terminal status), so evals can
-  start before training finishes.
+- **Cluster leak on a naming mismatch.** If a future grpo_fast change renames
+  checkpoint dirs (e.g. `global_step_N`), the watcher emits nothing: eval targets
+  bound to a never-emitted `checkpoint_<N>` never dispatch, and `teardown` —
+  gated on `training.checkpoint_<last_step>` — never fires, leaking the RL
+  cluster (H100:8) + RM/code servers until idle-timeout. The training step now
+  guards this by **failing loudly** (non-zero exit) when zero checkpoints are
+  emitted, so the build fails cleanly instead of hanging. If you change the
+  naming, update `CKPT_GLOB` in the step and `compute_checkpoint_steps` in the
+  generator together.
