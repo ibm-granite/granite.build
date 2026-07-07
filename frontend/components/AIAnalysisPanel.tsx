@@ -23,7 +23,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getAIAnalysis,
   submitAIFeedback,
-  isSidecarConfigured,
 } from "@/api/analytics";
 import type { AIAnalysis } from "@/types";
 
@@ -129,8 +128,6 @@ function FeedbackModal({
 
 export function AIAnalysisPanel({ buildId, failureReason }: Props) {
   const [showFeedback, setShowFeedback] = useState(false);
-  const sidecarConfigured = isSidecarConfigured();
-
   const {
     data: analyses,
     isLoading,
@@ -138,20 +135,8 @@ export function AIAnalysisPanel({ buildId, failureReason }: Props) {
   } = useQuery({
     queryKey: ["ai-analysis", buildId],
     queryFn: () => getAIAnalysis(buildId),
-    enabled: sidecarConfigured && Boolean(buildId),
+    enabled: Boolean(buildId),
   });
-
-  if (!sidecarConfigured) {
-    return (
-      <div style={{ padding: "2rem", textAlign: "center", color: "#525252" }}>
-        <p>AI analysis is not available in this deployment.</p>
-        <p style={{ fontSize: "0.875rem" }}>
-          Configure <code>VITE_ANALYTICS_URL</code> and{" "}
-          <code>GB_UI_LLM_API_KEY</code> to enable.
-        </p>
-      </div>
-    );
-  }
 
   if (isLoading)
     return (

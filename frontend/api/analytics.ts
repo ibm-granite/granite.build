@@ -4,53 +4,24 @@
  * All calls return null gracefully when the server is not running or not configured.
  */
 import axios, { AxiosError } from 'axios'
+import { apiBase } from '@/api/client'
 import type {
   BuildStatusChartPoint,
   FailureTrendResponse,
   TrendHistoryResponse,
   AIAnalysis,
-  QueueCapacity,
-  NodePool,
-  K8sResource,
-  LeaderboardEntry,
-  UserResourceDay,
 } from '@/types'
 
-const client = axios.create({ baseURL: '/api/analytics' })
-
-import { getActiveEnv } from '@/config/activeEnv'
-
-client.interceptors.request.use((config) => {
-  const auth = localStorage.getItem('gb-ui-auth')
-  if (auth) {
-    try {
-      const { token } = JSON.parse(auth)
-      if (token) config.headers['Authorization'] = `Bearer ${token}`
-    } catch {
-      // ignore
-    }
-  }
-  // Forward the active environment so the sidecar uses the right gbserver schema.
-  const envId = getActiveEnv()
-  if (envId) config.params = { ...config.params, env_id: envId }
-  return config
-})
-
-export function isSidecarConfigured(): boolean {
-  // Always attempt analytics calls — safeGet handles connection failures gracefully.
-  // Standalone mode with no server running returns null, showing empty states.
-  return true
-}
+const client = axios.create({ baseURL: apiBase('/api/analytics') })
 
 // Wraps calls so they return null instead of throwing when sidecar is absent
 async function safeGet<T>(path: string, params?: Record<string, unknown>): Promise<T | null> {
-  if (!isSidecarConfigured()) return null
   try {
     const { data } = await client.get<T>(path, { params })
     return data
   } catch (err) {
     const status = (err as AxiosError).response?.status
-    if ((err as AxiosError).code === 'ECONNREFUSED' || status === 404 || status === 503) {
+    if ((err as AxiosError).code === 'ECONNREFUSED' || status === 404 || status === 500 || status === 503) {
       return null
     }
     throw err
@@ -80,7 +51,6 @@ export interface FailureTrendParams {
 export async function getFailureTrends(
   params: FailureTrendParams = {},
 ): Promise<FailureTrendResponse | null> {
-  if (!isSidecarConfigured()) return null
   try {
     const { data } = await client.post<FailureTrendResponse>('/builds/failure-trends', params)
     return data
@@ -96,7 +66,6 @@ export interface RunAnalysisParams {
 }
 
 export async function runAnalysis(params: RunAnalysisParams): Promise<{ started: boolean; mode: string } | null> {
-  if (!isSidecarConfigured()) return null
   try {
     const { data } = await client.post<{ started: boolean; mode: string }>('/ai/run', params)
     return data
@@ -105,13 +74,12 @@ export async function runAnalysis(params: RunAnalysisParams): Promise<{ started:
   }
 }
 
-export async function getAIDaemonStatus(): Promise<{ running: boolean; analyzing: boolean }> {
-  if (!isSidecarConfigured()) return { running: false, analyzing: false }
+export async function getAIDaemonStatus(): Promise<{ running: boolean; analyzing: boolean; llm_configured: boolean }> {
   try {
-    const { data } = await client.get<{ running: boolean; analyzing: boolean }>('/ai/status')
+    const { data } = await client.get<{ running: boolean; analyzing: boolean; llm_configured: boolean }>('/ai/status')
     return data
   } catch {
-    return { running: false, analyzing: false }
+    return { running: false, analyzing: false, llm_configured: false }
   }
 }
 
@@ -127,7 +95,6 @@ export async function analyzeLogsContent(
   buildName?: string,
   status = 'running',
 ): Promise<AIAnalysis | null> {
-  if (!isSidecarConfigured()) return null
   try {
     const { data } = await client.post<AIAnalysis>(`/builds/${buildId}/analyze-logs`, {
       log_content: logContent,
@@ -152,53 +119,7 @@ export async function submitAIFeedback(
     comment?: string
   },
 ): Promise<void> {
-  if (!isSidecarConfigured()) return
   await client.post(`/builds/${buildId}/ai-feedback`, { update_id: updateId, ...feedback })
-}
-
-// ── Infrastructure ────────────────────────────────────────────────────────────
-
-export async function getQueueCapacity(): Promise<QueueCapacity[] | null> {
-  return safeGet('/infra/queues')
-}
-
-export async function getNodePools(): Promise<NodePool[] | null> {
-  return safeGet('/infra/nodes')
-}
-
-export async function getLeaderboard(
-  view: 'running_jobs' | 'gpu' | 'cpu' | 'memory' | 'total_builds' = 'running_jobs',
-): Promise<LeaderboardEntry[] | null> {
-  return safeGet('/infra/leaderboard', { view })
-}
-
-export async function getUserResources(daysBack = 14): Promise<UserResourceDay[] | null> {
-  return safeGet('/infra/resource-usage', { days_back: daysBack })
-}
-
-export async function getBuildK8sResources(buildId: string): Promise<K8sResource[] | null> {
-  return safeGet(`/infra/builds/${buildId}/k8s-resources`)
-}
-
-export interface BuildResources {
-  build_id: string
-  cpu?: string | null
-  memory?: string | null
-  gpu?: number | null
-}
-
-export async function getBuildResources(buildIds: string[]): Promise<BuildResources[] | null> {
-  if (!buildIds.length) return []
-  try {
-    const qp = new URLSearchParams()
-    for (const id of buildIds) qp.append('build_id', id)
-    const { data } = await client.get<BuildResources[]>(`/infra/builds/resources?${qp}`)
-    return data
-  } catch (err) {
-    const status = (err as AxiosError).response?.status
-    if ((err as AxiosError).code === 'ECONNREFUSED' || status === 404 || status === 503) return null
-    throw err
-  }
 }
 
 export interface BuildLogsResponse {
@@ -226,7 +147,6 @@ export async function saveTrendAnalysis(
   isPublic: boolean,
   author: string,
 ): Promise<{ success: boolean; update_id?: string } | null> {
-  if (!isSidecarConfigured()) return null
   try {
     const { data: res } = await client.post('/builds/failure-trends/save', {
       data,
@@ -254,7 +174,6 @@ export async function getSavedTrend(
 }
 
 export async function deleteSavedTrend(updateId: string, author: string): Promise<void> {
-  if (!isSidecarConfigured()) return
   await client.delete(`/builds/failure-trends/${updateId}`, { params: { author } })
 }
 
@@ -263,7 +182,6 @@ export async function toggleTrendVisibility(
   isPublic: boolean,
   author: string,
 ): Promise<void> {
-  if (!isSidecarConfigured()) return
   await client.patch(`/builds/failure-trends/${updateId}/visibility`, null, {
     params: { is_public: isPublic, author },
   })
