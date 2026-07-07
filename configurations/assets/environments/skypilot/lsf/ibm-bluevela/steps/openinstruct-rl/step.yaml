@@ -267,8 +267,12 @@ environment_configs:
             OUTPUT_DIR="{{ config.rl_config.output_dir }}"
             CKPT_GLOB="step_"
             CKPT_WATCH_INTERVAL="{{ config.checkpoint_watch_interval_seconds | default(30) }}"
+            # Marker files (one per emitted checkpoint) live here. This dir is
+            # the shared source of truth between the background watcher and the
+            # parent: the watcher runs `emit_new_checkpoints` in a subshell, so a
+            # shell counter variable would NOT propagate back to the parent — the
+            # emitted count must be read from these on-disk markers instead.
             EMITTED_DIR="$(mktemp -d)"
-            EMITTED_COUNT=0
 
             emit_new_checkpoints() {
               # Emit an artifact line for each checkpoint dir not yet emitted.
@@ -283,7 +287,6 @@ environment_configs:
                 # tighten to a sentinel file if grpo_fast writes one.)
                 [ -n "$(ls -A "$ckpt" 2>/dev/null)" ] || continue
                 touch "$marker"
-                EMITTED_COUNT=$((EMITTED_COUNT + 1))
                 echo "LLMB_ARTIFACT_ID:checkpoint_${step} LLMB_ARTIFACT_PATH:${ckpt}"
               done
             }
@@ -368,11 +371,16 @@ environment_configs:
             cleanup_watcher
             emit_new_checkpoints
 
-            # Fail loudly if the watcher never matched a checkpoint dir: the
-            # downstream eval/export/combined targets bind checkpoint_<step> ids
-            # and would otherwise stall forever with no error. A zero count means
-            # the on-disk naming doesn't match CKPT_GLOB (grpo_fast may use
-            # global_step_N / checkpoint-N) — see VERIFY note above.
+            # Fail loudly if NO checkpoint was ever emitted: the downstream
+            # eval/export/combined targets bind checkpoint_<step> ids and would
+            # otherwise stall forever with no error. Count the on-disk marker
+            # files, NOT a shell variable — emit_new_checkpoints runs inside the
+            # backgrounded watcher subshell, so a counter var it incremented
+            # never propagates back here; the markers in $EMITTED_DIR are the
+            # shared source of truth. Zero markers means the on-disk naming
+            # doesn't match CKPT_GLOB (grpo_fast may use global_step_N /
+            # checkpoint-N) — see VERIFY note above.
+            EMITTED_COUNT="$(find "$EMITTED_DIR" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l)"
             if [ "$EMITTED_COUNT" -eq 0 ]; then
               echo "ERROR: no checkpoint dirs matched '${OUTPUT_DIR}/${CKPT_GLOB}*'." >&2
               echo "       grpo_fast wrote no '${CKPT_GLOB}<N>' dirs; downstream" >&2
