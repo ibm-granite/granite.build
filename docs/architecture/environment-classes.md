@@ -201,6 +201,9 @@ Calls `bkill <jobid>` (via SSH tunnel or local subprocess). Skips jobs that were
 
 ### Asset Stores
 
+The `Lsf` environment implements these `pullasset_*`/`pushasset_*` methods. For the store types
+themselves (URI schemes, secrets, configuration), see [Asset stores](../asset-stores/README.md).
+
 | Method | Store type | Mode |
 |--------|-----------|------|
 | `pullasset_lhstore` | Lakehouse | `dmf_pull` — injects a `lhpull` built-in step |
@@ -325,6 +328,9 @@ Default strategies (applied when `retry.enabled: true` in `environment.yaml`):
 Test scenario name: `"pod_eviction"` (used with `GBTEST_SIMULATE_FAILURE_SCENARIO`).
 
 ### Asset Stores
+
+The `K8s` environment implements these `pullasset_*`/`pushasset_*` methods. For the store types
+themselves (URI schemes, secrets, configuration), see [Asset stores](../asset-stores/README.md).
 
 | Method | Store type | Mode |
 |--------|-----------|------|

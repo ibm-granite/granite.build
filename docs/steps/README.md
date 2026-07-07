@@ -48,7 +48,7 @@ These steps ship with gbserver in `src/gbserver/builtins/steps/`:
 
 These steps ship under `configurations/assets/environments/bash/steps/` and demonstrate
 inference and LoRA fine-tuning in the local **bash** environment (no GPU or container
-required). See [bash-environment.md](../operators/bash-environment.md) for how a bash step
+required). See [bash environment](../environments/bash.md) for how a bash step
 receives inputs/config and reports outputs.
 
 | Step | Description | Doc |
@@ -109,7 +109,7 @@ steps:
         learning_rate: 2e-5
 ```
 
-See the [`build.yaml` reference](../users/build-yaml-reference.md#steps)
+See the [`build.yaml` reference](../builds/build-yaml-reference.md#steps)
 for the full set of fields.
 
 ## Extending with custom steps
@@ -118,13 +118,13 @@ Three approaches for running custom code:
 
 | Approach | When to use |
 |----------|-------------|
-| [Bring Your Own Step (BYOS)](../users/bring-your-own-step.md) | Your code lives in a Git repo; you provide setup/start commands. |
-| [Custom code steps](../users/custom-code-steps.md) | You want inline commands without a separate step definition. |
-| [Bring Your Own Image (BYOI)](../users/bring-your-own-image.md) | You have a pre-built container image. |
+| [Bring Your Own Step (BYOS)](bring-your-own-step.md) | Your code lives in a Git repo; you provide setup/start commands. |
+| [Custom code steps](custom-code-steps.md) | You want inline commands without a separate step definition. |
+| [Bring Your Own Image (BYOI)](bring-your-own-image.md) | You have a pre-built container image. |
 
 ## See also
 
-- [Bash environment](../operators/bash-environment.md) — how bash steps execute (inputs, config, outputs)
+- [Bash environment](../environments/bash.md) — how bash steps execute (inputs, config, outputs)
 - [Templates](../templates/README.md) — reusable build.yaml patterns
-- [`build.yaml` reference](../users/build-yaml-reference.md) — full schema
-- [`environment.yaml` reference](../operators/environment-yaml-config.md) — environment definitions
+- [`build.yaml` reference](../builds/build-yaml-reference.md) — full schema
+- [`environment.yaml` reference](../environments/README.md) — environment definitions

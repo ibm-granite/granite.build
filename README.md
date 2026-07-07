@@ -176,7 +176,7 @@ llm.build:
         - step_uri: space://steps/eval
 ```
 
-For the full schema, see [`docs/users/build-yaml-reference.md`](docs/users/build-yaml-reference.md).
+For the full schema, see [`docs/builds/build-yaml-reference.md`](docs/builds/build-yaml-reference.md).
 
 ## Repository layout
 
@@ -236,11 +236,11 @@ gb build cancel <build-id>        # cancel a running build
 gb artifact list                  # list artifacts
 ```
 
-For the full subcommand reference, see [`docs/users/cli-reference.md`](docs/users/cli-reference.md).
+For the full subcommand reference, see [`docs/cli/gb-cli-reference.md`](docs/cli/gb-cli-reference.md).
 
 ## REST API
 
-The REST API is available at `/api/v1` when the server is running. Start with `gbserver standalone` or `gbserver rest-server` and visit `http://localhost:8080/docs` for the interactive OpenAPI documentation. Authentication options (GitHub, IBMid, API key) are documented in [`docs/operators/multi-provider-authentication.md`](docs/operators/multi-provider-authentication.md).
+The REST API is available at `/api/v1` when the server is running. Start with `gbserver standalone` or `gbserver rest-server`, then browse the interactive OpenAPI docs — each API group is a mounted sub-app with its own page, e.g. `http://localhost:8080/api/v1/builds/docs`. See [`docs/rest-api/`](docs/rest-api/README.md) for the API map and authentication options (GitHub, IBMid, API key).
 
 ## Web Dashboard
 
@@ -311,13 +311,13 @@ gbserver proxies `/api/analytics/*` to the sidecar at `:8090` — the browser on
 
 The [`docs/`](docs/) directory has complete reference material. Three reading paths from the [docs index](docs/README.md):
 
-- **Writing a build** → [`build.yaml` reference](docs/users/build-yaml-reference.md), [CLI reference](docs/users/cli-reference.md), [HuggingFace push](docs/users/hf-push.md), [features](docs/features/) (retry, target reuse, lineage, gbtest).
-- **Running gbserver** → [`environment.yaml` reference](docs/operators/environment-yaml-config.md), [setup scripts](docs/operators/setup/), [SkyPilot Kubernetes setup](docs/operators/setup/skypilot-kubernetes-setup.md), [troubleshooting](docs/operators/troubleshooting.md).
+- **Writing a build** → [`build.yaml` reference](docs/builds/build-yaml-reference.md), [CLI reference](docs/cli/gb-cli-reference.md), [HuggingFace push](docs/builds/hf-push.md), [build features](docs/builds/README.md#advanced) (retry, target reuse, lineage), [gbtest](docs/cli/gbtest-cli-reference.md).
+- **Running gbserver** → [environments](docs/environments/README.md), [configuration](docs/configuration/README.md), [REST API](docs/rest-api/README.md), [troubleshooting](docs/help/troubleshooting.md).
 - **Changing gbserver** → [architecture diagram](docs/architecture/arch-diagram.md), [environment classes](docs/architecture/environment-classes.md).
 
 ## Try the demos
 
-End-to-end demos with TRL fine-tuning and unitxt evaluation. Each runs locally and tears down cleanly. Full setup instructions in [`docs/demos.md`](docs/demos.md).
+End-to-end demos with TRL fine-tuning and unitxt evaluation. Each runs locally and tears down cleanly. Full setup instructions in [`docs/demos/`](docs/demos/).
 
 ```bash
 # Standalone Docker — fine-tune + eval in containers on this machine

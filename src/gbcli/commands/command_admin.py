@@ -112,7 +112,7 @@ def log(
     """
     Get server module logs
 
-    Provide module: gbserver-rest-server, gbserver-pr-watch, gbserver-build-watch, or gbserver-build-runner
+    Provide module: gbserver-rest-server, gbserver-build-watch, or gbserver-build-runner
     """
     if not skip_version_check:
         try:

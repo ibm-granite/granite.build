@@ -159,7 +159,26 @@ build-backend = "setuptools.build_meta"
 fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
-where = ["src", "test"]
+# "." picks up the repo-root `configurations/` tree (spaces, assets, environments,
+# steps). It has no __init__.py, so namespaces=true is required to treat it as a
+# package, and `include` scopes discovery so its subdirectories are not promoted
+# to top-level packages. Its non-.py payload is shipped via package-data below.
+# Located at runtime by gbserver.types.constants.find_configurations_root().
+where = ["src", "test", "."]
+# Explicit include so adding "." as a search root does not sweep in unintended
+# top-level dirs from the repo root; keep this in sync with the packages that
+# were discovered before (src/* and the test/* suites) plus configurations.
+include = [
+    "gbserver*",
+    "gbcli*",
+    "gbcommon*",
+    "libgbtest*",
+    "unit*",
+    "integration*",
+    "e2e*",
+    "configurations*",
+]
+namespaces = true
 
 [tool.setuptools.package-data]
 "*" = ["*", ".*"]

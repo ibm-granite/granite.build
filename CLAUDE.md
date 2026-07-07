@@ -58,7 +58,6 @@ gbserver --help
 gbserver rest-server --help
 gbserver build-watch --build-dir <dir>
 gbserver build-runner ...
-gbserver pr-watch --gh-token $TOKEN --config <config.yaml>
 ```
 
 ## Architecture

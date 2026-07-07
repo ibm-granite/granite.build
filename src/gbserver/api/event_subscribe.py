@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
 from gbserver.api.builds import builds_api
+from gbserver.api.utils import has_space_write_access
 from gbserver.messaging.rabbitmq_admin import RabbitMQAdminError
 from gbserver.messaging.subscription_service import provision_subscription
 from gbserver.storage.singleton_storage import get_admin_storage
@@ -83,7 +84,24 @@ async def subscribe_build_events(build_id: str, request: Request) -> SubscribeRe
         )
     assert isinstance(build, StoredBuild)
 
-    # 3. Provision credentials via messaging layer
+    # 3. Authorize: user must be build owner, space admin, or super admin
+    has_access, user_id = has_space_write_access(
+        request, username_on_target=build.username, space_name=build.space_name
+    )
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User {user_id} does not have access to build {build_id}.",
+        )
+
+    # 4. Reject subscription to finished builds (no events will be published)
+    if build.status.is_finished():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Build {build_id} has already finished (status: {build.status}).",
+        )
+
+    # 5. Provision credentials via messaging layer
     try:
         result = await provision_subscription(build_id)
     except RabbitMQAdminError as exc:

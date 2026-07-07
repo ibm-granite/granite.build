@@ -5,7 +5,7 @@ top-level [`README.md`](../README.md) has a faster overview; this guide
 fills in the *why* and points to the right reference docs.
 
 > **Audience:** users authoring `build.yaml` files. If you're deploying gbserver
-> for a team, start with [`operators/`](operators/) instead.
+> for a team, start with the [running-gbserver docs](README.md#im-running-gbserver) instead.
 
 ## Prerequisites
 
@@ -41,7 +41,8 @@ The `--space-dir` flag points at a space directory whose `space.yaml` chains
 (via `base_uris`) into the shared *environments*, *steps*, and *asset stores*
 under [`configurations/assets/`](../configurations/assets/). The
 [`configurations/spaces/local/`](../configurations/spaces/local/) space is the
-in-repo canonical example — read its `space.yaml` to see how a space is laid out.
+in-repo canonical example — read its `space.yaml` to see how a space is laid out,
+or see [Spaces and `space.yaml`](spaces/README.md) for the full schema.
 The build you submit below lives in
 [`samples/standalone/standalone-quickstart/`](../samples/standalone/standalone-quickstart/).
 
@@ -96,8 +97,8 @@ For the longer version of this story, see
 
 ## Where to next
 
-- Build something real → [`users/build-yaml-reference.md`](users/build-yaml-reference.md) for the full schema
-- Use a different backend → [`operators/environment-yaml-config.md`](operators/environment-yaml-config.md)
-- Push artifacts to HuggingFace → [`users/hf-push.md`](users/hf-push.md)
-- Validate a build with assertions → [`features/gbtest.md`](features/gbtest.md)
-- Hit a problem → [`operators/troubleshooting.md`](operators/troubleshooting.md)
+- Build something real → [`builds/build-yaml-reference.md`](builds/build-yaml-reference.md) for the full schema
+- Use a different backend → [`environments/README.md`](environments/README.md)
+- Push artifacts to HuggingFace → [`builds/hf-push.md`](builds/hf-push.md)
+- Validate a build with assertions → [`cli/gbtest-cli-reference.md`](cli/gbtest-cli-reference.md)
+- Hit a problem → [`help/troubleshooting.md`](help/troubleshooting.md)

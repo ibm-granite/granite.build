@@ -5,7 +5,7 @@ for a common workflow. Templates let you start quickly — instantiate one,
 customize the parameters, and submit.
 
 > **Audience:** users authoring builds. If you're looking for the build.yaml
-> schema itself, see [`build-yaml-reference.md`](../users/build-yaml-reference.md).
+> schema itself, see [`build-yaml-reference.md`](../builds/build-yaml-reference.md).
 
 ## What's in a template
 
@@ -95,6 +95,6 @@ Templates shipped with this repo live in [`configurations/assets/templates/`](..
 
 ## See also
 
-- [`build.yaml` reference](../users/build-yaml-reference.md) — full schema
+- [`build.yaml` reference](../builds/build-yaml-reference.md) — full schema
 - [Steps](../steps/README.md) — built-in and custom steps
-- [Bring Your Own Step](../users/bring-your-own-step.md) — custom code as a step
+- [Bring Your Own Step](../steps/bring-your-own-step.md) — custom code as a step

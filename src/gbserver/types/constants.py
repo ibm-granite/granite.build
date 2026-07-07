@@ -16,9 +16,11 @@
 
 """Contants and env vars that are used by many other modules."""
 
+import importlib.util
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -63,6 +65,76 @@ CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_DIR = CODE_GBSERVER_BUILTINS_STEPS_DIR / "gb
 CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_URI = f"{FILE_SCHEME}://" + str(
     CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_DIR
 )
+
+# ---------------------------------------------------------
+# configurations/ discovery
+#
+# The `configurations/` tree (spaces, assets, environments, steps) lives at the
+# repo root -- outside the `src/` package -- but is shipped as a namespace
+# package (see `[tool.setuptools.packages.find]` in pyproject.toml), so a
+# non-editable install lands it in site-packages/configurations/, importable as
+# the top-level `configurations` package. Depending on how gbserver was
+# installed and where it is run from, the tree may be in different places, so we
+# probe an ordered list of candidates and return the first that actually holds
+# the standalone space.
+#
+# Override with the GBSERVER_CONFIGURATIONS_DIR env var to point at any copy.
+ENV_VAR_CONFIGURATIONS_DIR = ENV_VAR_PREFIX + "_CONFIGURATIONS_DIR"
+
+# The src-layout repo root: this file is src/gbserver/types/constants.py, so
+# CODE_GBSERVER_DIR is src/gbserver and its .parent.parent is the repo root.
+_REPO_ROOT = CODE_GBSERVER_DIR.parent.parent
+
+# Sentinel that identifies a valid configurations root.
+_CONFIGURATIONS_SENTINEL = Path("spaces") / "local" / "space.yaml"
+
+
+def _installed_configurations_dir() -> Optional[Path]:
+    """Locate the installed `configurations` namespace package, if importable.
+
+    `configurations` ships as a namespace package (no __init__.py), so its spec
+    exposes the on-disk directory via ``submodule_search_locations`` rather than
+    a module origin. We read the first location that exists on disk.
+    """
+    try:
+        spec = importlib.util.find_spec("configurations")
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return None
+    if spec is None or spec.submodule_search_locations is None:
+        return None
+    for location in spec.submodule_search_locations:
+        path = Path(location)
+        if path.is_dir():
+            return path
+    return None
+
+
+def find_configurations_root() -> Optional[Path]:
+    """Locate the `configurations/` root across install layouts.
+
+    Returns the first candidate directory that contains the standalone space
+    (`spaces/local/space.yaml`), or None if none is found. Candidates, in order:
+
+    1. ``$GBSERVER_CONFIGURATIONS_DIR`` -- explicit override.
+    2. ``<cwd>/configurations`` -- running from a repo checkout (incl. ``-e``).
+    3. ``<repo root>/configurations`` -- src-layout checkout, any cwd.
+    4. The installed ``configurations`` namespace package (non-editable install).
+    """
+    override = os.environ.get(ENV_VAR_CONFIGURATIONS_DIR)
+    candidates = [
+        Path(override) if override else None,
+        Path.cwd() / "configurations",
+        _REPO_ROOT / "configurations",
+        _installed_configurations_dir(),
+    ]
+    for candidate in candidates:
+        if candidate and (candidate / _CONFIGURATIONS_SENTINEL).is_file():
+            return candidate.resolve()
+    return None
+
+
+# Subpath of the standalone space within a configurations root.
+CONFIGURATIONS_STANDALONE_SPACE_SUBPATH = Path("spaces") / "local"
 
 # ---------------------------------------------------------
 # Environment variables
@@ -304,9 +376,6 @@ DEFAULT_ROOT_BUILDWATCHER_WORKSPACE_DIR = (
 # loop into CPU busy-loops that also hammer storage; never poll faster than this.
 # Enforced by BuildWatcherConfig (validator) and AbstractBuildRunner (setter).
 MIN_MONITORING_INTERVAL_SECONDS = 1
-DEFAULT_ROOT_PRWATCHER_WORKSPACE_DIR = (
-    DEFAULT_ROOT_WORKSPACE_DIR + "/gbserver-prwatcher-workspace"
-)
 GBSERVER_FUNCTIONAL_IDS = json.loads(
     os.getenv(
         ENV_VAR_PREFIX + "_FUNCTIONAL_IDS",
