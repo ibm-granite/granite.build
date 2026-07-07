@@ -70,17 +70,6 @@ body {
   background-color: var(--cds-background);
 }
 
-// Home page resource ProgressBar colors — Carbon Charts categorical palette, colors 01–03
-// Light theme (default)
-.home-gpu-bar .cds--progress-bar__bar { background-color: #6929c4; } // 01. Purple 70
-.home-cpu-bar .cds--progress-bar__bar { background-color: #1192e8; } // 02. Cyan 50
-.home-mem-bar .cds--progress-bar__bar { background-color: #005d5d; } // 03. Teal 70
-
-// Dark theme (g100)
-[data-carbon-theme='g100'] .home-gpu-bar .cds--progress-bar__bar { background-color: #8a3ffc; } // 01. Purple 60
-[data-carbon-theme='g100'] .home-cpu-bar .cds--progress-bar__bar { background-color: #33b1ff; } // 02. Cyan 40
-[data-carbon-theme='g100'] .home-mem-bar .cds--progress-bar__bar { background-color: #007d79; } // 03. Teal 60
-
 // SideNav rail: Gray 20 background in the g10 (light) theme
 .cds--side-nav {
   background-color: #e0e0e0;
