@@ -320,9 +320,41 @@ environment_configs:
 
             watch_checkpoints &
             WATCH_PID=$!
+            {% endif %}
 
+            # ── Ray hygiene (issue #45): diagnose + neutralize a stale cluster
+            # address ──────────────────────────────────────────────────────
+            # open_instruct.grpo_fast calls a bare ray.init(), which resolves an
+            # address from (1) $RAY_ADDRESS, then (2) the session file
+            # /tmp/ray/ray_current_cluster written by a prior `ray start`. If a
+            # previous run on shared storage (HOME=/stage) or a leaked env var
+            # left an address pointing at another node, ray.init() connects
+            # THERE and hangs ~12 min on a dead GCS
+            # (RRpcError: Timed out while waiting for GCS to become available),
+            # failing the job before training starts. This was observed on a run
+            # where the job ran on one node but ray.init() dialed a foreign
+            # node's :6379.
+            #
+            # First print the two sources (so the real origin is visible in the
+            # log), then neutralize both and give Ray a fresh, node-local temp
+            # dir so a new run can't collide with another node's leftovers on a
+            # shared /tmp. All steps are best-effort/idempotent — safe for the
+            # single-checkpoint recipes that share this step.
+            echo "[ray-hygiene] RAY_ADDRESS=${RAY_ADDRESS:-<unset>}"
+            echo "[ray-hygiene] session file (/tmp/ray/ray_current_cluster):"
+            cat /tmp/ray/ray_current_cluster 2>/dev/null || echo "  <none>"
+            unset RAY_ADDRESS
+            ray stop --force >/dev/null 2>&1 || true
+            rm -f /tmp/ray/ray_current_cluster 2>/dev/null || true
+            export RAY_TMPDIR="${TMPDIR:-/tmp}/ray-${SKYPILOT_TASK_ID:-$$}"
+            mkdir -p "$RAY_TMPDIR"
+            echo "[ray-hygiene] cleared; RAY_TMPDIR=$RAY_TMPDIR"
+
+            # Run the trainer. This always runs; only the per-checkpoint watcher
+            # around it (above/below) is gated on emit_checkpoint_artifacts.
             bash "$GRPO_SCRIPT"
 
+            {% if config.emit_checkpoint_artifacts in _true %}
             # Training succeeded: stop the watcher, then do a final sweep for any
             # checkpoints written between the last poll and training exit.
             cleanup_watcher
