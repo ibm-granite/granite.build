@@ -267,6 +267,17 @@ environment_configs:
             OUTPUT_DIR="{{ config.rl_config.output_dir }}"
             CKPT_GLOB="step_"
             CKPT_WATCH_INTERVAL="{{ config.checkpoint_watch_interval_seconds | default(30) }}"
+            # Completeness sentinels: emit a checkpoint only once BOTH files are
+            # present. grpo_fast's HF save_pretrained writes model.safetensors
+            # early in the sequence and tokenizer.json last (verified on BlueVela
+            # step_10/step_20 by mtime: config -> model.safetensors -> tokenizer
+            # files, tokenizer.json last). Requiring both "bookends" — the heavy
+            # weights AND the final tokenizer file — brackets the whole write
+            # sequence, so a downstream H100 eval never loads a dir that is
+            # non-empty but still mid-write (a plain `ls -A` non-empty check would
+            # race that window and eval a partial/corrupt model). Weights-only or
+            # sharded checkpoints: add model.safetensors.index.json here too.
+            CKPT_SENTINELS="model.safetensors tokenizer.json"
             # Marker files (one per emitted checkpoint) live here. This dir is
             # the shared source of truth between the background watcher and the
             # parent: the watcher runs `emit_new_checkpoints` in a subshell, so a
@@ -282,10 +293,13 @@ environment_configs:
                 step="${base#${CKPT_GLOB}}"
                 marker="$EMITTED_DIR/$base"
                 [ -e "$marker" ] && continue
-                # Only emit once the dir is non-empty, to avoid racing a
-                # partially-written checkpoint. (Provisional completeness check;
-                # tighten to a sentinel file if grpo_fast writes one.)
-                [ -n "$(ls -A "$ckpt" 2>/dev/null)" ] || continue
+                # Gate on every completeness sentinel; skip until all are present
+                # so we never emit a checkpoint dir that is still being written.
+                complete=1
+                for sentinel in $CKPT_SENTINELS; do
+                  [ -f "$ckpt/$sentinel" ] || { complete=0; break; }
+                done
+                [ "$complete" -eq 1 ] || continue
                 touch "$marker"
                 echo "LLMB_ARTIFACT_ID:checkpoint_${step} LLMB_ARTIFACT_PATH:${ckpt}"
               done
