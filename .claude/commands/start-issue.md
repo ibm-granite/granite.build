@@ -42,7 +42,7 @@ FORK_REPO=$(git remote get-url origin | sed -E 's|.*[:/][^/]+/(.*)$|\1|' | sed '
    git status --porcelain
    ```
    If there are uncommitted changes, ask the user what to do:
-   - **Commit** them before proceeding
+   - **Commit** them before proceeding (always use `git commit -s` — the upstream repo enforces the DCO check)
    - **Stash** them (`git stash push -m "stash before issue-$ARGUMENTS"`)
    - **Abort** and let the user handle it manually
 4. Fetch the latest upstream:
