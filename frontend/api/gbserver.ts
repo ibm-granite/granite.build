@@ -1,6 +1,5 @@
 /**
  * API client for the gbserver REST API (/api/v1/*).
- * All requests are proxied through Vite to VITE_GBSERVER_URL.
  *
  * Endpoint reference (from granite.build/src/gbserver/api/):
  *   GET  /builds/           → { builds: StoredBuild[] }
@@ -13,7 +12,7 @@
  *   GET  /spaces/           → { spaces: StoredSpace[] }
  */
 import axios from 'axios'
-import { getActiveEnv } from '@/config/activeEnv'
+import { apiBase } from '@/api/client'
 import type {
   Build,
   BuildStatus,
@@ -25,43 +24,7 @@ import type {
   Space,
 } from '@/types'
 
-function resolveBaseUrl(): string {
-  const override = getActiveEnv()
-  return override ? `/api/v1-env/${override}` : '/api/v1'
-}
-
-const client = axios.create()
-
-// Resolve base URL and attach auth token on every request
-client.interceptors.request.use((config) => {
-  config.baseURL = resolveBaseUrl()
-  const auth = localStorage.getItem('gb-ui-auth')
-  if (auth) {
-    try {
-      const { token } = JSON.parse(auth)
-      if (token) config.headers['Authorization'] = `Bearer ${token}`
-    } catch { /* ignore */ }
-  }
-  return config
-})
-
-// On 401, the stored token is stale — clear it and return to login
-client.interceptors.response.use(
-  (res) => res,
-  (err) => {
-    if (err?.response?.status === 401) {
-      localStorage.removeItem('gb-ui-auth')
-      // Save current path before the hard reload so AppShell (which skips '/')
-      // doesn't lose it, and AuthCallback can navigate back after OAuth.
-      const path = window.location.pathname + window.location.search
-      if (path !== '/' && path !== '/login' && path !== '/auth/callback') {
-        sessionStorage.setItem('gb-ui-pre-auth-url', path)
-      }
-      window.location.href = '/login'
-    }
-    return Promise.reject(err)
-  },
-)
+const client = axios.create({ baseURL: apiBase('/api/v1') })
 
 // ── Response adapters ─────────────────────────────────────────────────────────
 // gbserver returns StoredBuild which uses uppercase Status enums and slightly
@@ -114,7 +77,7 @@ function adaptBuild(raw: Record<string, unknown>): Build {
       }
       return undefined
     })(),
-    build_archive: raw.build_archive,
+    build_archive: raw.build_archive as string | undefined,
   }
 }
 
@@ -328,6 +291,20 @@ export async function getBuildEvents(buildId: string): Promise<BuildEvent[]> {
       description,
     }
   })
+}
+
+export async function getBuildArchiveFiles(buildId: string): Promise<Record<string, string>> {
+  const build = await getBuild(buildId)
+  const archive = build.build_archive
+  if (!archive) return {}
+  const JSZip = (await import('jszip')).default
+  const zip = await JSZip.loadAsync(archive, { base64: true })
+  const entries = await Promise.all(
+    Object.entries(zip.files)
+      .filter(([, f]) => !f.dir)
+      .map(async ([name, f]) => [name, await f.async('string')] as const)
+  )
+  return Object.fromEntries(entries)
 }
 
 export async function getBuildStepLog(logPath: string): Promise<string> {

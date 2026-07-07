@@ -1,12 +1,3 @@
-// ── Runtime config / environment switcher ────────────────────────────────────
-
-export interface EnvironmentEntry {
-  id: string
-  label: string
-  url: string
-  dbSchema?: string
-}
-
 // Core build status union
 export type BuildStatus =
   | 'running'
@@ -62,7 +53,7 @@ export interface Build {
   failure_reason?: string
   failure_message?: string
   // Raw build.yaml contents (for Build Definition tab)
-  build_archive?: unknown
+  build_archive?: string
 }
 
 export interface BuildEvent {
@@ -201,108 +192,12 @@ export interface AIAnalysis {
   downvotes: number
 }
 
-// ── Infrastructure (analytics sidecar) ───────────────────────────────────────
-
-export interface QueueCapacity {
-  name: string
-  cluster_name: string
-  gpu_capacity: number
-  gpu_used: number
-  cpu_capacity_cores: number
-  cpu_used_cores: number
-  memory_capacity_gib: number
-  memory_used_gib: number
-  admitted_workloads: number
-  pending_workloads: number
-  reserving_workloads: number
-}
-
-export interface K8sResource {
-  kind: string
-  name: string
-  namespace?: string
-  cluster_name?: string
-  status?: string
-  build_status?: string
-  failure_reason?: string
-  failure_message?: string
-  cpu?: string
-  memory?: string
-  gpu?: number
-  storage?: string
-  replicas?: number
-  created_at?: string
-  deleted_at?: string
-}
-
-export interface NodePool {
-  pool_name: string
-  cluster_name: string
-  node_count: number
-  ready_nodes: number
-  cpu_allocatable_cores: number
-  cpu_requested_cores: number
-  memory_allocatable_gib: number
-  memory_requested_gib: number
-  gpu_allocatable: number
-  gpu_requested: number
-  running_pods: number
-  pending_pods: number
-  autoscale_enabled: boolean
-  min_nodes?: number
-  max_nodes?: number
-}
-
-export interface LeaderboardEntry {
-  username: string
-  running_jobs: number
-  gpu_count: number
-  cpu_cores: number
-  memory_gib: number
-  total_builds: number
-}
-
 export interface Metric {
   name: string
   value: string
   units?: string
   build_id?: string
   recorded_at: string
-}
-
-export interface UserResourceDay {
-  username: string
-  date: string
-  build_count: number
-  gpu_count: number
-  cpu_cores: number
-  memory_gib: number
-}
-
-// ── Flight Plans ─────────────────────────────────────────────────────────────
-
-export interface Plan {
-  plan_id: string
-  name: string
-  summary?: string
-  markdown_body?: string
-  status: string
-  revision: number
-  space_name?: string
-  created_by?: string
-  username?: string
-  created_at?: string
-  updated_at: string
-  tags?: string[]
-}
-
-export interface LinkedBuild {
-  plan_id: string
-  build_id: string
-  step_id: string
-  revision: number
-  execution_notes: string
-  created_at: string
 }
 
 // ── API response wrappers ─────────────────────────────────────────────────────
