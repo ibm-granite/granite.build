@@ -16,6 +16,8 @@ class TestDiGiT_SFTFull_FMEval(AbstractYamlBuildRunnerTest):
     def _get_yaml_spec_dir(self) -> Path:
         return get_test_data_dir_for(__file__) / "builds/DiGiT_SFTFull_FMEval"
 
-    @pytest.mark.timeout(7200)  # 120 minutes, matches the test-defined timeout in buildtest.yaml
+    @pytest.mark.timeout(
+        7200
+    )  # 120 minutes, matches the test-defined timeout in buildtest.yaml
     def test_runner(self):
         super().test_runner()
