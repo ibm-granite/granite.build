@@ -350,6 +350,36 @@ class TestSubtypeMatching:
 
         assert _resolved_dir(resolved).samefile(shared)
 
+    def test_scalar_subtypes_uses_exact_match_not_substring(self, tmp_path):
+        """A scalar `subtypes: kubernetes` (not a list) must match the sub-type
+        exactly, not as a substring — a prefix like ``"k"`` must NOT resolve,
+        while the full ``"kubernetes"`` does."""
+        base = tmp_path / "base"
+        step_dir = base / "steps" / "digit"
+        step_dir.mkdir(parents=True)
+        (step_dir / "step.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "digit",
+                    "version": "v1",
+                    "type": "custom",
+                    # scalar (not a list) — the bug turned membership into a
+                    # substring test.
+                    "environment_configs": {"Skypilot": {"subtypes": "kubernetes"}},
+                }
+            )
+        )
+        _set_bases(base)
+
+        # substring "k" of "kubernetes" must not sneak past the exact-match gate
+        with SpaceURI.with_current_env_class_name("Skypilot", env_subtype="k"):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/digit")
+        # the exact sub-type still resolves
+        with SpaceURI.with_current_env_class_name("Skypilot", env_subtype="kubernetes"):
+            resolved = _resolve("space://steps/digit")
+        assert _resolved_dir(resolved).samefile(step_dir)
+
     def test_own_dir_step_skipped_when_subtypes_exclude_env(self, tmp_path):
         """The sub-type filter applies even to a step in the env's OWN dir (walk
         level 0): if its ``subtypes`` exclude the active env it is skipped despite

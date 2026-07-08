@@ -188,6 +188,10 @@ class SpaceURI(URI):
           ``env_subtype`` is one of its entries (exact string equality).  An env
           with no sub-type therefore never satisfies a step that lists sub-types.
 
+        A scalar ``subtypes: kubernetes`` is normalized to a single-element list
+        so membership stays an exact match; a value that is neither a list nor a
+        string is uninterpretable and treated as no restriction.
+
         When ``env_class`` is unknown there is no class context to filter on, so
         the step is admitted (preserves directory-only ancestor-walk behavior).
 
@@ -202,7 +206,15 @@ class SpaceURI(URI):
         if not isinstance(entry, dict):
             return True
         subtypes = entry.get("subtypes") or []
-        if not subtypes:
+        if isinstance(subtypes, str):
+            # A scalar `subtypes: kubernetes` is a single sub-type, not an
+            # iterable of characters — wrap it so membership stays an exact
+            # string match rather than a substring test (``"k" in "kubernetes"``).
+            subtypes = [subtypes]
+        if not isinstance(subtypes, list) or not subtypes:
+            # Empty, or a non-list we can't interpret as sub-types → universal,
+            # matching the module's "can't read the restriction → admit"
+            # convention (see :meth:`_step_subtype_ok`).
             return True
         return env_subtype in subtypes
 
