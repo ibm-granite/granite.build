@@ -342,14 +342,10 @@ class SpaceURI(URI):
             its sub-type restriction).
         Callers fall through to the legacy resolver tiers in that case.
         """
-        if not uri_suffix.startswith(STEPS_PREFIX):
+        parsed = SpaceURI._parse_step_name_rest(uri_suffix)
+        if parsed is None:
             return None
-        after = uri_suffix[len(STEPS_PREFIX) :]
-        if not after:
-            return None
-        name, _, rest = after.partition("/")
-        if not name:
-            return None
+        name, rest = parsed
         env_class: Optional[str] = getattr(
             SpaceURI._thread_local, "current_env_class_name", None
         )
