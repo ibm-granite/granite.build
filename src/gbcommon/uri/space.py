@@ -68,26 +68,25 @@ class SpaceURI(URI):
         match = SpaceURI._try_env_class_match(uri_suffix)
         if match is not None:
             return match  # type: ignore[return-value]
-        # Tier 3: env-agnostic fallback against the space's own base_uris.  For
-        # `steps/<name>[/<rest>]` URIs the step dir is resolved first and routed
-        # through `_step_uri_from_dir`, so the `subtypes` gate reads the step's
-        # own `step.yaml` (not a path displaced by a `..` in `<rest>`) and a
-        # `<rest>` that escapes the step dir is rejected — the same containment
-        # guard Tiers 1 & 2 have.  A `subtypes` restriction is thus never
-        # bypassed by falling through to the fallback.  Non-`steps/` URIs match
-        # purely on path existence.
+        # Tier 3: env-agnostic fallback against the space's own base_uris.
+        # Existence is checked via the resolved URI's own scheme-aware
+        # ``exists()`` (so ``file://`` and ``git+ssh://`` bases both resolve, and
+        # the resolved URI — possibly a git URI pulled later — is returned as-is).
+        # For a `steps/<name>[/<rest>]` URI, `_fallback_steps_ok` additionally
+        # enforces the `<rest>` containment guard and the `subtypes` restriction
+        # against the base's local materialization (the local dir, or the reused
+        # git clone), so the restriction is never bypassed by falling through to
+        # the fallback.  Bases that can't be materialized locally are admitted
+        # (as before sub-types existed).
         parsed = SpaceURI._parse_step_name_rest(uri_suffix)
         for base_uri in SpaceURI._thread_local.base_uris:
-            if parsed is not None:
-                found = SpaceURI._fallback_step_uri(base_uri, parsed[0], parsed[1])
-                if found is not None:
-                    return found  # type: ignore[return-value]
-                continue
             resolved = URI.get_uri(
                 base_uri, "file", secrets=SpaceURI._thread_local.space_secrets
             )
             resolved.append_path(uri_suffix)
-            if resolved.exists():
+            if not resolved.exists():
+                continue
+            if parsed is None or SpaceURI._fallback_steps_ok(base_uri, parsed):
                 return resolved  # type: ignore[return-value]
         raise ValueError(f"Unresolvable space uri : {uristr}")
 
@@ -150,8 +149,10 @@ class SpaceURI(URI):
 
         The ancestor-walk never ascends above this boundary, so step lookups stay
         within the base_uri subtree the env lives under.  Falls back to
-        ``env_path`` itself when no file base_uri encloses it (the walk then
-        degenerates to the env's own directory).
+        ``env_path`` itself when no base_uri encloses it (the walk then
+        degenerates to the env's own directory).  Git base_uris are materialized
+        to their reused local clone via :meth:`_uri_to_local_path`, so a
+        git-backed env whose steps live in the same repo is bounded correctly.
 
         Args:
             env_path: Absolute, resolved path of the active env's directory.
@@ -162,7 +163,7 @@ class SpaceURI(URI):
         boundary = env_path
         best_len = -1
         for base_uri in SpaceURI._thread_local.base_uris:
-            base_path = SpaceURI._file_uri_to_path(base_uri)
+            base_path = SpaceURI._uri_to_local_path(base_uri)
             if base_path is None:
                 continue
             base_path = base_path.resolve()
@@ -172,6 +173,35 @@ class SpaceURI(URI):
                 boundary = base_path
                 best_len = len(str(base_path))
         return boundary
+
+    @staticmethod
+    def _env_config_entry(data: dict, env_class: str):
+        """Look up ``environment_configs[<env_class>]`` case-insensitively.
+
+        Env class names (``K8s``, ``Skypilot``, ...) and the ``environment_configs``
+        keys authored in ``step.yaml`` don't always agree on case (e.g. a step
+        keyed ``k8s`` for the ``K8s`` env class), so the match is by
+        case-insensitive string equality.  An exact match is preferred; a
+        case-insensitive match is the fallback.
+
+        Args:
+            data: Parsed ``step.yaml`` mapping.
+            env_class: Active env class name.
+
+        Returns:
+            The matching ``environment_configs`` value, or ``None`` when no key
+            matches.
+        """
+        configs = data.get("environment_configs") or {}
+        if not isinstance(configs, dict):
+            return None
+        if env_class in configs:
+            return configs[env_class]
+        lowered = env_class.lower()
+        for key, value in configs.items():
+            if isinstance(key, str) and key.lower() == lowered:
+                return value
+        return None
 
     @staticmethod
     def _subtype_ok(
@@ -202,7 +232,7 @@ class SpaceURI(URI):
         """
         if not env_class:
             return True
-        entry = (data.get("environment_configs") or {}).get(env_class)
+        entry = SpaceURI._env_config_entry(data, env_class)
         if not isinstance(entry, dict):
             return True
         subtypes = entry.get("subtypes") or []
@@ -242,39 +272,48 @@ class SpaceURI(URI):
         return SpaceURI._subtype_ok(data, env_class, env_subtype)
 
     @staticmethod
-    def _fallback_step_uri(base_uri: str, name: str, rest: str) -> Optional[URI]:
-        """Resolve a ``steps/<name>[/<rest>]`` URI against one base_uri (Tier 3).
+    def _fallback_steps_ok(base_uri: str, parsed: Tuple[str, str]) -> bool:
+        """Vet a Tier 3 ``steps/<name>[/<rest>]`` fallback hit against ``base_uri``.
 
-        Resolves the step directory ``<base>/steps/<name>`` first so the
-        ``subtypes`` gate reads the step's *own* ``step.yaml`` (rather than a
-        path displaced by a ``..`` in ``rest``), then routes through
-        :meth:`_step_uri_from_dir` so a ``rest`` that escapes the step dir is
-        rejected — giving Tier 3 the same containment guard as Tiers 1 & 2.
-        This keeps a ``subtypes`` restriction from ever being bypassed by a
-        crafted ``rest`` falling through to the env-agnostic fallback.
+        The caller has already confirmed the target exists via the resolved
+        URI's scheme-aware ``exists()``.  This applies the two guards that need
+        the base materialized as a local directory:
+
+        * **containment** — a ``<rest>`` that escapes ``<base>/steps/<name>``
+          (e.g. ``../../secret``) is rejected, matching Tiers 1 & 2;
+        * **sub-type** — the step's own ``step.yaml`` is read and its
+          ``subtypes`` restriction (if any) must admit the active env.
+
+        Reading the step's *own* ``step.yaml`` (resolved from ``<name>``, not
+        from the possibly ``..``-displaced ``<rest>``) keeps the restriction
+        from being bypassed by a crafted sub-asset path.  The base is resolved
+        to a local root via :meth:`_base_uri_to_local_root` (a ``file://`` dir,
+        or the reused git clone — no re-clone).  A base that can't be
+        materialized locally is admitted, preserving pre-sub-type behavior.
 
         Args:
-            base_uri: The base URI to resolve the step against.
-            name: The step name (the ``<name>`` in ``steps/<name>``).
-            rest: Sub-asset path within the step dir (empty for a bare URI).
+            base_uri: The base URI the target resolved against.
+            parsed: ``(name, rest)`` from :meth:`_parse_step_name_rest`.
 
         Returns:
-            The resolved ``URI`` when the step dir exists, its ``subtypes``
-            restriction admits the active env, and ``rest`` stays contained;
-            otherwise ``None``.
+            ``True`` when the hit is admitted; ``False`` when ``rest`` escapes
+            the step dir or the ``subtypes`` restriction excludes the env.
         """
-        step_dir_uri = URI.get_uri(
-            base_uri, "file", secrets=SpaceURI._thread_local.space_secrets
-        )
-        step_dir_uri.append_path(f"{STEPS_PREFIX}{name}")
-        step_dir = Path(step_dir_uri.uri.path)  # type: ignore[union-attr]
+        name, rest = parsed
+        root = SpaceURI._uri_to_local_path(base_uri)
+        if root is None:
+            return True
+        step_dir = root / STEPS_PREFIX.rstrip("/") / name
+        if rest:
+            base = step_dir.resolve()
+            resolved = (step_dir / rest).resolve()
+            if resolved != base and base not in resolved.parents:
+                return False
         env_class = getattr(SpaceURI._thread_local, "current_env_class_name", None)
         env_subtype = getattr(SpaceURI._thread_local, "current_env_subtype", None)
-        if not SpaceURI._step_subtype_ok(
+        return SpaceURI._step_subtype_ok(
             step_dir / STEP_FILE_NAME, env_class, env_subtype
-        ):
-            return None
-        return SpaceURI._step_uri_from_dir(step_dir, rest)
+        )
 
     @staticmethod
     def _walk_colocated_steps(uri_suffix: str) -> Optional[URI]:
@@ -288,12 +327,18 @@ class SpaceURI(URI):
         candidate that declares a ``subtypes`` restriction not satisfied by the
         active env is skipped and the walk continues upward.
 
+        The env dir URI is materialized to a local path via
+        :meth:`_uri_to_local_path`, so a git-backed env resolves against its
+        reused clone — the walk then works whenever the co-located steps live in
+        the **same repo** (base_uri) as the env (cross-repo steps live in a
+        separate clone and are not reachable by the walk).
+
         Args:
             uri_suffix: The scheme-stripped ``steps/<name>[/<rest>]`` suffix.
 
         Returns:
             The matched step ``URI`` (with any ``<rest>`` appended), or ``None``
-            when there is no active/local env dir or no ancestor within the
+            when there is no active/resolvable env dir or no ancestor within the
             boundary carries a matching step.
         """
         parsed = SpaceURI._parse_step_name_rest(uri_suffix)
@@ -303,7 +348,7 @@ class SpaceURI(URI):
         env_dir_uri = getattr(SpaceURI._thread_local, "current_env_dir_uri", None)
         if not env_dir_uri:
             return None
-        env_path = SpaceURI._file_uri_to_path(env_dir_uri)
+        env_path = SpaceURI._uri_to_local_path(env_dir_uri)
         if env_path is None:
             return None
         env_path = env_path.resolve()
@@ -327,11 +372,13 @@ class SpaceURI(URI):
     def _try_env_class_match(uri_suffix: str) -> Optional[URI]:
         """Resolve `space://steps/<name>[/<rest>]` by env-class metadata match.
 
-        Recursively scans every base_uri (file:// only) for ``<name>/step.yaml``
-        files, parses each candidate's ``environment_configs`` keys, and returns
-        the first (lexicographically) whose keys contain the active env's class
-        name (set via :meth:`with_current_env`) **and** whose per-class
-        ``subtypes`` restriction (if any) admits the active env's sub-type.  The
+        Recursively scans every base_uri (``file://`` dirs and git bases, the
+        latter via their reused local clone) for ``<name>/step.yaml`` files,
+        parses each candidate's ``environment_configs`` keys, and returns the
+        first (lexicographically) whose keys contain the active env's class name
+        (case-insensitively; set via :meth:`with_current_env`) **and** whose
+        per-class ``subtypes`` restriction (if any) admits the active env's
+        sub-type.  The
         directory of the matched step.yaml is used as the resolution result; for
         sub-asset URIs the ``<rest>`` portion is appended to that directory.
 
@@ -362,7 +409,7 @@ class SpaceURI(URI):
         # that happens to list the same env.
         matches: List = []
         for base_uri in SpaceURI._thread_local.base_uris:
-            base_path = SpaceURI._file_uri_to_path(base_uri)
+            base_path = SpaceURI._uri_to_local_path(base_uri)
             if base_path is None or not base_path.exists():
                 continue
             for cand in base_path.rglob(f"{name}/{STEP_FILE_NAME}"):
@@ -376,9 +423,9 @@ class SpaceURI(URI):
                 if not isinstance(data, dict):
                     continue
                 env_keys = list((data.get("environment_configs") or {}).keys())
-                if env_class in env_keys and SpaceURI._subtype_ok(
-                    data, env_class, env_subtype
-                ):
+                if SpaceURI._env_config_entry(
+                    data, env_class
+                ) is not None and SpaceURI._subtype_ok(data, env_class, env_subtype):
                     matches.append((len(env_keys), str(cand), cand))
         if not matches:
             return None
@@ -408,6 +455,46 @@ class SpaceURI(URI):
             return None
         p = Path(path_str)
         return p if p.is_absolute() else None
+
+    @staticmethod
+    def _uri_to_local_path(uri_str: str) -> Optional[Path]:
+        """Return a local filesystem path for a space URI, materializing git.
+
+        Handles both ``base_uris`` entries and the active env's directory URI:
+
+        * Local (``file://``) → its directory (via :meth:`_file_uri_to_path`).
+        * Git (``git+ssh``/``git+https``/...) → the **already-cloned** local path
+          via ``GitURI.get_path_in_repo_from_cache`` — the same thread-local
+          cache the resolved URI's ``exists()``/env-asset load populates, so no
+          second clone happens.  A ``#subdirectory=`` fragment is honored (the
+          env dir URI carries one), so this returns the repo root for a bare
+          repo base and ``<clone>/<subdir>`` for a sub-path.
+
+        This lets the ancestor-walk (Tier 1), env-class-match glob (Tier 2) and
+        the fallback guards (Tier 3) operate on local files for git-backed
+        spaces.  Non-local, non-git URIs (or a git URI whose clone fails) return
+        ``None`` — callers treat that as "can't inspect" and skip/admit.
+
+        Args:
+            uri_str: A ``base_uris`` entry or the active env's directory URI.
+
+        Returns:
+            A local ``Path``, or ``None`` when it can't be materialized locally.
+        """
+        local = SpaceURI._file_uri_to_path(uri_str)
+        if local is not None:
+            return local
+        secrets = getattr(SpaceURI._thread_local, "space_secrets", None)
+        resolved = URI.get_uri(uri_str, "file", secrets=secrets)
+        get_path_in_repo = getattr(resolved, "get_path_in_repo_from_cache", None)
+        if get_path_in_repo is None:
+            return None
+        try:
+            return get_path_in_repo()
+        except Exception:  # pylint: disable=broad-except
+            # A clone failure (network/auth) is non-fatal here: fall back to
+            # "can't inspect" so resolution degrades to path-existence only.
+            return None
 
     @classmethod
     def set_baseuris(cls, base_uris: List[str], space_secrets: dict):

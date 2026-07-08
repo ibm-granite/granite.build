@@ -37,13 +37,13 @@ environment_configs:
     ...
 ```
 
-So a single `skypilot/steps/digit` is resolved by `skypilot/kubernetes` and `skypilot/slurm` but is unresolvable for `skypilot/aws` and `skypilot/lsf/...`.  The filter is applied by **both** the ancestor-walk and env-class-match tiers, so the restriction holds regardless of which tier finds the file: a candidate excluded by sub-type is skipped (the walk keeps ascending; class-match ignores it).
+So a single `skypilot/steps/digit` is resolved by `skypilot/kubernetes` and `skypilot/slurm` but is unresolvable for `skypilot/aws` and `skypilot/lsf/...`.  The filter is applied by **all three** tiers (ancestor-walk, env-class-match, and the env-agnostic fallback), so the restriction holds regardless of which tier finds the file: a candidate excluded by sub-type is skipped (the walk keeps ascending; class-match ignores it; the fallback rejects it).
 
 ## Env-class matching against existing `environment_configs`
 
 The resolver can also pick a step variant based on the env's class name (`Bash`, `Docker`, `K8s`, `Lsf`, `Runpod`, `Skypilot`, ...) by reading each candidate `step.yaml`'s existing `environment_configs` keys.  No new field on `step.yaml` is required.
 
-The resolver scans recursively under each base_uri for any file at `<...>/<name>/step.yaml`, parses each one, and selects the candidate whose `environment_configs` contains the active env's class name.  Subdirectory naming is **conventional only** — the match is by file content, so step variants can live anywhere (the convention is `<base>/steps/<env-class-lowercase>/<name>/`):
+The resolver scans recursively under each base_uri for any file at `<...>/<name>/step.yaml`, parses each one, and selects the candidate whose `environment_configs` contains the active env's class name.  The class-name match is **case-insensitive** (env class `K8s` matches an `environment_configs` key `k8s`).  Subdirectory naming is **conventional only** — the match is by file content, so step variants can live anywhere (the convention is `<base>/steps/<env-class-lowercase>/<name>/`):
 
 ```
 src/gbserver/builtins/steps/
@@ -61,11 +61,20 @@ When the active env class is `K8s`, the resolver picks `steps/k8s/s3push/step.ya
 For `space://steps/<name>` and an env of class `K8s` loaded from `<env-dir>`:
 
 1. Walk `<env-dir>` → parents up to the enclosing `base_uri`, first `steps/<name>/step.yaml` hit wins (nearest overrides); a candidate whose `subtypes` restriction excludes the active env is skipped and the walk continues.
-2. Recursive glob `<base>/**/<name>/step.yaml` across `base_uris` — first candidate (by specificity, then lex) whose `environment_configs` contains `K8s` **and** whose `subtypes` restriction admits the active env's sub-type.
-3. `<base>/steps/<name>/step.yaml` — env-agnostic fallback (path match), but a candidate whose `subtypes` restriction excludes the active env is still skipped.
+2. Recursive glob `<base>/**/<name>/step.yaml` across `base_uris` — first candidate (by specificity, then lex) whose `environment_configs` contains `K8s` (case-insensitively) **and** whose `subtypes` restriction admits the active env's sub-type.
+3. `<base>/steps/<name>/step.yaml` — env-agnostic fallback.  Existence is checked via the resolved URI's own scheme-aware `exists()`, and the resolved (git or file) URI is returned as-is; the `subtypes` restriction and `<rest>` containment are still enforced against the base's local materialization, so a candidate the active env's sub-type excludes is skipped.
 4. unresolvable → `ValueError`.
 
 The `subtypes` restriction is honored by **all** step tiers, so it is never bypassed by falling through from one tier to the next.
+
+### Git-backed spaces
+
+`base_uris` may be git URIs (`git+ssh://…`), not just local `file://` dirs.  All three tiers operate off a repo's **already-cloned** local copy (the thread-local git clone cache, reused — no re-clone), via a git-aware local-path resolver:
+
+- Tier 2 (glob) and Tier 3 (fallback) scan/inspect any git base's clone.
+- Tier 1 (ancestor-walk) resolves the env dir to its clone and walks within it, so co-located steps in the **same repo** (base_uri) as the environment resolve.  Steps in a *different* repo from the env live in a separate clone and are not reachable by the walk — use env-class-match or the fallback for those.
+
+A base that can't be materialized locally (unsupported scheme, or a clone failure) is treated as "can't inspect": Tier 1/2 skip it and Tier 3 admits by path existence only, matching pre-`subtypes` behavior.
 
 Use the ancestor-walk (a shared `steps/` dir at the family level) for impls shared by environments under a common directory; add a `subtypes` list to restrict a shared step to specific endpoints of the same class; use env-class-match for splitting a multi-env step.yaml into per-env files (the builtins approach).
 

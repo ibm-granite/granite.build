@@ -510,6 +510,19 @@ class TestTier2EnvClassMatch:
             with pytest.raises(ValueError, match="Unresolvable space uri"):
                 _resolve("space://steps/only")
 
+    def test_class_match_is_case_insensitive(self, tmp_path):
+        """Env class `K8s` matches an `environment_configs` key `k8s` — the
+        class-name comparison is case-insensitive.  Placed under `k8s/` (not the
+        root `steps/`) so only the env-class-match tier can find it."""
+        base = tmp_path / "base"
+        match = _write_step(base / "k8s" / "digit", env_classes=["k8s"])
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("K8s"):
+            resolved = _resolve("space://steps/digit")
+
+        assert _resolved_dir(resolved).samefile(match)
+
     def test_subasset_uri_appends_rest_to_matched_dir(self, tmp_path):
         """`space://steps/<name>/<rest>` resolves against the matched step dir
         plus the `<rest>` suffix."""
@@ -652,6 +665,92 @@ class TestTier3Fallback:
 
         with pytest.raises(ValueError, match="Unresolvable space uri"):
             _resolve("space://steps/missing")
+
+
+# --------------------------------------------------------------------------- #
+# Git base_uris — resolution off the reused local clone (no re-clone)
+# --------------------------------------------------------------------------- #
+
+_GIT_BASE = "git+ssh://example.com/org/repo.git@main"
+
+
+def _fake_git_clone(monkeypatch, clone: Path) -> None:
+    """Make any GitURI resolve to ``clone`` without touching the network.
+
+    Both ``GitURI.exists()`` and ``SpaceURI._uri_to_local_path`` go through
+    ``get_path_in_repo_from_cache``; patching it to return a ready local dir
+    mimics a repo that was already cloned into the thread-local cache.
+    """
+    monkeypatch.setattr(
+        "gbcommon.uri.git.GitURI.get_path_in_repo_from_cache",
+        lambda self, force=False: clone,
+    )
+
+
+class TestGitBaseUri:
+    def test_uri_to_local_path_reuses_git_clone(self, tmp_path, monkeypatch):
+        """A git base resolves to its existing clone dir (no re-clone), so the
+        resolver's local operations have a real directory to work against."""
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        _fake_git_clone(monkeypatch, clone)
+
+        assert SpaceURI._uri_to_local_path(_GIT_BASE) == clone
+
+    def test_fallback_admits_non_local_base(self, monkeypatch):
+        """When a base can't be materialized locally, the Tier 3 steps guard
+        admits it (path-existence-only, pre-`subtypes` behavior) rather than
+        excluding it — the regression that broke git-backed spaces."""
+        monkeypatch.setattr(
+            SpaceURI, "_uri_to_local_path", staticmethod(lambda _: None)
+        )
+        assert SpaceURI._fallback_steps_ok(_GIT_BASE, ("digit", ""))
+
+    def test_git_fallback_resolves_step(self, tmp_path, monkeypatch):
+        """`space://steps/digit` resolves against a git base via the reused
+        clone and returns the (git) resolved URI — the end-to-end regression."""
+        clone = tmp_path / "clone"
+        _write_step(clone / "steps" / "digit")  # digit at repo-root steps/
+        _fake_git_clone(monkeypatch, clone)
+        SpaceURI.set_baseuris([_GIT_BASE], {})
+
+        resolved = _resolve("space://steps/digit")
+
+        assert resolved.uri.scheme.startswith("git")
+
+    def test_git_fallback_honors_subtype(self, tmp_path, monkeypatch):
+        """The subtype filter runs against the git clone: an excluded sub-type
+        is unresolvable, an admitted one resolves."""
+        clone = tmp_path / "clone"
+        _write_step(
+            clone / "steps" / "digit",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes"],
+        )
+        _fake_git_clone(monkeypatch, clone)
+        SpaceURI.set_baseuris([_GIT_BASE], {})
+
+        with SpaceURI.with_current_env_class_name("Skypilot", env_subtype="aws"):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/digit")
+        # kubernetes is admitted; env-class-match (Tier 2) resolves it off the
+        # clone (returning a local file URI into the clone).
+        with SpaceURI.with_current_env_class_name("Skypilot", env_subtype="kubernetes"):
+            resolved = _resolve("space://steps/digit")
+        assert _resolved_dir(resolved).samefile(clone / "steps" / "digit")
+
+    def test_git_tier2_class_match(self, tmp_path, monkeypatch):
+        """Env-class-match (Tier 2) globs the git clone: a class-keyed step not
+        at the root `steps/` still resolves for the matching env class."""
+        clone = tmp_path / "clone"
+        _write_step(clone / "k8s" / "digit", env_classes=["k8s"])  # class-match only
+        _fake_git_clone(monkeypatch, clone)
+        SpaceURI.set_baseuris([_GIT_BASE], {})
+
+        with SpaceURI.with_current_env_class_name("K8s"):
+            resolved = _resolve("space://steps/digit")
+
+        assert _resolved_dir(resolved).samefile(clone / "k8s" / "digit")
 
 
 # --------------------------------------------------------------------------- #
