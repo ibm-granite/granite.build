@@ -2,7 +2,7 @@
 OpenAI-compatible LLM client with model fallback chain.
 
 Works with any base_url:
-  - RITS (IBM internal): https://inference-3scale-apicast-...
+  - RITS-style endpoints (base_url containing "rits.fmaas"):
       Auth:  RITS_API_KEY header
       URL:   <base_url>/<model-slug>/v1/chat/completions
       Model spec: "slug:full/model-name"  (e.g. "granite-4-h-small:ibm-granite/granite-4.0-h-small")

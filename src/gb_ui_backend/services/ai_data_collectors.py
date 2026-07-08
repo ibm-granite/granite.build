@@ -2,7 +2,7 @@
 Data collectors for AI analysis.
 
 Ported from gb_dashboard/services/ai_data_collectors.py.
-IBM Cloud Logs is optional — falls back to K8s pod logs stored in the DB.
+Cloud logs collection (e.g. IBM Cloud Logs) is optional — falls back to K8s pod logs stored in the DB.
 GbserverDataCollector connects to gbserver's PostgreSQL schema if configured.
 """
 from __future__ import annotations
@@ -291,7 +291,7 @@ class GbserverDataCollector(DataCollector):
 # ── Optional: cloud logs collector ────────────────────────────────────────────
 
 class CloudLogsCollector(DataCollector):
-    """Fetches logs from a cloud logs service (IBM Cloud Logs or compatible).
+    """Fetches logs from a cloud logging service (e.g. IBM Cloud Logs).
 
     Falls back to K8s pod logs stored in the database when unavailable.
     The cloud logs client is loaded lazily via gb_ui_backend.services.cloud_logs

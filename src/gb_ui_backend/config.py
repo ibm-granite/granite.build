@@ -49,11 +49,11 @@ class Config(BaseSettings):
     gbserver_db_url: str = Field(default="")
     gbserver_db_schema: str = Field(default="public")
 
-    # Optional cloud logs (IBM Cloud Logs or compatible)
+    # Optional cloud logging service (e.g. IBM Cloud Logs) — enables the Logs tab on running builds
     cloud_logs_url: str = Field(default="")
     cloud_logs_api_key: str = Field(default="")
 
-    # IBM Cloud Object Storage — enables data processing pipeline page
+    # S3-compatible object storage — enables the data processing pipeline page
     cos_endpoint: str = Field(default="")
     cos_access_key: str = Field(default="")
     cos_secret_key: str = Field(default="")
