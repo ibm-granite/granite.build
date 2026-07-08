@@ -29,7 +29,6 @@ Behaviour is driven largely by environment variables (see [below](#key-environme
 | `gbserver standalone [--host 0.0.0.0] [--port 8080] [--space-dir <dir>]` | All-in-one local server: REST API + BuildWatcher in one process. Forces `GB_ENVIRONMENT=STANDALONE` and applies standalone-friendly defaults (SQLite storage, thread build runner, API-key auth, embedded NATS). `--space-dir` defaults to the in-repo `configurations/spaces/local`. |
 | `gbserver rest-server [--port 8080]` | Start just the REST API server (`/api/v1`). |
 | `gbserver build-watch [--gh-token <t>] [--config <f>] [--watch/--no-watch]` | Watch for pending builds (from PRs or a config) and dispatch build runners. |
-| `gbserver pr-watch [--gh-token <t>] [--config <f>] [--watch/--no-watch]` | Watch PRs for build configurations. Requires a GitHub token. |
 | `gbserver build-runner (--build-id <id> \| --build-dir <dir>) [...]` | Execute a single build — either a `PENDING` build from storage (`--build-id`) or one loaded from a directory (`--build-dir`). `--build-id` and `--build-dir` are mutually exclusive. |
 
 `build-runner` extras (directory mode): `--space-name`, `--space-config-uri`, `--target/-t` (repeatable),

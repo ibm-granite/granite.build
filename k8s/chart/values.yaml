@@ -136,11 +136,6 @@ pvcs:
     # enable: false
     storageClassName: ibmc-vpc-file-500-iops
     storageSize: 1000Gi
-  prWorkspace:
-    enable: true
-    # enable: false
-    storageClassName: ibmc-vpc-file-500-iops
-    storageSize: 1000Gi
   workloadReadWrite:
     enable: true
     # enable: false

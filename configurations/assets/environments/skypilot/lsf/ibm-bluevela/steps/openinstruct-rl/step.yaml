@@ -7,6 +7,20 @@ config:
   gb:
     mock: false
     step_contents_in_env: false
+  # Monitor cadence + checkpoint-watch knobs (issue #45). poll_interval_seconds
+  # and log_retrieval_* are consumed by the skypilot_monitor block below;
+  # checkpoint_watch_interval_seconds is consumed by the in-run watcher that
+  # emits one artifact per new checkpoint dir. All have safe defaults so the
+  # existing single-checkpoint recipes need not set them.
+  poll_interval_seconds: 900
+  log_retrieval_mode: "periodic"
+  log_retrieval_interval_seconds: 900
+  # Per-checkpoint artifact emission is opt-in: only the checkpoint-fanout recipe
+  # (which binds checkpoint_<step> outputs) sets this true. Left false, the older
+  # single-checkpoint recipes (ifrl-smoke, ifrl-full, identityrl-*) don't run the
+  # watcher and so don't emit per-step artifact lines they never bind.
+  emit_checkpoint_artifacts: false
+  checkpoint_watch_interval_seconds: 30
   rl_config:
     # ── identification ──
     exp_name: ""
@@ -235,17 +249,170 @@ environment_configs:
             GRPO_CMD
             chmod +x "$GRPO_SCRIPT"
 
+            # ── Per-checkpoint artifact emission (issue #45) ────────────────
+            # grpo_fast writes a checkpoint every save_freq optimizer updates
+            # into a per-step subdir of output_dir. To let downstream eval
+            # targets start against each checkpoint AS SOON AS it is written
+            # (not only at the end), a background watcher polls output_dir and
+            # emits one artifact line per new checkpoint dir. The periodic
+            # skypilot_monitor scrapes these mid-run.
+            #
+            # Convention (must match generate_build.py's checkpoint_<step>
+            # output names): the checkpoint dir is named "step_<N>", where <N>
+            # is the optimizer-update index, and the emitted id is
+            # "checkpoint_<N>". VERIFY (issue #45 BlueVela run): confirm
+            # grpo_fast's actual dir naming; if it differs (e.g. global_step_N,
+            # checkpoint-N), adjust the CKPT_GLOB / step parsing below and keep
+            # the generator's naming in lock-step.
+            OUTPUT_DIR="{{ config.rl_config.output_dir }}"
+            CKPT_GLOB="step_"
+            CKPT_WATCH_INTERVAL="{{ config.checkpoint_watch_interval_seconds | default(30) }}"
+            # Completeness sentinels: emit a checkpoint only once BOTH files are
+            # present. grpo_fast's HF save_pretrained writes model.safetensors
+            # early in the sequence and tokenizer.json last (verified on BlueVela
+            # step_10/step_20 by mtime: config -> model.safetensors -> tokenizer
+            # files, tokenizer.json last). Requiring both "bookends" — the heavy
+            # weights AND the final tokenizer file — brackets the whole write
+            # sequence, so a downstream H100 eval never loads a dir that is
+            # non-empty but still mid-write (a plain `ls -A` non-empty check would
+            # race that window and eval a partial/corrupt model). Weights-only or
+            # sharded checkpoints: add model.safetensors.index.json here too.
+            CKPT_SENTINELS="model.safetensors tokenizer.json"
+            # Marker files (one per emitted checkpoint) live here. This dir is
+            # the shared source of truth between the background watcher and the
+            # parent: the watcher runs `emit_new_checkpoints` in a subshell, so a
+            # shell counter variable would NOT propagate back to the parent — the
+            # emitted count must be read from these on-disk markers instead.
+            EMITTED_DIR="$(mktemp -d)"
+
+            emit_new_checkpoints() {
+              # Emit an artifact line for each checkpoint dir not yet emitted.
+              for ckpt in "$OUTPUT_DIR"/${CKPT_GLOB}*; do
+                [ -d "$ckpt" ] || continue
+                base="$(basename "$ckpt")"
+                step="${base#${CKPT_GLOB}}"
+                marker="$EMITTED_DIR/$base"
+                [ -e "$marker" ] && continue
+                # Gate on every completeness sentinel; skip until all are present
+                # so we never emit a checkpoint dir that is still being written.
+                complete=1
+                for sentinel in $CKPT_SENTINELS; do
+                  [ -f "$ckpt/$sentinel" ] || { complete=0; break; }
+                done
+                [ "$complete" -eq 1 ] || continue
+                touch "$marker"
+                echo "LLMB_ARTIFACT_ID:checkpoint_${step} LLMB_ARTIFACT_PATH:${ckpt}"
+              done
+            }
+
+            watch_checkpoints() {
+              while true; do
+                emit_new_checkpoints
+                sleep "$CKPT_WATCH_INTERVAL"
+              done
+            }
+
             echo "[$(date)] Starting GRPO training"
             echo "  exp_name: {{ config.rl_config.exp_name }}"
             echo "  output:   {{ config.rl_config.output_dir }}"
+
+            {% set _true = [true, "true", "True", "1", 1] -%}
+            {% if config.emit_checkpoint_artifacts in _true %}
+            # ── Watcher lifecycle (issue #45) ───────────────────────────────
+            # The whole run executes under `set -e`, so a non-zero exit from the
+            # trainer would abort before an inline `kill`, orphaning the watch
+            # loop until container teardown. A trap tied to EXIT cleans up on
+            # every path (success, trainer failure, signal); `wait` reaps the
+            # watcher so it and the final sweep don't share $EMITTED_DIR
+            # concurrently.
+            WATCH_PID=""
+            cleanup_watcher() {
+              if [ -n "$WATCH_PID" ] && kill -0 "$WATCH_PID" 2>/dev/null; then
+                kill "$WATCH_PID" 2>/dev/null || true
+                wait "$WATCH_PID" 2>/dev/null || true
+                WATCH_PID=""
+              fi
+            }
+            # EXIT-time cleanup: reap the watcher and remove the marker tmpdir on
+            # every path (success, trainer failure, signal).
+            trap 'cleanup_watcher; rm -rf "$EMITTED_DIR"' EXIT
+
+            watch_checkpoints &
+            WATCH_PID=$!
+            {% endif %}
+
+            # ── Ray hygiene (issue #45): diagnose + neutralize a stale cluster
+            # address ──────────────────────────────────────────────────────
+            # open_instruct.grpo_fast calls a bare ray.init(), which resolves an
+            # address from (1) $RAY_ADDRESS, then (2) the session file
+            # /tmp/ray/ray_current_cluster written by a prior `ray start`. If a
+            # previous run on shared storage (HOME=/stage) or a leaked env var
+            # left an address pointing at another node, ray.init() connects
+            # THERE and hangs ~12 min on a dead GCS
+            # (RRpcError: Timed out while waiting for GCS to become available),
+            # failing the job before training starts. This was observed on a run
+            # where the job ran on one node but ray.init() dialed a foreign
+            # node's :6379.
+            #
+            # First print the two sources (so the real origin is visible in the
+            # log), then neutralize both and give Ray a fresh, node-local temp
+            # dir so a new run can't collide with another node's leftovers on a
+            # shared /tmp. All steps are best-effort/idempotent — safe for the
+            # single-checkpoint recipes that share this step.
+            echo "[ray-hygiene] RAY_ADDRESS=${RAY_ADDRESS:-<unset>}"
+            echo "[ray-hygiene] session file (/tmp/ray/ray_current_cluster):"
+            cat /tmp/ray/ray_current_cluster 2>/dev/null || echo "  <none>"
+            unset RAY_ADDRESS
+            ray stop --force >/dev/null 2>&1 || true
+            rm -f /tmp/ray/ray_current_cluster 2>/dev/null || true
+            # Setting RAY_TMPDIR forces grpo_fast onto its explicit-temp-dir
+            # branch (ray.init(_temp_dir=...)), which STARTS a fresh local
+            # cluster instead of the bare ray.init() that resolved a stale
+            # remote address above. RAY_TMPDIR must stay SHORT: Ray appends
+            # /session_<ts>_<pid>/sockets/plasma_store (~65 bytes) and the
+            # resulting AF_UNIX socket path cannot exceed 107 bytes. The
+            # SkyPilot task id is ~48 chars and blows that limit, so key the
+            # dir off the (short) PID under /tmp (node-local tmpfs) instead.
+            export RAY_TMPDIR="/tmp/ray-$$"
+            mkdir -p "$RAY_TMPDIR"
+            echo "[ray-hygiene] cleared; RAY_TMPDIR=$RAY_TMPDIR"
+
+            # Run the trainer. This always runs; only the per-checkpoint watcher
+            # around it (above/below) is gated on emit_checkpoint_artifacts.
             bash "$GRPO_SCRIPT"
 
-            # Emit the checkpoint artifact for downstream targets. GRPO writes
-            # checkpoints directly under output_dir (no SFT-style epoch_hf_*
-            # conversion), so the artifact path is output_dir.
-            # VERIFY (issue-36 BlueVela run): confirm grpo_fast writes the
-            # final checkpoint under output_dir (no epoch subdir), so this is
-            # the correct artifact path.
+            {% if config.emit_checkpoint_artifacts in _true %}
+            # Training succeeded: stop the watcher, then do a final sweep for any
+            # checkpoints written between the last poll and training exit.
+            cleanup_watcher
+            emit_new_checkpoints
+
+            # Fail loudly if NO checkpoint was ever emitted: the downstream
+            # eval/export/combined targets bind checkpoint_<step> ids and would
+            # otherwise stall forever with no error. Count the on-disk marker
+            # files, NOT a shell variable — emit_new_checkpoints runs inside the
+            # backgrounded watcher subshell, so a counter var it incremented
+            # never propagates back here; the markers in $EMITTED_DIR are the
+            # shared source of truth. Zero markers means the on-disk naming
+            # doesn't match CKPT_GLOB (grpo_fast may use global_step_N /
+            # checkpoint-N) — see VERIFY note above.
+            EMITTED_COUNT="$(find "$EMITTED_DIR" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l)"
+            if [ "$EMITTED_COUNT" -eq 0 ]; then
+              echo "ERROR: no checkpoint dirs matched '${OUTPUT_DIR}/${CKPT_GLOB}*'." >&2
+              echo "       grpo_fast wrote no '${CKPT_GLOB}<N>' dirs; downstream" >&2
+              echo "       eval targets would never dispatch. Check the actual" >&2
+              echo "       checkpoint dir naming and align CKPT_GLOB + the" >&2
+              echo "       generator's checkpoint_<step> outputs." >&2
+              exit 1
+            fi
+            {% endif %}
+
+            # Backward-compatible final artifact for recipes that bind a single
+            # `checkpoint` output (ifrl-smoke, ifrl-full, identityrl-*). GRPO
+            # writes checkpoints directly under output_dir (no SFT-style
+            # epoch_hf_* conversion), so the artifact path is output_dir. In the
+            # checkpoint-fanout builds this id has no matching output and is
+            # harmlessly ignored (buildrun logs a warning and continues).
             echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:{{ config.rl_config.output_dir }}"
     monitors:
       skypilot_monitor:

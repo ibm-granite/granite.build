@@ -37,7 +37,6 @@ if not _can_import("psutil"):
         "integration/ibm/buildrunner/k8s/test_buildrunnerjob.py",
         "integration/ibm/buildrunner/k8s/test_builds.py",
         "integration/ibm/buildwatcher/test_buildwatcher.py",
-        "integration/ibm/githubmanager/test_githubmanager_subselect_targets.py",
         "e2e/sidecar/test_multi_sidecar_cmdmon_delayed_pytest.py",
         "e2e/sidecar/test_multi_sidecar_cmdmon_pytest.py",
         "e2e/sidecar/test_multi_sidecar_pytest.py",

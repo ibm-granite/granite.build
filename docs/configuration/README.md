@@ -44,7 +44,7 @@ All components read the same env vars; a few settings are component-specific (fu
 
 - **REST server** (`gbserver rest-server`) — `GBSERVER_REST_SERVER_WORKERS`,
   `GBSERVER_REST_SERVER_TIMEOUT_KEEP_ALIVE`, and the auth vars above.
-- **Build/PR watchers** (`gbserver build-watch` / `pr-watch`) — a `--config` YAML file
+- **Build watcher** (`gbserver build-watch`) — a `--config` YAML file
   (spaces to watch, `monitoring_interval`, `buildrunner_type`, …) and `--asset_stores_dir`;
   see [config-files.md](config-files.md).
 - **Build runner** (`gbserver build-runner`) — `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` and, for `job`,

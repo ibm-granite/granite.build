@@ -1,0 +1,171 @@
+name: combined-export
+version: 1.0.0
+type: EVAL
+# Combined roll-up (issue #45): pivots the per-checkpoint sage export CSVs into
+# a single benchmark x checkpoint table. Rows are benchmarks (the sage CSV's
+# `model` + `metric` columns), columns are checkpoints (ckpt_<step>), so each
+# row reads left-to-right as a metric's trajectory across the run.
+#
+# Reuses the sage image only for its Python 3.11; the pivot itself is stdlib
+# csv, no sage/exporter dependency (unlike sage-export, which re-scans a result
+# tree — that path can't roll up flat per-checkpoint experiment dirs).
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  combined_export_config:
+    # Directories holding the per-checkpoint CSVs. sage CSVs live under
+    # SAGE_RESULTS_DIR/EXPERIMENT; bfcl CSVs under BFCL_RESULTS_DIR/EXPERIMENT.
+    # Either may be empty/absent (e.g. a run with no bfcl eval).
+    sage_input_dir: ""
+    bfcl_input_dir: ""
+    # Globs (relative to the respective dir) selecting the per-checkpoint CSVs.
+    # The step parses <step> from each ckpt_<step>-*.csv name for the column.
+    sage_input_glob: "ckpt_*-sage.csv"
+    bfcl_input_glob: "ckpt_*-bfcl.csv"
+    output_csv: ""
+outputs:
+  optional:
+    combined_csv:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: combined-export
+    launchers:
+      combined-export:
+        type: skypilot
+        monitors:
+        - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311:0.025"
+          resources:
+            memory: "16"
+          run: |
+            set -e
+            echo "=== Combined Results Roll-up (benchmark x checkpoint) ==="
+
+            export SAGE_INPUT_DIR="{{ config.combined_export_config.sage_input_dir }}"
+            export BFCL_INPUT_DIR="{{ config.combined_export_config.bfcl_input_dir }}"
+            export SAGE_INPUT_GLOB="{{ config.combined_export_config.sage_input_glob }}"
+            export BFCL_INPUT_GLOB="{{ config.combined_export_config.bfcl_input_glob }}"
+            export COMBINED_OUTPUT_CSV="{{ config.combined_export_config.output_csv }}"
+
+            echo "  Sage input: $SAGE_INPUT_DIR/$SAGE_INPUT_GLOB"
+            echo "  BFCL input: $BFCL_INPUT_DIR/$BFCL_INPUT_GLOB"
+            echo "  Output:     $COMBINED_OUTPUT_CSV"
+
+            mkdir -p "$(dirname "$COMBINED_OUTPUT_CSV")"
+
+            if [[ -x "/opt/miniconda3/bin/python" ]]; then
+              PYTHON_BIN="/opt/miniconda3/bin/python"
+            else
+              PYTHON_BIN="python3"
+            fi
+
+            "$PYTHON_BIN" - <<'PIVOT_PY'
+            import csv, glob, os, re, sys
+
+            output_csv = os.environ["COMBINED_OUTPUT_CSV"]
+
+            def step_of(path):
+                # Column key from the numeric checkpoint step in the filename
+                # (ckpt_<step>-*.csv), so columns sort ckpt_2 < ckpt_10.
+                m = re.search(r"ckpt_(\d+)", os.path.basename(path))
+                return int(m.group(1)) if m else -1
+
+            # Discover every checkpoint column across both eval kinds; a column
+            # exists if either a sage OR a bfcl CSV is present for that step.
+            def discover(dir_env, glob_env):
+                d = os.environ.get(dir_env, "")
+                if not d:
+                    return {}
+                return {step_of(p): p for p in glob.glob(os.path.join(d, os.environ[glob_env]))}
+
+            sage_files = discover("SAGE_INPUT_DIR", "SAGE_INPUT_GLOB")
+            bfcl_files = discover("BFCL_INPUT_DIR", "BFCL_INPUT_GLOB")
+
+            steps = sorted(set(sage_files) | set(bfcl_files))
+            if not steps:
+                sys.exit("ERROR: no per-checkpoint sage or bfcl CSVs found")
+            columns = [f"ckpt_{s}" for s in steps]
+
+            # Rows keyed by (model, metric); first-seen order preserved so a
+            # benchmark present only in a later checkpoint still appears.
+            row_order = []
+            seen = set()
+            values = {}  # (model, metric) -> {col: value}
+
+            def add(key, col, value):
+                if key not in seen:
+                    seen.add(key)
+                    row_order.append(key)
+                values.setdefault(key, {})[col] = value
+
+            for s in steps:
+                col = f"ckpt_{s}"
+                # sage CSV: (model, metric, <value-headed-by-result-path>).
+                path = sage_files.get(s)
+                if path:
+                    with open(path, newline="") as fh:
+                        reader = csv.reader(fh)
+                        next(reader, None)  # header
+                        for parts in reader:
+                            if len(parts) < 3:
+                                continue
+                            add((parts[0], parts[1]), col, parts[2])
+                # bfcl CSV: (expt, overall) -> one row per expt, e.g. BFCL-bfclv3.
+                path = bfcl_files.get(s)
+                if path:
+                    with open(path, newline="") as fh:
+                        reader = csv.reader(fh)
+                        next(reader, None)  # header (expt, overall)
+                        for parts in reader:
+                            if len(parts) < 2:
+                                continue
+                            add((f"BFCL-{parts[0]}", "overall"), col, parts[1])
+
+            with open(output_csv, "w", newline="") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["model", "metric", *columns])
+                for key in row_order:
+                    model, metric = key
+                    writer.writerow(
+                        [model, metric, *[values[key].get(c, "") for c in columns]]
+                    )
+
+            print(f"Wrote {output_csv}: {len(row_order)} benchmarks x {len(columns)} checkpoints")
+            PIVOT_PY
+
+            echo "=== CSV OUTPUT ==="
+            cat "$COMBINED_OUTPUT_CSV"
+            echo "=== END CSV OUTPUT ==="
+
+            echo "LLMB_ARTIFACT_ID:combined_csv LLMB_ARTIFACT_PATH:${COMBINED_OUTPUT_CSV}"
+    monitors:
+      skypilot_monitor:
+        type: skypilot_monitor
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(90) }}"
+          log_retrieval:
+            # Export steps emit no mid-run events; pull the log once at the end.
+            mode: "{{ config.log_retrieval_mode | default('on_completion') }}"
+          event_configs:
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "Combined Results Roll-up"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+            event_fields:
+              - field_name: binding_id
+                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+              - field_name: path
+                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                is_data: true
+              - field_name: binding
+                field_value_template: '{ "path": "{{ fields.data.path }}" }'
+                is_json: true

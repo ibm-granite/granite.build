@@ -110,7 +110,6 @@ class TestCLIDiscovery:
         "build-runner",
         "build-watch",
         "create-spaces",
-        "pr-watch",
         "rest-server",
         "rest-server-worker",
     ]

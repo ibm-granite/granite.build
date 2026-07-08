@@ -23,7 +23,7 @@ import tempfile
 import threading
 import urllib.parse
 from pathlib import Path
-from typing import List, Optional, Self, Type
+from typing import List, Optional, Self, Tuple, Type
 
 from git import Repo
 
@@ -39,6 +39,41 @@ from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import short_alphanumeric_lower_hash
 
 logger = get_logger(__name__)
+
+
+def get_uri_parts(uri: str) -> Tuple[str, str, str, str, str]:
+    """
+    >>> urlparse('git+ssh://mysourcecontrol.com/granite-dot-build/assets.git#subdirectory=steps/hello-helm-data-upload')
+    ParseResult(
+        scheme='git+ssh',
+        netloc='mysourcecontrol.com',
+        path='/granite-dot-build/assets.git',
+        params='',
+        query='',
+        fragment='subdirectory=steps/hello-helm-data-upload',
+    )
+    >>> Path(u.path).parts
+    ('/', 'granite-dot-build', 'assets.git')
+
+    Example: ('git+ssh', 'mysourcecontrol.com', 'granite-dot-build', 'assets', 'steps/hello-helm-data-upload')
+
+    Returns (scheme, domain, owner, repo, sub_directory)
+    """
+    u = urllib.parse.urlparse(uri)
+    scheme = u.scheme
+    domain = u.netloc
+    upath_parts = Path(u.path).parts
+    owner = upath_parts[1]
+    repo = upath_parts[2]
+    if repo.endswith(".git"):
+        repo = repo.removesuffix(".git")
+    subdirprefix = "subdirectory="
+    subdir = (
+        u.fragment.removeprefix(subdirprefix)
+        if u.fragment.startswith(subdirprefix)
+        else ""
+    )
+    return (scheme, domain, owner, repo, subdir)
 
 
 class GitURI(URI):

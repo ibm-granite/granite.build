@@ -304,7 +304,8 @@ check_hf_token:
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
 		args=(--durations=20 $(PYTEST_COV) --junitxml=report.xml) && \
-		args+=(-rs -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} $(PYTEST_CAPTURE)) && \
+		args+=(--max-worker-restart=0 -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE}) && \
+		args+=(-rs $(PYTEST_CAPTURE)) && \
 		args+=(-m '$(PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
 		pytest "$${args[@]}" $(PYTEST_TEST_TARGETS) && \
 		$(COVERAGE_GATE)
@@ -428,14 +429,6 @@ test-local-build: .check-test-env
 test-remote-build: .check-test-env
 	cd samples/tests/hello-gb-vela/ && gbserver build run && cd -
 
-.PHONY: start-gitops
-start-gitops: check-github-token check-table-prefix
-	gbserver \
-	--gb-admin-table-prefix ${MY_TABLE_PREFIX} \
-	pr-watch \
-	--gh-token ${GITHUB_TOKEN} \
-	--config samples/config/pr-watcher-config.yaml
-
 .PHONY: start-watching-builds
 start-watching-builds: check-github-token check-table-prefix
 	gbserver \
@@ -460,11 +453,6 @@ delete-tables: check-table-prefix
 	dmf table delete -n granite_dot_build.admin -t ${MY_TABLE_PREFIX}gb_steps
 	dmf table delete -n granite_dot_build.admin -t ${MY_TABLE_PREFIX}gb_artifacts
 
-.PHONY: reset-and-start-gitops
-reset-and-start-gitops:
-	$(MAKE) delete-tables
-	$(MAKE) create-spaces
-	$(MAKE) start-gitops
 
 clean::
 	@# Help: Clean up the distribution build and the venv 

@@ -29,9 +29,9 @@ These are **defaults**: an explicit environment variable still wins (precedence 
 [gb-environment.md](gb-environment.md)); the built-in DEV/STAGING/PROD/STANDALONE configs use the same
 `GBEnvConfig` shape.
 
-## Watcher config (`build-watch` / `pr-watch` `--config`)
+## Watcher config (`build-watch` `--config`)
 
-`gbserver build-watch --config <path>` and `gbserver pr-watch --config <path>` take a YAML file
+`gbserver build-watch --config <path>` takes a YAML file
 describing **which spaces to watch** and polling behaviour. The file is reloaded when it changes (unless
 `--no-watch`).
 
@@ -47,9 +47,6 @@ gh_api_endpoint: https://api.github.com
 workspace_dir: gbserverworkspace
 watcher_workspace_dir: gbserverworkspace/gbserver-buildwatcher-workspace
 ```
-
-**`pr-watch`** — [`PrWatcherConfig`](../../src/gbserver/types/prwatcherconfig.py): the same `spaces` and
-`monitoring_interval`, plus `validate_inputs_are_registered: true`.
 
 An empty/omitted `spaces` list means **watch all registered spaces**. Space names refer to spaces
 registered in gbserver (see [Spaces](../spaces/README.md#registering-and-referencing-a-space-by-name)).
