@@ -582,6 +582,39 @@ class TestTier3Fallback:
 
         assert _resolved_dir(resolved).samefile(env_dir)
 
+    def test_fallback_rest_traversal_rejected(self, tmp_path):
+        """A `<rest>` that escapes the step dir (``../../secret``) is rejected on
+        the Tier 3 fallback too — the containment guard Tiers 1 & 2 have applies
+        here, so the resolver won't land outside the step dir even though the
+        target file exists."""
+        base = tmp_path / "base"
+        _write_step(base / "steps" / "hello")
+        (base / "secret").write_text("password\n")  # real file, outside the step dir
+        _set_bases(base)
+
+        with pytest.raises(ValueError, match="Unresolvable space uri"):
+            _resolve("space://steps/hello/../../secret")
+
+    def test_fallback_dotdot_rest_cannot_bypass_subtype(self, tmp_path):
+        """A `..` in `<rest>` cannot hop from a restricted step to a sibling.
+
+        `space://steps/digit/../x` normalizes to `<base>/steps/x`, but the
+        `subtypes` gate reads `digit`'s own `step.yaml` and the containment guard
+        rejects the escape, so the restriction is not bypassed — the URI is
+        Unresolvable even though `x` alone would resolve for this env."""
+        base = tmp_path / "base"
+        _write_step(
+            base / "steps" / "digit",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes"],
+        )
+        _write_step(base / "steps" / "x")  # universal sibling that `x` alone resolves
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot", env_subtype="aws"):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/digit/../x")
+
     def test_unresolvable_raises(self, tmp_path):
         base = tmp_path / "base"
         base.mkdir()
