@@ -172,6 +172,7 @@ include = [
     "gbserver*",
     "gbcli*",
     "gbcommon*",
+    "gb_ui_backend*",
     "libgbtest*",
     "unit*",
     "integration*",
