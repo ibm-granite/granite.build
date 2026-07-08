@@ -33,7 +33,7 @@ Fork issue number (if provided): $ARGUMENTS
 
 1. Confirm we are NOT on the `main` branch — we should be on an issue branch
 2. Run `git status` to check for uncommitted changes
-3. If there are unstaged/uncommitted changes, ask the user whether to stage and commit them before proceeding
+3. If there are unstaged/uncommitted changes, ask the user whether to stage and commit them before proceeding. Always commit with `git commit -s` (sign-off) — the upstream repo enforces the DCO check.
 4. Check if a PR already exists for this branch:
    ```
    gh pr list --repo ibm-granite/granite.build --head "$FORK_OWNER":<current-branch-name> --state open --json number,url
@@ -51,7 +51,7 @@ Only check files that will be in the PR — those changed between `upstream/main
 2. If there are Python files, run `isort --profile black` and `black` on each file
 3. If there are Python files, run `pylint` and `mypy --disable-error-code=import-untyped` directly on each changed file
 4. If linting produces errors, show them to the user and ask whether to fix them or proceed anyway
-5. If formatting changed any files, stage and commit them with message "style: auto-format via pre-commit"
+5. If formatting changed any files, stage and commit them with `git commit -s -m "style: auto-format via pre-commit"` (the `-s` sign-off is required by the upstream DCO check)
 
 ## Step 3: Push to fork
 
