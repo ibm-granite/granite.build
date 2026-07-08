@@ -14,7 +14,7 @@ export default function ArtifactDetailPage() {
     const id = window.location.hash.slice(1)
     if (id) {
       setArtifactId(id)
-      window.history.replaceState(null, '', `/artifacts/${id}/`)
+      window.history.replaceState(null, '', `/dashboard/artifacts/${id}/`)
     }
   }, [])
 
@@ -41,8 +41,8 @@ export default function ArtifactDetailPage() {
       <div style={{ padding: '2rem 1.5rem 1.5rem' }}>
         <PageHeader
           crumbs={[
-            { label: 'Granite.build', to: '/' },
-            { label: 'Artifacts', to: '/artifacts' },
+            { label: 'Granite.build', to: '/dashboard' },
+            { label: 'Artifacts', to: '/dashboard/artifacts' },
             { label: artifact?.name ?? '…' },
           ]}
         />

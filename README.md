@@ -244,67 +244,98 @@ The REST API is available at `/api/v1` when the server is running. Start with `g
 
 ## Web Dashboard
 
-gb-ui is a React/TypeScript dashboard for Granite.Build that runs alongside gbserver. In standalone mode it is served by gbserver at the same port as the REST API (8080) — no separate Node.js process required.
+The gb-ui dashboard is a React/TypeScript app (Carbon Design System) that ships with gbserver. In standalone mode it is served by gbserver at port 8080 — no separate Node.js process needed at runtime.
 
-### Running the dashboard
+**Build prerequisite:** Node.js 20+ and yarn are required to compile the frontend. They are only needed at build time; the output is plain static files.
 
-**Standalone mode** — gbserver serves the compiled UI and REST API from the same origin. This is the default.
+### Mode 1 — Standalone (default, recommended)
 
-```bash
-make build-frontend        # compile once (or after any frontend/ change)
-gbserver standalone        # UI + API at http://localhost:8080
-```
+gbserver compiles and serves the UI and REST API from the same origin. This is the normal mode for end users.
 
-To point the frontend at a different gbserver, set `GBSERVER_API_URL` at build time:
+**First-time setup:**
 
 ```bash
-GBSERVER_API_URL=http://other-host:8080 make build-frontend
+make build-frontend     # compile and copy to src/gbserver/static/ui/
+gbserver standalone     # UI + API + analytics at http://localhost:8080
 ```
 
-**Dev mode** — Next.js dev server at `:3000` with hot reload. No build step needed when iterating on UI changes.
+Open `http://localhost:8080` — the dashboard, REST API, and analytics sidecar are all served on port 8080.
+
+**After any frontend code change:**
 
 ```bash
-cd frontend && yarn dev    # UI at http://localhost:3000
+make build-frontend                        # incremental rebuild (reuses .next/ cache)
+make clean-frontend && make build-frontend # full clean rebuild (clears cache first)
 ```
 
-Without a backend, data pages show empty states but the UI itself loads. To connect to a running gbserver, create `frontend/.env.local`:
+### Mode 2 — Dev server (hot reload)
+
+Runs the Next.js dev server with instant hot reload. Use this when iterating on frontend code without rebuilding the static export after each change.
+
+**Without a backend** — the UI loads but data pages show empty states:
 
 ```bash
-GBSERVER_API_URL=http://localhost:8080
+cd frontend
+yarn install   # first time only
+yarn dev       # UI at https://localhost:3000
 ```
 
-This enables a server-side proxy — all `/api/*` calls are forwarded to gbserver so the browser uses relative paths (no CORS).
-
-### Rebuilding the frontend
+**With a running gbserver** — copy the dev template and set the API URL:
 
 ```bash
-make build-frontend                          # compile and sync to src/gbserver/static/ui/
-make clean-frontend && make build-frontend   # full clean rebuild
-make clean-frontend                          # wipe frontend/out/, frontend/.next/, src/gbserver/static/ui/
+cp frontend/.env.local.example frontend/.env.local
+# then edit frontend/.env.local and uncomment:
+# GBSERVER_API_URL=http://localhost:8080
 ```
 
-`make build-frontend` runs `yarn build` then rsyncs the output into `src/gbserver/static/ui/`. `yarn build` removes `404.html` from the output (required so the SPA fallback handler can intercept unknown paths). Run `make clean-frontend` first to clear the Next.js compiler cache and guarantee a fresh compile.
+```bash
+gbserver standalone   # terminal 1 — start gbserver
+cd frontend && yarn dev   # terminal 2 — start dev server
+```
+
+The dev server proxies all `/api/*` requests to gbserver server-side — no CORS configuration needed.
+
+### Mode 3 — Remote gbserver
+
+To build the frontend pointing at a gbserver on a different host, set `GBSERVER_API_URL` at build time (it gets baked into the bundle):
+
+```bash
+GBSERVER_API_URL=https://my-server:8080 make build-frontend
+```
+
+Leave it unset to default to same-origin (the standard case when gbserver serves the frontend).
 
 ### Analytics sidecar
 
-The `gb_ui_backend` sidecar adds build status charts, failure trends, and AI-powered analysis. It is bundled with the `standalone` install and **starts automatically** alongside gbserver — no separate command or database configuration needed. By default it stores analytics data in `~/.granite.build/dashboard-analytics.db` (SQLite).
+The `gb_ui_backend` sidecar adds build status charts, failure trends, and optional AI-powered analysis. It is bundled with the `standalone` install extra and **starts automatically** alongside gbserver — no extra command or initial database setup needed.
 
-To use PostgreSQL instead:
+Default storage: `~/.granite.build/dashboard-analytics.db` (SQLite, auto-created on first run).
+
+Optional configuration (set as environment variables or in `.env`):
+
+| Variable | Description |
+|---|---|
+| `GB_UI_DATABASE_URL` | Override the sidecar analytics DB — SQLite path or PostgreSQL URL |
+| `GB_UI_GBSERVER_DB_URL` | gbserver's own DB for richer build volume charts (auto-set when storage is SQLite) |
+| `GB_UI_LLM_BASE_URL` | OpenAI-compatible endpoint for AI failure analysis (feature disabled if unset) |
+| `GB_UI_LLM_API_KEY` | API key for the LLM endpoint |
+
+Copy `.env.example` to `.env` for a full annotated reference of all options:
 
 ```bash
-GB_UI_DATABASE_URL="postgresql+asyncpg://user:pass@host/db" gbserver standalone
+cp .env.example .env
 ```
 
 gbserver proxies `/api/analytics/*` to the sidecar at `:8090` — the browser only ever talks to port 8080.
 
-### Frontend repository layout
+### Frontend layout
 
 | Path | Description |
 |------|-------------|
-| `frontend/` | gb-ui Next.js source (TypeScript, React, Carbon Design System) |
-| `frontend/out/` | Static export output — produced by `make build-frontend`, not committed |
-| `frontend/.env.local.example` | Dev environment template — copy to `frontend/.env.local` |
-| `src/gbserver/static/ui/` | Runtime location gbserver serves the frontend from |
+| `frontend/` | Next.js source (TypeScript, React, Carbon Design System) |
+| `frontend/out/` | Static export — produced by `make build-frontend`, not committed |
+| `frontend/.env.local.example` | Dev template — copy to `frontend/.env.local` |
+| `src/gbserver/static/ui/` | Runtime path gbserver serves the compiled frontend from |
 | `src/gb_ui_backend/` | Analytics sidecar — FastAPI app for charts and AI analysis |
 
 ## Documentation
