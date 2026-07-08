@@ -1019,13 +1019,15 @@ class Lsf(Environment):
         routing through SpaceURI's env-class-match tier so the Lsf env-keyed
         copy at ``<builtins>/steps/lsf/<step_name>/step.yaml`` is selected.
 
-        Wrapped in :meth:`SpaceURI.with_current_env_class_name` because these
-        helpers run during pullasset/pushasset (target setup), which happens
-        before any ``TargetStep`` enters the resolver's env-aware scope. We
-        explicitly scope the env class here so resolution doesn't depend on
-        caller context.
+        Wrapped in :meth:`SpaceURI.with_current_env` because these helpers run
+        during pullasset/pushasset (target setup), which happens before any
+        ``TargetStep`` enters the resolver's env-aware scope. Scoping from
+        ``self`` supplies the full env context — class name, env-dir URI (for
+        the ancestor-walk tier) and sub-type (for the sub-type filter) — so
+        resolution exercises the same tiers as a normal step and doesn't depend
+        on caller context.
         """
-        with SpaceURI.with_current_env_class_name(self.__class__.__name__):
+        with SpaceURI.with_current_env(self):
             uri = URI.get_uri(f"space://steps/{step_name}", default_scheme="file")
         assert uri.uri is not None, f"unresolved space URI for step {step_name!r}"
         return Path(uri.uri.path) / STEP_FILE_NAME
