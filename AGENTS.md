@@ -1,4 +1,10 @@
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+# AGENTS.md
+
+This file provides guidance to coding agents (Claude Code and others) when working with code in this repository.
+
+## Git Commits
+
+Always create commits with the `-s` (sign-off) flag — e.g. `git commit -s -m "..."`. The upstream repo (`ibm-granite/granite.build`) enforces the [DCO check](https://developercertificate.org/), which requires a `Signed-off-by:` trailer on every commit. Commits without it will fail CI on the PR.
 
 ## Project Overview
 
