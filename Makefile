@@ -304,7 +304,8 @@ check_hf_token:
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
 		args=(--durations=20 $(PYTEST_COV) --junitxml=report.xml) && \
-		args+=(-rs -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} $(PYTEST_CAPTURE)) && \
+		args+=(--max-worker-restart=0 -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE}) && \
+		args+=(-rs $(PYTEST_CAPTURE)) && \
 		args+=(-m '$(PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
 		pytest "$${args[@]}" $(PYTEST_TEST_TARGETS) && \
 		$(COVERAGE_GATE)
