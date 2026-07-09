@@ -120,13 +120,16 @@ def _make_retrying(
 
 
 def _is_retryable_dns_error(exc: BaseException) -> bool:
-    """Retry transient DNS/resolution failures, but not timeouts.
+    """Retry transient DNS/resolution failures, but not the cancellation timeout.
 
-    Mirrors the original connector patch, which re-raised
-    ``asyncio.TimeoutError`` (a subclass of ``OSError`` with ``errno is None``)
-    immediately and treated every other ``OSError`` as transient.
+    Mirrors the original connector patch, whose guard was
+    ``exc.errno is None and isinstance(exc, asyncio.TimeoutError)`` -- i.e. it
+    re-raised only the errno-less ``asyncio.TimeoutError`` (the lookup
+    cancellation surfaced by ``async_timeout``) and treated every other
+    ``OSError`` -- including a ``TimeoutError`` that carries an ``errno`` -- as
+    transient. Preserving the ``errno is None`` condition keeps that fidelity.
     """
-    if isinstance(exc, asyncio.TimeoutError):
+    if isinstance(exc, asyncio.TimeoutError) and getattr(exc, "errno", None) is None:
         return False
     return isinstance(exc, OSError)
 
@@ -165,13 +168,32 @@ def _install_aiohttp_dns_retry() -> None:
 def _is_retryable_connector_error(exc: BaseException) -> bool:
     """Retry aiohttp connection failures; let ApiException propagate.
 
-    Mirrors the original api_client patch, which retried only
-    ``ClientConnectorError`` and re-raised ``ApiException`` so callers still see
-    real API errors (with the decoded body).
+    Retries ``ClientConnectorError`` (mirroring the original api_client patch,
+    which retried only that and re-raised ``ApiException`` so callers still see
+    real API errors with the decoded body).
+
+    Excludes ``ClientConnectorDNSError``: it is a ``ClientConnectorError``
+    subclass that ``_create_direct_connection`` raises after the ``OSError``
+    from ``_resolve_host``, which the aiohttp DNS seam has *already* retried to
+    exhaustion. Retrying it again here would nest the two seams (up to
+    ``MAX_ATTEMPTS`` request retries x ``MAX_ATTEMPTS`` DNS retries each),
+    blowing past the documented backoff budget. Letting it propagate keeps DNS
+    retried exactly once, at its true source.
     """
     # pylint: disable-next=import-outside-toplevel
     from aiohttp.client_exceptions import ClientConnectorError
 
+    try:
+        # ClientConnectorDNSError only exists in aiohttp >= 3.10; on older pins
+        # (the floor is >=3.8) there is no separate DNS subclass, so nothing to
+        # exclude and DNS errors simply retry here as before.
+        # pylint: disable-next=import-outside-toplevel
+        from aiohttp.client_exceptions import ClientConnectorDNSError
+
+        if isinstance(exc, ClientConnectorDNSError):
+            return False
+    except ImportError:
+        pass
     return isinstance(exc, ClientConnectorError)
 
 

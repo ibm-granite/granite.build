@@ -26,6 +26,14 @@ from typing import Self
 
 import pytest
 from aiohttp.client_exceptions import ClientConnectorError
+
+try:
+    from aiohttp.client_exceptions import ClientConnectorDNSError
+
+    HAS_DNS_ERROR = True
+except ImportError:  # aiohttp < 3.10
+    ClientConnectorDNSError = None  # type: ignore[assignment,misc]
+    HAS_DNS_ERROR = False
 from aiohttp.connector import TCPConnector
 
 import gbserver.resilience.transport_retry as tr
@@ -141,11 +149,31 @@ class TestPredicates:
         assert _is_retryable_dns_error(asyncio.TimeoutError()) is False
         assert _is_retryable_dns_error(ValueError("nope")) is False
 
+    def test_dns_retries_timeout_with_errno(self: Self) -> None:
+        # The original patch only re-raised the errno-less cancellation
+        # TimeoutError; a TimeoutError carrying an errno is a real network error
+        # and must still be retried (mirrors ``exc.errno is None`` guard).
+        errno_timeout = asyncio.TimeoutError()
+        errno_timeout.errno = 110  # ETIMEDOUT
+        assert _is_retryable_dns_error(errno_timeout) is True
+
     def test_connector_retries_only_client_connector_error(self: Self) -> None:
         # Build a minimal ClientConnectorError instance without a real socket.
         err = ClientConnectorError(connection_key=_FakeKey(), os_error=OSError("x"))
         assert _is_retryable_connector_error(err) is True
         assert _is_retryable_connector_error(OSError("x")) is False
+
+    @pytest.mark.skipif(
+        not HAS_DNS_ERROR, reason="ClientConnectorDNSError needs aiohttp >= 3.10"
+    )
+    def test_connector_does_not_retry_dns_error(self: Self) -> None:
+        # ClientConnectorDNSError is handled at the DNS seam (_resolve_host);
+        # retrying it again at the request seam would nest the two budgets.
+        dns_err = ClientConnectorDNSError(
+            connection_key=_FakeKey(), os_error=OSError("dns")
+        )
+        assert isinstance(dns_err, ClientConnectorError)
+        assert _is_retryable_connector_error(dns_err) is False
 
     @requires_k8s
     def test_connector_does_not_retry_api_exception(self: Self) -> None:
