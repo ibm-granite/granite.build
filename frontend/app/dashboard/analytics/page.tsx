@@ -540,7 +540,7 @@ export default function AnalyticsPage() {
                                           <TableRow key={b.build_id}>
                                             <TableCell>
                                               <Link
-                                                href={`/dashboard/builds/${b.build_id}`}
+                                                href={`/dashboard/builds/_/?id=${b.build_id}`}
                                                 style={{
                                                   color:
                                                     "var(--cds-link-primary, #0f62fe)",

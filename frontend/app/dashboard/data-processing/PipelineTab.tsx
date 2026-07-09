@@ -131,7 +131,7 @@ export function PipelineTab({ datasets, search, isLoading }: Props) {
                   status={ds.latest_build_status as BuildStatus}
                 />
                 <Link
-                  href={`/dashboard/builds/${ds.latest_build_id}`}
+                  href={`/dashboard/builds/_/?id=${ds.latest_build_id}`}
                   style={{ fontSize: "0.8125rem" }}
                 >
                   {ds.builds[0]?.name ?? ds.latest_build_id.slice(0, 8)}

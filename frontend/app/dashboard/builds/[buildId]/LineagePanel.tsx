@@ -498,7 +498,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
               kind="secondary"
               onClick={() => {
                 if (artifactNavNode)
-                  window.location.href = `/dashboard/artifacts/_/#${artifactNavNode.node.id}`;
+                  router.push(`/dashboard/artifacts/_/?id=${artifactNavNode.node.id}`);
                 setArtifactNavNode(null);
               }}
             >
@@ -526,7 +526,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
           secondaryButtonText="Cancel"
           onRequestSubmit={() => {
             if (artifactNavNode)
-              window.location.href = `/dashboard/artifacts/_/#${artifactNavNode.node.id}`;
+              router.push(`/dashboard/artifacts/_/?id=${artifactNavNode.node.id}`);
             setArtifactNavNode(null);
           }}
           onSecondarySubmit={() => setArtifactNavNode(null)}

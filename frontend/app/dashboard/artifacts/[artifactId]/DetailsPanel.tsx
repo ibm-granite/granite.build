@@ -90,7 +90,7 @@ export function DetailsPanel({
         {artifact.build_id && (
           <DetailField label="Created by build">
             <Link
-              href={`/dashboard/builds/${artifact.build_id}`}
+              href={`/dashboard/builds/_/?id=${artifact.build_id}`}
               style={{ color: "var(--cds-link-primary, #0f62fe)" }}
             >
               <span className={styles.mono}>{artifact.build_id}</span>

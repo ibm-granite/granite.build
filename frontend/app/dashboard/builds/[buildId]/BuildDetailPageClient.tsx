@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { InlineLoading, InlineNotification, SkeletonText, Tag } from "@carbon/react";
 import styles from "./page.module.scss";
 import { useQuery } from "@tanstack/react-query";
@@ -16,15 +17,62 @@ import { BuildDetails } from "./BuildDetails";
 
 const ACTIVE_STATUSES = new Set(["running", "submitted", "pending"]);
 
+// useSearchParams() bails the page out to client-side rendering up to the
+// nearest Suspense boundary during static export — without one here, the
+// statically-exported HTML (built with no query param) and the client's
+// first render (which already sees the real ?id=) disagree, tripping a
+// hydration mismatch (React error #418). The fallback below matches what
+// the static export produces so hydration has nothing to reconcile against.
 export default function BuildDetailPage() {
-  const [buildId, setBuildId] = useState('');
+  return (
+    <Suspense fallback={<BuildDetailFallback />}>
+      <BuildDetailContent />
+    </Suspense>
+  );
+}
+
+function BuildDetailFallback() {
+  return (
+    <div style={{ padding: "2rem 1.5rem 1.5rem" }}>
+      <PageHeader
+        crumbs={[
+          { label: "Granite.build", to: "/" },
+          { label: "Builds", to: "/dashboard/builds" },
+          { label: "…" },
+        ]}
+      />
+      <div className={styles.buildHeaderRow}>
+        <SkeletonText width="300px" />
+      </div>
+    </div>
+  );
+}
+
+function BuildDetailContent() {
+  // The real id lives in the ?id= query param, not location.hash — a hash read
+  // in a mount-only effect breaks when navigating from one build's page to
+  // another without an intervening route change, since both are the same "_"
+  // route to Next's router and a one-time hash read never sees the new id.
+  // useSearchParams() is reactive, but it isn't enough by itself: Next's router
+  // patches window.history, so our own cosmetic replaceState below (stripping
+  // the query param once we've adopted the id) makes useSearchParams() briefly
+  // report no id again. Latching the id into state — only ever overwritten by
+  // a new *non-empty* param value — survives that revert.
+  const searchParams = useSearchParams();
+  const paramId = searchParams.get('id');
+  const [buildId, setBuildId] = useState(paramId ?? '');
+
   useEffect(() => {
-    const id = window.location.hash.slice(1);
-    if (id) {
-      setBuildId(id);
-      window.history.replaceState(null, '', `/dashboard/builds/${id}/`);
+    if (paramId && paramId !== buildId) {
+      setBuildId(paramId);
     }
-  }, []);
+  }, [paramId, buildId]);
+
+  useEffect(() => {
+    if (buildId) {
+      window.history.replaceState(null, '', `/dashboard/builds/${buildId}/`);
+    }
+  }, [buildId]);
 
   const refetchInterval = (data: unknown) => {
     const b = data as { status?: string } | undefined;

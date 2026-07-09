@@ -127,7 +127,7 @@ function ArtifactTable({
                 <td style={{ ...tdStyle, wordBreak: "break-all" }}>
                   {linked ? (
                     <Link
-                      href={`/dashboard/artifacts/${artifactId}`}
+                      href={`/dashboard/artifacts/_/?id=${artifactId}`}
                       style={{
                         color: "var(--cds-link-primary)",
                         fontSize: "0.75rem",

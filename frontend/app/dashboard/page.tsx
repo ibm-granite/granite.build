@@ -10,6 +10,7 @@ import {
   ScaleTypes,
 } from "@carbon/charts";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ClickableTile,
   Dropdown,
@@ -368,10 +369,11 @@ function SpacesOverviewTile() {
 // ── Builds ────────────────────────────────────────────────────────────────────
 
 function BuildTile({ build }: { build: Build }) {
+  const router = useRouter();
   return (
     <ClickableTile
       id={`home-build-${build.uuid}`}
-      onClick={() => { window.location.href = `/dashboard/builds/_/#${build.uuid}` }}
+      onClick={() => router.push(`/dashboard/builds/_/?id=${build.uuid}`)}
       style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}
     >
       <div className={styles.buildTileHeader}>

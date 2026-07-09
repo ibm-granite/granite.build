@@ -199,7 +199,7 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         # gbcli
         gbserver_host="http://localhost:8080",
         default_space="standalone",
-        web_ui_url="http://localhost:8080",
+        web_ui_url="http://localhost:8080/dashboard",
         config_spaces="",
         config_profile="",
         server_log_application_name="gbserver-standalone",

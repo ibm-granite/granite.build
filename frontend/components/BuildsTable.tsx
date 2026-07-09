@@ -18,6 +18,7 @@ import {
 } from "@carbon/react";
 
 import React from "react";
+import { useRouter } from "next/navigation";
 import type { Build, BuildStatus } from "@/types";
 import { BuildStatusBadge } from "@/components/BuildStatusBadge";
 import { TagsCell } from "@/components/TagsCell";
@@ -62,6 +63,8 @@ export function BuildsTable({
   onPageChange,
   onSearch,
 }: Props) {
+  const router = useRouter();
+
   if (isLoading) {
     return (
       <DataTableSkeleton
@@ -125,7 +128,7 @@ export function BuildsTable({
                   <TableRow
                     key={row.id}
                     {...rowProps}
-                    onClick={() => { window.location.href = `/dashboard/builds/_/#${row.id}` }}
+                    onClick={() => router.push(`/dashboard/builds/_/?id=${row.id}`)}
                     style={{ cursor: "pointer" }}
                   >
                     {row.cells.map((cell) => (
