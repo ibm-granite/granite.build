@@ -38,15 +38,22 @@ logger = get_logger(__name__)
 _sidecar_process: "subprocess.Popen[bytes] | None" = None
 
 
-def _start_analytics_sidecar() -> None:
+def _start_analytics_sidecar(host: str = "127.0.0.1", port: int = 8080) -> None:
     """Start gb_ui_backend as a background subprocess if it is installed.
 
     If GB_UI_DATABASE_URL is not set, defaults to the sidecar's own SQLite file in
     the GB home directory (see SIDECAR_DB_FILENAME in gb_ui_backend/config.py).
     If GB_UI_GBSERVER_DB_URL is not set and gbserver is running in SQLite mode,
     defaults to gbserver's own SQLite file so standalone analytics work out of the box.
+    If GB_UI_GBSERVER_URL is not set, defaults to the main server's own host/port so
+    the sidecar can report the frontend URL at the end of its own startup log.
+
+    Args:
+        host: Bind address the main REST server (and frontend) is listening on.
+        port: Port the main REST server (and frontend) is listening on.
     """
     import importlib.util
+
     if importlib.util.find_spec("gb_ui_backend") is None:
         return
 
@@ -59,10 +66,17 @@ def _start_analytics_sidecar() -> None:
             f"sqlite+aiosqlite:///{os.path.join(gb_home, 'dashboard-analytics.db')}"
         )
 
-    if not os.environ.get("GB_UI_GBSERVER_DB_URL") and os.environ.get(ENV_VAR_METADATA_STORAGE, "sql").lower() == "sqlite":
+    if (
+        not os.environ.get("GB_UI_GBSERVER_DB_URL")
+        and os.environ.get(ENV_VAR_METADATA_STORAGE, "sql").lower() == "sqlite"
+    ):
         os.environ["GB_UI_GBSERVER_DB_URL"] = (
             f"sqlite+aiosqlite:///{os.path.join(gb_home, SQLITE_DB_FILE_NAME)}"
         )
+
+    if not os.environ.get("GB_UI_GBSERVER_URL"):
+        browse_host = "127.0.0.1" if host == "0.0.0.0" else host
+        os.environ["GB_UI_GBSERVER_URL"] = f"http://{browse_host}:{port}"
 
     _sidecar_process = subprocess.Popen(
         [sys.executable, "-m", "gb_ui_backend"],
@@ -83,6 +97,7 @@ def _stop_analytics_sidecar() -> None:
             _sidecar_process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             _sidecar_process.kill()
+
 
 _IBMID_REQUIRED_VARS = [
     "GBSERVER_IBMID_CLIENT_ID",
@@ -111,7 +126,7 @@ def cli(
             )
             sys.exit(1)
 
-    _start_analytics_sidecar()
+    _start_analytics_sidecar(host="0.0.0.0", port=port)
 
     try:
         logger.info(
