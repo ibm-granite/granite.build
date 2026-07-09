@@ -48,7 +48,7 @@ export default function BuildsPage() {
   const [spaceName, setSpaceName] = useState<string | undefined>();
   const [selectedTags, setTags] = useState<string[]>([]);
   const [status, setStatus] = useState<string>("all");
-  const [, setSearch] = useState("");
+  const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
@@ -90,6 +90,21 @@ export default function BuildsPage() {
     setPage(p);
     setPageSize(ps);
   }, []);
+
+  const handleSearch = useCallback((term: string) => {
+    setSearch(term);
+    setPage(1);
+  }, []);
+
+  // gbserver's list endpoint has no name/search param, so search filters the
+  // current page of already-fetched builds rather than querying the server.
+  const allItems = data?.items ?? [];
+  const visibleItems = search
+    ? allItems.filter((b) =>
+        b.name.toLowerCase().includes(search.toLowerCase()),
+      )
+    : allItems;
+  const visibleTotal = search ? visibleItems.length : data?.total ?? 0;
 
   const spaceItems = [
     { id: "__all__", label: "All spaces" },
@@ -181,13 +196,13 @@ export default function BuildsPage() {
       )}
 
       <BuildsTable
-        builds={data?.items ?? []}
-        total={data?.total ?? 0}
+        builds={visibleItems}
+        total={visibleTotal}
         page={page}
         pageSize={pageSize}
         isLoading={isLoading}
         onPageChange={handlePageChange}
-        onSearch={setSearch}
+        onSearch={handleSearch}
       />
     </div>
   );

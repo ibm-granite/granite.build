@@ -96,6 +96,7 @@ export default function ArtifactsPage() {
   const [artifactType, setArtifactType] = useState<string>("all");
   const [artifactStatus, setArtifactStatus] = useState<string>("all");
   const [selectedTags, setTags] = useState<string[]>([]);
+  const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [sortKey, setSortKey] = useState("updated_time");
@@ -141,6 +142,11 @@ export default function ArtifactsPage() {
     setPageSize(ps);
   }, []);
 
+  const handleSearch = useCallback((term: string) => {
+    setSearch(term);
+    setPage(1);
+  }, []);
+
   const spaceItems = [
     { id: "__all__", label: "All spaces" },
     ...spaces.map((s) => ({ id: s.name, label: s.name })),
@@ -149,6 +155,7 @@ export default function ArtifactsPage() {
   const allRows = (data?.items ?? [])
     .filter((a) => artifactType === "all" || a.artifact_type === artifactType)
     .filter((a) => artifactStatus === "all" || a.status === artifactStatus)
+    .filter((a) => a.name.toLowerCase().includes(search.toLowerCase()))
     .map((a) => ({
       id: a.uuid,
       name: a.name,
@@ -318,7 +325,10 @@ export default function ArtifactsPage() {
             <TableContainer>
               <TableToolbar>
                 <TableToolbarContent>
-                  <TableToolbarSearch placeholder="Search artifacts…" />
+                  <TableToolbarSearch
+                    placeholder="Search artifacts…"
+                    onChange={(_e, value) => handleSearch(value ?? "")}
+                  />
                 </TableToolbarContent>
               </TableToolbar>
               <Table {...getTableProps()} size="md">
