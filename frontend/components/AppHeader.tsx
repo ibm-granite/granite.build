@@ -23,9 +23,9 @@ import {
   Product,
   Asleep,
   Dashboard,
-  DataVis_4,
   DeliveryParcel,
   Light,
+  Pipelines,
   Switcher as SwitcherIcon,
 } from "@carbon/icons-react";
 import { useTheme } from "@/hooks/useTheme";
@@ -51,7 +51,7 @@ export function AppHeader() {
           isCollapsible
           onClick={() => setIsSideNavExpanded((v) => !v)}
         />
-        <HeaderName href="/" prefix="">
+        <HeaderName as={Link} href="/dashboard" prefix="">
           Granite.build
         </HeaderName>
         <HeaderGlobalBar>
@@ -136,7 +136,7 @@ export function AppHeader() {
             <SideNavLink
               as={Link}
               href="/dashboard/data-processing"
-              renderIcon={DataVis_4}
+              renderIcon={Pipelines}
               aria-current={
                 pathname === "/dashboard/data-processing" ? "page" : undefined
               }

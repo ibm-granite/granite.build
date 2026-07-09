@@ -85,8 +85,49 @@ root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
 # Override with GBSERVER_UI_DIR for non-standard layouts.
 _UI_DIR = os.environ.get(
     "GBSERVER_UI_DIR",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static", "ui"),
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static", "ui"
+    ),
 )
+
+
+def _is_rsc_request(request: Request) -> bool:
+    return request.headers.get("rsc") == "1" or "_rsc" in request.query_params
+
+
+@root_api.middleware("http")
+async def _serve_rsc_payload(request: Request, call_next):
+    """Serve the pre-rendered RSC flight payload for Next.js App Router
+    client-side navigations, instead of letting StaticFiles return the page's
+    HTML document for every request regardless of headers.
+
+    `output: 'export'` ships a `<route>/index.txt` flight-stream payload
+    alongside every route's `index.html`. The client router fetches it at
+    `<route>.txt` (no trailing slash before `.txt`, e.g. `/dashboard/builds.txt`
+    for the route `/dashboard/builds/`) — a *different* path than the payload's
+    on-disk location — identified by the `rsc: 1` header or `_rsc` query param.
+    Without this, every single navigation — `<Link>`, `router.push`, all of it
+    — 404s fetching that payload, fails to parse a response as flight data,
+    and silently falls back to a full hard reload, which is why the
+    client-only theme attribute on <html> keeps resetting between page
+    transitions.
+    """
+    path = request.url.path
+    if (
+        _is_rsc_request(request)
+        and not path.startswith("/api/")
+        and path.endswith(".txt")
+    ):
+        rel = path[: -len(".txt")].strip("/")
+        txt_path = (
+            os.path.join(_UI_DIR, rel, "index.txt")
+            if rel
+            else os.path.join(_UI_DIR, "index.txt")
+        )
+        if os.path.isfile(txt_path):
+            return FileResponse(txt_path, media_type="text/x-component")
+    return await call_next(request)
+
 
 if os.path.isdir(_UI_DIR):
     # html=True makes StaticFiles serve index.html for directory paths
@@ -99,7 +140,9 @@ else:
 
 
 @root_api.exception_handler(404)
-async def _spa_fallback(request: Request, exc: Exception) -> FileResponse | JSONResponse:
+async def _spa_fallback(
+    request: Request, exc: Exception
+) -> FileResponse | JSONResponse:
     """Serve a clean SPA shell for unknown non-API paths so the client-side router can handle them.
 
     Uses dashboard/index.html rather than the root index.html because the root
@@ -113,7 +156,7 @@ async def _spa_fallback(request: Request, exc: Exception) -> FileResponse | JSON
     tells the router to render the route fresh from its client-side bundle.
     """
     if not request.url.path.startswith("/api/"):
-        if request.headers.get("rsc") == "1" or "_rsc" in (request.url.query or ""):
+        if _is_rsc_request(request):
             # RSC data requests must not be intercepted — returning HTML instead of
             # RSC data confuses the App Router and causes wrong-page renders.
             return JSONResponse({"detail": "Not Found"}, status_code=404)

@@ -22,16 +22,16 @@ function readTheme(): Theme {
 }
 
 export function useTheme() {
-  const [theme, setThemeState] = useState<Theme>(() => {
-    if (typeof window === 'undefined') return 'g10'
-    const stored = (localStorage.getItem(STORAGE_KEY) as Theme) ?? 'g10'
-    applyTheme(stored)
-    return stored
-  })
+  // Always starts at 'g10', matching what the server rendered — SSR can't know
+  // the stored preference, and mutating the DOM during render (instead of in an
+  // effect) causes a React hydration mismatch on <html>. The inline script in
+  // app/layout.tsx already set the real attribute before hydration; the effect
+  // below just reads it back afterward, which is an ordinary post-hydration
+  // state update, not something hydration validates against.
+  const [theme, setThemeState] = useState<Theme>('g10')
 
-  // Keep all useTheme instances in sync by observing the attribute —
-  // the same pattern useChartsTheme uses.
   useEffect(() => {
+    setThemeState(readTheme())
     const observer = new MutationObserver(() => setThemeState(readTheme()))
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-carbon-theme'] })
     return () => observer.disconnect()
@@ -53,8 +53,10 @@ function readChartsTheme(): 'white' | 'g100' {
 }
 
 export function useChartsTheme(): 'white' | 'g100' {
-  const [theme, setTheme] = useState<'white' | 'g100'>(readChartsTheme)
+  // Same SSR-safe-default-then-sync-in-effect pattern as useTheme() above.
+  const [theme, setTheme] = useState<'white' | 'g100'>('white')
   useEffect(() => {
+    setTheme(readChartsTheme())
     const observer = new MutationObserver(() => setTheme(readChartsTheme()))
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-carbon-theme'] })
     return () => observer.disconnect()
