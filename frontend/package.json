@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "NODE_TLS_REJECT_UNAUTHORIZED=0 next dev --port 3000 --experimental-https",
     "build": "next build && rm -f out/404.html",
-    "start": "next start",
     "lint": "next lint",
     "test": "node --test tests/*.test.js",
     "test:build": "yarn build && node --test tests/build-output.test.js"

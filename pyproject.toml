@@ -107,8 +107,6 @@ sidecar = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",
-    "tenacity>=8.3",
-    "pyyaml>=6.0",
     "aiosqlite>=0.19",
 ]
 # All optional dependencies

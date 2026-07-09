@@ -1,4 +1,5 @@
 """Central configuration — all env vars for the analytics sidecar."""
+
 from __future__ import annotations
 
 import os
@@ -10,7 +11,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Default SQLite filename for the sidecar's analytics database.
 # Stored in ~/.granite.build/ alongside gbserver's llmb-server.db.
 SIDECAR_DB_FILENAME = "dashboard-analytics.db"
-
 
 
 class Config(BaseSettings):
@@ -33,7 +33,10 @@ class Config(BaseSettings):
     gbserver_url: str = Field(default="http://localhost:8080")
 
     # GBMCP server (MCP-over-HTTP) — required for flight plans feature
-    gbmcp_url: str = Field(default="", description="Streamable-HTTP MCP endpoint, e.g. http://localhost:3001/mcp")
+    gbmcp_url: str = Field(
+        default="",
+        description="Streamable-HTTP MCP endpoint, e.g. http://localhost:3001/mcp",
+    )
 
     # LLM — any OpenAI-compatible endpoint. Empty = AI analysis disabled.
     llm_base_url: str = Field(default="")
@@ -43,7 +46,6 @@ class Config(BaseSettings):
         description="Comma-separated model IDs to try in order (first = preferred).",
     )
     llm_timeout: int = Field(default=60)
-
 
     # gbserver database (for AI data collector — optional)
     gbserver_db_url: str = Field(default="")
@@ -62,30 +64,12 @@ class Config(BaseSettings):
     # CORS origins allowed to call this sidecar
     cors_origins: list[str] = Field(default=["http://localhost:5173"])
 
-    # K8s sync — multi-cluster YAML config (gb_dashboard compatible format)
-    # If set, overrides kubeconfig/k8s_namespaces for multi-cluster support.
-    # Reads from GB_UI_CONFIG env var.
-    config: str = Field(default="", description="Path to YAML cluster config file")
-
-    # K8s sync — single kubeconfig fallback (used when config_file is not set)
-    kubeconfig: str = Field(default="", description="Path to kubeconfig file")
-    k8s_namespaces: str = Field(default="", description="Comma-separated namespaces to watch")
-    sync_interval: int = Field(default=60, description="Seconds between K8s sync polls")
-
     # Set to false to disable the AI analysis daemon without removing LLM credentials
     ai_analysis_enabled: bool = Field(default=True)
 
     @property
     def llm_models_list(self) -> list[str]:
         return [m.strip() for m in self.llm_models.split(",") if m.strip()]
-
-    @property
-    def k8s_namespaces_list(self) -> list[str]:
-        return [n.strip() for n in self.k8s_namespaces.split(",") if n.strip()]
-
-    @property
-    def k8s_enabled(self) -> bool:
-        return bool(self.config or self.kubeconfig)
 
     @property
     def ai_enabled(self) -> bool:
@@ -98,6 +82,7 @@ class Config(BaseSettings):
 
 class GitHubConfig(BaseSettings):
     """Reads GITHUB_* vars — no GB_UI_ prefix, so a separate settings class."""
+
     model_config = SettingsConfigDict(
         env_file=os.path.join(os.path.dirname(__file__), "../../../.env"),
         extra="ignore",
