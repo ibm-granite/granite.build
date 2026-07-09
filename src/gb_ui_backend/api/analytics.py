@@ -16,7 +16,7 @@ import uuid as uuid_module
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import case, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -338,7 +338,17 @@ class SaveTrendRequest(BaseModel):
     data: dict
     title: Optional[str] = None
     is_public: bool = False
-    author: str = "unknown"
+
+
+def get_current_author(request: Request) -> str:
+    """Derive the caller's identity from the X-User-Email header set by
+    gbserver's AuthMiddleware/analytics proxy (see frontend_routes.py).
+
+    Falls back to "standalone" in apikey/localhost mode, which has no
+    per-user identity — this must never be trusted from a client-supplied
+    field, since it's used to scope/authorize saved-analysis ownership.
+    """
+    return request.headers.get("x-user-email") or "standalone"
 
 
 class TrendHistoryItem(BaseModel):
@@ -362,6 +372,7 @@ class TrendHistoryResponse(BaseModel):
 @router.post("/builds/failure-trends/save")
 async def save_trend_analysis(
     body: SaveTrendRequest,
+    author: str = Depends(get_current_author),
     db: AsyncSession = Depends(get_db),
     config: Config = Depends(get_config),
 ):
@@ -385,7 +396,7 @@ async def save_trend_analysis(
         prompt_version="v1",
         summary=summary,
         raw_response=body.data,
-        feedback_author=body.author,
+        feedback_author=author,
         extras={
             "is_public": body.is_public,
             "title": body.title,
@@ -405,7 +416,7 @@ async def save_trend_analysis(
 @router.get("/builds/failure-trends/history", response_model=TrendHistoryResponse)
 async def get_trend_history(
     tab: str = Query(default="mine"),
-    author: str = Query(default=""),
+    author: str = Depends(get_current_author),
     db: AsyncSession = Depends(get_db),
     config: Config = Depends(get_config),
 ):
@@ -416,7 +427,7 @@ async def get_trend_history(
         GbdMeta.source == "trend_analysis",
         GbdMeta.build_id == TREND_SENTINEL_BUILD_ID,
     ]
-    if tab == "mine" and author:
+    if tab == "mine":
         filters.append(GbdMeta.feedback_author == author)
     else:
         # .astext is PostgreSQL JSONB-specific and doesn't exist on the generic
@@ -493,7 +504,7 @@ async def get_saved_trend(
 async def toggle_trend_visibility(
     update_id: str,
     is_public: bool = Query(),
-    author: str = Query(default=""),
+    author: str = Depends(get_current_author),
     db: AsyncSession = Depends(get_db),
     config: Config = Depends(get_config),
 ):
@@ -512,7 +523,7 @@ async def toggle_trend_visibility(
     ).scalar_one_or_none()
     if not row:
         raise HTTPException(404, "Not found")
-    if author and row.feedback_author != author:
+    if row.feedback_author != author:
         raise HTTPException(403, "Not your analysis")
     ex = dict(row.extras or {})
     ex["is_public"] = is_public
@@ -524,7 +535,7 @@ async def toggle_trend_visibility(
 @router.delete("/builds/failure-trends/{update_id}")
 async def delete_saved_trend(
     update_id: str,
-    author: str = Query(default=""),
+    author: str = Depends(get_current_author),
     db: AsyncSession = Depends(get_db),
     config: Config = Depends(get_config),
 ):
@@ -543,7 +554,7 @@ async def delete_saved_trend(
     ).scalar_one_or_none()
     if not row:
         raise HTTPException(404, "Not found")
-    if author and row.feedback_author != author:
+    if row.feedback_author != author:
         raise HTTPException(403, "Not your analysis")
     await db.execute(delete(GbdMeta).where(GbdMeta.update_id == uid))
     await db.commit()
