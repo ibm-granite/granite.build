@@ -16,16 +16,9 @@ import {
 } from "@carbon/react";
 import { Download, Copy, Renew, Restart } from "@carbon/icons-react";
 import { useQuery } from "@tanstack/react-query";
-import { getBuildStepLog } from "@/api/gbserver";
-import {
-  getBuildLogs,
-  getAIAnalysis,
-  analyzeLogsContent,
-} from "@/api/analytics";
+import { getBuildStepLog, getBuildLiveLogs } from "@/api/gbserver";
+import { getAIAnalysis, analyzeLogsContent } from "@/api/analytics";
 import type { AIAnalysis, BuildStatusDetail, BuildStepRun } from "@/types";
-
-const SIDECAR_CONTAINERS = ["main", "sidecar"] as const;
-type SidecarContainer = (typeof SIDECAR_CONTAINERS)[number];
 
 interface Props {
   buildId: string;
@@ -334,23 +327,26 @@ function StepLogsView({
   );
 }
 
-// ── Sidecar cloud-logs view (running steps, no log_path yet) ──────────────────
+// ── Live log view (running steps, no log_path yet) ─────────────────────────────
+//
+// Reads directly from gbserver's /logs/logquery endpoint, which in standalone
+// mode serves MESSAGE_EVENT rows straight from the local event store (see
+// getBuildLiveLogs in api/gbserver.ts) — no cloud logs service required.
 
-function SidecarLogsView({
+function LiveLogsView({
   buildId,
   onFirstContent,
 }: {
   buildId: string;
   onFirstContent?: (c: string) => void;
 }) {
-  const [container, setContainer] = useState<SidecarContainer>("main");
   const [stream, setStream] = useState(false);
   const [wrap, setWrap] = useState(false);
   const [filter, setFilter] = useState("");
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["logs-panel-sidecar", buildId, container],
-    queryFn: () => getBuildLogs(buildId, container, 500),
+    queryKey: ["logs-panel-live", buildId],
+    queryFn: () => getBuildLiveLogs(buildId, 500),
     refetchInterval: stream ? 5000 : false,
     staleTime: 0,
   });
@@ -376,7 +372,7 @@ function SidecarLogsView({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${buildId}-${container}.log`;
+    a.download = `${buildId}.log`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -391,39 +387,6 @@ function SidecarLogsView({
         gap: "0.5rem",
       }}
     >
-      <div
-        style={{
-          display: "flex",
-          gap: 0,
-          flexShrink: 0,
-          borderBottom: "1px solid var(--cds-border-subtle-01)",
-        }}
-      >
-        {SIDECAR_CONTAINERS.map((c) => (
-          <button
-            key={c}
-            onClick={() => setContainer(c)}
-            style={{
-              padding: "0.5rem 1rem",
-              fontSize: "0.875rem",
-              background: "none",
-              border: "none",
-              borderBottom:
-                container === c
-                  ? "2px solid var(--cds-interactive)"
-                  : "2px solid transparent",
-              color:
-                container === c
-                  ? "var(--cds-text-primary)"
-                  : "var(--cds-text-secondary)",
-              cursor: "pointer",
-              marginBottom: "-1px",
-            }}
-          >
-            {c}
-          </button>
-        ))}
-      </div>
       <Layer>
         <Toolbar
           onRefetch={() => refetch()}
@@ -658,7 +621,7 @@ export function LogsPanel({ buildId, status }: Props) {
         {stepsWithLogs.length > 0 ? (
           <StepLogsView steps={stepsWithLogs} onFirstContent={setLogContent} />
         ) : (
-          <SidecarLogsView buildId={buildId} onFirstContent={setLogContent} />
+          <LiveLogsView buildId={buildId} onFirstContent={setLogContent} />
         )}
       </div>
     </div>

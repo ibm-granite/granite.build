@@ -315,6 +315,51 @@ export async function getBuildStepLog(logPath: string): Promise<string> {
   return data
 }
 
+// gbserver's /logs/logquery mirrors the IBM Cloud Logs query shape so the
+// same endpoint backs `gb build log` regardless of deployment. In standalone
+// mode it's served by LocalLogQueryAPI (src/gbserver/utils/local_logquery.py),
+// which reads MESSAGE_EVENT rows for the build straight out of gbserver's own
+// event store — no cloud logs service or K8s involved.
+export interface BuildLiveLogsResult {
+  lines: string[]
+  total: number
+}
+
+export async function getBuildLiveLogs(buildId: string, limit = 500): Promise<BuildLiveLogsResult> {
+  const endDate = Date.now()
+  const startDate = endDate - 24 * 3600_000
+
+  const { data } = await client.post<{
+    logs: Array<{ text: string | null; timestamp: number | null }>
+    total: number
+  }>('/logs/logquery', {
+    queryDef: {
+      startDate,
+      endDate,
+      pageSize: limit,
+      pageIndex: 0,
+      type: 'freeText',
+      queryParams: {
+        jsonObject: { 'kubernetes.labels.granite-dot-build/build-id': [buildId] },
+      },
+      sortModel: [{ field: 'timestamp', ordering: 'asc', missing: '_last' }],
+    },
+  })
+
+  const lines = (data.logs ?? [])
+    .slice()
+    .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0))
+    .map((l) => {
+      try {
+        return (JSON.parse(l.text ?? '{}') as { log?: string }).log ?? ''
+      } catch {
+        return l.text ?? ''
+      }
+    })
+
+  return { lines: lines.slice(-limit), total: data.total || lines.length }
+}
+
 
 function extractTagStrings(data: unknown): string[] {
   const arr: unknown[] = Array.isArray(data)
