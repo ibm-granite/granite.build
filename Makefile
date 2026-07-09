@@ -484,6 +484,11 @@ YARN ?= yarn
 
 .PHONY: clean-frontend
 clean-frontend:
+	@pids="$$(lsof -ti tcp:8090 2>/dev/null)"; \
+	if [ -n "$$pids" ]; then \
+		echo "Killing stale gb_ui_backend sidecar on :8090 (pid(s): $$pids)"; \
+		kill $$pids 2>/dev/null || true; \
+	fi
 	rm -rf frontend/out frontend/.next src/gbserver/static/ui
 
 .PHONY: build-frontend
