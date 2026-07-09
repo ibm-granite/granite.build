@@ -1,7 +1,7 @@
 /**
- * API client for the gb-ui analytics server (/api/analytics/*).
- * The server always runs on :8090 alongside the client — no URL config needed.
- * All calls return null gracefully when the server is not running or not configured.
+ * API client for the gb-ui analytics routes (/api/analytics/*), served by
+ * gbserver itself at the same origin — no separate URL config needed.
+ * All calls return null gracefully when analytics is not configured.
  */
 import axios, { AxiosError } from 'axios'
 import { apiBase } from '@/api/client'
@@ -14,7 +14,7 @@ import type {
 
 const client = axios.create({ baseURL: apiBase('/api/analytics') })
 
-// Wraps calls so they return null instead of throwing when sidecar is absent
+// Wraps calls so they return null instead of throwing when analytics is unavailable
 async function safeGet<T>(path: string, params?: Record<string, unknown>): Promise<T | null> {
   try {
     const { data } = await client.get<T>(path, { params })

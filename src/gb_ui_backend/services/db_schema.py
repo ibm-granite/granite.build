@@ -69,7 +69,7 @@ async def get_optional_db() -> AsyncGenerator[Optional[AsyncSession], None]:
     """Yields None when GB_UI_DATABASE_URL is not set; yields a session otherwise.
 
     Use this as the dependency for endpoints that have a GbserverSource fallback
-    path so they can serve data even without a sidecar analytics database.
+    path so they can serve data even without an analytics database.
     """
     if not get_config().database_url:
         yield None

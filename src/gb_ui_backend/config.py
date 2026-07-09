@@ -1,4 +1,4 @@
-"""Central configuration — all env vars for the analytics sidecar."""
+"""Central configuration — all env vars for the analytics service."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Default SQLite filename for the sidecar's analytics database.
+# Default SQLite filename for the analytics database.
 # Stored in ~/.granite.build/ alongside gbserver's llmb-server.db.
-SIDECAR_DB_FILENAME = "dashboard-analytics.db"
+ANALYTICS_DB_FILENAME = "dashboard-analytics.db"
 
 
 class Config(BaseSettings):
@@ -22,7 +22,7 @@ class Config(BaseSettings):
         extra="ignore",
     )
 
-    # Sidecar analytics database — SQLite or PostgreSQL.
+    # Analytics database — SQLite or PostgreSQL.
     # Auto-set to sqlite+aiosqlite:///<GB_HOME_DIR>/dashboard-analytics.db by gbserver if unset.
     database_url: str = Field(
         default="",
@@ -61,7 +61,7 @@ class Config(BaseSettings):
     cos_secret_key: str = Field(default="")
     cos_bucket: str = Field(default="")
 
-    # CORS origins allowed to call this sidecar
+    # CORS origins allowed to call this service
     cors_origins: list[str] = Field(default=["http://localhost:5173"])
 
     # Set to false to disable the AI analysis daemon without removing LLM credentials

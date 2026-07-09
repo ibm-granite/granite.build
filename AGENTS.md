@@ -122,7 +122,7 @@ The central registry is `src/gbserver/types/constants.py`. All gbserver env vars
 
 ## Frontend (gb-ui)
 
-The `frontend/` directory contains the gb-ui Next.js dashboard and `src/gb_ui_backend/` is its analytics sidecar. Both are part of this repo after the gb-ui migration.
+The `frontend/` directory contains the gb-ui Next.js dashboard and `src/gb_ui_backend/` is its analytics service. Both are part of this repo after the gb-ui migration.
 
 ### Frontend commands
 
@@ -176,14 +176,14 @@ cd frontend && yarn dev       # proxies /api/* to gbserver at :8080 (no CORS)
 
 `GBSERVER_API_URL` in `.env.local` sets the proxy destination — the browser always uses relative paths, so no CORS configuration is needed on gbserver.
 
-### Running with the analytics sidecar
+### Running with the analytics service
 
-The sidecar (`gb_ui_backend`) is bundled with the `standalone` extra and **starts automatically** alongside gbserver. Both DB URLs default to SQLite in `~/.granite.build/` — no configuration needed.
+`gb_ui_backend` is bundled with the `standalone` extra. If installed, gbserver includes its routers directly into its own process at startup — no separate process or port. Both DB URLs default to SQLite in `~/.granite.build/` — no configuration needed.
 
 ```shell
 pip install -e ".[standalone]"
 gbserver standalone
-# Sidecar starts at :8090; gbserver proxies /api/analytics/* to it
+# Analytics routes are served at /api/analytics/* on gbserver's own port
 # Analytics DB: ~/.granite.build/dashboard-analytics.db (SQLite, auto-created)
 ```
 
@@ -203,23 +203,23 @@ GB_UI_DATABASE_URL="postgresql+asyncpg://user:pass@host/db" gbserver standalone
 | `frontend/api/client.ts` | `apiBase()` helper — handles `GBSERVER_API_URL` override |
 | `frontend/next.config.ts` | Build config — static export in standalone mode, rewrite proxy in dev |
 | `frontend/.env.local.example` | Dev environment template — copy to `.env.local` |
-| `src/gb_ui_backend/` | Analytics sidecar — FastAPI app for charts, AI analysis |
+| `src/gb_ui_backend/` | Analytics service — FastAPI routers for charts, AI analysis; included directly into gbserver |
 | `src/gb_ui_backend/config.py` | Pydantic settings — all `GB_UI_*` env vars |
-| `src/gbserver/api/frontend_routes.py` | gbserver endpoints: `/api/config`, `/api/environments`, `/api/analytics/*` proxy |
+| `src/gbserver/api/root_api.py` | Includes gb_ui_backend's routers under `/api/analytics/*` and calls its startup init |
+| `src/gbserver/api/frontend_routes.py` | gbserver endpoints: `/api/config`, `/api/environments` |
 | `src/gbserver/static/ui/` | Compiled frontend served by gbserver at runtime |
 
-### Key env vars (frontend / sidecar)
+### Key env vars (frontend / analytics)
 
 | Variable | Where set | Description |
 |---|---|---|
 | `GBSERVER_API_URL` | `frontend/.env.local` or build env | API base URL. Dev: sets the rewrite proxy target. Standalone: baked into the bundle at `make build-frontend` time. Unset = same-origin default. |
 | `GBSERVER_UI_DIR` | gbserver env | Override path to compiled frontend (default: `src/gbserver/static/ui/`) |
-| `GBSERVER_ANALYTICS_URL` | gbserver env | Sidecar URL (default: `http://localhost:8090`) |
-| `GB_UI_DATABASE_URL` | gbserver env | Sidecar analytics DB. Auto-set to `~/.granite.build/dashboard-analytics.db` (SQLite) when unset. |
+| `GB_UI_DATABASE_URL` | gbserver env | Analytics DB. Auto-set to `~/.granite.build/dashboard-analytics.db` (SQLite) when unset. |
 | `GB_UI_GBSERVER_DB_URL` | gbserver env | gbserver's own DB for richer analytics. Auto-set to gbserver's SQLite file when unset and storage is sqlite. |
-| `GB_UI_GBSERVER_URL` | sidecar env | gbserver URL for sidecar-to-gbserver API calls (default: `http://localhost:8080`) |
-| `GB_UI_LLM_BASE_URL` | sidecar env | OpenAI-compatible endpoint for AI analysis |
-| `GB_UI_LLM_API_KEY` | sidecar env | API key for the LLM endpoint |
+| `GB_UI_GBSERVER_URL` | analytics env | gbserver URL, used for the standalone dev-mode startup banner (default: `http://localhost:8080`) |
+| `GB_UI_LLM_BASE_URL` | analytics env | OpenAI-compatible endpoint for AI analysis |
+| `GB_UI_LLM_API_KEY` | analytics env | API key for the LLM endpoint |
 
 ## Deployment
 

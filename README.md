@@ -259,7 +259,7 @@ make build-frontend     # compile and copy to src/gbserver/static/ui/
 gbserver standalone     # UI + API + analytics at http://localhost:8080
 ```
 
-Open `http://localhost:8080` — the dashboard, REST API, and analytics sidecar are all served on port 8080.
+Open `http://localhost:8080` — the dashboard, REST API, and analytics routes are all served on port 8080.
 
 **After any frontend code change:**
 
@@ -305,9 +305,9 @@ GBSERVER_API_URL=https://my-server:8080 make build-frontend
 
 Leave it unset to default to same-origin (the standard case when gbserver serves the frontend).
 
-### Analytics sidecar
+### Analytics service
 
-The `gb_ui_backend` sidecar adds build status charts, failure trends, and optional AI-powered analysis. It is bundled with the `standalone` install extra and **starts automatically** alongside gbserver — no extra command or initial database setup needed.
+`gb_ui_backend` adds build status charts, failure trends, and optional AI-powered analysis. It is bundled with the `standalone` install extra; if installed, gbserver includes its routers directly into its own process at startup — no extra command or initial database setup needed.
 
 Default storage: `~/.granite.build/dashboard-analytics.db` (SQLite, auto-created on first run).
 
@@ -315,7 +315,7 @@ Optional configuration (set as environment variables or in `.env`):
 
 | Variable | Description |
 |---|---|
-| `GB_UI_DATABASE_URL` | Override the sidecar analytics DB — SQLite path or PostgreSQL URL |
+| `GB_UI_DATABASE_URL` | Override the analytics DB — SQLite path or PostgreSQL URL |
 | `GB_UI_GBSERVER_DB_URL` | gbserver's own DB for richer build volume charts (auto-set when storage is SQLite) |
 | `GB_UI_LLM_BASE_URL` | OpenAI-compatible endpoint for AI failure analysis (feature disabled if unset) |
 | `GB_UI_LLM_API_KEY` | API key for the LLM endpoint |
@@ -326,7 +326,7 @@ Copy `.env.example` to `.env` for a full annotated reference of all options:
 cp .env.example .env
 ```
 
-gbserver proxies `/api/analytics/*` to the sidecar at `:8090` — the browser only ever talks to port 8080.
+`/api/analytics/*` is served by gbserver itself, in-process — the browser only ever talks to port 8080; there's no separate port or process.
 
 ### Frontend layout
 
@@ -336,7 +336,7 @@ gbserver proxies `/api/analytics/*` to the sidecar at `:8090` — the browser on
 | `frontend/out/` | Static export — produced by `make build-frontend`, not committed |
 | `frontend/.env.local.example` | Dev template — copy to `frontend/.env.local` |
 | `src/gbserver/static/ui/` | Runtime path gbserver serves the compiled frontend from |
-| `src/gb_ui_backend/` | Analytics sidecar — FastAPI app for charts and AI analysis |
+| `src/gb_ui_backend/` | Analytics service — FastAPI routers for charts and AI analysis, included directly into gbserver |
 
 ## Documentation
 

@@ -73,7 +73,7 @@ dependencies = [
 # Tier 1: Standalone — minimal, no external services needed
 standalone = [
     "nats-py",
-    "granite.build[sidecar]",
+    "granite.build[analytics]",
 ]
 # Tier 2: Third-party open-source — installable from PyPI, testable in GH Actions
 thirdparty = [
@@ -97,8 +97,8 @@ ibm = [
     "psycopg2-binary",
     "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # Integration branch (granite-build): LSF cloud driver + thinkahead AWS host-AMI-override + LsfCommandRunner rsync timeout fix. gb-sky-v1-stable is a moving alias for the recommended v1-line commit (re-pointed as the fork advances, like a docker minor tag); a breaking jump gets a new tag. Fresh installs re-resolve it; cached clones need `git fetch --tags --force`.
 ]
-# gb-ui analytics sidecar (gb_ui_backend) — runs alongside Next.js or gbserver
-sidecar = [
+# gb-ui analytics service (gb_ui_backend) — routers included directly into gbserver
+analytics = [
     "fastapi[standard]>=0.115",
     "uvicorn[standard]>=0.30",
     "sqlalchemy[asyncio]>=2.0",
@@ -134,7 +134,8 @@ dev = [
 [project.scripts]
 # gbserver scripts
 gbserver = "gbserver.cli:gbserver"
-# gb-ui analytics sidecar
+# gb-ui analytics service — standalone dev-mode entrypoint (normally included
+# directly into gbserver's own process; see gbserver/api/root_api.py)
 gb-ui-backend = "gb_ui_backend.__main__:main"
 # gbcli scripts
 gbcli = "gbcli.cli:gbcli"

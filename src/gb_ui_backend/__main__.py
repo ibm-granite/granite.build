@@ -17,7 +17,8 @@ def main():
     # Fires after uvicorn's own "Application startup complete." / "Uvicorn running
     # on ..." lines, so this ends up as the last, most visible line at boot —
     # reinforcing where the frontend actually lives (gbserver serves it, not this
-    # sidecar, which only handles /api/analytics/*).
+    # standalone dev-mode process, which only handles /api/analytics/* — normally
+    # gbserver includes these routers directly, see gbserver/api/root_api.py).
     original_startup = server.startup
 
     async def _startup_with_log(*args, **kwargs):
