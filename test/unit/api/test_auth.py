@@ -186,10 +186,11 @@ class TestAuthMiddlewareApiKeyMode:
             response = client.get("/api/test")  # no Authorization header
         assert response.status_code == 401
 
-    def test_analytics_proxy_path_requires_api_key(self):
+    def test_analytics_path_requires_api_key(self):
         """/api/analytics/* must be authenticated like any other /api/ path —
-        it must NOT be bypassed on the (incorrect) assumption that the
-        sidecar validates tokens itself."""
+        it must NOT be bypassed. These routes are included directly into
+        root_api (see gbserver/api/root_api.py), so they get no special
+        treatment from AuthMiddleware."""
         env = {
             "GBSERVER_AUTH_MODE": "apikey",
             "GBSERVER_API_KEY": "test-key-123",

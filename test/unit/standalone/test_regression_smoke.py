@@ -205,6 +205,74 @@ class TestAPIRoutes:
                 expected in route_paths
             ), f"Route '{expected}' not found in root_api. Found: {sorted(route_paths)}"
 
+    def test_analytics_routes_included(self):
+        """gb_ui_backend's routers are include_router()'d directly into
+        root_api rather than mounted as a separate app — FastAPI wraps an
+        include_router() call in an internal _IncludedRouter that computes
+        prefixed paths lazily, so they don't appear as flat route.path
+        strings the way the .mount()'d sub-apps above do. Verify by request
+        behavior instead.
+
+        Must authenticate (apikey/localhost bypass) so the request actually
+        reaches routing — AuthMiddleware returns 401 before call_next() for
+        an unauthenticated request regardless of whether the path resolves
+        to a real route, so an unauthenticated request would pass this
+        assertion even if the route were never wired up.
+        """
+        import importlib.util
+        import os
+        from unittest.mock import patch
+
+        if importlib.util.find_spec("gb_ui_backend") is None:
+            pytest.skip("gb_ui_backend not installed")
+
+        try:
+            from gbserver.api.root_api import root_api
+        except ImportError:
+            pytest.skip(
+                "root_api requires kubernetes_asyncio (transitively via buildwatcher)"
+            )
+
+        from fastapi.testclient import TestClient
+
+        env = {"GBSERVER_AUTH_MODE": "apikey", "GBSERVER_API_KEY": ""}
+        with patch.dict(os.environ, env, clear=False):
+            client = TestClient(
+                root_api
+            )  # host "testclient" is in the localhost allowlist
+            response = client.get("/api/analytics/builds/failure-trends/history")
+        assert response.status_code != 404, (
+            "Analytics route not resolved — check the include_router() wiring "
+            "in gbserver/api/root_api.py"
+        )
+
+    def test_analytics_route_requires_auth_on_real_app(self):
+        """End-to-end check (not just the synthetic app in test_auth*.py):
+        an unauthenticated request to a real /api/analytics/* route on the
+        actual root_api returns 401, confirming AuthMiddleware covers these
+        routes now that they're included directly rather than proxied."""
+        import importlib.util
+        import os
+        from unittest.mock import patch
+
+        if importlib.util.find_spec("gb_ui_backend") is None:
+            pytest.skip("gb_ui_backend not installed")
+
+        try:
+            from gbserver.api.root_api import root_api
+        except ImportError:
+            pytest.skip(
+                "root_api requires kubernetes_asyncio (transitively via buildwatcher)"
+            )
+
+        from fastapi.testclient import TestClient
+
+        env = {"GBSERVER_AUTH_MODE": "apikey", "GBSERVER_API_KEY": "test-key-123"}
+        with patch.dict(os.environ, env, clear=False):
+            client = TestClient(root_api)
+            response = client.get("/api/analytics/builds/failure-trends/history")
+        assert response.status_code == 401
+
 
 # ---------------------------------------------------------------------------
 # f) Constants regression

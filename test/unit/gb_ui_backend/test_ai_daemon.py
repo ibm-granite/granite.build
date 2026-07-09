@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Regression tests for the AI daemon's SQLite (default sidecar DB) compatibility.
+"""Regression tests for the AI daemon's SQLite (default analytics DB) compatibility.
 
 Covers two review findings:
   - run_custom_categorization crashed with NameError (func never imported).

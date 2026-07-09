@@ -43,7 +43,7 @@ async def app_and_client():
             yield session
 
     app = FastAPI()
-    app.include_router(router)
+    app.include_router(router, prefix="/api/analytics")
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_config] = lambda: Config(
         database_url="sqlite+aiosqlite:///:memory:"
