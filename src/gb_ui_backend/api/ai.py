@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid as uuid_mod
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -21,6 +22,32 @@ router = APIRouter(prefix="/api/analytics")
 
 _trigger_task: Optional[asyncio.Task] = None
 _trigger_analyzing = False
+
+_ANALYZE_LOGS_RATE_LIMIT_WINDOW_SECONDS = 60
+_ANALYZE_LOGS_RATE_LIMIT_MAX_CALLS = 5
+_analyze_logs_call_times: dict[str, list[float]] = {}
+
+
+def _rate_limit_analyze_logs(request: Request) -> None:
+    """Minimal per-identity sliding-window rate limit for analyze_logs.
+
+    This endpoint makes a billable LLM call per request — bound abuse by
+    identity (X-User-Email, set by gbserver's AuthMiddleware/analytics proxy)
+    or client IP as a fallback in apikey/localhost mode.
+    """
+    identity = request.headers.get("x-user-email") or (
+        request.client.host if request.client else "unknown"
+    )
+    now = time.monotonic()
+    recent = [
+        t
+        for t in _analyze_logs_call_times.get(identity, [])
+        if now - t < _ANALYZE_LOGS_RATE_LIMIT_WINDOW_SECONDS
+    ]
+    if len(recent) >= _ANALYZE_LOGS_RATE_LIMIT_MAX_CALLS:
+        raise HTTPException(429, "Rate limit exceeded — try again later")
+    recent.append(now)
+    _analyze_logs_call_times[identity] = recent
 
 
 class AIAnalysisOut(BaseModel):
@@ -191,6 +218,7 @@ async def analyze_logs(
     build_id: str,
     body: AnalyzeLogsIn,
     config: Config = Depends(get_config),
+    _rate_limit: None = Depends(_rate_limit_analyze_logs),
 ):
     if not config.llm_base_url:
         raise HTTPException(503, "AI analysis not configured")
