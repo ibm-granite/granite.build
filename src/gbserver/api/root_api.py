@@ -119,12 +119,15 @@ async def _serve_rsc_payload(request: Request, call_next):
         and path.endswith(".txt")
     ):
         rel = path[: -len(".txt")].strip("/")
-        txt_path = (
+        txt_path = os.path.realpath(
             os.path.join(_UI_DIR, rel, "index.txt")
             if rel
             else os.path.join(_UI_DIR, "index.txt")
         )
-        if os.path.isfile(txt_path):
+        ui_dir_real = os.path.realpath(_UI_DIR)
+        if (
+            txt_path == ui_dir_real or txt_path.startswith(ui_dir_real + os.sep)
+        ) and os.path.isfile(txt_path):
             return FileResponse(txt_path, media_type="text/x-component")
     return await call_next(request)
 
