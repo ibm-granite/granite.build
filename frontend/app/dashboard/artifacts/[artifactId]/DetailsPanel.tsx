@@ -7,12 +7,47 @@ import styles from "./DetailsPanel.module.scss";
 import type { Artifact } from "@/types";
 
 
+// Mirrors src/gbcommon/utils/hf_utils.py:convert_hf_uri_to_url — model URLs
+// never include a "models/" segment; datasets/spaces/buckets keep their
+// pluralized type segment.
 function getHuggingFaceUrl(uri: string): string | null {
   if (!uri) return null
+
   if (uri.startsWith('hf://')) {
-    const path = uri.slice(5)
-    return path.startsWith('huggingface.co/') ? `https://${path}` : `https://huggingface.co/${path}`
+    const remainder = uri.slice(5)
+    let parts: string[]
+
+    if (remainder.startsWith('/')) {
+      // hf:///[type/]org/name
+      parts = remainder.replace(/^\/+/, '').split('/')
+    } else if (remainder.startsWith('huggingface.co/')) {
+      // hf://huggingface.co/[type/]org/name
+      parts = remainder.slice('huggingface.co/'.length).split('/')
+    } else if (remainder.includes('/')) {
+      // hf://<domain>/[type/]org/name — the domain segment is discarded;
+      // the browsable URL is always on huggingface.co
+      parts = remainder.split('/').slice(1)
+    } else {
+      return null
+    }
+
+    if (parts.length === 2) {
+      const [org, name] = parts
+      return `https://huggingface.co/${org}/${name}`
+    }
+    if (parts.length === 3) {
+      const [type, org, name] = parts
+      switch (type) {
+        case 'models':   return `https://huggingface.co/${org}/${name}`
+        case 'datasets': return `https://huggingface.co/datasets/${org}/${name}`
+        case 'spaces':   return `https://huggingface.co/spaces/${org}/${name}`
+        case 'buckets':  return `https://huggingface.co/buckets/${org}/${name}`
+        default: return null
+      }
+    }
+    return null
   }
+
   if (/huggingface\.co/.test(uri)) return uri.startsWith('http') ? uri : `https://${uri}`
   return null
 }

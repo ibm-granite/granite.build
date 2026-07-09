@@ -185,12 +185,47 @@ function isUUID(s: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
 }
 
+// Mirrors src/gbcommon/utils/hf_utils.py:convert_hf_uri_to_url — model URLs
+// never include a "models/" segment; datasets/spaces/buckets keep their
+// pluralized type segment.
 function getHuggingFaceUrl(uri: string): string | null {
   if (!uri) return null
+
   if (uri.startsWith('hf://')) {
-    const path = uri.slice(5)
-    return path.startsWith('huggingface.co/') ? `https://${path}` : `https://huggingface.co/${path}`
+    const remainder = uri.slice(5)
+    let parts: string[]
+
+    if (remainder.startsWith('/')) {
+      // hf:///[type/]org/name
+      parts = remainder.replace(/^\/+/, '').split('/')
+    } else if (remainder.startsWith('huggingface.co/')) {
+      // hf://huggingface.co/[type/]org/name
+      parts = remainder.slice('huggingface.co/'.length).split('/')
+    } else if (remainder.includes('/')) {
+      // hf://<domain>/[type/]org/name — the domain segment is discarded;
+      // the browsable URL is always on huggingface.co
+      parts = remainder.split('/').slice(1)
+    } else {
+      return null
+    }
+
+    if (parts.length === 2) {
+      const [org, name] = parts
+      return `https://huggingface.co/${org}/${name}`
+    }
+    if (parts.length === 3) {
+      const [type, org, name] = parts
+      switch (type) {
+        case 'models':   return `https://huggingface.co/${org}/${name}`
+        case 'datasets': return `https://huggingface.co/datasets/${org}/${name}`
+        case 'spaces':   return `https://huggingface.co/spaces/${org}/${name}`
+        case 'buckets':  return `https://huggingface.co/buckets/${org}/${name}`
+        default: return null
+      }
+    }
+    return null
   }
+
   if (/huggingface\.co/.test(uri)) return uri.startsWith('http') ? uri : `https://${uri}`
   return null
 }
@@ -275,9 +310,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
 
   const artifactNavModalHeader = (artifactNavNode: { node: ElkNodeEx; hfUrl: string | null } | null) => {
     if (artifactNavNode) {
-      return <h3>Would you like to view <code>{artifactNavNode.node?.title || artifactNavNode.node?.id}</code> on HuggingFace or proceed to the artifact page?`</h3>
+      return <h4>Would you like to view <code>{artifactNavNode.node?.title || artifactNavNode.node?.id}</code> on HuggingFace or proceed to the artifact page?`</h4>
     } else {
-      return <h3>Would you like to view this artifact on HuggingFace or proceed to the artifact page?`</h3>
+      return <h4>Would you like to view this artifact on HuggingFace or proceed to the artifact page?`</h4>
     }
   }
 
@@ -286,10 +321,18 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   const [upstreamLevels, setUpstreamLevels] = React.useState(Infinity)
   const [downstreamLevels, setDownstreamLevels] = React.useState(Infinity)
   const [partial, setPartial] = React.useState(false)
-  const [selectedNode, setSelectedNode] = React.useState<ElkNodeEx | undefined>()
   const [artifactNavNode, setArtifactNavNode] = React.useState<{ node: ElkNodeEx; hfUrl: string | null } | null>(null)
   const router = useRouter()
   const [rendered, setRendered] = React.useState(false)
+
+  // The current artifact's node is always highlighted on artifact pages
+  // (showFocusNode is only true there) — this is not click-driven.
+  const currentArtifactNode = React.useMemo(
+    () => (showFocusNode && initialFocusNodeId
+      ? enrichedNodes.find((n) => n.id === initialFocusNodeId)
+      : undefined),
+    [showFocusNode, initialFocusNodeId, enrichedNodes]
+  )
 
   const { filteredNodes, filteredLinks } = React.useMemo(() => {
     if (!focusNodeId || (upstreamLevels === Infinity && downstreamLevels === Infinity)) {
@@ -300,7 +343,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   }, [focusNodeId, upstreamLevels, downstreamLevels, enrichedNodes, allLinks])
 
   const handleNodeClick = (node: ElkNodeEx) => {
-    setSelectedNode(node)
     if (!showFocusNode) {
       setFocusNodeId(node.id)
     }
@@ -312,8 +354,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
 
   const handleFocusNode = () => {
     if (!focusNodeId) return
-    const node = enrichedNodes.find((n) => n.id === focusNodeId)
-    if (node) setSelectedNode(node)
     setUpstreamLevels(Infinity)
     setDownstreamLevels(Infinity)
     setPartial(false)
@@ -322,7 +362,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
 
   const handleUpstream = () => {
     if (!focusNodeId) return
-    setSelectedNode(undefined)
     const newUp = upstreamLevels === Infinity ? 2 : upstreamLevels + 1
     const sub = getSubgraph(focusNodeId, downstreamLevels, newUp, enrichedNodes, allLinks)
     setUpstreamLevels(sub.hasMoreUpstream ? newUp : Infinity)
@@ -331,7 +370,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
 
   const handleDownstream = () => {
     if (!focusNodeId) return
-    setSelectedNode(undefined)
     const newDown = downstreamLevels === Infinity ? 2 : downstreamLevels + 1
     const sub = getSubgraph(focusNodeId, newDown, upstreamLevels, enrichedNodes, allLinks)
     setDownstreamLevels(sub.hasMoreDownstream ? newDown : Infinity)
@@ -469,7 +507,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
               nodes={filteredNodes}
               links={filteredLinks}
               allLinks={allLinks}
-              selectedNode={selectedNode}
+              selectedNode={currentArtifactNode}
               onClick={handleNodeClick}
               onSvgRendered={() => setRendered(true)}
             />

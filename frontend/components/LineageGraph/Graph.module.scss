@@ -5,10 +5,6 @@
   position: relative;
 }
 
-.linkDimmed {
-  opacity: 0.15;
-}
-
 .linkHighlighted {
   :global(.cds--cc--edge__inner) {
     stroke-width: 0.15rem;

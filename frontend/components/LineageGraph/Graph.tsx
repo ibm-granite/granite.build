@@ -195,11 +195,6 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
           hover &&
           (edge.targets.includes(`${hover.id}-input`) || edge.sources.includes(`${hover.id}-output`))
         const isSkeleton = edge.id.includes('-skeleton')
-        const isConnectedToSelected = props.selectedNode && (
-          edge.targets.includes(`${props.selectedNode.id}-input`) ||
-          edge.sources.includes(`${props.selectedNode.id}-output`)
-        )
-        const isDimmed = !!(props.selectedNode && !isConnectedToSelected && !isSkeleton)
 
         return (
           <LinkArrow
@@ -208,7 +203,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
             color={isSkeleton ? '#E0E0E0' : isHighlighted ? '#5D5D5D' : '#878787'}
             markerEnd={isSkeleton ? 'arrow' : 'arrow-right'}
             markerStart={isSkeleton ? undefined : undefined}
-            className={isSkeleton ? styles.linkSkeleton : isDimmed ? styles.linkDimmed : isHighlighted ? styles.linkHighlighted : styles.linkDefault}
+            className={isSkeleton ? styles.linkSkeleton : isHighlighted ? styles.linkHighlighted : styles.linkDefault}
           />
         )
       })

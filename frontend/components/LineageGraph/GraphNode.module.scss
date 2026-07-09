@@ -59,11 +59,6 @@
   }
 }
 
-.nodeWrapperDimmed {
-  opacity: 0.2;
-  transition: opacity 0.15s ease;
-}
-
 .nodeWrapperPlanned {
   opacity: 0.6;
   :global(.cds--cc--card-node) {

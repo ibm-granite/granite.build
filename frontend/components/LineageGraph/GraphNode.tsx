@@ -69,7 +69,6 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode }:
   const { icon, color, bgColor, subtitleLabel } = getNodeConfig(type)
   const isSelected = selectedNode?.id === node.id
   const isHighlighted = node.highlight
-  const isDimmed = !!selectedNode && !isSelected
 
   const nodeWrapperClass = [
     styles.nodeWrapper,
@@ -77,7 +76,6 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode }:
     isSelected ? styles.nodeWrapperSelected : '',
     isHighlighted ? styles.nodeWrapperHighlighted : '',
     node.planned ? styles.nodeWrapperPlanned : '',
-    isDimmed ? styles.nodeWrapperDimmed : '',
   ].filter(Boolean).join(' ')
 
   return (

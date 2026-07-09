@@ -2,8 +2,9 @@
 
 import * as React from 'react'
 import { Button, InlineLoading, Loading } from '@carbon/react'
-import { ZoomIn, ZoomFit, ZoomOut } from '@carbon/icons-react'
+import { CenterSquare, ZoomIn, ZoomFit, ZoomOut } from '@carbon/icons-react'
 import { useQuery } from '@tanstack/react-query'
+import { isAxiosError } from 'axios'
 import type { ElkExtendedEdge } from 'elkjs'
 import type { Artifact } from '@/types'
 import { getBuild, getBuildStatus, getArtifactLineage } from '@/api/gbserver'
@@ -98,7 +99,6 @@ function buildLineageGraph(
 function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const graphRef = React.useRef<GraphHandle>(null)
   const [rendered, setRendered] = React.useState(false)
-  const [selectedNode, setSelectedNode] = React.useState<ElkNodeEx | undefined>()
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['artifact-lineage', artifact.uri],
@@ -112,6 +112,17 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
     [artifact, data],
   )
 
+  // The current artifact's own node is always highlighted — not click-driven.
+  const currentArtifactNode = React.useMemo(
+    () => nodes.find((n) => n.id === artifact.uuid),
+    [nodes, artifact.uuid],
+  )
+
+  // gbserver returns 404 for every artifact when no lineage provider is
+  // configured (the standalone default) — that's an expected "not available"
+  // state, not a failure worth alarming the user about.
+  const notAvailable = !isLoading && isAxiosError(error) && error.response?.status === 404
+  const realError = !isLoading && error && !notAvailable
   const noLineage = !isLoading && !error && nodes.length === 0
 
   return (
@@ -133,6 +144,12 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
         <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
           iconDescription="Zoom Out (-10%)" renderIcon={ZoomOut}
           onClick={() => graphRef.current?.zoomOut()} />
+        <Button size="sm" kind="ghost"
+          renderIcon={CenterSquare}
+          onClick={() => graphRef.current?.centerOnNode(artifact.uuid)}
+        >
+          Focus Node
+        </Button>
       </div>
 
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
@@ -141,14 +158,14 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             <Loading withOverlay={false} description="Loading lineage…" />
           </div>
         )}
-        {!isLoading && error && (
+        {realError && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--cds-support-error)', fontSize: '0.875rem', padding: '1rem', textAlign: 'center' }}>
             Failed to load lineage: {String(error)}
           </div>
         )}
-        {!isLoading && noLineage && (
+        {!isLoading && (notAvailable || noLineage) && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--cds-text-secondary)', fontSize: '0.875rem' }}>
-            No lineage data available for this artifact.
+            {notAvailable ? 'Lineage is not available for this artifact.' : 'No lineage data available for this artifact.'}
           </div>
         )}
         {!isLoading && !error && !noLineage && (
@@ -164,8 +181,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
               nodes={nodes}
               links={links}
               allLinks={links}
-              selectedNode={selectedNode}
-              onClick={setSelectedNode}
+              selectedNode={currentArtifactNode}
               onSvgRendered={() => setRendered(true)}
             />
           </>
