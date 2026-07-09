@@ -1,13 +1,16 @@
-// Core build status union
+// Core build status union — mirrors gbserver's Status enum
+// (src/gbserver/types/status.py) plus 'planned', a frontend-only synthetic
+// status for target steps that haven't started yet.
 export type BuildStatus =
   | 'running'
   | 'success'
   | 'failed'
   | 'pending'
   | 'submitted'
-  | 'suspended'
+  | 'invalid'
   | 'cancelled'
-  | 'deleted'
+  | 'cancel_requested'
+  | 'retry_pending'
   | 'planned'
 
 // ── Build hierarchy ──────────────────────────────────────────────────────────
@@ -78,10 +81,15 @@ export interface BuildStatusDetail {
 
 export type ArtifactType = 'MODEL' | 'DATASET' | 'FILESET' | 'TABLE'
 
+// Mirrors gbserver's ArtifactRegistrationStatus enum
+// (src/gbserver/storage/artifact_registration.py).
+export type ArtifactStatus = 'pending' | 'success' | 'failed' | 'cancelled'
+
 export interface Artifact {
   uuid: string
   name: string
   artifact_type: ArtifactType
+  status: ArtifactStatus
   space_name: string
   username: string
   uri: string
@@ -105,20 +113,27 @@ export interface Space {
 
 // ── Analytics ────────────────────────────────────────────────────────────────
 
+// Mirrors gbserver's Status enum (src/gbserver/types/status.py).
 export interface BuildStatusChartPoint {
   date: string
   running: number
   success: number
   failed: number
+  invalid: number
   pending: number
   submitted: number
-  suspended: number
+  retry_pending: number
+  cancel_requested: number
+  cancelled: number
   running_test: number
   success_test: number
   failed_test: number
+  invalid_test: number
   pending_test: number
   submitted_test: number
-  suspended_test: number
+  retry_pending_test: number
+  cancel_requested_test: number
+  cancelled_test: number
 }
 
 export interface FailureTrendResponse {

@@ -10,7 +10,20 @@ interface Props {
   showTestRuns?: boolean
 }
 
-const STATUSES = ['running', 'success', 'failed', 'pending', 'submitted', 'suspended'] as const
+// Mirrors gbserver's Status enum (src/gbserver/types/status.py).
+const STATUS_LABELS = {
+  running: 'Running',
+  success: 'Succeeded',
+  failed: 'Failed',
+  invalid: 'Invalid',
+  pending: 'Pending',
+  submitted: 'Submitted',
+  retry_pending: 'Retrying',
+  cancel_requested: 'Cancelling',
+  cancelled: 'Cancelled',
+} as const
+
+const STATUSES = Object.keys(STATUS_LABELS) as (keyof typeof STATUS_LABELS)[]
 
 export function BuildStatusChart({ data, showTestRuns = true }: Props) {
   const theme = useChartsTheme()
@@ -21,7 +34,7 @@ export function BuildStatusChart({ data, showTestRuns = true }: Props) {
 
   const chartData = data.flatMap((point) =>
     STATUSES.flatMap((status) => {
-      const label = status.charAt(0).toUpperCase() + status.slice(1)
+      const label = STATUS_LABELS[status]
       const rows: { group: string; date: string; value: number }[] = [
         { group: label, date: point.date, value: point[status] ?? 0 },
       ]

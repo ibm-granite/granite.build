@@ -127,6 +127,7 @@ function adaptArtifact(raw: Record<string, unknown>): Artifact {
     uuid: raw.uuid as string,
     name: (raw.name as string) || (raw.uri as string),
     artifact_type: ((raw.type as string) || (raw.artifact_type as string) || 'FILESET') as import('../types').ArtifactType,
+    status: (((raw.status as string) || 'success').toLowerCase()) as import('../types').ArtifactStatus,
     space_name: raw.space_name as string,
     username: raw.username as string,
     uri: raw.uri as string,

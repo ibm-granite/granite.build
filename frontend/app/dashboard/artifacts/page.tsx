@@ -17,8 +17,6 @@ import {
   Pagination,
   Dropdown,
   MultiSelect,
-  ContentSwitcher,
-  Switch,
   InlineNotification,
   Tag,
 } from "@carbon/react";
@@ -53,6 +51,16 @@ const ARTIFACT_TYPES = [
   { id: "TABLE", label: "Table" },
 ];
 
+// Mirrors gbserver's ArtifactRegistrationStatus enum
+// (src/gbserver/storage/artifact_registration.py).
+const STATUS_OPTIONS = [
+  { id: "all", label: "All statuses" },
+  { id: "success", label: "Success" },
+  { id: "pending", label: "Pending" },
+  { id: "failed", label: "Failed" },
+  { id: "cancelled", label: "Cancelled" },
+];
+
 const TYPE_COLORS: Record<string, "blue" | "green" | "teal" | "purple"> = {
   MODEL: "purple",
   DATASET: "teal",
@@ -83,12 +91,11 @@ function formatDate(iso: string): string {
 
 export default function ArtifactsPage() {
   const router = useRouter();
-  const auth = { username: 'standalone' }
 
   const [spaceName, setSpaceName] = useState<string | undefined>();
   const [artifactType, setArtifactType] = useState<string>("all");
+  const [artifactStatus, setArtifactStatus] = useState<string>("all");
   const [selectedTags, setTags] = useState<string[]>([]);
-  const [viewAll, setViewAll] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [sortKey, setSortKey] = useState("updated_time");
@@ -120,14 +127,11 @@ export default function ArtifactsPage() {
       spaceName,
       artifactType,
       selectedTags,
-      viewAll,
-      auth?.username,
     ],
     queryFn: () =>
       listArtifacts({
         space_name: spaceName,
         tags: selectedTags.length ? selectedTags : undefined,
-        username: viewAll ? undefined : auth?.username,
       }),
     placeholderData: (prev) => prev,
   });
@@ -144,6 +148,7 @@ export default function ArtifactsPage() {
 
   const allRows = (data?.items ?? [])
     .filter((a) => artifactType === "all" || a.artifact_type === artifactType)
+    .filter((a) => artifactStatus === "all" || a.status === artifactStatus)
     .map((a) => ({
       id: a.uuid,
       name: a.name,
@@ -247,6 +252,24 @@ export default function ArtifactsPage() {
               }}
             />
           </div>
+          <div style={{ minWidth: "12rem" }}>
+            <Dropdown
+              id="status-filter"
+              titleText="Status"
+              label="Status"
+              size="sm"
+              items={STATUS_OPTIONS}
+              itemToString={(i) => i?.label ?? ""}
+              selectedItem={
+                STATUS_OPTIONS.find((i) => i.id === artifactStatus) ??
+                STATUS_OPTIONS[0]
+              }
+              onChange={({ selectedItem }) => {
+                setArtifactStatus(selectedItem?.id ?? "all");
+                setPage(1);
+              }}
+            />
+          </div>
           {tags.length > 0 && (
             <div style={{ minWidth: "12rem" }}>
               <MultiSelect
@@ -264,19 +287,6 @@ export default function ArtifactsPage() {
               />
             </div>
           )}
-        </div>
-        <div className={styles.contentSwitcherWrapper}>
-          <ContentSwitcher
-            size="sm"
-            selectedIndex={viewAll ? 0 : 1}
-            onChange={({ index }) => {
-              setViewAll(index === 0);
-              setPage(1);
-            }}
-          >
-            <Switch name="all" text="All artifacts" />
-            <Switch name="mine" text="My artifacts" />
-          </ContentSwitcher>
         </div>
       </div>
 
@@ -343,13 +353,14 @@ export default function ArtifactsPage() {
                       <TableRow
                         {...rowProps}
                         key={row.id}
-                        onClick={() => router.push(`/artifacts/${row.id}`)}
+                        onClick={() => router.push(`/dashboard/artifacts/_/?id=${row.id}`)}
                         style={{ cursor: "pointer" }}
                       >
                         {row.cells.map((cell) => (
                           <TableCell key={cell.id}>
                             {cell.info.header === "artifact_type" ? (
-                              (cell.value as string)
+                              ARTIFACT_TYPES.find((t) => t.id === cell.value)?.label ??
+                                (cell.value as string)
                             ) : cell.info.header === "tags" ? (
                               <TagsCell tags={(cell.value as string[]) ?? []} />
                             ) : cell.info.header === "updated_time" ? (

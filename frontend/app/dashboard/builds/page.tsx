@@ -4,8 +4,6 @@ import { useState, useCallback } from "react";
 import {
   Dropdown,
   MultiSelect,
-  ContentSwitcher,
-  Switch,
   InlineNotification,
 } from "@carbon/react";
 import { useQuery } from "@tanstack/react-query";
@@ -31,25 +29,25 @@ function TagDropdownItem({ label }: { id: string; label: string }) {
   );
 }
 
+// Mirrors gbserver's Status enum (src/gbserver/types/status.py).
 const STATUS_OPTIONS = [
   { id: "all", label: "All statuses" },
   { id: "running", label: "Running" },
   { id: "success", label: "Success" },
   { id: "failed", label: "Failed" },
+  { id: "invalid", label: "Invalid" },
   { id: "pending", label: "Pending" },
   { id: "submitted", label: "Submitted" },
-  { id: "suspended", label: "Suspended" },
+  { id: "retry_pending", label: "Retrying" },
+  { id: "cancel_requested", label: "Cancelling" },
   { id: "cancelled", label: "Cancelled" },
 ];
 
 export default function BuildsPage() {
-  const auth = { username: 'standalone' }
-
   // Filters
   const [spaceName, setSpaceName] = useState<string | undefined>();
   const [selectedTags, setTags] = useState<string[]>([]);
   const [status, setStatus] = useState<string>("all");
-  const [viewAll, setViewAll] = useState(true);
   const [, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -73,15 +71,12 @@ export default function BuildsPage() {
       spaceName,
       selectedTags,
       status,
-      viewAll,
-      auth?.username,
       page,
       pageSize,
     ],
     queryFn: () =>
       listBuilds({
         space_name: spaceName,
-        username: viewAll ? undefined : auth?.username,
         tags: selectedTags.length ? selectedTags : undefined,
         status: status === "all" ? undefined : (status as BuildStatus),
         sort: "created_time:desc",
@@ -174,19 +169,6 @@ export default function BuildsPage() {
               }}
             />
           </div>
-        </div>
-        <div className={styles.contentSwitcherWrapper}>
-          <ContentSwitcher
-            size="sm"
-            selectedIndex={viewAll ? 0 : 1}
-            onChange={({ index }) => {
-              setViewAll(index === 0);
-              setPage(1);
-            }}
-          >
-            <Switch name="all" text="All builds" />
-            <Switch name="mine" text="My builds" />
-          </ContentSwitcher>
         </div>
       </div>
       {error && (

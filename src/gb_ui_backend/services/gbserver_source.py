@@ -459,7 +459,17 @@ class GbserverSource:
                 pivot[day_str] = {}
             pivot[day_str][row[1]] = int(row[2])
 
-        statuses = ["running", "success", "failed", "pending", "submitted", "suspended"]
+        statuses = [
+            "running",
+            "success",
+            "failed",
+            "invalid",
+            "pending",
+            "submitted",
+            "retry_pending",
+            "cancel_requested",
+            "cancelled",
+        ]
         return [
             {
                 "date": day,

@@ -31,11 +31,32 @@ import type { Build } from "@/types";
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
+// Mirrors gbserver's Status enum (src/gbserver/types/status.py).
 const BUILD_STATUS_OPTS = [
   { id: "", label: "All jobs" },
   { id: "running", label: "Running jobs" },
+  { id: "success", label: "Succeeded jobs" },
   { id: "failed", label: "Failed jobs" },
+  { id: "invalid", label: "Invalid jobs" },
+  { id: "pending", label: "Pending jobs" },
+  { id: "submitted", label: "Submitted jobs" },
+  { id: "retry_pending", label: "Retrying jobs" },
+  { id: "cancel_requested", label: "Cancelling jobs" },
+  { id: "cancelled", label: "Cancelled jobs" },
 ];
+
+// Mirrors gbserver's Status enum (src/gbserver/types/status.py), in display order.
+const BUILD_STATUS_CHART_LABELS: Record<string, string> = {
+  submitted: "Submitted",
+  pending: "Pending",
+  running: "Running",
+  success: "Succeeded",
+  failed: "Failed",
+  invalid: "Invalid",
+  retry_pending: "Retrying",
+  cancel_requested: "Cancelling",
+  cancelled: "Cancelled",
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -95,15 +116,16 @@ function MyBuildsTile() {
   const [isRefreshing, markRefreshing] = useRefreshState(isFetching)
 
   const builds = data?.items ?? [];
-  const running = builds.filter((b) => b.status === "running").length;
-  const succeeded = builds.filter((b) => b.status === "success").length;
-  const failed = builds.filter((b) => b.status === "failed").length;
+  const statusCounts = new Map<string, number>();
+  for (const b of builds) {
+    statusCounts.set(b.status, (statusCounts.get(b.status) ?? 0) + 1);
+  }
 
-  const chartData: ChartTabularData = [
-    { group: "Running", value: running },
-    { group: "Succeeded", value: succeeded },
-    { group: "Failed", value: failed },
-  ];
+  // Only non-zero statuses get a slice — keeps the legend focused on what's
+  // actually present, while still covering every status gbserver can report.
+  const chartData: ChartTabularData = Object.entries(BUILD_STATUS_CHART_LABELS)
+    .map(([status, label]) => ({ group: label, value: statusCounts.get(status) ?? 0 }))
+    .filter((d) => d.value > 0);
   const chartOptions: DonutChartOptions = {
     donut: {
       center: { label: "total builds", number: builds.length },
@@ -114,11 +136,6 @@ function MyBuildsTile() {
     toolbar: { enabled: false },
     theme,
     data: { loading: isFetching || !username },
-    color: {
-      pairing: {
-        option: 4,
-      },
-    },
   };
 
   return (
@@ -438,7 +455,7 @@ function BuildsPanel() {
       listBuilds({
         status: statusOpt.id || undefined,
         sort: "created_time:desc",
-        page_size: 10,
+        page_size: 4,
         page_index: 0,
       }),
   });
@@ -530,7 +547,7 @@ function BuildsPanel() {
               gap: "1rem",
             }}
           >
-            {Array.from({ length: 10 }).map((_, i) => (
+            {Array.from({ length: 4 }).map((_, i) => (
               <BuildTileSkeleton key={i} />
             ))}
           </div>

@@ -33,19 +33,27 @@ router = APIRouter(prefix="/api/analytics")
 
 
 class BuildStatusPoint(BaseModel):
+    """Mirrors gbserver's Status enum (src/gbserver/types/status.py)."""
+
     date: str
     running: int = 0
     success: int = 0
     failed: int = 0
+    invalid: int = 0
     pending: int = 0
     submitted: int = 0
-    suspended: int = 0
+    retry_pending: int = 0
+    cancel_requested: int = 0
+    cancelled: int = 0
     running_test: int = 0
     success_test: int = 0
     failed_test: int = 0
+    invalid_test: int = 0
     pending_test: int = 0
     submitted_test: int = 0
-    suspended_test: int = 0
+    retry_pending_test: int = 0
+    cancel_requested_test: int = 0
+    cancelled_test: int = 0
 
 
 class FailureTrendRequest(BaseModel):
@@ -118,9 +126,12 @@ async def get_build_status_chart(
                 "running",
                 "success",
                 "failed",
+                "invalid",
                 "pending",
                 "submitted",
-                "suspended",
+                "retry_pending",
+                "cancel_requested",
+                "cancelled",
             ]
             return [
                 BuildStatusPoint(
