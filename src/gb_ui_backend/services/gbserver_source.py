@@ -676,62 +676,16 @@ class GbserverSource:
         ]
 
 
-_default_source: Optional[GbserverSource] = None
-_sources_by_schema: Dict[str, GbserverSource] = {}
-_env_to_schema: Dict[str, str] = {}  # uppercase env_id → schema
+_source: Optional[GbserverSource] = None
 
 
-def get_gbserver_source(env_id: Optional[str] = None) -> Optional[GbserverSource]:
-    """Return the GbserverSource for the given environment ID, or the default."""
-    if env_id:
-        schema = _env_to_schema.get(env_id.upper())
-        if schema and schema in _sources_by_schema:
-            return _sources_by_schema[schema]
-    return _default_source
+def get_gbserver_source() -> Optional[GbserverSource]:
+    """Return the GbserverSource, if initialised."""
+    return _source
 
 
-async def init_gbserver_sources_from_environments(
-    db_url: str,
-    default_schema: str = "public",
-) -> None:
-    """Initialize one GbserverSource per unique dbSchema found in ENVIRONMENTS_JSON.
-
-    Falls back to a single source using default_schema when the env var is absent
-    or unparseable. The default_schema source is always created.
-    """
-    import json as _json
-    import os as _os
-
-    global _default_source, _sources_by_schema, _env_to_schema
-
-    async def _get_or_create(schema: str) -> GbserverSource:
-        if schema not in _sources_by_schema:
-            _sources_by_schema[schema] = GbserverSource(db_url, schema=schema)
-        return _sources_by_schema[schema]
-
-    # Always create the deployment-default source first
-    _default_source = await _get_or_create(default_schema)
-
-    # Parse ENVIRONMENTS_JSON and create one source per unique schema
-    raw = _os.environ.get("ENVIRONMENTS_JSON", "")
-    if raw:
-        try:
-            for env in _json.loads(raw):
-                env_id = str(env.get("id", "")).upper()
-                schema = env.get("dbSchema") or default_schema
-                await _get_or_create(schema)
-                _env_to_schema[env_id] = schema
-        except Exception as exc:
-            logger.warning("ENVIRONMENTS_JSON parse error in gbserver_source: %s", exc)
-
-    logger.info(
-        "GbserverSource: %d schema(s) initialised, %d env mappings",
-        len(_sources_by_schema),
-        len(_env_to_schema),
-    )
-
-
-# Kept for backward compat — callers that don't care about env switching.
 async def init_gbserver_source(db_url: str, schema: str = "public") -> GbserverSource:
-    await init_gbserver_sources_from_environments(db_url, default_schema=schema)
-    return _default_source  # type: ignore[return-value]
+    global _source
+    _source = GbserverSource(db_url, schema=schema)
+    logger.info("GbserverSource initialised (schema=%s)", schema)
+    return _source

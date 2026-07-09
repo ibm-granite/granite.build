@@ -10,13 +10,12 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Load .env into os.environ so ENVIRONMENTS_JSON and other unprefixed vars are
-# available to code that reads os.environ directly (e.g. gbserver_source).
-# override=False means real environment variables win.
+# Load .env into os.environ so unprefixed vars are available to code that
+# reads os.environ directly. override=False means real environment variables win.
 _env_file = os.path.join(os.path.dirname(__file__), "../../../.env")
 load_dotenv(_env_file, override=False)
 
-from gb_ui_backend.api import ai, analytics, builds, data_processing, infra, plans
+from gb_ui_backend.api import ai, analytics, builds, data_processing, plans
 from gb_ui_backend.config import get_config
 
 logging.basicConfig(
@@ -83,7 +82,6 @@ app.include_router(analytics.router)
 app.include_router(ai.router)
 app.include_router(builds.router)
 app.include_router(data_processing.router)
-app.include_router(infra.router)
 app.include_router(plans.router)
 
 

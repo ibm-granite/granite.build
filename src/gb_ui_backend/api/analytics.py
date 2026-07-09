@@ -91,7 +91,6 @@ class FailureTrendResponse(BaseModel):
 async def get_build_status_chart(
     days_back: int = Query(default=30, ge=1, le=365),
     exclude_tests: bool = Query(default=False),
-    env_id: Optional[str] = Query(default=None),
     db: Optional[AsyncSession] = Depends(get_optional_db),
     config: Config = Depends(get_config),
 ):
@@ -149,7 +148,7 @@ async def get_build_status_chart(
         # Sidecar DB is empty (AI analysis hasn't run yet) — fall through to Path 2.
 
     # ── Path 2: gbserver source (standalone) ──────────────────────────────────
-    source = get_gbserver_source(env_id)
+    source = get_gbserver_source()
     if source:
         points = await source.get_status_chart(
             days_back=days_back, exclude_tests=exclude_tests
@@ -162,7 +161,6 @@ async def get_build_status_chart(
 @router.post("/builds/failure-trends", response_model=FailureTrendResponse)
 async def get_failure_trends(
     req: FailureTrendRequest,
-    env_id: Optional[str] = Query(default=None),
     db: Optional[AsyncSession] = Depends(get_optional_db),
     config: Config = Depends(get_config),
 ):
@@ -250,7 +248,7 @@ async def get_failure_trends(
         # Sidecar DB is empty (AI analysis hasn't run yet) — fall through to Path 2.
 
     # ── Path 2: gbserver source (standalone) ──────────────────────────────────
-    source = get_gbserver_source(env_id)
+    source = get_gbserver_source()
     if source:
         builds = await source.get_failed_builds(
             days_back=req.days_back,
