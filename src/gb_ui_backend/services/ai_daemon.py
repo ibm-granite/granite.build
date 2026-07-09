@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -423,26 +423,27 @@ class AIDaemon:
         """
         build_id = uuid.UUID(raw["uuid"])
         now = datetime.now(timezone.utc)
-        stmt = (
-            insert(GbdBuild)
-            .values(
-                id=build_id,
-                name=raw["name"],
-                space_name=raw.get("space_name") or "",
-                username=raw.get("username") or "",
-                status=raw.get("status") or "failed",
-                created_at=raw.get("created_time") or now,
-                updated_at=raw.get("updated_time") or now,
-                finished_at=raw.get("updated_time"),
-            )
-            .on_conflict_do_update(
-                index_elements=["id"],
-                set_={"status": raw.get("status") or "failed", "updated_at": now},
-            )
+        status = raw.get("status") or "failed"
+
+        existing = await session.get(GbdBuild, build_id)
+        if existing is not None:
+            existing.status = status
+            existing.updated_at = now
+            return existing
+
+        build = GbdBuild(
+            id=build_id,
+            name=raw["name"],
+            space_name=raw.get("space_name") or "",
+            username=raw.get("username") or "",
+            status=status,
+            created_at=raw.get("created_time") or now,
+            updated_at=raw.get("updated_time") or now,
+            finished_at=raw.get("updated_time"),
         )
-        await session.execute(stmt)
-        result = await session.execute(select(GbdBuild).where(GbdBuild.id == build_id))
-        return result.scalar_one()
+        session.add(build)
+        await session.flush()
+        return build
 
     async def _process_gbserver_batch(self) -> None:
         """Analyze failed builds discovered directly from gbserver's database.
