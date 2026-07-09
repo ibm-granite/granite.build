@@ -14,8 +14,8 @@ import {
   Pagination,
 } from "@carbon/react";
 import type { DPDataset } from "@/api/dataProcessing";
+import { adaptStatus } from "@/api/gbserver";
 import { BuildStatusBadge } from "@/components/BuildStatusBadge";
-import type { BuildStatus } from "@/types";
 
 interface Props {
   datasets: DPDataset[];
@@ -110,7 +110,7 @@ export function DatasetList({ datasets, search, isLoading }: Props) {
                         {cell.info.header === "latest_status" ? (
                           cell.value ? (
                             <BuildStatusBadge
-                              status={cell.value as BuildStatus}
+                              status={adaptStatus(cell.value as string)}
                             />
                           ) : (
                             "—"

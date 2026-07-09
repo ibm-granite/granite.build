@@ -30,7 +30,7 @@ const client = axios.create({ baseURL: apiBase('/api/v1') })
 // gbserver returns StoredBuild which uses uppercase Status enums and slightly
 // different field names. We normalise here so the UI always works with our types.
 
-function adaptStatus(s: string): BuildStatus {
+export function adaptStatus(s: string): BuildStatus {
   return (s || '').toLowerCase() as BuildStatus
 }
 

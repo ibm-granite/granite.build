@@ -4,8 +4,8 @@ import React from "react";
 import Link from "next/link";
 import { DataTableSkeleton } from "@carbon/react";
 import type { DPDataset } from "@/api/dataProcessing";
+import { adaptStatus } from "@/api/gbserver";
 import { BuildStatusBadge } from "@/components/BuildStatusBadge";
-import type { BuildStatus } from "@/types";
 import styles from "./page.module.scss";
 
 interface Props {
@@ -128,7 +128,7 @@ export function PipelineTab({ datasets, search, isLoading }: Props) {
             {ds.latest_build_id ? (
               <>
                 <BuildStatusBadge
-                  status={ds.latest_build_status as BuildStatus}
+                  status={adaptStatus(ds.latest_build_status ?? "")}
                 />
                 <Link
                   href={`/dashboard/builds/_/?id=${ds.latest_build_id}`}
