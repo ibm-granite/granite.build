@@ -8,7 +8,7 @@ logger = logging.getLogger("gb_ui_backend")
 def main():
     config = uvicorn.Config(
         "gb_ui_backend.main:app",
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=8090,
         reload=False,
     )

@@ -150,11 +150,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
             return response
 
-        # Allow analytics sidecar proxy — sidecar validates tokens itself
-        if request.url.path.startswith("/api/analytics/"):
-            response = await call_next(request)
-            return response
-
         # Read auth mode at request time (not import time) so that env vars
         # set after import (e.g. by the standalone command) are picked up.
         auth_mode = os.getenv("GBSERVER_AUTH_MODE", "github")

@@ -481,6 +481,17 @@ class TestAuthMiddlewareMultiProvider:
             response = client.get("/api/test")
         assert response.status_code == 401
 
+    def test_analytics_proxy_path_requires_auth(self):
+        """/api/analytics/* must be authenticated like any other /api/ path —
+        it must NOT be bypassed on the (incorrect) assumption that the
+        sidecar validates tokens itself."""
+        env = {"GBSERVER_AUTH_MODE": "github"}
+        with patch.dict(os.environ, env, clear=False):
+            app = _make_app()
+            client = TestClient(app)
+            response = client.get("/api/analytics/builds/failure-trends/history")
+        assert response.status_code == 401
+
     def test_non_api_path_bypasses_auth(self):
         """Paths outside /api/ (frontend pages, static assets) are public
         regardless of auth mode — the client needs to load the page before

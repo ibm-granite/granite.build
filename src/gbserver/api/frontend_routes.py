@@ -20,7 +20,7 @@ Public endpoints (no auth required — see AuthMiddleware):
   GET  /api/config        — runtime config for frontend bootstrap
   GET  /api/environments  — always returns the single STANDALONE entry
 
-Proxy endpoint:
+Proxy endpoint (requires auth — see AuthMiddleware):
   *    /api/analytics/{path}  — forwards to the gb_ui_backend sidecar at :8090
 """
 
@@ -62,6 +62,9 @@ async def analytics_proxy(path: str, request: Request) -> Response:
     headers = {
         k: v for k, v in request.headers.items() if k.lower() in _FORWARDED_HEADERS
     }
+    user = getattr(request.state, "data", {}).get("user")
+    if user is not None:
+        headers["x-user-email"] = user.email
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
