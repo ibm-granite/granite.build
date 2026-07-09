@@ -59,11 +59,15 @@ def _make_test_jwt(private_key, claims: dict, headers: dict = None) -> str:
 
 
 def _make_app() -> FastAPI:
-    """Build a minimal FastAPI app with AuthMiddleware and a /test endpoint."""
+    """Build a minimal FastAPI app with AuthMiddleware and a /api/test endpoint.
+
+    The probe endpoint must live under /api/ — AuthMiddleware only guards
+    /api/* paths (everything else is public frontend/static content).
+    """
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
 
-    @app.get("/test")
+    @app.get("/api/test")
     async def test_endpoint(request: Request):
         user = request.state.data["user"]
         return JSONResponse(
@@ -77,6 +81,10 @@ def _make_app() -> FastAPI:
     @app.get("/docs")
     async def docs_endpoint():
         return JSONResponse(content={"docs": True})
+
+    @app.get("/dashboard")
+    async def frontend_page_endpoint():
+        return JSONResponse(content={"page": True})
 
     return app
 
@@ -455,7 +463,7 @@ class TestAuthMiddlewareMultiProvider:
             with patch("gbserver.api.auth_providers.requests") as mock_requests:
                 mock_requests.get.return_value = mock_response
                 response = client.get(
-                    "/test",
+                    "/api/test",
                     headers={"Authorization": "Bearer ghp_validtoken123"},
                 )
 
@@ -470,8 +478,20 @@ class TestAuthMiddlewareMultiProvider:
         with patch.dict(os.environ, env, clear=False):
             app = _make_app()
             client = TestClient(app)
-            response = client.get("/test")
+            response = client.get("/api/test")
         assert response.status_code == 401
+
+    def test_non_api_path_bypasses_auth(self):
+        """Paths outside /api/ (frontend pages, static assets) are public
+        regardless of auth mode — the client needs to load the page before
+        it has a token."""
+        env = {"GBSERVER_AUTH_MODE": "github"}
+        with patch.dict(os.environ, env, clear=False):
+            app = _make_app()
+            client = TestClient(app)
+            response = client.get("/dashboard")  # no Authorization header
+        assert response.status_code == 200
+        assert response.json() == {"page": True}
 
     def test_docs_allowed_without_auth(self):
         """Docs endpoint should work without authentication in any mode."""

@@ -270,7 +270,7 @@ class TestEnvironmentConfig:
         assert config.default_sql_schema == "standalone"
         assert config.default_pod_namespace == "default"
         assert config.lakehouse_environment == ""
-        assert config.web_ui_url == ""
+        assert config.web_ui_url == "http://localhost:8080/dashboard"
 
 
 # ---------------------------------------------------------------------------

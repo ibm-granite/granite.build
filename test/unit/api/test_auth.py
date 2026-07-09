@@ -26,11 +26,15 @@ from gbserver.api.auth import AuthMiddleware
 
 
 def _make_app() -> FastAPI:
-    """Build a minimal FastAPI app with AuthMiddleware and a /test endpoint."""
+    """Build a minimal FastAPI app with AuthMiddleware and a /api/test endpoint.
+
+    The probe endpoint must live under /api/ — AuthMiddleware only guards
+    /api/* paths (everything else is public frontend/static content).
+    """
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
 
-    @app.get("/test")
+    @app.get("/api/test")
     async def test_endpoint(request: Request):
         user = request.state.data["user"]
         return JSONResponse(content={"login": user.login})
@@ -42,6 +46,10 @@ def _make_app() -> FastAPI:
     @app.get("/openapi.json")
     async def openapi_endpoint():
         return JSONResponse(content={"openapi": "3.0.0"})
+
+    @app.get("/dashboard")
+    async def frontend_page_endpoint():
+        return JSONResponse(content={"page": True})
 
     return app
 
@@ -59,7 +67,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             response = client.get(
-                "/test", headers={"Authorization": "Bearer test-key-123"}
+                "/api/test", headers={"Authorization": "Bearer test-key-123"}
             )
         assert response.status_code == 200
         assert response.json()["login"] == "standalone"
@@ -74,7 +82,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             response = client.get(
-                "/test", headers={"Authorization": "Bearer wrong-key"}
+                "/api/test", headers={"Authorization": "Bearer wrong-key"}
             )
         assert response.status_code == 401
 
@@ -89,7 +97,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             response = client.get(
-                "/test", headers={"Authorization": "Bearer test-key-123"}
+                "/api/test", headers={"Authorization": "Bearer test-key-123"}
             )
         assert response.status_code == 200
         assert response.json()["login"] == "myuser"
@@ -104,7 +112,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             # TestClient sends from "testclient" which is in the localhost allow list
-            response = client.get("/test")
+            response = client.get("/api/test")
         assert response.status_code == 200
         assert response.json()["login"] == "standalone"
 
@@ -162,7 +170,7 @@ class TestAuthMiddlewareApiKeyMode:
         with patch.dict(os.environ, env, clear=False):
             app = _make_app()
             client = TestClient(app)
-            response = client.get("/test")
+            response = client.get("/api/test")
         assert response.status_code == 401
 
     def test_localhost_without_auth_header_returns_401_when_api_key_set(self):
@@ -175,5 +183,20 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             # TestClient sends from "testclient" (in localhost allow list)
             client = TestClient(app)
-            response = client.get("/test")  # no Authorization header
+            response = client.get("/api/test")  # no Authorization header
         assert response.status_code == 401
+
+    def test_non_api_path_bypasses_auth_even_with_api_key_set(self):
+        """Paths outside /api/ (frontend pages, static assets) are public in
+        every auth mode — the client needs to load the page before it has a
+        token, and the API key requirement must not apply to them."""
+        env = {
+            "GBSERVER_AUTH_MODE": "apikey",
+            "GBSERVER_API_KEY": "test-key-123",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            app = _make_app()
+            client = TestClient(app)
+            response = client.get("/dashboard")  # no Authorization header
+        assert response.status_code == 200
+        assert response.json() == {"page": True}
