@@ -15,9 +15,7 @@
 # limitations under the License.
 
 
-import atexit
 import os
-import subprocess
 import sys
 
 import click
@@ -35,18 +33,21 @@ from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_sidecar_process: "subprocess.Popen[bytes] | None" = None
 
+def _configure_analytics_env(host: str = "127.0.0.1", port: int = 8080) -> None:
+    """Default the analytics service's env vars if gb_ui_backend is installed.
 
-def _start_analytics_sidecar(host: str = "127.0.0.1", port: int = 8080) -> None:
-    """Start gb_ui_backend as a background subprocess if it is installed.
+    The analytics routers are included directly into root_api (see
+    gbserver/api/root_api.py) — this only sets sensible defaults for the env
+    vars gb_ui_backend's Config reads, so standalone analytics work out of
+    the box without requiring the caller to configure a database explicitly.
 
-    If GB_UI_DATABASE_URL is not set, defaults to the sidecar's own SQLite file in
-    the GB home directory (see SIDECAR_DB_FILENAME in gb_ui_backend/config.py).
+    If GB_UI_DATABASE_URL is not set, defaults to the analytics service's own
+    SQLite file in the GB home directory (see ANALYTICS_DB_FILENAME in
+    gb_ui_backend/config.py).
     If GB_UI_GBSERVER_DB_URL is not set and gbserver is running in SQLite mode,
     defaults to gbserver's own SQLite file so standalone analytics work out of the box.
-    If GB_UI_GBSERVER_URL is not set, defaults to the main server's own host/port so
-    the sidecar can report the frontend URL at the end of its own startup log.
+    If GB_UI_GBSERVER_URL is not set, defaults to the main server's own host/port.
 
     Args:
         host: Bind address the main REST server (and frontend) is listening on.
@@ -57,11 +58,10 @@ def _start_analytics_sidecar(host: str = "127.0.0.1", port: int = 8080) -> None:
     if importlib.util.find_spec("gb_ui_backend") is None:
         return
 
-    global _sidecar_process
     gb_home = get_gb_home_dir()
 
     if not os.environ.get("GB_UI_DATABASE_URL"):
-        # mirrors SIDECAR_DB_FILENAME in gb_ui_backend/config.py — keep in sync
+        # mirrors ANALYTICS_DB_FILENAME in gb_ui_backend/config.py — keep in sync
         os.environ["GB_UI_DATABASE_URL"] = (
             f"sqlite+aiosqlite:///{os.path.join(gb_home, 'dashboard-analytics.db')}"
         )
@@ -77,26 +77,6 @@ def _start_analytics_sidecar(host: str = "127.0.0.1", port: int = 8080) -> None:
     if not os.environ.get("GB_UI_GBSERVER_URL"):
         browse_host = "127.0.0.1" if host == "0.0.0.0" else host
         os.environ["GB_UI_GBSERVER_URL"] = f"http://{browse_host}:{port}"
-
-    _sidecar_process = subprocess.Popen(
-        [sys.executable, "-m", "gb_ui_backend"],
-        start_new_session=True,  # own process group — immune to gbserver SIGTERM/SIGHUP
-    )
-    logger.info(
-        "Analytics sidecar started (pid=%d) — listening on :8090.",
-        _sidecar_process.pid,
-    )
-    atexit.register(_stop_analytics_sidecar)
-
-
-def _stop_analytics_sidecar() -> None:
-    if _sidecar_process is not None and _sidecar_process.poll() is None:
-        logger.info("Stopping analytics sidecar (pid=%d).", _sidecar_process.pid)
-        _sidecar_process.terminate()
-        try:
-            _sidecar_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _sidecar_process.kill()
 
 
 _IBMID_REQUIRED_VARS = [
@@ -126,7 +106,7 @@ def cli(
             )
             sys.exit(1)
 
-    _start_analytics_sidecar(host="0.0.0.0", port=port)
+    _configure_analytics_env(host="0.0.0.0", port=port)
 
     try:
         logger.info(

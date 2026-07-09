@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 import click
 import uvicorn
 
-from gbserver.commands.command_rest_server import _start_analytics_sidecar
+from gbserver.commands.command_rest_server import _configure_analytics_env
 from gbserver.commands.utils import check_and_init_for_standalone
 from gbserver.types.constants import (
     CONFIGURATIONS_STANDALONE_SPACE_SUBPATH,
@@ -190,8 +190,8 @@ def _run_standalone(
     watcher_thread.start()
     logger.info("BuildWatcher started in background thread")
 
-    # 4. Start the analytics sidecar (if gb_ui_backend is installed).
-    _start_analytics_sidecar(host=host, port=port)
+    # 4. Default the analytics service's env vars (if gb_ui_backend is installed).
+    _configure_analytics_env(host=host, port=port)
 
     # 5. Start the REST API via uvicorn.
     #    Force the "asyncio" event loop (not uvloop) to avoid subprocess-in-thread

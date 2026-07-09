@@ -20,21 +20,17 @@ Public endpoints (no auth required — see AuthMiddleware):
   GET  /api/config        — runtime config for frontend bootstrap
   GET  /api/environments  — always returns the single STANDALONE entry
 
-Proxy endpoint (requires auth — see AuthMiddleware):
-  *    /api/analytics/{path}  — forwards to the gb_ui_backend sidecar at :8090
+/api/analytics/* is handled by gb_ui_backend's routers, included directly
+into root_api (see gbserver/api/root_api.py) — not proxied from here.
 """
 
 from __future__ import annotations
 
 import os
 
-import httpx
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi import APIRouter
 
 frontend_router = APIRouter()
-
-_FORWARDED_HEADERS = {"authorization", "content-type", "accept", "x-request-id"}
 
 
 @frontend_router.get("/api/config")
@@ -48,41 +44,3 @@ async def get_config() -> dict:
 @frontend_router.get("/api/environments")
 async def get_environments() -> list:
     return [{"id": "STANDALONE", "label": "Standalone", "url": "http://localhost:8080"}]
-
-
-@frontend_router.api_route(
-    "/api/analytics/{path:path}",
-    methods=["GET", "POST", "PUT", "DELETE"],
-)
-async def analytics_proxy(path: str, request: Request) -> Response:
-    """Proxy requests to the gb_ui_backend analytics sidecar."""
-    sidecar = os.environ.get("GBSERVER_ANALYTICS_URL", "http://localhost:8090")
-    qs = f"?{request.url.query}" if request.url.query else ""
-    target = f"{sidecar}/api/analytics/{path}{qs}"
-    headers = {
-        k: v for k, v in request.headers.items() if k.lower() in _FORWARDED_HEADERS
-    }
-    user = getattr(request.state, "data", {}).get("user")
-    if user is not None:
-        headers["x-user-email"] = user.email
-
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.request(
-                method=request.method,
-                url=target,
-                headers=headers,
-                content=await request.body(),
-            )
-        return Response(
-            content=resp.content,
-            status_code=resp.status_code,
-            media_type=resp.headers.get("content-type"),
-        )
-    except httpx.ConnectError:
-        return JSONResponse(
-            {
-                "detail": "Analytics sidecar unavailable. Start gb_ui_backend to enable analytics."
-            },
-            status_code=503,
-        )

@@ -16,6 +16,7 @@
 
 
 import asyncio
+import importlib.util
 import os
 
 from fastapi import FastAPI, Request
@@ -40,6 +41,7 @@ from gbserver.types.constants import (
     API_BASE_PATH,
     GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GIT_COMMIT,
+    GBSERVER_REST_SERVER_WORKERS,
 )
 from gbserver.utils.logger import get_logger
 
@@ -78,6 +80,37 @@ root_api.mount(f"{API_BASE_PATH}/logs", logs_api)
 root_api.mount(f"{API_BASE_PATH}/node-health", node_health_api)
 root_api.mount(f"{API_BASE_PATH}/secrets", secrets_api)
 root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
+
+# ── Analytics (optional gb_ui_backend extra) ───────────────────────────────────
+# Included directly (not mounted as a separate ASGI app) so these routes run
+# in-process behind AuthMiddleware like everything else, and so gb_ui_backend's
+# startup work (init_analytics, called below) is driven by root_api's own
+# startup hook rather than relying on a sub-app lifespan that .mount() alone
+# would never invoke.
+_HAS_ANALYTICS = importlib.util.find_spec("gb_ui_backend") is not None
+if _HAS_ANALYTICS:
+    from gb_ui_backend.api import ai as _gb_ai
+    from gb_ui_backend.api import analytics as _gb_analytics
+    from gb_ui_backend.api import builds as _gb_builds
+    from gb_ui_backend.api import data_processing as _gb_data_processing
+    from gb_ui_backend.api import plans as _gb_plans
+
+    for _router in (
+        _gb_analytics.router,
+        _gb_ai.router,
+        _gb_builds.router,
+        _gb_data_processing.router,
+        _gb_plans.router,
+    ):
+        root_api.include_router(_router, prefix="/api/analytics")
+
+    if GBSERVER_REST_SERVER_WORKERS > 1:
+        logger.warning(
+            "GBSERVER_REST_SERVER_WORKERS=%d with analytics enabled — each "
+            "worker gets its own analytics DB engine/AI-daemon state; "
+            "analytics assumes a single worker.",
+            GBSERVER_REST_SERVER_WORKERS,
+        )
 
 # ── Frontend static file serving ──────────────────────────────────────────────
 
@@ -175,6 +208,11 @@ async def _spa_fallback(
 @root_api.on_event("startup")
 async def _start_background_tasks():
     """Launch background tasks that run for the lifetime of the server."""
+    if _HAS_ANALYTICS:
+        from gb_ui_backend.main import init_analytics
+
+        await init_analytics()
+
     if GBSERVER_EVENT_PUBLISHING_ENABLED:
         if os.getenv("RABBITMQ_HOST"):
             from gbserver.messaging.credential_cleanup import start_cleanup_loop
