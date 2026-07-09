@@ -85,8 +85,14 @@ function exportCSV(data: FailureTrendResponse) {
       ]);
     }
   }
+  // Prefix a leading =/+/-/@ with an apostrophe to neutralize CSV formula
+  // injection when opened in a spreadsheet app — quoting alone doesn't stop it.
+  const escapeCsvCell = (c: string) =>
+    /^[=+\-@]/.test(c) ? `'${c}` : c;
   const csv = rows
-    .map((r) => r.map((c) => `"${c.replace(/"/g, '""')}"`).join(","))
+    .map((r) =>
+      r.map((c) => `"${escapeCsvCell(c).replace(/"/g, '""')}"`).join(","),
+    )
     .join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
