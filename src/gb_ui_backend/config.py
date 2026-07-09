@@ -83,10 +83,6 @@ class Config(BaseSettings):
 class GitHubConfig(BaseSettings):
     """Reads GITHUB_* vars — no GB_UI_ prefix, so a separate settings class."""
 
-    model_config = SettingsConfigDict(
-        env_file=os.path.join(os.path.dirname(__file__), "../../../.env"),
-        extra="ignore",
-    )
     github_client_secret: str = Field(default="", alias="GITHUB_CLIENT_SECRET")
 
     model_config = SettingsConfigDict(
