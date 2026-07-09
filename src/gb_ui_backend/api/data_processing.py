@@ -11,12 +11,12 @@ Provides:
 
 Ported from gb_dashboard/src/gb_dashboard/api/data_processing.py.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import re
-
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -40,17 +40,21 @@ router = APIRouter(prefix="/api/analytics/data-processing", tags=["data-processi
 # Regex patterns (ported verbatim from gb_dashboard)
 # ---------------------------------------------------------------------------
 
-_RE_MEGATRON_PATH   = re.compile(r"--megatron_path\s+(\S+)")
-_RE_ARROW_PATH      = re.compile(r"--arrow_path\s+(\S+)")
-_RE_MERGED_TEXT     = re.compile(r"--merged_text_path\s+(\S+)")
-_RE_MERGED_BIN      = re.compile(r"--merged_bin_path\s+(\S+)")
-_RE_OUTPUT_FOLDER   = re.compile(r"--output_folder\s+(\S+)")
-_RE_INPUT_FOLDER    = re.compile(r"--input_folder\s+(\S+)")
-_RE_IS_MEGATRON     = re.compile(r"run_cos_pipeline\.py")
+_RE_MEGATRON_PATH = re.compile(r"--megatron_path\s+(\S+)")
+_RE_ARROW_PATH = re.compile(r"--arrow_path\s+(\S+)")
+_RE_MERGED_TEXT = re.compile(r"--merged_text_path\s+(\S+)")
+_RE_MERGED_BIN = re.compile(r"--merged_bin_path\s+(\S+)")
+_RE_OUTPUT_FOLDER = re.compile(r"--output_folder\s+(\S+)")
+_RE_INPUT_FOLDER = re.compile(r"--input_folder\s+(\S+)")
+_RE_IS_MEGATRON = re.compile(r"run_cos_pipeline\.py")
 _RE_IS_TOKENIZATION = re.compile(r"tokenization2arrow")
 
 _TYPE_COLUMNS: dict[str, int] = {
-    "parquet": 0, "arrow": 1, "megatron": 2, "merged_text": 3, "merged_bin": 3
+    "parquet": 0,
+    "arrow": 1,
+    "megatron": 2,
+    "merged_text": 3,
+    "merged_bin": 3,
 }
 
 
@@ -110,6 +114,7 @@ def _short_name(path: str) -> str:
 # Dataset scanning (async — uses GbserverSource)
 # ---------------------------------------------------------------------------
 
+
 async def _scan_datasets_async(days: int) -> tuple[list[dict], int, int, Optional[str]]:
     """Scan gbserver builds for data processing datasets.
 
@@ -117,11 +122,20 @@ async def _scan_datasets_async(days: int) -> tuple[list[dict], int, int, Optiona
     """
     source = get_gbserver_source()
     if not source:
-        logger.debug("scan-datasets: GbserverSource not configured (set GB_UI_GBSERVER_DB_URL)")
-        return [], 0, 0, "GB_UI_GBSERVER_DB_URL is not configured — cannot scan builds for DP datasets."
+        logger.debug(
+            "scan-datasets: GbserverSource not configured (set GB_UI_GBSERVER_DB_URL)"
+        )
+        return (
+            [],
+            0,
+            0,
+            "GB_UI_GBSERVER_DB_URL is not configured — cannot scan builds for DP datasets.",
+        )
 
     try:
-        builds, db_warning = await source.list_builds_for_dp_scan(days_back=days, limit=10000)
+        builds, db_warning = await source.list_builds_for_dp_scan(
+            days_back=days, limit=10000
+        )
     except Exception as exc:
         msg = (
             f"DB query failed — ensure GB_UI_GBSERVER_DB_URL points to gbserver's own database "
@@ -135,8 +149,17 @@ async def _scan_datasets_async(days: int) -> tuple[list[dict], int, int, Optiona
     matched = 0
 
     # Diagnostic: log all build names and look for any DP-related patterns
-    DP_KEYWORDS = ("run_cos_pipeline", "tokenization2arrow", "dpk", "megatron", "arrow_path",
-                   "output_folder", "parquet", "tokenize", "cos_pipeline")
+    DP_KEYWORDS = (
+        "run_cos_pipeline",
+        "tokenization2arrow",
+        "dpk",
+        "megatron",
+        "arrow_path",
+        "output_folder",
+        "parquet",
+        "tokenize",
+        "cos_pipeline",
+    )
     build_names = [b.get("name", "?")[:40] for b in builds]
     logger.info("scan-datasets days=%d: fetched builds = %s", days, build_names)
     for b in builds:
@@ -144,8 +167,13 @@ async def _scan_datasets_async(days: int) -> tuple[list[dict], int, int, Optiona
         found = [kw for kw in DP_KEYWORDS if kw.lower() in yaml.lower()]
         if found:
             sample = yaml[:300].replace("\n", " | ")
-            logger.info("  DP keyword(s) %s in build %s (%s): %s",
-                        found, b["uuid"][:8], b.get("name", "?")[:30], sample)
+            logger.info(
+                "  DP keyword(s) %s in build %s (%s): %s",
+                found,
+                b["uuid"][:8],
+                b.get("name", "?")[:30],
+                sample,
+            )
 
     for build in builds:
         yaml_content = build.get("yaml_content")
@@ -202,12 +230,16 @@ async def _scan_datasets_async(days: int) -> tuple[list[dict], int, int, Optiona
             for pkey in ("parquet_path", "merged_text_path", "merged_bin_path"):
                 if paths.get(pkey) and not ds[pkey]:
                     ds[pkey] = paths[pkey]
-            if bt and (not ds["latest_build_time"] or str(bt) > ds["latest_build_time"]):
+            if bt and (
+                not ds["latest_build_time"] or str(bt) > ds["latest_build_time"]
+            ):
                 ds["latest_build_time"] = str(bt)
 
         datasets[group_key]["builds"].append(build_entry)
 
-    result = sorted(datasets.values(), key=lambda d: d["latest_build_time"], reverse=True)
+    result = sorted(
+        datasets.values(), key=lambda d: d["latest_build_time"], reverse=True
+    )
     for ds in result:
         ds["build_count"] = len(ds["builds"])
         ds["builds"].sort(key=lambda b: b.get("created_time", ""), reverse=True)
@@ -222,7 +254,11 @@ async def _scan_datasets_async(days: int) -> tuple[list[dict], int, int, Optiona
 
     logger.info(
         "scan-datasets days=%d: fetched=%d scanned=%d matched=%d datasets=%d%s",
-        days, len(builds), scanned, matched, len(result),
+        days,
+        len(builds),
+        scanned,
+        matched,
+        len(result),
         f" [warning: {db_warning}]" if db_warning else "",
     )
     return result, scanned, matched, db_warning
@@ -231,6 +267,7 @@ async def _scan_datasets_async(days: int) -> tuple[list[dict], int, int, Optiona
 # ---------------------------------------------------------------------------
 # Lineage graph construction (ported verbatim from gb_dashboard)
 # ---------------------------------------------------------------------------
+
 
 def _build_lineage_graph(datasets: list[dict]) -> dict:
     """Build lineage graph (nodes + edges) from dataset list."""
@@ -276,16 +313,25 @@ def _build_lineage_graph(datasets: list[dict]) -> dict:
         merged_text = ds.get("merged_text_path", "")
         merged_bin = ds.get("merged_bin_path", "")
 
-        if parquet:      get_or_create_node(parquet, "parquet")
-        if arrow:        get_or_create_node(arrow, "arrow")
-        if megatron:     get_or_create_node(megatron, "megatron")
-        if merged_text:  get_or_create_node(merged_text, "merged_text")
-        if merged_bin:   get_or_create_node(merged_bin, "merged_bin")
+        if parquet:
+            get_or_create_node(parquet, "parquet")
+        if arrow:
+            get_or_create_node(arrow, "arrow")
+        if megatron:
+            get_or_create_node(megatron, "megatron")
+        if merged_text:
+            get_or_create_node(merged_text, "merged_text")
+        if merged_bin:
+            get_or_create_node(merged_bin, "merged_bin")
 
-        if parquet and arrow:           get_or_create_edge(parquet, arrow)
-        if arrow and megatron:          get_or_create_edge(arrow, megatron)
-        if megatron and merged_text:    get_or_create_edge(megatron, merged_text)
-        if megatron and merged_bin:     get_or_create_edge(megatron, merged_bin)
+        if parquet and arrow:
+            get_or_create_edge(parquet, arrow)
+        if arrow and megatron:
+            get_or_create_edge(arrow, megatron)
+        if megatron and merged_text:
+            get_or_create_edge(megatron, merged_text)
+        if megatron and merged_bin:
+            get_or_create_edge(megatron, merged_bin)
 
         for build in ds.get("builds", []):
             btype = build["type"]
@@ -339,6 +385,7 @@ def _build_lineage_graph(datasets: list[dict]) -> dict:
 # API endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.get("/lineage")
 async def get_lineage(days: int = Query(1, ge=1, le=30)) -> JSONResponse:
     """Return lineage DAG (nodes + edges + datasets) from recent DP builds."""
@@ -361,7 +408,12 @@ async def get_lineage(days: int = Query(1, ge=1, le=30)) -> JSONResponse:
 async def recent_datasets(days: int = Query(1, ge=1, le=30)) -> JSONResponse:
     """Scan recent builds and return data processing datasets."""
     datasets, scanned, matched, warning = await _scan_datasets_async(days)
-    resp: dict[str, Any] = {"datasets": datasets, "scanned": scanned, "matched": matched, "days": days}
+    resp: dict[str, Any] = {
+        "datasets": datasets,
+        "scanned": scanned,
+        "matched": matched,
+        "days": days,
+    }
     if warning:
         resp["warning"] = warning
     return JSONResponse(resp)
@@ -389,6 +441,7 @@ async def remove_scan_prefix(prefix: str = Query(..., min_length=1)) -> JSONResp
 # COS-dependent endpoints (graceful 200 with error field when unconfigured)
 # ---------------------------------------------------------------------------
 
+
 def _cos_configured() -> bool:
     cfg = get_config()
     return bool(cfg.cos_endpoint and cfg.cos_access_key and cfg.cos_secret_key)
@@ -399,6 +452,7 @@ def _make_s3_client():
     try:
         import boto3
         from botocore.config import Config as BotoConfig
+
         return boto3.client(
             "s3",
             endpoint_url=cfg.cos_endpoint,
@@ -435,10 +489,12 @@ async def get_node_counts(
         try:
             key = path_info["path"].strip().strip("/")
             if key.startswith(bucket + "/"):
-                key = key[len(bucket) + 1:]
+                key = key[len(bucket) + 1 :]
             count = 0
             paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=bucket, Prefix=key + "/", Delimiter="/", MaxKeys=1000):
+            for page in paginator.paginate(
+                Bucket=bucket, Prefix=key + "/", Delimiter="/", MaxKeys=1000
+            ):
                 count += page.get("KeyCount", 0)
             return path_info["id"], count
         except Exception as exc:
@@ -477,7 +533,7 @@ async def get_pipeline_status(
         try:
             key = path_info["path"].strip().strip("/")
             if key.startswith(bucket + "/"):
-                key = key[len(bucket) + 1:]
+                key = key[len(bucket) + 1 :]
             build_id = path_info.get("build_id", "")
             summary_key = f"{key.rstrip('/')}/pipeline/{build_id}/pipeline_summary.json"
             resp = s3.get_object(Bucket=bucket, Key=summary_key)

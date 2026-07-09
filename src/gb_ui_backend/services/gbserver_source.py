@@ -15,6 +15,7 @@ from K8s into separate gbd_* tables, we read gbserver's own tables directly:
 
 gbserver stores richer data in JSON blobs; we extract what we need via raw SQL.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,7 +36,7 @@ ACTIVE_STATUSES = {"PENDING", "RUNNING", "SUBMITTED", "SUSPENDED"}
 def _resolve_db_url(url: str) -> str:
     """Expand ~ in SQLite paths."""
     if url.startswith("sqlite+aiosqlite:///"):
-        path = url[len("sqlite+aiosqlite:///"):]
+        path = url[len("sqlite+aiosqlite:///") :]
         return "sqlite+aiosqlite:///" + os.path.expanduser(path)
     return url
 
@@ -67,7 +68,8 @@ class GbserverSource:
         self._is_sqlite = "sqlite" in url
         logger.info(
             "GbserverSource connected to %s (schema=%s)",
-            url.split("///")[-1].split("@")[-1], schema,
+            url.split("///")[-1].split("@")[-1],
+            schema,
         )
 
     async def close(self) -> None:
@@ -88,7 +90,9 @@ class GbserverSource:
         """Return builds from gbserver ordered by updated_time desc."""
         if date_from:
             try:
-                since = datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                since = datetime.strptime(date_from, "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
             except ValueError:
                 since = datetime.now(timezone.utc) - timedelta(days=days_back)
         else:
@@ -99,7 +103,9 @@ class GbserverSource:
 
         if date_to:
             try:
-                until = datetime.strptime(date_to, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+                until = datetime.strptime(date_to, "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                ) + timedelta(days=1)
                 conditions.append("updated_time < :until")
                 params["until"] = until
             except ValueError:
@@ -136,15 +142,17 @@ class GbserverSource:
 
         builds = []
         for row in rows:
-            builds.append({
-                "uuid": str(row[0]),
-                "name": row[1],
-                "space_name": row[2],
-                "username": row[3],
-                "status": (row[4] or "").lower(),
-                "created_time": row[5],
-                "updated_time": row[6],
-            })
+            builds.append(
+                {
+                    "uuid": str(row[0]),
+                    "name": row[1],
+                    "space_name": row[2],
+                    "username": row[3],
+                    "status": (row[4] or "").lower(),
+                    "created_time": row[5],
+                    "updated_time": row[6],
+                }
+            )
         return builds
 
     async def list_builds_for_dp_scan(
@@ -185,9 +193,15 @@ class GbserverSource:
                 rows = result.fetchall()
             except Exception as exc:
                 err_str = str(exc).lower()
-                if "build_archive" in err_str or "column" in err_str or "undefined" in err_str:
+                if (
+                    "build_archive" in err_str
+                    or "column" in err_str
+                    or "undefined" in err_str
+                ):
                     has_archive_column = False
-                    logger.info("list_builds_for_dp_scan: build_archive column absent, fetching without it")
+                    logger.info(
+                        "list_builds_for_dp_scan: build_archive column absent, fetching without it"
+                    )
                 else:
                     raise
 
@@ -197,8 +211,12 @@ class GbserverSource:
             # SQLite uses PRAGMA table_info; PostgreSQL uses information_schema.
             async with self._sessions() as session:
                 if self._is_sqlite:
-                    col_result = await session.execute(text("PRAGMA table_info(gb_builds)"))
-                    available_cols = [r[1] for r in col_result.fetchall()]  # column 1 = name
+                    col_result = await session.execute(
+                        text("PRAGMA table_info(gb_builds)")
+                    )
+                    available_cols = [
+                        r[1] for r in col_result.fetchall()
+                    ]  # column 1 = name
                 else:
                     col_result = await session.execute(text("""
                         SELECT column_name FROM information_schema.columns
@@ -212,7 +230,9 @@ class GbserverSource:
             # gbserver stores the full StoredBuild as JSON in the "json" column —
             # build_archive is inside that JSON blob, same as how steps use it.
             if "json" in available_cols:
-                logger.info("list_builds_for_dp_scan: extracting build_archive from json column")
+                logger.info(
+                    "list_builds_for_dp_scan: extracting build_archive from json column"
+                )
                 sql_json = text("""
                     SELECT uuid, name, space_name, username, status, created_time, updated_time,
                            "json"
@@ -227,33 +247,75 @@ class GbserverSource:
 
                 builds = []
                 for row in rows:
-                    uuid_, name, space_name, username, status, created_time, updated_time, json_blob = row
+                    (
+                        uuid_,
+                        name,
+                        space_name,
+                        username,
+                        status,
+                        created_time,
+                        updated_time,
+                        json_blob,
+                    ) = row
                     yaml_content: Optional[str] = None
                     if json_blob:
                         try:
                             import json as _json
-                            blob = _json.loads(json_blob) if isinstance(json_blob, str) else json_blob
-                            archive = blob.get("build_archive") if isinstance(blob, dict) else None
+
+                            blob = (
+                                _json.loads(json_blob)
+                                if isinstance(json_blob, str)
+                                else json_blob
+                            )
+                            archive = (
+                                blob.get("build_archive")
+                                if isinstance(blob, dict)
+                                else None
+                            )
                             if archive:
-                                import base64, io, zipfile
+                                import base64
+                                import io
+                                import zipfile
+
                                 zip_bytes = base64.b64decode(archive)
                                 with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
                                     names = zf.namelist()
                                     # Prefer build.yaml; fall back to first yaml found
                                     target = next(
-                                        (n for n in names if n.lower() in ("build.yaml", "build.yml")),
-                                        next((n for n in names if n.endswith((".yaml", ".yml"))), None),
+                                        (
+                                            n
+                                            for n in names
+                                            if n.lower() in ("build.yaml", "build.yml")
+                                        ),
+                                        next(
+                                            (
+                                                n
+                                                for n in names
+                                                if n.endswith((".yaml", ".yml"))
+                                            ),
+                                            None,
+                                        ),
                                     )
                                     if target:
-                                        yaml_content = zf.read(target).decode("utf-8", errors="replace")
+                                        yaml_content = zf.read(target).decode(
+                                            "utf-8", errors="replace"
+                                        )
                         except Exception as exc:
-                            logger.debug("json column decode error for build %s: %s", uuid_, exc)
-                    builds.append({
-                        "uuid": str(uuid_), "name": name, "space_name": space_name,
-                        "username": username, "status": (status or "").lower(),
-                        "created_time": created_time, "updated_time": updated_time,
-                        "yaml_content": yaml_content,
-                    })
+                            logger.debug(
+                                "json column decode error for build %s: %s", uuid_, exc
+                            )
+                    builds.append(
+                        {
+                            "uuid": str(uuid_),
+                            "name": name,
+                            "space_name": space_name,
+                            "username": username,
+                            "status": (status or "").lower(),
+                            "created_time": created_time,
+                            "updated_time": updated_time,
+                            "yaml_content": yaml_content,
+                        }
+                    )
                 return builds, None
 
             # No usable column found — return metadata-only with a detailed warning
@@ -270,13 +332,19 @@ class GbserverSource:
 
             builds = [
                 {
-                    "uuid": str(r[0]), "name": r[1], "space_name": r[2],
-                    "username": r[3], "status": (r[4] or "").lower(),
-                    "created_time": r[5], "yaml_content": None,
+                    "uuid": str(r[0]),
+                    "name": r[1],
+                    "space_name": r[2],
+                    "username": r[3],
+                    "status": (r[4] or "").lower(),
+                    "created_time": r[5],
+                    "yaml_content": None,
                 }
                 for r in raw_rows
             ]
-            cols_str = ", ".join(available_cols) if available_cols else "(could not read)"
+            cols_str = (
+                ", ".join(available_cols) if available_cols else "(could not read)"
+            )
             warning = (
                 f"build_archive column not found in gb_builds — "
                 f"found {len(builds)} builds but cannot read their YAMLs to detect DP patterns. "
@@ -287,28 +355,45 @@ class GbserverSource:
         # --- decode archives ---
         builds = []
         for row in rows:
-            uuid_, name, space_name, username, status, created_time, updated_time, archive = row
+            (
+                uuid_,
+                name,
+                space_name,
+                username,
+                status,
+                created_time,
+                updated_time,
+                archive,
+            ) = row
             yaml_content: Optional[str] = None
             if archive:
                 try:
-                    raw = archive if isinstance(archive, (bytes, bytearray)) else archive.encode()
+                    raw = (
+                        archive
+                        if isinstance(archive, (bytes, bytearray))
+                        else archive.encode()
+                    )
                     zip_bytes = base64.b64decode(raw)
                     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
                         for fname in zf.namelist():
                             if fname.endswith((".yaml", ".yml")):
-                                yaml_content = zf.read(fname).decode("utf-8", errors="replace")
+                                yaml_content = zf.read(fname).decode(
+                                    "utf-8", errors="replace"
+                                )
                                 break
                 except Exception:
                     pass
-            builds.append({
-                "uuid": str(uuid_),
-                "name": name,
-                "space_name": space_name,
-                "username": username,
-                "status": (status or "").lower(),
-                "created_time": created_time,
-                "yaml_content": yaml_content,
-            })
+            builds.append(
+                {
+                    "uuid": str(uuid_),
+                    "name": name,
+                    "space_name": space_name,
+                    "username": username,
+                    "status": (status or "").lower(),
+                    "created_time": created_time,
+                    "yaml_content": yaml_content,
+                }
+            )
         return builds, None
 
     async def get_build(self, build_id: str) -> Optional[Dict[str, Any]]:
@@ -322,9 +407,13 @@ class GbserverSource:
         if not row:
             return None
         return {
-            "uuid": str(row[0]), "name": row[1], "space_name": row[2],
-            "username": row[3], "status": (row[4] or "").lower(),
-            "created_time": row[5], "updated_time": row[6],
+            "uuid": str(row[0]),
+            "name": row[1],
+            "space_name": row[2],
+            "username": row[3],
+            "status": (row[4] or "").lower(),
+            "created_time": row[5],
+            "updated_time": row[6],
         }
 
     # ── Build status chart ────────────────────────────────────────────────────
@@ -460,7 +549,18 @@ class GbserverSource:
         status_msgs: List[Dict[str, Any]] = []
 
         for row in rows:
-            src, _uid, name, type_status, json_data, created_time, idx, source, target_id, step_id = row
+            (
+                src,
+                _uid,
+                name,
+                type_status,
+                json_data,
+                created_time,
+                idx,
+                source,
+                target_id,
+                step_id,
+            ) = row
             try:
                 payload = _json.loads(json_data) if json_data else {}
             except Exception:
@@ -472,7 +572,11 @@ class GbserverSource:
                     "index": idx or 0,
                     "type": type_status,
                     "source": source,
-                    "created_time": created_time.isoformat() if hasattr(created_time, "isoformat") else str(created_time or ""),
+                    "created_time": (
+                        created_time.isoformat()
+                        if hasattr(created_time, "isoformat")
+                        else str(created_time or "")
+                    ),
                 }
                 if type_status == "MESSAGE_EVENT":
                     event["level"] = ev_payload.get("level", "INFO")
@@ -488,22 +592,31 @@ class GbserverSource:
             elif src in ("target", "step"):
                 status_msg = payload.get("status_msg", "")
                 definition_uri = payload.get("definition_uri", "")
-                if status_msg or (type_status or "").upper() in ("FAILED", "ERROR", "INVALID"):
-                    status_msgs.append({
-                        "entity": src,
-                        "name": name or definition_uri or "unknown",
-                        "definition_uri": definition_uri,
-                        "status": type_status,
-                        "status_msg": status_msg[:10240] if status_msg else "",
-                        "started_at": payload.get("started_at"),
-                        "finished_at": payload.get("finished_at"),
-                    })
+                if status_msg or (type_status or "").upper() in (
+                    "FAILED",
+                    "ERROR",
+                    "INVALID",
+                ):
+                    status_msgs.append(
+                        {
+                            "entity": src,
+                            "name": name or definition_uri or "unknown",
+                            "definition_uri": definition_uri,
+                            "status": type_status,
+                            "status_msg": status_msg[:10240] if status_msg else "",
+                            "started_at": payload.get("started_at"),
+                            "finished_at": payload.get("finished_at"),
+                        }
+                    )
 
         # Sort events by priority: errors first
         def _priority(e: Dict) -> tuple:
             if e["type"] == "MESSAGE_EVENT" and e.get("level") == "ERROR":
                 return (0, -(e.get("index") or 0))
-            if e["type"] == "STATUS_EVENT" and e.get("status", "").upper() in ("FAILED", "ERROR"):
+            if e["type"] == "STATUS_EVENT" and e.get("status", "").upper() in (
+                "FAILED",
+                "ERROR",
+            ):
                 return (1, -(e.get("index") or 0))
             return (4, -(e.get("index") or 0))
 
@@ -603,7 +716,8 @@ async def init_gbserver_sources_from_environments(
 
     logger.info(
         "GbserverSource: %d schema(s) initialised, %d env mappings",
-        len(_sources_by_schema), len(_env_to_schema),
+        len(_sources_by_schema),
+        len(_env_to_schema),
     )
 
 

@@ -1,4 +1,5 @@
 """Shared data types for build discovery (K8s and other sources)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

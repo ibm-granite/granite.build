@@ -12,6 +12,7 @@ Works with any base_url:
       Auth:  Authorization: Bearer <api_key>
       URL:   <base_url>/v1/chat/completions
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -57,7 +58,10 @@ class LLMClient:
     def _headers(self) -> dict[str, str]:
         if self._is_rits:
             return {"RITS_API_KEY": self.api_key, "Content-Type": "application/json"}
-        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
 
     def _url(self, model_spec: str) -> tuple[str, str]:
         """Return (endpoint_url, model_name) for the given model spec."""
@@ -129,7 +133,10 @@ class LLMClient:
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             async with client.stream(
-                "POST", url, headers=self._headers(), json=payload,
+                "POST",
+                url,
+                headers=self._headers(),
+                json=payload,
             ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():

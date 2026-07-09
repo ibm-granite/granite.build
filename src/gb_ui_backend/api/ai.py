@@ -1,4 +1,5 @@
 """AI analysis endpoints."""
+
 from __future__ import annotations
 
 import asyncio
@@ -82,7 +83,9 @@ async def run_analysis(body: RunAnalysisIn, config: Config = Depends(get_config)
     if _trigger_analyzing:
         raise HTTPException(409, "Analysis already running")
     if not config.llm_base_url or not config.llm_api_key:
-        raise HTTPException(503, "LLM not configured — set GB_UI_LLM_BASE_URL and GB_UI_LLM_API_KEY")
+        raise HTTPException(
+            503, "LLM not configured — set GB_UI_LLM_BASE_URL and GB_UI_LLM_API_KEY"
+        )
     if not config.db_enabled:
         raise HTTPException(503, "Database not configured — set GB_UI_DATABASE_URL")
     if body.mode == "custom" and not body.categories:
@@ -92,10 +95,13 @@ async def run_analysis(body: RunAnalysisIn, config: Config = Depends(get_config)
         global _trigger_analyzing
         _trigger_analyzing = True
         try:
-            engine = create_async_engine(config.database_url, echo=False, pool_size=3, max_overflow=5)
+            engine = create_async_engine(
+                config.database_url, echo=False, pool_size=3, max_overflow=5
+            )
             session_factory = async_sessionmaker(engine, expire_on_commit=False)
             if body.mode == "auto":
                 from gb_ui_backend.services.ai_daemon import create_ai_daemon
+
                 daemon = await create_ai_daemon(
                     database_url=config.database_url,
                     llm_base_url=config.llm_base_url,
@@ -109,6 +115,7 @@ async def run_analysis(body: RunAnalysisIn, config: Config = Depends(get_config)
                 await daemon._process_gbserver_batch()
             else:
                 from gb_ui_backend.services.ai_daemon import run_custom_categorization
+
                 await run_custom_categorization(
                     session_factory=session_factory,
                     llm_base_url=config.llm_base_url,

@@ -7,6 +7,7 @@ Data source priority:
 This means standalone users get charts and trends from gbserver's own data
 without needing a separate database.
 """
+
 from __future__ import annotations
 
 import logging
@@ -50,8 +51,10 @@ class BuildStatusPoint(BaseModel):
 class FailureTrendRequest(BaseModel):
     days_back: int = 30
     date_from: Optional[str] = None  # YYYY-MM-DD; overrides days_back when both are set
-    source: str = "llm_phase1"  # "llm_phase1" (auto) or "llm_custom" (user-triggered custom)
-    date_to: Optional[str] = None    # YYYY-MM-DD inclusive
+    source: str = (
+        "llm_phase1"  # "llm_phase1" (auto) or "llm_custom" (user-triggered custom)
+    )
+    date_to: Optional[str] = None  # YYYY-MM-DD inclusive
     categories: Optional[list[str]] = None
     exclude_tests: bool = False
 
@@ -111,12 +114,24 @@ async def get_build_status_chart(
                 s = (row.status or "").lower()
                 it = bool(row.is_test)
                 pivot.setdefault(d, {}).setdefault(s, {})[it] = row.count
-            statuses = ["running", "success", "failed", "pending", "submitted", "suspended"]
+            statuses = [
+                "running",
+                "success",
+                "failed",
+                "pending",
+                "submitted",
+                "suspended",
+            ]
             return [
                 BuildStatusPoint(
                     date=d,
                     **{s: pivot[d].get(s, {}).get(False, 0) for s in statuses},
-                    **{f"{s}_test": (0 if exclude_tests else pivot[d].get(s, {}).get(True, 0)) for s in statuses},
+                    **{
+                        f"{s}_test": (
+                            0 if exclude_tests else pivot[d].get(s, {}).get(True, 0)
+                        )
+                        for s in statuses
+                    },
                 )
                 for d in sorted(pivot)
             ]
@@ -125,7 +140,9 @@ async def get_build_status_chart(
     # ── Path 2: gbserver source (standalone) ──────────────────────────────────
     source = get_gbserver_source(env_id)
     if source:
-        points = await source.get_status_chart(days_back=days_back, exclude_tests=exclude_tests)
+        points = await source.get_status_chart(
+            days_back=days_back, exclude_tests=exclude_tests
+        )
         return [BuildStatusPoint(**p) for p in points]
 
     raise HTTPException(503, "No data source configured")
@@ -143,7 +160,9 @@ async def get_failure_trends(
     # Resolve date bounds — explicit date_from/date_to take precedence over days_back
     if req.date_from:
         try:
-            since = datetime.strptime(req.date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            since = datetime.strptime(req.date_from, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
         except ValueError:
             since = datetime.now(timezone.utc) - timedelta(days=req.days_back)
     else:
@@ -153,14 +172,19 @@ async def get_failure_trends(
     if req.date_to:
         try:
             # Add one day so the upper bound is inclusive
-            until = datetime.strptime(req.date_to, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+            until = datetime.strptime(req.date_to, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            ) + timedelta(days=1)
         except ValueError:
             pass
 
     # ── Path 1: sidecar database ──────────────────────────────────────────────
     if db is not None:
         from gb_ui_backend.services.db_schema import GbdMeta
-        meta_source = req.source if req.source in ("llm_phase1", "llm_custom") else "llm_phase1"
+
+        meta_source = (
+            req.source if req.source in ("llm_phase1", "llm_custom") else "llm_phase1"
+        )
         # Subquery: only the most recent analysis per build for the requested source
         latest_meta = (
             select(
@@ -175,7 +199,8 @@ async def get_failure_trends(
         stmt = (
             select(GbdBuild, GbdMeta)
             .outerjoin(
-                latest_meta, GbdBuild.id == latest_meta.c.build_id,
+                latest_meta,
+                GbdBuild.id == latest_meta.c.build_id,
             )
             .outerjoin(
                 GbdMeta,
@@ -196,10 +221,13 @@ async def get_failure_trends(
             return _pivot_failure_trends(
                 [
                     {
-                        "build_id": str(b.id), "name": b.name, "username": b.username,
+                        "build_id": str(b.id),
+                        "name": b.name,
+                        "username": b.username,
                         "space_name": b.space_name,
                         "created_at": b.created_at.isoformat() if b.created_at else "",
-                        "category": (m.error_category_1 if m else None) or "Uncategorized",
+                        "category": (m.error_category_1 if m else None)
+                        or "Uncategorized",
                         "confidence": m.confidence if m else 0.0,
                         "summary": m.summary if m else None,
                     }
@@ -222,9 +250,15 @@ async def get_failure_trends(
         # No AI categories without the sidecar DB — everything is "Uncategorized"
         rows_simple = [
             {
-                "build_id": b["uuid"], "name": b["name"], "username": b["username"],
+                "build_id": b["uuid"],
+                "name": b["name"],
+                "username": b["username"],
                 "space_name": b["space_name"],
-                "created_at": b["updated_time"].isoformat() if hasattr(b.get("updated_time"), "isoformat") else str(b.get("updated_time", "")),
+                "created_at": (
+                    b["updated_time"].isoformat()
+                    if hasattr(b.get("updated_time"), "isoformat")
+                    else str(b.get("updated_time", ""))
+                ),
                 "category": "Uncategorized",
                 "confidence": 0.0,
                 "summary": None,
@@ -262,8 +296,10 @@ def _pivot_failure_trends(
         )
         cat_builds.setdefault(cat, []).append(
             CategorizedBuild(
-                build_id=row["build_id"], name=row["name"],
-                username=row["username"], space_name=row["space_name"],
+                build_id=row["build_id"],
+                name=row["name"],
+                username=row["username"],
+                space_name=row["space_name"],
                 created_at=str(raw_dt)[:19],
                 category=cat,
                 confidence=row.get("confidence") or 0.0,
@@ -276,7 +312,10 @@ def _pivot_failure_trends(
     return FailureTrendResponse(
         labels=labels,
         categories=categories,
-        series={cat: [date_cat_counts.get(l, {}).get(cat, 0) for l in labels] for cat in categories},
+        series={
+            cat: [date_cat_counts.get(l, {}).get(cat, 0) for l in labels]
+            for cat in categories
+        },
         builds_by_category=cat_builds,
         total_analyzed=len(rows),
         analysis_time_ms=(time.monotonic() - t0) * 1000,
@@ -284,6 +323,7 @@ def _pivot_failure_trends(
 
 
 # ── Saved trend analyses ──────────────────────────────────────────────────────
+
 
 class SaveTrendRequest(BaseModel):
     data: dict
@@ -324,7 +364,9 @@ async def save_trend_analysis(
     total = body.data.get("total_analyzed", 0)
     date_start = labels[0] if labels else ""
     date_end = labels[-1] if labels else ""
-    summary = f"{date_start} to {date_end}: {total} builds, {len(categories)} categories"
+    summary = (
+        f"{date_start} to {date_end}: {total} builds, {len(categories)} categories"
+    )
 
     stmt = pg_insert(GbdMeta).values(
         update_id=uuid_module.uuid4(),
@@ -370,26 +412,39 @@ async def get_trend_history(
     else:
         filters.append(GbdMeta.extras["is_public"].astext == "true")
 
-    total = (await db.execute(select(func.count(GbdMeta.id)).where(*filters))).scalar() or 0
-    rows = (await db.execute(
-        select(GbdMeta).where(*filters).order_by(GbdMeta.created_at.desc()).limit(50)
-    )).scalars().all()
+    total = (
+        await db.execute(select(func.count(GbdMeta.id)).where(*filters))
+    ).scalar() or 0
+    rows = (
+        (
+            await db.execute(
+                select(GbdMeta)
+                .where(*filters)
+                .order_by(GbdMeta.created_at.desc())
+                .limit(50)
+            )
+        )
+        .scalars()
+        .all()
+    )
 
     items = []
     for r in rows:
         ex = r.extras or {}
-        items.append(TrendHistoryItem(
-            update_id=str(r.update_id),
-            title=ex.get("title"),
-            summary=r.summary or "",
-            date_range_start=ex.get("date_range_start", ""),
-            date_range_end=ex.get("date_range_end", ""),
-            category_count=ex.get("category_count", 0),
-            total_builds=ex.get("total_builds", 0),
-            is_public=ex.get("is_public", False),
-            author=r.feedback_author or "unknown",
-            created_at=r.created_at.isoformat() if r.created_at else "",
-        ))
+        items.append(
+            TrendHistoryItem(
+                update_id=str(r.update_id),
+                title=ex.get("title"),
+                summary=r.summary or "",
+                date_range_start=ex.get("date_range_start", ""),
+                date_range_end=ex.get("date_range_end", ""),
+                category_count=ex.get("category_count", 0),
+                total_builds=ex.get("total_builds", 0),
+                is_public=ex.get("is_public", False),
+                author=r.feedback_author or "unknown",
+                created_at=r.created_at.isoformat() if r.created_at else "",
+            )
+        )
     return TrendHistoryResponse(items=items, total_count=total)
 
 
@@ -405,12 +460,20 @@ async def get_saved_trend(
         uid = uuid_module.UUID(update_id)
     except ValueError:
         raise HTTPException(400, "Invalid update_id")
-    row = (await db.execute(
-        select(GbdMeta).where(GbdMeta.update_id == uid, GbdMeta.source == "trend_analysis")
-    )).scalar_one_or_none()
+    row = (
+        await db.execute(
+            select(GbdMeta).where(
+                GbdMeta.update_id == uid, GbdMeta.source == "trend_analysis"
+            )
+        )
+    ).scalar_one_or_none()
     if not row:
         raise HTTPException(404, "Not found")
-    return {"update_id": str(row.update_id), "data": row.raw_response, "title": (row.extras or {}).get("title")}
+    return {
+        "update_id": str(row.update_id),
+        "data": row.raw_response,
+        "title": (row.extras or {}).get("title"),
+    }
 
 
 @router.patch("/builds/failure-trends/{update_id}/visibility")
@@ -427,9 +490,13 @@ async def toggle_trend_visibility(
         uid = uuid_module.UUID(update_id)
     except ValueError:
         raise HTTPException(400, "Invalid update_id")
-    row = (await db.execute(
-        select(GbdMeta).where(GbdMeta.update_id == uid, GbdMeta.source == "trend_analysis")
-    )).scalar_one_or_none()
+    row = (
+        await db.execute(
+            select(GbdMeta).where(
+                GbdMeta.update_id == uid, GbdMeta.source == "trend_analysis"
+            )
+        )
+    ).scalar_one_or_none()
     if not row:
         raise HTTPException(404, "Not found")
     if author and row.feedback_author != author:
@@ -454,9 +521,13 @@ async def delete_saved_trend(
         uid = uuid_module.UUID(update_id)
     except ValueError:
         raise HTTPException(400, "Invalid update_id")
-    row = (await db.execute(
-        select(GbdMeta).where(GbdMeta.update_id == uid, GbdMeta.source == "trend_analysis")
-    )).scalar_one_or_none()
+    row = (
+        await db.execute(
+            select(GbdMeta).where(
+                GbdMeta.update_id == uid, GbdMeta.source == "trend_analysis"
+            )
+        )
+    ).scalar_one_or_none()
     if not row:
         raise HTTPException(404, "Not found")
     if author and row.feedback_author != author:

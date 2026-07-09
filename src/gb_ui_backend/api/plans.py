@@ -1,4 +1,5 @@
 """Flight plans API — proxies MCP plan_list and plan_get tools via Streamable HTTP."""
+
 from __future__ import annotations
 
 import json
@@ -40,7 +41,9 @@ async def _mcp_call_tool(
             headers["Mcp-Session-Id"] = session_id
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            async with client.stream("POST", gbmcp_url, json=body, headers=headers) as resp:
+            async with client.stream(
+                "POST", gbmcp_url, json=body, headers=headers
+            ) as resp:
                 if not resp.is_success:
                     await resp.aread()
                     resp.raise_for_status()
@@ -74,28 +77,32 @@ async def _mcp_call_tool(
     req_id = next(_req_counter)
 
     # 1. Initialize session
-    await _post({
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-03-26",
-            "capabilities": {},
-            "clientInfo": {"name": "gb-ui", "version": "0.1.0"},
-        },
-    })
+    await _post(
+        {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "gb-ui", "version": "0.1.0"},
+            },
+        }
+    )
 
     # 2. Initialized notification (no id = notification, server may return 202)
     await _post({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
 
     # 3. Tool call
     tool_req_id = next(_req_counter)
-    response = await _post({
-        "jsonrpc": "2.0",
-        "id": tool_req_id,
-        "method": "tools/call",
-        "params": {"name": tool_name, "arguments": arguments},
-    })
+    response = await _post(
+        {
+            "jsonrpc": "2.0",
+            "id": tool_req_id,
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+        }
+    )
 
     if response is None:
         raise HTTPException(status_code=502, detail="MCP server returned no response")
@@ -134,7 +141,9 @@ async def list_plans(authorization: Optional[str] = Header(None)):
         raise
     except Exception as exc:
         logger.error("plan_list failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"Failed to fetch plans: {exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"Failed to fetch plans: {exc}"
+        ) from exc
 
 
 @router.get("/{plan_id}")
@@ -145,10 +154,14 @@ async def get_plan(plan_id: str, authorization: Optional[str] = Header(None)):
 
     token = _extract_token(authorization)
     try:
-        data = await _mcp_call_tool(config.gbmcp_url, token, "plan_get", {"plan_id": plan_id})
+        data = await _mcp_call_tool(
+            config.gbmcp_url, token, "plan_get", {"plan_id": plan_id}
+        )
         return data
     except HTTPException:
         raise
     except Exception as exc:
         logger.error("plan_get(%s) failed: %s", plan_id, exc)
-        raise HTTPException(status_code=502, detail=f"Failed to fetch plan: {exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"Failed to fetch plan: {exc}"
+        ) from exc

@@ -342,7 +342,9 @@ def get_build_archive(build_id: str) -> Dict[str, Dict[str, str]]:
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="build not found!")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
+        )
     if not build.build_archive:
         return {"files": {}}
     raw = base64.b64decode(build.build_archive)

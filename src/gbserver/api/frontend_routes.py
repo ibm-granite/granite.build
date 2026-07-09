@@ -59,7 +59,9 @@ async def analytics_proxy(path: str, request: Request) -> Response:
     sidecar = os.environ.get("GBSERVER_ANALYTICS_URL", "http://localhost:8090")
     qs = f"?{request.url.query}" if request.url.query else ""
     target = f"{sidecar}/api/analytics/{path}{qs}"
-    headers = {k: v for k, v in request.headers.items() if k.lower() in _FORWARDED_HEADERS}
+    headers = {
+        k: v for k, v in request.headers.items() if k.lower() in _FORWARDED_HEADERS
+    }
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
@@ -76,6 +78,8 @@ async def analytics_proxy(path: str, request: Request) -> Response:
         )
     except httpx.ConnectError:
         return JSONResponse(
-            {"detail": "Analytics sidecar unavailable. Start gb_ui_backend to enable analytics."},
+            {
+                "detail": "Analytics sidecar unavailable. Start gb_ui_backend to enable analytics."
+            },
             status_code=503,
         )

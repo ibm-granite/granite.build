@@ -2,13 +2,16 @@
 SQLAlchemy models — ported from gb_dashboard's gbd_* tables.
 IBM-specific fields (DMF, Tekton, Aspera) are omitted.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
 from typing import AsyncGenerator, List, Optional
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
@@ -16,7 +19,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -24,9 +26,6 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from typing import Optional
-
-from fastapi import HTTPException
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from gb_ui_backend.config import get_config
@@ -97,8 +96,12 @@ class GbdBuild(Base):
     total_memory: Mapped[Optional[str]] = mapped_column(String(50))
     total_gpu: Mapped[Optional[int]] = mapped_column(Integer)
     total_storage: Mapped[Optional[str]] = mapped_column(String(50))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now()
+    )
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     cluster_name: Mapped[Optional[str]] = mapped_column(String(255))
     source_uri: Mapped[Optional[str]] = mapped_column(Text)
@@ -106,20 +109,23 @@ class GbdBuild(Base):
     tags: Mapped[Optional[dict]] = mapped_column(JSON)
 
     __table_args__ = (
-        Index("ix_gbd_builds_status",       "status"),
-        Index("ix_gbd_builds_username",     "username"),
-        Index("ix_gbd_builds_space_name",   "space_name"),
-        Index("ix_gbd_builds_created_at",   "created_at"),
-        Index("ix_gbd_builds_updated_at",   "updated_at"),
+        Index("ix_gbd_builds_status", "status"),
+        Index("ix_gbd_builds_username", "username"),
+        Index("ix_gbd_builds_space_name", "space_name"),
+        Index("ix_gbd_builds_created_at", "created_at"),
+        Index("ix_gbd_builds_updated_at", "updated_at"),
         UniqueConstraint("name", "cluster_name", name="uq_gbd_builds_name_cluster"),
     )
 
-    k8s_resources: Mapped[List["GbdK8sResource"]] = relationship("GbdK8sResource", lazy="noload")
+    k8s_resources: Mapped[List["GbdK8sResource"]] = relationship(
+        "GbdK8sResource", lazy="noload"
+    )
     events: Mapped[List["GbdEvent"]] = relationship("GbdEvent", lazy="noload")
 
 
 class GbdMeta(Base):
     """AI analysis results for a build."""
+
     __tablename__ = "gbd_meta"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -156,19 +162,22 @@ class GbdMeta(Base):
     kb_recommendation: Mapped[Optional[str]] = mapped_column(Text)
     # Links phase 2/5 results to their parent phase 1 analysis
     parent_uid: Mapped[Optional[UUID]] = mapped_column(Uuid(as_uuid=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now()
+    )
 
     __table_args__ = (
-        Index("ix_gbd_meta_build_id",      "build_id"),
-        Index("ix_gbd_meta_source",        "source"),
-        Index("ix_gbd_meta_created_at",    "created_at"),
-        Index("ix_gbd_meta_error_cat_1",   "error_category_1"),
-        Index("ix_gbd_meta_parent_uid",    "parent_uid"),
+        Index("ix_gbd_meta_build_id", "build_id"),
+        Index("ix_gbd_meta_source", "source"),
+        Index("ix_gbd_meta_created_at", "created_at"),
+        Index("ix_gbd_meta_error_cat_1", "error_category_1"),
+        Index("ix_gbd_meta_parent_uid", "parent_uid"),
     )
 
 
 class GbdClusterQueue(Base):
     """Kueue ClusterQueue capacity snapshot."""
+
     __tablename__ = "gbd_clusterqueues"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -184,7 +193,9 @@ class GbdClusterQueue(Base):
     admitted_workloads: Mapped[Optional[int]] = mapped_column(Integer)
     pending_workloads: Mapped[Optional[int]] = mapped_column(Integer)
     reserving_workloads: Mapped[Optional[int]] = mapped_column(Integer)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now()
+    )
 
     __table_args__ = (
         UniqueConstraint("name", "cluster_name", name="uq_gbd_cq_name_cluster"),
@@ -193,6 +204,7 @@ class GbdClusterQueue(Base):
 
 class GbdNodeCapacity(Base):
     """Node pool utilization snapshot."""
+
     __tablename__ = "gbd_node_capacity"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -211,7 +223,9 @@ class GbdNodeCapacity(Base):
     autoscale_enabled: Mapped[Optional[bool]] = mapped_column(Boolean)
     min_nodes: Mapped[Optional[int]] = mapped_column(Integer)
     max_nodes: Mapped[Optional[int]] = mapped_column(Integer)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now()
+    )
 
     __table_args__ = (
         UniqueConstraint("cluster_name", "pool_name", name="uq_gbd_nc_cluster_pool"),
@@ -220,10 +234,13 @@ class GbdNodeCapacity(Base):
 
 class GbdK8sResource(Base):
     """AppWrapper, Pod, Workload, or HelmRelease associated with a build."""
+
     __tablename__ = "gbd_k8s_resources"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    build_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("gbd_builds.id"))
+    build_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("gbd_builds.id")
+    )
     kind: Mapped[str] = mapped_column(String(50))
     name: Mapped[str] = mapped_column(String(255))
     namespace: Mapped[Optional[str]] = mapped_column(String(255))
@@ -245,20 +262,27 @@ class GbdK8sResource(Base):
 
     __table_args__ = (
         Index("ix_gbd_k8s_resources_build_id", "build_id"),
-        Index("ix_gbd_k8s_resources_kind",     "kind"),
-        Index("ix_gbd_k8s_resources_status",   "build_status"),
-        UniqueConstraint("kind", "name", "namespace", "cluster_name",
-                         name="uq_gbd_k8s_resources_kind_name_ns_cluster"),
+        Index("ix_gbd_k8s_resources_kind", "kind"),
+        Index("ix_gbd_k8s_resources_status", "build_status"),
+        UniqueConstraint(
+            "kind",
+            "name",
+            "namespace",
+            "cluster_name",
+            name="uq_gbd_k8s_resources_kind_name_ns_cluster",
+        ),
     )
 
 
 class GbdEvent(Base):
     """Kubernetes event associated with a build."""
+
     __tablename__ = "gbd_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    build_id: Mapped[Optional[UUID]] = mapped_column(Uuid(as_uuid=True),
-                                                      ForeignKey("gbd_builds.id"))
+    build_id: Mapped[Optional[UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("gbd_builds.id")
+    )
     event_uid: Mapped[Optional[str]] = mapped_column(String(255))
     cluster_name: Mapped[Optional[str]] = mapped_column(String(255))
     namespace: Mapped[Optional[str]] = mapped_column(String(255))

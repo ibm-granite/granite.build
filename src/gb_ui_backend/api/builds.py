@@ -1,4 +1,5 @@
 """Build-level analytics endpoints (logs, etc.)."""
+
 from __future__ import annotations
 
 import logging
@@ -35,17 +36,25 @@ async def get_build_logs(
     if config.cloud_logs_url and config.cloud_logs_api_key:
         try:
             from gb_ui_backend.services.cloud_logs import get_cloud_logs_client
-            client = get_cloud_logs_client(config.cloud_logs_url, config.cloud_logs_api_key)
+
+            client = get_cloud_logs_client(
+                config.cloud_logs_url, config.cloud_logs_api_key
+            )
             response = await client.query_logs(
                 build_id=build_id,
                 container_name=container if container == "sidecar" else None,
                 page_size=limit + offset,
             )
             exclude = "sidecar" if container == "main" else None
-            all_lines: list[str] = client.parse_logs(response, exclude_container=exclude)
+            all_lines: list[str] = client.parse_logs(
+                response, exclude_container=exclude
+            )
             total = len(all_lines)
-            page = all_lines[offset:offset + limit] if offset else (
-                all_lines[-limit:] if len(all_lines) > limit else all_lines)
+            page = (
+                all_lines[offset : offset + limit]
+                if offset
+                else (all_lines[-limit:] if len(all_lines) > limit else all_lines)
+            )
             return BuildLogsResponse(lines=page, total=total)
         except ImportError:
             pass
@@ -64,6 +73,7 @@ async def get_build_logs(
     pods: list[GbdK8sResource] = []
     try:
         from gb_ui_backend.services.db_schema import _get_session_factory
+
         async with _get_session_factory()() as db:
             result = await db.execute(
                 select(GbdK8sResource)
@@ -85,6 +95,9 @@ async def get_build_logs(
             all_lines.extend(container_log.split("\n"))
 
     total = len(all_lines)
-    page = all_lines[offset:offset + limit] if offset else (
-        all_lines[-limit:] if len(all_lines) > limit else all_lines)
+    page = (
+        all_lines[offset : offset + limit]
+        if offset
+        else (all_lines[-limit:] if len(all_lines) > limit else all_lines)
+    )
     return BuildLogsResponse(lines=page, total=total)

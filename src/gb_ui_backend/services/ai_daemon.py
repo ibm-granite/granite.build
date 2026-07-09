@@ -7,6 +7,7 @@ Multi-phase analysis (Phase 1 failure/health, Phase 2 knowledge base search) ret
 Progress analysis (Phase 3) and consensus refinement (Phase 5) are simplified/omitted
 in this initial port — the core failure/health analysis is the primary value.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -61,26 +62,43 @@ _ISSUE_TYPE_TO_CATEGORY: Dict[str, str] = {
 }
 
 _CATEGORY_KEYWORDS: List[tuple] = [
-    ("OOM",           ["out of memory", "cuda out of memory", "oom", "memory exhausted", "outofmemoryerror"]),
-    ("GPU",           ["cuda", "nccl", "gpu"]),
-    ("Timeout",       ["timeout", "timed out", "deadline exceeded"]),
-    ("Network",       ["network", "connection refused", "connection reset", "dns", "socket"]),
-    ("Storage",       ["no space left", "disk full", "storage", "filesystem"]),
-    ("Configuration", ["misconfigured", "invalid config", "environment variable", "missing env"]),
-    ("Code Error",    ["traceback", "exception", "assertionerror", "importerror", "syntaxerror"]),
+    (
+        "OOM",
+        [
+            "out of memory",
+            "cuda out of memory",
+            "oom",
+            "memory exhausted",
+            "outofmemoryerror",
+        ],
+    ),
+    ("GPU", ["cuda", "nccl", "gpu"]),
+    ("Timeout", ["timeout", "timed out", "deadline exceeded"]),
+    ("Network", ["network", "connection refused", "connection reset", "dns", "socket"]),
+    ("Storage", ["no space left", "disk full", "storage", "filesystem"]),
+    (
+        "Configuration",
+        ["misconfigured", "invalid config", "environment variable", "missing env"],
+    ),
+    (
+        "Code Error",
+        ["traceback", "exception", "assertionerror", "importerror", "syntaxerror"],
+    ),
 ]
 
 
 def _infer_category(parsed: Dict[str, Any]) -> Optional[str]:
     """Infer error_category_1 from response fields when the model omits it."""
-    for issue in (parsed.get("issues") or []):
+    for issue in parsed.get("issues") or []:
         cat = _ISSUE_TYPE_TO_CATEGORY.get((issue.get("type") or "").lower())
         if cat:
             return cat
-    text = " ".join([
-        (parsed.get("summary") or "").lower(),
-        (parsed.get("root_cause") or "").lower(),
-    ])
+    text = " ".join(
+        [
+            (parsed.get("summary") or "").lower(),
+            (parsed.get("root_cause") or "").lower(),
+        ]
+    )
     for cat, keywords in _CATEGORY_KEYWORDS:
         if any(kw in text for kw in keywords):
             return cat
@@ -137,7 +155,9 @@ async def _analyze_build_async(
     try:
         analysis_type = determine_analysis_type(status)
         context = BuildContext(
-            build_id=build_id, build_name=build_name, status=status,
+            build_id=build_id,
+            build_name=build_name,
+            status=status,
             failure_reason=build_data.get("failure_reason"),
             failure_message=build_data.get("failure_message"),
             total_cpu=build_data.get("total_cpu"),
@@ -152,7 +172,9 @@ async def _analyze_build_async(
             step_logs=build_data.get("step_logs", {}),
             clusterqueue_capacity_gpu=build_data.get("clusterqueue_capacity_gpu", 0),
             clusterqueue_usage_gpu=build_data.get("clusterqueue_usage_gpu", 0),
-            clusterqueue_pending_workloads=build_data.get("clusterqueue_pending_workloads", 0),
+            clusterqueue_pending_workloads=build_data.get(
+                "clusterqueue_pending_workloads", 0
+            ),
             gbserver_events=build_data.get("gbserver_events", []),
             gbserver_status_msgs=build_data.get("gbserver_status_msgs", []),
         )
@@ -163,8 +185,12 @@ async def _analyze_build_async(
             {"role": "user", "content": user_prompt},
         ]
 
-        logger.info("LLM call: %s (%s) — %d chars", short_id, status,
-                    len(system_prompt) + len(user_prompt))
+        logger.info(
+            "LLM call: %s (%s) — %d chars",
+            short_id,
+            status,
+            len(system_prompt) + len(user_prompt),
+        )
 
         client = LLMClient(
             base_url=llm_base_url,
@@ -175,11 +201,16 @@ async def _analyze_build_async(
 
         t0 = time.monotonic()
         raw_response = await client.chat_completion(
-            messages=messages, temperature=temperature, max_tokens=max_tokens)
+            messages=messages, temperature=temperature, max_tokens=max_tokens
+        )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        content = raw_response.get("choices", [{}])[0].get("message", {}).get("content", "")
-        model_used = raw_response.get("model", llm_models[0] if llm_models else "unknown")
+        content = (
+            raw_response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        )
+        model_used = raw_response.get(
+            "model", llm_models[0] if llm_models else "unknown"
+        )
         usage = raw_response.get("usage", {})
         tokens_prompt = usage.get("prompt_tokens", 0)
         tokens_completion = usage.get("completion_tokens", 0)
@@ -200,16 +231,24 @@ async def _analyze_build_async(
                 "confidence": 0.5,
             }
 
-        logger.info("LLM response: %s — %dms, %d tokens — %s",
-                    short_id, latency_ms, tokens_completion, parsed.get("summary", "")[:80])
+        logger.info(
+            "LLM response: %s — %dms, %d tokens — %s",
+            short_id,
+            latency_ms,
+            tokens_completion,
+            parsed.get("summary", "")[:80],
+        )
 
         error_category_1 = parsed.get("error_category_1")
         if not error_category_1 and analysis_type == "failure":
             error_category_1 = _infer_category(parsed)
 
         return AnalysisResult(
-            build_id=build_id, build_name=build_name, analysis_type=analysis_type,
-            model_name=model_used, prompt_version=PROMPT_VERSION,
+            build_id=build_id,
+            build_name=build_name,
+            analysis_type=analysis_type,
+            model_name=model_used,
+            prompt_version=PROMPT_VERSION,
             created_at=datetime.now(timezone.utc).isoformat(),
             build_status_at_analysis=status,
             summary=parsed.get("summary"),
@@ -229,14 +268,25 @@ async def _analyze_build_async(
     except Exception as e:
         logger.error("Error analyzing %s: %s", short_id, e)
         return AnalysisResult(
-            build_id=build_id, build_name=build_name, analysis_type="error",
-            model_name="", prompt_version=PROMPT_VERSION,
+            build_id=build_id,
+            build_name=build_name,
+            analysis_type="error",
+            model_name="",
+            prompt_version=PROMPT_VERSION,
             created_at=datetime.now(timezone.utc).isoformat(),
             build_status_at_analysis=status,
-            summary=None, root_cause=None, suggested_action=None,
-            issues=None, error_messages=None, error_category_1=None, error_category_2=None,
-            confidence=None, raw_response={},
-            tokens_prompt=0, tokens_completion=0, latency_ms=0,
+            summary=None,
+            root_cause=None,
+            suggested_action=None,
+            issues=None,
+            error_messages=None,
+            error_category_1=None,
+            error_category_2=None,
+            confidence=None,
+            raw_response={},
+            tokens_prompt=0,
+            tokens_completion=0,
+            latency_ms=0,
             error=str(e),
         )
 
@@ -274,10 +324,10 @@ class AIDaemon:
         _infer_category so no LLM calls are needed.
         """
         from sqlalchemy import update
+
         async with self.session_factory() as session:
             result = await session.execute(
-                select(GbdMeta.id, GbdMeta.raw_response)
-                .where(
+                select(GbdMeta.id, GbdMeta.raw_response).where(
                     GbdMeta.analysis_type == "failure",
                     GbdMeta.error_category_1.is_(None),
                     GbdMeta.raw_response.isnot(None),
@@ -293,7 +343,11 @@ class AIDaemon:
         async with self.session_factory() as session:
             for row_id, raw_response in rows:
                 try:
-                    content = raw_response.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    content = (
+                        raw_response.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                    )
                     clean = content.strip()
                     if clean.startswith("```"):
                         clean = clean.split("```")[1]
@@ -341,6 +395,7 @@ class AIDaemon:
     ) -> List[Dict[str, Any]]:
         """Find failed builds in gbserver that don't yet have a failure analysis."""
         from gb_ui_backend.services.gbserver_source import get_gbserver_source
+
         source = get_gbserver_source()
         if not source:
             return []
@@ -409,7 +464,9 @@ class AIDaemon:
                     obj = await self._upsert_gbserver_build(session, raw)
                     build_objects.append(obj)
                 except Exception as e:
-                    logger.warning("Failed to upsert gbserver build %s: %s", raw.get("name"), e)
+                    logger.warning(
+                        "Failed to upsert gbserver build %s: %s", raw.get("name"), e
+                    )
             await session.commit()
 
         if not build_objects:
@@ -419,10 +476,14 @@ class AIDaemon:
         async with self.session_factory() as session:
             for build in build_objects:
                 try:
-                    context = await self.data_collector.collect_build_context(session, build)
+                    context = await self.data_collector.collect_build_context(
+                        session, build
+                    )
                     build_data_list.append(context.to_dict())
                 except Exception as e:
-                    logger.warning("Failed to collect context for %s: %s", build.name, e)
+                    logger.warning(
+                        "Failed to collect context for %s: %s", build.name, e
+                    )
 
         if not build_data_list:
             return
@@ -448,14 +509,20 @@ class AIDaemon:
                 logger.error("Analysis error (gbserver): %s", result)
                 continue
             if result.error:
-                logger.warning("Analysis error for %s: %s", result.build_id[:8], result.error)
+                logger.warning(
+                    "Analysis error for %s: %s", result.build_id[:8], result.error
+                )
                 continue
             try:
                 async with self.session_factory() as session:
                     await self._save_result(session, result)
                     await session.commit()
             except Exception as e:
-                logger.error("Failed to save gbserver analysis for %s: %s", result.build_id[:8], e)
+                logger.error(
+                    "Failed to save gbserver analysis for %s: %s",
+                    result.build_id[:8],
+                    e,
+                )
 
     async def _process_batch(self) -> None:
         now = datetime.now(timezone.utc)
@@ -467,16 +534,18 @@ class AIDaemon:
                 GbdMeta.source == "llm_phase1",
                 GbdMeta.error_category_1.isnot(None),
             )
-            stmt = (select(GbdBuild)
-                    .where(
-                        GbdBuild.status.in_(list(ANALYZE_STATUSES)),
-                        or_(
-                            GbdBuild.status.in_(list(ACTIVE_STATUSES)),
-                            GbdBuild.id.not_in(already_analyzed_subq),
-                        ),
-                    )
-                    .order_by(GbdBuild.updated_at.desc())
-                    .limit(50))
+            stmt = (
+                select(GbdBuild)
+                .where(
+                    GbdBuild.status.in_(list(ANALYZE_STATUSES)),
+                    or_(
+                        GbdBuild.status.in_(list(ACTIVE_STATUSES)),
+                        GbdBuild.id.not_in(already_analyzed_subq),
+                    ),
+                )
+                .order_by(GbdBuild.updated_at.desc())
+                .limit(50)
+            )
             result = await session.execute(stmt)
             all_builds = result.scalars().all()
 
@@ -486,7 +555,10 @@ class AIDaemon:
             is_terminal = build.status not in ACTIVE_STATUSES
             if not is_terminal:
                 last = self._last_analyzed_active.get(build_id)
-                if last and (now - last).total_seconds() < self.reanalyze_active_interval:
+                if (
+                    last
+                    and (now - last).total_seconds() < self.reanalyze_active_interval
+                ):
                     continue
             builds_to_analyze.append(build)
 
@@ -500,10 +572,14 @@ class AIDaemon:
         async with self.session_factory() as session:
             for build in builds_to_analyze:
                 try:
-                    context = await self.data_collector.collect_build_context(session, build)
+                    context = await self.data_collector.collect_build_context(
+                        session, build
+                    )
                     build_data_list.append(context.to_dict())
                 except Exception as e:
-                    logger.warning("Failed to collect context for %s: %s", build.name, e)
+                    logger.warning(
+                        "Failed to collect context for %s: %s", build.name, e
+                    )
 
         if not build_data_list:
             return
@@ -533,7 +609,9 @@ class AIDaemon:
                 logger.error("Analysis worker exception: %s", result)
                 continue
             if result.error:
-                logger.warning("Analysis error for %s: %s", result.build_id[:8], result.error)
+                logger.warning(
+                    "Analysis error for %s: %s", result.build_id[:8], result.error
+                )
                 continue
             try:
                 async with self.session_factory() as session:
@@ -543,12 +621,19 @@ class AIDaemon:
                 if not is_terminal:
                     self._last_analyzed_active[result.build_id] = now
             except Exception as e:
-                logger.error("Failed to save analysis for %s: %s", result.build_id[:8], e)
+                logger.error(
+                    "Failed to save analysis for %s: %s", result.build_id[:8], e
+                )
 
         # Phase 2: knowledge base search for failed builds with results
-        failed_results = [r for r in results
-                          if not isinstance(r, Exception) and not r.error
-                          and r.analysis_type == "failure" and r.root_cause]
+        failed_results = [
+            r
+            for r in results
+            if not isinstance(r, Exception)
+            and not r.error
+            and r.analysis_type == "failure"
+            and r.root_cause
+        ]
         if failed_results:
             await self._run_phase2(failed_results)
 
@@ -580,9 +665,12 @@ class AIDaemon:
             created_at=datetime.now(timezone.utc),
         )
         await session.execute(stmt)
-        logger.info("Saved analysis for %s (%s): %s",
-                    result.build_id[:8], result.analysis_type,
-                    (result.summary or "")[:80])
+        logger.info(
+            "Saved analysis for %s (%s): %s",
+            result.build_id[:8],
+            result.analysis_type,
+            (result.summary or "")[:80],
+        )
 
     async def _run_phase2(self, phase1_results: List[AnalysisResult]) -> None:
         """Search knowledge base and store phase 2 recommendations."""
@@ -611,6 +699,7 @@ class AIDaemon:
                     )
                     system = get_system_prompt("solution_search")
                     from gb_ui_backend.services.llm_client import LLMClient
+
                     client = LLMClient(
                         base_url=self.llm_base_url,
                         api_key=self.llm_api_key,
@@ -618,11 +707,18 @@ class AIDaemon:
                         timeout=self.llm_timeout,
                     )
                     raw = await client.chat_completion(
-                        messages=[{"role": "system", "content": system},
-                                   {"role": "user", "content": phase2_prompt}],
-                        temperature=0.1, max_tokens=1024,
+                        messages=[
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": phase2_prompt},
+                        ],
+                        temperature=0.1,
+                        max_tokens=1024,
                     )
-                    content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    content = (
+                        raw.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                    )
                     try:
                         parsed = json.loads(content.strip())
                     except json.JSONDecodeError:
@@ -634,7 +730,10 @@ class AIDaemon:
                     # Find the phase 1 meta record to link to
                     existing = await session.execute(
                         select(GbdMeta)
-                        .where(GbdMeta.build_id == build_uuid, GbdMeta.source == "llm_phase1")
+                        .where(
+                            GbdMeta.build_id == build_uuid,
+                            GbdMeta.source == "llm_phase1",
+                        )
                         .order_by(GbdMeta.created_at.desc())
                         .limit(1)
                     )
@@ -653,7 +752,8 @@ class AIDaemon:
                         kb_search_query=parsed.get("search_query", ""),
                         kb_recommendation=recommendation,
                         parent_uid=parent_uid,
-                        upvotes=0, downvotes=0,
+                        upvotes=0,
+                        downvotes=0,
                         created_at=datetime.now(timezone.utc),
                     )
                     await session.execute(stmt)
@@ -678,8 +778,9 @@ async def run_custom_categorization(
     context collection is needed — just a short LLM classification call per build.
     Results are stored with source='llm_custom', replacing any prior custom run.
     """
-    from gb_ui_backend.services.llm_client import LLMClient
     from sqlalchemy import delete as sa_delete
+
+    from gb_ui_backend.services.llm_client import LLMClient
 
     since = datetime.now(timezone.utc) - timedelta(days=days_back)
     categories_str = ", ".join(categories)
@@ -711,11 +812,15 @@ async def run_custom_categorization(
         return 0
 
     client = LLMClient(
-        base_url=llm_base_url, api_key=llm_api_key,
-        models=llm_models, timeout=llm_timeout,
+        base_url=llm_base_url,
+        api_key=llm_api_key,
+        models=llm_models,
+        timeout=llm_timeout,
     )
 
-    async def classify_one(build: GbdBuild, summary: Optional[str], root_cause: Optional[str]) -> tuple:
+    async def classify_one(
+        build: GbdBuild, summary: Optional[str], root_cause: Optional[str]
+    ) -> tuple:
         if not summary and not root_cause:
             return build.id, "Uncategorized"
         prompt = (
@@ -726,7 +831,8 @@ async def run_custom_categorization(
         try:
             raw = await client.chat_completion(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.0, max_tokens=50,
+                temperature=0.0,
+                max_tokens=50,
             )
             content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
             clean = content.strip()
@@ -771,7 +877,11 @@ async def run_custom_categorization(
             saved += 1
         await session.commit()
 
-    logger.info("Custom categorization complete: %d builds classified into %s", saved, categories)
+    logger.info(
+        "Custom categorization complete: %d builds classified into %s",
+        saved,
+        categories,
+    )
     return saved
 
 

@@ -80,14 +80,20 @@ class CloudLogsClient:
                 "type": "freeText",
                 "queryParams": {"jsonObject": json_filter},
                 "sortModel": [
-                    {"field": "timestamp", "ordering": "asc" if sort_asc else "desc", "missing": "_last"}
+                    {
+                        "field": "timestamp",
+                        "ordering": "asc" if sort_asc else "desc",
+                        "missing": "_last",
+                    }
                 ],
             }
         }
 
         last_error: Optional[Exception] = None
         for attempt in range(MAX_RETRIES):
-            timeout = timeout_override or min(INITIAL_TIMEOUT * (1.5 ** attempt), MAX_TIMEOUT)
+            timeout = timeout_override or min(
+                INITIAL_TIMEOUT * (1.5**attempt), MAX_TIMEOUT
+            )
             try:
                 resp = await self._get_http().post(
                     f"{self.api_url}/api/v1/logquery",
@@ -104,15 +110,19 @@ class CloudLogsClient:
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429 and attempt < MAX_RETRIES - 1:
                     last_error = e
-                    await asyncio.sleep(min(2.0 * (2 ** attempt), 10.0))
+                    await asyncio.sleep(min(2.0 * (2**attempt), 10.0))
                 else:
                     raise
             except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as e:
                 last_error = e
                 if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF))
+                    await asyncio.sleep(
+                        min(INITIAL_BACKOFF * (2**attempt), MAX_BACKOFF)
+                    )
                 else:
-                    logger.error("Cloud Logs query failed after %d attempts: %s", MAX_RETRIES, e)
+                    logger.error(
+                        "Cloud Logs query failed after %d attempts: %s", MAX_RETRIES, e
+                    )
 
         raise last_error  # type: ignore[misc]
 
@@ -134,7 +144,9 @@ class CloudLogsClient:
                 if not container_name:
                     try:
                         text_json = json.loads(log.get("text") or "")
-                        container_name = (text_json.get("kubernetes") or {}).get("container_name")
+                        container_name = (text_json.get("kubernetes") or {}).get(
+                            "container_name"
+                        )
                     except (json.JSONDecodeError, TypeError):
                         pass
                 if container_name == exclude_container:

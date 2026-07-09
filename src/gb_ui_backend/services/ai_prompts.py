@@ -5,6 +5,7 @@ Ported from gb_dashboard/services/ai_prompts.py.
 GitHub prompt hot-reload and IBM-specific repo references abstracted.
 Prompts are loaded from ai_system_prompts.md in this directory.
 """
+
 from __future__ import annotations
 
 import logging
@@ -41,7 +42,10 @@ def _parse_prompts_from_content(content: str) -> Dict[str, str]:
 def _load_system_prompts() -> Dict[str, str]:
     prompt_file = Path(__file__).parent / "ai_system_prompts.md"
     if not prompt_file.exists():
-        logger.warning("System prompts file not found: %s — AI analysis will be unavailable", prompt_file)
+        logger.warning(
+            "System prompts file not found: %s — AI analysis will be unavailable",
+            prompt_file,
+        )
         return {}
     try:
         content = prompt_file.read_text()
@@ -86,7 +90,9 @@ async def reload_prompts_from_url(url: str, token: str = "") -> bool:
 
 def get_system_prompt(analysis_type: str) -> str:
     if analysis_type not in SYSTEM_PROMPTS:
-        raise ValueError(f"Unknown analysis type: {analysis_type}. Available: {list(SYSTEM_PROMPTS.keys())}")
+        raise ValueError(
+            f"Unknown analysis type: {analysis_type}. Available: {list(SYSTEM_PROMPTS.keys())}"
+        )
     return SYSTEM_PROMPTS[analysis_type]
 
 
@@ -107,8 +113,9 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // CHARS_PER_TOKEN
 
 
-def _truncate_logs(logs: str, max_chars: int,
-                   keep_start: int = 50, keep_end: int = 200) -> str:
+def _truncate_logs(
+    logs: str, max_chars: int, keep_start: int = 50, keep_end: int = 200
+) -> str:
     if len(logs) <= max_chars:
         return logs
     lines = logs.split("\n")
@@ -122,7 +129,7 @@ def _truncate_logs(logs: str, max_chars: int,
     if len(truncated) > max_chars:
         end_text = "\n".join(lines[-keep_end:])
         if len(end_text) > max_chars:
-            end_text = end_text[-(max_chars - 100):]
+            end_text = end_text[-(max_chars - 100) :]
         truncated = f"... [truncated, showing last {keep_end} lines] ...\n\n" + end_text
     return truncated
 
@@ -139,7 +146,10 @@ def _clean_status_message(msg: str, include_stack_traces: bool = False) -> str:
     user_exceptions = []
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith(("Exception:", "Error:")) and "gbserver" not in stripped.lower():
+        if (
+            stripped.startswith(("Exception:", "Error:"))
+            and "gbserver" not in stripped.lower()
+        ):
             user_exceptions.append(stripped)
         elif "Exception:" in stripped and "/app/src/gbserver/" not in line:
             idx = stripped.find("Exception:")
@@ -148,20 +158,25 @@ def _clean_status_message(msg: str, include_stack_traces: bool = False) -> str:
                 user_exceptions.append(exc)
     for line in lines:
         if "<details>" in line.lower():
-            in_details = True; continue
+            in_details = True
+            continue
         if "</details>" in line.lower():
-            in_details = False; continue
+            in_details = False
+            continue
         if in_details:
             continue
         if "Full Stack Trace" in line or "Traceback (most recent call last)" in line:
-            in_stack = True; continue
+            in_stack = True
+            continue
         if in_stack:
             if line.strip() == "" or (line.strip() and not line.startswith((" ", "|"))):
                 in_stack = False
             else:
                 continue
-        if any(x in line for x in ("/app/src/gbserver/", "gbserver.types.errors",
-                                     "File \"/", "| ")):
+        if any(
+            x in line
+            for x in ("/app/src/gbserver/", "gbserver.types.errors", 'File "/', "| ")
+        ):
             continue
         if line.strip() == "```":
             continue
@@ -203,13 +218,21 @@ class BuildContext:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "build_id": self.build_id, "build_name": self.build_name, "status": self.status,
-            "failure_reason": self.failure_reason, "failure_message": self.failure_message,
-            "total_cpu": self.total_cpu, "total_memory": self.total_memory,
-            "total_gpu": self.total_gpu, "created_at": self.created_at,
-            "finished_at": self.finished_at, "duration_str": self.duration_str,
-            "k8s_resources": self.k8s_resources, "events": self.events,
-            "pod_logs": self.pod_logs, "step_logs": self.step_logs,
+            "build_id": self.build_id,
+            "build_name": self.build_name,
+            "status": self.status,
+            "failure_reason": self.failure_reason,
+            "failure_message": self.failure_message,
+            "total_cpu": self.total_cpu,
+            "total_memory": self.total_memory,
+            "total_gpu": self.total_gpu,
+            "created_at": self.created_at,
+            "finished_at": self.finished_at,
+            "duration_str": self.duration_str,
+            "k8s_resources": self.k8s_resources,
+            "events": self.events,
+            "pod_logs": self.pod_logs,
+            "step_logs": self.step_logs,
             "clusterqueue_capacity_gpu": self.clusterqueue_capacity_gpu,
             "clusterqueue_usage_gpu": self.clusterqueue_usage_gpu,
             "clusterqueue_pending_workloads": self.clusterqueue_pending_workloads,
@@ -226,7 +249,9 @@ def _has_useful_logs(ctx: BuildContext) -> bool:
     return bool(ctx.pod_logs and len(ctx.pod_logs.split("\n")) > 5)
 
 
-def format_user_prompt(context: BuildContext, max_tokens: int = MAX_PROMPT_TOKENS) -> str:
+def format_user_prompt(
+    context: BuildContext, max_tokens: int = MAX_PROMPT_TOKENS
+) -> str:
     lines = [
         f"Build: {context.build_name} ({context.build_id[:8]})",
         f"Status: {context.status}",
@@ -241,9 +266,12 @@ def format_user_prompt(context: BuildContext, max_tokens: int = MAX_PROMPT_TOKEN
     if context.duration_str:
         lines.append(f"Duration: {context.duration_str}")
     resources = []
-    if context.total_cpu: resources.append(f"{context.total_cpu} CPU")
-    if context.total_memory: resources.append(f"{context.total_memory} memory")
-    if context.total_gpu: resources.append(f"{context.total_gpu} GPU")
+    if context.total_cpu:
+        resources.append(f"{context.total_cpu} CPU")
+    if context.total_memory:
+        resources.append(f"{context.total_memory} memory")
+    if context.total_gpu:
+        resources.append(f"{context.total_gpu} GPU")
     if resources:
         lines.append(f"Resources: {', '.join(resources)}")
 
@@ -251,14 +279,21 @@ def format_user_prompt(context: BuildContext, max_tokens: int = MAX_PROMPT_TOKEN
         lines += ["", "Backend Status Messages:"]
         has_logs = _has_useful_logs(context)
         for msg in context.gbserver_status_msgs:
-            lines.append(f"  - [{msg.get('entity','')}] {msg.get('name','unknown')}: {msg.get('status','')}")
-            sm = _clean_status_message(msg.get("status_msg", ""), include_stack_traces=not has_logs)
+            lines.append(
+                f"  - [{msg.get('entity','')}] {msg.get('name','unknown')}: {msg.get('status','')}"
+            )
+            sm = _clean_status_message(
+                msg.get("status_msg", ""), include_stack_traces=not has_logs
+            )
             if sm:
                 lines.append(f"    Message: {sm}")
 
     if context.gbserver_events:
-        err_events = [e for e in context.gbserver_events
-                      if e.get("type") == "MESSAGE_EVENT" and e.get("level") == "ERROR"]
+        err_events = [
+            e
+            for e in context.gbserver_events
+            if e.get("type") == "MESSAGE_EVENT" and e.get("level") == "ERROR"
+        ]
         if err_events:
             lines += ["", "Backend Error Messages:"]
             for ev in err_events[:20]:
@@ -274,9 +309,19 @@ def format_user_prompt(context: BuildContext, max_tokens: int = MAX_PROMPT_TOKEN
                 line += f" ({res['failure_reason']})"
             lines.append(line)
 
-    PREEMPTION_REASONS = {"Preempted", "Evicted", "Killing", "OOMKilling", "OOMKilled", "NodeNotReady"}
-    important = [e for e in context.events
-                 if e.get("type") == "Warning" or e.get("reason") in PREEMPTION_REASONS]
+    PREEMPTION_REASONS = {
+        "Preempted",
+        "Evicted",
+        "Killing",
+        "OOMKilling",
+        "OOMKilled",
+        "NodeNotReady",
+    }
+    important = [
+        e
+        for e in context.events
+        if e.get("type") == "Warning" or e.get("reason") in PREEMPTION_REASONS
+    ]
     if important:
         lines += ["", "K8s Events:"]
         for ev in important[:15]:
@@ -288,17 +333,24 @@ def format_user_prompt(context: BuildContext, max_tokens: int = MAX_PROMPT_TOKEN
             lines.append(f"  - {prefix}{ts}{reason}{obj}: {ev.get('message','')[:200]}")
 
     if context.clusterqueue_capacity_gpu > 0:
-        lines += ["", "ClusterQueue Status:",
-                  f"  - Capacity: {context.clusterqueue_capacity_gpu} GPU",
-                  f"  - In Use: {context.clusterqueue_usage_gpu} GPU",
-                  f"  - Pending Workloads: {context.clusterqueue_pending_workloads}"]
+        lines += [
+            "",
+            "ClusterQueue Status:",
+            f"  - Capacity: {context.clusterqueue_capacity_gpu} GPU",
+            f"  - In Use: {context.clusterqueue_usage_gpu} GPU",
+            f"  - Pending Workloads: {context.clusterqueue_pending_workloads}",
+        ]
 
     tokens_used = _estimate_tokens("\n".join(lines))
-    log_budget = max(10000, min((max_tokens - tokens_used) * CHARS_PER_TOKEN - 1000, 200_000))
+    log_budget = max(
+        10000, min((max_tokens - tokens_used) * CHARS_PER_TOKEN - 1000, 200_000)
+    )
 
     if context.step_logs:
         lines += ["", "Pod Logs by Step:"]
-        per_step = log_budget // max(len([v for v in context.step_logs.values() if v]), 1)
+        per_step = log_budget // max(
+            len([v for v in context.step_logs.values() if v]), 1
+        )
         for step_name, step_log in context.step_logs.items():
             if step_log:
                 lines.append(f"\n=== Step: {step_name} ===")
@@ -337,10 +389,18 @@ class KnowledgeBaseEntry:
         return {
             "entry_type": "build_analysis",
             "meta_id": self.meta_id,
-            "error_categories": " > ".join(filter(None, [
-                self.error_category_1, self.error_category_2,
-                self.error_category_3, self.error_category_4,
-            ])) or None,
+            "error_categories": " > ".join(
+                filter(
+                    None,
+                    [
+                        self.error_category_1,
+                        self.error_category_2,
+                        self.error_category_3,
+                        self.error_category_4,
+                    ],
+                )
+            )
+            or None,
             "root_cause": self.root_cause,
             "human_solution": self.human_solution,
             "suggested_action": self.suggested_action,
@@ -349,9 +409,12 @@ class KnowledgeBaseEntry:
         }
 
 
-def format_phase2_prompt(root_cause: str, error_messages: List[str],
-                          error_categories: List[str],
-                          knowledge_base: List[KnowledgeBaseEntry]) -> str:
+def format_phase2_prompt(
+    root_cause: str,
+    error_messages: List[str],
+    error_categories: List[str],
+    knowledge_base: List[KnowledgeBaseEntry],
+) -> str:
     lines = ["=== CURRENT ISSUE ===", f"Root Cause: {root_cause}"]
     if error_messages:
         lines += ["", "Error Messages:"]
