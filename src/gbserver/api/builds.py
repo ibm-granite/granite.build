@@ -48,6 +48,7 @@ from gbserver.types.api.builds import BuildValidateRequestType
 from gbserver.types.auth import User
 from gbserver.types.status import Status
 from gbserver.types.validation import GBValidationErrors
+from gbserver.utils.archive import check_zip_safe
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -349,6 +350,12 @@ def get_build_archive(build_id: str) -> Dict[str, Dict[str, str]]:
         return {"files": {}}
     raw = base64.b64decode(build.build_archive)
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+        try:
+            check_zip_safe(zf)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(e)
+            )
         files = {name: zf.read(name).decode(errors="replace") for name in zf.namelist()}
     return {"files": files}
 

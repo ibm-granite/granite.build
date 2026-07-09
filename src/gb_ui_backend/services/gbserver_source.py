@@ -277,8 +277,11 @@ class GbserverSource:
                                 import io
                                 import zipfile
 
+                                from gbserver.utils.archive import check_zip_safe
+
                                 zip_bytes = base64.b64decode(archive)
                                 with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                                    check_zip_safe(zf)
                                     names = zf.namelist()
                                     # Prefer build.yaml; fall back to first yaml found
                                     target = next(
@@ -373,8 +376,11 @@ class GbserverSource:
                         if isinstance(archive, (bytes, bytearray))
                         else archive.encode()
                     )
+                    from gbserver.utils.archive import check_zip_safe
+
                     zip_bytes = base64.b64decode(raw)
                     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                        check_zip_safe(zf)
                         for fname in zf.namelist():
                             if fname.endswith((".yaml", ".yml")):
                                 yaml_content = zf.read(fname).decode(
