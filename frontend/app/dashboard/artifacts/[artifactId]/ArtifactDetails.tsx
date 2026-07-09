@@ -10,7 +10,6 @@ import {
 } from '@carbon/react'
 import type { Artifact } from '@/types'
 import { DetailsPanel } from './DetailsPanel'
-import { FilesPanel } from './FilesPanel'
 import { ContentsPanel } from './ContentsPanel'
 import { ModelCardPanel } from './ModelCardPanel'
 import { LineagePanel } from './LineagePanel'
@@ -25,17 +24,18 @@ export function ArtifactDetails({ artifact, loading, artifactId }: Props) {
   const type = artifact?.artifact_type
 
   // Use display:none to keep tab/panel indices aligned (same pattern as build detail)
-  const filesHide    = type === 'FILESET' ? undefined : 'none'
   const contentsHide = type === 'TABLE'   ? undefined : 'none'
   const modelHide    = type === 'MODEL'   ? undefined : 'none'
 
   return (
     <div className={styles.tabsWrapper} style={{ height: 'calc(100vh - 220px)', minHeight: '500px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <div style={{ flex: 1, overflow: 'hidden', minHeight: 0, minWidth: "100%" }}>
-        <TabsVertical height="100%">
+        {/* Keyed on artifactId so navigating to a different artifact (e.g. via
+            the lineage graph) remounts the tabs and resets to Details, instead
+            of carrying over whatever tab was selected on the previous artifact. */}
+        <TabsVertical key={artifactId} height="100%">
           <TabListVertical aria-label="Artifact detail tabs">
             <Tab>Details</Tab>
-            <Tab style={{ display: filesHide }}>Files</Tab>
             <Tab style={{ display: contentsHide }}>Contents</Tab>
             <Tab style={{ display: modelHide }}>Model Card</Tab>
             <Tab>Lineage</Tab>
@@ -43,9 +43,6 @@ export function ArtifactDetails({ artifact, loading, artifactId }: Props) {
           <TabPanels>
             <TabPanel style={{ overflowY: 'auto', height: '100%' }}>
               <DetailsPanel artifact={artifact} loading={loading} />
-            </TabPanel>
-            <TabPanel style={{ display: filesHide, overflowY: 'auto', height: '100%' }}>
-              {type === 'FILESET' && <FilesPanel artifactId={artifactId} />}
             </TabPanel>
             <TabPanel style={{ display: contentsHide, overflowY: 'auto', height: '100%' }}>
               {type === 'TABLE' && <ContentsPanel artifactId={artifactId} />}

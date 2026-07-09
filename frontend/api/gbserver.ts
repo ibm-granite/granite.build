@@ -432,17 +432,6 @@ export async function getArtifact(artifactId: string): Promise<Artifact> {
   return adaptArtifact((data.artifact ?? data) as Record<string, unknown>)
 }
 
-export interface ArtifactFile {
-  path: string
-  size?: number
-  checksum?: string
-}
-
-export async function getArtifactFiles(artifactId: string): Promise<ArtifactFile[]> {
-  const { data } = await client.get<{ files: ArtifactFile[] }>(`/artifacts/${artifactId}/files`)
-  return data.files ?? []
-}
-
 export interface ArtifactContents {
   columns: string[]
   rows: (string | number | null)[][]
