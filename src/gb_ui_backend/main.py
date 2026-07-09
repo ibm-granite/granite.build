@@ -1,4 +1,12 @@
-"""gb-ui analytics sidecar — FastAPI application."""
+"""gb-ui analytics service — FastAPI application.
+
+Normally mounted directly into gbserver's own app (see
+gbserver/api/root_api.py, which calls init_analytics() from its own startup
+hook and include_router()s these routers under /api/analytics). This module
+also remains independently runnable (`python -m gb_ui_backend` / the
+`gb-ui-backend` console script) for local development and testing outside
+gbserver.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +24,7 @@ _env_file = os.path.join(os.path.dirname(__file__), "../../../.env")
 load_dotenv(_env_file, override=False)
 
 from gb_ui_backend.api import ai, analytics, builds, data_processing, plans
-from gb_ui_backend.config import get_config
+from gb_ui_backend.config import Config, get_config
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -26,16 +34,24 @@ logger = logging.getLogger(__name__)
 config = get_config()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+async def init_analytics(config: Config | None = None) -> None:
+    """Create analytics tables and connect to gbserver's own DB if configured.
+
+    Called both by this module's own `lifespan()` (standalone execution) and
+    directly by gbserver's startup hook when these routers are mounted
+    in-process (see gbserver/api/root_api.py).
+    """
+    if config is None:
+        config = get_config()
+
     logger.info(
-        "gb-ui backend starting — db=%s ai=%s gbserver_db=%s",
+        "analytics service starting — db=%s ai=%s gbserver_db=%s",
         config.db_enabled,
         config.ai_enabled,
         bool(config.gbserver_db_url),
     )
 
-    # Auto-create sidecar tables (idempotent; required for SQLite which has no migrations)
+    # Auto-create analytics tables (idempotent; required for SQLite which has no migrations)
     if config.db_enabled:
         from gb_ui_backend.services.db_schema import Base, _get_engine
 
@@ -58,13 +74,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error("Failed to initialize GbserverSource: %s", e)
 
-    yield
 
-    logger.info("gb-ui backend stopped")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_analytics(config)
+    yield
+    logger.info("analytics service stopped")
 
 
 app = FastAPI(
-    title="gb-ui analytics sidecar",
+    title="gb-ui analytics service",
     description="Optional analytics backend for gb-ui. Provides build history charts, failure trend analysis, and AI-powered build analysis.",
     version="0.1.0",
     lifespan=lifespan,
@@ -78,11 +97,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(analytics.router)
-app.include_router(ai.router)
-app.include_router(builds.router)
-app.include_router(data_processing.router)
-app.include_router(plans.router)
+app.include_router(analytics.router, prefix="/api/analytics")
+app.include_router(ai.router, prefix="/api/analytics")
+app.include_router(builds.router, prefix="/api/analytics")
+app.include_router(data_processing.router, prefix="/api/analytics")
+app.include_router(plans.router, prefix="/api/analytics")
 
 
 @app.get("/health")

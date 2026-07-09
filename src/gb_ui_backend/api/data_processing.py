@@ -34,7 +34,7 @@ _cos_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cos-io")
 # User-added COS scan prefixes (in-memory, not persisted)
 _extra_scan_prefixes: list[str] = []
 
-router = APIRouter(prefix="/api/analytics/data-processing", tags=["data-processing"])
+router = APIRouter(prefix="/data-processing", tags=["data-processing"])
 
 # ---------------------------------------------------------------------------
 # Regex patterns (ported verbatim from gb_dashboard)

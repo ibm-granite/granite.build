@@ -18,7 +18,7 @@ from gb_ui_backend.config import Config, get_config
 from gb_ui_backend.services.db_schema import GbdMeta, get_db
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/analytics")
+router = APIRouter()
 
 _trigger_task: Optional[asyncio.Task] = None
 _trigger_analyzing = False
@@ -32,12 +32,15 @@ def _rate_limit_analyze_logs(request: Request) -> None:
     """Minimal per-identity sliding-window rate limit for analyze_logs.
 
     This endpoint makes a billable LLM call per request — bound abuse by
-    identity (X-User-Email, set by gbserver's AuthMiddleware/analytics proxy)
-    or client IP as a fallback in apikey/localhost mode.
+    identity. Routes mounted in gbserver see the trusted user gbserver's
+    AuthMiddleware already resolved (`request.state.data["user"]`); the
+    X-User-Email header and client IP are fallbacks for running this app
+    standalone, outside gbserver, where there's no AuthMiddleware at all.
     """
-    identity = request.headers.get("x-user-email") or (
-        request.client.host if request.client else "unknown"
-    )
+    user = getattr(request.state, "data", {}).get("user")
+    identity = (
+        user.email if user is not None else request.headers.get("x-user-email")
+    ) or (request.client.host if request.client else "unknown")
     now = time.monotonic()
     recent = [
         t

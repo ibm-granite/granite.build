@@ -13,7 +13,7 @@ from fastapi import APIRouter, Header, HTTPException
 from gb_ui_backend.config import get_config
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/analytics/plans")
+router = APIRouter(prefix="/plans")
 
 _req_counter = count(1)
 

@@ -1,7 +1,7 @@
 """Analytics API endpoints — build status chart and failure trends.
 
 Data source priority:
-  1. sidecar PostgreSQL (gbd_* tables, populated by K8s sync daemon)
+  1. analytics-service PostgreSQL (gbd_* tables, populated by K8s sync daemon)
   2. gbserver SQLite/PostgreSQL (gb_* tables, read directly via GbserverSource)
 
 This means standalone users get charts and trends from gbserver's own data
@@ -29,7 +29,7 @@ from gb_ui_backend.services.gbserver_source import get_gbserver_source
 TREND_SENTINEL_BUILD_ID = uuid_module.UUID("00000000-0000-0000-0000-000000000000")
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/analytics")
+router = APIRouter()
 
 
 class BuildStatusPoint(BaseModel):
@@ -94,7 +94,7 @@ async def get_build_status_chart(
     db: Optional[AsyncSession] = Depends(get_optional_db),
     config: Config = Depends(get_config),
 ):
-    # ── Path 1: sidecar database ──────────────────────────────────────────────
+    # ── Path 1: analytics-service database ──────────────────────────────────────────────
     if db is not None:
         since = datetime.now(timezone.utc) - timedelta(days=days_back)
         is_test_expr = case(
@@ -145,7 +145,7 @@ async def get_build_status_chart(
                 )
                 for d in sorted(pivot)
             ]
-        # Sidecar DB is empty (AI analysis hasn't run yet) — fall through to Path 2.
+        # Analytics-service DB is empty (AI analysis hasn't run yet) — fall through to Path 2.
 
     # ── Path 2: gbserver source (standalone) ──────────────────────────────────
     source = get_gbserver_source()
@@ -187,7 +187,7 @@ async def get_failure_trends(
         except ValueError:
             pass
 
-    # ── Path 1: sidecar database ──────────────────────────────────────────────
+    # ── Path 1: analytics-service database ──────────────────────────────────────────────
     if db is not None:
         from gb_ui_backend.services.db_schema import GbdMeta
 
@@ -245,7 +245,7 @@ async def get_failure_trends(
                 req.categories,
                 t0,
             )
-        # Sidecar DB is empty (AI analysis hasn't run yet) — fall through to Path 2.
+        # Analytics-service DB is empty (AI analysis hasn't run yet) — fall through to Path 2.
 
     # ── Path 2: gbserver source (standalone) ──────────────────────────────────
     source = get_gbserver_source()
@@ -256,7 +256,7 @@ async def get_failure_trends(
             date_to=req.date_to,
             exclude_tests=req.exclude_tests,
         )
-        # No AI categories without the sidecar DB — everything is "Uncategorized"
+        # No AI categories without the analytics-service DB — everything is "Uncategorized"
         rows_simple = [
             {
                 "build_id": b["uuid"],
@@ -341,13 +341,21 @@ class SaveTrendRequest(BaseModel):
 
 
 def get_current_author(request: Request) -> str:
-    """Derive the caller's identity from the X-User-Email header set by
-    gbserver's AuthMiddleware/analytics proxy (see frontend_routes.py).
+    """Derive the caller's identity from gbserver's AuthMiddleware.
 
-    Falls back to "standalone" in apikey/localhost mode, which has no
-    per-user identity — this must never be trusted from a client-supplied
-    field, since it's used to scope/authorize saved-analysis ownership.
+    These routes are mounted directly on gbserver's own app, so
+    AuthMiddleware's `request.state.data["user"]` is already the trusted
+    identity for this request. The X-User-Email header is a fallback for
+    running this app standalone, outside gbserver, where there's no
+    AuthMiddleware at all; "standalone" is the final fallback for
+    apikey/localhost mode, which has no per-user identity.
+
+    This must never be trusted from a client-supplied field, since it's
+    used to scope/authorize saved-analysis ownership.
     """
+    user = getattr(request.state, "data", {}).get("user")
+    if user is not None:
+        return user.email
     return request.headers.get("x-user-email") or "standalone"
 
 
@@ -432,7 +440,7 @@ async def get_trend_history(
     else:
         # .astext is PostgreSQL JSONB-specific and doesn't exist on the generic
         # JSON comparator (extras is declared as plain JSON to stay portable
-        # across the sidecar's SQLite/Postgres backends) — as_boolean() is the
+        # across the analytics service's SQLite/Postgres backends) — as_boolean() is the
         # dialect-agnostic equivalent.
         filters.append(GbdMeta.extras["is_public"].as_boolean() == True)  # noqa: E712
 

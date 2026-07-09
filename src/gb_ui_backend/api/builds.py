@@ -14,7 +14,7 @@ from gb_ui_backend.config import Config, get_config
 from gb_ui_backend.services.db_schema import GbdK8sResource
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/analytics/builds")
+router = APIRouter(prefix="/builds")
 
 
 class BuildLogsResponse(BaseModel):
@@ -61,7 +61,7 @@ async def get_build_logs(
         except Exception as e:
             logger.warning("Cloud logs fetch for %s failed: %s", build_id, e)
 
-    # K8s pod logs fallback from sidecar DB
+    # K8s pod logs fallback from the analytics-service DB
     if not config.database_url:
         return BuildLogsResponse(lines=[], total=0)
 
