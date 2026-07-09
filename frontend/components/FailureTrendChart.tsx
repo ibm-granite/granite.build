@@ -15,7 +15,13 @@ interface Props {
 export function FailureTrendChart({ data, daysBack, isAnalyzing }: Props) {
   const theme = useChartsTheme();
 
-  if (!data) {
+  if (
+    !data ||
+    !Array.isArray(data.categories) ||
+    !Array.isArray(data.labels) ||
+    !data.series ||
+    typeof data.series !== "object"
+  ) {
     return (
       <p style={{ color: "#525252", padding: "1rem" }}>
         No failure trend data available.
