@@ -144,9 +144,14 @@ async def get_ai_analysis(
     if not config.db_enabled:
         raise HTTPException(503, "Database not configured")
 
+    try:
+        build_uuid = UUID(build_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid build ID")
+
     stmt = (
         select(GbdMeta)
-        .where(GbdMeta.build_id == build_id)
+        .where(GbdMeta.build_id == build_uuid)
         .order_by(GbdMeta.created_at.desc())
         .limit(10)
     )

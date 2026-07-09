@@ -410,7 +410,11 @@ async def get_trend_history(
     if tab == "mine" and author:
         filters.append(GbdMeta.feedback_author == author)
     else:
-        filters.append(GbdMeta.extras["is_public"].astext == "true")
+        # .astext is PostgreSQL JSONB-specific and doesn't exist on the generic
+        # JSON comparator (extras is declared as plain JSON to stay portable
+        # across the sidecar's SQLite/Postgres backends) — as_boolean() is the
+        # dialect-agnostic equivalent.
+        filters.append(GbdMeta.extras["is_public"].as_boolean() == True)  # noqa: E712
 
     total = (
         await db.execute(select(func.count(GbdMeta.id)).where(*filters))
