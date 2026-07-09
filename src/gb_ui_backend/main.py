@@ -1,4 +1,5 @@
 """gb-ui analytics sidecar — FastAPI application."""
+
 from __future__ import annotations
 
 import logging
@@ -15,10 +16,12 @@ from fastapi.middleware.cors import CORSMiddleware
 _env_file = os.path.join(os.path.dirname(__file__), "../../../.env")
 load_dotenv(_env_file, override=False)
 
-from gb_ui_backend.api import analytics, ai, builds, data_processing, infra, plans
+from gb_ui_backend.api import ai, analytics, builds, data_processing, infra, plans
 from gb_ui_backend.config import get_config
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 config = get_config()
@@ -28,12 +31,15 @@ config = get_config()
 async def lifespan(app: FastAPI):
     logger.info(
         "gb-ui backend starting — db=%s ai=%s gbserver_db=%s",
-        config.db_enabled, config.ai_enabled, bool(config.gbserver_db_url),
+        config.db_enabled,
+        config.ai_enabled,
+        bool(config.gbserver_db_url),
     )
 
     # Auto-create sidecar tables (idempotent; required for SQLite which has no migrations)
     if config.db_enabled:
         from gb_ui_backend.services.db_schema import Base, _get_engine
+
         async with _get_engine().begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
@@ -41,10 +47,15 @@ async def lifespan(app: FastAPI):
     if config.gbserver_db_url:
         try:
             from gb_ui_backend.services.gbserver_source import init_gbserver_source
-            await init_gbserver_source(config.gbserver_db_url, schema=config.gbserver_db_schema)
-            logger.info("GbserverSource initialized from %s (schema=%s)",
-                        config.gbserver_db_url.split("///")[-1].split("@")[-1],
-                        config.gbserver_db_schema)
+
+            await init_gbserver_source(
+                config.gbserver_db_url, schema=config.gbserver_db_schema
+            )
+            logger.info(
+                "GbserverSource initialized from %s (schema=%s)",
+                config.gbserver_db_url.split("///")[-1].split("@")[-1],
+                config.gbserver_db_schema,
+            )
         except Exception as e:
             logger.error("Failed to initialize GbserverSource: %s", e)
 
