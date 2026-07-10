@@ -75,7 +75,7 @@ Once it's ready, report to the user:
   ```
   If launched as a tracked background task it also stops when this Claude session exits.
 
-If startup fails, show the relevant lines from `/tmp/gbserver.log` rather than guessing. For setup or startup issues, invoke the `gb-docs` skill — it reads the checkout's docs (`docs/getting-started.md`, `docs/operators/troubleshooting.md`).
+If startup fails, show the relevant lines from `/tmp/gbserver.log` rather than guessing. For setup or startup issues, invoke the `gb-docs` skill — it reads the checkout's docs (`docs/getting-started.md`, `docs/help/troubleshooting.md`).
 
 ## Steps are picked up dynamically — you do NOT need to restart
 
