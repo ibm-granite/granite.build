@@ -59,16 +59,17 @@ def _make_test_jwt(private_key, claims: dict, headers: dict = None) -> str:
 
 
 def _make_app() -> FastAPI:
-    """Build a minimal FastAPI app with AuthMiddleware and a /api/test endpoint.
+    """Build a minimal FastAPI app with AuthMiddleware and a /test endpoint.
 
-    The probe endpoint must live under /api/ — AuthMiddleware authenticates
-    everything except an explicit allow-list (see _is_public_path in
-    gbserver.api.auth); /api/test deliberately isn't on that list.
+    AuthMiddleware authenticates everything except an explicit allow-list
+    (see _is_public_path in gbserver.api.auth) — /test deliberately isn't on
+    that list, and doesn't need to live under /api/ to be protected: auth is
+    the default everywhere now, not just under /api/.
     """
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
 
-    @app.get("/api/test")
+    @app.get("/test")
     async def test_endpoint(request: Request):
         user = request.state.data["user"]
         return JSONResponse(
@@ -474,7 +475,7 @@ class TestAuthMiddlewareMultiProvider:
             with patch("gbserver.api.auth_providers.requests") as mock_requests:
                 mock_requests.get.return_value = mock_response
                 response = client.get(
-                    "/api/test",
+                    "/test",
                     headers={"Authorization": "Bearer ghp_validtoken123"},
                 )
 
@@ -489,7 +490,7 @@ class TestAuthMiddlewareMultiProvider:
         with patch.dict(os.environ, env, clear=False):
             app = _make_app()
             client = TestClient(app)
-            response = client.get("/api/test")
+            response = client.get("/test")
         assert response.status_code == 401
 
     def test_analytics_path_requires_auth(self):

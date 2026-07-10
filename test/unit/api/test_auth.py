@@ -26,16 +26,17 @@ from gbserver.api.auth import AuthMiddleware
 
 
 def _make_app() -> FastAPI:
-    """Build a minimal FastAPI app with AuthMiddleware and a /api/test endpoint.
+    """Build a minimal FastAPI app with AuthMiddleware and a /test endpoint.
 
-    The probe endpoint must live under /api/ — AuthMiddleware authenticates
-    everything except an explicit allow-list (see _is_public_path in
-    gbserver.api.auth); /api/test deliberately isn't on that list.
+    AuthMiddleware authenticates everything except an explicit allow-list
+    (see _is_public_path in gbserver.api.auth) — /test deliberately isn't on
+    that list, and doesn't need to live under /api/ to be protected: auth is
+    the default everywhere now, not just under /api/.
     """
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
 
-    @app.get("/api/test")
+    @app.get("/test")
     async def test_endpoint(request: Request):
         user = request.state.data["user"]
         return JSONResponse(content={"login": user.login})
@@ -94,7 +95,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             response = client.get(
-                "/api/test", headers={"Authorization": "Bearer test-key-123"}
+                "/test", headers={"Authorization": "Bearer test-key-123"}
             )
         assert response.status_code == 200
         assert response.json()["login"] == "standalone"
@@ -109,7 +110,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             response = client.get(
-                "/api/test", headers={"Authorization": "Bearer wrong-key"}
+                "/test", headers={"Authorization": "Bearer wrong-key"}
             )
         assert response.status_code == 401
 
@@ -124,7 +125,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             response = client.get(
-                "/api/test", headers={"Authorization": "Bearer test-key-123"}
+                "/test", headers={"Authorization": "Bearer test-key-123"}
             )
         assert response.status_code == 200
         assert response.json()["login"] == "myuser"
@@ -139,7 +140,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             # TestClient sends from "testclient" which is in the localhost allow list
-            response = client.get("/api/test")
+            response = client.get("/test")
         assert response.status_code == 200
         assert response.json()["login"] == "standalone"
 
@@ -248,7 +249,7 @@ class TestAuthMiddlewareApiKeyMode:
         with patch.dict(os.environ, env, clear=False):
             app = _make_app()
             client = TestClient(app)
-            response = client.get("/api/test")
+            response = client.get("/test")
         assert response.status_code == 401
 
     def test_localhost_without_auth_header_returns_401_when_api_key_set(self):
@@ -261,7 +262,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             # TestClient sends from "testclient" (in localhost allow list)
             client = TestClient(app)
-            response = client.get("/api/test")  # no Authorization header
+            response = client.get("/test")  # no Authorization header
         assert response.status_code == 401
 
     def test_analytics_path_requires_api_key(self):
