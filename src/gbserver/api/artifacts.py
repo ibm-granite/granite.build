@@ -31,6 +31,7 @@ from gbserver.api.utils import (
     split_tags,
 )
 from gbserver.lineage.jobstats import get_lineage_store
+from gbserver.spaces.resource_group import resolve_space_resource_group_id
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,
@@ -444,9 +445,12 @@ def resolve_hf_resource_group(
             detail="HF token is not configured on the server",
         )
     try:
-        resolved_id = HfURI.resolve_resource_group_id_for_org(
-            token=token,
+        # Table-first: use the id cached on the space row when present, else fall
+        # back to the HF API lookup and write the resolved id back onto the row.
+        resolved_id = resolve_space_resource_group_id(
+            space_name=space_name,
             organization=organization,
+            token=token,
             resource_group_name=rg_name,
         )
     except ValueError as exc:

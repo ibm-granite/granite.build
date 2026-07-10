@@ -51,9 +51,26 @@ def mock_hfuri():
     uri.get_owner.return_value = "myorg"
     uri.get_repo.return_value = "myrepo"
     uri.get_revision.return_value = "main"
+    uri.get_host.return_value = "huggingface.co"
     uri.hash.return_value = "abc123hash"
     uri.__str__ = lambda self: "hf://models/myorg/myrepo"
     return uri
+
+
+@pytest.fixture
+def mock_resolve_rg():
+    """Patch the server-side resource group resolver used by pushasset_hfstore.
+
+    Resolution is delegated to
+    ``gbserver.spaces.resource_group.resolve_space_resource_group_id`` (imported
+    into the lsf env module); patch it there so tests never touch storage or the
+    HF API.
+    """
+    with patch(
+        "gbserver.environment.lsf.resolve_space_resource_group_id",
+        return_value=None,
+    ) as mock:
+        yield mock
 
 
 class TestPullassetHfstore:
@@ -157,13 +174,12 @@ class TestPullassetHfstore:
 class TestPushassetHfstore:
     @pytest.mark.asyncio
     async def test_returns_build_target_step_config(
-        self, lsf_env, mock_hfuri, mock_hf_metadata
+        self, lsf_env, mock_hfuri, mock_hf_metadata, mock_resolve_rg
     ):
         """pushasset_hfstore returns BuildTargetStepConfig with hfpush_config."""
         from gbserver.asset.hfstore import Hfstore
 
         assetstore = MagicMock(spec=Hfstore)
-        mock_hfuri.resolve_resource_group_id.return_value = None
         with (
             patch("gbserver.environment.lsf.Asset") as mock_asset_cls,
             patch.object(
@@ -215,13 +231,12 @@ class TestPushassetHfstore:
 
     @pytest.mark.asyncio
     async def test_private_flag_from_storepush_config(
-        self, lsf_env, mock_hfuri, mock_hf_metadata
+        self, lsf_env, mock_hfuri, mock_hf_metadata, mock_resolve_rg
     ):
         """pushasset_hfstore picks up private=False from storepush_config."""
         from gbserver.asset.hfstore import Hfstore
 
         assetstore = MagicMock(spec=Hfstore)
-        mock_hfuri.resolve_resource_group_id.return_value = None
         storepush_config = MagicMock()
         storepush_config.config = {"hf": {"private": False}}
 

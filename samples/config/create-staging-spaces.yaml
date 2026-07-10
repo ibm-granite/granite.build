@@ -3,6 +3,10 @@ spaces:
 - name: "public"
   git_repo_uri: "https://github.ibm.com/granite-dot-build/gb-test"
   lakehouse_namespace: "granite_dot_build.public"
+  # Optional: HF Enterprise resource group id cached for HF pushes. When set,
+  # HF pushes into this space skip the admin-token HF API lookup. Omit to let
+  # the server resolve and cache it lazily on first push.
+  # resource_group_id: "0123456789abcdef01234567"
 - name: "testspace"
   git_repo_uri: "https://github.ibm.com/granite-dot-build/gb-testspace"
   lakehouse_namespace: "granite_dot_build.testspace"

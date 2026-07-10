@@ -75,6 +75,7 @@ from gbserver.environment.environment import (
     Environment,
     EventLogLineParserConfig,
 )
+from gbserver.spaces.resource_group import resolve_space_resource_group_id
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
     EntityRunMetadata,
@@ -2247,10 +2248,14 @@ class K8s(Environment):
         if hf_resource_group_id:
             resource_group_id: Optional[str] = hf_resource_group_id
         else:
-            resource_group_id = hfuri.resolve_resource_group_id(
+            # Table-first resolution (cached id on the space row) with HF API
+            # fallback + write-back. HfURI still only receives the resolved id.
+            resource_group_id = resolve_space_resource_group_id(
+                space_name=space_name,
+                organization=hfuri.get_owner(),
                 token=assetstore.resolve_token(hfuri),
                 resource_group_name=hf_resource_group_name,
-                space_name=space_name,
+                host=hfuri.get_host(),
             )
 
         hfpush_config = Hfstore.build_hfpush_step_config(
