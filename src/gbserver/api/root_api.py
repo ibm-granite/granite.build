@@ -35,6 +35,7 @@ from gbserver.api.frontend_routes import frontend_router
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
+from gbserver.api.openapi_security import add_bearer_auth
 from gbserver.api.secrets import secrets_api
 from gbserver.api.spaces import spaces_api
 from gbserver.types.constants import (
@@ -80,6 +81,23 @@ root_api.mount(f"{API_BASE_PATH}/logs", logs_api)
 root_api.mount(f"{API_BASE_PATH}/node-health", node_health_api)
 root_api.mount(f"{API_BASE_PATH}/secrets", secrets_api)
 root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
+
+# ── Swagger "Authorize" button ─────────────────────────────────────────────────
+# Advertise the Bearer-token scheme (enforced by AuthMiddleware) so each app's
+# /docs page shows an Authorize button and sends the header on "Try it out".
+# Purely a docs/UI convenience — no effect on runtime request handling.
+for _api in (
+    root_api,
+    auth_api,
+    artifacts_api,
+    builds_api,
+    lineage_api,
+    logs_api,
+    node_health_api,
+    secrets_api,
+    spaces_api,
+):
+    add_bearer_auth(_api)
 
 # ── Analytics (optional gb_ui_backend extra) ───────────────────────────────────
 # Included directly (not mounted as a separate ASGI app) so these routes run
