@@ -61,10 +61,6 @@ def _make_app() -> FastAPI:
     async def root_endpoint():
         return JSONResponse(content={"root": True})
 
-    @app.get("/404")
-    async def not_found_page_endpoint():
-        return JSONResponse(content={"not_found_page": True})
-
     @app.get("/dashboard")
     async def frontend_page_endpoint():
         return JSONResponse(content={"page": True})
@@ -226,18 +222,6 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             response = client.get("/")
-        assert response.status_code == 200
-
-    def test_404_page_always_allowed(self):
-        """The Next.js /404 error page should not require authentication."""
-        env = {
-            "GBSERVER_AUTH_MODE": "apikey",
-            "GBSERVER_API_KEY": "test-key-123",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            app = _make_app()
-            client = TestClient(app)
-            response = client.get("/404")
         assert response.status_code == 200
 
     def test_missing_auth_header_with_api_key_set_returns_401(self):

@@ -42,10 +42,14 @@ logger = get_logger(__name__)
 _LOCALHOST_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
 
 # Exact paths that never require authentication, regardless of auth mode.
+#
+# Next.js's static export also emits a 404/index.html, but it's unreachable
+# in practice: root_api's SPA-fallback 404 handler always serves
+# dashboard/index.html for unknown paths (see _spa_fallback), never
+# 404/index.html, so there's no route to allow-list here.
 _PUBLIC_EXACT_PATHS = frozenset(
     {
         "/",
-        "/404",
         "/docs",
         "/openapi.json",
         "/redoc",
