@@ -50,8 +50,6 @@ _PUBLIC_EXACT_PATHS = frozenset(
         "/openapi.json",
         "/redoc",
         "/docs/oauth2-redirect",
-        "/api/config",
-        "/api/environments",
     }
 )
 
