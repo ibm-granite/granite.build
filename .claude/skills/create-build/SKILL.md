@@ -51,7 +51,7 @@ export GBSERVER_HOST="http://127.0.0.1:${GBSERVER_PORT:-8080}"
 - The space's `space.yaml` has a `base_uris:` chain (e.g. `file://../../assets`) — that's where steps/environments/assetstores resolve from.
 - **Environments:** `ls <assets>/environments/` → typically `bash docker runpod skypilot ...`. Default to `bash`.
 - **Steps:** steps usable on the bash backend live under `<assets>/environments/bash/steps/<name>/`. A step is referenced as `space://steps/<name>` even though it lives in an env-keyed subdir — the resolver maps it.
-- **The `hello` step** (`<assets>/environments/bash/steps/hello/`) is the minimal correct bash step — copy its shape.
+- **On-disk reference steps** live under `<assets>/environments/bash/steps/` (`hello`, `command`, `inference`, `inference-lora`, `lora-finetune`). `hello`/`command` are **minimal** steps (launcher + a `MESSAGE_EVENT` log monitor, no artifact capture) — copy them for shape. `inference`, `inference-lora`, and `lora-finetune` are the reference for a step that **captures outputs as artifacts** — they carry the `NEWARTIFACT_IN_ENVIRONMENT_EVENT` monitor. Copy `inference` (or `lora-finetune`) when your step must emit artifacts.
 
 When you reference `space://steps/<name>` or `space://environments/<name>`, the name must be a real directory you found above.
 
@@ -73,7 +73,7 @@ A step is a directory under `<assets>/environments/bash/steps/<step-name>/`:
 
 ### `step.yaml` — the launch contract
 
-Model it on this (the `hello` step is the on-disk reference). `type: nohup` is mandatory for bash. The monitor's `NEWARTIFACT_IN_ENVIRONMENT_EVENT` block is what captures your outputs — keep it.
+Model it on this. `type: nohup` is mandatory for bash. The monitor's `NEWARTIFACT_IN_ENVIRONMENT_EVENT` block is what captures your outputs — keep it. **On-disk reference:** this artifact-capturing shape matches the `inference`, `inference-lora`, and `lora-finetune` steps (which carry this monitor); `hello`/`command` are minimal and have only the `MESSAGE_EVENT` block, so copy `inference` (or `lora-finetune`) when your step emits artifacts.
 
 ```yaml
 name: <step-name>            # must equal the directory name
@@ -218,7 +218,7 @@ This `job.log` is your primary debugging artifact. If a step "succeeded" but did
 ## Authoring procedure (checklist)
 
 1. Confirm a gbserver is running (start via `run-gbserver` if not). Set `GB_ENVIRONMENT=STANDALONE`, activate the repo venv.
-2. Discover the space, its `bash` environment, and existing steps by reading `<assets>/`. Read the `hello` step as a template.
+2. Discover the space, its `bash` environment, and existing steps by reading `<assets>/`. Read an on-disk step as a template — `hello` for the minimal shape, `inference`/`lora-finetune` for the artifact-capturing shape.
 3. Author the step under `<assets>/environments/bash/steps/<name>/`: `step.yaml` (Bash/`nohup` launcher + artifact monitor) and `bash_scripts/<name>/` (the script, which sets up its own venv and reads settings from env). Make scripts executable.
 4. Write the build.yaml with the user's project: target(s) and step(s) matching the workload (one target/one step is the simplest), settings in `config.bash.env`, base model as an `hf:///` input, outputs via `base_uri`. (No restart needed — the server picks the step up.)
 5. `gb build validate`, then **`gb build start`**. Monitor it with `gb build status <build-id>`; the build is done once it no longer appears in `gb build list`. Then read `job.log` to confirm the workload actually ran (not just that status flipped to SUCCESS).
@@ -226,4 +226,4 @@ This `job.log` is your primary debugging artifact. If a step "succeeded" but did
 
 ## When unsure
 
-Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s/LSF-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) are **k8s/LSF-only and do not apply to the bash backend**. For bash behavior, the source of truth is the on-disk `hello` step plus a working build's `job.log`/`step.yaml`.
+Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s/LSF-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) are **k8s/LSF-only and do not apply to the bash backend**. For bash behavior, the source of truth is the on-disk steps (`hello`/`command` for a minimal launch; `inference`/`lora-finetune` for artifact capture) plus a working build's `job.log`/`step.yaml`.

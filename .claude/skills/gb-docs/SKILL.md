@@ -29,29 +29,28 @@ Find the granite.build checkout, in this order, then use its `docs/` directory:
 ## Index — pick by topic
 
 **Authoring builds**
-- `docs/users/build-yaml-reference.md` — **authoritative `build.yaml` schema** (targets, steps, inputs/outputs, URIs, all fields/options).
-- `docs/users/bring-your-own-step.md` — use/author custom steps (note: examples lean k8s/docker).
-- `docs/users/custom-code-steps.md` — running custom code (the `commands`/`files_to_create` features here are k8s/LSF only).
-- `docs/users/bring-your-own-image.md` — custom container images.
-- `docs/users/hf-push.md` — pushing artifacts to HuggingFace.
+- `docs/builds/build-yaml-reference.md` — **authoritative `build.yaml` schema** (targets, steps, inputs/outputs, URIs, all fields/options).
+- `docs/builds/README.md` — build features overview; `docs/builds/hf-push.md` — push artifacts to HuggingFace; `docs/builds/event-notifications.md`.
+- `docs/steps/bring-your-own-step.md`, `docs/steps/custom-code-steps.md`, `docs/steps/bring-your-own-image.md` — author/use custom steps (examples lean k8s/docker; the `commands`/`files_to_create` features are k8s/LSF only). `docs/steps/README.md` — steps overview.
 
 **Using the system**
 - `docs/getting-started.md` — end-to-end walkthrough.
-- `docs/users/cli-reference.md` — the `gb` CLI commands.
-- `docs/users/faq.md` — common questions.
-- `docs/glossary.md` — terminology (build, target, step, artifact, space, …).
-- `docs/demos.md` — demo walkthroughs.
+- `docs/cli/gb-cli-reference.md` — the `gb` CLI; `docs/cli/gbserver-cli-reference.md` — the server CLI; `docs/cli/gbtest-cli-reference.md` — gbtest.
+- `docs/help/faq.md` — common questions; `docs/glossary.md` — terminology (build, target, step, artifact, space, …).
+- `docs/demos/` — demo walkthroughs (`docker-demo.md`, `granite4_nano.md`, `skypilot-slurm-demo.md`).
 
 **Concepts / architecture**
 - `docs/architecture/arch-diagram.md`, `docs/architecture/environment-classes.md`.
-- `docs/steps/README.md`, `docs/templates/README.md`.
+- `docs/steps/README.md`, `docs/templates/README.md`, `docs/spaces/README.md`, `docs/asset-stores/README.md`.
 
-**Features**
-- `docs/features/lineage.md`, `build-retry.md`, `retry.md`, `step-retry-configuration.md`, `target-reuse.md`, `gbtest.md`.
+**Build features**
+- `docs/builds/lineage.md`, `docs/builds/build-retry.md`, `docs/builds/retry.md`, `docs/builds/step-retry-configuration.md`, `docs/builds/target-reuse.md`.
 
-**Operators / setup / troubleshooting**
-- `docs/operators/troubleshooting.md` — **diagnosing failures** (server or build).
-- `docs/operators/environment-yaml-config.md`, `local-secrets-manager.md`, `multi-provider-authentication.md`, `runpod-orchestrator.md`, `skypilot-local-infrastructure.md`, `setup/skypilot-kubernetes-setup.md`.
+**Environments / config / secrets / troubleshooting**
+- `docs/help/troubleshooting.md` — **diagnosing failures** (server or build).
+- `docs/environments/bash.md` — the **standalone bash backend** (most relevant here); also `docker.md`, `k8s.md`, `lsf.md`, `runpod.md`, `skypilot*.md`, `step-resolution.md`, and `setup/`.
+- `docs/configuration/` — `config-files.md`, `environment-variables.md`, `gb-environment.md`.
+- `docs/secrets/` — `local-secrets-manager.md`, `env-secrets-manager.md`, `ibmcloud-secrets-manager.md`; `docs/rest-api/multi-provider-authentication.md`.
 
 `docs/README.md` is the repo's own index if you need the full catalog.
 

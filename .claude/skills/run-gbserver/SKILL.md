@@ -2,7 +2,7 @@
 name: run-gbserver
 description: Clone, set up, and run the Granite.build standalone gbserver. Use when asked to set up, install, start, or run gbserver / the Granite.build standalone server and when running builds.
 argument-hint: "[path-to-existing-checkout]"
-allowed-tools: Bash(git clone *) Bash(git -C *) Bash(make *) Bash(source *) Bash(gbserver *) Bash(curl *) Bash(ls *) Bash(test *) Bash(python3.13 *) Bash(lsof *) Bash(sleep *)
+allowed-tools: Bash(git clone *) Bash(git -C *) Bash(make *) Bash(source *) Bash(gbserver *) Bash(curl *) Bash(ls *) Bash(test *) Bash(python3 *) Bash(python3.13 *) Bash(lsof *) Bash(sleep *)
 ---
 
 # Run the Granite.build standalone gbserver
@@ -27,10 +27,10 @@ Let `$REPO` be the resolved repo directory for the rest of these steps. Run all 
 
 ## 1. Create the virtualenv and install
 
-Requires **Python 3.13**. Confirm `python3.13 --version` works first; if it doesn't, stop and tell the user to install Python 3.13.
+Requires **Python ≥ 3.13**. Pick an interpreter: prefer `python3.13` if present, otherwise use `python3` when `python3 --version` reports ≥ 3.13. If neither is ≥ 3.13, stop and tell the user to install Python 3.13. Use whichever you found as `PYTHON=` below.
 
 ```
-make standalone-venv PYTHON=python3.13
+make standalone-venv PYTHON=python3.13   # or PYTHON=python3 if that is your >=3.13 interpreter
 ```
 
 This creates `.venv/` and installs the standalone dependencies (the gbserver/`gb` CLI). If `.venv/` already exists and the `gbserver` entry point is present, you may skip this step.
