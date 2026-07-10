@@ -97,8 +97,10 @@ export function FailureTrendChart({ data, daysBack, isAnalyzing }: Props) {
           }}
         >
           Analyzed {data.total_analyzed} builds and found{" "}
-          {data.categories.length} categories in{" "}
-          {(data.analysis_time_ms / 1000).toFixed(1)}s
+          {data.categories.length} categories
+          {typeof data.analysis_time_ms === "number"
+            ? ` in ${(data.analysis_time_ms / 1000).toFixed(1)}s`
+            : ""}
         </p>
       ) : null}
     </div>

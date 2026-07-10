@@ -86,9 +86,11 @@ function exportCSV(data: FailureTrendResponse) {
     }
   }
   // Prefix a leading =/+/-/@ with an apostrophe to neutralize CSV formula
-  // injection when opened in a spreadsheet app — quoting alone doesn't stop it.
+  // injection when opened in a spreadsheet app — quoting alone doesn't stop
+  // it. Leading whitespace/tab/CR before the trigger character is still a
+  // trigger for some spreadsheet apps, so check past it too.
   const escapeCsvCell = (c: string) =>
-    /^[=+\-@]/.test(c) ? `'${c}` : c;
+    /^\s*[=+\-@]/.test(c) ? `'${c}` : c;
   const csv = rows
     .map((r) =>
       r.map((c) => `"${escapeCsvCell(c).replace(/"/g, '""')}"`).join(","),
