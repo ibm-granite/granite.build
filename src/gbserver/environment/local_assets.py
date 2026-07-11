@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from gbserver.spaces.resource_group import resolve_space_resource_group_id
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -162,6 +163,26 @@ def push_asset_hfstore(
     space_name = space_config.get("space", {}).get("name") or None
 
     space_name = "public"  # TODO: use the right thing here.
+
+    # Resolve the resource group id server-side (table-first: cached id on the
+    # space row, HF API only as a fallback + write-back) and hand HfURI the
+    # resolved id. This keeps the standalone/local push path from requiring an
+    # admin-scoped HF token when the id is already cached on the space.
+    token = assetstore.resolve_token(hfuri) if assetstore is not None else None
+    resource_group_id = resolve_space_resource_group_id(
+        space_name=space_name,
+        organization=hfuri.get_owner(),
+        token=token,
+        host=hfuri.get_host(),
+    )
+
     logger.info("Pushing %s → %s (space=%s)", src, URI.get_uristr(hfuri), space_name)
-    hfuri.push(src, commit_message=commit_message, space_name=space_name)
+    # Pass only the pre-resolved id (not space_name): HfURI.push would otherwise
+    # re-derive the name and hit the admin-gated /resource-groups endpoint to
+    # cross-check, defeating the cache. With no name/space, push uses the id as-is.
+    hfuri.push(
+        src,
+        commit_message=commit_message,
+        resource_group_id=resource_group_id,
+    )
     return hfuri

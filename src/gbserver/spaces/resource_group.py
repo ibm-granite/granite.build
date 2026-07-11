@@ -78,9 +78,10 @@ def resolve_space_resource_group_id(
         ValueError: propagated from :meth:`HfURI.resolve_resource_group_id_for_org`
             when the provided inputs disagree.
     """
+    space_storage = get_admin_storage().space_storage
     space = None
     if space_name:
-        space = get_admin_storage().space_storage.get_by_name(space_name)
+        space = space_storage.get_by_name(space_name)
         if space is not None and space.resource_group_id:
             logger.info(
                 "Using cached resource group id '%s' for space '%s'",
@@ -103,7 +104,7 @@ def resolve_space_resource_group_id(
     # create a space row here.
     if resolved_id and space is not None:
         space.resource_group_id = resolved_id
-        get_admin_storage().space_storage.update(space)
+        space_storage.update(space)
         logger.info(
             "Cached resource group id '%s' onto space '%s'",
             resolved_id,
