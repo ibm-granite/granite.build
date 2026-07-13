@@ -16,6 +16,7 @@
 
 """Tests for HfURI, covering the pull(), push(), exists(), and delete() methods."""
 
+import json
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
@@ -354,6 +355,65 @@ class TestHfURIPushUnit:
                 uri.push(src_dir)
         MockApi.return_value.upload_folder.assert_not_called()
 
+    def test_push_normalizes_adapter_local_base_model(self, tmp_path):
+        """A LoRA adapter's pod-local base_model path is rewritten to owner/repo."""
+        src_dir = tmp_path / "adapter"
+        src_dir.mkdir()
+        config = src_dir / "adapter_config.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "peft_type": "LORA",
+                    "base_model_name_or_path": (
+                        "/gb-read-write/hfcache/ibm-granite/granite-4.1-3b/"
+                        "ec5a9d0c8f2e4a1b9c3d5e7f0a2b4c6d8e0f1a2b"
+                    ),
+                }
+            )
+        )
+        uri = HfURI.from_parts(owner="myorg", repo="my-lora", hf_type=HfType.MODEL)
+
+        with patch("gbcommon.uri.hf.HfApi"):
+            uri.push(src_dir)
+
+        rewritten = json.loads(config.read_text())
+        assert rewritten["base_model_name_or_path"] == "ibm-granite/granite-4.1-3b"
+
+    def test_push_leaves_valid_base_model_untouched(self, tmp_path):
+        """A base_model that is already an owner/repo id is not rewritten."""
+        src_dir = tmp_path / "adapter"
+        src_dir.mkdir()
+        config = src_dir / "adapter_config.json"
+        config.write_text(
+            json.dumps({"base_model_name_or_path": "ibm-granite/granite-4.1-3b"})
+        )
+        uri = HfURI.from_parts(owner="myorg", repo="my-lora", hf_type=HfType.MODEL)
+
+        with patch("gbcommon.uri.hf.HfApi"):
+            uri.push(src_dir)
+
+        assert (
+            json.loads(config.read_text())["base_model_name_or_path"]
+            == "ibm-granite/granite-4.1-3b"
+        )
+
+    def test_hf_repo_id_from_cache_path(self):
+        """The cache-path parser strips a trailing commit hash to owner/repo."""
+        assert (
+            HfURI._hf_repo_id_from_cache_path(
+                "/gb-read-write/hfcache/ibm-granite/granite-4.1-3b/"
+                "ec5a9d0c8f2e4a1b9c3d5e7f0a2b4c6d8e0f1a2b"
+            )
+            == "ibm-granite/granite-4.1-3b"
+        )
+        # Without a trailing hash, the last two segments are owner/repo.
+        assert (
+            HfURI._hf_repo_id_from_cache_path("/cache/ibm-granite/granite-4.1-3b")
+            == "ibm-granite/granite-4.1-3b"
+        )
+        # Too few segments to derive an id.
+        assert HfURI._hf_repo_id_from_cache_path("/onlyone") is None
+
 
 # ---------------------------------------------------------------------------
 # Unit tests – repo_exists / revision_exists are mocked, no network required
@@ -438,6 +498,17 @@ class TestHfURIPartsUnit:
         uri = URI.get_uri("hf://huggingface.co/datasets/owner/repo_name")
         assert isinstance(uri, HfURI)
         assert uri.is_prod_safe() is True
+
+    def test_two_slash_type_segment_warns(self, caplog):
+        """hf://models/... (two slashes) parses the type as the host and warns."""
+        with caplog.at_level("WARNING"):
+            uri = HfURI.parse("hf://models/ibm-research/my-model")
+            # host is the mis-parsed "models"; the warning tells the user to use
+            # three slashes.
+            assert uri.get_host() == "models"
+        assert any(
+            "three slashes" in record.message for record in caplog.records
+        ), caplog.text
 
     def _helper(self, hfuri: str, expectations: ExistsExpection) -> None:
         uri = URI.get_uri(hfuri)

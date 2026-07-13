@@ -16,7 +16,9 @@
 
 """URI referring to models/datasets/spaces/etc. in HuggingFace Hub"""
 
+import json
 import os
+import re
 import sys
 import threading
 import urllib.parse
@@ -268,6 +270,23 @@ class HfURI(URI):
         assert self.uri is not None, "self.uri is None"
         parts = self.uri.path.strip("/").split("/")
         host = self.uri.netloc or HF_HOST  # default to huggingface.co if not provided
+
+        # A common mistake is writing "hf://models/owner/repo" (two slashes)
+        # when "hf:///models/owner/repo" (three slashes) was intended. With two
+        # slashes the type segment ("models", "datasets", ...) is parsed as the
+        # host, so the push/pull silently targets a bogus endpoint instead of
+        # huggingface.co. Warn so the failure is diagnosable.
+        if host in _HF_SEGMENT_TO_TYPE:
+            logger.warning(
+                "HF URI '%s' uses '%s' as the host, which is almost certainly a "
+                "missing-slash typo: use 'hf:///%s/...' (three slashes) so the "
+                "host defaults to %s instead of '%s'.",
+                self.uri.geturl(),
+                host,
+                host,
+                HF_HOST,
+                host,
+            )
 
         # If the first path segment is a known type keyword, consume it.
         # Otherwise the type defaults to MODEL (the "/models/" segment is optional).
@@ -1003,6 +1022,78 @@ class HfURI(URI):
                 f"refusing to push directory with no non-empty files: {src}"
             )
 
+    @staticmethod
+    def _hf_repo_id_from_cache_path(path: str) -> Optional[str]:
+        """Derive an ``owner/repo`` HF id from a local HF cache path.
+
+        Base models are pulled onto the cluster into a cache laid out as
+        ``<cache>/<owner>/<repo>/<revision>``, where the trailing revision is a
+        git ref or commit hash. Returns ``owner/repo`` or ``None`` when the path
+        has too few components to derive one.
+        """
+        segments = [seg for seg in path.strip("/").split("/") if seg]
+        # Drop a trailing revision/commit-hash segment if present so the last
+        # two segments are the owner and repo.
+        if segments and re.fullmatch(r"[0-9a-f]{7,64}", segments[-1]):
+            segments = segments[:-1]
+        if len(segments) < 2:
+            return None
+        return f"{segments[-2]}/{segments[-1]}"
+
+    @staticmethod
+    def _normalize_adapter_base_model(src: Path) -> None:
+        """Rewrite a LoRA adapter's local base-model path to its HF repo id.
+
+        When a PEFT/LoRA adapter is trained on the cluster the base model is
+        first pulled into a local cache (``<cache>/<owner>/<repo>/<revision>``)
+        and the trainer records that local path in ``adapter_config.json`` under
+        ``base_model_name_or_path``. Uploaded verbatim, HuggingFace then shows
+        the pod-local path (e.g.
+        ``/gb-read-write/hfcache/ibm-granite/granite-4.1-3b/ec5a9d...``) instead
+        of the ``owner/repo`` id and cannot link the base model.
+
+        This mirrors what the Lakehouse (lhpush) path already does: derive the
+        ``owner/repo`` id from the cache layout and write it back before the
+        upload. Only local absolute paths are rewritten; values that already
+        look like an HF repo id are left untouched.
+        """
+        config_path = src / "adapter_config.json"
+        if not config_path.is_file():
+            return
+        try:
+            config = json.loads(config_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(
+                "Could not read %s to normalize base model: %s", config_path, e
+            )
+            return
+        base = config.get("base_model_name_or_path")
+        # Only rewrite pod-local absolute paths; a real HF id such as
+        # "ibm-granite/granite-4.1-3b" does not start with "/".
+        if not isinstance(base, str) or not base.startswith("/"):
+            return
+        repo_id = HfURI._hf_repo_id_from_cache_path(base)
+        if not repo_id:
+            logger.warning(
+                "Could not derive an HF repo id from base_model_name_or_path "
+                "'%s'; leaving it unchanged.",
+                base,
+            )
+            return
+        config["base_model_name_or_path"] = repo_id
+        try:
+            config_path.write_text(json.dumps(config, indent=2))
+        except OSError as e:
+            logger.warning(
+                "Could not write normalized base model to %s: %s", config_path, e
+            )
+            return
+        logger.info(
+            "Normalized adapter base_model_name_or_path '%s' -> '%s' for HF upload",
+            base,
+            repo_id,
+        )
+
     def push(
         self: Self,
         src: Path,
@@ -1143,6 +1234,8 @@ class HfURI(URI):
                 _log_hf_api_error("upload_file", repo_id, e)
                 raise
         else:
+            if repo_type == "model":
+                self._normalize_adapter_base_model(src)
             logger.info(
                 "Uploading folder %s → %s/%s (type=%s, rev=%s)",
                 src,
