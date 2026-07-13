@@ -35,7 +35,7 @@ from gbserver.api.frontend_routes import frontend_router
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
-from gbserver.api.openapi_security import add_bearer_auth
+from gbserver.api.openapi_security import add_bearer_auth, enable_api
 from gbserver.api.secrets import secrets_api
 from gbserver.api.spaces import spaces_api
 from gbserver.types.constants import (
@@ -73,31 +73,25 @@ def read_root():
 
 
 root_api.include_router(frontend_router)
-root_api.mount(f"{API_BASE_PATH}/auth", auth_api)
-root_api.mount(f"{API_BASE_PATH}/artifacts", artifacts_api)
-root_api.mount(f"{API_BASE_PATH}/builds", builds_api)
-root_api.mount(f"{API_BASE_PATH}/lineage", lineage_api)
-root_api.mount(f"{API_BASE_PATH}/logs", logs_api)
-root_api.mount(f"{API_BASE_PATH}/node-health", node_health_api)
-root_api.mount(f"{API_BASE_PATH}/secrets", secrets_api)
-root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
 
-# ── Swagger "Authorize" button ─────────────────────────────────────────────────
-# Advertise the Bearer-token scheme (enforced by AuthMiddleware) so each app's
-# /docs page shows an Authorize button and sends the header on "Try it out".
-# Purely a docs/UI convenience — no effect on runtime request handling.
-for _api in (
-    root_api,
-    auth_api,
-    artifacts_api,
-    builds_api,
-    lineage_api,
-    logs_api,
-    node_health_api,
-    secrets_api,
-    spaces_api,
-):
-    add_bearer_auth(_api)
+# Mount each sub-app and advertise the Bearer-token scheme on it, so its /docs
+# page shows an Authorize button that sends the header on "Try it out". This is
+# purely a docs/UI convenience — enforcement stays in AuthMiddleware.
+#
+# auth_api is mounted with advertise_auth=False: AuthMiddleware exempts the
+# entire /api/v1/auth/* login flow from authentication, so a lock icon there
+# would wrongly claim a token is required before the user has one.
+enable_api(root_api, f"{API_BASE_PATH}/auth", auth_api, advertise_auth=False)
+enable_api(root_api, f"{API_BASE_PATH}/artifacts", artifacts_api)
+enable_api(root_api, f"{API_BASE_PATH}/builds", builds_api)
+enable_api(root_api, f"{API_BASE_PATH}/lineage", lineage_api)
+enable_api(root_api, f"{API_BASE_PATH}/logs", logs_api)
+enable_api(root_api, f"{API_BASE_PATH}/node-health", node_health_api)
+enable_api(root_api, f"{API_BASE_PATH}/secrets", secrets_api)
+enable_api(root_api, f"{API_BASE_PATH}/spaces", spaces_api)
+
+# root_api is the parent app (not mounted), so wire its own Swagger auth directly.
+add_bearer_auth(root_api)
 
 # ── Analytics (optional gb_ui_backend extra) ───────────────────────────────────
 # Included directly (not mounted as a separate ASGI app) so these routes run

@@ -34,24 +34,31 @@ sole responsibility.
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 
+from gbserver.types.constants import GBSERVER_GIT_COMMIT
+
 _SCHEME_NAME = "BearerAuth"
 
 
-def add_bearer_auth(app: FastAPI, *, title: str = "granite.build API") -> None:
+def add_bearer_auth(app: FastAPI) -> None:
     """Make Swagger UI show an "Authorize" button for *app* that sends the
     ``Authorization: Bearer <token>`` header on "Try it out" requests.
 
     Safe to call on every mounted sub-app; each app owns its own ``/docs`` and
     ``/openapi.json``, so the scheme must be declared per app to appear on that
     app's docs page. Does not change runtime behavior — see the module docstring.
+
+    The requirement is declared once at the document level (OpenAPI's top-level
+    ``security`` field), which every operation inherits — Swagger renders the
+    Authorize button and a per-operation lock exactly as it would for a
+    per-operation declaration, without iterating the paths.
     """
 
     def custom_openapi() -> dict:
         if app.openapi_schema:
             return app.openapi_schema
         schema = get_openapi(
-            title=title,
-            version="1.0.0",
+            title=app.title,
+            version=GBSERVER_GIT_COMMIT or app.version,
             routes=app.routes,
         )
         schema.setdefault("components", {})["securitySchemes"] = {
@@ -64,13 +71,31 @@ def add_bearer_auth(app: FastAPI, *, title: str = "granite.build API") -> None:
                 ),
             }
         }
-        # Apply the scheme to every operation so the single "Authorize" action
-        # sends the header for all endpoints on the page.
-        for path_item in schema.get("paths", {}).values():
-            for operation in path_item.values():
-                if isinstance(operation, dict):
-                    operation.setdefault("security", []).append({_SCHEME_NAME: []})
+        # Document-level requirement: inherited by every operation unless one
+        # overrides it. Equivalent Swagger rendering to marking each operation,
+        # without walking the paths.
+        schema["security"] = [{_SCHEME_NAME: []}]
         app.openapi_schema = schema
         return schema
 
     app.openapi = custom_openapi  # type: ignore[method-assign]
+
+
+def enable_api(
+    parent: FastAPI,
+    path: str,
+    sub_api: FastAPI,
+    *,
+    advertise_auth: bool = True,
+) -> None:
+    """Mount *sub_api* under *parent* at *path* and, unless disabled, advertise
+    the Bearer-token scheme on it so its ``/docs`` shows an Authorize button.
+
+    Keeps the mount and the Swagger-auth wiring in one place so the two can't
+    drift apart. Pass ``advertise_auth=False`` for sub-apps whose routes
+    ``AuthMiddleware`` exempts from authentication (e.g. the login flow), so the
+    docs don't claim a token is required where the server ignores it.
+    """
+    parent.mount(path, sub_api)
+    if advertise_auth:
+        add_bearer_auth(sub_api)
