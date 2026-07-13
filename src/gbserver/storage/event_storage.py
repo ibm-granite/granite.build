@@ -54,6 +54,35 @@ class IStoredEventStorage(IItemStorage[StoredEvent]):
             f"Sub-class {self.__class__.__name__} did not implement method throwing this exception"
         )
 
+    @abstractmethod
+    def get_max_index(self) -> int:
+        """Get the maximum index value from gb_events table.
+
+        Used by LineageWatcher to seed its watermark at startup.
+
+        Returns:
+            int: Maximum index value, or 0 if no events exist.
+        """
+        raise NotImplementedError(
+            f"Sub-class {self.__class__.__name__} did not implement method throwing this exception"
+        )
+
+    @abstractmethod
+    def get_events_after_index(self, min_index: int) -> list[StoredEvent]:
+        """Get all events with index > min_index, ordered ascending.
+
+        Used by LineageWatcher to poll for new events.
+
+        Args:
+            min_index (int): Return events with index > min_index.
+
+        Returns:
+            list[StoredEvent]: Events ordered by ascending index.
+        """
+        raise NotImplementedError(
+            f"Sub-class {self.__class__.__name__} did not implement method throwing this exception"
+        )
+
 
 class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
 
@@ -129,6 +158,59 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
             uuid = row[UUID_COLUMN_NAME]
             sorted_events.append(event_dict[uuid])
         return sorted_events
+
+    def get_max_index(self) -> int:
+        """Get the maximum index value from gb_events table.
+
+        Used by LineageWatcher to seed its watermark at startup.
+
+        Returns:
+            int: Maximum index value, or 0 if no events exist.
+        """
+        try:
+            rows = self._get_by_where_row_dicts(where=None)
+            if not rows:
+                return 0
+            return max(row.get("index", 0) for row in rows)
+        except Exception as e:
+            self.logger.warning("Failed to get max index: %s", e)
+            return 0
+
+    def get_events_after_index(self, min_index: int) -> list[StoredEvent]:
+        """Get all events with index > min_index, ordered ascending.
+
+        Used by LineageWatcher to poll for new events.
+
+        Args:
+            min_index (int): Return events with index > min_index.
+
+        Returns:
+            list[StoredEvent]: Events ordered by ascending index.
+        """
+        from gbserver.storage.storage import QueryControl, SortOrder
+
+        try:
+            sort_order = SortOrder(column="index", ascending=True)
+            query_control = QueryControl(sort_orders=[sort_order])
+
+            rows = self._get_by_where_row_dicts(where=None, query_control=query_control)
+            if not rows:
+                return []
+
+            filtered_rows = [row for row in rows if row.get("index", 0) > min_index]
+
+            result = []
+            for row in filtered_rows:
+                uuid = row.get("uuid")
+                if uuid:
+                    event = self.get_by_uuid(uuid)
+                    if event:
+                        event.index = row.get("index", 0)
+                        result.append(event)
+            return result
+        except Exception as e:
+            self.logger.exception("Failed to get events after index %d: %s", min_index, e)
+            return []
 
     @classmethod
     def _get_sample_item(cls) -> StoredEvent:

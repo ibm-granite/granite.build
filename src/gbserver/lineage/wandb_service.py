@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import deque
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
@@ -36,9 +37,11 @@ from gbserver.types.constants import (
     GBSERVER_WANDB_API_KEY,
     GBSERVER_WANDB_BASE_URL,
     GBSERVER_WANDB_ENTITY,
+    GBSERVER_WANDB_LOG_LEVEL,
     GBSERVER_WANDB_PROJECT,
+    GBSERVER_WANDB_QUIET,
 )
-from gbserver.utils.logger import get_logger
+from gbserver.utils.logger import get_log_level, get_logger
 
 logger = get_logger(__name__)
 
@@ -60,6 +63,8 @@ class WandBLineageService(LineageService):
 
     def __init__(self):
         wandb.login(key=GBSERVER_WANDB_API_KEY, host=GBSERVER_WANDB_BASE_URL)
+        wandb_logger = logging.getLogger("wandb")
+        wandb_logger.setLevel(get_log_level(GBSERVER_WANDB_LOG_LEVEL))
         self._runs = {}
 
     def _get_run(self, run_id: str, job_name: str):
@@ -72,10 +77,15 @@ class WandBLineageService(LineageService):
             id=run_id,
             name=job_name,
             resume="allow",
+            settings=wandb.Settings(quiet=GBSERVER_WANDB_QUIET),
         )
 
         self._runs[run_id] = run
         return run
+
+    def _is_offline(self, run: Any) -> bool:
+        """Check if a wandb run is in offline mode."""
+        return getattr(run, "offline", False)
 
     def emit_event(self, event: Dict) -> None:
         try:
@@ -85,41 +95,51 @@ class WandBLineageService(LineageService):
 
             run = self._get_run(run_id, job_name)
 
-            for inp in event.get("inputs", []):
-                resource_name = self._dataset_name(inp)
-                resource_type = self._get_hf_type(inp)
-                artifact_type = (
-                    resource_type
-                    if resource_type in ("model", "dataset", "bucket")
-                    else "dataset"
+            if self._is_offline(run):
+                logger.warning(
+                    "wandb offline mode; skipping artifact lineage registration for run %s",
+                    run_id,
                 )
+                offline = True
+            else:
+                offline = False
 
-                if self._is_huggingface_resource(inp):
-                    self._register_hf_reference(
-                        run, inp, resource_name, is_output=False
+            if not offline:
+                for inp in event.get("inputs", []):
+                    resource_name = self._dataset_name(inp)
+                    resource_type = self._get_hf_type(inp)
+                    artifact_type = (
+                        resource_type
+                        if resource_type in ("model", "dataset", "bucket")
+                        else "dataset"
                     )
-                else:
-                    artifact = wandb.Artifact(
-                        name=resource_name, type=artifact_type, metadata=inp
-                    )
-                    run.use_artifact(artifact)
 
-            for out in event.get("outputs", []):
-                resource_name = self._dataset_name(out)
-                resource_type = self._get_hf_type(out)
-                artifact_type = (
-                    resource_type
-                    if resource_type in ("model", "dataset", "bucket")
-                    else "dataset"
-                )
+                    if self._is_huggingface_resource(inp):
+                        self._register_hf_reference(
+                            run, inp, resource_name, is_output=False
+                        )
+                    else:
+                        artifact = wandb.Artifact(
+                            name=resource_name, type=artifact_type, metadata=inp
+                        )
+                        run.use_artifact(artifact)
 
-                if self._is_huggingface_resource(out):
-                    self._register_hf_reference(run, out, resource_name, is_output=True)
-                else:
-                    artifact = wandb.Artifact(
-                        name=resource_name, type=artifact_type, metadata=out
+                for out in event.get("outputs", []):
+                    resource_name = self._dataset_name(out)
+                    resource_type = self._get_hf_type(out)
+                    artifact_type = (
+                        resource_type
+                        if resource_type in ("model", "dataset", "bucket")
+                        else "dataset"
                     )
-                    run.log_artifact(artifact)
+
+                    if self._is_huggingface_resource(out):
+                        self._register_hf_reference(run, out, resource_name, is_output=True)
+                    else:
+                        artifact = wandb.Artifact(
+                            name=resource_name, type=artifact_type, metadata=out
+                        )
+                        run.log_artifact(artifact)
 
             run_facets = event.get("run", {}).get("facets", {})
             job_facets = event.get("job", {}).get("facets", {})
