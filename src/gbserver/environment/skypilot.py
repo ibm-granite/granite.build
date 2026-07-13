@@ -1897,55 +1897,6 @@ class Skypilot(Environment):
         )
         return binding_config, pull_step_config
 
-    async def pullasset_envstore(
-        self: Self,
-        uri: Optional[Union[str, URI]] = None,
-        binding: Optional[Any] = None,
-        storeload_config=None,
-        **kwargs,
-    ) -> Tuple[Dict, Optional[Any]]:
-        """Pull asset for env:// store — artifact is already on shared FS.
-
-        No-op pull: the path is directly accessible on the shared filesystem.
-        Returns the binding with the path extracted from the URI.
-        """
-        path = str(uri).replace("env://", "") if uri else ""
-        logger.info(
-            "pullasset_envstore: artifact at path=%s (shared FS, no transfer needed)",
-            path,
-        )
-        binding_config = {"binding": {"path": path}}
-        return binding_config, None
-
-    async def pushasset_envstore(
-        self: Self,
-        binding: Any,
-        binding_id: Optional[str] = "",
-        storepush_config=None,
-        uri: Optional[Union[str, URI]] = None,
-        assetstore=None,
-        secrets: Optional[Dict[str, str]] = None,
-        run_metadata: Optional[Any] = None,
-        output_config: Optional[Any] = None,
-    ) -> URI:
-        """Push asset for env:// store — artifact is already on shared FS.
-
-        No-op push: the artifact path from the container is directly
-        accessible on the shared filesystem, so no transfer is needed.
-        """
-        if not uri:
-            raise ValueError(
-                f"pushasset_envstore: empty uri for binding={binding_id!r}; "
-                "an env:// store push requires a concrete artifact path."
-            )
-        logger.info(
-            "pushasset_envstore: registering artifact %s at uri=%s binding=%s",
-            binding_id,
-            uri,
-            binding,
-        )
-        return URI.get_uri(str(uri))
-
     async def pushasset_hfstore(
         self: Self,
         binding: Any,

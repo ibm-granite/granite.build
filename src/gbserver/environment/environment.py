@@ -82,6 +82,8 @@ from gbserver.types.environmentconfig import (
     ENVIRONMENT_FILENAME,
     AssetStoreEnvironmentConfig,
     EnvironmentConfig,
+    StoreLoad,
+    StorePush,
 )
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
@@ -603,7 +605,14 @@ class Environment(ABC):
         self._dispatch_event(event=event)
 
     def _load_assetstores(self: Self) -> None:
-        """Load the asset stores specified in the environment.yaml"""
+        """Load the asset stores specified in the environment.yaml.
+
+        Every environment additionally gets the built-in ``env://`` (Envstore)
+        store registered implicitly via :meth:`_register_default_envstore`, so
+        env:// input/output work on all backends without an ``assetstores`` entry
+        in each ``environment.yaml``.
+        """
+        self._register_default_envstore()
         if self.config is None or self.config.assetstores is None:
             logger.warning("No asset stores found!")
             return
@@ -612,6 +621,33 @@ class Environment(ABC):
                 store_uri=storeenv.store_uri, context=self.context
             )
             self.supported_assetstores[assetstore] = storeenv
+
+    def _register_default_envstore(self: Self) -> None:
+        """Register the built-in ``env://`` (Envstore) asset store for this env.
+
+        env:// artifacts already live on a filesystem the environment can reach,
+        so push/pull are no-ops (see ``pullasset_envstore`` / ``pushasset_envstore``).
+        Registering the store here — from the bundled ``builtins/assetstores/env``
+        definition rather than a per-environment ``environment.yaml`` entry — makes
+        env:// universally supported. Failures are logged and swallowed so a
+        problem loading the built-in store never breaks environment construction;
+        an environment.yaml may still declare its own env:// store on top.
+        """
+        try:
+            env_store_dir = (
+                Path(__file__).parent.parent / "builtins" / "assetstores" / "env"
+            )
+            assetstore = Assetstore.load_asset_store(
+                env_store_dir, context=self.context
+            )
+            store_env_config = AssetStoreEnvironmentConfig(
+                store_uri="env://",
+                load=[StoreLoad(mode="default")],
+                push=[StorePush(mode="default")],
+            )
+            self.supported_assetstores[assetstore] = store_env_config
+        except Exception as e:  # never fail env construction over the default store
+            logger.warning("Failed to register default env:// assetstore: %s", e)
 
     @classmethod
     def load_environment_config(
@@ -1474,6 +1510,85 @@ class Environment(ABC):
         self.shared_mem_store[str(uri)] = binding.get("state")
         logger.info(
             "pushasset_memstore: registering binding_id=%s at uri=%s binding=%s",
+            binding_id,
+            uri,
+            binding,
+        )
+        return URI.get_uri(str(uri))
+
+    async def pullasset_envstore(
+        self: Self,
+        uri: Optional[Union[str, URI]] = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        **kwargs,
+    ) -> Tuple[Dict, Optional[Any]]:
+        """Pull an asset from the env:// store — artifact already on a reachable FS.
+
+        The env:// store models an artifact that already lives on a filesystem the
+        environment can reach, so the pull is a no-op: parse the URI to an
+        ``EnvURI`` and return its path in the consumer-facing binding. No transfer
+        is performed. Inherited by every environment so all backends support
+        env:// pull.
+
+        :param uri: The ``env://`` URI (string or already-parsed ``URI``).
+        :param binding: Unused; present for dispatcher signature parity.
+        :param storeload_config: Unused; present for dispatcher signature parity.
+        :returns: ``(binding_config, None)`` where ``binding_config`` carries the
+            reconstructed path under ``BINDING_KEY``; the second element is ``None``
+            because no build step is queued for the no-op pull.
+        :raises AssertionError: If the URI is not a valid ``EnvURI`` with a path.
+        """
+        # Local import: gbcommon.uri.env has no dependency on this module, so this
+        # avoids any import-order risk and matches the lazy-import style used here.
+        from gbcommon.uri.env import EnvURI
+
+        assert uri is not None, "pullasset_envstore requires a non-empty env:// uri"
+        envuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
+        assert isinstance(envuri, EnvURI), f"invalid envuri: {envuri}"
+        assert envuri.uri, f"invalid envuri: {envuri}"
+        final_binding_path = envuri.uri.path
+        assert final_binding_path, f"invalid envuri: {envuri}"
+        binding_config = {BINDING_KEY: {"path": final_binding_path}}
+        logger.info(
+            "pullasset_envstore: loaded env uri %s at binding %s",
+            uri,
+            binding_config,
+        )
+        return binding_config, None
+
+    async def pushasset_envstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        storepush_config=None,
+        uri: Optional[Union[str, URI]] = None,
+        assetstore=None,
+        secrets: Optional[Dict[str, str]] = None,
+        run_metadata: Optional[Any] = None,
+        output_config: Optional[Any] = None,
+        **kwargs,
+    ) -> URI:
+        """Push an asset to the env:// store — artifact already on a reachable FS.
+
+        No-op push: the artifact path is directly accessible on the shared/reachable
+        filesystem, so nothing is transferred; the concrete URI is simply
+        registered and returned. Inherited by every environment so all backends
+        support env:// push.
+
+        :param binding: The producer binding for the artifact (logged only).
+        :param binding_id: Output binding id being pushed (used in errors/logs).
+        :param uri: The concrete ``env://`` artifact URI. Required.
+        :returns: The registered artifact URI.
+        :raises ValueError: If ``uri`` is empty — an env:// push needs a concrete path.
+        """
+        if not uri:
+            raise ValueError(
+                f"pushasset_envstore: empty uri for binding={binding_id!r}; "
+                "an env:// store push requires a concrete artifact path."
+            )
+        logger.info(
+            "pushasset_envstore: registering artifact %s at uri=%s binding=%s",
             binding_id,
             uri,
             binding,

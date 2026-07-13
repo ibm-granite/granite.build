@@ -23,12 +23,9 @@ from libgbtest.buildrunner.buildtest import (
 pytestmark = pytest.mark.standalone
 
 
-@pytest.mark.skip(
-    reason="Temporarily disable since we need a PR to main and this is failing due to space config issues (we think)."
-)
 @pytest.mark.xdist_group(name="buildtest_local")
 class TestBuildRunner1StepLocal(AbstractYamlBuildRunnerTest):
-    """Runs a barebone local build flow."""
+    """Runs a barebone local build flow exercising env:// input + output."""
 
     def _get_yaml_spec_dir(self) -> Path:
         return get_test_data_dir_for(__file__) / "1step/local"

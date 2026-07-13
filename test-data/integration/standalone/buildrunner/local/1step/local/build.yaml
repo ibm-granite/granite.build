@@ -1,27 +1,37 @@
 granite.build:
-  name: echo_in_bash
+  name: env_in_out_bash
+  # Single bash target exercising the env:// asset store for BOTH an input and an
+  # output on the in-process Bash environment. env:// push/pull are shared-FS
+  # no-ops (pullasset_envstore / pushasset_envstore, inherited from the base
+  # Environment), so no files are transferred:
+  #   - env_input is pulled as a no-op; its path is available to the command via
+  #     {{ bindings.env_input.binding.path }} (the path need not exist, since
+  #     EnvURI.exists()/pull() are stubs).
+  #   - env_output is registered inline from the LLMB_ARTIFACT marker the command
+  #     emits (the bash `command` step's log_monitor parses it into a
+  #     NEWARTIFACT_IN_ENVIRONMENT_EVENT).
   targets:
-    echo:
+    command:
       allow_unknown: true
       environment_uri: space://environments/bash
       inputs:
-      #   model_to_tune:
-      #     uri: lh://prod/granite_dot_build.public/models/model_shared/granite-2b-base/20250319T181102
-        # tuning_data:
-      #     uri: lh://prod/granite_dot_build.public/tables/all_data_large_dedup_regression_test
+        env_input:
+          # Arbitrary fixed shared-FS path; the value isn't tested (pull is a
+          # no-op), it just flows to the command as bindings.env_input.binding.path.
+          uri: "env:///tmp/gb-env-input.txt"
       outputs:
-        # Uncomment "intermediate_checkpoint_with_optimizer_state" only when "save_strategy" in the tuning_config is set to "steps" or "epoch".
-        # This will push intermediate checkpoints (with optimizer state) to Lakehouse.
-        # Otherwise, only the "final_checkpoint" is pushed.
-        #
-        # intermediate_checkpoint_with_optimizer_state:
-        #   uri: lh://{{ space.variables.DEFAULT_LH_ENVIRONMENT }}/{{ space.variables.DEFAULT_LH_NAMESPACE }}/models/{{ space.variables.DEFAULT_LH_MODEL_TABLE }}/gb_tuned_model_{{ run_metadata.targetsteprun_id | short_hash }}_{{ binding.path | path_basename }}
-        # training_logs_jsonl:
-          # uri: lh://{{ space.variables.DEFAULT_LH_ENVIRONMENT }}/{{ space.variables.DEFAULT_LH_NAMESPACE }}/tables/gb_training_logs_jsonl_{{ run_metadata.targetsteprun_id | short_hash }}
-        # final_checkpoint:
-        #   uri: lh://{{ space.variables.DEFAULT_LH_ENVIRONMENT }}/{{ space.variables.DEFAULT_LH_NAMESPACE }}/models/{{ space.variables.DEFAULT_LH_MODEL_TABLE }}/gb_tuned_model_{{ run_metadata.targetsteprun_id | short_hash }}_{{ binding.path | path_basename }}
+        env_output:
+          # Arbitrary fixed path; the command just echoes it in the LLMB_ARTIFACT
+          # marker so the output registers. env:// push is a no-op (no existence
+          # check), so no file is actually created — the path value isn't tested.
+          uri: "env:///tmp/gb-env-output.txt"
+          type: fileset
       steps:
-        - step_uri: space://steps/echo
+        - step_uri: space://steps/command
           config:
+            bash_config:
+              command: >-
+                echo "env input path: {{ bindings.env_input.binding.path }}";
+                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-env-output.txt"
             compute_config:
               num_nodes: 1

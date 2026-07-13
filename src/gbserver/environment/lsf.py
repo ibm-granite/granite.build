@@ -31,7 +31,6 @@ from pydantic import BaseModel
 
 from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.cos import CosURI
-from gbcommon.uri.env import EnvURI
 from gbcommon.uri.hf import HfURI
 from gbcommon.uri.lh import LhURI
 from gbcommon.uri.space import SpaceURI
@@ -994,25 +993,6 @@ class Lsf(Environment):
         )
         # if event_configs:
         #     self._logfile_event_configs[launch_id] = event_configs
-
-    async def pullasset_envstore(
-        self: Self,
-        uri: URI,
-        binding: Optional[Any] = None,
-        storeload_config: Optional[StoreLoad] = None,
-        assetstore: Optional[Assetstore] = None,
-        secrets: Optional[dict] = None,
-        **kwargs,
-    ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
-        """Load an asset from the env asset store"""
-        envuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
-        assert isinstance(envuri, EnvURI), f"invalid envuri: {envuri}"
-        assert envuri.uri, f"invalid envuri: {envuri}"
-        final_binding_path = envuri.uri.path
-        assert final_binding_path, f"invalid envuri: {envuri}"
-        binding_config = {BINDING_KEY: {"path": final_binding_path}}
-        logger.info("loaded env uri: %s at binding: %s", uri, binding_config)
-        return (binding_config, None)
 
     def _resolve_builtin_step_yaml(self: Self, step_name: str) -> Path:
         """Resolve ``space://steps/<step_name>`` to the local step.yaml Path,

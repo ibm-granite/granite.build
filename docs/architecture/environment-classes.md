@@ -92,6 +92,23 @@ Retry is controlled at two levels:
 
 `retry_transparently=True` deduplicates `NEWARTIFACT` events across retry iterations using `RetryArtifactFilterQueue`, so downstream consumers don't see duplicate artifact events.
 
+### Built-in asset stores (`env://`, `mem://`)
+
+Two stores are provided by the base class, so **every** environment supports them with no per-environment
+configuration:
+
+| Store | Methods (on `Environment`) | Behaviour |
+|-------|----------------------------|-----------|
+| `env://` (env-local) | `pullasset_envstore` / `pushasset_envstore` | Shared-filesystem no-op: pull reconstructs the path from the `EnvURI` into the binding; push registers the URI. No transfer. |
+| `mem://` (in-memory) | `pullasset_memstore` / `pushasset_memstore` | Passes a producer's binding value verbatim through the build's shared in-memory dict. |
+
+Because these live on the base class, subclasses inherit them automatically — no subclass needs its own
+`*_envstore` / `*_memstore` methods, and `env://` / `mem://` do **not** need an `assetstores` entry in
+`environment.yaml`. `_load_assetstores` calls `_register_default_envstore()`, which registers the bundled
+[`builtins/assetstores/env`](../../src/gbserver/builtins/assetstores/env/store.yaml) store for the
+environment (an `environment.yaml` may still declare its own `env://` store to override the default
+`load`/`push` mode).
+
 ### Abstract Method
 
 ```python
@@ -210,7 +227,10 @@ themselves (URI schemes, secrets, configuration), see [Asset stores](../asset-st
 | `pushasset_lhstore` | Lakehouse | Injects a `lhpush` built-in step |
 | `pullasset_cosstore` | IBM COS | `cos_pull` — injects a `cosrclone` built-in step |
 | `pushasset_cosstore` | IBM COS | Injects a `cosrclone` built-in step |
-| `pullasset_envstore` | Env (local path) | Returns the path directly as a binding |
+
+`Lsf` also supports `env://` (`pullasset_envstore` / `pushasset_envstore`), but those are
+[inherited from the base class](#built-in-asset-stores-env-mem) rather than defined here — as they are
+for every environment.
 
 For Lakehouse and COS stores, loading/pushing is delegated to built-in steps that run as additional LSF jobs in the pipeline.
 

@@ -2,14 +2,26 @@
 # test/integration/ibm/buildrunner/local/test_buildrunner_1step_local.py.
 # build_yaml defaults to ./build.yaml (sibling) when omitted.
 targets:
-  - echo
+  - command
 target_expectations:
-  - target_name: echo
+  - target_name: command
+    # One `command` step. env:// input + output are shared-FS no-ops: they add
+    # one input and one output artifact but launch no extra pull/push step, so
+    # step_count stays 1. The env:// output produces one jobstat/lineage record.
+    # NOTE: in this in-process standalone run the lineage store is a
+    # NoopLineageStore, so _verify_target_lineage skips the jobstats_count
+    # assertion entirely (see buildtest.py); the value 1 documents the real count
+    # for environments that have a lineage store configured.
     step_count: 1
-    input_artifact_count: 0
-    output_artifact_count: 0
-    jobstats_count: 0
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
 # Use the shared standalone space at <repo>/configurations/spaces/local so the BuildRunner
-# resolves space:// URIs (the bash environment and the echo step) without
+# resolves space:// URIs (the bash environment and the command step) without
 # cloning from GitHub.  Relative path resolves against this YAML's directory.
 space_uri: ../../../../../../../configurations/spaces/local
+# Happy-path env:// binding test — run only the basic build, not the cancellation
+# variant (the command step finishes near-instantly, so cancellation can't
+# reliably catch it RUNNING). Mirrors the command-2target fixture.
+tests:
+  - runner

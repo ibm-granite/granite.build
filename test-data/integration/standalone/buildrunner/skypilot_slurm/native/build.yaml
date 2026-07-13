@@ -6,11 +6,23 @@ granite.build:
       inputs:
         input_model:
           uri: hf:///datasets/ibm-research/vira-intents-live
+        # env:// input: a shared-FS path pulled as a no-op (pullasset_envstore).
+        # The path need not physically exist — EnvURI.exists()/pull() are stubs —
+        # and the value isn't tested; it just flows to the command as a binding.
+        env_input:
+          uri: "env:///tmp/gb-env-input.txt"
       outputs:
         output_model1:
           uri: hf://huggingface.co/datasets/ibm-research/skypilot-slurm-hf-test1_{{ binding.path | short_hash }}
         output_model2:
           uri: hf://huggingface.co/datasets/ibm-research/skypilot-slurm-hf-test2_{{ binding.path | short_hash }}
+        # env:// output: registered inline (pushasset_envstore) from the artifact
+        # marker the command emits below. `type` is required for env:// outputs.
+        # The path is arbitrary (env:// push/pull are no-ops); it just has to be
+        # the same value in this uri and in the command's LLMB_ARTIFACT marker.
+        env_output:
+          uri: "env:///tmp/gb-env-output.txt"
+          type: fileset
       steps:
         - step_uri: space://steps/bash
           config:
@@ -18,7 +30,9 @@ granite.build:
               command: >-
                 file=foo1a.json; echo '{"artifact": "output_model1", "file": "foo1a"}' > $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
                 file=foo1b.json; echo '{"artifact": "output_model1", "file": "foo1b"}' > $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
-                file={{ bindings.input_model.binding.path }}; echo "LLMB_ARTIFACT_ID:output_model2 LLMB_ARTIFACT_PATH:$file"
+                file={{ bindings.input_model.binding.path }}; echo "LLMB_ARTIFACT_ID:output_model2 LLMB_ARTIFACT_PATH:$file";
+                echo "env input path: {{ bindings.env_input.binding.path }}";
+                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-env-output.txt"
             compute_config:
               num_gpus_per_node: 0
               total_memory_per_node: 1Gi

@@ -14,6 +14,13 @@ inject a built-in transfer step (`hfpull`, `cosrclone`, `lhpull` / `lhpush`) or 
 Each environment declares the stores it can reach in its `environment.yaml` `assetstores` block, and
 builds refer to them via `space://assetstores/<name>` URIs resolved through the space's `base_uris`.
 
+> **`env://` is always available.** The env-local (`env://`) store is registered implicitly for
+> **every** environment class — it does **not** need an `assetstores` entry in `environment.yaml`. Its
+> push/pull are shared-filesystem no-ops, so any backend can consume/produce `env://` artifacts. An
+> `environment.yaml` may still declare its own `env://` store on top if it wants a non-default
+> `load`/`push` mode. See [Env-local](#store-types-and-uri-schemes) below and
+> [`Environment._register_default_envstore`](../../src/gbserver/environment/environment.py).
+
 ## Store types and URI schemes
 
 | Store | URI scheme(s) | Maps a URI to… | Credentials (default secret name) |
@@ -28,9 +35,10 @@ builds refer to them via `space://assetstores/<name>` URIs resolved through the 
 
 Notes:
 
-- **Env-local (`env://`)** is used by bare-metal HPC backends (e.g. LSF/SLURM with shared GPFS): the
-  artifact is already on a filesystem the worker can see, so the store resolves the path directly and
-  transfers nothing.
+- **Env-local (`env://`)** models an artifact that already lives on a filesystem the worker can see, so
+  the store resolves the path directly and transfers nothing. Common on bare-metal HPC backends (e.g.
+  LSF/SLURM with shared GPFS), but supported by **all** environment classes and registered
+  automatically — no `environment.yaml` `assetstores` entry is required (see the note above).
 - **In-memory (`mem://`)** passes a producer's binding value (e.g. a service URL) verbatim to downstream
   consumers without touching a filesystem.
 

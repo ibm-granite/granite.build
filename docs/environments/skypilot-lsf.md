@@ -80,7 +80,12 @@ cloud, so any value set on the env or launcher has no effect. Omit it.
 ### `env_local` asset store
 
 LSF jobs write outputs directly to the shared filesystem (e.g. GPFS), so outputs are registered with
-the `env_local` no-op pull/push rather than transferred. Output URIs use the `env://` scheme.
+the no-op `env://` pull/push rather than transferred. Output URIs use the `env://` scheme.
+
+The `env://` store is registered implicitly for **every** environment, so the `assetstores` block below
+is **optional** — `env://` inputs/outputs work without it. Declare it only to pin a specific `load`/`push`
+`mode` (e.g. the explicit `env_local` mode shown here). See
+[Asset stores](../asset-stores/README.md#store-types-and-uri-schemes).
 
 ## Example `environment.yaml` (LSF)
 
