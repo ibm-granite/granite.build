@@ -407,6 +407,43 @@ async def test_push_asset_hfstore_uses_cached_resource_group_id(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_push_asset_hfstore_best_effort_on_resolve_failure(tmp_path):
+    """A failed resource-group resolution does not abort the push.
+
+    In standalone the local user's token typically can't resolve the id via the
+    HF API. The push must proceed with resource_group_id=None (matching
+    pre-cache behavior) rather than raising.
+    """
+    src = tmp_path / "model.bin"
+    src.write_bytes(b"weights")
+    store = MagicMock()
+    store.get_secrets.return_value = {"HF_TOKEN": "tok"}
+    store.resolve_token.return_value = "tok"
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+    with (
+        patch(
+            "gbserver.environment.local_assets.resolve_space_resource_group_id",
+            side_effect=ValueError("cannot resolve without admin token"),
+        ),
+        patch.object(HfURI, "push", return_value=True) as mock_push,
+    ):
+        result = push_asset_hfstore(
+            src=str(src),
+            binding_id="my-output",
+            uri=uri,
+            assetstore=store,
+        )
+
+    assert result is uri
+    mock_push.assert_called_once_with(
+        src,
+        commit_message="Upload via gbserver [build= target= output=my-output]",
+        resource_group_id=None,
+    )
+
+
+@pytest.mark.asyncio
 async def test_push_asset_hfstore_raises_on_empty_uri(tmp_path):
     """ValueError is raised when uri is None."""
     with pytest.raises(ValueError, match="Empty uri"):
