@@ -1,0 +1,13 @@
+name: env-local
+# The env:// (Envstore) asset store: an artifact that already lives on a
+# filesystem the environment can reach. Push/pull are no-ops (no transfer), so
+# every environment supports it — gbserver registers this store implicitly for
+# all environments, preferring the space's own space://assetstores/env-local and
+# falling back to THIS bundled default when the space doesn't define one (see
+# Environment._register_default_envstore). Not required in each environment.yaml.
+#
+# NOTE: the directory is named `env-local` (not `env`) on purpose — a bare `env`
+# collides with the common `ENV/` .gitignore rule on case-insensitive
+# filesystems (macOS), which would silently untrack this file.
+base_uri: "env://"
+config: {}
