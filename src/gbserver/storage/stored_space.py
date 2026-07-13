@@ -18,6 +18,8 @@
 Storing space metadata in persistent storage.
 """
 
+from typing import Optional
+
 from gbserver.storage.storage import BaseStoredItem
 
 
@@ -29,6 +31,7 @@ class StoredSpace(BaseStoredItem):
 
     name: str
     git_repo_uri: str
-    lakehouse_namespace: (
-        str  # TODO: this should not be here. instead from the space.yaml
-    )
+    # TODO: this should not be here. instead from the space.yaml.
+    # Optional so that records stored without it (and future records that omit
+    # it) deserialize cleanly in both directions.
+    lakehouse_namespace: Optional[str] = None
