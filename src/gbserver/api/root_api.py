@@ -34,7 +34,7 @@ from gbserver.api.builds import builds_api
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
-from gbserver.api.openapi_security import add_bearer_auth, enable_api
+from gbserver.api.openapi_security import enable_api
 from gbserver.api.secrets import secrets_api
 from gbserver.api.spaces import spaces_api
 from gbserver.types.constants import (
@@ -87,8 +87,9 @@ enable_api(root_api, f"{API_BASE_PATH}/node-health", node_health_api)
 enable_api(root_api, f"{API_BASE_PATH}/secrets", secrets_api)
 enable_api(root_api, f"{API_BASE_PATH}/spaces", spaces_api)
 
-# root_api is the parent app (not mounted), so wire its own Swagger auth directly.
-add_bearer_auth(root_api)
+# root_api is the top-level app (never mounted), so advertise the scheme on it
+# directly — no mount, just the Swagger auth wiring.
+enable_api(root_api)
 
 # ── Analytics (optional gb_ui_backend extra) ───────────────────────────────────
 # Included directly (not mounted as a separate ASGI app) so these routes run

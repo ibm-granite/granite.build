@@ -31,6 +31,8 @@ routing, validation, or the actual auth decision, which remains the middleware's
 sole responsibility.
 """
 
+from typing import Optional
+
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 
@@ -83,19 +85,29 @@ def add_bearer_auth(app: FastAPI) -> None:
 
 def enable_api(
     parent: FastAPI,
-    path: str,
-    sub_api: FastAPI,
+    path: str = "",
+    sub_api: Optional[FastAPI] = None,
     *,
     advertise_auth: bool = True,
 ) -> None:
-    """Mount *sub_api* under *parent* at *path* and, unless disabled, advertise
-    the Bearer-token scheme on it so its ``/docs`` shows an Authorize button.
+    """Wire up an API app's Swagger auth, and optionally mount it.
 
-    Keeps the mount and the Swagger-auth wiring in one place so the two can't
-    drift apart. Pass ``advertise_auth=False`` for sub-apps whose routes
+    Two forms:
+
+    * ``enable_api(parent, path, sub_api)`` — mount *sub_api* under *parent* at
+      *path*, then advertise the Bearer-token scheme on it.
+    * ``enable_api(parent)`` — advertise the scheme on *parent* itself, for the
+      top-level app that is never mounted. Nothing is mounted.
+
+    Keeping both the mount and the Swagger-auth wiring behind this one function
+    means an API app can't be added without its auth advertisement being
+    considered, and ``root_api.py`` never has to reach for ``add_bearer_auth``
+    directly. Pass ``advertise_auth=False`` for apps whose routes
     ``AuthMiddleware`` exempts from authentication (e.g. the login flow), so the
     docs don't claim a token is required where the server ignores it.
     """
-    parent.mount(path, sub_api)
+    target = parent if sub_api is None else sub_api
+    if sub_api is not None:
+        parent.mount(path, sub_api)
     if advertise_auth:
-        add_bearer_auth(sub_api)
+        add_bearer_auth(target)

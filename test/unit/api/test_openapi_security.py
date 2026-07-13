@@ -100,3 +100,12 @@ class TestEnableApi:
         enable_api(parent, "/api/v1/auth", sub, advertise_auth=False)
         assert any(getattr(r, "path", None) == "/api/v1/auth" for r in parent.routes)
         assert "security" not in sub.openapi()
+
+    def test_parent_only_advertises_without_mounting(self):
+        """enable_api(parent) advertises on the top-level app and mounts nothing."""
+        parent = _app_with_route()
+        before = {getattr(r, "path", None) for r in parent.routes}
+        enable_api(parent)
+        after = {getattr(r, "path", None) for r in parent.routes}
+        assert before == after  # no new mount
+        assert _SCHEME in parent.openapi()["components"]["securitySchemes"]
