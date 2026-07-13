@@ -24,6 +24,7 @@ _This repository is currently in alpha. The code and documentation are under act
 - [CLI](#cli)
 - [REST API](#rest-api)
 - [Documentation](#documentation)
+- [Coding agent skills](#coding-agent-skills)
 - [Try the demos](#try-the-demos)
 - [Contributing](#contributing)
 - [License](#license)
@@ -192,6 +193,7 @@ For the full schema, see [`docs/builds/build-yaml-reference.md`](docs/builds/bui
 | `test/` | Test suites for all components. |
 | `scripts/` | Helper scripts including the standalone and SLURM demos. |
 | `k8s/` | Helm charts for production Kubernetes deployment. |
+| `.claude/` | Coding-agent config: [`skills/`](.claude/skills/) (Agent Skills a coding agent uses to drive granite.build — see [below](#coding-agent-skills)) and [`commands/`](.claude/commands/) (repo slash commands). |
 | `Makefile` | `make standalone-venv`, `make demo-venv`, `make image`, format/lint targets. |
 
 ## Features
@@ -345,6 +347,18 @@ The [`docs/`](docs/) directory has complete reference material. Three reading pa
 - **Writing a build** → [`build.yaml` reference](docs/builds/build-yaml-reference.md), [CLI reference](docs/cli/gb-cli-reference.md), [HuggingFace push](docs/builds/hf-push.md), [build features](docs/builds/README.md#advanced) (retry, target reuse, lineage), [gbtest](docs/cli/gbtest-cli-reference.md).
 - **Running gbserver** → [environments](docs/environments/README.md), [configuration](docs/configuration/README.md), [REST API](docs/rest-api/README.md), [troubleshooting](docs/help/troubleshooting.md).
 - **Changing gbserver** → [architecture diagram](docs/architecture/arch-diagram.md), [environment classes](docs/architecture/environment-classes.md).
+
+## Coding agent skills
+
+This repo ships **Agent Skills** under [`.claude/skills/`](.claude/skills/) so a coding agent working in a granite.build checkout can operate the tool without you re-explaining it each time. **Claude Code** discovers them automatically when your working directory is inside the repo — no install; invoke one explicitly with `/<name>`, or let the agent select it from your request based on the skill's description.
+
+| Skill | What it does |
+|-------|--------------|
+| [`run-gbserver`](.claude/skills/run-gbserver/SKILL.md) | Clone, set up, and start the standalone `gbserver` — the prerequisite for creating, validating, or running any build. |
+| [`create-build`](.claude/skills/create-build/SKILL.md) | Author a new `build.yaml` (steps, targets, inputs/outputs, compute) for training, inference/serving, data generation, or evaluation. |
+| [`gb-docs`](.claude/skills/gb-docs/SKILL.md) | Look up the in-repo [`docs/`](docs/) (schema, CLI, concepts, troubleshooting) and answer grounded in them. |
+
+Each skill is a `SKILL.md` (`name` + `description` + instructions) in the portable [Agent Skills](https://agentskills.io) format; the agent matches on the `description` to decide when to use it.
 
 ## Try the demos
 

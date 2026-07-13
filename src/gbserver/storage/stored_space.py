@@ -18,6 +18,8 @@
 Storing space metadata in persistent storage.
 """
 
+from typing import Optional
+
 from gbserver.storage.storage import BaseStoredItem
 
 
@@ -32,3 +34,11 @@ class StoredSpace(BaseStoredItem):
     lakehouse_namespace: (
         str  # TODO: this should not be here. instead from the space.yaml
     )
+    # Cached HuggingFace Enterprise resource group id for this space's DEFAULT
+    # resource group (the ``gbspace-<space>`` group derived from the space name).
+    # Populated from create-spaces YAML or lazily written back after a successful
+    # HF API lookup (see gbserver.spaces.resource_group). Only the default group's
+    # id is cached here; an explicitly-requested non-default group is never stored.
+    # Stored inside the existing ``json`` column, so no schema migration / new SQL
+    # column is required.
+    hf_default_resource_group_id: Optional[str] = None

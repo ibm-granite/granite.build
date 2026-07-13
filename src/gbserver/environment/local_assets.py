@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from gbserver.spaces.resource_group import resolve_space_resource_group_id
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -162,6 +163,48 @@ def push_asset_hfstore(
     space_name = space_config.get("space", {}).get("name") or None
 
     space_name = "public"  # TODO: use the right thing here.
+
+    # Resolve the resource group id server-side (table-first: cached default id
+    # on the space row, HF API only as a fallback + write-back) and hand HfURI
+    # the resolved id. This lets the standalone/local push reuse a cached id
+    # without an admin-scoped HF token.
+    #
+    # Fall back to the server HF token when no assetstore is supplied.
+    from gbserver.types.constants import get_hf_token
+
+    token = (
+        assetstore.resolve_token(hfuri) if assetstore is not None else get_hf_token()
+    )
+    # Best-effort: in standalone the local user's token typically CANNOT resolve
+    # the resource group id via the HF API (that needs org-admin scope), so a
+    # miss here is expected. Don't abort — log and push with resource_group_id
+    # = None, matching pre-cache behavior: HfURI.push -> create_repo(exist_ok=
+    # True) succeeds for an existing repo, and surfaces its own error otherwise.
+    # (A future enterprise-vs-non-enterprise split will remove the need for an
+    # id entirely on the non-enterprise path.)
+    resource_group_id = None
+    try:
+        resource_group_id = resolve_space_resource_group_id(
+            space_name=space_name,
+            organization=hfuri.get_owner(),
+            token=token,
+            host=hfuri.get_host(),
+        )
+    except Exception as e:
+        logger.warning(
+            "Could not resolve HuggingFace resource group id for space '%s' "
+            "(pushing without one): %s",
+            space_name,
+            e,
+        )
+
     logger.info("Pushing %s → %s (space=%s)", src, URI.get_uristr(hfuri), space_name)
-    hfuri.push(src, commit_message=commit_message, space_name=space_name)
+    # Pass only the pre-resolved id (not space_name): HfURI.push would otherwise
+    # re-derive the name and hit the admin-gated /resource-groups endpoint to
+    # cross-check, defeating the cache. With no name/space, push uses the id as-is.
+    hfuri.push(
+        src,
+        commit_message=commit_message,
+        resource_group_id=resource_group_id,
+    )
     return hfuri

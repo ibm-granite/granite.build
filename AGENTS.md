@@ -206,7 +206,6 @@ GB_UI_DATABASE_URL="postgresql+asyncpg://user:pass@host/db" gbserver standalone
 | `src/gb_ui_backend/` | Analytics service — FastAPI routers for charts, AI analysis; included directly into gbserver |
 | `src/gb_ui_backend/config.py` | Pydantic settings — all `GB_UI_*` env vars |
 | `src/gbserver/api/root_api.py` | Includes gb_ui_backend's routers under `/api/analytics/*` and calls its startup init |
-| `src/gbserver/api/frontend_routes.py` | gbserver endpoints: `/api/config`, `/api/environments` |
 | `src/gbserver/static/ui/` | Compiled frontend served by gbserver at runtime |
 
 ### Key env vars (frontend / analytics)

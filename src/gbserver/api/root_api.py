@@ -31,7 +31,6 @@ from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
 from gbserver.api.builds import builds_api
-from gbserver.api.frontend_routes import frontend_router
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
@@ -71,8 +70,6 @@ def read_root():
         "git_commit": GBSERVER_GIT_COMMIT,
     }
 
-
-root_api.include_router(frontend_router)
 
 # Mount each sub-app and advertise the Bearer-token scheme on it, so its /docs
 # page shows an Authorize button that sends the header on "Try it out". This is

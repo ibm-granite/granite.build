@@ -41,6 +41,47 @@ logger = get_logger(__name__)
 
 _LOCALHOST_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
 
+# Exact paths that never require authentication, regardless of auth mode.
+#
+# Next.js's static export also emits a 404/index.html, but it's unreachable
+# in practice: root_api's SPA-fallback 404 handler always serves
+# dashboard/index.html for unknown paths (see _spa_fallback), never
+# 404/index.html, so there's no route to allow-list here.
+_PUBLIC_EXACT_PATHS = frozenset(
+    {
+        "/",
+        "/docs",
+        "/openapi.json",
+        "/redoc",
+        "/docs/oauth2-redirect",
+    }
+)
+
+# Path prefixes that never require authentication. The Next.js static-export
+# frontend (see root_api.py's StaticFiles mount, SPA fallback, and RSC .txt
+# payload middleware) is served entirely under /dashboard/* and /_next/*.
+# New pages under frontend/app/dashboard/ are covered automatically by the
+# /dashboard prefix below; a new *top-level* page outside /dashboard needs a
+# new prefix here. /api/v1/auth is the OIDC pre-auth login flow (see
+# auth_routes.py) — deliberately public.
+_PUBLIC_PATH_PREFIXES = ("/api/v1/auth", "/dashboard", "/_next")
+
+
+def _is_public_path(path: str) -> bool:
+    """Authenticate everything except this explicit allow-list.
+
+    Deny-by-default: a path must be named here to skip auth. This is the
+    inverse of an allow-everything-except-/api/ check — a future endpoint
+    registered outside this allow-list requires auth by default instead of
+    silently being public.
+    """
+    if path in _PUBLIC_EXACT_PATHS:
+        return True
+    return any(
+        path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + ".")
+        for prefix in _PUBLIC_PATH_PREFIXES
+    )
+
 
 def _make_synthetic_user(login: str) -> User:
     """Create a synthetic User object for API key / localhost auth."""
@@ -134,19 +175,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "auth middleware headers: %s", self._redact_headers(request.headers)
         )
 
-        # Only /api/* paths require authentication. Static assets, page routes,
-        # /docs, /openapi.json, and the SPA fallback are all public.
-        if not request.url.path.startswith("/api/"):
-            response = await call_next(request)
-            return response
-
-        # Allow auth proxy endpoints (login flow) without authentication
-        if request.url.path.startswith("/api/v1/auth/"):
-            response = await call_next(request)
-            return response
-
-        # Allow frontend bootstrap endpoints — client needs these before it has a token
-        if request.url.path in ("/api/config", "/api/environments"):
+        # Only GET/HEAD requests to the explicit allow-list skip auth — every
+        # allow-listed path is GET-only by nature (docs, config bootstrap,
+        # OIDC redirects, static/SPA serving), so this also catches a future
+        # mutating endpoint accidentally registered under an otherwise-public
+        # prefix (e.g. POST /dashboard/something).
+        if request.method in ("GET", "HEAD") and _is_public_path(request.url.path):
             response = await call_next(request)
             return response
 

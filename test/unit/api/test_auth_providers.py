@@ -59,15 +59,17 @@ def _make_test_jwt(private_key, claims: dict, headers: dict = None) -> str:
 
 
 def _make_app() -> FastAPI:
-    """Build a minimal FastAPI app with AuthMiddleware and a /api/test endpoint.
+    """Build a minimal FastAPI app with AuthMiddleware and a /test endpoint.
 
-    The probe endpoint must live under /api/ — AuthMiddleware only guards
-    /api/* paths (everything else is public frontend/static content).
+    AuthMiddleware authenticates everything except an explicit allow-list
+    (see _is_public_path in gbserver.api.auth) — /test deliberately isn't on
+    that list, and doesn't need to live under /api/ to be protected: auth is
+    the default everywhere now, not just under /api/.
     """
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
 
-    @app.get("/api/test")
+    @app.get("/test")
     async def test_endpoint(request: Request):
         user = request.state.data["user"]
         return JSONResponse(
@@ -85,6 +87,16 @@ def _make_app() -> FastAPI:
     @app.get("/dashboard")
     async def frontend_page_endpoint():
         return JSONResponse(content={"page": True})
+
+    @app.post("/dashboard")
+    async def frontend_page_post_endpoint(request: Request):
+        user = request.state.data["user"]
+        return JSONResponse(content={"login": user.login})
+
+    @app.get("/some/unregistered/path")
+    async def unregistered_endpoint(request: Request):
+        user = request.state.data["user"]
+        return JSONResponse(content={"login": user.login})
 
     return app
 
@@ -463,7 +475,7 @@ class TestAuthMiddlewareMultiProvider:
             with patch("gbserver.api.auth_providers.requests") as mock_requests:
                 mock_requests.get.return_value = mock_response
                 response = client.get(
-                    "/api/test",
+                    "/test",
                     headers={"Authorization": "Bearer ghp_validtoken123"},
                 )
 
@@ -478,7 +490,7 @@ class TestAuthMiddlewareMultiProvider:
         with patch.dict(os.environ, env, clear=False):
             app = _make_app()
             client = TestClient(app)
-            response = client.get("/api/test")
+            response = client.get("/test")
         assert response.status_code == 401
 
     def test_analytics_path_requires_auth(self):
@@ -493,10 +505,12 @@ class TestAuthMiddlewareMultiProvider:
             response = client.get("/api/analytics/builds/failure-trends/history")
         assert response.status_code == 401
 
-    def test_non_api_path_bypasses_auth(self):
-        """Paths outside /api/ (frontend pages, static assets) are public
+    def test_known_frontend_path_bypasses_auth(self):
+        """Known frontend page paths (/dashboard and friends) are public
         regardless of auth mode — the client needs to load the page before
-        it has a token."""
+        it has a token. This is an explicit allow-list entry, not
+        "everything outside /api/" — see test_unlisted_non_api_path_requires_auth
+        below for the contrast."""
         env = {"GBSERVER_AUTH_MODE": "github"}
         with patch.dict(os.environ, env, clear=False):
             app = _make_app()
@@ -504,6 +518,27 @@ class TestAuthMiddlewareMultiProvider:
             response = client.get("/dashboard")  # no Authorization header
         assert response.status_code == 200
         assert response.json() == {"page": True}
+
+    def test_unlisted_non_api_path_requires_auth(self):
+        """A non-/api/ path that ISN'T on the allow-list must still require
+        auth — this is the regression test for the deny-by-default fix.
+        Under the old "not /api/" bypass, this would have been public."""
+        env = {"GBSERVER_AUTH_MODE": "github"}
+        with patch.dict(os.environ, env, clear=False):
+            app = _make_app()
+            client = TestClient(app)
+            response = client.get("/some/unregistered/path")
+        assert response.status_code == 401
+
+    def test_post_to_public_frontend_path_requires_auth(self):
+        """A non-GET/HEAD request to an otherwise-public path must still
+        require auth — the allow-list is GET/HEAD-only by design."""
+        env = {"GBSERVER_AUTH_MODE": "github"}
+        with patch.dict(os.environ, env, clear=False):
+            app = _make_app()
+            client = TestClient(app)
+            response = client.post("/dashboard")
+        assert response.status_code == 401
 
     def test_docs_allowed_without_auth(self):
         """Docs endpoint should work without authentication in any mode."""

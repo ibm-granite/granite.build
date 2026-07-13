@@ -33,8 +33,26 @@ def mock_hfuri():
     uri.get_repo.return_value = "myrepo"
     uri.get_revision.return_value = "main"
     uri.get_hf_type.return_value = "model"
+    uri.get_host.return_value = "huggingface.co"
     uri.__str__ = lambda self: "hf://models/myorg/myrepo"
     return uri
+
+
+@pytest.fixture
+def mock_resolve_rg():
+    """Patch the server-side resource group resolver used by pushasset_hfstore.
+
+    Resolution is delegated to
+    ``gbserver.spaces.resource_group.resolve_space_resource_group_id`` (imported
+    into the skypilot env module); patch it there so tests never touch storage
+    or the HF API. Yields the mock so tests can tune the return value / assert
+    call behavior.
+    """
+    with patch(
+        "gbserver.environment.skypilot.resolve_space_resource_group_id",
+        return_value=None,
+    ) as mock:
+        yield mock
 
 
 def _hfstore_mock(token: str = "tok-abc"):
@@ -273,10 +291,11 @@ class TestGetHfCacheDir:
 
 class TestPushassetHfstore:
     @pytest.mark.asyncio
-    async def test_returns_build_target_step_config(self, skypilot_env, mock_hfuri):
+    async def test_returns_build_target_step_config(
+        self, skypilot_env, mock_hfuri, mock_resolve_rg
+    ):
         """pushasset_hfstore returns BuildTargetStepConfig with hfpush_config."""
         assetstore = _hfstore_mock()
-        mock_hfuri.resolve_resource_group_id.return_value = None
 
         step_config = await skypilot_env.pushasset_hfstore(
             binding={"path": "/workspace/output/model"},
@@ -294,10 +313,11 @@ class TestPushassetHfstore:
         assert hfpush_config["private"] is True
 
     @pytest.mark.asyncio
-    async def test_injects_hf_token_into_launcher_envs(self, skypilot_env, mock_hfuri):
+    async def test_injects_hf_token_into_launcher_envs(
+        self, skypilot_env, mock_hfuri, mock_resolve_rg
+    ):
         """pushasset_hfstore puts HF_TOKEN under config.launcher_config.envs."""
         assetstore = _hfstore_mock(token="my-push-token")
-        mock_hfuri.resolve_resource_group_id.return_value = None
 
         step_config = await skypilot_env.pushasset_hfstore(
             binding={"path": "/workspace/output"},
@@ -328,10 +348,11 @@ class TestPushassetHfstore:
             )
 
     @pytest.mark.asyncio
-    async def test_private_flag_from_output_config(self, skypilot_env, mock_hfuri):
+    async def test_private_flag_from_output_config(
+        self, skypilot_env, mock_hfuri, mock_resolve_rg
+    ):
         """pushasset_hfstore picks up private=False from output_config.store_push."""
         assetstore = _hfstore_mock()
-        mock_hfuri.resolve_resource_group_id.return_value = None
 
         output_config = MagicMock()
         output_config.space_name = None
@@ -349,12 +370,12 @@ class TestPushassetHfstore:
         assert step_config.config["hfpush_config"]["private"] is False
 
     @pytest.mark.asyncio
-    async def test_resource_group_id_from_output_config(self, skypilot_env, mock_hfuri):
-        """Explicit resource_group_id from output_config skips hfuri.resolve_resource_group_id."""
+    async def test_resource_group_id_from_output_config(
+        self, skypilot_env, mock_hfuri, mock_resolve_rg
+    ):
+        """Explicit resource_group_id from output_config skips the RG resolver."""
         assetstore = _hfstore_mock()
-        mock_hfuri.resolve_resource_group_id.side_effect = AssertionError(
-            "should not be called"
-        )
+        mock_resolve_rg.side_effect = AssertionError("should not be called")
 
         output_config = MagicMock()
         output_config.space_name = None
@@ -373,12 +394,12 @@ class TestPushassetHfstore:
 
         hfpush_config = step_config.config["hfpush_config"]
         assert hfpush_config["hf"]["resource_group_id"] == "rg-explicit-123"
+        mock_resolve_rg.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_step_uri_override(self, skypilot_env, mock_hfuri):
+    async def test_step_uri_override(self, skypilot_env, mock_hfuri, mock_resolve_rg):
         """storepush_config.config.step_uri overrides the default builtin uri."""
         assetstore = _hfstore_mock()
-        mock_hfuri.resolve_resource_group_id.return_value = None
 
         storepush_config = MagicMock()
         storepush_config.config = {"step_uri": "file:///custom/hfpush"}
@@ -395,12 +416,11 @@ class TestPushassetHfstore:
 
     @pytest.mark.asyncio
     async def test_default_step_uri_points_to_builtin_hfpush(
-        self, skypilot_env, mock_hfuri
+        self, skypilot_env, mock_hfuri, mock_resolve_rg
     ):
         """Default step_uri is `space://steps/hfpush` so the resolver picks the
         env-keyed split (`builtins/steps/skypilot/hfpush/`) at lookup time."""
         assetstore = _hfstore_mock()
-        mock_hfuri.resolve_resource_group_id.return_value = None
 
         step_config = await skypilot_env.pushasset_hfstore(
             binding={"path": "/workspace/output/model"},
