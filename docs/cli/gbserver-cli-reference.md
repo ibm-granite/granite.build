@@ -51,7 +51,7 @@ Both accept `--cancel_on_error` and `--user-name`.
 | Command | Purpose |
 |---------|---------|
 | `gbserver add-users <users_file>` | Add users to spaces from a YAML file (`spaces: <name>: [{username, role}]`). |
-| `gbserver create-spaces [--spaces-path <f>] [--clear] [--replace] [--force]` | Create the predefined spaces (registers them in the `gb_spaces` table). |
+| `gbserver create-spaces [--spaces-path <f>] [--clear] [--replace] [--force]` | Create the predefined spaces (registers them in the `gb_spaces` table). Each space in the YAML accepts `name`, `git_repo_uri`, `lakehouse_namespace`, and an optional `hf_default_resource_group_id` (the HF Enterprise resource group id for the space's default group, cached for HF pushes; no HF API lookup is done here). |
 | `gbserver admin-tables --operation <op> [--dry-run]` | Repair admin metadata: `fail-zombie-builds`, `fix-zombie-targets`, `fix-zombie-steps`, `fail-pending-without-pr`. Prompts for confirmation. |
 
 `rest-server-worker` is an internal pseudo-command used when running the REST server with multiple

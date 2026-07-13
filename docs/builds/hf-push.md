@@ -152,7 +152,7 @@ must agree (the resolver raises `ValueError` on mismatch).
 | 1 | `store_push.config.hf.resource_group_id` (build.yaml) | Per-output pre-resolved id. No HF API call. |
 | 2 | `store_push.config.hf.resource_group_name` (build.yaml) | Per-output name. Resolved via HF API. |
 | 3 | `environment.yaml` → `assetstores[].push[].config.hf.resource_group_id` / `resource_group_name` | Environment-level fallback. |
-| 4 | Build `space_name` (automatic) | Populated at runtime from the g.b space; converted to resource group name by prepending `gbspace-`, then resolved via HF API. This is the default that makes `store_push` unnecessary in most cases. |
+| 4 | Build `space_name` (automatic) | Populated at runtime from the g.b space. The server first uses the `hf_default_resource_group_id` **cached on the space row** (`gb_spaces` table); if absent, the space name is converted to a resource group name by prepending `gbspace-` and resolved via the HF API, then the resolved id is written back onto the space row. Only the space's **default** group is cached — an explicit `resource_group_name` for a *different* group bypasses the cache and is resolved (and cross-checked) via the HF API without being cached. This is the default that makes `store_push` unnecessary in most cases. |
 
 If none of the above yield a value, no resource group is attached to the push.
 
@@ -160,9 +160,21 @@ If none of the above yield a value, no resource group is attached to the push.
 > populated at runtime from the g.b space the build belongs to. It appears here
 > only because it contributes to the final resource-group resolution.
 
-The resolution itself is implemented in
-[`HfURI.resolve_resource_group_id`](../../src/gbcommon/uri/hf.py) and called from
-both the K8s and LSF push paths before the step is dispatched.
+> **Why the space-table cache?** The HF API that maps a resource group *name* to
+> its *id* (`GET /api/organizations/{org}/resource-groups`) only lists groups the
+> caller can *manage* — effectively org-admin scope. A `contributor`/`write` user
+> cannot resolve the id even though they can push to the group. Caching the id on
+> the space row (populated by `create-spaces` or written back after one admin-token
+> lookup) lets non-admin CLI users and standalone servers resolve it without an
+> admin token. The id for a name is effectively immutable, so it is not
+> re-verified at runtime.
+
+The space-table lookup + HF fallback + write-back is implemented in
+[`resolve_space_resource_group_id`](../../src/gbserver/spaces/resource_group.py),
+which wraps the HF-only resolver
+[`HfURI.resolve_resource_group_id_for_org`](../../src/gbcommon/uri/hf.py). It is
+called from the K8s, LSF, and SkyPilot push paths (and the CLI-facing
+`/hf/resource-group` endpoint) before the step is dispatched.
 
 ---
 

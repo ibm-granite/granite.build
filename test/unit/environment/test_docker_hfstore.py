@@ -239,7 +239,13 @@ async def test_pushasset_hfstore_calls_hfuri_push(
     binding = {"path": str(src)}
     uri = HfURI.from_parts(owner="org", repo="my-model", hf_type=HfType.MODEL)
 
-    with patch.object(HfURI, "push", return_value=True) as mock_push:
+    with (
+        patch(
+            "gbserver.environment.local_assets.resolve_space_resource_group_id",
+            return_value="rg-id",
+        ),
+        patch.object(HfURI, "push", return_value=True) as mock_push,
+    ):
         result = await docker_env.pushasset_hfstore(
             binding=binding,
             uri=uri,
@@ -247,10 +253,13 @@ async def test_pushasset_hfstore_calls_hfuri_push(
         )
 
     assert result is uri
+    # The resource group id is resolved server-side (table-first) BEFORE the push
+    # and passed as a pre-resolved id; space_name is intentionally NOT forwarded,
+    # so HfURI.push does not re-derive the name and re-hit the admin-gated HF API.
     mock_push.assert_called_once_with(
         src,
         commit_message="Upload via gbserver [build= target= output=]",
-        space_name="public",
+        resource_group_id="rg-id",
     )
 
 
@@ -357,6 +366,81 @@ async def test_push_asset_hfstore_standalone_succeeds(tmp_path):
 
     assert result is uri
     mock_push.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_push_asset_hfstore_uses_cached_resource_group_id(tmp_path):
+    """The standalone push path resolves the id table-first and forwards it.
+
+    Guards against regressing to the admin-token-only path: the id comes from
+    resolve_space_resource_group_id (cache-aware) and is passed to HfURI.push as
+    a pre-resolved id, with no space_name (which would re-hit the HF API).
+    """
+    src = tmp_path / "model.bin"
+    src.write_bytes(b"weights")
+    store = MagicMock()
+    store.get_secrets.return_value = {"HF_TOKEN": "tok"}
+    store.resolve_token.return_value = "tok"
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+    with (
+        patch(
+            "gbserver.environment.local_assets.resolve_space_resource_group_id",
+            return_value="cached-rg-id",
+        ) as mock_resolve,
+        patch.object(HfURI, "push", return_value=True) as mock_push,
+    ):
+        result = push_asset_hfstore(
+            src=str(src),
+            binding_id="my-output",
+            uri=uri,
+            assetstore=store,
+        )
+
+    assert result is uri
+    mock_resolve.assert_called_once()
+    mock_push.assert_called_once_with(
+        src,
+        commit_message="Upload via gbserver [build= target= output=my-output]",
+        resource_group_id="cached-rg-id",
+    )
+
+
+@pytest.mark.asyncio
+async def test_push_asset_hfstore_best_effort_on_resolve_failure(tmp_path):
+    """A failed resource-group resolution does not abort the push.
+
+    In standalone the local user's token typically can't resolve the id via the
+    HF API. The push must proceed with resource_group_id=None (matching
+    pre-cache behavior) rather than raising.
+    """
+    src = tmp_path / "model.bin"
+    src.write_bytes(b"weights")
+    store = MagicMock()
+    store.get_secrets.return_value = {"HF_TOKEN": "tok"}
+    store.resolve_token.return_value = "tok"
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+    with (
+        patch(
+            "gbserver.environment.local_assets.resolve_space_resource_group_id",
+            side_effect=ValueError("cannot resolve without admin token"),
+        ),
+        patch.object(HfURI, "push", return_value=True) as mock_push,
+    ):
+        result = push_asset_hfstore(
+            src=str(src),
+            binding_id="my-output",
+            uri=uri,
+            assetstore=store,
+        )
+
+    assert result is uri
+    mock_push.assert_called_once_with(
+        src,
+        commit_message="Upload via gbserver [build= target= output=my-output]",
+        resource_group_id=None,
+    )
 
 
 @pytest.mark.asyncio
