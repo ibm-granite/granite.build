@@ -32,14 +32,18 @@ environment_configs:
             event_fields:
             - field_name: msg
               field_regex: .*
-          # Artifact detection: a line of the form
+          # Artifact detection: a line that BEGINS with
           #   LLMB_ARTIFACT_ID:<output-name> LLMB_ARTIFACT_PATH:<path>
           # registers <path> as the artifact for the named output binding. Only
           # commands that emit these markers produce artifacts; all others are
           # unaffected. Mirrors the Skypilot/LSF `command` step so env:// (and
           # other) outputs can be registered from an arbitrary bash command.
+          # The `^` anchor is required: command.sh echoes the full command back
+          # ("command step start: <cmd>"), so a command that contains the marker
+          # text would otherwise be matched on that diagnostic line too — and the
+          # trailing shell quote there breaks the `binding` JSON template.
           - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+            line_regex: "^LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
             is_json: false
             event_fields:
             - field_name: binding_id
