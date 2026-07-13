@@ -22,13 +22,6 @@ assetstores:
     push:
       - mode: default
         config: {}
-  - store_uri: space://assetstores/env-local
-    load:
-      - mode: env_local
-        config: {}
-    push:
-      - mode: env_local
-        config: {}
   - store_uri: space://assetstores/hf
     load:
       - mode: hf_pull

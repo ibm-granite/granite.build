@@ -44,6 +44,9 @@ every worker (e.g. `/mnt/shared`). See [skypilot.md](skypilot.md#shared_workdir)
 
 ## Example `environment.yaml`
 
+The `env://` store is registered implicitly for **every** environment, so it needs no `assetstores`
+entry — declare a store below only for the schemes you actually configure (e.g. `hf`).
+
 ```yaml
 name: sky-kube
 type: Skypilot
@@ -51,13 +54,6 @@ config:
   default_cloud: kubernetes
   idle_minutes_to_autostop: 0
 assetstores:
-  - store_uri: space://assetstores/env-local
-    load:
-      - mode: env_local
-        config: {}
-    push:
-      - mode: env_local
-        config: {}
   - store_uri: space://assetstores/hf
     load:
       - mode: hf_pull

@@ -75,14 +75,10 @@ assetstores:
                                      # else ~/.cache/gbserver/hf on the worker.
     push:
       - mode: hf_push
-  - store_uri: space://assetstores/env-local
-    load:
-      - mode: env_local             # No-op: output already on the shared FS (bare-metal HPC).
-        config: {}
-    push:
-      - mode: env_local
-        config: {}
 ```
+
+> `env://` (shared-filesystem, no-op push/pull) is registered implicitly for every environment, so it
+> needs no `assetstores` entry — add one only to pin a specific `env://` `load`/`push` `mode`.
 
 ### `shared_workdir`
 

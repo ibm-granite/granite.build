@@ -98,13 +98,14 @@ class TestSkyKubeEnvironmentYaml:
             data = yaml.safe_load(f)
         assert data["config"]["default_cloud"] == "kubernetes"
 
-    def test_assetstores_env_local(self):
+    def test_env_local_not_declared(self):
+        """env:// is registered implicitly for every environment
+        (Environment._register_default_envstore), so it must NOT be declared
+        explicitly here — guards against re-adding the redundant entry."""
         with open(self.ENV_PATH) as f:
             data = yaml.safe_load(f)
-        store = data["assetstores"][0]
-        assert store["store_uri"] == "space://assetstores/env-local"
-        assert store["load"][0]["mode"] == "env_local"
-        assert store["push"][0]["mode"] == "env_local"
+        uris = {s["store_uri"] for s in (data.get("assetstores") or [])}
+        assert "space://assetstores/env-local" not in uris
 
 
 class TestSkypilotManagedEnvironmentYaml:
@@ -136,13 +137,14 @@ class TestSkypilotManagedEnvironmentYaml:
             data = yaml.safe_load(f)
         assert data["config"]["default_cloud"] == "kubernetes"
 
-    def test_assetstores_env_local(self):
+    def test_env_local_not_declared(self):
+        """env:// is registered implicitly for every environment
+        (Environment._register_default_envstore), so it must NOT be declared
+        explicitly here — guards against re-adding the redundant entry."""
         with open(self.ENV_PATH) as f:
             data = yaml.safe_load(f)
-        store = data["assetstores"][0]
-        assert store["store_uri"] == "space://assetstores/env-local"
-        assert store["load"][0]["mode"] == "env_local"
-        assert store["push"][0]["mode"] == "env_local"
+        uris = {s["store_uri"] for s in (data.get("assetstores") or [])}
+        assert "space://assetstores/env-local" not in uris
 
 
 class TestMergedQuickstartAssets:
