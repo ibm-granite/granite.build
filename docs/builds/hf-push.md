@@ -152,7 +152,7 @@ must agree (the resolver raises `ValueError` on mismatch).
 | 1 | `store_push.config.hf.resource_group_id` (build.yaml) | Per-output pre-resolved id. No HF API call. |
 | 2 | `store_push.config.hf.resource_group_name` (build.yaml) | Per-output name. Resolved via HF API. |
 | 3 | `environment.yaml` → `assetstores[].push[].config.hf.resource_group_id` / `resource_group_name` | Environment-level fallback. |
-| 4 | Build `space_name` (automatic) | Populated at runtime from the g.b space. The server first uses the `resource_group_id` **cached on the space row** (`gb_spaces` table); if absent, the space name is converted to a resource group name by prepending `gbspace-` and resolved via the HF API, then the resolved id is written back onto the space row. This is the default that makes `store_push` unnecessary in most cases. |
+| 4 | Build `space_name` (automatic) | Populated at runtime from the g.b space. The server first uses the `hf_default_resource_group_id` **cached on the space row** (`gb_spaces` table); if absent, the space name is converted to a resource group name by prepending `gbspace-` and resolved via the HF API, then the resolved id is written back onto the space row. Only the space's **default** group is cached — an explicit `resource_group_name` for a *different* group bypasses the cache and is resolved (and cross-checked) via the HF API without being cached. This is the default that makes `store_push` unnecessary in most cases. |
 
 If none of the above yield a value, no resource group is attached to the push.
 

@@ -491,19 +491,27 @@ def push(
             # targeting a group other than the space's default).
             if not resource_group_id:
                 org = hf_organization or HF_ORGANIZATION_DEFAULT
+
                 # Resolve the space from the local cache (populated by
-                # `space list --all --refresh`). Prefer the resource_group_id
-                # cached on the space; only fall back to the server lookup
-                # (which needs the admin functional token) when it is absent.
+                # `space list --all --refresh`) to read its cached default
+                # resource group id. Use a non-fatal callback here: if the space
+                # can't be resolved locally (e.g. no profile yet on a fresh CLI),
+                # we must NOT exit — we fall through to the server-side lookup
+                # below with the raw --space value, which works without a cache.
+                def _quiet_resolve_callback(callback_event: str, callback_args: Dict):
+                    pass
+
                 global_space = resolve_space(
-                    artifact_client.github_token, space, callback=echo_callback
+                    artifact_client.github_token,
+                    space,
+                    callback=_quiet_resolve_callback,
                 )
                 resolved_space_name = space
                 if global_space is not None:
                     resolved_space_name = (
                         global_space.get("name") or resolved_space_name
                     )
-                    resource_group_id = global_space.get("resource_group_id")
+                    resource_group_id = global_space.get("hf_default_resource_group_id")
                 if not resource_group_id:
                     if not resolved_space_name:
                         click.echo(

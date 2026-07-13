@@ -164,17 +164,32 @@ def push_asset_hfstore(
 
     space_name = "public"  # TODO: use the right thing here.
 
-    # Resolve the resource group id server-side (table-first: cached id on the
-    # space row, HF API only as a fallback + write-back) and hand HfURI the
-    # resolved id. This keeps the standalone/local push path from requiring an
-    # admin-scoped HF token when the id is already cached on the space.
-    token = assetstore.resolve_token(hfuri) if assetstore is not None else None
-    resource_group_id = resolve_space_resource_group_id(
-        space_name=space_name,
-        organization=hfuri.get_owner(),
-        token=token,
-        host=hfuri.get_host(),
+    # Resolve the resource group id server-side (table-first: cached default id
+    # on the space row, HF API only as a fallback + write-back) and hand HfURI
+    # the resolved id. This keeps the standalone/local push path from requiring
+    # an admin-scoped HF token when the id is already cached on the space.
+    #
+    # Fall back to the server HF token when no assetstore is supplied, so a
+    # cache-miss fallback isn't attempted unauthenticated (which would fail).
+    from gbserver.types.constants import get_hf_token
+
+    token = (
+        assetstore.resolve_token(hfuri) if assetstore is not None else get_hf_token()
     )
+    try:
+        resource_group_id = resolve_space_resource_group_id(
+            space_name=space_name,
+            organization=hfuri.get_owner(),
+            token=token,
+            host=hfuri.get_host(),
+        )
+    except Exception as e:
+        # Surface a clean error rather than an uncaught ValueError from the HF
+        # resolver (e.g. an unauthenticated cache-miss fallback).
+        raise RuntimeError(
+            f"Failed to resolve HuggingFace resource group id for space "
+            f"'{space_name}': {e}"
+        ) from e
 
     logger.info("Pushing %s → %s (space=%s)", src, URI.get_uristr(hfuri), space_name)
     # Pass only the pre-resolved id (not space_name): HfURI.push would otherwise

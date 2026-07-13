@@ -29,7 +29,7 @@ def user_spaces_list(username: str) -> list[dict]:
 
     Returns:
         List of dicts with keys: uuid, name, git_repo_uri, lakehouse_namespace,
-        resource_group_id, is_admin
+        hf_default_resource_group_id, is_admin
         Always includes the "public" space (with is_admin=False) if it exists
         in storage and the user doesn't already have an explicit membership.
     """
@@ -53,7 +53,7 @@ def user_spaces_list(username: str) -> list[dict]:
             "name": space.space.name,
             "git_repo_uri": space.space.git_repo_uri,
             "lakehouse_namespace": space.space.lakehouse_namespace,
-            "resource_group_id": space.space.resource_group_id,
+            "hf_default_resource_group_id": space.space.hf_default_resource_group_id,
             "is_admin": space.is_admin,
         }
         for space in spaces

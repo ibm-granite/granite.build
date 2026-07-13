@@ -50,8 +50,8 @@ class BaseSpaceStorageTest(AbstractStorageTest):
         item = storage.get_by_name(item1.name)
         assert item is not None, f"Did not find item by name={item1.name}"
 
-    def test_resource_group_id_round_trips(self):
-        """resource_group_id is stored in the json column and round-trips.
+    def test_hf_default_resource_group_id_round_trips(self):
+        """hf_default_resource_group_id is stored in the json column and round-trips.
 
         It also defaults to None for rows created without it (old rows).
         """
@@ -60,7 +60,7 @@ class BaseSpaceStorageTest(AbstractStorageTest):
             name="rg_space",
             git_repo_uri="http://foo.bar/rg",
             lakehouse_namespace="lhnamespace_rg",
-            resource_group_id="rg-abc-123",
+            hf_default_resource_group_id="rg-abc-123",
         )
         without_rg = StoredSpace(
             name="no_rg_space",
@@ -71,17 +71,20 @@ class BaseSpaceStorageTest(AbstractStorageTest):
 
         reloaded = storage.get_by_name("rg_space")
         assert reloaded is not None
-        assert reloaded.resource_group_id == "rg-abc-123"
+        assert reloaded.hf_default_resource_group_id == "rg-abc-123"
 
         reloaded_none = storage.get_by_name("no_rg_space")
         assert reloaded_none is not None
-        assert reloaded_none.resource_group_id is None
+        assert reloaded_none.hf_default_resource_group_id is None
 
         # Update the null-id row (mirrors the helper's write-back) and confirm
         # the change persists.
-        reloaded_none.resource_group_id = "written-back"
+        reloaded_none.hf_default_resource_group_id = "written-back"
         storage.update(reloaded_none)
-        assert storage.get_by_name("no_rg_space").resource_group_id == "written-back"
+        assert (
+            storage.get_by_name("no_rg_space").hf_default_resource_group_id
+            == "written-back"
+        )
 
 
 class BaseLegacyStoredSpaceTest(AbstractExistingDataReadTest):
