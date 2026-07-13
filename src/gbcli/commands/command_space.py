@@ -141,6 +141,7 @@ def list(
                     s["name"],
                     s["git_repo_uri"],
                     s["lakehouse_namespace"],
+                    s.get("hf_default_resource_group_id") or "",
                     format_user_role(s["is_admin"]),
                 ]
                 for s in spaces
