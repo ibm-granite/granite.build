@@ -607,47 +607,79 @@ class Environment(ABC):
     def _load_assetstores(self: Self) -> None:
         """Load the asset stores specified in the environment.yaml.
 
-        Every environment additionally gets the built-in ``env://`` (Envstore)
-        store registered implicitly via :meth:`_register_default_envstore`, so
-        env:// input/output work on all backends without an ``assetstores`` entry
-        in each ``environment.yaml``.
+        Declared stores are loaded first; then :meth:`_register_default_envstore`
+        ensures the ``env://`` (Envstore) store is available even when it is not
+        declared, so env:// input/output work on all backends without an
+        ``assetstores`` entry in each ``environment.yaml``.
         """
-        self._register_default_envstore()
-        if self.config is None or self.config.assetstores is None:
+        if self.config is not None and self.config.assetstores is not None:
+            for storeenv in self.config.assetstores:
+                assetstore = Asset.get_assetstore_from_store_uri(
+                    store_uri=storeenv.store_uri, context=self.context
+                )
+                self.supported_assetstores[assetstore] = storeenv
+        else:
             logger.warning("No asset stores found!")
-            return
-        for storeenv in self.config.assetstores:
-            assetstore = Asset.get_assetstore_from_store_uri(
-                store_uri=storeenv.store_uri, context=self.context
-            )
-            self.supported_assetstores[assetstore] = storeenv
+        # Run after the declared stores so an explicit env:// declaration wins.
+        self._register_default_envstore()
 
     def _register_default_envstore(self: Self) -> None:
-        """Register the built-in ``env://`` (Envstore) asset store for this env.
+        """Ensure the ``env://`` (Envstore) asset store is registered for this env.
 
         env:// artifacts already live on a filesystem the environment can reach,
         so push/pull are no-ops (see ``pullasset_envstore`` / ``pushasset_envstore``).
-        Registering the store here — from the bundled ``builtins/assetstores/env``
-        definition rather than a per-environment ``environment.yaml`` entry — makes
-        env:// universally supported. Failures are logged and swallowed so a
-        problem loading the built-in store never breaks environment construction;
-        an environment.yaml may still declare its own env:// store on top.
+        Registering the store implicitly makes env:// universally supported without
+        a per-environment ``environment.yaml`` entry. Resolution order:
+
+        1. If an ``environment.yaml`` store already handles ``env://``, do nothing —
+           the explicit declaration wins.
+        2. Otherwise prefer the space's own ``space://assetstores/env-local`` store,
+           so a space can customize it.
+        3. Fall back to the bundled ``builtins/assetstores/env-local`` default.
+
+        Failures are logged and swallowed so a problem loading the store never
+        breaks environment construction.
         """
+        if any(
+            s.config.base_uri and s.config.base_uri.startswith("env://")
+            for s in self.supported_assetstores
+        ):
+            return  # an explicit environment.yaml env:// store takes precedence
+        assetstore = self._resolve_env_assetstore()
+        if assetstore is None:
+            return
+        self.supported_assetstores[assetstore] = AssetStoreEnvironmentConfig(
+            store_uri="env://",
+            load=[StoreLoad(mode="default")],
+            push=[StorePush(mode="default")],
+        )
+
+    def _resolve_env_assetstore(self: Self) -> Optional[Assetstore]:
+        """Resolve the ``env://`` asset store: space store first, bundled default.
+
+        :returns: The space's ``env-local`` Assetstore if the active space defines
+            one, else the bundled ``builtins/assetstores/env-local`` default, or
+            ``None`` if neither can be loaded.
+        """
+        # 1) Prefer the space's env-local store (lets a space customize it).
+        try:
+            return Asset.get_assetstore_from_store_uri(
+                store_uri="space://assetstores/env-local", context=self.context
+            )
+        except Exception as e:
+            logger.info(
+                "env-local not found in space (%s); using bundled default env:// store",
+                e,
+            )
+        # 2) Fall back to the bundled builtin default.
         try:
             env_store_dir = (
-                Path(__file__).parent.parent / "builtins" / "assetstores" / "env"
+                Path(__file__).parent.parent / "builtins" / "assetstores" / "env-local"
             )
-            assetstore = Assetstore.load_asset_store(
-                env_store_dir, context=self.context
-            )
-            store_env_config = AssetStoreEnvironmentConfig(
-                store_uri="env://",
-                load=[StoreLoad(mode="default")],
-                push=[StorePush(mode="default")],
-            )
-            self.supported_assetstores[assetstore] = store_env_config
-        except Exception as e:  # never fail env construction over the default store
-            logger.warning("Failed to register default env:// assetstore: %s", e)
+            return Assetstore.load_asset_store(env_store_dir, context=self.context)
+        except Exception as e:
+            logger.warning("Failed to load bundled default env:// assetstore: %s", e)
+            return None
 
     @classmethod
     def load_environment_config(

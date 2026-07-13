@@ -104,10 +104,10 @@ configuration:
 
 Because these live on the base class, subclasses inherit them automatically — no subclass needs its own
 `*_envstore` / `*_memstore` methods, and `env://` / `mem://` do **not** need an `assetstores` entry in
-`environment.yaml`. `_load_assetstores` calls `_register_default_envstore()`, which registers the bundled
-[`builtins/assetstores/env`](../../src/gbserver/builtins/assetstores/env/store.yaml) store for the
-environment (an `environment.yaml` may still declare its own `env://` store to override the default
-`load`/`push` mode).
+`environment.yaml`. `_load_assetstores` calls `_register_default_envstore()`, which ensures an `env://`
+store is registered using this resolution order: (1) an explicit `environment.yaml` `env://` store wins;
+otherwise (2) the space's own `space://assetstores/env-local` store; otherwise (3) the bundled
+[`builtins/assetstores/env-local`](../../src/gbserver/builtins/assetstores/env-local/store.yaml) default.
 
 ### Abstract Method
 
