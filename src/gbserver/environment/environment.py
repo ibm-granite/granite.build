@@ -1570,6 +1570,9 @@ class Environment(ABC):
             reconstructed path under ``BINDING_KEY``; the second element is ``None``
             because no build step is queued for the no-op pull.
         :raises AssertionError: If the URI is not a valid ``EnvURI`` with a path.
+        :raises ValueError: If the resolved path is relative — a no-transfer env://
+            reference must be an absolute path (config validation normally rejects
+            these at load; this guards paths reaching the store another way).
         """
         # Local import: gbcommon.uri.env has no dependency on this module, so this
         # avoids any import-order risk and matches the lazy-import style used here.
@@ -1581,6 +1584,11 @@ class Environment(ABC):
         assert envuri.uri, f"invalid envuri: {envuri}"
         final_binding_path = envuri.uri.path
         assert final_binding_path, f"invalid envuri: {envuri}"
+        if not Path(final_binding_path).is_absolute():
+            raise ValueError(
+                f"pullasset_envstore: relative env:// path {final_binding_path!r} "
+                f"(uri={uri}) is not supported — use an absolute path (env:///...)."
+            )
         binding_config = {BINDING_KEY: {"path": final_binding_path}}
         logger.info(
             "pullasset_envstore: loaded env uri %s at binding %s",
@@ -1612,12 +1620,21 @@ class Environment(ABC):
         :param binding_id: Output binding id being pushed (used in errors/logs).
         :param uri: The concrete ``env://`` artifact URI. Required.
         :returns: The registered artifact URI.
-        :raises ValueError: If ``uri`` is empty — an env:// push needs a concrete path.
+        :raises ValueError: If ``uri`` is empty, or resolves to a relative path — a
+            no-transfer env:// reference must be an absolute path (config validation
+            normally rejects these at load; this guards paths reaching the store
+            another way).
         """
         if not uri:
             raise ValueError(
                 f"pushasset_envstore: empty uri for binding={binding_id!r}; "
                 "an env:// store push requires a concrete artifact path."
+            )
+        envuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
+        if envuri.uri is not None and not Path(envuri.uri.path).is_absolute():
+            raise ValueError(
+                f"pushasset_envstore: relative env:// path {envuri.uri.path!r} "
+                f"(uri={uri}) is not supported — use an absolute path (env:///...)."
             )
         logger.info(
             "pushasset_envstore: registering artifact %s at uri=%s binding=%s",

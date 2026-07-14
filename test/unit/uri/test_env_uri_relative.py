@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+
+# Copyright LLM.build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Relative ``env:`` URIs are rejected.
+
+An ``env:`` URI performs no transfer (it references a path the environment can
+already reach), so a relative path has no resolution root and is disallowed.
+Rejection happens at build-config load (``BuildConfig.my_validate``) and, as a
+defense-in-depth guard, in the base ``pull/push`` envstore methods. Absolute
+``env:///…`` and templated ``env://{{ … }}`` (which resolve to an absolute path)
+remain valid.
+"""
+
+import asyncio
+
+import pytest
+
+from gbcommon.uri.env import is_relative_env_uri
+from gbserver.environment.environment import Environment
+from gbserver.types.buildconfig import (
+    BuildConfig,
+    BuildTargetConfig,
+    BuildTargetInputConfig,
+    BuildTargetOutputConfig,
+)
+
+pytestmark = pytest.mark.standalone
+
+
+# --- helper -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "uri_str,expected",
+    [
+        ("env:outputs/x/", True),
+        ("env:outputs/inf_{{ binding.path | short_hash }}/", True),
+        ("env:result.txt", True),
+        ("env:///tmp/x", False),
+        ("env://two/slashes", False),
+        ("env://{{ binding.path }}", False),
+        ("file:outputs/x", False),
+        ("hf:///ibm-granite/granite-4.0-h-350m", False),
+        ("", False),
+    ],
+)
+def test_is_relative_env_uri(uri_str, expected):
+    assert is_relative_env_uri(uri_str) is expected
+
+
+# --- load-time validation ---------------------------------------------------
+
+
+def _build_config_with(inputs=None, outputs=None) -> BuildConfig:
+    return BuildConfig(
+        matched_base_key="granite.build",
+        targets={
+            "t": BuildTargetConfig(
+                environment_uri="space://environments/bash",
+                inputs=inputs or {},
+                outputs=outputs or {},
+                steps=[],
+            ),
+        },
+    )
+
+
+def test_relative_env_input_uri_is_rejected():
+    cfg = _build_config_with(
+        inputs={"in": BuildTargetInputConfig(uri="env:inputs/data")}
+    )
+    errors = cfg.my_validate()
+    assert len(errors) > 0
+    assert "env://" in str(errors)
+
+
+def test_relative_env_output_uri_is_rejected():
+    cfg = _build_config_with(
+        outputs={"out": BuildTargetOutputConfig(uri="env:outputs/x/", type="fileset")}
+    )
+    errors = cfg.my_validate()
+    assert len(errors) > 0
+    assert "env://" in str(errors)
+
+
+def test_absolute_and_templated_env_uris_are_allowed():
+    cfg = _build_config_with(
+        inputs={"in": BuildTargetInputConfig(uri="env:///abs/in")},
+        outputs={
+            "abs": BuildTargetOutputConfig(uri="env:///abs/out", type="fileset"),
+            "tmpl": BuildTargetOutputConfig(
+                uri="env://{{ binding.path }}", type="fileset"
+            ),
+        },
+    )
+    errors = cfg.my_validate()
+    # No env-relative errors (the only content is these valid env: URIs).
+    assert not any("env://" in e for e in [str(x) for x in errors])
+
+
+# --- runtime guard (base envstore methods) ----------------------------------
+# The base methods don't touch instance state for the relative check, so we can
+# invoke the unbound coroutines with a dummy ``self``.
+
+
+def test_pushasset_envstore_rejects_relative():
+    with pytest.raises(ValueError, match="relative env://"):
+        asyncio.run(
+            Environment.pushasset_envstore(
+                None, binding={"path": "/x"}, uri="env:rel/out"
+            )
+        )
+
+
+def test_pushasset_envstore_allows_absolute():
+    uri = asyncio.run(
+        Environment.pushasset_envstore(
+            None, binding={"path": "/x"}, uri="env:///abs/out"
+        )
+    )
+    assert "abs/out" in str(uri)
+
+
+def test_pullasset_envstore_rejects_relative():
+    with pytest.raises(ValueError, match="relative env://"):
+        asyncio.run(Environment.pullasset_envstore(None, uri="env:rel/in"))
+
+
+def test_pullasset_envstore_allows_absolute():
+    binding_config, step = asyncio.run(
+        Environment.pullasset_envstore(None, uri="env:///abs/in")
+    )
+    assert step is None
+    assert binding_config["binding"]["path"] == "/abs/in"

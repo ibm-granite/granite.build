@@ -41,6 +41,9 @@ Notes:
   the store resolves the path directly and transfers nothing. Common on bare-metal HPC backends (e.g.
   LSF/SLURM with shared GPFS), but supported by **all** environment classes and registered
   automatically — no `environment.yaml` `assetstores` entry is required (see the note above).
+  Because it transfers nothing, an `env://` path must be **absolute**: relative `env:` URIs (e.g.
+  `env:outputs/foo`) have no resolution root and are **rejected at build-config load**. Use an absolute
+  `env:///…` (a templated `env://{{ binding.path }}` is fine — it resolves to an absolute path).
 - **In-memory (`mem://`)** passes a producer's binding value (e.g. a service URL) verbatim to downstream
   consumers without touching a filesystem.
 
