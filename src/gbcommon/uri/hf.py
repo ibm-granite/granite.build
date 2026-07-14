@@ -1030,6 +1030,12 @@ class HfURI(URI):
         ``<cache>/<owner>/<repo>/<revision>``, where the trailing revision is a
         git ref or commit hash. Returns ``owner/repo`` or ``None`` when the path
         has too few components to derive one.
+
+        This assumes the fixed ``owner/repo/revision`` cache layout: it takes
+        the last two segments as ``owner/repo`` after dropping a trailing
+        commit-hash segment. Inputs that do not follow that layout (e.g. an
+        all-hex repo name with no revision, or a non-hex trailing segment) can
+        mis-parse, but the cluster cache always produces this layout.
         """
         segments = [seg for seg in path.strip("/").split("/") if seg]
         # Drop a trailing revision/commit-hash segment if present so the last
@@ -1234,6 +1240,9 @@ class HfURI(URI):
                 _log_hf_api_error("upload_file", repo_id, e)
                 raise
         else:
+            # Only folder uploads can carry an adapter_config.json; LoRA
+            # adapters are always pushed as a directory, so single-file uploads
+            # have nothing to normalize.
             if repo_type == "model":
                 self._normalize_adapter_base_model(src)
             logger.info(
