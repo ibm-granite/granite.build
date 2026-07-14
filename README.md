@@ -311,13 +311,14 @@ Leave it unset to default to same-origin (the standard case when gbserver serves
 
 `gb_ui_backend` adds build status charts, failure trends, and optional AI-powered analysis. It is bundled with the `standalone` install extra; if installed, gbserver includes its routers directly into its own process at startup — no extra command or initial database setup needed.
 
-Default storage: `~/.granite.build/dashboard-analytics.db` (SQLite, auto-created on first run).
+Default storage: derived from the main store's own backend. Standalone SQLite mode co-locates into gbserver's own `~/.granite.build/llmb-server.db` on a fresh install (auto-created on first run); an existing `~/.granite.build/dashboard-analytics.db` from an older install is kept instead. Postgres mode (`GBSERVER_METADATA_STORAGE=sql`) connects to the same Postgres instance as the main store.
 
 Optional configuration (set as environment variables or in `.env`):
 
 | Variable | Description |
 |---|---|
 | `GB_UI_DATABASE_URL` | Override the analytics DB — SQLite path or PostgreSQL URL |
+| `GB_UI_ANALYTICS_COLOCATE_SQLITE` | Standalone SQLite mode only: force `true` (co-locate into gbserver's own DB file) or `false` (keep a separate `dashboard-analytics.db`); unset auto-detects |
 | `GB_UI_GBSERVER_DB_URL` | gbserver's own DB for richer build volume charts (auto-set when storage is SQLite) |
 | `GB_UI_LLM_BASE_URL` | OpenAI-compatible endpoint for AI failure analysis (feature disabled if unset) |
 | `GB_UI_LLM_API_KEY` | API key for the LLM endpoint |
