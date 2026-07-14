@@ -194,16 +194,27 @@ ENV_VAR_BUILTIN_STEP_IMAGE = ENV_VAR_PREFIX + "_BUILTIN_STEP_IMAGE"
 def gbserver_ui_dir() -> str:
     """Directory the compiled frontend assets are served from.
 
-    Default: static/ui/ under the gbserver package (populated by
-    ``make build-frontend``). Override with GBSERVER_UI_DIR for non-standard
-    layouts. Resolved in one lightweight place so callers that only need to know
-    whether the UI is present (e.g. analytics auto-detection in the CLI parent
-    process) agree with what root_api actually serves, without importing the
-    heavyweight root_api module.
+    Default: static/ui/ under the gbserver package; override with GBSERVER_UI_DIR.
     """
     # This file lives at gbserver/types/constants.py; the package root is two levels up.
     gbserver_pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.environ.get(ENV_VAR_UI_DIR, os.path.join(gbserver_pkg, "static", "ui"))
+
+
+def analytics_backend_enabled() -> bool:
+    """Whether the gb_ui_backend analytics subsystem should run in this server.
+
+    True only when the package is installed AND enabled — explicit
+    GB_UI_ANALYTICS_ENABLED wins, else auto-detect off the presence of compiled
+    UI assets (an API-only server has no dashboard to serve analytics to, and
+    initializing its DB there would crash startup). Resolved here, off inherited
+    env and the shared UI dir, so the CLI parent and each uvicorn worker agree.
+    """
+    if importlib.util.find_spec("gb_ui_backend") is None:
+        return False
+    from gb_ui_backend.config import analytics_is_enabled
+
+    return analytics_is_enabled(os.path.isdir(gbserver_ui_dir()))
 
 
 ENV_VAR_GBSERVER_SQL_SCHEME = ENV_VAR_PREFIX + "_SQL_SCHEME"  # postgresql, mysql, etc.
