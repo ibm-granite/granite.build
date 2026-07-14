@@ -8,6 +8,8 @@ All tests are marked @pytest.mark.g4os and @pytest.mark.unit so they
 run in both the existing CI pipeline and the g4os-mode pipeline.
 """
 
+import os
+
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -174,6 +176,35 @@ class TestEnvironmentDiscovery:
 # ---------------------------------------------------------------------------
 
 
+def _load_root_api_with_analytics():
+    """Import root_api with analytics forced on, reloading if needed.
+
+    root_api decides whether to mount the analytics routers once, at import
+    time, from _ANALYTICS_ENABLED (explicit GB_UI_ANALYTICS_ENABLED, else
+    auto-detect off compiled UI assets). CI has neither the env var nor the UI
+    assets, so a plain import leaves analytics off and the routers unmounted.
+    These tests verify the include_router() wiring itself, so force analytics
+    on and reload the module if the cached copy came up with it disabled.
+
+    Returns the (possibly reloaded) root_api app, or None if root_api can't be
+    imported (missing optional deps) — the caller should skip in that case.
+    """
+    import importlib
+
+    os.environ["GB_UI_ANALYTICS_ENABLED"] = "true"
+    try:
+        import gbserver.api.root_api as root_api_mod
+    except ImportError:
+        return None
+
+    if not getattr(root_api_mod, "_ANALYTICS_ENABLED", False):
+        from gb_ui_backend import config as gb_ui_config
+
+        gb_ui_config.get_config.cache_clear()
+        root_api_mod = importlib.reload(root_api_mod)
+    return root_api_mod.root_api
+
+
 class TestAPIRoutes:
     """Verify all expected sub-APIs are mounted on the root API."""
 
@@ -220,15 +251,13 @@ class TestAPIRoutes:
         assertion even if the route were never wired up.
         """
         import importlib.util
-        import os
         from unittest.mock import patch
 
         if importlib.util.find_spec("gb_ui_backend") is None:
             pytest.skip("gb_ui_backend not installed")
 
-        try:
-            from gbserver.api.root_api import root_api
-        except ImportError:
+        root_api = _load_root_api_with_analytics()
+        if root_api is None:
             pytest.skip(
                 "root_api requires kubernetes_asyncio (transitively via buildwatcher)"
             )
@@ -252,15 +281,13 @@ class TestAPIRoutes:
         actual root_api returns 401, confirming AuthMiddleware covers these
         routes now that they're included directly rather than proxied."""
         import importlib.util
-        import os
         from unittest.mock import patch
 
         if importlib.util.find_spec("gb_ui_backend") is None:
             pytest.skip("gb_ui_backend not installed")
 
-        try:
-            from gbserver.api.root_api import root_api
-        except ImportError:
+        root_api = _load_root_api_with_analytics()
+        if root_api is None:
             pytest.skip(
                 "root_api requires kubernetes_asyncio (transitively via buildwatcher)"
             )
@@ -367,8 +394,6 @@ class TestStandaloneEnvironmentDefaults:
         importlib.reload(constants)
 
         try:
-            import os
-
             assert os.environ.get("GBSERVER_METADATA_STORAGE") == "sqlite"
             assert os.environ.get("GBSERVER_DEFAULT_BUILDRUNNER_TYPE") == "thread"
             assert os.environ.get("GBSERVER_PROCEED_WITHOUT_SECRETS") == "true"
@@ -394,8 +419,6 @@ class TestStandaloneEnvironmentDefaults:
         importlib.reload(constants)
 
         try:
-            import os
-
             # Explicit override preserved
             assert os.environ.get("GBSERVER_METADATA_STORAGE") == "sql"
             # Defaults still applied where not overridden
