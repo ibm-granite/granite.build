@@ -209,6 +209,19 @@ class TestConfigureAnalyticsEnv:
         monkeypatch.setenv("GB_HOME_DIR", str(tmp_path / "gb_home"))
         monkeypatch.delenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", raising=False)
         monkeypatch.delenv("GB_UI_DATABASE_URL", raising=False)
+        # Force analytics on explicitly rather than relying on GBSERVER_UI_DIR
+        # auto-detection: src/gbserver/static/ui is a gitignored build artifact
+        # that may or may not exist on the machine running this test (it doesn't
+        # in a fresh CI checkout), and analytics_backend_enabled() returning False
+        # would make _configure_analytics_env() return before ever touching
+        # GB_UI_DATABASE_URL — the exact thing this test needs to happen.
+        monkeypatch.setenv("GB_UI_ANALYTICS_ENABLED", "true")
+        # _configure_analytics_env sets these two directly via os.environ[...] (not
+        # through monkeypatch), so without pre-registering them here monkeypatch
+        # won't know to revert them — they'd leak into later tests sharing this
+        # worker process, exactly like the leak _run() below already guards against.
+        monkeypatch.delenv("GB_UI_GBSERVER_URL", raising=False)
+        monkeypatch.delenv("GB_UI_GBSERVER_DB_URL", raising=False)
         import importlib
 
         from gbserver.types import constants
