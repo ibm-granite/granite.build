@@ -162,6 +162,7 @@ def _run_resolve_with_space_error(monkeypatch, caplog, exc):
     Returns the resolved Assetstore (always the bundled default here) while
     ``caplog`` captures the log record emitted for the failure.
     """
+
     def _raise(**kwargs):
         raise exc
 
