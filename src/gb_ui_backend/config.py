@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Default SQLite filename for the analytics database.
@@ -72,6 +72,20 @@ class Config(BaseSettings):
     # (see analytics_is_enabled); explicit true/false wins. Lets a deployed, API-only
     # rest-server keep analytics off even though the gb_ui_backend package is installed.
     analytics_enabled: bool | None = Field(default=None)
+
+    @field_validator("analytics_enabled", mode="before")
+    @classmethod
+    def _blank_analytics_enabled_is_unset(cls, v: object) -> object:
+        # Treat GB_UI_ANALYTICS_ENABLED="" or whitespace as unset (→ None → auto-detect)
+        # rather than a parse error. Setting an env var to empty is a common "disable"
+        # idiom in k8s manifests/shells, and a ValidationError here would crash startup
+        # in both the CLI parent and every worker — the very failure this field prevents.
+        # Also tolerate surrounding whitespace on real values (e.g. " true ").
+        if isinstance(v, str):
+            v = v.strip()
+            if v == "":
+                return None
+        return v
 
     @property
     def llm_models_list(self) -> list[str]:

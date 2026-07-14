@@ -66,6 +66,22 @@ class TestAnalyticsIsEnabled:
         gb_config.get_config.cache_clear()
         assert analytics_is_enabled(ui_assets_present=False) is True
 
+    def test_blank_value_treated_as_unset(self, monkeypatch):
+        # Setting an env var to empty is a common "disable"/"unset" idiom in k8s
+        # manifests and shells. It must not raise (which would crash startup in
+        # the parent and every worker) — it falls through to auto-detect.
+        for blank in ("", "   "):
+            monkeypatch.setenv("GB_UI_ANALYTICS_ENABLED", blank)
+            gb_config.get_config.cache_clear()
+            assert analytics_is_enabled(ui_assets_present=True) is True
+            gb_config.get_config.cache_clear()
+            assert analytics_is_enabled(ui_assets_present=False) is False
+
+    def test_whitespace_padded_value_parsed(self, monkeypatch):
+        monkeypatch.setenv("GB_UI_ANALYTICS_ENABLED", " false ")
+        gb_config.get_config.cache_clear()
+        assert analytics_is_enabled(ui_assets_present=True) is False
+
 
 class TestConfigureAnalyticsEnv:
     """_configure_analytics_env must not set the SQLite fallback when analytics is off."""
@@ -81,7 +97,15 @@ class TestConfigureAnalyticsEnv:
             monkeypatch.delenv("GB_UI_ANALYTICS_ENABLED", raising=False)
         else:
             monkeypatch.setenv("GB_UI_ANALYTICS_ENABLED", override)
-        monkeypatch.delenv("GB_UI_DATABASE_URL", raising=False)
+        # Clear every var _configure_analytics_env may write via os.environ[...] so
+        # monkeypatch tracks and restores them — otherwise GB_UI_GBSERVER_URL (set
+        # unconditionally) and GB_UI_GBSERVER_DB_URL leak into later tests.
+        for var in (
+            "GB_UI_DATABASE_URL",
+            "GB_UI_GBSERVER_URL",
+            "GB_UI_GBSERVER_DB_URL",
+        ):
+            monkeypatch.delenv(var, raising=False)
         gb_config.get_config.cache_clear()
 
         _configure_analytics_env(host="0.0.0.0", port=8080)
