@@ -663,8 +663,11 @@ class Environment(ABC):
         override the default, but **no shipped space does** — so in practice this
         falls through to the bundled ``builtins/assetstores/env-local`` default,
         which is the effective out-of-the-box store. The space lookup is a
-        best-effort customization hook; its miss is logged at ``debug`` (not
-        ``info``) since it is the common, expected path.
+        best-effort customization hook: an *absent* store (the common, expected
+        path) is logged at ``debug``, while a store that is present but *fails to
+        load* (malformed yaml/config) is logged at ``warning`` so it is debuggable
+        instead of silently masked as absent. Both still fall back to the bundled
+        default.
 
         :returns: The space's ``env-local`` Assetstore if the active space defines
             one, else the bundled ``builtins/assetstores/env-local`` default, or
@@ -677,10 +680,25 @@ class Environment(ABC):
                 store_uri="space://assetstores/env-local", context=self.context
             )
         except Exception as e:
-            logger.debug(
-                "env-local not found in space (%s); using bundled default env:// store",
-                e,
-            )
+            # Distinguish two failure modes so a real problem isn't masked as a
+            # routine miss (both still fall back to the bundled default):
+            #  - No space defines env-local: SpaceURI.__new__ can't resolve it and
+            #    raises ValueError("Unresolvable space uri ..."). This is the
+            #    expected common path -> debug (no log noise on every build).
+            #  - A space DOES define env-local but it fails to load (malformed
+            #    yaml/config): any other error -> warning, so it's debuggable
+            #    rather than silently swallowed.
+            if isinstance(e, ValueError) and "Unresolvable space uri" in str(e):
+                logger.debug(
+                    "no space env-local store (%s); using bundled default env:// store",
+                    e,
+                )
+            else:
+                logger.warning(
+                    "space env-local store failed to load (%s); using bundled "
+                    "default env:// store",
+                    e,
+                )
         # 2) Fall back to the bundled builtin default.
         try:
             env_store_dir = (

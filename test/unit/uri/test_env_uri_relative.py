@@ -25,10 +25,14 @@ remain valid.
 """
 
 import asyncio
+import logging
+from types import SimpleNamespace
 
 import pytest
 
+import gbserver.asset.asset as asset_mod
 from gbcommon.uri.env import is_relative_env_uri
+from gbserver.asset.envstore import Envstore
 from gbserver.environment.environment import Environment
 from gbserver.types.buildconfig import (
     BuildConfig,
@@ -145,3 +149,46 @@ def test_pullasset_envstore_allows_absolute():
     )
     assert step is None
     assert binding_config["binding"]["path"] == "/abs/in"
+
+
+# --- _resolve_env_assetstore: distinguish "absent" (debug) vs "malformed" (warning) ---
+# Both fall back to the bundled builtin env-local store; only the log level differs.
+# _resolve_env_assetstore reads only self.context, so a tiny stub self suffices.
+
+
+def _run_resolve_with_space_error(monkeypatch, caplog, exc):
+    """Force the space env-local lookup to raise ``exc`` and resolve the store.
+
+    Returns the resolved Assetstore (always the bundled default here) while
+    ``caplog`` captures the log record emitted for the failure.
+    """
+    def _raise(**kwargs):
+        raise exc
+
+    monkeypatch.setattr(
+        asset_mod.Asset, "get_assetstore_from_store_uri", staticmethod(_raise)
+    )
+    stub = SimpleNamespace(context=None)
+    with caplog.at_level(logging.DEBUG):
+        store = Environment._resolve_env_assetstore(stub)
+    return store
+
+
+def test_resolve_env_assetstore_absent_logs_debug(monkeypatch, caplog):
+    # No space defines env-local -> SpaceURI raises "Unresolvable space uri".
+    store = _run_resolve_with_space_error(
+        monkeypatch,
+        caplog,
+        ValueError("Unresolvable space uri : space://assetstores/env-local"),
+    )
+    assert isinstance(store, Envstore)  # fell back to the bundled default
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_resolve_env_assetstore_malformed_logs_warning(monkeypatch, caplog):
+    # A space DOES define env-local but it fails to load -> should warn.
+    store = _run_resolve_with_space_error(
+        monkeypatch, caplog, RuntimeError("malformed store.yaml")
+    )
+    assert isinstance(store, Envstore)  # still falls back to the bundled default
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING]
