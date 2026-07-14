@@ -633,9 +633,11 @@ class Environment(ABC):
 
         1. If an ``environment.yaml`` store already handles ``env://``, do nothing —
            the explicit declaration wins.
-        2. Otherwise prefer the space's own ``space://assetstores/env-local`` store,
-           so a space can customize it.
-        3. Fall back to the bundled ``builtins/assetstores/env-local`` default.
+        2. Otherwise prefer a space-provided ``space://assetstores/env-local`` store
+           if one exists — an optional customization hook that **no shipped space
+           defines**, so this is normally a miss.
+        3. Fall back to the bundled ``builtins/assetstores/env-local`` default —
+           the effective out-of-the-box store.
 
         Failures are logged and swallowed so a problem loading the store never
         breaks environment construction.
@@ -655,19 +657,27 @@ class Environment(ABC):
         )
 
     def _resolve_env_assetstore(self: Self) -> Optional[Assetstore]:
-        """Resolve the ``env://`` asset store: space store first, bundled default.
+        """Resolve the ``env://`` asset store: optional space store, else bundled default.
+
+        A space *may* define its own ``space://assetstores/env-local`` store to
+        override the default, but **no shipped space does** — so in practice this
+        falls through to the bundled ``builtins/assetstores/env-local`` default,
+        which is the effective out-of-the-box store. The space lookup is a
+        best-effort customization hook; its miss is logged at ``debug`` (not
+        ``info``) since it is the common, expected path.
 
         :returns: The space's ``env-local`` Assetstore if the active space defines
             one, else the bundled ``builtins/assetstores/env-local`` default, or
             ``None`` if neither can be loaded.
         """
-        # 1) Prefer the space's env-local store (lets a space customize it).
+        # 1) Prefer a space-provided env-local store if one exists (optional
+        #    customization hook; not shipped by default -> normally a miss).
         try:
             return Asset.get_assetstore_from_store_uri(
                 store_uri="space://assetstores/env-local", context=self.context
             )
         except Exception as e:
-            logger.info(
+            logger.debug(
                 "env-local not found in space (%s); using bundled default env:// store",
                 e,
             )

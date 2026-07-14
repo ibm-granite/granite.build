@@ -17,10 +17,12 @@ builds refer to them via `space://assetstores/<name>` URIs resolved through the 
 > **`env://` is always available.** The env-local (`env://`) store is registered implicitly for
 > **every** environment class — it does **not** need an `assetstores` entry in `environment.yaml`. Its
 > push/pull are shared-filesystem no-ops, so any backend can consume/produce `env://` artifacts. The
-> store is resolved in this order: an explicit `environment.yaml` `env://` entry wins; otherwise the
-> space's own `space://assetstores/env-local` store; otherwise a bundled
+> store is resolved in this order: an explicit `environment.yaml` `env://` entry wins; otherwise a
+> space-provided `space://assetstores/env-local` store *if one exists*; otherwise a bundled
 > [`builtins/assetstores/env-local`](../../src/gbserver/builtins/assetstores/env-local/store.yaml)
-> default. See [Env-local](#store-types-and-uri-schemes) below and
+> default. **No shipped space defines an `env-local` store**, so out of the box the bundled default is
+> used; adding one to a space is an optional customization. See
+> [Env-local](#store-types-and-uri-schemes) below and
 > [`Environment._register_default_envstore`](../../src/gbserver/environment/environment.py).
 
 ## Store types and URI schemes
