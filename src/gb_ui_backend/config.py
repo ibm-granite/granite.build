@@ -67,6 +67,12 @@ class Config(BaseSettings):
     # Set to false to disable the AI analysis daemon without removing LLM credentials
     ai_analysis_enabled: bool = Field(default=True)
 
+    # Master on/off for the whole analytics subsystem, read from GB_UI_ANALYTICS_ENABLED.
+    # Tri-state: None (unset) → auto-detect off the presence of compiled UI assets
+    # (see analytics_is_enabled); explicit true/false wins. Lets a deployed, API-only
+    # rest-server keep analytics off even though the gb_ui_backend package is installed.
+    analytics_enabled: bool | None = Field(default=None)
+
     @property
     def llm_models_list(self) -> list[str]:
         return [m.strip() for m in self.llm_models.split(",") if m.strip()]
@@ -100,3 +106,21 @@ def get_config() -> Config:
 @lru_cache
 def get_github_config() -> GitHubConfig:
     return GitHubConfig()
+
+
+def analytics_is_enabled(ui_assets_present: bool) -> bool:
+    """Resolve whether the analytics subsystem should run.
+
+    An explicit GB_UI_ANALYTICS_ENABLED (config.analytics_enabled) always wins.
+    Otherwise auto-detect: analytics runs only when the compiled frontend assets
+    are present, since an API-only server has no dashboard to serve analytics to.
+
+    ``ui_assets_present`` is passed in rather than computed here because the
+    canonical UI directory (and its GBSERVER_UI_DIR override) lives in gbserver's
+    root_api. This is called from both the CLI parent process and each uvicorn
+    worker; both read the same inherited env and the same UI dir, so they agree.
+    """
+    override = get_config().analytics_enabled
+    if override is not None:
+        return override
+    return ui_assets_present

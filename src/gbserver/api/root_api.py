@@ -41,6 +41,7 @@ from gbserver.types.constants import (
     GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GIT_COMMIT,
     GBSERVER_REST_SERVER_WORKERS,
+    gbserver_ui_dir,
 )
 from gbserver.utils.logger import get_logger
 
@@ -79,14 +80,31 @@ root_api.mount(f"{API_BASE_PATH}/node-health", node_health_api)
 root_api.mount(f"{API_BASE_PATH}/secrets", secrets_api)
 root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
 
+# ── Frontend static file serving ──────────────────────────────────────────────
+
+_UI_DIR = gbserver_ui_dir()
+
 # ── Analytics (optional gb_ui_backend extra) ───────────────────────────────────
 # Included directly (not mounted as a separate ASGI app) so these routes run
 # in-process behind AuthMiddleware like everything else, and so gb_ui_backend's
 # startup work (init_analytics, called below) is driven by root_api's own
 # startup hook rather than relying on a sub-app lifespan that .mount() alone
 # would never invoke.
+#
+# _HAS_ANALYTICS is a precondition (the package must be installed to run at all);
+# _ANALYTICS_ENABLED is the actual switch. An explicit GB_UI_ANALYTICS_ENABLED
+# wins, otherwise it auto-detects off the compiled UI assets — a deployed,
+# API-only rest-server has the package installed but no dashboard, so analytics
+# (and its DB init) must stay off there rather than crash startup. This runs per
+# uvicorn worker; the CLI parent resolves the same way in _configure_analytics_env.
 _HAS_ANALYTICS = importlib.util.find_spec("gb_ui_backend") is not None
+_ANALYTICS_ENABLED = False
 if _HAS_ANALYTICS:
+    from gb_ui_backend.config import analytics_is_enabled
+
+    _ANALYTICS_ENABLED = analytics_is_enabled(os.path.isdir(_UI_DIR))
+
+if _ANALYTICS_ENABLED:
     from gb_ui_backend.api import ai as _gb_ai
     from gb_ui_backend.api import analytics as _gb_analytics
     from gb_ui_backend.api import builds as _gb_builds
@@ -102,6 +120,8 @@ if _HAS_ANALYTICS:
     ):
         root_api.include_router(_router, prefix="/api/analytics")
 
+    logger.info("Analytics enabled — mounted /api/analytics routers")
+
     if GBSERVER_REST_SERVER_WORKERS > 1:
         logger.warning(
             "GBSERVER_REST_SERVER_WORKERS=%d with analytics enabled — each "
@@ -109,17 +129,12 @@ if _HAS_ANALYTICS:
             "analytics assumes a single worker.",
             GBSERVER_REST_SERVER_WORKERS,
         )
-
-# ── Frontend static file serving ──────────────────────────────────────────────
-
-# Default: static/ui/ sibling to this package directory (populated by make build-frontend).
-# Override with GBSERVER_UI_DIR for non-standard layouts.
-_UI_DIR = os.environ.get(
-    "GBSERVER_UI_DIR",
-    os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static", "ui"
-    ),
-)
+elif _HAS_ANALYTICS:
+    logger.info(
+        "Analytics installed but disabled (GB_UI_ANALYTICS_ENABLED override or "
+        "no compiled UI assets at %s) — /api/analytics not mounted",
+        _UI_DIR,
+    )
 
 
 def _is_rsc_request(request: Request) -> bool:
@@ -206,10 +221,18 @@ async def _spa_fallback(
 @root_api.on_event("startup")
 async def _start_background_tasks():
     """Launch background tasks that run for the lifetime of the server."""
-    if _HAS_ANALYTICS:
+    if _ANALYTICS_ENABLED:
         from gb_ui_backend.main import init_analytics
 
-        await init_analytics()
+        # Analytics is optional and must never take down the core REST API — a
+        # misconfigured or unwritable analytics DB should degrade gracefully
+        # (mirrors the try/except around GbserverSource in gb_ui_backend.main).
+        try:
+            await init_analytics()
+        except Exception:
+            logger.exception(
+                "Analytics init failed — continuing with analytics degraded"
+            )
 
     if GBSERVER_EVENT_PUBLISHING_ENABLED:
         if os.getenv("RABBITMQ_HOST"):
