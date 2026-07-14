@@ -96,6 +96,18 @@ def _configure_analytics_env(host: str = "127.0.0.1", port: int = 8080) -> None:
         browse_host = "127.0.0.1" if host == "0.0.0.0" else host
         os.environ["GB_UI_GBSERVER_URL"] = f"http://{browse_host}:{port}"
 
+    # gb_ui_backend.config.get_config() is lru_cached — the analytics_backend_enabled()
+    # call at the top of this function already constructed and cached a Config read
+    # from os.environ *before* the env vars above were set, so every later consumer
+    # (init_analytics(), _get_engine()) would otherwise see a stale, pre-mutation
+    # instance with database_url="" — analytics silently never gets a database despite
+    # GB_UI_DATABASE_URL being set correctly in the process environment. Clear it now
+    # that all GB_UI_* mutations in this function are done, so the next get_config()
+    # call picks up the real values.
+    from gb_ui_backend.config import get_config
+
+    get_config.cache_clear()
+
 
 _IBMID_REQUIRED_VARS = [
     "GBSERVER_IBMID_CLIENT_ID",

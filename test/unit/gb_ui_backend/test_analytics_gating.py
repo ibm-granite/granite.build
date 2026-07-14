@@ -195,6 +195,35 @@ class TestConfigureAnalyticsEnv:
         finally:
             importlib.reload(constants)
 
+    def test_get_config_cache_cleared_after_env_mutation(self, monkeypatch, tmp_path):
+        """Regression test for a lru_cache staleness bug found via live verification
+        (not by any unit test): analytics_backend_enabled(), called at the top of
+        _configure_analytics_env, constructs and caches a Config read from os.environ
+        *before* GB_UI_DATABASE_URL is set later in the same function. Without
+        clearing the cache afterward, every later consumer (init_analytics(),
+        _get_engine()) would see that stale, pre-mutation instance with
+        database_url="" forever — analytics would silently never get a database
+        despite GB_UI_DATABASE_URL being set correctly in the process environment.
+        """
+        monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
+        monkeypatch.setenv("GB_HOME_DIR", str(tmp_path / "gb_home"))
+        monkeypatch.delenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", raising=False)
+        monkeypatch.delenv("GB_UI_DATABASE_URL", raising=False)
+        import importlib
+
+        from gbserver.types import constants
+
+        importlib.reload(constants)
+        try:
+            # Prime the cache the same way analytics_backend_enabled()'s internal
+            # get_config() call does, before _configure_analytics_env mutates env.
+            gb_config.get_config.cache_clear()
+            gb_config.get_config()
+            _configure_analytics_env(host="0.0.0.0", port=8080)
+            assert gb_config.get_config().database_url != ""
+        finally:
+            importlib.reload(constants)
+
 
 class TestDeriveAnalyticsDatabaseUrl:
     """derive_analytics_database_url() inherits the main store's backend config
