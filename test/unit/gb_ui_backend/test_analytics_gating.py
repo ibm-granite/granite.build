@@ -94,6 +94,52 @@ class TestAnalyticsIsEnabled:
         assert any("Unrecognized boolean value" in r.message for r in caplog.records)
 
 
+class TestAnalyticsColocateSqliteBlank:
+    """analytics_colocate_sqlite reuses the same blank-is-unset validator as
+    analytics_enabled (see _blank_is_unset) — GB_UI_ANALYTICS_COLOCATE_SQLITE=""
+    must resolve to None (auto-detect), not raise ValidationError.
+    """
+
+    def test_unset_is_none(self, monkeypatch):
+        monkeypatch.delenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", raising=False)
+        gb_config.get_config.cache_clear()
+        assert gb_config.get_config().analytics_colocate_sqlite is None
+
+    def test_blank_is_none(self, monkeypatch):
+        monkeypatch.setenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", "")
+        gb_config.get_config.cache_clear()
+        assert gb_config.get_config().analytics_colocate_sqlite is None
+
+    def test_explicit_true(self, monkeypatch):
+        monkeypatch.setenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", "true")
+        gb_config.get_config.cache_clear()
+        assert gb_config.get_config().analytics_colocate_sqlite is True
+
+    def test_explicit_false(self, monkeypatch):
+        monkeypatch.setenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", "false")
+        gb_config.get_config.cache_clear()
+        assert gb_config.get_config().analytics_colocate_sqlite is False
+
+
+class TestDatabaseConnectArgsProperty:
+    """Config.database_connect_args decodes GB_UI_DATABASE_CONNECT_ARGS (JSON-encoded
+    since an ssl.SSLContext can't cross the env-var boundary as-is)."""
+
+    def test_unset_is_empty_dict(self, monkeypatch):
+        monkeypatch.delenv("GB_UI_DATABASE_CONNECT_ARGS", raising=False)
+        gb_config.get_config.cache_clear()
+        assert gb_config.get_config().database_connect_args == {}
+
+    def test_set_decodes_json(self, monkeypatch):
+        monkeypatch.setenv(
+            "GB_UI_DATABASE_CONNECT_ARGS", '{"sslrootcert_file": "/tmp/root.pem"}'
+        )
+        gb_config.get_config.cache_clear()
+        assert gb_config.get_config().database_connect_args == {
+            "sslrootcert_file": "/tmp/root.pem"
+        }
+
+
 class TestConfigureAnalyticsEnv:
     """_configure_analytics_env must not set the SQLite fallback when analytics is off."""
 
@@ -130,6 +176,179 @@ class TestConfigureAnalyticsEnv:
         assert os.environ.get("GB_UI_DATABASE_URL") is None
 
     def test_ui_mode_sets_sqlite_url(self, monkeypatch, tmp_path):
-        self._run(monkeypatch, tmp_path, ui_present=True, override=None)
-        url = os.environ.get("GB_UI_DATABASE_URL")
-        assert url is not None and url.startswith("sqlite+aiosqlite:///")
+        # GBSERVER_METADATA_STORAGE unset here defaults to "sql", which since
+        # TestDeriveAnalyticsDatabaseUrl below derives a postgres URL instead — pin
+        # sqlite mode explicitly to keep asserting the SQLite path, and isolate
+        # GB_HOME_DIR so this doesn't probe the real filesystem's home dir.
+        monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
+        monkeypatch.setenv("GB_HOME_DIR", str(tmp_path / "gb_home"))
+        monkeypatch.delenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", raising=False)
+        import importlib
+
+        from gbserver.types import constants
+
+        importlib.reload(constants)
+        try:
+            self._run(monkeypatch, tmp_path, ui_present=True, override=None)
+            url = os.environ.get("GB_UI_DATABASE_URL")
+            assert url is not None and url.startswith("sqlite+aiosqlite:///")
+        finally:
+            importlib.reload(constants)
+
+
+class TestDeriveAnalyticsDatabaseUrl:
+    """derive_analytics_database_url() inherits the main store's backend config
+    instead of an independent SQLite default — see gbserver/types/constants.py.
+    """
+
+    def _reload_constants(self):
+        import importlib
+
+        from gbserver.types import constants
+
+        importlib.reload(constants)
+        return constants
+
+    def _sql_env(self, monkeypatch, **overrides):
+        env = {
+            "GBSERVER_METADATA_STORAGE": "sql",
+            "GBSERVER_SQL_SCHEME": "postgresql",
+            "GBSERVER_SQL_HOST": "pg.example.com",
+            "GBSERVER_SQL_PORT": "5432",
+            "GBSERVER_SQL_USER": "gbui",
+            "GBSERVER_SQL_PASSWD": "s3cr3t",
+            "GBSERVER_SQL_DBNAME": "gbdb",
+            **overrides,
+        }
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.delenv("GBSERVER_SQL_SSLROOT_CERT_FILE", raising=False)
+        monkeypatch.delenv("GBSERVER_SQL_SSLROOT_CERT", raising=False)
+        monkeypatch.delenv("GBSERVER_SQL_SSLROOT_CERT_BASE64", raising=False)
+
+    def test_sql_mode_derives_postgres_asyncpg_url(self, monkeypatch):
+        self._sql_env(monkeypatch)
+        constants = self._reload_constants()
+        try:
+            assert (
+                constants.derive_analytics_database_url()
+                == "postgresql+asyncpg://gbui:s3cr3t@pg.example.com:5432/gbdb"
+            )
+        finally:
+            self._reload_constants()
+
+    def test_sql_mode_url_quotes_special_characters(self, monkeypatch):
+        self._sql_env(
+            monkeypatch, GBSERVER_SQL_USER="gb ui", GBSERVER_SQL_PASSWD="p@ss/word"
+        )
+        constants = self._reload_constants()
+        try:
+            url = constants.derive_analytics_database_url()
+            assert "gb+ui" in url
+            assert "p%40ss%2Fword" in url
+        finally:
+            self._reload_constants()
+
+    def test_sql_mode_unsupported_scheme_returns_none(self, monkeypatch):
+        self._sql_env(monkeypatch, GBSERVER_SQL_SCHEME="mysql")
+        constants = self._reload_constants()
+        try:
+            assert constants.derive_analytics_database_url() is None
+        finally:
+            self._reload_constants()
+
+    def test_sqlite_mode_fresh_install_colocates(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
+        monkeypatch.setenv("GB_HOME_DIR", str(tmp_path))
+        monkeypatch.delenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", raising=False)
+        gb_config.get_config.cache_clear()
+        constants = self._reload_constants()
+        try:
+            url = constants.derive_analytics_database_url()
+            assert url == f"sqlite+aiosqlite:///{tmp_path / 'llmb-server.db'}"
+        finally:
+            self._reload_constants()
+
+    def test_sqlite_mode_existing_install_keeps_legacy_file(
+        self, monkeypatch, tmp_path
+    ):
+        legacy = tmp_path / "dashboard-analytics.db"
+        legacy.write_text("")
+        monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
+        monkeypatch.setenv("GB_HOME_DIR", str(tmp_path))
+        monkeypatch.delenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", raising=False)
+        gb_config.get_config.cache_clear()
+        constants = self._reload_constants()
+        try:
+            url = constants.derive_analytics_database_url()
+            assert url == f"sqlite+aiosqlite:///{legacy}"
+        finally:
+            self._reload_constants()
+
+    def test_sqlite_mode_explicit_colocate_true_overrides_existing_legacy(
+        self, monkeypatch, tmp_path
+    ):
+        legacy = tmp_path / "dashboard-analytics.db"
+        legacy.write_text("")
+        monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
+        monkeypatch.setenv("GB_HOME_DIR", str(tmp_path))
+        monkeypatch.setenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", "true")
+        gb_config.get_config.cache_clear()
+        constants = self._reload_constants()
+        try:
+            url = constants.derive_analytics_database_url()
+            assert url == f"sqlite+aiosqlite:///{tmp_path / 'llmb-server.db'}"
+        finally:
+            self._reload_constants()
+
+    def test_sqlite_mode_explicit_colocate_false_keeps_separate_even_fresh(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
+        monkeypatch.setenv("GB_HOME_DIR", str(tmp_path))
+        monkeypatch.setenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", "false")
+        gb_config.get_config.cache_clear()
+        constants = self._reload_constants()
+        try:
+            url = constants.derive_analytics_database_url()
+            assert url == f"sqlite+aiosqlite:///{tmp_path / 'dashboard-analytics.db'}"
+        finally:
+            self._reload_constants()
+
+
+class TestDeriveAnalyticsSqlConnectArgs:
+    """derive_analytics_sql_connect_args() translates the main store's TLS cert
+    (sslrootcert/sslmode, built for sync psycopg2) into the cert file path
+    gb_ui_backend's db_schema.py turns into an ssl.SSLContext for asyncpg.
+    """
+
+    def _reset_cert_state(self, monkeypatch, *, cert_file=None, cert_base64=None):
+        import gbserver.storage.sql.cert_file as cert_file_module
+
+        # get_ssl_cert_file caches its result in a module global — reset it so each
+        # test starts fresh regardless of what a previous test resolved.
+        monkeypatch.setattr(cert_file_module, "_SSL_CERT_FILE", None)
+        monkeypatch.setattr(
+            cert_file_module, "GBSERVER_SQL_SSLROOT_CERT_FILE", cert_file
+        )
+        monkeypatch.setattr(
+            cert_file_module, "GBSERVER_SQL_SSLROOT_CERT_BASE64", cert_base64
+        )
+
+    def test_no_cert_configured_returns_empty(self, monkeypatch):
+        self._reset_cert_state(monkeypatch)
+        from gbserver.types import constants
+
+        assert constants.derive_analytics_sql_connect_args() == {}
+
+    def test_cert_file_configured_returns_path_for_translation(
+        self, monkeypatch, tmp_path
+    ):
+        cert_path = tmp_path / "root.pem"
+        cert_path.write_text("dummy-cert-content")
+        self._reset_cert_state(monkeypatch, cert_file=str(cert_path))
+        from gbserver.types import constants
+
+        assert constants.derive_analytics_sql_connect_args() == {
+            "sslrootcert_file": str(cert_path)
+        }

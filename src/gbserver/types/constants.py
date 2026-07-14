@@ -21,10 +21,11 @@ import json
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 
-from gbcommon.types.constants import DEFAULT_GH_DOMAIN, get_gh_api_base
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN, get_gb_home_dir, get_gh_api_base
 from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.types.constants_base import (
     ENV_VAR_IBMID_AUTHORIZE_URL,
@@ -215,6 +216,76 @@ def analytics_backend_enabled() -> bool:
     from gb_ui_backend.config import analytics_is_enabled
 
     return analytics_is_enabled(os.path.isdir(gbserver_ui_dir()))
+
+
+def derive_analytics_database_url() -> Optional[str]:
+    """Best-effort default for GB_UI_DATABASE_URL, inherited from the main store's
+    own backend config instead of an independent SQLite default.
+
+    An operator who points the main store at Postgres (GBSERVER_METADATA_STORAGE=sql)
+    gets analytics pointed at that same Postgres instance automatically, rather than
+    silently falling back to a private SQLite file that may not even have a writable
+    directory to live in (the root cause of the crashloop #190 fixed defensively).
+
+    Returns None when no safe default can be derived — callers should leave
+    GB_UI_DATABASE_URL unset in that case; analytics_backend_enabled()'s gating and
+    main.py's try/except around init_analytics() keep that degrading gracefully
+    rather than crashing.
+    """
+    if GB_METADATA_STORAGE == "sql":
+        if GBSERVER_SQL_SCHEME != "postgresql":
+            # Lazy import: gbserver.utils.logger imports this module at its own top
+            # level, so importing it back at our module top would be circular.
+            from gbserver.utils.logger import get_logger
+
+            get_logger(__name__).warning(
+                "GBSERVER_SQL_SCHEME=%s has no known asyncpg equivalent — "
+                "skipping analytics database URL auto-derivation.",
+                GBSERVER_SQL_SCHEME,
+            )
+            return None
+        user = quote_plus(GBSERVER_SQL_USER)
+        password = quote_plus(GBSERVER_SQL_PASSWD)
+        return (
+            f"postgresql+asyncpg://{user}:{password}"
+            f"@{GBSERVER_SQL_HOST}:{GBSERVER_SQL_PORT}/{GBSERVER_SQL_DBNAME}"
+        )
+
+    if GB_METADATA_STORAGE == "sqlite":
+        from gb_ui_backend.config import ANALYTICS_DB_FILENAME, get_config
+        from gbserver.storage.sqlite.sqlite_storage import SQLITE_DB_FILE_NAME
+
+        gb_home = get_gb_home_dir()
+        legacy_path = os.path.join(gb_home, ANALYTICS_DB_FILENAME)
+        colocate = get_config().analytics_colocate_sqlite
+        if colocate is None:
+            # Auto-detect: don't orphan an existing standalone install's history.
+            colocate = not os.path.isfile(legacy_path)
+        if colocate:
+            return f"sqlite+aiosqlite:///{os.path.join(gb_home, SQLITE_DB_FILE_NAME)}"
+        return f"sqlite+aiosqlite:///{legacy_path}"
+
+    return None
+
+
+def derive_analytics_sql_connect_args() -> dict:
+    """JSON-serializable create_async_engine() connect_args for a derived
+    postgresql+asyncpg analytics URL, translating the main SQL store's TLS cert.
+
+    The main store's sync psycopg2 driver takes sslrootcert/sslmode as URL query
+    params (see sql_storage.py's _get_connection_specs()); asyncpg instead needs an
+    ssl.SSLContext passed as a connect arg, which isn't JSON-serializable and can't
+    cross the os.environ boundary to gb_ui_backend as-is. So this only ever returns
+    the cert file *path* under "sslrootcert_file" — gb_ui_backend's db_schema.py
+    builds the actual ssl.SSLContext from that path right before creating the engine.
+    """
+    from gbserver.storage.sql.cert_file import get_ssl_cert_file
+    from gbserver.utils.logger import get_logger
+
+    cert_file = get_ssl_cert_file(get_logger(__name__))
+    if cert_file is None:
+        return {}
+    return {"sslrootcert_file": cert_file}
 
 
 ENV_VAR_GBSERVER_SQL_SCHEME = ENV_VAR_PREFIX + "_SQL_SCHEME"  # postgresql, mysql, etc.
