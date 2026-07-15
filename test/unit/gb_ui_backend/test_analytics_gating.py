@@ -82,14 +82,16 @@ class TestAnalyticsIsEnabled:
         gb_config.get_config.cache_clear()
         assert analytics_is_enabled(ui_assets_present=True) is False
 
-    def test_unrecognized_nonblank_value_does_not_raise(self, monkeypatch):
+    def test_unrecognized_nonblank_value_warns_and_is_true(self, monkeypatch, caplog):
         # A non-blank, non-bool value (typo like "enabled", "on-prod") must not
         # raise a ValidationError out of Config() — that would crash startup in
-        # the parent and every worker. It resolves to a definite bool (anything
-        # set and not a falsy token is true) via the shared parser.
+        # the parent and every worker. It resolves to True (anything set and not
+        # a falsy token) and logs a warning so the likely typo is visible.
         monkeypatch.setenv("GB_UI_ANALYTICS_ENABLED", "enabled")
         gb_config.get_config.cache_clear()
-        assert analytics_is_enabled(ui_assets_present=False) is True
+        with caplog.at_level("WARNING"):
+            assert analytics_is_enabled(ui_assets_present=False) is True
+        assert any("Unrecognized boolean value" in r.message for r in caplog.records)
 
 
 class TestConfigureAnalyticsEnv:
