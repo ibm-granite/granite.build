@@ -180,7 +180,7 @@ class TestMergedQuickstartAssets:
         assert data["type"] == "Skypilot"
 
     def test_bash_env_binds_local_and_hf(self):
-        data = self._load(self.ENVS_DIR / "bash" / "environment.yaml")
+        data = self._load(self.ENVS_DIR / "local_bash" / "environment.yaml")
         uris = {s["store_uri"] for s in data["assetstores"]}
         assert any("local" in u for u in uris)
         assert any("hf" in u for u in uris)
@@ -191,10 +191,10 @@ class TestMergedQuickstartAssets:
         assert any("local" in u for u in uris)
 
     def test_colocated_hello_steps_exist(self):
-        # bash/docker/runpod get co-located hello steps; the single Skypilot
-        # hello (under skypilot/aws) resolves for other Skypilot envs via
-        # env-class match.
-        for env in ("bash", "docker", "runpod"):
+        # local_bash/docker/runpod get co-located hello steps; the single
+        # Skypilot hello (under skypilot/aws) resolves for other Skypilot envs
+        # via env-class match.
+        for env in ("local_bash", "docker", "runpod"):
             assert (self.ENVS_DIR / env / "steps" / "hello" / "step.yaml").exists()
         assert (
             self.ENVS_DIR / "skypilot" / "aws" / "steps" / "hello" / "step.yaml"
@@ -203,7 +203,7 @@ class TestMergedQuickstartAssets:
     def test_bash_hello_step_has_command_script(self):
         script = (
             self.ENVS_DIR
-            / "bash"
+            / "local_bash"
             / "steps"
             / "hello"
             / "bash_scripts"
