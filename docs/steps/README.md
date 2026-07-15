@@ -72,12 +72,20 @@ launchers:
     image: my-registry/my-image:latest
     start_command: "python main.py"
 monitors:
-  - type: log
-    pattern: "STEP_COMPLETE"
+  log_monitor:
+    type: log_monitor            # tails the workload's stdout/stderr
+    config:
+      event_configs: [ ... ]     # rules that turn log lines into build events
 config:
   retry_enabled: false
   retry_transparently: false
 ```
+
+> A monitor turns matching workload log lines into build events — including the artifact
+> events that register a step's outputs. In a full step definition, monitors are declared
+> per environment type under `environment_configs`; see
+> [Monitoring and artifact events](monitoring-and-artifact-events.md) for the real schema and
+> how to capture outputs.
 
 ### Key fields
 
@@ -86,7 +94,7 @@ config:
 | `name` | Step identifier. |
 | `inputs` / `outputs` | Optional I/O schema (`required`/`optional` maps of `name → {type, accept}`, plus `allow_unknown`). Validated against the build's target inputs/outputs before the build runs — a missing required input fails fast. See the [bash example steps](#bash-example-steps) for concrete schemas. |
 | `launchers` | Map of environment type → launch config. The environment selects which launcher to use. |
-| `monitors` | How gbserver detects step completion (log patterns, exit codes). |
+| `monitors` | How gbserver detects step completion and captures outputs by parsing workload logs. See [Monitoring and artifact events](monitoring-and-artifact-events.md). |
 | `config` | Default configuration (overridable by the build.yaml `step.config`). |
 
 Each launcher type matches an environment backend (bash, docker, k8s, lsf,
@@ -124,6 +132,7 @@ Three approaches for running custom code:
 
 ## See also
 
+- [Monitoring and artifact events](monitoring-and-artifact-events.md) — how a step captures its outputs by parsing workload logs
 - [Bash environment](../environments/bash.md) — how bash steps execute (inputs, config, outputs)
 - [Templates](../templates/README.md) — reusable build.yaml patterns
 - [`build.yaml` reference](../builds/build-yaml-reference.md) — full schema

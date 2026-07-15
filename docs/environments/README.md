@@ -178,7 +178,7 @@ event_configs:
 
 | `event_type` | Typical trigger | Common fields |
 |--------------|-----------------|---------------|
-| `NEWARTIFACT_IN_ENVIRONMENT_EVENT` | Workload writes an output | `binding_id` (matches an output name in `build.yaml`), `binding` (JSON with `"path"`) |
+| `NEWARTIFACT_IN_ENVIRONMENT_EVENT` | Workload writes an output | `binding_id` (matches an output name in `build.yaml`), `binding` (JSON with `"path"` for filesystem outputs, or `"state"` for `mem://` outputs) |
 | `MESSAGE_EVENT` | Informational line for the build UI | `msg` |
 | `WORKLOAD_STATUS_EVENT` | Progress update | `status` |
 | `VALIDATION_DATA_EVENT` | Structured metrics | `data` |
@@ -222,6 +222,11 @@ rule works across environments:
       field_value_template: '{ "path": "{{ fields.data.path }}" }'
       is_json: true
 ```
+
+For a `mem://` output the workload emits `LLMB_ARTIFACT_STATE:<value>` instead, and the rule
+builds a `"state"` binding (passed to the consumer verbatim, no path normalisation). See
+[Monitoring and artifact events](../steps/monitoring-and-artifact-events.md) for the step
+author's guide to both variants.
 
 ## `step.yaml` `config:` — common fields read by environments
 
