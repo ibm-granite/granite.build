@@ -47,9 +47,7 @@ def docker_env():
 
 def _mem_stores(env):
     """Return the registered asset stores whose base_uri is ``mem://``."""
-    return [
-        s for s in env.supported_assetstores if s.config.base_uri == "mem://"
-    ]
+    return [s for s in env.supported_assetstores if s.config.base_uri == "mem://"]
 
 
 def test_default_memstore_registered(bash_env):
