@@ -54,3 +54,25 @@ environment_configs:
             - field_name: binding
               field_value_template: '{ "path": "{{ fields.data.path }}" }'
               is_json: true
+          # mem:// output variant: a line that BEGINS with
+          #   LLMB_ARTIFACT_ID:<output-name> LLMB_ARTIFACT_STATE:<value>
+          # registers <value> as the artifact's `state` for the named output.
+          # Unlike LLMB_ARTIFACT_PATH (a filesystem path for env://), the mem://
+          # store passes binding["state"] to the consumer verbatim (no path
+          # normalisation), so a value like a service URL survives intact and the
+          # consumer reads it via {{ bindings.<input>.binding.state }}. Mirrors how
+          # the skypilot code-server/rm-server steps emit mem:// bindings. The two
+          # markers are mutually exclusive per line, so this event and the
+          # PATH event above never both match the same line.
+          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            line_regex: "^LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_STATE:.*"
+            is_json: false
+            event_fields:
+            - field_name: binding_id
+              field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+            - field_name: state
+              field_regex: "(?<=LLMB_ARTIFACT_STATE:).*"
+              is_data: true
+            - field_name: binding
+              field_value_template: '{ "state": "{{ fields.data.state }}" }'
+              is_json: true
