@@ -44,7 +44,7 @@ class TestStandaloneE2E:
         step_yaml = STANDALONE_BUILD_DIR / "steps" / "hello" / "step.yaml"
         assert step_yaml.is_file(), f"step.yaml not found at {step_yaml}"
         env_yaml = (
-            STANDALONE_BUILD_DIR / "environments" / "local_bash" / "environment.yaml"
+            STANDALONE_BUILD_DIR / "environments" / "bash" / "environment.yaml"
         )
         assert env_yaml.is_file(), f"environment.yaml not found at {env_yaml}"
         space_yaml = STANDALONE_BUILD_DIR / "space.yaml"

@@ -1,25 +1,25 @@
-# local_bash environment
+# bash environment
 
-> **Audience:** operators configuring the `local_bash` environment (implemented by the `Bash` class),
+> **Audience:** operators configuring the `bash` environment (implemented by the `Bash` class),
 > anyone authoring a `build.yaml` for it, or writing a custom bash step. For the common schema see
 > [Environment overview](README.md); for step resolution see [step-resolution.md](step-resolution.md).
 
 ## Compute environment
 
-The **local_bash** environment runs a step as a local OS process — no container image, no cluster. It is
+The **bash** environment runs a step as a local OS process — no container image, no cluster. It is
 the simplest backend and the one used by the standalone samples under
 [`samples/standalone/`](../../samples/standalone/). The step's script runs under `nohup`; its
 stdout/stderr are tailed by the monitor, which turns matching lines into build events.
 
 The implementation is the [`Bash`](../../src/gbserver/environment/bash.py) class (`type: Bash`); the
-environment is named `local_bash`.
+environment is named `bash`.
 
 ## `environment.yaml`
 
-The local_bash environment needs no type-specific config:
+The bash environment needs no type-specific config:
 
 ```yaml
-name: local_bash
+name: bash
 type: Bash
 config: {}
 assetstores:
@@ -45,10 +45,10 @@ assetstores:
 
 ## Execution flow
 
-When a target whose `environment_uri` is `space://environments/local_bash` runs a step:
+When a target whose `environment_uri` is `space://environments/bash` runs a step:
 
 1. The step is resolved to a directory containing `step.yaml` (see [step-resolution.md](step-resolution.md)).
-2. The local_bash environment selects the step's `Bash` launcher (type `nohup`) and prepares a working copy
+2. The bash environment selects the step's `Bash` launcher (type `nohup`) and prepares a working copy
    of the step's `bash_scripts/<step.name>/` directory.
 3. gbserver renders the built-in **job-submission script** (`llmb_bash_jobsub.sh`), which exports a set
    of `LLMB_BASH_*` environment variables and then runs the step's `script_path` (e.g. `run.py`).
@@ -68,7 +68,7 @@ model, a `file:` dataset, …) and **automatically exports its local path** as
 # build.yaml
 targets:
   inference:
-    environment_uri: space://environments/local_bash
+    environment_uri: space://environments/bash
     inputs:
       model:                                   # <- target input named "model"
         uri: hf:///ibm-granite/granite-4.0-h-350m
@@ -174,6 +174,6 @@ does exactly this: its `inference` target binds its `adapter` input to the `fine
 - [Environments overview](README.md) and the shared [event_configs schema](README.md#event_configs--log-line-parsing-rules)
 - [Docker environment](docker.md) — the containerized analogue of bash
 - [Steps overview](../steps/README.md) and per-step docs:
-  [inference](../../configurations/assets/environments/local_bash/steps/inference/README.md),
-  [lora-finetune](../../configurations/assets/environments/local_bash/steps/lora-finetune/README.md)
+  [inference](../../configurations/assets/environments/bash/steps/inference/README.md),
+  [lora-finetune](../../configurations/assets/environments/bash/steps/lora-finetune/README.md)
 - [build.yaml reference](../builds/build-yaml-reference.md)

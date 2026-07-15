@@ -12,7 +12,7 @@ granite.build:
   targets:
     # ── Target 1: train the LoRA adapter ───────────────────────────────
     finetune:
-      environment_uri: space://environments/local_bash
+      environment_uri: space://environments/bash
       inputs:
         # The base model — chosen here in build.yaml, downloaded by gbserver,
         # exposed to the script as $LLMB_BASH_INPUT_MODEL.
@@ -45,7 +45,7 @@ granite.build:
 
     # ── Target 2: run inference with base model + the trained adapter ───
     inference:
-      environment_uri: space://environments/local_bash
+      environment_uri: space://environments/bash
       inputs:
         # Same base model as target 1.
         model:

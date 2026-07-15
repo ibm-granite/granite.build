@@ -4,9 +4,9 @@ Train a small **LoRA adapter** on a base model, then run inference with base + a
 in the local **bash** environment (no GPU/container required). Two targets wired together by
 a **cross-target binding**:
 
-1. **`finetune`** — runs the [`lora-finetune`](../../../configurations/assets/environments/local_bash/steps/lora-finetune/README.md)
+1. **`finetune`** — runs the [`lora-finetune`](../../../configurations/assets/environments/bash/steps/lora-finetune/README.md)
    step and registers the trained adapter as its `adapter` output.
-2. **`inference`** — runs the [`inference-lora`](../../../configurations/assets/environments/local_bash/steps/inference-lora/README.md)
+2. **`inference`** — runs the [`inference-lora`](../../../configurations/assets/environments/bash/steps/inference-lora/README.md)
    step, which binds its `adapter` input to `finetune.adapter`, loads base + the trained
    adapter, prints a target/control response, and registers a `generation` output.
 

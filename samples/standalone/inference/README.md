@@ -2,7 +2,7 @@
 
 Run a single-prompt inference against any causal LM in the local **bash** environment — no
 GPU, no container, no cloud credentials. Uses the
-[`inference`](../../../configurations/assets/environments/local_bash/steps/inference/README.md) step.
+[`inference`](../../../configurations/assets/environments/bash/steps/inference/README.md) step.
 
 ## Run it
 

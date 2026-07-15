@@ -65,7 +65,7 @@ granite.build:
   name: lora-finetune
   targets:
     finetune:
-      environment_uri: space://environments/local_bash
+      environment_uri: space://environments/bash
       inputs:
         model:
           uri: hf:///ibm-granite/granite-4.0-h-350m

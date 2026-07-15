@@ -9,7 +9,7 @@ granite.build:
   targets:
     fail-target:
       allow_unknown: true
-      environment_uri: space://environments/local_bash
+      environment_uri: space://environments/bash
       steps:
         # The general-purpose `command` bash step runs an arbitrary shell command
         # from config.bash_config.command.  `exit 1` hard-FAILS the target; the

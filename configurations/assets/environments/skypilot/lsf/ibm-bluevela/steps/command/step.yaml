@@ -4,7 +4,7 @@ type: exec
 # A general-purpose Skypilot step that runs an arbitrary shell command supplied
 # by the build.yaml under `config.bash_config.command`. The step exits with that
 # command's status. It is the Skypilot/LSF analogue of the Bash env's `command`
-# step (configurations/assets/environments/local_bash/steps/command/step.yaml) and is
+# step (configurations/assets/environments/bash/steps/command/step.yaml) and is
 # intended for lightweight integration testing on a Skypilot cluster (e.g.
 # BlueVela LSF). Cluster-specific resources (cluster/zone/accelerators/image_id)
 # are supplied per-step from the build.yaml via `config.launcher_config.resources`.

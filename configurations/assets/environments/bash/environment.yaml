@@ -1,4 +1,4 @@
-name: local_bash
+name: bash
 type: Bash
 config: {}
 assetstores:

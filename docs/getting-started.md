@@ -75,7 +75,7 @@ gb build list
 ```
 
 The quickstart `build.yaml` runs a single step in a local bash process. Edit
-the `environment_uri` line to switch backends — the file has `local_bash`, `docker`,
+the `environment_uri` line to switch backends — the file has `bash`, `docker`,
 `runpod`, and `skypilot` options pre-commented.
 
 ## What just happened

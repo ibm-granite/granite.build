@@ -3,7 +3,7 @@ granite.build:
   targets:
     inference:
       # Local bash process — no cloud creds, no GPU required.
-      environment_uri: space://environments/local_bash
+      environment_uri: space://environments/bash
       inputs:
         # The model is chosen HERE, in build.yaml. gbserver downloads it from
         # HuggingFace and exposes its local path to the step as

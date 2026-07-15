@@ -1,4 +1,4 @@
-name: local_bash-test
+name: bash-test
 type: Bash
 config: {}
 assetstores:

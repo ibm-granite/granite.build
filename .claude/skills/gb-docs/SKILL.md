@@ -10,13 +10,13 @@ The granite.build repo ships docs under `docs/`. They track the installed versio
 
 ## Important caveat: the docs are k8s/LSF-centric
 
-This environment runs the **standalone local_bash backend** by default, but most docs are written for the Kubernetes/LSF backends. Several documented conveniences **do not apply to local_bash**, e.g.:
+This environment runs the **standalone bash backend** by default, but most docs are written for the Kubernetes/LSF backends. Several documented conveniences **do not apply to bash**, e.g.:
 - `config.workload.commands` (inline command list) — k8s/LSF only.
 - `config.gb.files_to_create` / `additional_files` — k8s/LSF only.
 - The generic `gbstep` step — has no bash launcher; using it on bash fails with `KeyError: 'helm'`.
 
 So: use the docs for the **schema and concepts** (URIs, inputs/outputs, the field reference), but for **how a bash step actually launches and behaves**, the authoritative source is the on-disk reality, not the prose:
-- The on-disk steps under `<assets>/environments/local_bash/steps/` — `hello`/`command` are the minimal correct bash steps (`step.yaml` with a `Bash`/`nohup` launcher + a `bash_scripts/<step>/command.sh`), while `inference`/`inference-lora`/`lora-finetune` are the reference for a step that captures outputs as artifacts (they carry the `NEWARTIFACT_IN_ENVIRONMENT_EVENT` monitor).
+- The on-disk steps under `<assets>/environments/bash/steps/` — `hello`/`command` are the minimal correct bash steps (`step.yaml` with a `Bash`/`nohup` launcher + a `bash_scripts/<step>/command.sh`), while `inference`/`inference-lora`/`lora-finetune` are the reference for a step that captures outputs as artifacts (they carry the `NEWARTIFACT_IN_ENVIRONMENT_EVENT` monitor).
 - A *prior successful build's* artifacts under `~/.granite.build/workdir/llm-build-<id>/.../launch-*/` — the copied `step.yaml`, the script, and especially `job.log` (the real stdout). Reverse-engineering a working build beats guessing from docs.
 
 When the docs and on-disk bash reality disagree about bash behavior, trust the on-disk reality and say so.
@@ -48,7 +48,7 @@ Find the granite.build checkout, in this order, then use its `docs/` directory:
 
 **Environments / config / secrets / troubleshooting**
 - `docs/help/troubleshooting.md` — **diagnosing failures** (server or build).
-- `docs/environments/local_bash.md` — the **standalone local_bash backend** (most relevant here); also `docker.md`, `k8s.md`, `lsf.md`, `runpod.md`, `skypilot*.md`, `step-resolution.md`, and `setup/`.
+- `docs/environments/bash.md` — the **standalone bash backend** (most relevant here); also `docker.md`, `k8s.md`, `lsf.md`, `runpod.md`, `skypilot*.md`, `step-resolution.md`, and `setup/`.
 - `docs/configuration/` — `config-files.md`, `environment-variables.md`, `gb-environment.md`.
 - `docs/secrets/` — `local-secrets-manager.md`, `env-secrets-manager.md`, `ibmcloud-secrets-manager.md`; `docs/rest-api/multi-provider-authentication.md`.
 

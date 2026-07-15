@@ -6,7 +6,7 @@
 ## Compute environment
 
 The **docker** environment runs each step in a local **Docker container** (or **Podman** via its
-Docker-compatible API socket). It is the containerized analogue of the [local_bash](local_bash.md) environment:
+Docker-compatible API socket). It is the containerized analogue of the [bash](bash.md) environment:
 same local machine, but the step runs inside an image you choose, with bind-mounted inputs/outputs and
 optional CPU/memory/GPU limits.
 
@@ -99,7 +99,7 @@ and translates it to Docker container limits:
 
 ## How inputs and outputs are wired
 
-- **Inputs.** Unlike [local_bash](local_bash.md), the Docker environment does **not** auto-export input paths as
+- **Inputs.** Unlike [bash](bash.md), the Docker environment does **not** auto-export input paths as
   env vars. Wire a resolved binding into the container explicitly, e.g. via `launcher_config.env` using
   `{{ bindings.<name>.binding.path }}`. HuggingFace inputs loaded via the `hf` asset store are
   bind-mounted read-only under `/gb-hf-models/...` (the whole `models--org--repo` dir is mounted so HF
@@ -113,6 +113,6 @@ and translates it to Docker container limits:
 ## See also
 
 - [Environments overview](README.md)
-- [local_bash environment](local_bash.md) — the non-containerized local backend
+- [bash environment](bash.md) — the non-containerized local backend
 - [Bring your own image](../steps/bring-your-own-image.md)
 - [build.yaml reference](../builds/build-yaml-reference.md)
