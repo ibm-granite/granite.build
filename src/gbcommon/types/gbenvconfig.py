@@ -23,14 +23,28 @@ from pydantic import BaseModel
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 
+# The single source of truth for what counts as "false" when parsing a boolean
+# from an environment-variable string. Anything set but not in this set is true.
+_FALSY_TOKENS = frozenset({"false", "null", "undefined", "no", "off", "0", ""})
+
+
+def parse_boolean(value: str | None, default: bool = False) -> bool:
+    """Parse an env-var-style string into a boolean.
+
+    ``None`` (unset) → ``default``. Otherwise the value is lower-cased and
+    compared against the falsy token set (see ``_FALSY_TOKENS``); a match is
+    ``False``, anything else set is ``True``. This never raises — the single
+    place the string→bool rule is defined, shared by ``getenv_boolean`` and any
+    other caller that already has the string in hand.
+    """
+    if value is None:
+        return default
+    return str(value).strip().lower() not in _FALSY_TOKENS
+
 
 def getenv_boolean(envname: str, default: bool = False) -> bool:
     """Evaluate the environment variable and return as a boolean value."""
-    value = os.getenv(envname)
-    if value is None:
-        return default
-    value_normalized = str(value).lower()
-    return value_normalized not in ["false", "null", "undefined", "no", "0", ""]
+    return parse_boolean(os.getenv(envname), default)
 
 
 class GBEnvConfig(BaseModel):

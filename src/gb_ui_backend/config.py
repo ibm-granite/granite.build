@@ -8,6 +8,8 @@ from functools import lru_cache
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from gbcommon.types.gbenvconfig import parse_boolean
+
 # Default SQLite filename for the analytics database.
 # Stored in ~/.granite.build/ alongside gbserver's llmb-server.db.
 ANALYTICS_DB_FILENAME = "dashboard-analytics.db"
@@ -75,16 +77,16 @@ class Config(BaseSettings):
 
     @field_validator("analytics_enabled", mode="before")
     @classmethod
-    def _blank_analytics_enabled_is_unset(cls, v: object) -> object:
-        # Treat GB_UI_ANALYTICS_ENABLED="" or whitespace as unset (→ None → auto-detect)
-        # rather than a parse error. Setting an env var to empty is a common "disable"
-        # idiom in k8s manifests/shells, and a ValidationError here would crash startup
-        # in both the CLI parent and every worker — the very failure this field prevents.
-        # Also tolerate surrounding whitespace on real values (e.g. " true ").
+    def _parse_analytics_enabled(cls, v: object) -> object:
+        # Parse GB_UI_ANALYTICS_ENABLED into the tri-state without ever raising:
+        # blank/whitespace (a common k8s/shell "unset" idiom) → None → auto-detect;
+        # any other set value → a definite bool via the shared parser. A
+        # ValidationError here would crash startup in the CLI parent and every
+        # worker — the very failure this field exists to prevent.
         if isinstance(v, str):
-            v = v.strip()
-            if v == "":
+            if v.strip() == "":
                 return None
+            return parse_boolean(v)
         return v
 
     @property

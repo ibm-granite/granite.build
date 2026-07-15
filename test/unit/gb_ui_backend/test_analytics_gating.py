@@ -82,6 +82,15 @@ class TestAnalyticsIsEnabled:
         gb_config.get_config.cache_clear()
         assert analytics_is_enabled(ui_assets_present=True) is False
 
+    def test_unrecognized_nonblank_value_does_not_raise(self, monkeypatch):
+        # A non-blank, non-bool value (typo like "enabled", "on-prod") must not
+        # raise a ValidationError out of Config() — that would crash startup in
+        # the parent and every worker. It resolves to a definite bool (anything
+        # set and not a falsy token is true) via the shared parser.
+        monkeypatch.setenv("GB_UI_ANALYTICS_ENABLED", "enabled")
+        gb_config.get_config.cache_clear()
+        assert analytics_is_enabled(ui_assets_present=False) is True
+
 
 class TestConfigureAnalyticsEnv:
     """_configure_analytics_env must not set the SQLite fallback when analytics is off."""
