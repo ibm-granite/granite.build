@@ -79,7 +79,7 @@ If startup fails, show the relevant lines from `/tmp/gbserver.log` rather than g
 
 ## Steps are picked up dynamically — you do NOT need to restart
 
-Once the server is running, adding or editing a **step** under the space's assets (`configurations/.../environments/bash/steps/<name>/`) is picked up on the next build automatically. Do **not** restart gbserver after authoring or changing a step — it resolves the current on-disk step at build time. Only restart if a change genuinely isn't being seen after you've ruled out everything else (wrong path, wrong step name, syntax error).
+Once the server is running, adding or editing a **step** under the space's assets (`configurations/.../environments/local_bash/steps/<name>/`) is picked up on the next build automatically. Do **not** restart gbserver after authoring or changing a step — it resolves the current on-disk step at build time. Only restart if a change genuinely isn't being seen after you've ruled out everything else (wrong path, wrong step name, syntax error).
 
 ## Submitting a build (only if asked)
 

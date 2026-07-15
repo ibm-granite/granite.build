@@ -20,7 +20,7 @@ These reflect how this environment actually behaves. Follow them unless the user
 
 - **Default to standalone.** Assume `GB_ENVIRONMENT=STANDALONE`, a local `gbserver`, the **bash** compute backend, and SQLite. No cloud creds, no Kubernetes. Everything below targets that backend.
 - **A server must be running before you create or run anything.** Building, validating, and running all talk to a live `gbserver`. Before your first `gb` command, confirm one is up; if not, start one. See "Ensure the server is running."
-- **Compose with targets and steps as the workload needs.** A workload is one or more **targets**, each containing one or more **steps**. Steps within a target run sequentially and share a filesystem; targets can be wired together with `binding` (a downstream target's input bound to an upstream target's output) and run on the standalone bash backend. Use sequential steps in one target for phases that share files (e.g. generate data → train in the same workspace); use separate bound targets when phases have distinct inputs/outputs or compute and you want them as separate lineage-tracked units. A single target with one step is still the simplest shape — reach for more structure only when the workload calls for it.
+- **Compose with targets and steps as the workload needs.** A workload is one or more **targets**, each containing one or more **steps**. Steps within a target run sequentially and share a filesystem; targets can be wired together with `binding` (a downstream target's input bound to an upstream target's output) and run on the standalone local_bash backend. Use sequential steps in one target for phases that share files (e.g. generate data → train in the same workspace); use separate bound targets when phases have distinct inputs/outputs or compute and you want them as separate lineage-tracked units. A single target with one step is still the simplest shape — reach for more structure only when the workload calls for it.
 - **The server picks up new/edited steps dynamically.** After you add or change a step under the space's assets, you do **not** need to restart gbserver. The next build resolves the new step. (Restart only if a change genuinely isn't being seen and you've ruled out everything else.)
 - **Steps, step definitions, and scripts live under the space's assets.** Only the build.yaml lives with the user's project. Never inline a training script into build.yaml; put it in the step's `bash_scripts/` dir.
 - **Each step's script sets up its own runtime (venv) internally.** Don't rely on a pre-activated environment. If the workload needs Python deps (torch/trl/peft/…), the script creates/activates its own venv (idempotently) before importing them — see "The step script owns its environment." Never install heavy deps into the gbserver venv.
@@ -50,21 +50,21 @@ export GBSERVER_HOST="http://127.0.0.1:${GBSERVER_PORT:-8080}"
 - Find the space: `gb space list` (works in standalone) gives space names; the space dir is the one passed to `--space-dir` (commonly `configurations/spaces/local`).
 - The space's `space.yaml` has a `base_uris:` chain (e.g. `file://../../assets`) — that's where steps/environments/assetstores resolve from.
 - **Environments:** `ls <assets>/environments/` → typically `bash docker runpod skypilot ...`. Default to `bash`.
-- **Steps:** steps usable on the bash backend live under `<assets>/environments/bash/steps/<name>/`. A step is referenced as `space://steps/<name>` even though it lives in an env-keyed subdir — the resolver maps it.
-- **On-disk reference steps** live under `<assets>/environments/bash/steps/` (`hello`, `command`, `inference`, `inference-lora`, `lora-finetune`). `hello`/`command` are **minimal** steps (launcher + a `MESSAGE_EVENT` log monitor, no artifact capture) — copy them for shape. `inference`, `inference-lora`, and `lora-finetune` are the reference for a step that **captures outputs as artifacts** — they carry the `NEWARTIFACT_IN_ENVIRONMENT_EVENT` monitor. Copy `inference` (or `lora-finetune`) when your step must emit artifacts.
+- **Steps:** steps usable on the local_bash backend live under `<assets>/environments/local_bash/steps/<name>/`. A step is referenced as `space://steps/<name>` even though it lives in an env-keyed subdir — the resolver maps it.
+- **On-disk reference steps** live under `<assets>/environments/local_bash/steps/` (`hello`, `command`, `inference`, `inference-lora`, `lora-finetune`). `hello`/`command` are **minimal** steps (launcher + a `MESSAGE_EVENT` log monitor, no artifact capture) — copy them for shape. `inference`, `inference-lora`, and `lora-finetune` are the reference for a step that **captures outputs as artifacts** — they carry the `NEWARTIFACT_IN_ENVIRONMENT_EVENT` monitor. Copy `inference` (or `lora-finetune`) when your step must emit artifacts.
 
 When you reference `space://steps/<name>` or `space://environments/<name>`, the name must be a real directory you found above.
 
 ## CRITICAL: bash steps need a `nohup` launcher — the generic `gbstep` does NOT work on bash
 
-The builtin `gbstep` step defines launchers only for `k8s` and `Lsf`. On the **bash** backend it falls back to a `helm` launcher and dies with `KeyError: 'helm'`. **Do not reference `space://steps/gbstep` on the bash backend.** Instead, author your own step whose `step.yaml` declares a `Bash` launcher of `type: nohup`. This is the single most common mistake — avoid it.
+The builtin `gbstep` step defines launchers only for `k8s` and `Lsf`. On the **local_bash** backend it falls back to a `helm` launcher and dies with `KeyError: 'helm'`. **Do not reference `space://steps/gbstep` on the local_bash backend.** Instead, author your own step whose `step.yaml` declares a `Bash` launcher of `type: nohup`. This is the single most common mistake — avoid it.
 
 ## Authoring a bash step (the core skill)
 
-A step is a directory under `<assets>/environments/bash/steps/<step-name>/`:
+A step is a directory under `<assets>/environments/local_bash/steps/<step-name>/`:
 
 ```
-<assets>/environments/bash/steps/<step-name>/
+<assets>/environments/local_bash/steps/<step-name>/
 ├── step.yaml
 └── bash_scripts/
     └── <step-name>/          # MUST match the step name
@@ -154,7 +154,7 @@ Either way: the venv is created **inside the step at run time**, is idempotent (
 
 Working build.yaml examples ship under `samples/standalone/` in the granite.build repo — read those for real, runnable references (single- and multi-target shapes).
 
-Keep it with the user's project (not under assets). The example below uses a single target referencing one step — the simplest shape; add more steps to a target (sequential, shared filesystem) or more targets (wired by `binding`) as the workload needs. Settings go in `config.bash.env`. The base model can be an `hf:///owner/repo` input — the bash env's HF assetstore pulls it automatically (no separate pull step), surfacing it as `$LLMB_BASH_INPUT_BASE_MODEL`.
+Keep it with the user's project (not under assets). The example below uses a single target referencing one step — the simplest shape; add more steps to a target (sequential, shared filesystem) or more targets (wired by `binding`) as the workload needs. Settings go in `config.bash.env`. The base model can be an `hf:///owner/repo` input — the local_bash env's HF assetstore pulls it automatically (no separate pull step), surfacing it as `$LLMB_BASH_INPUT_BASE_MODEL`.
 
 ```yaml
 granite.build:
@@ -162,7 +162,7 @@ granite.build:
   version: 0.0.1
   targets:
     run:                                   # one target
-      environment_uri: space://environments/bash
+      environment_uri: space://environments/local_bash
       inputs:
         base_model:
           uri: hf:///ibm-granite/granite-4.0-350m   # triple slash; host defaults to huggingface.co
@@ -219,11 +219,11 @@ This `job.log` is your primary debugging artifact. If a step "succeeded" but did
 
 1. Confirm a gbserver is running (start via `run-gbserver` if not). Set `GB_ENVIRONMENT=STANDALONE`, activate the repo venv.
 2. Discover the space, its `bash` environment, and existing steps by reading `<assets>/`. Read an on-disk step as a template — `hello` for the minimal shape, `inference`/`lora-finetune` for the artifact-capturing shape.
-3. Author the step under `<assets>/environments/bash/steps/<name>/`: `step.yaml` (Bash/`nohup` launcher + artifact monitor) and `bash_scripts/<name>/` (the script, which sets up its own venv and reads settings from env). Make scripts executable.
+3. Author the step under `<assets>/environments/local_bash/steps/<name>/`: `step.yaml` (Bash/`nohup` launcher + artifact monitor) and `bash_scripts/<name>/` (the script, which sets up its own venv and reads settings from env). Make scripts executable.
 4. Write the build.yaml with the user's project: target(s) and step(s) matching the workload (one target/one step is the simplest), settings in `config.bash.env`, base model as an `hf:///` input, outputs via `base_uri`. (No restart needed — the server picks the step up.)
 5. `gb build validate`, then **`gb build start`**. Monitor it with `gb build status <build-id>`; the build is done once it no longer appears in `gb build list`. Then read `job.log` to confirm the workload actually ran (not just that status flipped to SUCCESS).
 6. If anything is unclear about a field/option/error, consult the **`gb-docs`** skill.
 
 ## When unsure
 
-Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s/LSF-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) are **k8s/LSF-only and do not apply to the bash backend**. For bash behavior, the source of truth is the on-disk steps (`hello`/`command` for a minimal launch; `inference`/`lora-finetune` for artifact capture) plus a working build's `job.log`/`step.yaml`.
+Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s/LSF-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) are **k8s/LSF-only and do not apply to the local_bash backend**. For local_bash behavior, the source of truth is the on-disk steps (`hello`/`command` for a minimal launch; `inference`/`lora-finetune` for artifact capture) plus a working build's `job.log`/`step.yaml`.

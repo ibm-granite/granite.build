@@ -73,7 +73,7 @@ def _build_config_with(inputs=None, outputs=None) -> BuildConfig:
         matched_base_key="granite.build",
         targets={
             "t": BuildTargetConfig(
-                environment_uri="space://environments/bash",
+                environment_uri="space://environments/local_bash",
                 inputs=inputs or {},
                 outputs=outputs or {},
                 steps=[],

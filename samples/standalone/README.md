@@ -93,7 +93,7 @@ The sample's `build.yaml` can target any compute-backend environment defined in 
 Local process execution. No extra dependencies.
 
 ```yaml
-environment_uri: space://environments/bash
+environment_uri: space://environments/local_bash
 ```
 
 Compute-heavy bash steps (e.g. the [`lora-finetune`](lora-finetune/) sample) pick the

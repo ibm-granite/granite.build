@@ -19,7 +19,7 @@ configurations/
 │   ├── assetstores/
 │   │   └── <name>/store.yaml
 │   ├── environments/
-│   │   ├── bash/environment.yaml
+│   │   ├── local_bash/environment.yaml
 │   │   ├── docker/environment.yaml
 │   │   ├── skypilot/
 │   │   │   ├── steps/                   # shared by ALL skypilot envs below

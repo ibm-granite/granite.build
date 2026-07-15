@@ -46,16 +46,16 @@ These steps ship with gbserver in `src/gbserver/builtins/steps/`:
 
 ## Bash example steps
 
-These steps ship under `configurations/assets/environments/bash/steps/` and demonstrate
+These steps ship under `configurations/assets/environments/local_bash/steps/` and demonstrate
 inference and LoRA fine-tuning in the local **bash** environment (no GPU or container
-required). See [bash environment](../environments/bash.md) for how a bash step
+required). See [local_bash environment](../environments/local_bash.md) for how a bash step
 receives inputs/config and reports outputs.
 
 | Step | Description | Doc |
 |------|-------------|-----|
-| `inference` | Generate a response to a prompt with any causal LM. | [README](../../configurations/assets/environments/bash/steps/inference/README.md) |
-| `inference-lora` | Inference with an optional LoRA adapter (target + control prompt). | [README](../../configurations/assets/environments/bash/steps/inference-lora/README.md) |
-| `lora-finetune` | Train a LoRA adapter (synthetic or supplied dataset). | [README](../../configurations/assets/environments/bash/steps/lora-finetune/README.md) |
+| `inference` | Generate a response to a prompt with any causal LM. | [README](../../configurations/assets/environments/local_bash/steps/inference/README.md) |
+| `inference-lora` | Inference with an optional LoRA adapter (target + control prompt). | [README](../../configurations/assets/environments/local_bash/steps/inference-lora/README.md) |
+| `lora-finetune` | Train a LoRA adapter (synthetic or supplied dataset). | [README](../../configurations/assets/environments/local_bash/steps/lora-finetune/README.md) |
 
 ## `step.yaml` structure
 
@@ -124,7 +124,7 @@ Three approaches for running custom code:
 
 ## See also
 
-- [Bash environment](../environments/bash.md) — how bash steps execute (inputs, config, outputs)
+- [local_bash environment](../environments/local_bash.md) — how bash steps execute (inputs, config, outputs)
 - [Templates](../templates/README.md) — reusable build.yaml patterns
 - [`build.yaml` reference](../builds/build-yaml-reference.md) — full schema
 - [`environment.yaml` reference](../environments/README.md) — environment definitions

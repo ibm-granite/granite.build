@@ -64,7 +64,7 @@ class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
         target = StoredTargetRun(
             name=name,
             build_id=build_id,
-            environment_uri="space://environments/bash",
+            environment_uri="space://environments/local_bash",
             status=status,
             started_at=started_at,
             skipped_for_prerun_target_id=skipped_for_prerun_target_id,

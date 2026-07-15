@@ -8,7 +8,7 @@ granite.build:
   targets:
     fail-target:
       allow_unknown: true
-      environment_uri: space://environments/bash
+      environment_uri: space://environments/local_bash
       steps:
         - step_uri: space://steps/command
           config:

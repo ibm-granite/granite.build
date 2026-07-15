@@ -41,7 +41,7 @@ granite.build:
   name: inference
   targets:
     inference:
-      environment_uri: space://environments/bash
+      environment_uri: space://environments/local_bash
       inputs:
         model:
           uri: hf:///ibm-granite/granite-4.0-h-350m

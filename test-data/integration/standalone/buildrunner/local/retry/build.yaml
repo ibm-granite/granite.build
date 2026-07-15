@@ -8,7 +8,7 @@ granite.build:
   targets:
     succeed-target:
       allow_unknown: true
-      environment_uri: space://environments/bash
+      environment_uri: space://environments/local_bash
       steps:
         # The general-purpose `command` bash step runs an arbitrary shell command.
         # `exit 0` SUCCEEDS the target, leaving a reusable SUCCESS target run that

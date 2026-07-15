@@ -5,7 +5,7 @@
 > see [step-resolution.md](step-resolution.md).
 
 An **environment** is the compute backend a build target runs on. Each target in a `build.yaml`
-names an `environment_uri` (e.g. `space://environments/bash`); that points at
+names an `environment_uri` (e.g. `space://environments/local_bash`); that points at
 an environment asset whose `environment.yaml` declares the environment **type**, its credentials and
 behaviour, and the asset stores reachable from it. The `space://` URI is resolved through the active
 space's `base_uris` — see [Spaces and `space.yaml`](../spaces/README.md).
@@ -21,7 +21,7 @@ Every compute endpoint gbserver can run a step on, and the page that documents i
 
 | Compute endpoint | `type:` | Reached via | Page |
 |------------------|---------|-------------|------|
-| Local OS process | `Bash` | direct | [bash.md](bash.md) |
+| Local OS process | `Bash` | direct | [local_bash.md](local_bash.md) |
 | Local container (Docker / Podman) | `Docker` | direct | [docker.md](docker.md) |
 | Kubernetes / OpenShift | `K8s` | direct (Helm + AppWrapper) | [k8s.md](k8s.md) |
 | IBM LSF cluster | `Lsf` | direct (`bsub` over SSH) | [lsf.md](lsf.md) |

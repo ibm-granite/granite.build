@@ -13,7 +13,7 @@ granite.build:
   targets:
     command:
       allow_unknown: true
-      environment_uri: space://environments/bash
+      environment_uri: space://environments/local_bash
       inputs:
         env_input:
           # Arbitrary fixed shared-FS path; the value isn't tested (pull is a

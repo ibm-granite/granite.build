@@ -2,7 +2,7 @@ granite.build:
   name: bash-gpu-test
   targets:
     gpu-check:
-      environment_uri: space://environments/bash
+      environment_uri: space://environments/local_bash
       inputs: {}
       outputs: {}
       steps:
