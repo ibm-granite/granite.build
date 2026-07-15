@@ -14,16 +14,21 @@ inject a built-in transfer step (`hfpull`, `cosrclone`, `lhpull` / `lhpush`) or 
 Each environment declares the stores it can reach in its `environment.yaml` `assetstores` block, and
 builds refer to them via `space://assetstores/<name>` URIs resolved through the space's `base_uris`.
 
-> **`env://` is always available.** The env-local (`env://`) store is registered implicitly for
-> **every** environment class — it does **not** need an `assetstores` entry in `environment.yaml`. Its
-> push/pull are shared-filesystem no-ops, so any backend can consume/produce `env://` artifacts. The
-> store is resolved in this order: an explicit `environment.yaml` `env://` entry wins; otherwise a
-> space-provided `space://assetstores/env-local` store *if one exists*; otherwise a bundled
-> [`builtins/assetstores/env-local`](../../src/gbserver/builtins/assetstores/env-local/store.yaml)
-> default. **No shipped space defines an `env-local` store**, so out of the box the bundled default is
-> used; adding one to a space is an optional customization. See
-> [Env-local](#store-types-and-uri-schemes) below and
-> [`Environment._register_default_envstore`](../../src/gbserver/environment/environment.py).
+> **`env://` and `mem://` are always available.** The env-local (`env://`) and in-memory (`mem://`)
+> stores are registered implicitly for **every** environment class — neither needs an `assetstores`
+> entry in `environment.yaml`. Their push/pull transfer nothing (env:// is a shared-filesystem no-op;
+> mem:// passes a value through the build's shared memory), so any backend can consume/produce
+> `env://` / `mem://` artifacts. Each store is resolved in the same order: an explicit
+> `environment.yaml` entry for that scheme wins; otherwise a space-provided
+> `space://assetstores/env-local` / `space://assetstores/mem-local` store *if one exists*; otherwise a
+> bundled
+> [`builtins/assetstores/env-local`](../../src/gbserver/builtins/assetstores/env-local/store.yaml) /
+> [`builtins/assetstores/mem-local`](../../src/gbserver/builtins/assetstores/mem-local/store.yaml)
+> default. **No shipped space defines an `env-local`/`mem-local` store**, so out of the box the bundled
+> default is used; adding one to a space is an optional customization. See
+> [Env-local / In-memory](#store-types-and-uri-schemes) below and
+> [`Environment._register_default_envstore`](../../src/gbserver/environment/environment.py) /
+> [`_register_default_memstore`](../../src/gbserver/environment/environment.py).
 
 ## Store types and URI schemes
 
@@ -47,7 +52,11 @@ Notes:
   `env:outputs/foo`) have no resolution root and are **rejected at build-config load**. Use an absolute
   `env:///…` (a templated `env://{{ binding.path }}` is fine — it resolves to an absolute path).
 - **In-memory (`mem://`)** passes a producer's binding value (e.g. a service URL) verbatim to downstream
-  consumers without touching a filesystem.
+  consumers without touching a filesystem. Like `env://`, it is supported by **all** environment classes
+  and registered automatically — no `environment.yaml` `assetstores` entry is required (see the note
+  above). Because a `mem://` URI is an **opaque key** rather than a path, the value is passed through
+  unchanged — unlike `env://`, it applies no path normalisation, so a value such as `http://host:8000`
+  survives intact instead of being mangled into `/http:/host:8000`.
 
 The store implementations live in [`src/gbserver/asset/`](../../src/gbserver/asset/); the matching URI
 parsers in [`src/gbcommon/uri/`](../../src/gbcommon/uri/).

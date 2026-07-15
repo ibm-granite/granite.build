@@ -122,10 +122,11 @@ environment. Each `load`/`push` entry has a `mode` (e.g. `hf_pull`/`hf_push`, `c
 environment class, which may queue a built-in step (e.g. `hf_pull` injects an
 [hfpull](../../src/gbserver/builtins/) step); the exact set is per-type — see each page.
 
-The env-local (`env://`) store is the one exception: it is registered implicitly for **every**
-environment (push/pull are shared-filesystem no-ops handled by the base class), so `env://` inputs and
-outputs work without an `assetstores` entry here. Declare one only to override its default `load`/`push`
-mode.
+The env-local (`env://`) and in-memory (`mem://`) stores are the exceptions: each is registered
+implicitly for **every** environment (their push/pull transfer nothing — env:// is a shared-filesystem
+no-op, mem:// passes a value through the build's shared memory — handled by the base class), so `env://`
+and `mem://` inputs and outputs work without an `assetstores` entry here. Declare one only to override
+its default `load`/`push` mode.
 
 For the full list of modes and the store types themselves (URI schemes, secrets, configuration), see
 [Asset stores](../asset-stores/README.md#load-and-push-modes).
