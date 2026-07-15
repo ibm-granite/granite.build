@@ -1,17 +1,18 @@
-# Bash environment
+# bash environment
 
-> **Audience:** operators configuring a `Bash` environment, anyone authoring a `build.yaml` for it,
-> or writing a custom bash step. For the common schema see [Environment overview](README.md); for step
-> resolution see [step-resolution.md](step-resolution.md).
+> **Audience:** operators configuring the `bash` environment (implemented by the `Bash` class),
+> anyone authoring a `build.yaml` for it, or writing a custom bash step. For the common schema see
+> [Environment overview](README.md); for step resolution see [step-resolution.md](step-resolution.md).
 
 ## Compute environment
 
-The **bash** environment runs a step as a local OS process — no container image, no cluster. It is the
-simplest backend and the one used by the standalone samples under
+The **bash** environment runs a step as a local OS process — no container image, no cluster. It is
+the simplest backend and the one used by the standalone samples under
 [`samples/standalone/`](../../samples/standalone/). The step's script runs under `nohup`; its
 stdout/stderr are tailed by the monitor, which turns matching lines into build events.
 
-The implementation is [`Bash`](../../src/gbserver/environment/bash.py).
+The implementation is the [`Bash`](../../src/gbserver/environment/bash.py) class (`type: Bash`); the
+environment is named `bash`.
 
 ## `environment.yaml`
 

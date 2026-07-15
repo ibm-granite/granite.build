@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from gbcommon.types.gbenvconfig import parse_boolean
 
 # Default SQLite filename for the analytics database.
 # Stored in ~/.granite.build/ alongside gbserver's llmb-server.db.
@@ -67,6 +69,26 @@ class Config(BaseSettings):
     # Set to false to disable the AI analysis daemon without removing LLM credentials
     ai_analysis_enabled: bool = Field(default=True)
 
+    # Master on/off for the whole analytics subsystem, read from GB_UI_ANALYTICS_ENABLED.
+    # Tri-state: None (unset) → auto-detect off the presence of compiled UI assets
+    # (see analytics_is_enabled); explicit true/false wins. Lets a deployed, API-only
+    # rest-server keep analytics off even though the gb_ui_backend package is installed.
+    analytics_enabled: bool | None = Field(default=None)
+
+    @field_validator("analytics_enabled", mode="before")
+    @classmethod
+    def _parse_analytics_enabled(cls, v: object) -> object:
+        # Parse GB_UI_ANALYTICS_ENABLED into the tri-state without ever raising:
+        # blank/whitespace (a common k8s/shell "unset" idiom) → None → auto-detect;
+        # any other set value → a definite bool via the shared parser. A
+        # ValidationError here would crash startup in the CLI parent and every
+        # worker — the very failure this field exists to prevent.
+        if isinstance(v, str):
+            if v.strip() == "":
+                return None
+            return parse_boolean(v)
+        return v
+
     @property
     def llm_models_list(self) -> list[str]:
         return [m.strip() for m in self.llm_models.split(",") if m.strip()]
@@ -100,3 +122,21 @@ def get_config() -> Config:
 @lru_cache
 def get_github_config() -> GitHubConfig:
     return GitHubConfig()
+
+
+def analytics_is_enabled(ui_assets_present: bool) -> bool:
+    """Resolve whether the analytics subsystem should run.
+
+    An explicit GB_UI_ANALYTICS_ENABLED (config.analytics_enabled) always wins.
+    Otherwise auto-detect: analytics runs only when the compiled frontend assets
+    are present, since an API-only server has no dashboard to serve analytics to.
+
+    ``ui_assets_present`` is passed in rather than computed here because the
+    canonical UI directory (and its GBSERVER_UI_DIR override) lives in gbserver's
+    root_api. This is called from both the CLI parent process and each uvicorn
+    worker; both read the same inherited env and the same UI dir, so they agree.
+    """
+    override = get_config().analytics_enabled
+    if override is not None:
+        return override
+    return ui_assets_present

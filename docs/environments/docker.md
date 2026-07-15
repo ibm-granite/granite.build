@@ -113,6 +113,6 @@ and translates it to Docker container limits:
 ## See also
 
 - [Environments overview](README.md)
-- [Bash environment](bash.md) — the non-containerized local backend
+- [bash environment](bash.md) — the non-containerized local backend
 - [Bring your own image](../steps/bring-your-own-image.md)
 - [build.yaml reference](../builds/build-yaml-reference.md)

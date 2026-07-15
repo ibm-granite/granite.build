@@ -27,6 +27,7 @@ from gbserver.types.constants import (
     ENV_VAR_METADATA_STORAGE,
     GBSERVER_REST_SERVER_TIMEOUT_KEEP_ALIVE,
     GBSERVER_REST_SERVER_WORKERS,
+    analytics_backend_enabled,
 )
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
@@ -42,6 +43,11 @@ def _configure_analytics_env(host: str = "127.0.0.1", port: int = 8080) -> None:
     vars gb_ui_backend's Config reads, so standalone analytics work out of
     the box without requiring the caller to configure a database explicitly.
 
+    Does nothing unless analytics is enabled here (analytics_backend_enabled);
+    an API-only rest-server thus never gets the SQLite fallback below, which
+    would otherwise crash startup on an unwritable path. root_api re-resolves the
+    same way per worker off the same inherited env.
+
     If GB_UI_DATABASE_URL is not set, defaults to the analytics service's own
     SQLite file in the GB home directory (see ANALYTICS_DB_FILENAME in
     gb_ui_backend/config.py).
@@ -53,9 +59,11 @@ def _configure_analytics_env(host: str = "127.0.0.1", port: int = 8080) -> None:
         host: Bind address the main REST server (and frontend) is listening on.
         port: Port the main REST server (and frontend) is listening on.
     """
-    import importlib.util
-
-    if importlib.util.find_spec("gb_ui_backend") is None:
+    if not analytics_backend_enabled():
+        logger.info(
+            "Analytics not enabled — skipping analytics env defaulting "
+            "(no SQLite fallback for GB_UI_DATABASE_URL)"
+        )
         return
 
     gb_home = get_gb_home_dir()

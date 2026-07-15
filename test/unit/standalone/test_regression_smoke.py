@@ -8,6 +8,9 @@ All tests are marked @pytest.mark.g4os and @pytest.mark.unit so they
 run in both the existing CI pipeline and the g4os-mode pipeline.
 """
 
+import contextlib
+import os
+
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -174,6 +177,53 @@ class TestEnvironmentDiscovery:
 # ---------------------------------------------------------------------------
 
 
+@contextlib.contextmanager
+def _root_api_with_analytics():
+    """Yield root_api with analytics forced on, restoring all state on exit.
+
+    root_api decides whether to mount the analytics routers once, at import
+    time, from _ANALYTICS_ENABLED (explicit GB_UI_ANALYTICS_ENABLED, else
+    auto-detect off compiled UI assets). CI has neither the env var nor the UI
+    assets, so a plain import leaves analytics off and the routers unmounted.
+    These tests verify the include_router() wiring itself, so force analytics
+    on and reload the module if the cached copy came up with it disabled.
+
+    Yields the root_api app, or None if root_api can't be imported (missing
+    optional deps) — the caller should skip in that case. On exit, both the
+    GB_UI_ANALYTICS_ENABLED env var and the root_api module are restored to
+    their prior state so nothing leaks into later tests in the same worker.
+    """
+    import importlib
+
+    from gb_ui_backend import config as gb_ui_config
+
+    prev_env = os.environ.get("GB_UI_ANALYTICS_ENABLED")
+    os.environ["GB_UI_ANALYTICS_ENABLED"] = "true"
+    reloaded = False
+    try:
+        try:
+            import gbserver.api.root_api as root_api_mod
+        except ImportError:
+            yield None
+            return
+
+        if not getattr(root_api_mod, "_ANALYTICS_ENABLED", False):
+            gb_ui_config.get_config.cache_clear()
+            root_api_mod = importlib.reload(root_api_mod)
+            reloaded = True
+        yield root_api_mod.root_api
+    finally:
+        if prev_env is None:
+            os.environ.pop("GB_UI_ANALYTICS_ENABLED", None)
+        else:
+            os.environ["GB_UI_ANALYTICS_ENABLED"] = prev_env
+        # If we reloaded root_api to flip analytics on, reload it once more with
+        # the env restored so the cached module reflects the original state.
+        if reloaded:
+            gb_ui_config.get_config.cache_clear()
+            importlib.reload(root_api_mod)
+
+
 class TestAPIRoutes:
     """Verify all expected sub-APIs are mounted on the root API."""
 
@@ -220,27 +270,26 @@ class TestAPIRoutes:
         assertion even if the route were never wired up.
         """
         import importlib.util
-        import os
         from unittest.mock import patch
 
         if importlib.util.find_spec("gb_ui_backend") is None:
             pytest.skip("gb_ui_backend not installed")
 
-        try:
-            from gbserver.api.root_api import root_api
-        except ImportError:
-            pytest.skip(
-                "root_api requires kubernetes_asyncio (transitively via buildwatcher)"
-            )
-
         from fastapi.testclient import TestClient
 
-        env = {"GBSERVER_AUTH_MODE": "apikey", "GBSERVER_API_KEY": ""}
-        with patch.dict(os.environ, env, clear=False):
-            client = TestClient(
-                root_api
-            )  # host "testclient" is in the localhost allowlist
-            response = client.get("/api/analytics/builds/failure-trends/history")
+        with _root_api_with_analytics() as root_api:
+            if root_api is None:
+                pytest.skip(
+                    "root_api requires kubernetes_asyncio "
+                    "(transitively via buildwatcher)"
+                )
+
+            env = {"GBSERVER_AUTH_MODE": "apikey", "GBSERVER_API_KEY": ""}
+            with patch.dict(os.environ, env, clear=False):
+                client = TestClient(
+                    root_api
+                )  # host "testclient" is in the localhost allowlist
+                response = client.get("/api/analytics/builds/failure-trends/history")
         assert response.status_code != 404, (
             "Analytics route not resolved — check the include_router() wiring "
             "in gbserver/api/root_api.py"
@@ -252,25 +301,24 @@ class TestAPIRoutes:
         actual root_api returns 401, confirming AuthMiddleware covers these
         routes now that they're included directly rather than proxied."""
         import importlib.util
-        import os
         from unittest.mock import patch
 
         if importlib.util.find_spec("gb_ui_backend") is None:
             pytest.skip("gb_ui_backend not installed")
 
-        try:
-            from gbserver.api.root_api import root_api
-        except ImportError:
-            pytest.skip(
-                "root_api requires kubernetes_asyncio (transitively via buildwatcher)"
-            )
-
         from fastapi.testclient import TestClient
 
-        env = {"GBSERVER_AUTH_MODE": "apikey", "GBSERVER_API_KEY": "test-key-123"}
-        with patch.dict(os.environ, env, clear=False):
-            client = TestClient(root_api)
-            response = client.get("/api/analytics/builds/failure-trends/history")
+        with _root_api_with_analytics() as root_api:
+            if root_api is None:
+                pytest.skip(
+                    "root_api requires kubernetes_asyncio "
+                    "(transitively via buildwatcher)"
+                )
+
+            env = {"GBSERVER_AUTH_MODE": "apikey", "GBSERVER_API_KEY": "test-key-123"}
+            with patch.dict(os.environ, env, clear=False):
+                client = TestClient(root_api)
+                response = client.get("/api/analytics/builds/failure-trends/history")
         assert response.status_code == 401
 
 
@@ -367,8 +415,6 @@ class TestStandaloneEnvironmentDefaults:
         importlib.reload(constants)
 
         try:
-            import os
-
             assert os.environ.get("GBSERVER_METADATA_STORAGE") == "sqlite"
             assert os.environ.get("GBSERVER_DEFAULT_BUILDRUNNER_TYPE") == "thread"
             assert os.environ.get("GBSERVER_PROCEED_WITHOUT_SECRETS") == "true"
@@ -394,8 +440,6 @@ class TestStandaloneEnvironmentDefaults:
         importlib.reload(constants)
 
         try:
-            import os
-
             # Explicit override preserved
             assert os.environ.get("GBSERVER_METADATA_STORAGE") == "sql"
             # Defaults still applied where not overridden

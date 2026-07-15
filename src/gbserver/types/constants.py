@@ -164,6 +164,7 @@ ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX = (
     ENV_VAR_PREFIX + "_SKYPILOT_PROVISION_BACKOFF_MAX"
 )
 ENV_VAR_METADATA_STORAGE = ENV_VAR_PREFIX + "_METADATA_STORAGE"
+ENV_VAR_UI_DIR = ENV_VAR_PREFIX + "_UI_DIR"
 ENV_VAR_AUTH_MODE = ENV_VAR_PREFIX + "_AUTH_MODE"
 ENV_VAR_API_KEY = ENV_VAR_PREFIX + "_API_KEY"
 ENV_VAR_API_USER = ENV_VAR_PREFIX + "_API_USER"
@@ -188,6 +189,33 @@ ENV_VAR_GBSERVER_ENABLE_SSH_HOST_KEY_VERIFICATION = (
 ENV_VAR_GBSERVER_ENABLE_STEP_RETRY = ENV_VAR_PREFIX + "_ENABLE_STEP_RETRY"
 ENV_VAR_BUILDRUNNERJOB_SLEEP_ON_END = ENV_VAR_PREFIX + "_BUILDRUNNERJOB_SLEEP_ON_END"
 ENV_VAR_BUILTIN_STEP_IMAGE = ENV_VAR_PREFIX + "_BUILTIN_STEP_IMAGE"
+
+
+def gbserver_ui_dir() -> str:
+    """Directory the compiled frontend assets are served from.
+
+    Default: static/ui/ under the gbserver package; override with GBSERVER_UI_DIR.
+    """
+    # This file lives at gbserver/types/constants.py; the package root is two levels up.
+    gbserver_pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.environ.get(ENV_VAR_UI_DIR, os.path.join(gbserver_pkg, "static", "ui"))
+
+
+def analytics_backend_enabled() -> bool:
+    """Whether the gb_ui_backend analytics subsystem should run in this server.
+
+    True only when the package is installed AND enabled — explicit
+    GB_UI_ANALYTICS_ENABLED wins, else auto-detect off the presence of compiled
+    UI assets (an API-only server has no dashboard to serve analytics to, and
+    initializing its DB there would crash startup). Resolved here, off inherited
+    env and the shared UI dir, so the CLI parent and each uvicorn worker agree.
+    """
+    if importlib.util.find_spec("gb_ui_backend") is None:
+        return False
+    from gb_ui_backend.config import analytics_is_enabled
+
+    return analytics_is_enabled(os.path.isdir(gbserver_ui_dir()))
+
 
 ENV_VAR_GBSERVER_SQL_SCHEME = ENV_VAR_PREFIX + "_SQL_SCHEME"  # postgresql, mysql, etc.
 ENV_VAR_GBSERVER_SQL_DBNAME = ENV_VAR_PREFIX + "_SQL_DBNAME"

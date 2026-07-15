@@ -191,9 +191,9 @@ class TestMergedQuickstartAssets:
         assert any("local" in u for u in uris)
 
     def test_colocated_hello_steps_exist(self):
-        # bash/docker/runpod get co-located hello steps; the single Skypilot
-        # hello (under skypilot/aws) resolves for other Skypilot envs via
-        # env-class match.
+        # bash/docker/runpod get co-located hello steps; the single
+        # Skypilot hello (under skypilot/aws) resolves for other Skypilot envs
+        # via env-class match.
         for env in ("bash", "docker", "runpod"):
             assert (self.ENVS_DIR / env / "steps" / "hello" / "step.yaml").exists()
         assert (
