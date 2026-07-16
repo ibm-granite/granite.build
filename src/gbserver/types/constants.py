@@ -231,6 +231,11 @@ def derive_analytics_database_url() -> Optional[str]:
     GB_UI_DATABASE_URL unset in that case; analytics_backend_enabled()'s gating and
     main.py's try/except around init_analytics() keep that degrading gracefully
     rather than crashing.
+
+    Note: the derived sql-mode URL does not carry GBSERVER_SQL_SCHEMA — the main
+    store's tables live in that schema (see sql_storage.py's _get_connection_specs()),
+    but analytics' gbd_* tables land in the connection role's default schema instead.
+    Distinct table prefixes mean this doesn't collide with the main store.
     """
     if GB_METADATA_STORAGE == "sql":
         if GBSERVER_SQL_SCHEME != "postgresql":
@@ -252,18 +257,10 @@ def derive_analytics_database_url() -> Optional[str]:
         )
 
     if GB_METADATA_STORAGE == "sqlite":
-        from gb_ui_backend.config import ANALYTICS_DB_FILENAME, get_config
-        from gbserver.storage.sqlite.sqlite_storage import SQLITE_DB_FILE_NAME
+        from gb_ui_backend.config import ANALYTICS_DB_FILENAME
 
         gb_home = get_gb_home_dir()
-        legacy_path = os.path.join(gb_home, ANALYTICS_DB_FILENAME)
-        colocate = get_config().analytics_colocate_sqlite
-        if colocate is None:
-            # Auto-detect: don't orphan an existing standalone install's history.
-            colocate = not os.path.isfile(legacy_path)
-        if colocate:
-            return f"sqlite+aiosqlite:///{os.path.join(gb_home, SQLITE_DB_FILE_NAME)}"
-        return f"sqlite+aiosqlite:///{legacy_path}"
+        return f"sqlite+aiosqlite:///{os.path.join(gb_home, ANALYTICS_DB_FILENAME)}"
 
     return None
 

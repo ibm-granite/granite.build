@@ -94,33 +94,6 @@ class TestAnalyticsIsEnabled:
         assert any("Unrecognized boolean value" in r.message for r in caplog.records)
 
 
-class TestAnalyticsColocateSqliteBlank:
-    """analytics_colocate_sqlite reuses the same blank-is-unset validator as
-    analytics_enabled (see _blank_is_unset) — GB_UI_ANALYTICS_COLOCATE_SQLITE=""
-    must resolve to None (auto-detect), not raise ValidationError.
-    """
-
-    def test_unset_is_none(self, monkeypatch):
-        monkeypatch.delenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", raising=False)
-        gb_config.get_config.cache_clear()
-        assert gb_config.get_config().analytics_colocate_sqlite is None
-
-    def test_blank_is_none(self, monkeypatch):
-        monkeypatch.setenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", "")
-        gb_config.get_config.cache_clear()
-        assert gb_config.get_config().analytics_colocate_sqlite is None
-
-    def test_explicit_true(self, monkeypatch):
-        monkeypatch.setenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", "true")
-        gb_config.get_config.cache_clear()
-        assert gb_config.get_config().analytics_colocate_sqlite is True
-
-    def test_explicit_false(self, monkeypatch):
-        monkeypatch.setenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", "false")
-        gb_config.get_config.cache_clear()
-        assert gb_config.get_config().analytics_colocate_sqlite is False
-
-
 class TestDatabaseConnectArgsProperty:
     """Config.database_connect_args decodes GB_UI_DATABASE_CONNECT_ARGS (JSON-encoded
     since an ssl.SSLContext can't cross the env-var boundary as-is)."""
@@ -182,7 +155,6 @@ class TestConfigureAnalyticsEnv:
         # GB_HOME_DIR so this doesn't probe the real filesystem's home dir.
         monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
         monkeypatch.setenv("GB_HOME_DIR", str(tmp_path / "gb_home"))
-        monkeypatch.delenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", raising=False)
         import importlib
 
         from gbserver.types import constants
@@ -207,7 +179,6 @@ class TestConfigureAnalyticsEnv:
         """
         monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
         monkeypatch.setenv("GB_HOME_DIR", str(tmp_path / "gb_home"))
-        monkeypatch.delenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", raising=False)
         monkeypatch.delenv("GB_UI_DATABASE_URL", raising=False)
         # Force analytics on explicitly rather than relying on GBSERVER_UI_DIR
         # auto-detection: src/gbserver/static/ui is a gitignored build artifact
@@ -299,56 +270,9 @@ class TestDeriveAnalyticsDatabaseUrl:
         finally:
             self._reload_constants()
 
-    def test_sqlite_mode_fresh_install_colocates(self, monkeypatch, tmp_path):
+    def test_sqlite_mode_uses_dashboard_analytics_db(self, monkeypatch, tmp_path):
         monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
         monkeypatch.setenv("GB_HOME_DIR", str(tmp_path))
-        monkeypatch.delenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", raising=False)
-        gb_config.get_config.cache_clear()
-        constants = self._reload_constants()
-        try:
-            url = constants.derive_analytics_database_url()
-            assert url == f"sqlite+aiosqlite:///{tmp_path / 'llmb-server.db'}"
-        finally:
-            self._reload_constants()
-
-    def test_sqlite_mode_existing_install_keeps_legacy_file(
-        self, monkeypatch, tmp_path
-    ):
-        legacy = tmp_path / "dashboard-analytics.db"
-        legacy.write_text("")
-        monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
-        monkeypatch.setenv("GB_HOME_DIR", str(tmp_path))
-        monkeypatch.delenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", raising=False)
-        gb_config.get_config.cache_clear()
-        constants = self._reload_constants()
-        try:
-            url = constants.derive_analytics_database_url()
-            assert url == f"sqlite+aiosqlite:///{legacy}"
-        finally:
-            self._reload_constants()
-
-    def test_sqlite_mode_explicit_colocate_true_overrides_existing_legacy(
-        self, monkeypatch, tmp_path
-    ):
-        legacy = tmp_path / "dashboard-analytics.db"
-        legacy.write_text("")
-        monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
-        monkeypatch.setenv("GB_HOME_DIR", str(tmp_path))
-        monkeypatch.setenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", "true")
-        gb_config.get_config.cache_clear()
-        constants = self._reload_constants()
-        try:
-            url = constants.derive_analytics_database_url()
-            assert url == f"sqlite+aiosqlite:///{tmp_path / 'llmb-server.db'}"
-        finally:
-            self._reload_constants()
-
-    def test_sqlite_mode_explicit_colocate_false_keeps_separate_even_fresh(
-        self, monkeypatch, tmp_path
-    ):
-        monkeypatch.setenv("GBSERVER_METADATA_STORAGE", "sqlite")
-        monkeypatch.setenv("GB_HOME_DIR", str(tmp_path))
-        monkeypatch.setenv("GB_UI_ANALYTICS_COLOCATE_SQLITE", "false")
         gb_config.get_config.cache_clear()
         constants = self._reload_constants()
         try:

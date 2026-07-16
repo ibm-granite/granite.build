@@ -5,6 +5,7 @@ IBM-specific fields (DMF, Tekton, Aspera) are omitted.
 
 from __future__ import annotations
 
+import ssl
 from datetime import datetime
 from typing import AsyncGenerator, List, Optional
 from uuid import UUID
@@ -46,8 +47,6 @@ def _build_connect_args(raw: dict) -> dict:
     connect_args = dict(raw)
     cert_file = connect_args.pop("sslrootcert_file", None)
     if cert_file:
-        import ssl
-
         connect_args["ssl"] = ssl.create_default_context(cafile=cert_file)
     return connect_args
 

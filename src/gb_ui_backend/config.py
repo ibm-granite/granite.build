@@ -29,8 +29,8 @@ class Config(BaseSettings):
     # Auto-derived by gbserver (see derive_analytics_database_url in
     # gbserver.types.constants) from the main store's own backend config when unset:
     # GBSERVER_METADATA_STORAGE=sql inherits GBSERVER_SQL_* (translated to an asyncpg
-    # URL); GBSERVER_METADATA_STORAGE=sqlite defaults to a SQLite file under
-    # GB_HOME_DIR (see ANALYTICS_DB_FILENAME and analytics_colocate_sqlite below).
+    # URL); GBSERVER_METADATA_STORAGE=sqlite defaults to its own SQLite file under
+    # GB_HOME_DIR (see ANALYTICS_DB_FILENAME).
     database_url: str = Field(
         default="",
         description="SQLAlchemy async URL. Auto-derived by gbserver from the main store's backend config when unset.",
@@ -101,24 +101,6 @@ class Config(BaseSettings):
         # any other set value → a definite bool via the shared parser. A
         # ValidationError here would crash startup in the CLI parent and every
         # worker — the very failure this field exists to prevent.
-        if isinstance(v, str):
-            if v.strip() == "":
-                return None
-            return parse_boolean(v)
-        return v
-
-    # Tri-state, only consulted when GBSERVER_METADATA_STORAGE=sqlite: None (unset) →
-    # auto-detect (keep an existing dashboard-analytics.db if one is already present,
-    # else co-locate analytics' gbd_* tables into the main store's own llmb-server.db —
-    # the two table prefixes don't collide). Explicit true/false always wins, even over
-    # an existing dashboard-analytics.db (see derive_analytics_database_url in
-    # gbserver.types.constants).
-    analytics_colocate_sqlite: bool | None = Field(default=None)
-
-    @field_validator("analytics_colocate_sqlite", mode="before")
-    @classmethod
-    def _parse_analytics_colocate_sqlite(cls, v: object) -> object:
-        # Same blank-is-unset + shared-parser rule as _parse_analytics_enabled above.
         if isinstance(v, str):
             if v.strip() == "":
                 return None

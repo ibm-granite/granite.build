@@ -55,9 +55,9 @@ def _configure_analytics_env(host: str = "127.0.0.1", port: int = 8080) -> None:
     config (see derive_analytics_database_url in gbserver.types.constants):
     GBSERVER_METADATA_STORAGE=sql inherits GBSERVER_SQL_* as a postgresql+asyncpg
     URL (TLS cert, if any, carried via GB_UI_DATABASE_CONNECT_ARGS below);
-    GBSERVER_METADATA_STORAGE=sqlite defaults to a SQLite file under the GB home
-    directory (co-located with gbserver's own file, or the analytics service's
-    private one — see analytics_colocate_sqlite in gb_ui_backend/config.py).
+    GBSERVER_METADATA_STORAGE=sqlite defaults to the analytics service's own
+    SQLite file under the GB home directory (see ANALYTICS_DB_FILENAME in
+    gb_ui_backend/config.py).
     If GB_UI_GBSERVER_DB_URL is not set and gbserver is running in SQLite mode,
     defaults to gbserver's own SQLite file so standalone analytics work out of the box.
     If GB_UI_GBSERVER_URL is not set, defaults to the main server's own host/port.
