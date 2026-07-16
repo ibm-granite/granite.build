@@ -53,6 +53,7 @@ environment_configs:
         # status and artifact lines are distinct, so ordering is irrelevant.
         ref: space://monitors/skypilot
         config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
           log_retrieval:
             mode: "{{ config.log_retrieval_mode | default('startup_window') }}"
             interval_seconds: "{{ config.log_retrieval_interval_seconds | default(15) }}"

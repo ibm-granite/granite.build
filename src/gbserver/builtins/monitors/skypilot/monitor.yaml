@@ -3,21 +3,30 @@
 # references this via `ref: space://monitors/skypilot.yaml` and overrides only
 # what differs (poll interval, log_retrieval mode, extra event_configs).
 #
-# The default profile matches the common LSF/on-completion case; endpoints that
-# differ (e.g. aws polls faster) override `poll_interval_seconds`/`log_retrieval`.
 # The artifact event emits a `binding` payload ({"path": <artifact path>}) — this
 # is what downstream targets dereference as `{{ bindings.<x>.binding.path }}`, and
 # it enables retry-transparent NEWARTIFACT deduplication. Every {{ config.* }}
 # carries a `| default(...)` so a referencing step that omits the key still
 # renders under strict templating.
+#
+# poll_interval_seconds defaults to a SMALL value (15s): the skypilot monitor
+# detects a job's terminal status on its status poll (it sleeps poll_interval
+# between polls; stop_event is not set on normal success), so a large default
+# would delay completion detection for quick jobs by up to that interval. Long-
+# running steps (evals, training, services) override this to a larger value in
+# their step.yaml to reduce polling load over their long runtime.
 type: skypilot_monitor
 config:
-  poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+  poll_interval_seconds: "{{ config.poll_interval_seconds | default(15) }}"
   log_retrieval:
     mode: "{{ config.log_retrieval_mode | default('on_completion') }}"
   event_configs:
+    # env:// artifact: registers <path> for the named output. NOT anchored:
+    # SkyPilot's retrieved job logs prefix stdout lines, so the marker is not at
+    # column 0 — a `^` anchor would fail to match. (Contrast bash, which reads
+    # raw stdout and anchors to avoid matching its own command echo.)
     - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-      line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
       event_fields:
         - field_name: binding_id
           field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
@@ -26,4 +35,18 @@ config:
           is_data: true
         - field_name: binding
           field_value_template: '{ "path": "{{ fields.data.path }}" }'
+          is_json: true
+    # mem:// artifact: registers <value> as the output's `state`, passed verbatim
+    # to a consumer via {{ bindings.<x>.binding.state }} (no path normalisation).
+    # PATH and STATE markers are mutually exclusive per line.
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_STATE:.*"
+      event_fields:
+        - field_name: binding_id
+          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+        - field_name: state
+          field_regex: "(?<=LLMB_ARTIFACT_STATE:).*"
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "state": "{{ fields.data.state }}" }'
           is_json: true

@@ -127,11 +127,13 @@ environment_configs:
             fi
     monitors:
       skypilot_monitor:
-        # Artifact convention + default (poll 900, on_completion) profile come
-        # from the monitor library (space://monitors/skypilot); this eval step matches
-        # that profile and only appends its status banner.
+        # Artifact convention + on_completion profile come from the monitor
+        # library (space://monitors/skypilot). Evals run long, so override the
+        # poll to 900s (lighter status polling over the run) and append the
+        # status banner.
         ref: space://monitors/skypilot
         config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
           extra_event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "Starting sage evaluation"

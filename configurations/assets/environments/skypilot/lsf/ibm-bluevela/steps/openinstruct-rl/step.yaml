@@ -422,6 +422,7 @@ environment_configs:
         # per-step status banner.
         ref: space://monitors/skypilot
         config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
           log_retrieval:
             mode: "{{ config.log_retrieval_mode | default('periodic') }}"
             interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
