@@ -6,9 +6,9 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-"""Two command-step targets on BlueVela LSF (via Skypilot).
+"""Two bash-step targets on BlueVela LSF (via Skypilot).
 
-`first` runs the generic `command` step to echo an output file onto the shared
+`first` runs the generic `bash` step to echo an output file onto the shared
 filesystem and register it as artifact `out1`; `second` binds `first.out1` as an
 input, reads it, and registers its own output `out2`. This exercises cross-target
 output -> input binding over the env_local (shared-FS) assetstore on BlueVela.
@@ -42,8 +42,8 @@ pytestmark = pytest.mark.ibm
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
     reason="Skip in SPS CI/CD until we have environments/skypilot/lsf/bluevela/environment.yaml with key reference in gb-test and other space repos",
 )
-class TestSkypilotBlueVelaCommand2Target(AbstractYamlBuildRunnerTest):
-    """Two command-step targets on BlueVela LSF; target 2 binds target 1's output."""
+class TestSkypilotBlueVela2Target(AbstractYamlBuildRunnerTest):
+    """Two bash-step targets on BlueVela LSF; target 2 binds target 1's output."""
 
     def _get_yaml_spec_dir(self) -> Path:
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""
