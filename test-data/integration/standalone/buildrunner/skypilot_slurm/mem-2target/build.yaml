@@ -23,6 +23,8 @@ granite.build:
       steps:
         - step_uri: space://steps/bash
           config:
+            # Fast completion detection for the test (base skypilot default 60s).
+            poll_interval_seconds: 5
             bash_config:
               command: >-
                 echo "first target emitting mem:// output mem_output1";
@@ -41,6 +43,8 @@ granite.build:
       steps:
         - step_uri: space://steps/bash
           config:
+            # Fast completion detection for the test (base skypilot default 60s).
+            poll_interval_seconds: 5
             bash_config:
               # Assert the state bound from first.mem_output1 is the exact value
               # `first` produced; a mismatch (or empty value if mem:// did not

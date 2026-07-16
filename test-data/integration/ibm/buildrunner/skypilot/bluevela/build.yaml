@@ -22,6 +22,8 @@ granite.build:
       steps:
         - step_uri: space://steps/command
           config:
+            # Fast completion detection for the test (base skypilot default 60s).
+            poll_interval_seconds: 5
             bash_config:
               command: >-
                 echo "first target emitting out1";
@@ -43,6 +45,8 @@ granite.build:
       steps:
         - step_uri: space://steps/command
           config:
+            # Fast completion detection for the test (base skypilot default 60s).
+            poll_interval_seconds: 5
             bash_config:
               # Echoes the path bound from first.out1 — proves the binding flows
               # through gbserver without depending on a file existing on disk.
