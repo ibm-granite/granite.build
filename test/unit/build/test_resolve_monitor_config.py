@@ -139,6 +139,20 @@ class TestResolveMonitorConfig:
         assert len(cfg["event_configs"]) == 2
         assert cfg["event_configs"][-1] == status
 
+    def test_overlay_event_configs_rejected(self: Self, monitor_library) -> None:
+        """An overlay that sets event_configs (vs extra_event_configs) raises.
+
+        merge_dicts replaces lists wholesale, so allowing this would silently drop
+        the referenced monitor's artifact rules; the resolver rejects it instead.
+        """
+        with pytest.raises(ValueError, match="event_configs"):
+            resolve_monitor_config(
+                StepMonitorConfig(
+                    ref="space://monitors/skypilot",
+                    config={"event_configs": [{"event_type": "message_event"}]},
+                )
+            )
+
     def test_same_type_violation_raises(self: Self, monitor_library) -> None:
         """A monitor referencing a different-type parent raises."""
         with pytest.raises(ValueError, match="same type|type"):

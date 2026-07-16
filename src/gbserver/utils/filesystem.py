@@ -181,7 +181,25 @@ def merge_file(
 
 
 def merge_dicts(base: Any, overlay: Any) -> Any:
-    """Merge the 2 dictionaries recursively into one."""
+    """Recursively merge ``overlay`` onto ``base``, returning a new value.
+
+    Nested dicts are merged key-by-key; for any non-dict value — including
+    **lists** — the ``overlay`` value replaces the ``base`` value wholesale (it is
+    not concatenated or element-merged). Keys present only in ``base`` are kept;
+    keys whose values differ in type are overwritten by ``overlay`` (logged). A
+    ``None`` overlay value is preserved rather than treated as a deletion.
+
+    Note the list-replace behaviour: callers that need to *append* to a base list
+    (e.g. a monitor's ``event_configs``) must handle that themselves rather than
+    rely on this merge — see ``resolve_monitor_config``'s ``extra_event_configs``.
+
+    Args:
+        base: The base value (typically a dict).
+        overlay: The overriding value merged on top of ``base``.
+
+    Returns:
+        The merged value: a new dict when both inputs are dicts, else ``overlay``.
+    """
     if isinstance(base, dict) and isinstance(overlay, dict):
         updated = {}
         for k in base:

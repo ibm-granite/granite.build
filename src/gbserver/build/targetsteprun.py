@@ -104,10 +104,16 @@ def resolve_monitor_config(
 
     Inline entries (no ``ref``) return ``(type, deepcopy(config))``. A ``ref``
     names a monitor file (``space://monitors/<name>``); its own parent
-    ``ref`` chain is resolved recursively, deep-merging each ``config`` overlay
-    (child wins) via ``merge_dicts`` and appending ``extra_event_configs`` at
-    each level. The referring entry's ``type`` (when set) must equal the
-    referenced chain's ``type`` — a monitor may only reference another of the
+    ``ref`` chain is resolved recursively, merging each ``config`` overlay over
+    the inherited config via ``merge_dicts`` — nested dicts merge, but scalars
+    and **lists replace wholesale** (child wins). To *extend* the referenced
+    monitor's ``event_configs`` (rather than replace them), an overlay uses the
+    reserved ``extra_event_configs`` list, which is appended to the inherited
+    ``event_configs`` at each level. Setting ``event_configs`` directly in an
+    overlay is **rejected**: because lists replace, it would silently drop the
+    referenced monitor's artifact rules (and the ``binding`` payload downstream
+    consumers dereference). The referring entry's ``type`` (when set) must equal
+    the referenced chain's ``type`` — a monitor may only reference another of the
     same type. All configs are deepcopied so a resolution never mutates a shared
     loaded file.
 
@@ -122,8 +128,9 @@ def resolve_monitor_config(
         pre-template config dict (``extra_event_configs`` consumed, not present).
 
     Raises:
-        ValueError: On an unreadable/non-local ref, a reference cycle, or a
-            cross-type reference.
+        ValueError: On an unreadable/non-local ref, a reference cycle, a
+            cross-type reference, or an overlay that sets ``event_configs``
+            directly (use ``extra_event_configs`` to append instead).
     """
     if not monitor_config.ref:
         return monitor_config.type, deepcopy(monitor_config.config or {})
@@ -148,6 +155,17 @@ def resolve_monitor_config(
 
     overlay = deepcopy(monitor_config.config or {})
     extra_event_configs = overlay.pop("extra_event_configs", [])
+    if "event_configs" in overlay:
+        # merge_dicts replaces lists wholesale, so an overlay event_configs would
+        # discard the referenced monitor's artifact rules (and their binding
+        # payload) rather than extend them — a silent, hard-to-spot breakage.
+        # Appending is the only sensible overlay operation; enforce it.
+        raise ValueError(
+            f"Monitor ref '{monitor_config.ref}' overlay sets 'event_configs', "
+            "which would replace the referenced monitor's rules wholesale and "
+            "drop its artifact bindings. Use 'extra_event_configs' to append "
+            "rules, or define an inline monitor to replace them entirely."
+        )
     merged = merge_dicts(base_config, overlay)
     if extra_event_configs:
         merged["event_configs"] = list(merged.get("event_configs", [])) + list(
