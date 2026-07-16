@@ -311,26 +311,37 @@ def describe(
                             )
                     for index, monitor in enumerate(monitors):
                         for m in monitor:
-                            parsed_env_configs.append(
-                                [
-                                    f"{env_config_name}.monitors.{m}.type",
-                                    monitors[index][m].get("type"),
-                                ]
-                            )
+                            mon = monitors[index][m]
+                            prefix = f"{env_config_name}.monitors.{m}"
 
-                            monitor_config = monitors[index][m].get("config")
-                            if monitor_config:
-                                event_configs = monitor_config.get("event_configs", [])
-                                parsed_event_configs = [
-                                    parse_event_config_output(ec)
-                                    for ec in event_configs
-                                ]
+                            # A ref-based monitor points at a library monitor
+                            # (space://monitors/<name>); surface the ref so the
+                            # output isn't just an unresolved overlay. `type` is
+                            # optional for refs — only show it when actually set.
+                            if mon.get("ref"):
+                                parsed_env_configs.append([f"{prefix}.ref", mon["ref"]])
+                            if mon.get("type"):
                                 parsed_env_configs.append(
-                                    [
-                                        f"{env_config_name}.monitors.{m}.config.event_configs",
-                                        "\n".join(parsed_event_configs),
-                                    ]
+                                    [f"{prefix}.type", mon["type"]]
                                 )
+
+                            monitor_config = mon.get("config")
+                            if monitor_config:
+                                # Inline monitors carry `event_configs`; ref
+                                # overlays carry `extra_event_configs` (appended to
+                                # the referenced monitor's rules at resolution).
+                                for key in ("event_configs", "extra_event_configs"):
+                                    ecs = monitor_config.get(key, [])
+                                    if ecs:
+                                        parsed_event_configs = [
+                                            parse_event_config_output(ec) for ec in ecs
+                                        ]
+                                        parsed_env_configs.append(
+                                            [
+                                                f"{prefix}.config.{key}",
+                                                "\n".join(parsed_event_configs),
+                                            ]
+                                        )
 
                 env_config_output = tabulate(
                     parsed_env_configs,
