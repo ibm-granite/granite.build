@@ -10,13 +10,8 @@ environment_configs:
         monitors:
         - log_monitor
     monitors:
+      # Uses the shared monitor library (space://monitors/bash). hello emits no artifact
+      # markers, so the monitor's artifact events simply never fire — only the
+      # MESSAGE_EVENT stream applies, matching this step's original behavior.
       log_monitor:
-        type: log_monitor
-        config:
-          event_configs:
-          - event_type: MESSAGE_EVENT
-            line_regex: .*
-            is_json: false
-            event_fields:
-            - field_name: msg
-              field_regex: .*
+        ref: space://monitors/bash

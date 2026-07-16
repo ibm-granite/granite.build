@@ -17,7 +17,7 @@
 from enum import StrEnum, auto
 from typing import Dict, List, Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from gbcommon.types.config import Config
 
@@ -43,8 +43,29 @@ class StepLauncherConfig(Config):
 
 
 class StepMonitorConfig(Config):
-    type: str
+    # Either an inline monitor (``type`` required) or a reference to an
+    # environment.yaml monitor (``ref`` set; ``type`` optional override,
+    # ``config`` an optional overlay). Mirrors gbserver.types.stepconfig.
+    type: Optional[str] = None
+    ref: Optional[str] = None
     config: Optional[Dict] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def check_type_or_ref(self):
+        """Require ``type`` for inline entries or ``ref`` for reference entries.
+
+        Returns:
+            The validated model instance.
+
+        Raises:
+            ValueError: If neither ``type`` nor ``ref`` is provided.
+        """
+        if not self.ref and not self.type:
+            raise ValueError(
+                "StepMonitorConfig requires 'type' (inline monitor) or 'ref' "
+                "(reference to an environment.yaml monitor)."
+            )
+        return self
 
 
 class StepEnvironmentTypeConfig(Config):

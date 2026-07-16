@@ -1,0 +1,29 @@
+# Base monitor for the `skypilot_monitor` type, shared by all Skypilot
+# endpoints. A step (or an endpoint-specific monitor file, e.g. skypilot-aws.yaml)
+# references this via `ref: space://monitors/skypilot.yaml` and overrides only
+# what differs (poll interval, log_retrieval mode, extra event_configs).
+#
+# The default profile matches the common LSF/on-completion case; endpoints that
+# differ (e.g. aws polls faster) override `poll_interval_seconds`/`log_retrieval`.
+# The artifact event emits a `binding` payload ({"path": <artifact path>}) — this
+# is what downstream targets dereference as `{{ bindings.<x>.binding.path }}`, and
+# it enables retry-transparent NEWARTIFACT deduplication. Every {{ config.* }}
+# carries a `| default(...)` so a referencing step that omits the key still
+# renders under strict templating.
+type: skypilot_monitor
+config:
+  poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+  log_retrieval:
+    mode: "{{ config.log_retrieval_mode | default('on_completion') }}"
+  event_configs:
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
+      event_fields:
+        - field_name: binding_id
+          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+        - field_name: path
+          field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "path": "{{ fields.data.path }}" }'
+          is_json: true

@@ -26,8 +26,11 @@ import traceback
 from asyncio import Queue, TaskGroup
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Optional, Self
+from typing import Any, Dict, Optional, Self, Tuple
 
+import yaml
+
+from gbcommon.uri.uri import URI
 from gbserver.build.run import Run
 from gbserver.build.target import Target
 from gbserver.build.targetstep import TargetStep
@@ -40,15 +43,118 @@ from gbserver.types.buildevent import (
 )
 from gbserver.types.constants import USE_LESS_COMPUTE_ON_DRY_RUN
 from gbserver.types.status import STATUS_TO_ICON, Status
-from gbserver.types.stepconfig import StepLauncherConfig
+from gbserver.types.stepconfig import StepLauncherConfig, StepMonitorConfig
 from gbserver.utils.filesystem import (
     fill_templates_in_dir,
+    merge_dicts,
     sync_or_copy,
 )
 from gbserver.utils.logger import get_logger
 from gbserver.utils.template import fill_objtemplate
 
 logger = get_logger(__name__)
+
+
+MONITOR_FILE_NAME = "monitor.yaml"
+
+
+def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
+    """Load and parse a monitor-library entry referenced by a ``space://`` URI.
+
+    Mirrors how steps resolve (``space://steps/<name>`` → a directory containing
+    ``step.yaml``): ``space://monitors/<name>`` resolves — via the space
+    resolver — to a directory whose ``monitor.yaml`` holds the monitor. The
+    shipped ``builtins/monitors/`` tree is a base URI (the default); a
+    configurations-level ``monitors/`` tree overrides by name. A monitor.yaml
+    has the same ``{type, ref, config}`` shape as a :class:`StepMonitorConfig`,
+    so a monitor may itself reference a parent monitor.
+
+    Args:
+        uri_str: Monitor URI, e.g. ``space://monitors/skypilot``.
+
+    Returns:
+        The parsed monitor as a :class:`StepMonitorConfig`.
+
+    Raises:
+        ValueError: If the URI does not resolve to a readable local
+            ``monitor.yaml``.
+    """
+    resolved = URI.get_uri(uri_str, default_scheme="file")
+    parsed = resolved.uri
+    if parsed is None or parsed.scheme != "file":
+        raise ValueError(
+            f"Monitor ref '{uri_str}' resolved to a non-local URI; monitor "
+            "files must be local."
+        )
+    monitor_path = Path(parsed.path) / MONITOR_FILE_NAME
+    try:
+        with open(monitor_path, "r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except OSError as exc:
+        raise ValueError(
+            f"Cannot read monitor for ref '{uri_str}' at '{monitor_path}': {exc}"
+        ) from exc
+    return StepMonitorConfig.model_validate(data)
+
+
+def resolve_monitor_config(
+    monitor_config: StepMonitorConfig, _seen: Optional[set] = None
+) -> Tuple[Optional[str], Dict]:
+    """Resolve a monitor entry (inline, or a ``ref`` to a monitor-library file).
+
+    Inline entries (no ``ref``) return ``(type, deepcopy(config))``. A ``ref``
+    names a monitor file (``space://monitors/<name>.yaml``); its own parent
+    ``ref`` chain is resolved recursively, deep-merging each ``config`` overlay
+    (child wins) via ``merge_dicts`` and appending ``extra_event_configs`` at
+    each level. The referring entry's ``type`` (when set) must equal the
+    referenced chain's ``type`` — a monitor may only reference another of the
+    same type. All configs are deepcopied so a resolution never mutates a shared
+    loaded file.
+
+    Args:
+        monitor_config: The monitor entry to resolve (from a step's ``monitors``
+            map or a monitor-library file).
+        _seen: Internal — ref URIs already on the current chain, for cycle
+            detection.
+
+    Returns:
+        A ``(type, config)`` tuple: the resolved monitor type and the merged,
+        pre-template config dict (``extra_event_configs`` consumed, not present).
+
+    Raises:
+        ValueError: On an unreadable/non-local ref, a reference cycle, or a
+            cross-type reference.
+    """
+    if not monitor_config.ref:
+        return monitor_config.type, deepcopy(monitor_config.config or {})
+
+    seen = _seen or set()
+    if monitor_config.ref in seen:
+        raise ValueError(
+            f"Monitor ref cycle detected at '{monitor_config.ref}' "
+            f"(chain: {sorted(seen)})"
+        )
+
+    parent = _load_monitor_file(monitor_config.ref)
+    base_type, base_config = resolve_monitor_config(
+        parent, seen | {monitor_config.ref}
+    )
+    if monitor_config.type and base_type and monitor_config.type != base_type:
+        raise ValueError(
+            f"Monitor ref '{monitor_config.ref}' has type '{base_type}', which "
+            f"differs from the referring monitor's type '{monitor_config.type}';"
+            " a monitor may only reference another of the same type."
+        )
+
+    overlay = deepcopy(monitor_config.config or {})
+    extra_event_configs = overlay.pop("extra_event_configs", [])
+    merged = merge_dicts(base_config, overlay)
+    if extra_event_configs:
+        merged["event_configs"] = list(merged.get("event_configs", [])) + list(
+            extra_event_configs
+        )
+    return (monitor_config.type or base_type), merged
+
 
 TARGETRUNS_KEY = "targetruns"
 BINDINGS_KEY = "bindings"
@@ -225,7 +331,9 @@ class TargetStepRun(Run):
 
             filled_monitor_configs = {}
             for name, monitor in self.monitors.items():
-                monitor_config = deepcopy(monitor.config or {})
+                # Resolve any monitor-library reference (ref + overlay/append)
+                # to a concrete (type, config) before rendering templates.
+                monitor_type, monitor_config = resolve_monitor_config(monitor)
                 filled_monitor_config = fill_objtemplate(
                     monitor_config,
                     self.full_config,
@@ -233,7 +341,7 @@ class TargetStepRun(Run):
                     skip_keys={"field_value_template"},
                 )
                 filled_monitor_configs[name] = {
-                    "type": monitor.type,
+                    "type": monitor_type,
                     "config": filled_monitor_config,
                 }
 
@@ -342,8 +450,14 @@ class TargetStepRun(Run):
                     monitor_config = self_entity.step_environment_config.monitors[
                         monitor
                     ]
-                    if monitor_config.config is None:
-                        monitor_config.config = {}
+                    # Resolve any monitor-library reference (ref + overlay/append)
+                    # to a concrete (type, config) — inline monitors pass through.
+                    monitor_type, resolved_config = resolve_monitor_config(
+                        monitor_config
+                    )
+                    assert (
+                        monitor_type is not None
+                    ), f"monitor '{monitor}' has no resolved type"
                     # Render Jinja templates in the monitor config against the
                     # full config before passing it to the monitor. fill_objtemplate
                     # is non-mutating, so the rendered copy stored in
@@ -353,14 +467,14 @@ class TargetStepRun(Run):
                     # field_value_template is skipped so per-log-line templates stay
                     # literal for later rendering.
                     filled_monitor_config = fill_objtemplate(
-                        deepcopy(monitor_config.config),
+                        resolved_config,
                         self.full_config,
                         strict=True,
                         skip_keys={"field_value_template"},
                     )
                     monitor_tasks.add(
                         self_entity.environment.monitor(
-                            type=monitor_config.type,
+                            type=monitor_type,
                             launch_id=self.launch_id,
                             task_group=tg,
                             event_q=self.event_q,

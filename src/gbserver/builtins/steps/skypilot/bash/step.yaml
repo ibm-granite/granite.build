@@ -25,20 +25,8 @@ environment_configs:
           run: |
             {{ config.bash_config.command }}
     monitors:
+      # References the shipped monitor library (builtins/monitors/skypilot) as-is
+      # — no environment dependency, no override. Inherits the standard artifact
+      # convention (with binding) and the default poll/log_retrieval profile.
       skypilot_monitor:
-        type: skypilot_monitor
-        config:
-          poll_interval_seconds: 5
-          event_configs:
-            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
-              is_json: false
-              event_fields:
-                - field_name: binding_id
-                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
-                - field_name: path
-                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
-                  is_data: true
-                - field_name: binding
-                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
-                  is_json: true
+        ref: space://monitors/skypilot
