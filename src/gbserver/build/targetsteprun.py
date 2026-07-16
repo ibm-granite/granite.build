@@ -103,7 +103,7 @@ def resolve_monitor_config(
     """Resolve a monitor entry (inline, or a ``ref`` to a monitor-library file).
 
     Inline entries (no ``ref``) return ``(type, deepcopy(config))``. A ``ref``
-    names a monitor file (``space://monitors/<name>.yaml``); its own parent
+    names a monitor file (``space://monitors/<name>``); its own parent
     ``ref`` chain is resolved recursively, deep-merging each ``config`` overlay
     (child wins) via ``merge_dicts`` and appending ``extra_event_configs`` at
     each level. The referring entry's ``type`` (when set) must equal the

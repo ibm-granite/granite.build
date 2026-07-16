@@ -154,6 +154,21 @@ environment_configs:
           event_configs: [ ... ]  # Log-line parsing rules (see below).
 ```
 
+A monitor entry may instead **reference** a shared monitor from the library rather than inline
+`type`/`config`:
+
+```yaml
+    monitors:
+      <monitor_name>:
+        ref: space://monitors/<name>   # e.g. bash, docker, skypilot
+        config: { ... }                # Optional overlay deep-merged over the referenced monitor.
+```
+
+The referenced monitor lives at `src/gbserver/builtins/monitors/<name>/monitor.yaml` and already
+carries the standard `LLMB_ARTIFACT_*` rules. See
+[Referencing a shared monitor](../steps/monitoring-and-artifact-events.md#referencing-a-shared-monitor-the-monitor-library)
+for the overlay rules (`extra_event_configs`, same-type constraint).
+
 ## `event_configs` — log-line parsing rules
 
 `event_configs` live under a monitor's `config` and turn matching log lines into `BuildEvent`s

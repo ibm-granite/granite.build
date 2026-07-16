@@ -22,7 +22,7 @@ environment_configs:
           - -c
           - '{{ config.image_config.command }}'
     monitors:
-      # References the shipped monitor library (builtins/monitors/docker.yaml):
+      # References the shipped monitor library (builtins/monitors/docker/monitor.yaml):
       # standard LLMB artifact detection (with binding) + a MESSAGE stream. No
       # environment dependency — resolves against the shipped default.
       docker_log:

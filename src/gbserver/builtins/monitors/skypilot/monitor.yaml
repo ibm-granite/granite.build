@@ -1,7 +1,8 @@
 # Base monitor for the `skypilot_monitor` type, shared by all Skypilot
-# endpoints. A step (or an endpoint-specific monitor file, e.g. skypilot-aws.yaml)
-# references this via `ref: space://monitors/skypilot.yaml` and overrides only
-# what differs (poll interval, log_retrieval mode, extra event_configs).
+# endpoints. A step (or an endpoint-specific monitor file, e.g.
+# builtins/monitors/skypilot-aws/monitor.yaml) references this via
+# `ref: space://monitors/skypilot` and overrides only what differs (poll
+# interval, log_retrieval mode, extra event_configs).
 #
 # The artifact event emits a `binding` payload ({"path": <artifact path>}) — this
 # is what downstream targets dereference as `{{ bindings.<x>.binding.path }}`, and

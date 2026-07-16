@@ -1,5 +1,5 @@
 # Shared monitor for the `log_monitor` type (Bash environment). Referenced by
-# bash steps via `ref: space://monitors/bash.yaml`. Streams every log line as a
+# bash steps via `ref: space://monitors/bash`. Streams every log line as a
 # MESSAGE_EVENT and detects the standard LLMB artifact markers (env:// PATH and
 # mem:// STATE forms). Steps that emit no artifact markers simply never fire
 # those events.

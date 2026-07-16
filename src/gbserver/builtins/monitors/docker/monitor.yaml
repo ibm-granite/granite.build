@@ -1,5 +1,5 @@
 # Shared monitor for the `docker_log` type (Docker environment). Referenced by
-# docker steps via `ref: space://monitors/docker.yaml`. Detects the standard
+# docker steps via `ref: space://monitors/docker`. Detects the standard
 # LLMB env:// artifact marker (with a binding payload) and streams every other
 # line as a MESSAGE_EVENT.
 type: docker_log
