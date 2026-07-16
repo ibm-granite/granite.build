@@ -48,7 +48,7 @@ pytestmark = pytest.mark.skypilot_integration
     not _slurm_cluster_reachable(),
     reason="Docker SLURM cluster not reachable (run: make slurm-setup)",
 )
-class TestSkypilotSlurmMem2Target(AbstractYamlBuildRunnerTest):
+class TestSkypilotSlurm2Target(AbstractYamlBuildRunnerTest):
     """Cross-target mem:// output → input binding over two skypilot bash steps."""
 
     def _get_yaml_spec_dir(self) -> Path:
