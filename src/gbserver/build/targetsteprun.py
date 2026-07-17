@@ -91,9 +91,7 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
     try:
         monitor_dir = Asset(uri_str).sync()
     except Exception as exc:
-        raise ValueError(
-            f"Cannot fetch monitor for ref '{uri_str}': {exc}"
-        ) from exc
+        raise ValueError(f"Cannot fetch monitor for ref '{uri_str}': {exc}") from exc
     # Recursive glob mirrors step resolution: a directory source may be nested
     # one level under the sync dest (e.g. dest/<name>/monitor.yaml).
     files = glob.glob(str(monitor_dir / "**" / MONITOR_FILE_NAME), recursive=True)
@@ -159,9 +157,7 @@ def resolve_monitor_config(
         )
 
     parent = _load_monitor_file(monitor_config.ref)
-    base_type, base_config = resolve_monitor_config(
-        parent, seen | {monitor_config.ref}
-    )
+    base_type, base_config = resolve_monitor_config(parent, seen | {monitor_config.ref})
     if monitor_config.type and base_type and monitor_config.type != base_type:
         raise ValueError(
             f"Monitor ref '{monitor_config.ref}' has type '{base_type}', which "

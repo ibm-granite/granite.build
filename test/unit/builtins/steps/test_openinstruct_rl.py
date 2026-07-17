@@ -20,9 +20,7 @@ from gbserver.types.stepconfig import StepMonitorConfig
 from gbserver.utils.template import fill_template
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-LSF_ENV_DIR = (
-    REPO_ROOT / "configurations/assets/environments/skypilot/lsf/ibm-bluevela"
-)
+LSF_ENV_DIR = REPO_ROOT / "configurations/assets/environments/skypilot/lsf/ibm-bluevela"
 RL_STEP_YAML = LSF_ENV_DIR / "steps/openinstruct-rl/step.yaml"
 _BUILTINS_URI = (REPO_ROOT / "src/gbserver/builtins").as_uri()
 

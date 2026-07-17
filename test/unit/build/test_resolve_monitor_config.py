@@ -156,9 +156,7 @@ class TestResolveMonitorConfig:
     def test_same_type_violation_raises(self: Self, monitor_library) -> None:
         """A monitor referencing a different-type parent raises."""
         with pytest.raises(ValueError, match="same type|type"):
-            resolve_monitor_config(
-                StepMonitorConfig(ref="space://monitors/crosstype")
-            )
+            resolve_monitor_config(StepMonitorConfig(ref="space://monitors/crosstype"))
 
     def test_cycle_raises(self: Self, monitor_library) -> None:
         """A reference cycle raises rather than recursing forever."""
