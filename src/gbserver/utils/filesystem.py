@@ -226,6 +226,31 @@ def merge_dicts(base: Any, overlay: Any) -> Any:
     return overlay
 
 
+def find_files_shallowest_first(root: Union[str, Path], filename: str) -> List[str]:
+    """Recursively find ``filename`` under ``root``, shallowest match first.
+
+    Both step and monitor materialization sync a ``space://`` asset to a local
+    directory and then locate a named YAML in it (``step.yaml`` / ``monitor.yaml``),
+    which may sit directly under the sync dir or one level down. Raw
+    ``glob(..., recursive=True)`` order is filesystem-dependent, so callers taking
+    ``[0]`` would resolve nondeterministically if a stray nested copy existed.
+    Sorting by path depth (then lexicographically) makes the canonical top-level
+    file first and the choice deterministic.
+
+    Args:
+        root: Directory to search under.
+        filename: Exact file name to match (e.g. ``"monitor.yaml"``).
+
+    Returns:
+        Matching paths sorted shallowest-first (fewest path segments), ties broken
+        lexicographically. Empty if none match.
+    """
+    return sorted(
+        glob(str(Path(root) / "**" / filename), recursive=True),
+        key=lambda p: (len(Path(p).parts), p),
+    )
+
+
 def _get_matching_ignored_files(ignore_file: str) -> list[str]:
     """Get the list of matching ignored files within the directory containing the given ignore file
 

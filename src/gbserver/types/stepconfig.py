@@ -19,8 +19,9 @@
 from enum import StrEnum, auto
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
+from gbcommon.types.stepconfig import StepMonitorConfigBase
 from gbserver.types.config import Config
 from gbserver.types.validation import GBValidationErrors, GBValidatorConfig
 
@@ -57,11 +58,16 @@ class StepValidatorConfig(GBValidatorConfig):
     """Config for a step validator."""
 
 
-class StepMonitorConfig(Config):
+class StepMonitorConfig(StepMonitorConfigBase, Config):
     """Config for a single monitor of a step.
 
-    A monitor entry is either an *inline* definition or a *reference* to a
-    monitor defined in the environment.yaml (``EnvironmentConfig.monitors``):
+    The ``type`` / ``ref`` / ``config`` fields and the ``check_type_or_ref``
+    validator are inherited from the shared :class:`StepMonitorConfigBase` (in
+    gbcommon) so the client and server definitions cannot drift; this class only
+    adds the gbserver :class:`Config` base (``from_yaml``, ``matched_base_key``).
+
+    A monitor entry is either an *inline* definition or a *reference* to a monitor
+    defined in the environment.yaml (``EnvironmentConfig.monitors``):
 
     - Inline: ``type`` is required and ``config`` is the full monitor config.
     - Reference: ``ref`` names an environment monitor. ``type`` is optional (when
@@ -70,36 +76,7 @@ class StepMonitorConfig(Config):
       ``extra_event_configs`` list appended to the inherited ``event_configs``.
       Reference resolution happens per-step in ``targetsteprun`` and never
       mutates the shared environment definition.
-
-    Attributes:
-        type: Monitor type resolving to a ``monitor_<type>`` method. Required
-            for inline entries; optional override for reference entries.
-        ref: Name of an environment monitor to reference. Mutually implies the
-            reference form.
-        config: Inline monitor config, or (for a ``ref`` entry) an overlay.
     """
-
-    type: Optional[str] = None
-    ref: Optional[str] = None
-    config: Optional[Dict] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def check_type_or_ref(self):
-        """Require ``type`` for inline entries; allow it as an optional override
-        when ``ref`` is set.
-
-        Returns:
-            The validated model instance.
-
-        Raises:
-            ValueError: If neither ``type`` nor ``ref`` is provided.
-        """
-        if not self.ref and not self.type:
-            raise ValueError(
-                "StepMonitorConfig requires 'type' (inline monitor) or 'ref' "
-                "(reference to an environment.yaml monitor)."
-            )
-        return self
 
 
 class StepEnvironmentTypeConfig(Config):

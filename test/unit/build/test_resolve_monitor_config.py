@@ -25,7 +25,10 @@ import pytest
 import yaml
 
 from gbcommon.uri.space import SpaceURI
-from gbserver.build.targetsteprun import resolve_monitor_config
+from gbserver.build.targetsteprun import (
+    _reset_monitor_file_cache,
+    resolve_monitor_config,
+)
 from gbserver.types.stepconfig import StepMonitorConfig
 
 # A base skypilot monitor: the standard artifact convention + a default profile.
@@ -83,6 +86,9 @@ def monitor_library(tmp_path: Path):
     prev = getattr(SpaceURI._thread_local, "base_uris", None)
     prev_secrets = getattr(SpaceURI._thread_local, "space_secrets", None)
     SpaceURI.set_baseuris(base_uris=[tmp_path.as_uri()], space_secrets={})
+    # Isolate the thread-local monitor-file cache between cases so a prior test's
+    # parse can't be served for this test's freshly-written library.
+    _reset_monitor_file_cache()
     try:
         yield tmp_path
     finally:
@@ -153,6 +159,79 @@ class TestResolveMonitorConfig:
         assert "extra_event_configs" not in cfg
         assert len(cfg["event_configs"]) == 2
         assert cfg["event_configs"][-1] == status
+
+    def test_null_base_event_configs_with_extra(self: Self, monitor_library) -> None:
+        """A base monitor written as ``event_configs:`` (null) + an overlay's
+        extra_event_configs must not crash (list(None) TypeError); the extra
+        rules become the resolved event_configs.
+        """
+        _write_monitor(
+            monitor_library,
+            "nullevents",
+            {"type": "skypilot_monitor", "config": {"event_configs": None}},
+        )
+        status = {"event_type": "workload_status_event", "line_regex": "RUN"}
+        _, cfg = resolve_monitor_config(
+            StepMonitorConfig(
+                ref="space://monitors/nullevents",
+                config={"extra_event_configs": [status]},
+            )
+        )
+        assert cfg["event_configs"] == [status]
+
+    def test_nested_monitor_yaml_picks_shallowest(
+        self: Self, monitor_library
+    ) -> None:
+        """A stray nested monitor.yaml must not make resolution nondeterministic;
+        the canonical top-level file (shallowest) is chosen regardless of glob
+        order."""
+        _write_monitor(
+            monitor_library,
+            "nested",
+            {"type": "skypilot_monitor", "config": {"poll_interval_seconds": 1}},
+        )
+        # A deeper monitor.yaml with a different value; must be ignored.
+        deep = monitor_library / "monitors" / "nested" / "sub"
+        deep.mkdir(parents=True, exist_ok=True)
+        (deep / "monitor.yaml").write_text(
+            yaml.safe_dump(
+                {"type": "skypilot_monitor", "config": {"poll_interval_seconds": 999}}
+            )
+        )
+        _, cfg = resolve_monitor_config(
+            StepMonitorConfig(ref="space://monitors/nested")
+        )
+        assert cfg["poll_interval_seconds"] == 1  # top-level wins, not 999
+
+    def test_monitor_file_fetched_once_and_memoized(
+        self: Self, monitor_library, monkeypatch
+    ) -> None:
+        """Resolving the same ref twice fetches (syncs) the monitor file once.
+
+        resolve_monitor_config runs twice per step launch; the thread-local cache
+        must avoid a second clone/copy for the same (uri, space).
+        """
+        import gbserver.build.targetsteprun as tsr
+
+        real_asset = tsr.Asset
+        sync_calls = {"n": 0}
+
+        class CountingAsset:
+            def __init__(self, uri: str) -> None:
+                self._inner = real_asset(uri)
+
+            def sync(self, dest=None, force: bool = False):
+                sync_calls["n"] += 1
+                return self._inner.sync(dest=dest, force=force)
+
+        monkeypatch.setattr(tsr, "Asset", CountingAsset)
+        first = resolve_monitor_config(StepMonitorConfig(ref="space://monitors/skypilot"))
+        second = resolve_monitor_config(
+            StepMonitorConfig(ref="space://monitors/skypilot")
+        )
+        assert sync_calls["n"] == 1  # second resolve served from cache
+        assert first[0] == second[0] == "skypilot_monitor"
+        assert first[1] == second[1]
 
     def test_overlay_event_configs_rejected(self: Self, monitor_library) -> None:
         """An overlay that sets event_configs (vs extra_event_configs) raises.

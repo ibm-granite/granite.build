@@ -20,9 +20,9 @@ The target step run.
 
 import asyncio
 import dataclasses
-import glob
 import shutil
 import tempfile
+import threading
 import traceback
 from asyncio import Queue, TaskGroup
 from copy import deepcopy
@@ -31,6 +31,7 @@ from typing import Any, Dict, Optional, Self, Tuple
 
 import yaml
 
+from gbcommon.uri.space import SpaceURI
 from gbserver.asset.asset import Asset
 from gbserver.build.run import Run
 from gbserver.build.target import Target
@@ -47,6 +48,7 @@ from gbserver.types.status import STATUS_TO_ICON, Status
 from gbserver.types.stepconfig import StepLauncherConfig, StepMonitorConfig
 from gbserver.utils.filesystem import (
     fill_templates_in_dir,
+    find_files_shallowest_first,
     merge_dicts,
     sync_or_copy,
 )
@@ -57,6 +59,25 @@ logger = get_logger(__name__)
 
 
 MONITOR_FILE_NAME = "monitor.yaml"
+
+# Thread-local memoization of parsed monitor-library files. resolve_monitor_config
+# runs twice per step launch (create loop + _run) and once per ref-chain level, and
+# each fetch of a git-backed monitor is a clone+copy — so caching the parsed result
+# fetches a monitor at most once per thread/space. Keyed on (uri, space base_uris):
+# base_uris are thread-local per build, so builds using different spaces never share
+# entries and the same space:// name can't collide across spaces. Thread-local (like
+# Step's per-thread cache dir) means no locking and no cross-thread staleness.
+_MONITOR_FILE_CACHE = threading.local()
+
+
+def _reset_monitor_file_cache() -> None:
+    """Clear this thread's memoized monitor-file parses.
+
+    Test hook for isolating the thread-local :data:`_MONITOR_FILE_CACHE` between
+    cases (the cache otherwise persists for the thread's lifetime). Not used in
+    production — a real build never needs to invalidate mid-run.
+    """
+    _MONITOR_FILE_CACHE.__dict__.pop("entries", None)
 
 
 def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
@@ -84,6 +105,16 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
     Raises:
         ValueError: If the URI cannot be fetched or contains no ``monitor.yaml``.
     """
+    # Return a memoized parse when this (uri, space) was already fetched on this
+    # thread — avoids the redundant clone+copy on the second resolve per launch
+    # and across ref-chain levels. base_uris scope the space:// resolution.
+    base_uris = tuple(getattr(SpaceURI._thread_local, "base_uris", ()) or ())
+    cache: Dict = _MONITOR_FILE_CACHE.__dict__.setdefault("entries", {})
+    cache_key = (uri_str, base_uris)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     # Fetch the referenced monitor directory into a temp dir, read the single
     # monitor.yaml, then delete the temp dir before returning. Asset.sync()
     # resolves the space:// URI against the space base_uris and pulls the result,
@@ -108,13 +139,24 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
             raise ValueError(
                 f"Cannot fetch monitor for ref '{uri_str}': fetch reported failure."
             )
-        # Recursive glob mirrors step resolution: a directory source may be nested
-        # one level under the sync dest (e.g. dest/<name>/monitor.yaml).
-        files = glob.glob(str(monitor_dir / "**" / MONITOR_FILE_NAME), recursive=True)
+        # Locate monitor.yaml deterministically (shallowest first): a directory
+        # source may nest it one level under the sync dest (dest/<name>/…), and
+        # glob order is filesystem-dependent. Shared with step.yaml resolution.
+        files = find_files_shallowest_first(monitor_dir, MONITOR_FILE_NAME)
         if not files:
             raise ValueError(
                 f"Monitor ref '{uri_str}' resolved to '{monitor_dir}' but no "
                 f"'{MONITOR_FILE_NAME}' was found there."
+            )
+        if len(files) > 1:
+            logger.warning(
+                "Monitor ref '%s' matched %d '%s' files under '%s'; using the "
+                "shallowest (%s).",
+                uri_str,
+                len(files),
+                MONITOR_FILE_NAME,
+                monitor_dir,
+                files[0],
             )
         monitor_path = Path(files[0])
         try:
@@ -126,7 +168,9 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
             ) from exc
     finally:
         shutil.rmtree(monitor_dir, ignore_errors=True)
-    return StepMonitorConfig.model_validate(data)
+    parsed = StepMonitorConfig.model_validate(data)
+    cache[cache_key] = parsed
+    return parsed
 
 
 def resolve_monitor_config(
@@ -217,7 +261,9 @@ def resolve_monitor_config(
         )
     merged = merge_dicts(base_config, overlay)
     if extra_event_configs:
-        merged["event_configs"] = list(merged.get("event_configs", [])) + list(
+        # `or []` guards a base monitor written with `event_configs:` (null) —
+        # merged.get returns None (key present), and list(None) would TypeError.
+        merged["event_configs"] = list(merged.get("event_configs") or []) + list(
             extra_event_configs
         )
     return (monitor_config.type or base_type), merged
