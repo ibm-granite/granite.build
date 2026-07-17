@@ -26,7 +26,7 @@ from pathlib import Path
 import yaml
 from git import List, Optional
 
-from gbcommon.uri.git import GitURI
+from gbcommon.uri.git import GitURI, get_uri_parts
 from gbserver.build.build import Build
 from gbserver.build.buildrun import BuildRun
 from gbserver.build.space import Space
@@ -57,6 +57,33 @@ from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_utc_time, get_uuid
 
 logger = get_logger(__name__)
+
+
+def _same_git_repo(uri_a: str, uri_b: str) -> bool:
+    """Return whether two space git URIs refer to the same repository.
+
+    Compares only ``(host, owner, repo)``, ignoring the scheme (``https`` vs
+    ``git+ssh``), a ``.git`` suffix, a pip-style ``@<ref>`` branch suffix, and a
+    ``#subdirectory=`` fragment. This lets a bare stored ``git_repo_uri`` and a
+    resolved space-config URI (which may carry ``@<config-branch>``) compare equal
+    without a GitHub token to reconstruct the branch.
+
+    Args:
+        uri_a: A git repo URI (e.g. a stored space's ``git_repo_uri``).
+        uri_b: A git repo URI (e.g. the runner's ``space.uristr``).
+
+    Returns:
+        True when both URIs identify the same host/owner/repo.
+    """
+
+    def identity(uri: str) -> tuple[str, str, str]:
+        _scheme, domain, owner, repo, _subdir = get_uri_parts(uri)
+        # Strip a pip-style @<ref> the parser leaves on the repo segment, then a
+        # .git extension, so "gb-test.git@gbspace-config" -> "gb-test".
+        repo = repo.split("@", 1)[0].removesuffix(".git")
+        return (domain, owner, repo)
+
+    return identity(uri_a) == identity(uri_b)
 
 
 class BuildValidation:
@@ -259,16 +286,31 @@ class BuildValidation:
         build_id = stored_build.uuid
 
         if space:
-            # Make sure the space matches the build's space
+            # Make sure the space the runner loaded matches the build's declared
+            # space (by name). Compare the git repo identity (host/owner/repo)
+            # against the already-resolved space.uristr rather than re-deriving the
+            # full config URI via get_gb_space_config_uri: that call only appends
+            # the space-config branch when a GitHub token is available, and the
+            # module-level token default is frozen empty when git.py is imported
+            # before the token env var is set (e.g. under pytest). Comparing repo
+            # identity is token-free and ignores the derived @<branch> /
+            # #subdirectory suffix, so a bare stored git_repo_uri and the runner's
+            # git+ssh space.uristr for the same repo compare equal.
             space_storage: IStoredSpaceStorage = get_admin_storage().space_storage
             stored_space = space_storage.get_by_name(stored_build.space_name)
-            assert (
-                stored_space
-            ), f"Could not find space {stored_build.space_name} of build."
-            space_uri = GitURI.get_gb_space_config_uri(uri=stored_space.git_repo_uri)
-            assert (
-                space_uri == space.uristr
-            ), f"Derived build space uri {space_uri} from space {stored_space}, does not match the given space {space.uristr}"
+            if stored_space is None:
+                errors.add(
+                    err=f"Could not find space '{stored_build.space_name}' of build."
+                )
+                return errors
+            if not _same_git_repo(stored_space.git_repo_uri, space.uristr):
+                errors.add(
+                    err=(
+                        f"Build space {stored_space.git_repo_uri!r} does not match "
+                        f"the runner's space {space.uristr!r}."
+                    )
+                )
+                return errors
         validation_time = -1
 
         try:
