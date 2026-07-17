@@ -84,30 +84,40 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
     Raises:
         ValueError: If the URI cannot be fetched or contains no ``monitor.yaml``.
     """
-    # Fetch the referenced monitor directory to a local temp dir. Asset.sync()
+    # Fetch the referenced monitor directory into a temp dir, read the single
+    # monitor.yaml, then delete the temp dir before returning. Asset.sync()
     # resolves the space:// URI against the space base_uris and pulls the result,
     # handling file:// (builtins / local space) and git-backed spaces uniformly —
-    # exactly as Step does for step.yaml.
+    # exactly as Step does for step.yaml. resolve_monitor_config runs multiple
+    # times per step launch (and once per ref-chain level), so the temp dir MUST
+    # be cleaned up immediately — otherwise a long-lived gbserver leaks one dir
+    # per call and grows unbounded.
+    monitor_dir = Path(tempfile.mkdtemp())
     try:
-        monitor_dir = Asset(uri_str).sync()
-    except Exception as exc:
-        raise ValueError(f"Cannot fetch monitor for ref '{uri_str}': {exc}") from exc
-    # Recursive glob mirrors step resolution: a directory source may be nested
-    # one level under the sync dest (e.g. dest/<name>/monitor.yaml).
-    files = glob.glob(str(monitor_dir / "**" / MONITOR_FILE_NAME), recursive=True)
-    if not files:
-        raise ValueError(
-            f"Monitor ref '{uri_str}' resolved to '{monitor_dir}' but no "
-            f"'{MONITOR_FILE_NAME}' was found there."
-        )
-    monitor_path = Path(files[0])
-    try:
-        with open(monitor_path, "r", encoding="utf-8") as handle:
-            data = yaml.safe_load(handle) or {}
-    except OSError as exc:
-        raise ValueError(
-            f"Cannot read monitor for ref '{uri_str}' at '{monitor_path}': {exc}"
-        ) from exc
+        try:
+            Asset(uri_str).sync(dest=monitor_dir)
+        except Exception as exc:
+            raise ValueError(
+                f"Cannot fetch monitor for ref '{uri_str}': {exc}"
+            ) from exc
+        # Recursive glob mirrors step resolution: a directory source may be nested
+        # one level under the sync dest (e.g. dest/<name>/monitor.yaml).
+        files = glob.glob(str(monitor_dir / "**" / MONITOR_FILE_NAME), recursive=True)
+        if not files:
+            raise ValueError(
+                f"Monitor ref '{uri_str}' resolved to '{monitor_dir}' but no "
+                f"'{MONITOR_FILE_NAME}' was found there."
+            )
+        monitor_path = Path(files[0])
+        try:
+            with open(monitor_path, "r", encoding="utf-8") as handle:
+                data = yaml.safe_load(handle) or {}
+        except OSError as exc:
+            raise ValueError(
+                f"Cannot read monitor for ref '{uri_str}' at '{monitor_path}': {exc}"
+            ) from exc
+    finally:
+        shutil.rmtree(monitor_dir, ignore_errors=True)
     return StepMonitorConfig.model_validate(data)
 
 
