@@ -68,12 +68,13 @@ def _same_space_repo(uri_a: str, uri_b: str) -> bool:
     runner's resolved ``space.uristr`` for the same space compare equal without a
     GitHub token:
 
-    * **Remote git** (``https`` / ``git+ssh`` / ``git``): ``(host, owner, repo)``
-      compared case-insensitively, ignoring the scheme, SSH userinfo and port
-      (uses the URL *hostname*), a ``.git`` suffix, a pip-style ``@<ref>`` branch
-      suffix, and a ``#subdirectory=`` fragment. So
-      ``git+ssh://git@github.ibm.com/o/repo.git@branch`` and
-      ``https://github.ibm.com/o/repo`` match.
+    * **Remote git** (``https`` / ``git+ssh`` / ``git``, and the scp form
+      ``[user@]host:owner/repo`` that git emits): ``(host, owner, repo)`` compared
+      case-insensitively, ignoring the scheme, SSH userinfo and port (uses the URL
+      *hostname*), a ``.git`` suffix, a pip-style ``@<ref>`` branch suffix, and a
+      ``#subdirectory=`` fragment. So ``git+ssh://git@github.ibm.com/o/repo.git@branch``,
+      ``https://github.ibm.com/o/repo``, and ``git@github.ibm.com:o/repo.git`` all
+      match.
     * **Local** (``file://`` or a bare path): the normalized filesystem path
       (netloc + path, as :func:`gbcommon.uri.space._file_uri_to_path` composes it).
       Two distinct local spaces never collapse to the same identity, and paths
@@ -90,7 +91,28 @@ def _same_space_repo(uri_a: str, uri_b: str) -> bool:
         True when both URIs identify the same repository/location.
     """
 
+    def git_identity(host: str, path: str) -> tuple[str, str, str, str]:
+        # (host, owner, repo), case-insensitive. Segments beyond repo (extra path
+        # / fragment) are ignored; missing segments default to "" (no IndexError
+        # on short URIs). Strip a pip-style @<ref> then .git:
+        # "gb-test.git@branch" -> "gb-test".
+        segments = [s for s in path.split("/") if s]
+        owner = segments[0].lower() if len(segments) >= 1 else ""
+        repo = segments[1] if len(segments) >= 2 else ""
+        # Lowercase *before* stripping .git so a ".GIT"/".Git" suffix is also
+        # removed (removesuffix is case-sensitive).
+        repo = repo.split("@", 1)[0].lower().removesuffix(".git")
+        return ("git", host.lower(), owner, repo)
+
     def identity(uri: str) -> tuple[str, ...]:
+        # scp-like git URL ([user@]host:owner/repo(.git)) — the form git emits
+        # (git@host:org/repo.git). It has no "scheme://", so urlparse would mis-read
+        # it as a file path; detect it explicitly (a ':' before any '/', with a
+        # non-empty relative tail) and strip an optional "user@".
+        if "://" not in uri:
+            head, sep, tail = uri.partition(":")
+            if sep and "/" not in head and tail and not tail.startswith("/"):
+                return git_identity(head.rsplit("@", 1)[-1], tail)
         parsed = urllib.parse.urlparse(uri, scheme="file")
         if parsed.scheme in ("file", ""):
             # Local space: identity is the whole normalized path (no owner/repo
@@ -98,16 +120,8 @@ def _same_space_repo(uri_a: str, uri_b: str) -> bool:
             # case-sensitive (POSIX paths are).
             path = (parsed.netloc or "") + (parsed.path or "")
             return ("file", os.path.normpath(path) if path else "")
-        # Remote git URL: (host, owner, repo), case-insensitive. hostname strips
-        # any user@ and :port; segments beyond repo (extra path / fragment) are
-        # ignored. Missing segments default to "" (no IndexError on short URIs).
-        host = (parsed.hostname or "").lower()
-        segments = [s for s in parsed.path.split("/") if s]
-        owner = segments[0].lower() if len(segments) >= 1 else ""
-        repo = segments[1] if len(segments) >= 2 else ""
-        # Strip a pip-style @<ref> then a .git suffix: "gb-test.git@branch" -> "gb-test".
-        repo = repo.split("@", 1)[0].removesuffix(".git").lower()
-        return ("git", host, owner, repo)
+        # Remote git URL: hostname strips any user@ and :port.
+        return git_identity(parsed.hostname or "", parsed.path)
 
     return identity(uri_a) == identity(uri_b)
 

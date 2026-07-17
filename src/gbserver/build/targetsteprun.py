@@ -28,6 +28,7 @@ from asyncio import Queue, TaskGroup
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional, Self, Tuple
+from urllib.parse import urlparse
 
 import yaml
 
@@ -59,6 +60,43 @@ logger = get_logger(__name__)
 
 
 MONITOR_FILE_NAME = "monitor.yaml"
+
+
+class MonitorFetchError(ValueError):
+    """A monitor ref could not be *fetched* (transport failure), as opposed to
+    being structurally invalid.
+
+    Raised only when the monitor's space resolves against a **remote** base URI
+    (e.g. a git-hosted space) and the fetch fails — a failure that may be
+    transient (network). Callers that validate refs ahead of time (build-creation
+    validation) can treat this as non-fatal (don't permanently invalidate the
+    build) and let it retry at run time, while still failing fast on structurally
+    bad refs (dangling local ref, cycle, cross-type, missing monitor.yaml), which
+    raise a plain ``ValueError``. Subclasses ``ValueError`` so existing
+    ``except ValueError`` run-time call sites keep catching it.
+    """
+
+
+def _all_local_base_uris(base_uris: Tuple[str, ...]) -> bool:
+    """Whether every space base URI is local (``file://`` or a bare path).
+
+    A fetch failure against local-only bases can't be transient — the monitor
+    simply isn't there (a dangling/typo'd ref), so it should fail fast.
+    """
+    return all(urlparse(b).scheme in ("", "file") for b in base_uris)
+
+
+def _monitor_fetch_error(
+    uri_str: str, base_uris: Tuple[str, ...], detail: str
+) -> ValueError:
+    """Build the error for a failed monitor fetch, classified by base-URI locality.
+
+    Local-only spaces → plain ``ValueError`` (dangling ref, fail fast). A space
+    with any remote base → :class:`MonitorFetchError` (possibly transient).
+    """
+    msg = f"Cannot fetch monitor for ref '{uri_str}': {detail}"
+    return ValueError(msg) if _all_local_base_uris(base_uris) else MonitorFetchError(msg)
+
 
 # Thread-local memoization of parsed monitor-library files. resolve_monitor_config
 # runs twice per step launch (create loop + _run) and once per ref-chain level, and
@@ -96,6 +134,19 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
     steps support — including git-hosted spaces, whose base URI resolves to a
     ``git+ssh://`` / ``git://`` URI rather than a local ``file://`` path.
 
+    Threading / event loop: this resolves ``space://`` against **thread-local**
+    ``SpaceURI.base_uris`` (and uses the thread-local cache below), so it must run
+    on the per-build thread and is intentionally **not** offloaded to a worker
+    thread — a worker would lack that space context. For a git-backed space the
+    ``Asset.sync()`` clone blocks that (event-loop) thread, exactly as the
+    step.yaml materialization in :class:`Step` and the ``copytree``/template work
+    in ``TargetStepRun.__init__`` already do. In practice the run-time resolves are
+    cache hits: ``Build.__validate_step_monitors`` pre-resolves every step's
+    monitors during ``__setup`` on this same thread (build creation), warming the
+    cache. The only cold clone on the loop is a resume (validation skipped) with a
+    git-backed monitor *override*; local ``builtins/monitors/*`` refs are a cheap
+    file copy.
+
     Args:
         uri_str: Monitor URI, e.g. ``space://monitors/skypilot``.
 
@@ -128,17 +179,16 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
         try:
             # sync() returns the dest on success, or None when pull() reports
             # failure without raising (e.g. a failed copy). Guard the None so a
-            # failed fetch surfaces as this ValueError rather than a later, less
-            # obvious error (empty dir -> "no monitor.yaml", or a raw TypeError).
+            # failed fetch surfaces as an error rather than a later, less obvious
+            # one (empty dir -> "no monitor.yaml", or a raw TypeError). Classify
+            # the failure: a local-only space can't fail transiently (missing =
+            # dangling ref, fail fast -> ValueError), while a remote (git) fetch
+            # may be a transient network issue (-> MonitorFetchError).
             synced = Asset(uri_str).sync(dest=monitor_dir)
         except Exception as exc:
-            raise ValueError(
-                f"Cannot fetch monitor for ref '{uri_str}': {exc}"
-            ) from exc
+            raise _monitor_fetch_error(uri_str, base_uris, str(exc)) from exc
         if synced is None:
-            raise ValueError(
-                f"Cannot fetch monitor for ref '{uri_str}': fetch reported failure."
-            )
+            raise _monitor_fetch_error(uri_str, base_uris, "fetch reported failure")
         # Locate monitor.yaml deterministically (shallowest first): a directory
         # source may nest it one level under the sync dest (dest/<name>/…), and
         # glob order is filesystem-dependent. Shared with step.yaml resolution.
@@ -429,23 +479,28 @@ class TargetStepRun(Run):
             )
 
             # --- Monitor Config ---
-            self.monitors = {}
-            if launcher_cfg.monitors:
-                for name in launcher_cfg.monitors:
-
-                    monitors = getattr(env_config, "monitors", None) or {}
-                    if name not in monitors:
-                        raise ValueError(
-                            f"Launcher '{launcher_name}' requires monitor '{name}', "
-                            "but it is not defined in environment config."
-                        )
-                    monitor_obj = monitors[name]
-                    self.monitors[name] = monitor_obj
+            # Shared launcher->monitor selection (StepEnvironmentTypeConfig)
+            # keeps run-time and build-validation selection identical.
+            monitor_pairs, missing_monitors = env_config.select_launcher_monitors(
+                launcher_cfg
+            )
+            if missing_monitors:
+                raise ValueError(
+                    f"Launcher '{launcher_name}' requires monitor(s) "
+                    f"{missing_monitors}, but they are not defined in the "
+                    "environment config."
+                )
+            self.monitors = dict(monitor_pairs)
 
             filled_monitor_configs = {}
             for name, monitor in self.monitors.items():
                 # Resolve any monitor-library reference (ref + overlay/append)
                 # to a concrete (type, config) before rendering templates.
+                # Normally a cache hit (build-creation validation pre-warms the
+                # per-thread monitor cache); it blocks the loop only on a cold
+                # cache (e.g. resume) for a git-backed monitor space — consistent
+                # with the copytree/template work already done inline here. See
+                # _load_monitor_file for the thread-affinity rationale.
                 monitor_type, monitor_config = resolve_monitor_config(monitor)
                 filled_monitor_config = fill_objtemplate(
                     monitor_config,
@@ -555,47 +610,50 @@ class TargetStepRun(Run):
             ), f"invalid launch_id: {launch_id}"
             self.launch_id = launch_id
             monitor_tasks = set()
-            if self_entity.launcher.monitors is not None:
-                for monitor in self_entity.launcher.monitors:
-                    assert (
-                        self_entity.step_environment_config.monitors is not None
-                    ), "environment config monitors is None"
-                    monitor_config = self_entity.step_environment_config.monitors[
-                        monitor
-                    ]
-                    # Resolve any monitor-library reference (ref + overlay/append)
-                    # to a concrete (type, config) — inline monitors pass through.
-                    monitor_type, resolved_config = resolve_monitor_config(
-                        monitor_config
+            # Shared launcher->monitor selection (StepEnvironmentTypeConfig) —
+            # same rule as TargetStepRun.__init__ and build-creation validation.
+            monitor_pairs, missing_monitors = (
+                self_entity.step_environment_config.select_launcher_monitors(
+                    self_entity.launcher
+                )
+            )
+            if missing_monitors:
+                raise ValueError(
+                    f"launcher requires monitor(s) {missing_monitors} not defined "
+                    "in the environment config"
+                )
+            for monitor, monitor_config in monitor_pairs:
+                # Resolve any monitor-library reference (ref + overlay/append)
+                # to a concrete (type, config) — inline monitors pass through.
+                monitor_type, resolved_config = resolve_monitor_config(monitor_config)
+                assert (
+                    monitor_type is not None
+                ), f"monitor '{monitor}' has no resolved type"
+                # Render Jinja templates in the monitor config against the full
+                # config before passing it to the monitor. fill_objtemplate is
+                # non-mutating, so the rendered copy stored in
+                # full_config[MONITOR_CONFIG] above never reaches here — without
+                # this the monitor receives literal "{{ config.* }}" strings (e.g.
+                # log_retrieval.mode). Mirrors the launcher-config fill;
+                # field_value_template is skipped so per-log-line templates stay
+                # literal for later rendering.
+                filled_monitor_config = fill_objtemplate(
+                    resolved_config,
+                    self.full_config,
+                    strict=True,
+                    skip_keys={"field_value_template"},
+                )
+                monitor_tasks.add(
+                    self_entity.environment.monitor(
+                        type=monitor_type,
+                        launch_id=self.launch_id,
+                        task_group=tg,
+                        event_q=self.event_q,
+                        entityrun_metadata=self.get_runmetadata(),
+                        build_id=self.build_id,
+                        **filled_monitor_config,
                     )
-                    assert (
-                        monitor_type is not None
-                    ), f"monitor '{monitor}' has no resolved type"
-                    # Render Jinja templates in the monitor config against the
-                    # full config before passing it to the monitor. fill_objtemplate
-                    # is non-mutating, so the rendered copy stored in
-                    # full_config[MONITOR_CONFIG] above never reaches here — without
-                    # this the monitor receives literal "{{ config.* }}" strings
-                    # (e.g. log_retrieval.mode). Mirrors the launcher-config fill;
-                    # field_value_template is skipped so per-log-line templates stay
-                    # literal for later rendering.
-                    filled_monitor_config = fill_objtemplate(
-                        resolved_config,
-                        self.full_config,
-                        strict=True,
-                        skip_keys={"field_value_template"},
-                    )
-                    monitor_tasks.add(
-                        self_entity.environment.monitor(
-                            type=monitor_type,
-                            launch_id=self.launch_id,
-                            task_group=tg,
-                            event_q=self.event_q,
-                            entityrun_metadata=self.get_runmetadata(),
-                            build_id=self.build_id,
-                            **filled_monitor_config,
-                        )
-                    )
+                )
             await asyncio.gather(*monitor_tasks)
             await self.launch_task
 

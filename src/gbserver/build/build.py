@@ -51,15 +51,23 @@ BUILD_DIR = "build"
 
 def _step_monitor_ref_errors(
     env_cfg: StepEnvironmentTypeConfig, launcher: StepLauncherConfig
-) -> List[str]:
-    """Resolve the monitors a launcher selects and return any error messages.
+) -> Tuple[List[str], List[str]]:
+    """Resolve the monitors a launcher selects; return (fatal errors, warnings).
 
     Mirrors run-time monitor selection (``TargetStepRun``): only the monitors the
     launcher names, looked up in the active env class's ``env_cfg.monitors``, are
     resolved. Resolving each ``StepMonitorConfig`` via ``resolve_monitor_config``
-    surfaces a dangling/typo'd ``ref``, a ref cycle, a cross-type ref, or an inline
-    ``extra_event_configs`` misuse — as a ``ValueError`` — at build-validation time
-    instead of at step-run time.
+    surfaces problems at build-validation time instead of at step-run time.
+
+    The result separates *structural* problems from *transient* ones so build
+    validation doesn't permanently invalidate a build on a flaky fetch:
+
+    - **Fatal errors** (return[0]): a dangling/typo'd local ref, a ref cycle, a
+      cross-type ref, an inline ``extra_event_configs`` misuse, or a launcher
+      naming an undefined monitor — deterministic, so fail fast (build INVALID).
+    - **Warnings** (return[1]): a :class:`MonitorFetchError` — a *remote* (e.g.
+      git-hosted) monitor space that could not be fetched, which may be transient
+      (network). These do not invalidate the build; the run retries the fetch.
 
     Args:
         env_cfg: The step's resolved environment-type config (active env class).
@@ -67,28 +75,36 @@ def _step_monitor_ref_errors(
             run.
 
     Returns:
-        A list of human-readable error strings (empty when every selected monitor
-        resolves). Messages carry no target/step prefix — the caller adds one.
+        A ``(errors, warnings)`` pair of human-readable strings (no target/step
+        prefix — the caller adds one).
     """
     # Local import avoids a build.py <-> targetsteprun.py import cycle
     # (targetsteprun imports build.target / build.targetstep).
-    from gbserver.build.targetsteprun import resolve_monitor_config
+    from gbserver.build.targetsteprun import MonitorFetchError, resolve_monitor_config
 
     errors: List[str] = []
-    monitors = env_cfg.monitors or {}
-    for name in launcher.monitors or []:
-        monitor = monitors.get(name)
-        if monitor is None:
-            errors.append(
-                f"launcher requires monitor `{name}` not defined in the "
-                "environment config"
-            )
-            continue
+    warnings: List[str] = []
+    # Shared launcher->monitor selection (StepEnvironmentTypeConfig) — the same
+    # rule TargetStepRun uses at run time, so validation can't drift from it.
+    pairs, missing = env_cfg.select_launcher_monitors(launcher)
+    for name in missing:
+        errors.append(
+            f"launcher requires monitor `{name}` not defined in the "
+            "environment config"
+        )
+    for name, monitor in pairs:
         try:
             resolve_monitor_config(monitor)
+        except MonitorFetchError as e:
+            # Transient/remote fetch failure — don't permanently invalidate; the
+            # run will retry. Structurally-bad refs (below) still fail fast.
+            warnings.append(
+                f"monitor `{name}` could not be fetched at validation ({e}); "
+                "will retry at run time"
+            )
         except ValueError as e:
             errors.append(f"monitor `{name}`: {e}")
-    return errors
+    return errors, warnings
 
 
 class Build(BuildEntity):
@@ -351,10 +367,17 @@ class Build(BuildEntity):
                 # environment/launcher resolution — nothing to check here.
                 if env_cfg is None or launcher is None:
                     continue
-                for msg in _step_monitor_ref_errors(env_cfg, launcher):
+                fatal, transient = _step_monitor_ref_errors(env_cfg, launcher)
+                for msg in fatal:
                     errors.add(
                         err=f"Target `{target_name}` Step `{i}`: {msg}",
                         type=GBValidationErrorType.NOT_EXIST,
+                    )
+                # Transient/remote fetch failures are warnings, not errors — they
+                # must not turn a valid build INVALID on a network blip.
+                for msg in transient:
+                    errors.add_warning(
+                        warning=f"Target `{target_name}` Step `{i}`: {msg}"
                     )
         return errors
 

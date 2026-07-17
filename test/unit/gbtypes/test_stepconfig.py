@@ -167,3 +167,39 @@ class TestStepMonitorConfigRef:
         """A monitor with neither type nor ref fails validation."""
         with pytest.raises(ValidationError):
             StepMonitorConfig(config={"a": 1})
+
+
+class TestSelectLauncherMonitors:
+    """The shared launcher->monitor selector used by run time + build validation."""
+
+    def _env(self: Self) -> StepEnvironmentTypeConfig:
+        return StepEnvironmentTypeConfig(
+            launchers={"l": StepLauncherConfig(type="x")},
+            monitors={
+                "a": StepMonitorConfig(type="log_monitor"),
+                "b": StepMonitorConfig(ref="space://monitors/skypilot"),
+            },
+        )
+
+    def test_selects_named_monitors_in_order(self: Self) -> None:
+        """Returns (name, monitor) for each launcher-named monitor, in order."""
+        env = self._env()
+        launcher = StepLauncherConfig(type="x", monitors=["b", "a"])
+        pairs, missing = env.select_launcher_monitors(launcher)
+        assert [n for n, _ in pairs] == ["b", "a"]
+        assert pairs[0][1] is env.monitors["b"]
+        assert missing == []
+
+    def test_reports_missing_without_raising(self: Self) -> None:
+        """A launcher-named monitor absent from the env config is 'missing'."""
+        env = self._env()
+        launcher = StepLauncherConfig(type="x", monitors=["a", "nope"])
+        pairs, missing = env.select_launcher_monitors(launcher)
+        assert [n for n, _ in pairs] == ["a"]
+        assert missing == ["nope"]
+
+    def test_no_launcher_monitors_selects_none(self: Self) -> None:
+        """A launcher that names no monitors selects none (and none missing)."""
+        assert self._env().select_launcher_monitors(
+            StepLauncherConfig(type="x")
+        ) == ([], [])

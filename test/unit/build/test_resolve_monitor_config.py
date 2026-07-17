@@ -286,6 +286,43 @@ class TestResolveMonitorConfig:
         assert again["poll_interval_seconds"] == 900
         assert len(again["event_configs"]) == 1
 
+    def test_fetch_failure_classified_by_base_uri_locality(
+        self: Self, monkeypatch
+    ) -> None:
+        """A failed fetch is a plain ValueError for a local-only space (dangling ref,
+        fail fast) but a MonitorFetchError when a remote (git) base may have failed
+        transiently. Uses a fake Asset so no real clone/network happens.
+        """
+        import gbserver.build.targetsteprun as tsr
+
+        class _FakeAsset:
+            def __init__(self, uri: str) -> None:
+                pass
+
+            def sync(self, dest=None, force: bool = False):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(tsr, "Asset", _FakeAsset)
+        prev = getattr(SpaceURI._thread_local, "base_uris", None)
+        try:
+            SpaceURI.set_baseuris(base_uris=["file:///tmp/space"], space_secrets={})
+            _reset_monitor_file_cache()
+            with pytest.raises(ValueError) as local_exc:
+                tsr._load_monitor_file("space://monitors/x")
+            assert not isinstance(local_exc.value, tsr.MonitorFetchError)
+
+            SpaceURI.set_baseuris(
+                base_uris=["git+ssh://example.com/o/repo.git@main"], space_secrets={}
+            )
+            _reset_monitor_file_cache()
+            with pytest.raises(tsr.MonitorFetchError):
+                tsr._load_monitor_file("space://monitors/x")
+        finally:
+            SpaceURI.set_baseuris(
+                base_uris=prev if prev is not None else ["file:"], space_secrets={}
+            )
+            _reset_monitor_file_cache()
+
 
 def _env_cfg(monitors: dict) -> StepEnvironmentTypeConfig:
     """Build a StepEnvironmentTypeConfig with the given monitors map."""
@@ -304,16 +341,21 @@ class TestStepMonitorRefErrors:
         """A launcher-selected monitor with a resolvable ref yields no error."""
         env_cfg = _env_cfg({"m": StepMonitorConfig(ref="space://monitors/skypilot")})
         launcher = StepLauncherConfig(type="x", monitors=["m"])
-        assert _step_monitor_ref_errors(env_cfg, launcher) == []
+        assert _step_monitor_ref_errors(env_cfg, launcher) == ([], [])
 
-    def test_dangling_ref_errors(self: Self, monitor_library) -> None:
-        """A dangling ref surfaces at validation, mentioning the monitor name."""
+    def test_dangling_local_ref_is_fatal(self: Self, monitor_library) -> None:
+        """A dangling *local* ref is a fatal error (fail fast), not a warning.
+
+        The fixture's base_uris are file:// (local), so a missing monitor can't be
+        transient — it must invalidate the build.
+        """
         env_cfg = _env_cfg(
             {"m": StepMonitorConfig(ref="space://monitors/does-not-exist")}
         )
         launcher = StepLauncherConfig(type="x", monitors=["m"])
-        errs = _step_monitor_ref_errors(env_cfg, launcher)
+        errs, warns = _step_monitor_ref_errors(env_cfg, launcher)
         assert len(errs) == 1 and "does-not-exist" in errs[0]
+        assert warns == []
 
     def test_launcher_names_undefined_monitor_errors(
         self: Self, monitor_library
@@ -321,11 +363,12 @@ class TestStepMonitorRefErrors:
         """A launcher naming a monitor absent from env_cfg.monitors is flagged."""
         env_cfg = _env_cfg({})
         launcher = StepLauncherConfig(type="x", monitors=["missing"])
-        errs = _step_monitor_ref_errors(env_cfg, launcher)
+        errs, warns = _step_monitor_ref_errors(env_cfg, launcher)
         assert len(errs) == 1 and "missing" in errs[0]
+        assert warns == []
 
     def test_cycle_and_crosstype_refs_error(self: Self, monitor_library) -> None:
-        """Ref cycles and cross-type refs are also reported at validation."""
+        """Ref cycles and cross-type refs are fatal (structural) errors."""
         env_cfg = _env_cfg(
             {
                 "cyc": StepMonitorConfig(ref="space://monitors/cyc_a"),
@@ -333,10 +376,33 @@ class TestStepMonitorRefErrors:
             }
         )
         launcher = StepLauncherConfig(type="x", monitors=["cyc", "xtype"])
-        errs = _step_monitor_ref_errors(env_cfg, launcher)
-        assert len(errs) == 2
+        errs, warns = _step_monitor_ref_errors(env_cfg, launcher)
+        assert len(errs) == 2 and warns == []
 
     def test_launcher_with_no_monitors_no_error(self: Self, monitor_library) -> None:
         """A launcher that selects no monitors produces no errors."""
         env_cfg = _env_cfg({"m": StepMonitorConfig(ref="space://monitors/skypilot")})
-        assert _step_monitor_ref_errors(env_cfg, StepLauncherConfig(type="x")) == []
+        assert _step_monitor_ref_errors(env_cfg, StepLauncherConfig(type="x")) == (
+            [],
+            [],
+        )
+
+    def test_monitor_fetch_error_is_warning_not_error(
+        self: Self, monitor_library, monkeypatch
+    ) -> None:
+        """A ``MonitorFetchError`` (transient/remote fetch) becomes a WARNING, not a
+        build-invalidating error, so a network blip can't turn a valid build
+        INVALID. (The local→ValueError / remote→MonitorFetchError classification is
+        covered in TestResolveMonitorConfig.)
+        """
+        import gbserver.build.targetsteprun as tsr
+
+        def boom(monitor, _seen=None):
+            raise tsr.MonitorFetchError("Cannot fetch monitor for ref 'x': net down")
+
+        monkeypatch.setattr(tsr, "resolve_monitor_config", boom)
+        env_cfg = _env_cfg({"m": StepMonitorConfig(ref="space://monitors/skypilot")})
+        launcher = StepLauncherConfig(type="x", monitors=["m"])
+        errs, warns = _step_monitor_ref_errors(env_cfg, launcher)
+        assert errs == []  # not fatal — must not invalidate the build
+        assert len(warns) == 1 and "retry at run time" in warns[0]

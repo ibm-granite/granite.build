@@ -17,7 +17,7 @@
 """Types related to the step.yaml"""
 
 from enum import StrEnum, auto
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -101,6 +101,37 @@ class StepEnvironmentTypeConfig(Config):
     monitors: Dict[str, StepMonitorConfig] = Field(default_factory=dict)
     # env sub-types this step is restricted to (empty = universal)
     subtypes: List[str] = Field(default_factory=list)
+
+    def select_launcher_monitors(
+        self, launcher: StepLauncherConfig
+    ) -> Tuple[List[Tuple[str, StepMonitorConfig]], List[str]]:
+        """Select the monitors a launcher runs, looked up in this env config.
+
+        The single source of truth for launcher→monitor selection, shared by
+        run-time (``TargetStepRun.__init__``/``_run``) and build-creation
+        validation so the two never diverge. A launcher's ``monitors`` list names
+        keys into this env config's ``monitors`` map.
+
+        Args:
+            launcher: The selected launcher whose ``monitors`` names which monitors
+                to run.
+
+        Returns:
+            A ``(pairs, missing)`` tuple: ``pairs`` is ``[(name, StepMonitorConfig)]``
+            for each launcher-named monitor defined here (in launcher order);
+            ``missing`` is the launcher-named monitors absent from this config.
+            Callers that require completeness (run time) raise on ``missing``;
+            validation reports them without raising.
+        """
+        defined = self.monitors or {}
+        pairs: List[Tuple[str, StepMonitorConfig]] = []
+        missing: List[str] = []
+        for name in launcher.monitors or []:
+            if name in defined:
+                pairs.append((name, defined[name]))
+            else:
+                missing.append(name)
+        return pairs, missing
 
 
 class StepIOTypeEnum(StrEnum):

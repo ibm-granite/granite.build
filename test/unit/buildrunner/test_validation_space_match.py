@@ -46,11 +46,28 @@ class TestSameSpaceRepo:
             "git+ssh://git@github.ibm.com:22/granite-dot-build/gb-test.git",
             # Case-insensitive host/owner/repo (GitHub treats these equal).
             "https://GitHub.IBM.com/Granite-Dot-Build/GB-Test",
+            # scp-form git URL (the form git.py emits: git@host:org/repo.git).
+            "git@github.ibm.com:granite-dot-build/gb-test.git",
+            "git@github.ibm.com:granite-dot-build/gb-test",
+            # Uppercase .GIT suffix must also be stripped (case-insensitive).
+            "git+ssh://github.ibm.com/granite-dot-build/gb-test.GIT",
         ],
     )
     def test_same_git_repo_variants_match(self, other: str) -> None:
-        """Scheme, userinfo/port, .git, @<ref>, #subdirectory, and case all match."""
+        """Scheme, userinfo/port, .git, @<ref>, #subdirectory, case, and scp form all match."""
         assert _same_space_repo(self.STORED, other)
+
+    def test_scp_form_different_repo_does_not_match(self) -> None:
+        """An scp-form URL for a different repo must not match, and must not be
+        mistaken for a local path (regression: urlparse read scp as a file path)."""
+        assert not _same_space_repo(
+            self.STORED, "git@github.ibm.com:granite-dot-build/other.git"
+        )
+        # scp form vs a local path for a same-looking string are not equal.
+        assert not _same_space_repo(
+            "git@github.ibm.com:granite-dot-build/gb-test.git",
+            "file:///granite-dot-build/gb-test",
+        )
 
     @pytest.mark.parametrize(
         "other",
