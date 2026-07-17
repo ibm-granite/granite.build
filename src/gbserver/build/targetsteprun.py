@@ -112,7 +112,7 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
 
 
 def resolve_monitor_config(
-    monitor_config: StepMonitorConfig, _seen: Optional[set] = None
+    monitor_config: StepMonitorConfig, _seen: Optional[Tuple[str, ...]] = None
 ) -> Tuple[Optional[str], Dict]:
     """Resolve a monitor entry (inline, or a ``ref`` to a monitor-library file).
 
@@ -136,8 +136,8 @@ def resolve_monitor_config(
     Args:
         monitor_config: The monitor entry to resolve (from a step's ``monitors``
             map or a monitor-library file).
-        _seen: Internal — ref URIs already on the current chain, for cycle
-            detection.
+        _seen: Internal — ref URIs already on the current chain, in traversal
+            order, for cycle detection.
 
     Returns:
         A ``(type, config)`` tuple: the resolved monitor type and the merged,
@@ -164,15 +164,19 @@ def resolve_monitor_config(
             )
         return monitor_config.type, config
 
-    seen = _seen or set()
+    seen = _seen or ()
     if monitor_config.ref in seen:
+        # Report the ordered traversal path with the repeated ref appended so the
+        # cycle is obvious (e.g. "a -> b -> a"); seen is kept in visit order.
+        cycle = " -> ".join((*seen, monitor_config.ref))
         raise ValueError(
-            f"Monitor ref cycle detected at '{monitor_config.ref}' "
-            f"(chain: {sorted(seen)})"
+            f"Monitor ref cycle detected at '{monitor_config.ref}' (chain: {cycle})"
         )
 
     parent = _load_monitor_file(monitor_config.ref)
-    base_type, base_config = resolve_monitor_config(parent, seen | {monitor_config.ref})
+    base_type, base_config = resolve_monitor_config(
+        parent, seen + (monitor_config.ref,)
+    )
     if monitor_config.type and base_type and monitor_config.type != base_type:
         raise ValueError(
             f"Monitor ref '{monitor_config.ref}' has type '{base_type}', which "
