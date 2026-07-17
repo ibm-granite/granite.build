@@ -103,6 +103,21 @@ class TestResolveMonitorConfig:
         assert m_type == "docker_log"
         assert cfg == {"a": 1}
 
+    def test_inline_extra_event_configs_rejected(self: Self) -> None:
+        """An inline monitor (no ref) setting extra_event_configs raises.
+
+        extra_event_configs only appends to a referenced monitor's rules; on an
+        inline monitor it has no base to append to and would be silently dropped
+        downstream, so the resolver rejects it at config time.
+        """
+        with pytest.raises(ValueError, match="extra_event_configs"):
+            resolve_monitor_config(
+                StepMonitorConfig(
+                    type="log_monitor",
+                    config={"extra_event_configs": [{"event_type": "message_event"}]},
+                )
+            )
+
     def test_ref_to_monitor_file(self: Self, monitor_library) -> None:
         """A step ref loads the monitor file's (type, config)."""
         m_type, cfg = resolve_monitor_config(

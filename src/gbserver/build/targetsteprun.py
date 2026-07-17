@@ -116,7 +116,9 @@ def resolve_monitor_config(
 ) -> Tuple[Optional[str], Dict]:
     """Resolve a monitor entry (inline, or a ``ref`` to a monitor-library file).
 
-    Inline entries (no ``ref``) return ``(type, deepcopy(config))``. A ``ref``
+    Inline entries (no ``ref``) return ``(type, deepcopy(config))``; they may not
+    set ``extra_event_configs`` (there is no referenced base to append to — an
+    inline monitor lists all its rules directly under ``event_configs``). A ``ref``
     names a monitor file (``space://monitors/<name>``); its own parent
     ``ref`` chain is resolved recursively, merging each ``config`` overlay over
     the inherited config via ``merge_dicts`` — nested dicts merge, but scalars
@@ -143,11 +145,24 @@ def resolve_monitor_config(
 
     Raises:
         ValueError: On an unreadable/non-local ref, a reference cycle, a
-            cross-type reference, or an overlay that sets ``event_configs``
-            directly (use ``extra_event_configs`` to append instead).
+            cross-type reference, an overlay that sets ``event_configs`` directly
+            (use ``extra_event_configs`` to append instead), or an inline monitor
+            that sets ``extra_event_configs`` (put rules in ``event_configs``).
     """
     if not monitor_config.ref:
-        return monitor_config.type, deepcopy(monitor_config.config or {})
+        config = deepcopy(monitor_config.config or {})
+        if "extra_event_configs" in config:
+            # extra_event_configs only appends to a *referenced* monitor's
+            # event_configs; an inline monitor has no inherited base, so the key
+            # would be dropped downstream (swallowed by the monitor method's
+            # **kwargs) and its rules silently never register. Reject at config
+            # time instead of failing invisibly at run time.
+            raise ValueError(
+                "Monitor sets 'extra_event_configs' but has no 'ref'; that key "
+                "only appends to a referenced monitor's rules. For an inline "
+                "monitor, put the rules directly in 'event_configs'."
+            )
+        return monitor_config.type, config
 
     seen = _seen or set()
     if monitor_config.ref in seen:
