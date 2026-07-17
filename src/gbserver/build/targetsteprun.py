@@ -20,6 +20,7 @@ The target step run.
 
 import asyncio
 import dataclasses
+import glob
 import shutil
 import tempfile
 import traceback
@@ -30,7 +31,7 @@ from typing import Any, Dict, Optional, Self, Tuple
 
 import yaml
 
-from gbcommon.uri.uri import URI
+from gbserver.asset.asset import Asset
 from gbserver.build.run import Run
 from gbserver.build.target import Target
 from gbserver.build.targetstep import TargetStep
@@ -69,6 +70,11 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
     has the same ``{type, ref, config}`` shape as a :class:`StepMonitorConfig`,
     so a monitor may itself reference a parent monitor.
 
+    The resolved directory is materialized locally via :class:`Asset` (the same
+    fetch path steps use), so a monitor ref works for every space backend that
+    steps support — including git-hosted spaces, whose base URI resolves to a
+    ``git+ssh://`` / ``git://`` URI rather than a local ``file://`` path.
+
     Args:
         uri_str: Monitor URI, e.g. ``space://monitors/skypilot``.
 
@@ -76,17 +82,27 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
         The parsed monitor as a :class:`StepMonitorConfig`.
 
     Raises:
-        ValueError: If the URI does not resolve to a readable local
-            ``monitor.yaml``.
+        ValueError: If the URI cannot be fetched or contains no ``monitor.yaml``.
     """
-    resolved = URI.get_uri(uri_str, default_scheme="file")
-    parsed = resolved.uri
-    if parsed is None or parsed.scheme != "file":
+    # Fetch the referenced monitor directory to a local temp dir. Asset.sync()
+    # resolves the space:// URI against the space base_uris and pulls the result,
+    # handling file:// (builtins / local space) and git-backed spaces uniformly —
+    # exactly as Step does for step.yaml.
+    try:
+        monitor_dir = Asset(uri_str).sync()
+    except Exception as exc:
         raise ValueError(
-            f"Monitor ref '{uri_str}' resolved to a non-local URI; monitor "
-            "files must be local."
+            f"Cannot fetch monitor for ref '{uri_str}': {exc}"
+        ) from exc
+    # Recursive glob mirrors step resolution: a directory source may be nested
+    # one level under the sync dest (e.g. dest/<name>/monitor.yaml).
+    files = glob.glob(str(monitor_dir / "**" / MONITOR_FILE_NAME), recursive=True)
+    if not files:
+        raise ValueError(
+            f"Monitor ref '{uri_str}' resolved to '{monitor_dir}' but no "
+            f"'{MONITOR_FILE_NAME}' was found there."
         )
-    monitor_path = Path(parsed.path) / MONITOR_FILE_NAME
+    monitor_path = Path(files[0])
     try:
         with open(monitor_path, "r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
