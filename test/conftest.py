@@ -394,7 +394,6 @@ def pytest_sessionstart(session):
         # URI.uri_handler_classes points at the reloaded classes (uri.py/URI is not
         # reloaded, so issubclass and resolution stay consistent).
         import gbcommon.uri.git
-
         from gbcommon.uri.uri import URI
 
         importlib.reload(gbcommon.uri.git)
