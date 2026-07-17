@@ -200,6 +200,7 @@ class TestSelectLauncherMonitors:
 
     def test_no_launcher_monitors_selects_none(self: Self) -> None:
         """A launcher that names no monitors selects none (and none missing)."""
-        assert self._env().select_launcher_monitors(
-            StepLauncherConfig(type="x")
-        ) == ([], [])
+        assert self._env().select_launcher_monitors(StepLauncherConfig(type="x")) == (
+            [],
+            [],
+        )

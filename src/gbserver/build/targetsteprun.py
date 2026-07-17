@@ -95,7 +95,9 @@ def _monitor_fetch_error(
     with any remote base → :class:`MonitorFetchError` (possibly transient).
     """
     msg = f"Cannot fetch monitor for ref '{uri_str}': {detail}"
-    return ValueError(msg) if _all_local_base_uris(base_uris) else MonitorFetchError(msg)
+    return (
+        ValueError(msg) if _all_local_base_uris(base_uris) else MonitorFetchError(msg)
+    )
 
 
 # Thread-local memoization of parsed monitor-library files. resolve_monitor_config
