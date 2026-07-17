@@ -95,11 +95,19 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
     monitor_dir = Path(tempfile.mkdtemp())
     try:
         try:
-            Asset(uri_str).sync(dest=monitor_dir)
+            # sync() returns the dest on success, or None when pull() reports
+            # failure without raising (e.g. a failed copy). Guard the None so a
+            # failed fetch surfaces as this ValueError rather than a later, less
+            # obvious error (empty dir -> "no monitor.yaml", or a raw TypeError).
+            synced = Asset(uri_str).sync(dest=monitor_dir)
         except Exception as exc:
             raise ValueError(
                 f"Cannot fetch monitor for ref '{uri_str}': {exc}"
             ) from exc
+        if synced is None:
+            raise ValueError(
+                f"Cannot fetch monitor for ref '{uri_str}': fetch reported failure."
+            )
         # Recursive glob mirrors step resolution: a directory source may be nested
         # one level under the sync dest (e.g. dest/<name>/monitor.yaml).
         files = glob.glob(str(monitor_dir / "**" / MONITOR_FILE_NAME), recursive=True)
