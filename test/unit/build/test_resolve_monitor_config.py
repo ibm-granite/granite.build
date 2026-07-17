@@ -179,9 +179,7 @@ class TestResolveMonitorConfig:
         )
         assert cfg["event_configs"] == [status]
 
-    def test_nested_monitor_yaml_picks_shallowest(
-        self: Self, monitor_library
-    ) -> None:
+    def test_nested_monitor_yaml_picks_shallowest(self: Self, monitor_library) -> None:
         """A stray nested monitor.yaml must not make resolution nondeterministic;
         the canonical top-level file (shallowest) is chosen regardless of glob
         order."""
@@ -225,7 +223,9 @@ class TestResolveMonitorConfig:
                 return self._inner.sync(dest=dest, force=force)
 
         monkeypatch.setattr(tsr, "Asset", CountingAsset)
-        first = resolve_monitor_config(StepMonitorConfig(ref="space://monitors/skypilot"))
+        first = resolve_monitor_config(
+            StepMonitorConfig(ref="space://monitors/skypilot")
+        )
         second = resolve_monitor_config(
             StepMonitorConfig(ref="space://monitors/skypilot")
         )

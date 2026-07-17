@@ -80,9 +80,7 @@ class TestSameSpaceRepo:
 
     def test_local_and_git_do_not_match(self) -> None:
         """A local space and a git space are never the same space."""
-        assert not _same_space_repo(
-            "file:///home/user/gb-test", self.STORED
-        )
+        assert not _same_space_repo("file:///home/user/gb-test", self.STORED)
 
     @pytest.mark.parametrize(
         "pair",
