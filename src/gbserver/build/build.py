@@ -33,7 +33,12 @@ from gbserver.build.buildentity import BuildEntity
 from gbserver.build.space import Space
 from gbserver.build.target import Target
 from gbserver.types.buildconfig import BUILD_FILENAME, BuildConfig, BuildFailure
-from gbserver.types.stepconfig import StepConfig, StepInputsAcceptEnum
+from gbserver.types.stepconfig import (
+    StepConfig,
+    StepEnvironmentTypeConfig,
+    StepInputsAcceptEnum,
+    StepLauncherConfig,
+)
 from gbserver.types.validation import GBValidationErrors, GBValidationErrorType
 from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.logger import get_logger
@@ -42,6 +47,48 @@ from gbserver.utils.utils import get_uuid
 logger = get_logger(__name__)
 
 BUILD_DIR = "build"
+
+
+def _step_monitor_ref_errors(
+    env_cfg: StepEnvironmentTypeConfig, launcher: StepLauncherConfig
+) -> List[str]:
+    """Resolve the monitors a launcher selects and return any error messages.
+
+    Mirrors run-time monitor selection (``TargetStepRun``): only the monitors the
+    launcher names, looked up in the active env class's ``env_cfg.monitors``, are
+    resolved. Resolving each ``StepMonitorConfig`` via ``resolve_monitor_config``
+    surfaces a dangling/typo'd ``ref``, a ref cycle, a cross-type ref, or an inline
+    ``extra_event_configs`` misuse — as a ``ValueError`` — at build-validation time
+    instead of at step-run time.
+
+    Args:
+        env_cfg: The step's resolved environment-type config (active env class).
+        launcher: The selected launcher, whose ``monitors`` names which monitors
+            run.
+
+    Returns:
+        A list of human-readable error strings (empty when every selected monitor
+        resolves). Messages carry no target/step prefix — the caller adds one.
+    """
+    # Local import avoids a build.py <-> targetsteprun.py import cycle
+    # (targetsteprun imports build.target / build.targetstep).
+    from gbserver.build.targetsteprun import resolve_monitor_config
+
+    errors: List[str] = []
+    monitors = env_cfg.monitors or {}
+    for name in launcher.monitors or []:
+        monitor = monitors.get(name)
+        if monitor is None:
+            errors.append(
+                f"launcher requires monitor `{name}` not defined in the "
+                "environment config"
+            )
+            continue
+        try:
+            resolve_monitor_config(monitor)
+        except ValueError as e:
+            errors.append(f"monitor `{name}`: {e}")
+    return errors
 
 
 class Build(BuildEntity):
@@ -283,6 +330,34 @@ class Build(BuildEntity):
                         errors.add(err=err)
         return errors
 
+    def __validate_step_monitors(self: Self) -> GBValidationErrors:
+        """Resolve each step's launcher-selected monitor refs at build creation.
+
+        Restores fail-fast for monitor ``ref``s: a dangling/typo'd ref, a ref
+        cycle, a cross-type ref, or a launcher naming an undefined monitor is
+        reported here (build INVALID) instead of surfacing at step-run time. Only
+        the monitors the selected launcher names in the target's active env class
+        are checked, matching what ``TargetStepRun`` resolves at run time (no false
+        positives). Iterates the materialized ``TargetStep``s, whose
+        ``step_environment_config``/``launcher`` are set during assimilation.
+        """
+        logger.info("validating the step monitors of the build")
+        errors = GBValidationErrors()
+        for target_name, target in self.targets.items():
+            for i, targetstep in enumerate(target.targetsteps):
+                env_cfg = targetstep.step_environment_config
+                launcher = targetstep.launcher
+                # A missing env config / launcher is a distinct failure handled by
+                # environment/launcher resolution — nothing to check here.
+                if env_cfg is None or launcher is None:
+                    continue
+                for msg in _step_monitor_ref_errors(env_cfg, launcher):
+                    errors.add(
+                        err=f"Target `{target_name}` Step `{i}`: {msg}",
+                        type=GBValidationErrorType.NOT_EXIST,
+                    )
+        return errors
+
     @staticmethod
     def __env_dir_path(target_env_uri: Optional[URI]) -> Optional[Path]:
         """Return the local directory ``Path`` for the target's env URI, or ``None``.
@@ -494,6 +569,7 @@ class Build(BuildEntity):
         # In case build_config was changed after __init__
         errors.add(build_config.my_validate())
         errors.add(self.__validate_step_uris())
+        errors.add(self.__validate_step_monitors())
         errors.add(self.__validate_target_inputs())
         errors.add(self.__validate_step_inputs_and_outputs())
         for t in self.targets.values():

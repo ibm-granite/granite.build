@@ -25,11 +25,16 @@ import pytest
 import yaml
 
 from gbcommon.uri.space import SpaceURI
+from gbserver.build.build import _step_monitor_ref_errors
 from gbserver.build.targetsteprun import (
     _reset_monitor_file_cache,
     resolve_monitor_config,
 )
-from gbserver.types.stepconfig import StepMonitorConfig
+from gbserver.types.stepconfig import (
+    StepEnvironmentTypeConfig,
+    StepLauncherConfig,
+    StepMonitorConfig,
+)
 
 # A base skypilot monitor: the standard artifact convention + a default profile.
 _BASE = {
@@ -280,3 +285,58 @@ class TestResolveMonitorConfig:
         )
         assert again["poll_interval_seconds"] == 900
         assert len(again["event_configs"]) == 1
+
+
+def _env_cfg(monitors: dict) -> StepEnvironmentTypeConfig:
+    """Build a StepEnvironmentTypeConfig with the given monitors map."""
+    return StepEnvironmentTypeConfig(
+        launchers={"l": StepLauncherConfig(type="x")}, monitors=monitors
+    )
+
+
+class TestStepMonitorRefErrors:
+    """_step_monitor_ref_errors: build-creation-time monitor-ref resolution.
+
+    Restores fail-fast — a bad monitor ref is reported at validation, not step-run.
+    """
+
+    def test_valid_ref_no_error(self: Self, monitor_library) -> None:
+        """A launcher-selected monitor with a resolvable ref yields no error."""
+        env_cfg = _env_cfg({"m": StepMonitorConfig(ref="space://monitors/skypilot")})
+        launcher = StepLauncherConfig(type="x", monitors=["m"])
+        assert _step_monitor_ref_errors(env_cfg, launcher) == []
+
+    def test_dangling_ref_errors(self: Self, monitor_library) -> None:
+        """A dangling ref surfaces at validation, mentioning the monitor name."""
+        env_cfg = _env_cfg(
+            {"m": StepMonitorConfig(ref="space://monitors/does-not-exist")}
+        )
+        launcher = StepLauncherConfig(type="x", monitors=["m"])
+        errs = _step_monitor_ref_errors(env_cfg, launcher)
+        assert len(errs) == 1 and "does-not-exist" in errs[0]
+
+    def test_launcher_names_undefined_monitor_errors(
+        self: Self, monitor_library
+    ) -> None:
+        """A launcher naming a monitor absent from env_cfg.monitors is flagged."""
+        env_cfg = _env_cfg({})
+        launcher = StepLauncherConfig(type="x", monitors=["missing"])
+        errs = _step_monitor_ref_errors(env_cfg, launcher)
+        assert len(errs) == 1 and "missing" in errs[0]
+
+    def test_cycle_and_crosstype_refs_error(self: Self, monitor_library) -> None:
+        """Ref cycles and cross-type refs are also reported at validation."""
+        env_cfg = _env_cfg(
+            {
+                "cyc": StepMonitorConfig(ref="space://monitors/cyc_a"),
+                "xtype": StepMonitorConfig(ref="space://monitors/crosstype"),
+            }
+        )
+        launcher = StepLauncherConfig(type="x", monitors=["cyc", "xtype"])
+        errs = _step_monitor_ref_errors(env_cfg, launcher)
+        assert len(errs) == 2
+
+    def test_launcher_with_no_monitors_no_error(self: Self, monitor_library) -> None:
+        """A launcher that selects no monitors produces no errors."""
+        env_cfg = _env_cfg({"m": StepMonitorConfig(ref="space://monitors/skypilot")})
+        assert _step_monitor_ref_errors(env_cfg, StepLauncherConfig(type="x")) == []
