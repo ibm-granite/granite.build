@@ -28,7 +28,7 @@ from pathlib import Path
 import yaml
 from git import List, Optional
 
-from gbcommon.uri.git import GitURI
+from gbcommon.uri.git import GitURI, split_repo_path
 from gbserver.build.build import Build
 from gbserver.build.buildrun import BuildRun
 from gbserver.build.space import Space
@@ -92,17 +92,12 @@ def _same_space_repo(uri_a: str, uri_b: str) -> bool:
     """
 
     def git_identity(host: str, path: str) -> tuple[str, str, str, str]:
-        # (host, owner, repo), case-insensitive. Segments beyond repo (extra path
-        # / fragment) are ignored; missing segments default to "" (no IndexError
-        # on short URIs). Strip a pip-style @<ref> then .git:
-        # "gb-test.git@branch" -> "gb-test".
-        segments = [s for s in path.split("/") if s]
-        owner = segments[0].lower() if len(segments) >= 1 else ""
-        repo = segments[1] if len(segments) >= 2 else ""
-        # Lowercase *before* stripping .git so a ".GIT"/".Git" suffix is also
-        # removed (removesuffix is case-sensitive).
-        repo = repo.split("@", 1)[0].lower().removesuffix(".git")
-        return ("git", host.lower(), owner, repo)
+        # owner/repo (+ @<ref> and .git stripping) come from the shared
+        # split_repo_path so this doesn't parse git paths in parallel with
+        # get_uri_parts. Comparison-specific normalization (case-insensitive host/
+        # owner/repo) is applied here.
+        owner, repo = split_repo_path(path)
+        return ("git", host.lower(), owner.lower(), repo.lower())
 
     def identity(uri: str) -> tuple[str, ...]:
         # scp-like git URL ([user@]host:owner/repo(.git)) — the form git emits
