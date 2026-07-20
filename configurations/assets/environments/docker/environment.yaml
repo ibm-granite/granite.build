@@ -10,5 +10,8 @@ assetstores:
       - mode: default
     push:
       - mode: default
-  # file: URIs are handled by the implicitly-registered builtin file store
-  # (see Environment._register_default_filestore) — no entry required here.
+  # Local filesystem — push artifacts via file: URIs (builtin file store).
+  # Docker implements file: push only (no pullasset_filestore), so no load mode.
+  - store_uri: space://assetstores/file/
+    push:
+      - mode: default

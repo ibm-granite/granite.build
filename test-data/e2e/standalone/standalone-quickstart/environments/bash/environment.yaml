@@ -5,4 +5,9 @@ assetstores:
   - store_uri: space://assetstores/hf/
     load:
       - mode: default
-  # file: URIs are served by the implicitly-registered builtin file store.
+  # Local filesystem — load/push artifacts via file: URIs (builtin file store).
+  - store_uri: space://assetstores/file/
+    load:
+      - mode: default
+    push:
+      - mode: default

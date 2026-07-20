@@ -125,10 +125,10 @@ environment class, which may queue a built-in step (e.g. `hf_pull` injects an
 The env-local (`env://`) and in-memory (`mem://`) stores are the exceptions: each is registered
 implicitly for **every** environment (their push/pull transfer nothing — env:// is a shared-filesystem
 no-op, mem:// passes a value through the build's shared memory — handled by the base class), so `env://`
-and `mem://` inputs and outputs work without an `assetstores` entry here. The `file:` store is likewise
-registered implicitly, but only for the environment classes that implement file transfer (`bash` and
-`docker`), so `file:` inputs/outputs work there without an entry too. Declare one only to override its
-default `load`/`push` mode.
+and `mem://` inputs and outputs work without an `assetstores` entry here. Declare one only to override
+its default `load`/`push` mode. The `file:` store is **not** implicit — an environment that supports it
+declares `space://assetstores/file/` (the builtin File store) here with the modes it implements (e.g.
+`bash` = load+push; `docker` = push only, since it has no `pullasset_filestore`).
 
 For the full list of modes and the store types themselves (URI schemes, secrets, configuration), see
 [Asset stores](../asset-stores/README.md#load-and-push-modes).
