@@ -1,7 +1,7 @@
 granite.build:
   name: mem_2target_docker
   # Two docker targets exercising the mem:// asset store for cross-target
-  # output -> input binding on the Docker environment. The docker `image` step
+  # output -> input binding on the Docker environment. The docker `command` step
   # runs `bash -c <command>`, so it can echo the LLMB_ARTIFACT_STATE marker the
   # docker monitor now recognizes. A mem:// URI is an opaque key into the
   # build's shared in-memory dict: the producer's binding `state` value is
@@ -21,10 +21,10 @@ granite.build:
         mem_output1:
           uri: "mem://mem_output1"
       steps:
-        - step_uri: space://steps/image
+        - step_uri: space://steps/command
           config:
-            image_config:
-              # Public quay.io image with bash (the image step runs bash -c).
+            command_config:
+              # Public quay.io image with bash (the command step runs bash -c).
               image: quay.io/fedora/fedora-minimal:42
               command: >-
                 echo "first target emitting mem:// output mem_output1";
@@ -41,9 +41,9 @@ granite.build:
         mem_output2:
           uri: "mem://mem_output2"
       steps:
-        - step_uri: space://steps/image
+        - step_uri: space://steps/command
           config:
-            image_config:
+            command_config:
               image: quay.io/fedora/fedora-minimal:42
               # Assert the state bound from first.mem_output1 is the exact value
               # `first` produced; a mismatch (or empty value if mem:// did not

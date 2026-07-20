@@ -14,14 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Integration test for cross-target mem:// binding on the Docker environment.
+"""Integration test for the Docker command step with HF URI input/output.
 
-Two docker `image`-step targets: the first emits an
-`LLMB_ARTIFACT_ID:… LLMB_ARTIFACT_STATE:…` marker (a mem:// output), the second
-binds it and asserts the value arrived verbatim via the mem:// store — proving
-the docker monitor now recognizes the STATE marker and mem:// bindings work on
-the docker backend. Mirrors the bash mem 2-target test. The Docker daemon must
-be available.
+Validates the full pipeline:
+  HF URI input  →  Docker container (command step)  →  HF URI output
+
+The Docker daemon must be available.
 
 The fixture's build.yaml and buildtest.yaml live in the directory returned by
 _get_yaml_spec_dir below.
@@ -40,15 +38,20 @@ from libgbtest.constants import extended_testing_only
 pytestmark = pytest.mark.docker_required
 
 
-# Real-infra build test (launches local Docker containers) — extended suite only.
+# Real-infra build test (launches a local Docker container) — only run in the
+# extended suite (make extended-tests), not the fast quick-tests suite.
 @extended_testing_only
-# TODO: disable this skip when image pulling is supported during the build.
+# TODO: We need to disable this skip when image pulling is supported
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
     reason="Skip in CI/CD until we have automatic image pulling during the build",
 )
-class TestDockerMem2Target(AbstractYamlBuildRunnerTest):
-    """Cross-target mem:// output → input binding over two docker image steps."""
+class TestDockerCommandBuild(AbstractYamlBuildRunnerTest):
+    """Integration test: HF input → Docker command step → HF output.
+
+    Runs a real local Docker container with HF I/O mocked so no actual
+    HuggingFace network calls are made.
+    """
 
     def _get_yaml_spec_dir(self) -> Path:
-        return get_test_data_dir_for(__file__) / "mem-2target"
+        return get_test_data_dir_for(__file__) / "docker-hf"

@@ -1,8 +1,8 @@
-name: image
+name: command
 version: 1.0.0
 type: exec
 config:
-  image_config:
+  command_config:
     command: ''
     image: ''
   compute_config:
@@ -11,16 +11,16 @@ config:
 environment_configs:
   Docker:
     launchers:
-      image:
+      command:
         type: docker
         monitors:
         - docker_log
         config:
-          image: '{{ config.image_config.image }}'
+          image: '{{ config.command_config.image }}'
           command:
           - bash
           - -c
-          - '{{ config.image_config.command }}'
+          - '{{ config.command_config.command }}'
     monitors:
       # References the shipped monitor library (builtins/monitors/docker/monitor.yaml):
       # standard LLMB artifact detection (with binding) + a MESSAGE stream. No

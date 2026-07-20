@@ -12,11 +12,11 @@ granite.build:
         output_model2:
           uri: hf://huggingface.co/datasets/ibm-research/test-output2_{{ binding.path | short_hash }}
       steps:
-        - step_uri: space://steps/image
+        - step_uri: space://steps/command
           config:
-            image_config:
+            command_config:
               # Public quay.io image (no anonymous pull-rate limits, unlike
-              # Docker Hub).  The docker `image` step runs `bash -c <command>`,
+              # Docker Hub).  The docker `command` step runs `bash -c <command>`,
               # so the image must contain bash — which rules out the busybox
               # images used elsewhere in the tests (sh only).
               image: quay.io/fedora/fedora-minimal:42

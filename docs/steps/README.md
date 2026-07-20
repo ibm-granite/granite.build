@@ -42,7 +42,8 @@ These steps ship with gbserver in `src/gbserver/builtins/steps/`:
 | `s3pull` | Pull files from an S3-compatible object store. |
 | `s3push` | Push files to an S3-compatible object store. |
 | `cosrclone` | Transfer files using rclone (supports COS, S3, and many backends). |
-| `image` | Run a custom container image (BYOI). |
+| `command` | Run a custom container image with a shell command on the Docker environment (BYOI). |
+| `image` | Run a custom container image (BYOI) on the Skypilot environment. |
 
 ## Bash example steps
 
