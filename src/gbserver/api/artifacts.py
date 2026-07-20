@@ -577,7 +577,7 @@ def list_artifact_tags(
 
 # Needs to be after /tags and /decode GET, since it will match others otherwise.
 @artifacts_api.get("/{artifact_id}")
-def read_artifact(artifact_id: str) -> GetArtifactResponse:
+def read_artifact(request: Request, artifact_id: str) -> GetArtifactResponse:
     storage = get_admin_storage().artifact_registry
     item = storage.get_by_uuid(artifact_id)
     if item is None:
@@ -585,6 +585,11 @@ def read_artifact(artifact_id: str) -> GetArtifactResponse:
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
         )
     assert isinstance(item, ArtifactRegistration)
+    confirm_space_write_access(
+        request=request,
+        username_on_target=item.username,
+        space_name=item.space_name,
+    )
     resp = GetArtifactResponse(artifact=item)
     return resp
 
@@ -614,7 +619,7 @@ def _convert_status_str(status_str: str) -> ArtifactRegistrationStatus:
 def update_artifact(
     request: Request, artifact_id: str, update: ArtifactUpdateRequest
 ) -> ArtifactUpdateResponse:
-    read_resp = read_artifact(artifact_id)
+    read_resp = read_artifact(request, artifact_id)
     if read_resp is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
