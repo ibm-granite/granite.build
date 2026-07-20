@@ -235,7 +235,7 @@ steps:
 
 Reference definitions that show both variants in real use:
 
-- [`builtins/monitors/bash/monitor.yaml`](../../src/gbserver/builtins/monitors/bash/monitor.yaml) — the shared bash monitor, carrying the `LLMB_ARTIFACT_PATH` and `LLMB_ARTIFACT_STATE` rules side by side. The [`bash/steps/command/step.yaml`](../../configurations/assets/environments/bash/steps/command/step.yaml) step references it with `ref: space://monitors/bash`.
+- [`builtins/monitors/bash/monitor.yaml`](../../src/gbserver/builtins/monitors/bash/monitor.yaml) — the shared bash monitor, carrying the `LLMB_ARTIFACT_PATH` and `LLMB_ARTIFACT_STATE` rules side by side. The [`builtins/steps/bash/command/step.yaml`](../../src/gbserver/builtins/steps/bash/command/step.yaml) step references it with `ref: space://monitors/bash`.
 - [`skypilot/.../rm-server/step.yaml`](../../configurations/assets/environments/skypilot/lsf/ibm-bluevela/steps/rm-server/step.yaml) — a long-lived service that keeps its monitor **inline** (its startup-log scraping is bespoke) and publishes its URL as a `mem://` `state` binding.
 
 ## Per-environment monitor behaviour

@@ -51,7 +51,7 @@ export GBSERVER_HOST="http://127.0.0.1:${GBSERVER_PORT:-8080}"
 - The space's `space.yaml` has a `base_uris:` chain (e.g. `file://../../assets`) — that's where steps/environments/assetstores resolve from.
 - **Environments:** `ls <assets>/environments/` → typically `bash docker runpod skypilot ...`. Default to `bash`.
 - **Steps:** steps usable on the bash backend live under `<assets>/environments/bash/steps/<name>/`. A step is referenced as `space://steps/<name>` even though it lives in an env-keyed subdir — the resolver maps it.
-- **On-disk reference steps** live under `<assets>/environments/bash/steps/` (`hello`, `command`, `inference`, `inference-lora`, `lora-finetune`). `hello`/`command` are **minimal** steps (launcher + a `MESSAGE_EVENT` log monitor, no artifact capture) — copy them for shape. `inference`, `inference-lora`, and `lora-finetune` are the reference for a step that **captures outputs as artifacts** — they carry the `NEWARTIFACT_IN_ENVIRONMENT_EVENT` monitor. Copy `inference` (or `lora-finetune`) when your step must emit artifacts.
+- **On-disk reference steps** live under `<assets>/environments/bash/steps/` (`hello`, `inference`, `inference-lora`, `lora-finetune`). `hello` is a **minimal** step (launcher + a `MESSAGE_EVENT` log monitor, no artifact capture) — copy it for shape (the equivalent minimal `command` step now ships as a builtin at `builtins/steps/bash/command/`). `inference`, `inference-lora`, and `lora-finetune` are the reference for a step that **captures outputs as artifacts** — they carry the `NEWARTIFACT_IN_ENVIRONMENT_EVENT` monitor. Copy `inference` (or `lora-finetune`) when your step must emit artifacts.
 
 When you reference `space://steps/<name>` or `space://environments/<name>`, the name must be a real directory you found above.
 
@@ -73,7 +73,7 @@ A step is a directory under `<assets>/environments/bash/steps/<step-name>/`:
 
 ### `step.yaml` — the launch contract
 
-Model it on this. `type: nohup` is mandatory for bash. The monitor's `NEWARTIFACT_IN_ENVIRONMENT_EVENT` block is what captures your outputs — keep it. **On-disk reference:** this artifact-capturing shape matches the `inference`, `inference-lora`, and `lora-finetune` steps (which carry this monitor); `hello`/`command` are minimal and have only the `MESSAGE_EVENT` block, so copy `inference` (or `lora-finetune`) when your step emits artifacts.
+Model it on this. `type: nohup` is mandatory for bash. The monitor's `NEWARTIFACT_IN_ENVIRONMENT_EVENT` block is what captures your outputs — keep it. **On-disk reference:** this artifact-capturing shape matches the `inference`, `inference-lora`, and `lora-finetune` steps (which carry this monitor); `hello` (on-disk) and the builtin `command` step are minimal and have only the `MESSAGE_EVENT` block, so copy `inference` (or `lora-finetune`) when your step emits artifacts.
 
 ```yaml
 name: <step-name>            # must equal the directory name
@@ -226,4 +226,4 @@ This `job.log` is your primary debugging artifact. If a step "succeeded" but did
 
 ## When unsure
 
-Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s/LSF-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) are **k8s/LSF-only and do not apply to the bash backend**. For bash behavior, the source of truth is the on-disk steps (`hello`/`command` for a minimal launch; `inference`/`lora-finetune` for artifact capture) plus a working build's `job.log`/`step.yaml`.
+Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s/LSF-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) are **k8s/LSF-only and do not apply to the bash backend**. For bash behavior, the source of truth is the on-disk `hello` step (or the `command` builtin) for a minimal launch; `inference`/`lora-finetune` for artifact capture, plus a working build's `job.log`/`step.yaml`.
