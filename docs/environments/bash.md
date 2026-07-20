@@ -26,12 +26,12 @@ assetstores:
   - store_uri: space://assetstores/hf/
     load:
       - mode: default
-  - store_uri: space://assetstores/local/
-    load:
-      - mode: default
-    push:
-      - mode: default
 ```
+
+> Like `env://` and `mem://`, the `file:` store is registered implicitly for the
+> bash environment (see `Environment._register_default_filestore`), so `file:`
+> load/push work without an `assetstores` entry. Add one only to override its
+> default `load`/`push` mode.
 
 ## `step.yaml` — launcher and monitor types
 

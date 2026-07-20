@@ -30,6 +30,16 @@ builds refer to them via `space://assetstores/<name>` URIs resolved through the 
 > [`Environment._register_default_envstore`](../../src/gbserver/environment/environment.py) /
 > [`_register_default_memstore`](../../src/gbserver/environment/environment.py).
 
+> **`file:` is registered implicitly too — but only where file transfer exists.** The File store
+> ([`builtins/assetstores/file`](../../src/gbserver/builtins/assetstores/file/store.yaml)) is
+> registered automatically for every environment class that implements file transfer — currently
+> **`bash` and `docker`** (the classes with `pullasset_filestore`/`pushasset_filestore`) — so `file:`
+> load/push work there with no `assetstores` entry. It follows the same resolution order as
+> `env-local`/`mem-local` (explicit `environment.yaml` entry wins, then a space-provided
+> `space://assetstores/file`, else the bundled default). Backends without file transfer do **not**
+> register it, so they don't falsely advertise `file:` support. See
+> [`Environment._register_default_filestore`](../../src/gbserver/environment/environment.py).
+
 ## Store types and URI schemes
 
 | Store | URI scheme(s) | Maps a URI to… | Credentials (default secret name) |

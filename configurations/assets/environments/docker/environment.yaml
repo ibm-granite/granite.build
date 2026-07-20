@@ -10,9 +10,5 @@ assetstores:
       - mode: default
     push:
       - mode: default
-  # Local filesystem — load/push artifacts via file: URIs.
-  - store_uri: space://assetstores/local/
-    load:
-      - mode: default
-    push:
-      - mode: default
+  # file: URIs are handled by the implicitly-registered builtin file store
+  # (see Environment._register_default_filestore) — no entry required here.

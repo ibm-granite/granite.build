@@ -35,12 +35,12 @@ assetstores:
       - mode: default          # HF snapshot is downloaded and bind-mounted into the container.
     push:
       - mode: default
-  - store_uri: space://assetstores/local/
-    load:
-      - mode: default
-    push:
-      - mode: default
 ```
+
+> Like `env://` and `mem://`, the `file:` store is registered implicitly for the
+> docker environment (see `Environment._register_default_filestore`), so `file:`
+> load/push work without an `assetstores` entry. Add one only to override its
+> default `load`/`push` mode.
 
 `config.defaults` holds environment-wide fallbacks (`image`, `env`). Most knobs are set per step.
 

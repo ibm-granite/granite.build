@@ -161,8 +161,25 @@ class TestMergedQuickstartAssets:
         with open(path) as f:
             return yaml.safe_load(f)
 
-    def test_local_store(self):
-        data = self._load(self.STORES_DIR / "local" / "store.yaml")
+    def test_no_local_store(self):
+        # The redundant `local` file store was removed; file: URIs are served by
+        # the implicitly-registered builtin file store instead (see
+        # Environment._register_default_filestore).
+        assert not (self.STORES_DIR / "local").exists()
+
+    def test_builtin_file_store(self):
+        # The builtin file store that replaces the removed `local` store.
+        builtin = (
+            REPO_ROOT
+            / "src"
+            / "gbserver"
+            / "builtins"
+            / "assetstores"
+            / "file"
+            / "store.yaml"
+        )
+        data = self._load(builtin)
+        assert data["name"] == "file"
         assert data["base_uri"] == "file:"
 
     def test_s3_store(self):
@@ -179,16 +196,18 @@ class TestMergedQuickstartAssets:
         data = self._load(self.ENVS_DIR / "skypilot" / "aws" / "environment.yaml")
         assert data["type"] == "Skypilot"
 
-    def test_bash_env_binds_local_and_hf(self):
+    def test_bash_env_binds_hf_not_local(self):
+        # file: is no longer declared — it's served by the builtin file store.
         data = self._load(self.ENVS_DIR / "bash" / "environment.yaml")
         uris = {s["store_uri"] for s in data["assetstores"]}
-        assert any("local" in u for u in uris)
         assert any("hf" in u for u in uris)
+        assert not any("local" in u for u in uris)
 
-    def test_docker_env_binds_local(self):
+    def test_docker_env_binds_hf_not_local(self):
         data = self._load(self.ENVS_DIR / "docker" / "environment.yaml")
         uris = {s["store_uri"] for s in data["assetstores"]}
-        assert any("local" in u for u in uris)
+        assert any("hf" in u for u in uris)
+        assert not any("local" in u for u in uris)
 
     def test_colocated_hello_steps_exist(self):
         # bash/docker/runpod get co-located hello steps; the single
