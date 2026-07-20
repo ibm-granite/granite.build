@@ -19,7 +19,7 @@
 # override it to a small value for fast test turnaround.
 type: skypilot_monitor
 config:
-  poll_interval_seconds: "{{ config.poll_interval_seconds | default(60) }}"
+  poll_interval_seconds: "{{ config.poll_interval_seconds | default(300) }}"
   log_retrieval:
     mode: "{{ config.log_retrieval_mode | default('on_completion') }}"
   event_configs:
