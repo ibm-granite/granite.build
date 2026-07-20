@@ -47,26 +47,20 @@ environment_configs:
             /prod.sh
     monitors:
       skypilot_monitor:
-        type: skypilot_monitor
+        # Artifact convention comes from the monitor library (space://monitors/skypilot);
+        # a service overrides the retrieval profile to a startup window (scrape
+        # only during bring-up, then stop) and appends its status banner. The
+        # status and artifact lines are distinct, so ordering is irrelevant.
+        ref: space://monitors/skypilot
         config:
           poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
           log_retrieval:
-            # Service: scrape logs only during bring-up (capture the URL binding /
-            # confirm the process is up), then stop for the server's lifetime.
             mode: "{{ config.log_retrieval_mode | default('startup_window') }}"
             interval_seconds: "{{ config.log_retrieval_interval_seconds | default(15) }}"
             startup_window_seconds: "{{ config.log_retrieval_startup_window_seconds | default(120) }}"
-          event_configs:
+          extra_event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "Starting BCB server"
             event_fields:
               - field_name: status
                 field_value_template: "RUNNING"
-          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
-            event_fields:
-              - field_name: binding_id
-                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
-              - field_name: path
-                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
-                is_data: true

@@ -21,10 +21,11 @@ import json
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 
-from gbcommon.types.constants import DEFAULT_GH_DOMAIN, get_gh_api_base
+from gbcommon.types.constants import DEFAULT_GH_DOMAIN, get_gb_home_dir, get_gh_api_base
 from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.types.constants_base import (
     ENV_VAR_IBMID_AUTHORIZE_URL,
@@ -164,6 +165,7 @@ ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX = (
     ENV_VAR_PREFIX + "_SKYPILOT_PROVISION_BACKOFF_MAX"
 )
 ENV_VAR_METADATA_STORAGE = ENV_VAR_PREFIX + "_METADATA_STORAGE"
+ENV_VAR_UI_DIR = ENV_VAR_PREFIX + "_UI_DIR"
 ENV_VAR_AUTH_MODE = ENV_VAR_PREFIX + "_AUTH_MODE"
 ENV_VAR_API_KEY = ENV_VAR_PREFIX + "_API_KEY"
 ENV_VAR_API_USER = ENV_VAR_PREFIX + "_API_USER"
@@ -188,6 +190,100 @@ ENV_VAR_GBSERVER_ENABLE_SSH_HOST_KEY_VERIFICATION = (
 ENV_VAR_GBSERVER_ENABLE_STEP_RETRY = ENV_VAR_PREFIX + "_ENABLE_STEP_RETRY"
 ENV_VAR_BUILDRUNNERJOB_SLEEP_ON_END = ENV_VAR_PREFIX + "_BUILDRUNNERJOB_SLEEP_ON_END"
 ENV_VAR_BUILTIN_STEP_IMAGE = ENV_VAR_PREFIX + "_BUILTIN_STEP_IMAGE"
+
+
+def gbserver_ui_dir() -> str:
+    """Directory the compiled frontend assets are served from.
+
+    Default: static/ui/ under the gbserver package; override with GBSERVER_UI_DIR.
+    """
+    # This file lives at gbserver/types/constants.py; the package root is two levels up.
+    gbserver_pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.environ.get(ENV_VAR_UI_DIR, os.path.join(gbserver_pkg, "static", "ui"))
+
+
+def analytics_backend_enabled() -> bool:
+    """Whether the gb_ui_backend analytics subsystem should run in this server.
+
+    True only when the package is installed AND enabled — explicit
+    GB_UI_ANALYTICS_ENABLED wins, else auto-detect off the presence of compiled
+    UI assets (an API-only server has no dashboard to serve analytics to, and
+    initializing its DB there would crash startup). Resolved here, off inherited
+    env and the shared UI dir, so the CLI parent and each uvicorn worker agree.
+    """
+    if importlib.util.find_spec("gb_ui_backend") is None:
+        return False
+    from gb_ui_backend.config import analytics_is_enabled
+
+    return analytics_is_enabled(os.path.isdir(gbserver_ui_dir()))
+
+
+def derive_analytics_database_url() -> Optional[str]:
+    """Best-effort default for GB_UI_DATABASE_URL, inherited from the main store's
+    own backend config instead of an independent SQLite default.
+
+    An operator who points the main store at Postgres (GBSERVER_METADATA_STORAGE=sql)
+    gets analytics pointed at that same Postgres instance automatically, rather than
+    silently falling back to a private SQLite file that may not even have a writable
+    directory to live in (the root cause of the crashloop #190 fixed defensively).
+
+    Returns None when no safe default can be derived — callers should leave
+    GB_UI_DATABASE_URL unset in that case; analytics_backend_enabled()'s gating and
+    main.py's try/except around init_analytics() keep that degrading gracefully
+    rather than crashing.
+
+    Note: the derived sql-mode URL does not carry GBSERVER_SQL_SCHEMA — the main
+    store's tables live in that schema (see sql_storage.py's _get_connection_specs()),
+    but analytics' gbd_* tables land in the connection role's default schema instead.
+    Distinct table prefixes mean this doesn't collide with the main store.
+    """
+    if GB_METADATA_STORAGE == "sql":
+        if GBSERVER_SQL_SCHEME != "postgresql":
+            # Lazy import: gbserver.utils.logger imports this module at its own top
+            # level, so importing it back at our module top would be circular.
+            from gbserver.utils.logger import get_logger
+
+            get_logger(__name__).warning(
+                "GBSERVER_SQL_SCHEME=%s has no known asyncpg equivalent — "
+                "skipping analytics database URL auto-derivation.",
+                GBSERVER_SQL_SCHEME,
+            )
+            return None
+        user = quote_plus(GBSERVER_SQL_USER)
+        password = quote_plus(GBSERVER_SQL_PASSWD)
+        return (
+            f"postgresql+asyncpg://{user}:{password}"
+            f"@{GBSERVER_SQL_HOST}:{GBSERVER_SQL_PORT}/{GBSERVER_SQL_DBNAME}"
+        )
+
+    if GB_METADATA_STORAGE == "sqlite":
+        from gb_ui_backend.config import ANALYTICS_DB_FILENAME
+
+        gb_home = get_gb_home_dir()
+        return f"sqlite+aiosqlite:///{os.path.join(gb_home, ANALYTICS_DB_FILENAME)}"
+
+    return None
+
+
+def derive_analytics_sql_connect_args() -> dict:
+    """JSON-serializable create_async_engine() connect_args for a derived
+    postgresql+asyncpg analytics URL, translating the main SQL store's TLS cert.
+
+    The main store's sync psycopg2 driver takes sslrootcert/sslmode as URL query
+    params (see sql_storage.py's _get_connection_specs()); asyncpg instead needs an
+    ssl.SSLContext passed as a connect arg, which isn't JSON-serializable and can't
+    cross the os.environ boundary to gb_ui_backend as-is. So this only ever returns
+    the cert file *path* under "sslrootcert_file" — gb_ui_backend's db_schema.py
+    builds the actual ssl.SSLContext from that path right before creating the engine.
+    """
+    from gbserver.storage.sql.cert_file import get_ssl_cert_file
+    from gbserver.utils.logger import get_logger
+
+    cert_file = get_ssl_cert_file(get_logger(__name__))
+    if cert_file is None:
+        return {}
+    return {"sslrootcert_file": cert_file}
+
 
 ENV_VAR_GBSERVER_SQL_SCHEME = ENV_VAR_PREFIX + "_SQL_SCHEME"  # postgresql, mysql, etc.
 ENV_VAR_GBSERVER_SQL_DBNAME = ENV_VAR_PREFIX + "_SQL_DBNAME"

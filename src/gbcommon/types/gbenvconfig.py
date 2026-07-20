@@ -16,6 +16,7 @@
 
 """Unified environment configuration for GB (gbcli + gbserver)."""
 
+import logging
 import os
 from typing import Any, Dict, Optional, Self
 
@@ -23,14 +24,44 @@ from pydantic import BaseModel
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 
+logger = logging.getLogger(__name__)
+
+# The single source of truth for what counts as "false"/"true" when parsing a
+# boolean from an environment-variable string. Anything set but not falsy is
+# treated as true; the truthy set is used only to warn on unrecognized input.
+_FALSY_TOKENS = frozenset({"false", "null", "undefined", "no", "off", "0", ""})
+_TRUTHY_TOKENS = frozenset({"true", "yes", "on", "1"})
+
+
+def parse_boolean(value: str | None, default: bool = False) -> bool:
+    """Parse an env-var-style string into a boolean.
+
+    ``None`` (unset) → ``default``. Otherwise the value is lower-cased and
+    compared against the falsy token set (see ``_FALSY_TOKENS``); a match is
+    ``False``, anything else set is ``True``. A non-falsy value that also isn't a
+    recognized truthy token (a likely typo, e.g. ``on-prod``) is still treated as
+    ``True`` but logs a warning. This never raises — the single place the
+    string→bool rule is defined, shared by ``getenv_boolean`` and any other
+    caller that already has the string in hand.
+    """
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in _FALSY_TOKENS:
+        return False
+    if normalized not in _TRUTHY_TOKENS:
+        logger.warning(
+            "Unrecognized boolean value %r — treating as true; " "use one of %s / %s",
+            value,
+            sorted(_TRUTHY_TOKENS),
+            sorted(_FALSY_TOKENS),
+        )
+    return True
+
 
 def getenv_boolean(envname: str, default: bool = False) -> bool:
     """Evaluate the environment variable and return as a boolean value."""
-    value = os.getenv(envname)
-    if value is None:
-        return default
-    value_normalized = str(value).lower()
-    return value_normalized not in ["false", "null", "undefined", "no", "0", ""]
+    return parse_boolean(os.getenv(envname), default)
 
 
 class GBEnvConfig(BaseModel):

@@ -608,8 +608,9 @@ class Environment(ABC):
         """Load the asset stores specified in the environment.yaml.
 
         Declared stores are loaded first; then :meth:`_register_default_envstore`
-        ensures the ``env://`` (Envstore) store is available even when it is not
-        declared, so env:// input/output work on all backends without an
+        and :meth:`_register_default_memstore` ensure the ``env://`` (Envstore)
+        and ``mem://`` (Memstore) stores are available even when they are not
+        declared, so env:// / mem:// input/output work on all backends without an
         ``assetstores`` entry in each ``environment.yaml``.
         """
         if self.config is not None and self.config.assetstores is not None:
@@ -620,8 +621,9 @@ class Environment(ABC):
                 self.supported_assetstores[assetstore] = storeenv
         else:
             logger.warning("No asset stores found!")
-        # Run after the declared stores so an explicit env:// declaration wins.
+        # Run after the declared stores so an explicit declaration wins.
         self._register_default_envstore()
+        self._register_default_memstore()
 
     def _register_default_envstore(self: Self) -> None:
         """Ensure the ``env://`` (Envstore) asset store is registered for this env.
@@ -707,6 +709,95 @@ class Environment(ABC):
             return Assetstore.load_asset_store(env_store_dir, context=self.context)
         except Exception as e:
             logger.warning("Failed to load bundled default env:// assetstore: %s", e)
+            return None
+
+    def _register_default_memstore(self: Self) -> None:
+        """Ensure the ``mem://`` (Memstore) asset store is registered for this env.
+
+        A ``mem://`` URI is an opaque key into the build's in-memory
+        ``shared_mem_store`` dict: a producer target's binding ``state`` value is
+        passed to a consumer verbatim (see ``pullasset_memstore`` /
+        ``pushasset_memstore``), so there is no filesystem transfer. Registering
+        the store implicitly makes mem:// universally supported without a
+        per-environment ``environment.yaml`` entry. Resolution order mirrors
+        :meth:`_register_default_envstore`:
+
+        1. If an ``environment.yaml`` store already handles ``mem://``, do nothing —
+           the explicit declaration wins.
+        2. Otherwise prefer a space-provided ``space://assetstores/mem-local`` store
+           if one exists — an optional customization hook that **no shipped space
+           defines**, so this is normally a miss.
+        3. Fall back to the bundled ``builtins/assetstores/mem-local`` default —
+           the effective out-of-the-box store.
+
+        Failures are logged and swallowed so a problem loading the store never
+        breaks environment construction.
+        """
+        if any(
+            s.config.base_uri and s.config.base_uri.startswith("mem://")
+            for s in self.supported_assetstores
+        ):
+            return  # an explicit environment.yaml mem:// store takes precedence
+        assetstore = self._resolve_mem_assetstore()
+        if assetstore is None:
+            return
+        self.supported_assetstores[assetstore] = AssetStoreEnvironmentConfig(
+            store_uri="mem://",
+            load=[StoreLoad(mode="default")],
+            push=[StorePush(mode="default")],
+        )
+
+    def _resolve_mem_assetstore(self: Self) -> Optional[Assetstore]:
+        """Resolve the ``mem://`` asset store: optional space store, else bundled default.
+
+        A space *may* define its own ``space://assetstores/mem-local`` store to
+        override the default, but **no shipped space does** — so in practice this
+        falls through to the bundled ``builtins/assetstores/mem-local`` default,
+        which is the effective out-of-the-box store. The space lookup is a
+        best-effort customization hook: an *absent* store (the common, expected
+        path) is logged at ``debug``, while a store that is present but *fails to
+        load* (malformed yaml/config) is logged at ``warning`` so it is debuggable
+        instead of silently masked as absent. Both still fall back to the bundled
+        default.
+
+        :returns: The space's ``mem-local`` Assetstore if the active space defines
+            one, else the bundled ``builtins/assetstores/mem-local`` default, or
+            ``None`` if neither can be loaded.
+        """
+        # 1) Prefer a space-provided mem-local store if one exists (optional
+        #    customization hook; not shipped by default -> normally a miss).
+        try:
+            return Asset.get_assetstore_from_store_uri(
+                store_uri="space://assetstores/mem-local", context=self.context
+            )
+        except Exception as e:
+            # Distinguish two failure modes so a real problem isn't masked as a
+            # routine miss (both still fall back to the bundled default):
+            #  - No space defines mem-local: SpaceURI.__new__ can't resolve it and
+            #    raises ValueError("Unresolvable space uri ..."). This is the
+            #    expected common path -> debug (no log noise on every build).
+            #  - A space DOES define mem-local but it fails to load (malformed
+            #    yaml/config): any other error -> warning, so it's debuggable
+            #    rather than silently swallowed.
+            if isinstance(e, ValueError) and "Unresolvable space uri" in str(e):
+                logger.debug(
+                    "no space mem-local store (%s); using bundled default mem:// store",
+                    e,
+                )
+            else:
+                logger.warning(
+                    "space mem-local store failed to load (%s); using bundled "
+                    "default mem:// store",
+                    e,
+                )
+        # 2) Fall back to the bundled builtin default.
+        try:
+            mem_store_dir = (
+                Path(__file__).parent.parent / "builtins" / "assetstores" / "mem-local"
+            )
+            return Assetstore.load_asset_store(mem_store_dir, context=self.context)
+        except Exception as e:
+            logger.warning("Failed to load bundled default mem:// assetstore: %s", e)
             return None
 
     @classmethod

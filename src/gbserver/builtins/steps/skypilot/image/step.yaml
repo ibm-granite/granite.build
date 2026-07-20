@@ -24,20 +24,11 @@ environment_configs:
           run: |
             {{ config.image_config.command }}
     monitors:
+      # References the shipped monitor library (space://monitors/skypilot) for the
+      # standard artifact convention (env:// PATH + mem:// STATE, both with
+      # binding). This is a lightweight builtin used by quick/test builds, so keep
+      # a small poll override for fast completion detection (base default is 300s).
       skypilot_monitor:
-        type: skypilot_monitor
+        ref: space://monitors/skypilot
         config:
-          poll_interval_seconds: 5
-          event_configs:
-          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*
-            is_json: false
-            event_fields:
-            - field_name: binding_id
-              field_regex: (?<=LLMB_ARTIFACT_ID:)[^ ]+
-            - field_name: path
-              field_regex: (?<=LLMB_ARTIFACT_PATH:).*
-              is_data: true
-            - field_name: binding
-              field_value_template: '{ "path": "{{ fields.data.path }}" }'
-              is_json: true
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(5) }}"

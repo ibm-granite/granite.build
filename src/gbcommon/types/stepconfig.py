@@ -17,7 +17,7 @@
 from enum import StrEnum, auto
 from typing import Dict, List, Optional
 
-from pydantic import Field
+from pydantic import BaseModel, Field, model_validator
 
 from gbcommon.types.config import Config
 
@@ -42,9 +42,48 @@ class StepLauncherConfig(Config):
     config: Optional[Dict] = Field(default_factory=dict)
 
 
-class StepMonitorConfig(Config):
-    type: str
+class StepMonitorConfigBase(BaseModel):
+    """Shared field schema + validator for a step monitor entry.
+
+    Defined once here in gbcommon — the lowest shared layer — so the client
+    (gbcommon) and server (gbserver) ``StepMonitorConfig`` cannot drift. Each side
+    combines this base with its own :class:`Config` (see ``StepMonitorConfig``
+    below and in ``gbserver.types.stepconfig``); only the ``Config`` base differs
+    between them.
+
+    A monitor entry is either an *inline* definition (``type`` required, ``config``
+    is the full monitor config) or a *reference* (``ref`` set; ``type`` optional
+    override; ``config`` an optional overlay deep-merged over the referenced
+    config, with a reserved ``extra_event_configs`` list appended to the inherited
+    ``event_configs``).
+    """
+
+    type: Optional[str] = None
+    ref: Optional[str] = None
     config: Optional[Dict] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def check_type_or_ref(self):
+        """Require ``type`` for inline entries or ``ref`` for reference entries.
+
+        Returns:
+            The validated model instance.
+
+        Raises:
+            ValueError: If neither ``type`` nor ``ref`` is provided.
+        """
+        if not self.ref and not self.type:
+            raise ValueError(
+                "StepMonitorConfig requires 'type' (inline monitor) or 'ref' "
+                "(reference to an environment.yaml monitor)."
+            )
+        return self
+
+
+class StepMonitorConfig(StepMonitorConfigBase, Config):
+    # Fields + validator come from StepMonitorConfigBase (shared with gbserver);
+    # this adds the gbcommon Config base (from_yaml, etc.).
+    pass
 
 
 class StepEnvironmentTypeConfig(Config):

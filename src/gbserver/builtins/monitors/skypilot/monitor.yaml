@@ -1,0 +1,56 @@
+# Base monitor for the `skypilot_monitor` type, shared by all Skypilot
+# endpoints. A step (or an endpoint-specific monitor file, e.g.
+# builtins/monitors/skypilot-aws/monitor.yaml) references this via
+# `ref: space://monitors/skypilot` and overrides only what differs (poll
+# interval, log_retrieval mode, extra event_configs).
+#
+# The artifact event emits a `binding` payload ({"path": <artifact path>}) — this
+# is what downstream targets dereference as `{{ bindings.<x>.binding.path }}`, and
+# it enables retry-transparent NEWARTIFACT deduplication. Every {{ config.* }}
+# carries a `| default(...)` so a referencing step that omits the key still
+# renders under strict templating.
+#
+# poll_interval_seconds defaults to 300s: the skypilot monitor detects a job's
+# terminal status on its status poll (it sleeps poll_interval between polls;
+# stop_event is not set on normal success), so the default trades completion-
+# detection latency against polling load — a quick job's completion may not be
+# noticed until the next poll (up to ~5 min). Long-running steps (evals, training,
+# services) override this to a larger value in their step.yaml; build-test
+# fixtures override it to a small value for fast test turnaround.
+# (Keep in sync with _DEFAULT_POLL_INTERVAL_SECONDS in
+# src/gbserver/environment/skypilot.py, the runtime fallback when no poll is set.)
+type: skypilot_monitor
+config:
+  poll_interval_seconds: "{{ config.poll_interval_seconds | default(300) }}"
+  log_retrieval:
+    mode: "{{ config.log_retrieval_mode | default('on_completion') }}"
+  event_configs:
+    # env:// artifact: registers <path> for the named output. NOT anchored:
+    # SkyPilot's retrieved job logs prefix stdout lines, so the marker is not at
+    # column 0 — a `^` anchor would fail to match. (Contrast bash, which reads
+    # raw stdout and anchors to avoid matching its own command echo.)
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+      event_fields:
+        - field_name: binding_id
+          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+        - field_name: path
+          field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "path": "{{ fields.data.path }}" }'
+          is_json: true
+    # mem:// artifact: registers <value> as the output's `state`, passed verbatim
+    # to a consumer via {{ bindings.<x>.binding.state }} (no path normalisation).
+    # PATH and STATE markers are mutually exclusive per line.
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_STATE:.*"
+      event_fields:
+        - field_name: binding_id
+          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+        - field_name: state
+          field_regex: "(?<=LLMB_ARTIFACT_STATE:).*"
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "state": "{{ fields.data.state }}" }'
+          is_json: true

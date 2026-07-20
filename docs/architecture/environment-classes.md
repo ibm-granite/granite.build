@@ -104,12 +104,15 @@ configuration:
 
 Because these live on the base class, subclasses inherit them automatically — no subclass needs its own
 `*_envstore` / `*_memstore` methods, and `env://` / `mem://` do **not** need an `assetstores` entry in
-`environment.yaml`. `_load_assetstores` calls `_register_default_envstore()`, which ensures an `env://`
-store is registered using this resolution order: (1) an explicit `environment.yaml` `env://` store wins;
-otherwise (2) a space-provided `space://assetstores/env-local` store *if one exists*; otherwise (3) the bundled
-[`builtins/assetstores/env-local`](../../src/gbserver/builtins/assetstores/env-local/store.yaml) default.
-No shipped space defines an `env-local` store, so tier 3 (the bundled default) is what's used out of the
-box; tier 2 is an optional per-space customization hook.
+`environment.yaml`. `_load_assetstores` calls `_register_default_envstore()` and
+`_register_default_memstore()`, each of which ensures its store is registered using the same three-tier
+resolution order: (1) an explicit `environment.yaml` store for that scheme wins; otherwise (2) a
+space-provided `space://assetstores/env-local` / `space://assetstores/mem-local` store *if one exists*;
+otherwise (3) the bundled
+[`builtins/assetstores/env-local`](../../src/gbserver/builtins/assetstores/env-local/store.yaml) /
+[`builtins/assetstores/mem-local`](../../src/gbserver/builtins/assetstores/mem-local/store.yaml) default.
+No shipped space defines an `env-local`/`mem-local` store, so tier 3 (the bundled default) is what's used
+out of the box; tier 2 is an optional per-space customization hook.
 
 ### Abstract Method
 

@@ -107,8 +107,10 @@ and translates it to Docker container limits:
 - **Workspace.** The step's asset directory is bind-mounted at `/gb-workspace` (read-write); write
   outputs there.
 - **Outputs.** Register artifacts with the standard `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>`
-  log line (see the [event_configs schema](README.md#event_configs--log-line-parsing-rules)). On push,
-  container paths under `/gb-workspace` are translated back to their host path automatically.
+  log line (or the `LLMB_ARTIFACT_STATE:<value>` form for `mem://` outputs). Docker steps reference the
+  shared `space://monitors/docker` monitor, which carries both rules; they are **unanchored** (docker
+  streams raw stdout). See [Monitoring and artifact events](../steps/monitoring-and-artifact-events.md).
+  On push, container paths under `/gb-workspace` are translated back to their host path automatically.
 
 ## See also
 

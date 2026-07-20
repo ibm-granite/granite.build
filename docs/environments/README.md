@@ -122,10 +122,11 @@ environment. Each `load`/`push` entry has a `mode` (e.g. `hf_pull`/`hf_push`, `c
 environment class, which may queue a built-in step (e.g. `hf_pull` injects an
 [hfpull](../../src/gbserver/builtins/) step); the exact set is per-type — see each page.
 
-The env-local (`env://`) store is the one exception: it is registered implicitly for **every**
-environment (push/pull are shared-filesystem no-ops handled by the base class), so `env://` inputs and
-outputs work without an `assetstores` entry here. Declare one only to override its default `load`/`push`
-mode.
+The env-local (`env://`) and in-memory (`mem://`) stores are the exceptions: each is registered
+implicitly for **every** environment (their push/pull transfer nothing — env:// is a shared-filesystem
+no-op, mem:// passes a value through the build's shared memory — handled by the base class), so `env://`
+and `mem://` inputs and outputs work without an `assetstores` entry here. Declare one only to override
+its default `load`/`push` mode.
 
 For the full list of modes and the store types themselves (URI schemes, secrets, configuration), see
 [Asset stores](../asset-stores/README.md#load-and-push-modes).
@@ -153,6 +154,21 @@ environment_configs:
           event_configs: [ ... ]  # Log-line parsing rules (see below).
 ```
 
+A monitor entry may instead **reference** a shared monitor from the library rather than inline
+`type`/`config`:
+
+```yaml
+    monitors:
+      <monitor_name>:
+        ref: space://monitors/<name>   # e.g. bash, docker, skypilot
+        config: { ... }                # Optional overlay deep-merged over the referenced monitor.
+```
+
+The referenced monitor lives at `src/gbserver/builtins/monitors/<name>/monitor.yaml` and already
+carries the standard `LLMB_ARTIFACT_*` rules. See
+[Referencing a shared monitor](../steps/monitoring-and-artifact-events.md#referencing-a-shared-monitor-the-monitor-library)
+for the overlay rules (`extra_event_configs`, same-type constraint).
+
 ## `event_configs` — log-line parsing rules
 
 `event_configs` live under a monitor's `config` and turn matching log lines into `BuildEvent`s
@@ -177,7 +193,7 @@ event_configs:
 
 | `event_type` | Typical trigger | Common fields |
 |--------------|-----------------|---------------|
-| `NEWARTIFACT_IN_ENVIRONMENT_EVENT` | Workload writes an output | `binding_id` (matches an output name in `build.yaml`), `binding` (JSON with `"path"`) |
+| `NEWARTIFACT_IN_ENVIRONMENT_EVENT` | Workload writes an output | `binding_id` (matches an output name in `build.yaml`), `binding` (JSON with `"path"` for filesystem outputs, or `"state"` for `mem://` outputs) |
 | `MESSAGE_EVENT` | Informational line for the build UI | `msg` |
 | `WORKLOAD_STATUS_EVENT` | Progress update | `status` |
 | `VALIDATION_DATA_EVENT` | Structured metrics | `data` |
@@ -221,6 +237,11 @@ rule works across environments:
       field_value_template: '{ "path": "{{ fields.data.path }}" }'
       is_json: true
 ```
+
+For a `mem://` output the workload emits `LLMB_ARTIFACT_STATE:<value>` instead, and the rule
+builds a `"state"` binding (passed to the consumer verbatim, no path normalisation). See
+[Monitoring and artifact events](../steps/monitoring-and-artifact-events.md) for the step
+author's guide to both variants.
 
 ## `step.yaml` `config:` — common fields read by environments
 

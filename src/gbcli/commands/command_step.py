@@ -234,6 +234,50 @@ def describe(
                 )
         return config_str
 
+    # Config keys whose values are lists of event-parsing rules — rendered with
+    # the event-config formatter rather than the generic config renderer.
+    _EVENT_CONFIG_KEYS = ("event_configs", "extra_event_configs")
+
+    def monitor_rows(prefix: str, mon: dict) -> List[List[str]]:
+        """Describe-table rows for one monitor entry (``[label, value]`` pairs).
+
+        Renders whatever fields ``service_step.parse_monitor`` put on the monitor
+        dict — ``parse_monitor`` is the single owner of the monitor field shape
+        (``ref`` / ``type`` when set, always ``config``), so this stays in sync
+        with it without re-listing those fields. The only monitor-specific
+        knowledge here is presentation: event-rule lists (``event_configs`` /
+        ``extra_event_configs``) use the event-config formatter, while other config
+        (e.g. ``poll_interval_seconds``, ``log_retrieval``) uses the generic config
+        renderer.
+
+        Note: describe fetches a single ``step.yaml`` without a resolved space, so
+        it renders the monitor **as authored** — it deliberately does not follow a
+        ``ref`` into the library to resolve it (no space context here).
+        """
+        rows: List[List[str]] = []
+        for key, value in mon.items():
+            if key != "config":
+                rows.append([f"{prefix}.{key}", value])  # ref / type / future scalars
+                continue
+            config = value or {}
+            scalar_config = {
+                k: v for k, v in config.items() if k not in _EVENT_CONFIG_KEYS
+            }
+            if scalar_config:
+                rows.append(
+                    [f"{prefix}.config", parse_step_config_output(scalar_config)]
+                )
+            for ec_key in _EVENT_CONFIG_KEYS:
+                ecs = config.get(ec_key, [])
+                if ecs:
+                    rows.append(
+                        [
+                            f"{prefix}.config.{ec_key}",
+                            "\n".join(parse_event_config_output(ec) for ec in ecs),
+                        ]
+                    )
+        return rows
+
     try:
         if quiet:
             step_content = step_client.describe_step(
@@ -311,26 +355,12 @@ def describe(
                             )
                     for index, monitor in enumerate(monitors):
                         for m in monitor:
-                            parsed_env_configs.append(
-                                [
-                                    f"{env_config_name}.monitors.{m}.type",
-                                    monitors[index][m].get("type"),
-                                ]
-                            )
-
-                            monitor_config = monitors[index][m].get("config")
-                            if monitor_config:
-                                event_configs = monitor_config.get("event_configs", [])
-                                parsed_event_configs = [
-                                    parse_event_config_output(ec)
-                                    for ec in event_configs
-                                ]
-                                parsed_env_configs.append(
-                                    [
-                                        f"{env_config_name}.monitors.{m}.config.event_configs",
-                                        "\n".join(parsed_event_configs),
-                                    ]
+                            parsed_env_configs.extend(
+                                monitor_rows(
+                                    f"{env_config_name}.monitors.{m}",
+                                    monitors[index][m],
                                 )
+                            )
 
                 env_config_output = tabulate(
                     parsed_env_configs,

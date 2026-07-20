@@ -53,23 +53,14 @@ environment_configs:
             echo "LLMB_ARTIFACT_ID:bfcl_export_csv LLMB_ARTIFACT_PATH:${BFCL_OUTPUT_CSV}"
     monitors:
       skypilot_monitor:
-        type: skypilot_monitor
+        # Artifact convention + profile come from the monitor library
+        # (space://monitors/skypilot); this export step only appends its status
+        # banner.
+        ref: space://monitors/skypilot
         config:
-          poll_interval_seconds: "{{ config.poll_interval_seconds | default(90) }}"
-          log_retrieval:
-            # Export steps emit no mid-run events; pull the log once at the end.
-            mode: "{{ config.log_retrieval_mode | default('on_completion') }}"
-          event_configs:
+          extra_event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "BFCL Results Export"
             event_fields:
               - field_name: status
                 field_value_template: "RUNNING"
-          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
-            event_fields:
-              - field_name: binding_id
-                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
-              - field_name: path
-                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
-                is_data: true

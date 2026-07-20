@@ -1,0 +1,44 @@
+# Shared monitor for the `docker_log` type (Docker environment). Referenced by
+# docker steps via `ref: space://monitors/docker`. Detects the standard
+# LLMB env:// artifact marker (with a binding payload) and streams every other
+# line as a MESSAGE_EVENT.
+type: docker_log
+config:
+  event_configs:
+    # env:// artifact: registers <path> for the named output. Unanchored, to
+    # match the skypilot monitor (whose retrieved logs are prefixed). Docker
+    # streams raw stdout so an anchor would also work, but keeping it unanchored
+    # keeps the two consistent; bash anchors because it echoes its own command.
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+      is_json: false
+      event_fields:
+        - field_name: binding_id
+          field_regex: (?<=LLMB_ARTIFACT_ID:)[^ ]+
+        - field_name: path
+          field_regex: (?<=LLMB_ARTIFACT_PATH:).*
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "path": "{{ fields.data.path }}" }'
+          is_json: true
+    # mem:// artifact: registers <value> as the output's `state`, passed verbatim
+    # to a consumer via {{ bindings.<x>.binding.state }} (no path normalisation).
+    # PATH and STATE markers are mutually exclusive per line.
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_STATE:.*"
+      is_json: false
+      event_fields:
+        - field_name: binding_id
+          field_regex: (?<=LLMB_ARTIFACT_ID:)[^ ]+
+        - field_name: state
+          field_regex: (?<=LLMB_ARTIFACT_STATE:).*
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "state": "{{ fields.data.state }}" }'
+          is_json: true
+    - event_type: MESSAGE_EVENT
+      line_regex: .*
+      is_json: false
+      event_fields:
+        - field_name: msg
+          field_regex: .*

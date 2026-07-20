@@ -48,6 +48,8 @@ if HAS_SKYPILOT:
 else:
     sky = None  # type: ignore[assignment]
 
+_DEFAULT_POLL_INTERVAL_SECONDS = 300
+
 
 def _require_skypilot():
     """Raise a clear error if the sky SDK is not installed.
@@ -1064,21 +1066,23 @@ class Skypilot(Environment):
         if not cluster_name:
             logger.error("No cluster_name for launch_id %s", launch_id)
             return
-
         stop_event = self._get_launch_stopped_event(launch_id)
         # Canonical key across step.yaml configs is ``poll_interval_seconds``;
         # accept the legacy ``poll_interval`` for back-compat. Templated configs
         # may render this as a string (e.g. "120"), so coerce to a number.
         _raw_poll = kwargs.get(
-            "poll_interval_seconds", kwargs.get("poll_interval", 900)
+            "poll_interval_seconds",
+            kwargs.get("poll_interval", _DEFAULT_POLL_INTERVAL_SECONDS),
         )
         try:
             poll_interval = float(_raw_poll)
         except (TypeError, ValueError):
             logger.warning(
-                "Invalid poll_interval_seconds %r; falling back to 900s", _raw_poll
+                "Invalid poll_interval_seconds %r; falling back to %d",
+                _raw_poll,
+                _DEFAULT_POLL_INTERVAL_SECONDS,
             )
-            poll_interval = 900.0
+            poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
         # Per-step log-retrieval policy (mode + cadence). Defaults to
         # on_completion: pull the full log once at terminal status.
         log_mode, log_interval, startup_window = _parse_log_retrieval(

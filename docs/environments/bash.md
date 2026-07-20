@@ -150,10 +150,15 @@ monitor recognizes:
 print(f"LLMB_ARTIFACT_ID:{artifact_id} LLMB_ARTIFACT_PATH:{output_dir}")
 ```
 
-The monitor's `NEWARTIFACT_IN_ENVIRONMENT_EVENT` rule (in the step's `step.yaml`, see the
+Bash steps reference the shared `space://monitors/bash` monitor, whose
+`NEWARTIFACT_IN_ENVIRONMENT_EVENT` rule (see the
 [event_configs schema](README.md#event_configs--log-line-parsing-rules)) parses `LLMB_ARTIFACT_ID:` and
 `LLMB_ARTIFACT_PATH:` and binds the artifact. **The id must match an output name declared on the
-target**, so the artifact is routed to that output's URI.
+target**, so the artifact is routed to that output's URI. (For a `mem://` output the script prints
+`LLMB_ARTIFACT_STATE:<value>` instead.) The bash monitor's rules are **`^`-anchored** because the bash
+launcher echoes the command back — the anchor stops the rule matching that echo line; other environments
+that don't echo (skypilot, docker) leave the rule unanchored. See
+[Anchoring is per-environment](../steps/monitoring-and-artifact-events.md#anchoring-is-per-environment).
 
 ## Standalone caveats (multi-step pipelines)
 

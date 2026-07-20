@@ -26,6 +26,9 @@ granite.build:
       steps:
         - step_uri: space://steps/bash
           config:
+            # Fast completion detection for the test (base skypilot default is
+            # 60s; a quick test job finishes in seconds).
+            poll_interval_seconds: 5
             bash_config:
               command: >-
                 file=foo1a.json; echo '{"artifact": "output_model1", "file": "foo1a"}' > $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";

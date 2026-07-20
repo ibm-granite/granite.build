@@ -311,7 +311,7 @@ Leave it unset to default to same-origin (the standard case when gbserver serves
 
 `gb_ui_backend` adds build status charts, failure trends, and optional AI-powered analysis. It is bundled with the `standalone` install extra; if installed, gbserver includes its routers directly into its own process at startup — no extra command or initial database setup needed.
 
-Default storage: `~/.granite.build/dashboard-analytics.db` (SQLite, auto-created on first run).
+Default storage: derived from the main store's own backend. Standalone SQLite mode uses its own `~/.granite.build/dashboard-analytics.db` (SQLite, auto-created on first run). Postgres mode (`GBSERVER_METADATA_STORAGE=sql`) connects to the same Postgres instance as the main store.
 
 Optional configuration (set as environment variables or in `.env`):
 

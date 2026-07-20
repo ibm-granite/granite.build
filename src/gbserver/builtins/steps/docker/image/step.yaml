@@ -22,25 +22,8 @@ environment_configs:
           - -c
           - '{{ config.image_config.command }}'
     monitors:
+      # References the shipped monitor library (builtins/monitors/docker/monitor.yaml):
+      # standard LLMB artifact detection (with binding) + a MESSAGE stream. No
+      # environment dependency — resolves against the shipped default.
       docker_log:
-        type: docker_log
-        config:
-          event_configs:
-          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*
-            is_json: false
-            event_fields:
-            - field_name: binding_id
-              field_regex: (?<=LLMB_ARTIFACT_ID:)[^ ]+
-            - field_name: path
-              field_regex: (?<=LLMB_ARTIFACT_PATH:).*
-              is_data: true
-            - field_name: binding
-              field_value_template: '{ "path": "{{ fields.data.path }}" }'
-              is_json: true
-          - event_type: MESSAGE_EVENT
-            line_regex: .*
-            is_json: false
-            event_fields:
-            - field_name: msg
-              field_regex: .*
+        ref: space://monitors/docker

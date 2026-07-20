@@ -15,6 +15,7 @@ You're authoring a `build.yaml`, picking environments, and submitting builds wit
 - [`gb` CLI reference](cli/gb-cli-reference.md) — client subcommands (submit and monitor builds)
 - [Templates](templates/README.md) — reusable build.yaml patterns and how to create your own
 - [Steps](steps/README.md) — built-in steps, step.yaml structure, and custom step creation
+- [Monitoring and artifact events](steps/monitoring-and-artifact-events.md) — how a step captures its outputs by parsing workload logs
 - [HuggingFace push](builds/hf-push.md) — `hf://` URIs and `store_push`
 - [Bring your own step](steps/bring-your-own-step.md) — custom code from a Git repo
 - [Custom code steps](steps/custom-code-steps.md) — inline commands without step definitions

@@ -136,6 +136,7 @@ gb build log <build-id> --all
 
 ## See also
 
+- [Monitoring and artifact events](monitoring-and-artifact-events.md) — how the `LLMB_ARTIFACT_*` markers register outputs, and the `path` vs `state` binding distinction
 - [Bring Your Own Step](bring-your-own-step.md) — custom code from a Git repo
 - [Custom code steps](custom-code-steps.md) — inline commands without images
 - [Steps overview](README.md) — all step types

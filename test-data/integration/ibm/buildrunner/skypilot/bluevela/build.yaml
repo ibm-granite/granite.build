@@ -1,7 +1,7 @@
 granite.build:
   name: skypilot-bluevela-command-2target
   # Two targets on BlueVela LSF (via Skypilot), both running the generic
-  # `command` step. `first` emits an output path and registers it as artifact
+  # `bash` step. `first` emits an output path and registers it as artifact
   # `out1`; `second` binds `first.out1` as an input and echoes the bound path,
   # then registers its own output `out2`. Exercises cross-target output -> input
   # binding over the env_local (shared-FS) assetstore.
@@ -20,8 +20,10 @@ granite.build:
           # env_local pushes inline (no push step emits a type), so set it here.
           type: fileset
       steps:
-        - step_uri: space://steps/command
+        - step_uri: space://steps/bash
           config:
+            # Fast completion detection for the test (base skypilot default 60s).
+            poll_interval_seconds: 5
             bash_config:
               command: >-
                 echo "first target emitting out1";
@@ -41,8 +43,10 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: fileset
       steps:
-        - step_uri: space://steps/command
+        - step_uri: space://steps/bash
           config:
+            # Fast completion detection for the test (base skypilot default 60s).
+            poll_interval_seconds: 5
             bash_config:
               # Echoes the path bound from first.out1 — proves the binding flows
               # through gbserver without depending on a file existing on disk.
