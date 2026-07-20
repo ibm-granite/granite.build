@@ -172,9 +172,7 @@ class TestResolveMonitorConfig:
         assert cfg["log_retrieval"]["interval_seconds"] == 15  # inherited
         assert len(cfg["event_configs"]) == 1  # inherited artifact event
 
-    def test_three_level_chain_compounds_overlays(
-        self: Self, monitor_library
-    ) -> None:
+    def test_three_level_chain_compounds_overlays(self: Self, monitor_library) -> None:
         """A 3-level chain (leaf -> mid -> skypilot) compounds the recursive merge:
         scalar override takes the deepest value, nested-dict keys deep-merge across
         all levels, and extra_event_configs append base-first at each level.
