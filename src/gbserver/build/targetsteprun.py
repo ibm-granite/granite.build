@@ -260,8 +260,10 @@ def resolve_monitor_config(
     Raises:
         ValueError: On an unreadable/non-local ref, a reference cycle, a
             cross-type reference, an overlay that sets ``event_configs`` directly
-            (use ``extra_event_configs`` to append instead), or an inline monitor
-            that sets ``extra_event_configs`` (put rules in ``event_configs``).
+            (use ``extra_event_configs`` to append instead), an inline monitor
+            that sets ``extra_event_configs`` (put rules in ``event_configs``), or
+            a monitor/ref chain that resolves to no ``type``. The returned type is
+            therefore never ``None``.
     """
     if not monitor_config.ref:
         config = deepcopy(monitor_config.config or {})
@@ -275,6 +277,15 @@ def resolve_monitor_config(
                 "Monitor sets 'extra_event_configs' but has no 'ref'; that key "
                 "only appends to a referenced monitor's rules. For an inline "
                 "monitor, put the rules directly in 'event_configs'."
+            )
+        if monitor_config.type is None:
+            # Defense-in-depth: a validated StepMonitorConfig always has type or
+            # ref (check_type_or_ref), but guard a bypassed/relaxed config so we
+            # never return a None type (which downstream would only trip the
+            # -O-strippable assert in TargetStepRun._run, with a worse message).
+            raise ValueError(
+                "Monitor resolves to no 'type' and has no 'ref'; an inline "
+                "monitor must set 'type'."
             )
         return monitor_config.type, config
 
@@ -318,7 +329,17 @@ def resolve_monitor_config(
         merged["event_configs"] = list(merged.get("event_configs") or []) + list(
             extra_event_configs
         )
-    return (monitor_config.type or base_type), merged
+    resolved_type = monitor_config.type or base_type
+    if resolved_type is None:
+        # No level of the ref chain set a type. check_type_or_ref forces the
+        # refless root to have one, so this is unreachable for validated files —
+        # but raise rather than return None so a bypassed/relaxed chain fails here
+        # (surfaced by build validation) instead of at run time.
+        raise ValueError(
+            f"Monitor ref '{monitor_config.ref}' resolves to no monitor type; a "
+            "monitor in its ref chain must set 'type'."
+        )
+    return resolved_type, merged
 
 
 TARGETRUNS_KEY = "targetruns"

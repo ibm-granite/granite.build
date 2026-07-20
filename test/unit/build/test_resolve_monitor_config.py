@@ -129,6 +129,30 @@ class TestResolveMonitorConfig:
                 )
             )
 
+    def test_typeless_inline_monitor_raises(self: Self) -> None:
+        """resolve never returns a None type: a typeless inline monitor (validator
+        bypassed via model_construct) raises instead of returning (None, ...),
+        which downstream would only trip the -O-strippable run-time assert.
+        """
+        m = StepMonitorConfig.model_construct(type=None, ref=None, config={})
+        with pytest.raises(ValueError, match="type"):
+            resolve_monitor_config(m)
+
+    def test_typeless_ref_chain_raises(self: Self, monkeypatch) -> None:
+        """A ref chain that resolves to no type at any level raises (so build
+        validation surfaces it) rather than returning (None, ...)."""
+        import gbserver.build.targetsteprun as tsr
+
+        monkeypatch.setattr(
+            tsr,
+            "_load_monitor_file",
+            lambda uri: StepMonitorConfig.model_construct(
+                type=None, ref=None, config={}
+            ),
+        )
+        with pytest.raises(ValueError, match="type"):
+            resolve_monitor_config(StepMonitorConfig(ref="space://monitors/x"))
+
     def test_ref_to_monitor_file(self: Self, monitor_library) -> None:
         """A step ref loads the monitor file's (type, config)."""
         m_type, cfg = resolve_monitor_config(
