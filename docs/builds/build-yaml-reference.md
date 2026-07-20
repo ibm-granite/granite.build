@@ -305,7 +305,7 @@ These samples in the repo exercise the schema end to end:
 - [`samples/standalone/standalone-quickstart/build.yaml`](../../samples/standalone/standalone-quickstart/) — single target, multiple environment options, basic `compute_config`.
 - [`samples/templates/local_multi_stage/build.yaml`](../../samples/templates/local_multi_stage/) — four targets chained by binding, event-driven trigger.
 - [`samples/tests/digit-tuning-fmeval/build.yaml`](../../samples/tests/digit-tuning-fmeval/) — multi-GPU pipeline with templated Lakehouse URIs.
-- [`test-data/integration/standalone/buildrunner/local/retry/build.yaml`](../../test-data/integration/standalone/buildrunner/local/retry/) — top-level `retries` block with `max_retries`.
+- [`test-data/integration/standalone/buildrunner/bash/retry/build.yaml`](../../test-data/integration/standalone/buildrunner/bash/retry/) — top-level `retries` block with `max_retries`.
 
 ## Validation errors
 

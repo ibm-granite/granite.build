@@ -63,9 +63,9 @@ For a quick **single file or test**, `make py-test` with `ARGS` (passed straight
 
 ```bash
 # a whole standalone build-integration file
-make py-test ARGS="test/integration/standalone/buildrunner/local/test_buildrunner_1step_local.py"
+make py-test ARGS="test/integration/standalone/buildrunner/bash/test_buildrunner_1step_local.py"
 # narrow to one test with -k
-make py-test ARGS="test/integration/standalone/buildrunner/local -k retry"
+make py-test ARGS="test/integration/standalone/buildrunner/bash -k retry"
 ```
 
 `py-test` uses the default markers and `GBTEST_MODE=live`; add `GBTEST_MODE=mock` for mocked services.

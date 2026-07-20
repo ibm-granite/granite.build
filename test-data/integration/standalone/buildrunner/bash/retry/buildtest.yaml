@@ -1,5 +1,5 @@
 # Fixture for the build-level retry-with-target-reuse test
-# (test/integration/standalone/buildrunner/local/test_buildrunner_retry.py).
+# (test/integration/standalone/buildrunner/bash/test_buildrunner_retry.py).
 #
 # build_yaml defaults to ./build.yaml (sibling) when omitted.  The build's single
 # target succeeds, so Phase 1 ends SUCCESS; the test then marks it FAILED and
