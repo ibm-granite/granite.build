@@ -14,10 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Integration test for the image step on Skypilot/slurm with HF URI input/output.
+"""Integration test for the command step on Skypilot/slurm with HF URI input/output.
 
 Validates the full pipeline:
-  HF URI input  ->  image step on Skypilot/slurm  ->  HF URI output
+  HF URI input  ->  command step on Skypilot/slurm  ->  HF URI output
 
 Requires a running Docker SLURM cluster (see scripts/slurm/setup-slurm.sh).
 Auto-skips when the cluster is not reachable via SSH.
@@ -48,8 +48,8 @@ pytestmark = pytest.mark.skypilot_integration
     not _slurm_cluster_reachable(),
     reason="Docker SLURM cluster not reachable (run: make slurm-setup)",
 )
-class TestSkypilotSlurmNativeHF(AbstractYamlBuildRunnerTest):
-    """HF input -> native step on slurm via Skypilot -> HF output."""
+class TestSkypilotSlurm1Step(AbstractYamlBuildRunnerTest):
+    """HF input -> command step on slurm via Skypilot -> HF output."""
 
     def _get_yaml_spec_dir(self) -> Path:
-        return get_test_data_dir_for(__file__) / "native"
+        return get_test_data_dir_for(__file__) / "1step"
