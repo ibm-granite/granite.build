@@ -172,6 +172,55 @@ class TestResolveMonitorConfig:
         assert cfg["log_retrieval"]["interval_seconds"] == 15  # inherited
         assert len(cfg["event_configs"]) == 1  # inherited artifact event
 
+    def test_three_level_chain_compounds_overlays(
+        self: Self, monitor_library
+    ) -> None:
+        """A 3-level chain (leaf -> mid -> skypilot) compounds the recursive merge:
+        scalar override takes the deepest value, nested-dict keys deep-merge across
+        all levels, and extra_event_configs append base-first at each level.
+        """
+        e_mid = {"event_type": "workload_status_event", "line_regex": "MID"}
+        e_leaf = {"event_type": "workload_status_event", "line_regex": "LEAF"}
+        # mid: ref skypilot; override poll + log_retrieval.interval; append e_mid.
+        _write_monitor(
+            monitor_library,
+            "skypilot-mid",
+            {
+                "ref": "space://monitors/skypilot",
+                "config": {
+                    "poll_interval_seconds": 300,
+                    "log_retrieval": {"interval_seconds": 45},
+                    "extra_event_configs": [e_mid],
+                },
+            },
+        )
+        # leaf: ref mid; override poll again + log_retrieval.mode; append e_leaf.
+        _write_monitor(
+            monitor_library,
+            "skypilot-leaf",
+            {
+                "ref": "space://monitors/skypilot-mid",
+                "config": {
+                    "poll_interval_seconds": 60,
+                    "log_retrieval": {"mode": "periodic"},
+                    "extra_event_configs": [e_leaf],
+                },
+            },
+        )
+        m_type, cfg = resolve_monitor_config(
+            StepMonitorConfig(ref="space://monitors/skypilot-leaf")
+        )
+        assert m_type == "skypilot_monitor"  # type from the grandparent root
+        assert cfg["poll_interval_seconds"] == 60  # deepest (leaf) scalar wins
+        # log_retrieval deep-merges across all three levels: mode from leaf,
+        # interval from mid; neither is the grandparent's (on_completion / 15).
+        assert cfg["log_retrieval"] == {"mode": "periodic", "interval_seconds": 45}
+        # extra_event_configs append base-first: [grandparent artifact, mid, leaf].
+        assert len(cfg["event_configs"]) == 3
+        assert cfg["event_configs"][1] == e_mid
+        assert cfg["event_configs"][2] == e_leaf
+        assert "extra_event_configs" not in cfg
+
     def test_step_overlay_and_append(self: Self, monitor_library) -> None:
         """Step overlay overrides a knob and extra_event_configs appends."""
         status = {"event_type": "workload_status_event", "line_regex": "RUN"}
