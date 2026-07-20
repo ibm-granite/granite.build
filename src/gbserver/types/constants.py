@@ -325,9 +325,16 @@ ENV_VAR_GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES = (
     ENV_VAR_PREFIX + "_BUILD_FILES_DOWNLOAD_MAX_BYTES"
 )
 
-# Default: 1 GiB cap on streamed file downloads.
-BUILD_FILES_DOWNLOAD_MAX_BYTES = int(
-    os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES, str(1 * 1024**3))
+# Default: no cap on streamed file downloads. Downloads stream over SFTP in
+# bounded memory, so size poses no integrity/memory risk — but a large transfer
+# holds one of the tunnel's limited SFTP session slots (see SshTunnel
+# max_sessions) for its full duration, has no mid-stream resume (the endpoint
+# has no Range support), and may run into a fronting proxy/ingress body-time or
+# size limit. Set GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES to reintroduce a byte
+# ceiling (pre-flight 413) if any of those become a problem.
+_download_max = os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES)
+BUILD_FILES_DOWNLOAD_MAX_BYTES: Optional[int] = (
+    int(_download_max) if _download_max else None
 )
 
 ENV_VAR_GBSERVER_BUILD_FILES_LIST_MAX_ENTRIES = (
