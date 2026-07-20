@@ -356,7 +356,9 @@ class ChangeArchiveResponse(BaseModel):
     was_archived: bool
 
 
-def set_archive_bit(artifact_id: str, is_archived: bool) -> ChangeArchiveResponse:
+def set_archive_bit(
+    request: Request, artifact_id: str, is_archived: bool
+) -> ChangeArchiveResponse:
     storage = get_admin_storage().artifact_registry
     item = storage.get_by_uuid(artifact_id)
     if item is None:
@@ -364,6 +366,11 @@ def set_archive_bit(artifact_id: str, is_archived: bool) -> ChangeArchiveRespons
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
         )
     assert isinstance(item, ArtifactRegistration)
+    confirm_space_write_access(
+        request=request,
+        username_on_target=item.username,
+        space_name=item.space_name,
+    )
     was_archived = item.is_archived
     if was_archived != is_archived:
         item.is_archived = is_archived
@@ -375,13 +382,13 @@ def set_archive_bit(artifact_id: str, is_archived: bool) -> ChangeArchiveRespons
 
 
 @artifacts_api.put("/{artifact_id}/archive")
-def archive_artifact(artifact_id: str) -> ChangeArchiveResponse:
-    return set_archive_bit(artifact_id, True)
+def archive_artifact(request: Request, artifact_id: str) -> ChangeArchiveResponse:
+    return set_archive_bit(request, artifact_id, True)
 
 
 @artifacts_api.put("/{artifact_id}/unarchive")
-def unarchive_artifact(artifact_id: str) -> ChangeArchiveResponse:
-    return set_archive_bit(artifact_id, False)
+def unarchive_artifact(request: Request, artifact_id: str) -> ChangeArchiveResponse:
+    return set_archive_bit(request, artifact_id, False)
 
 
 class DecodedURIResponse(BaseModel):
