@@ -88,7 +88,7 @@ step can tune a single field without restating the rest:
       skypilot_monitor:
         ref: space://monitors/skypilot
         config:
-          # A long-running eval polls less often; base default is 60s.
+          # A long-running eval polls less often; base default is 300s.
           poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
 ```
 

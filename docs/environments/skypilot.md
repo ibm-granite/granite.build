@@ -148,7 +148,7 @@ environment_configs:
           idle_minutes_to_autostop: 10         # Optional. Per-step override of the env-level value.
     monitors:
       skypilot_monitor:
-        ref: space://monitors/skypilot   # shared monitor (LLMB_ARTIFACT_* rules, 60s default poll)
+        ref: space://monitors/skypilot   # shared monitor (LLMB_ARTIFACT_* rules, 300s default poll)
         config:
           # Optional overlay. Templated so a build.yaml step `config:` can override it.
           poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
@@ -181,10 +181,10 @@ log and walk every line through `event_configs`. Consequences:
 3. **`poll_interval_seconds` gates completion detection.** The monitor only notices a job finished on
    its next status poll (it sleeps the interval between polls; success does not wake it early), so a
    large interval delays detecting a *quick* job by up to that interval. The shared
-   `space://monitors/skypilot` monitor defaults to a modest **60s** for this reason. Long-running steps
-   (evals, training, services) override it *up* (e.g. `900`) to cut polling load over their runtime;
-   build-test fixtures override it *down* (e.g. `5`) for fast turnaround. Because the base value is
-   written as `{{ config.poll_interval_seconds | default(60) }}`, a `build.yaml` step `config:` can set
+   `space://monitors/skypilot` monitor defaults to **300s**, trading detection latency for lower polling
+   load. Long-running steps (evals, training, services) override it *up* (e.g. `900`); build-test
+   fixtures override it *down* (e.g. `5`) for fast turnaround. Because the base value is
+   written as `{{ config.poll_interval_seconds | default(300) }}`, a `build.yaml` step `config:` can set
    `poll_interval_seconds` without touching the monitor.
 
 If a step exits with a non-`SUCCEEDED` JobStatus, the monitor emits a `WORKLOAD_STATUS_EVENT` with

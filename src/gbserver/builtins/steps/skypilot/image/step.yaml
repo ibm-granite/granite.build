@@ -27,7 +27,7 @@ environment_configs:
       # References the shipped monitor library (space://monitors/skypilot) for the
       # standard artifact convention (env:// PATH + mem:// STATE, both with
       # binding). This is a lightweight builtin used by quick/test builds, so keep
-      # a small poll override for fast completion detection (base default is 60s).
+      # a small poll override for fast completion detection (base default is 300s).
       skypilot_monitor:
         ref: space://monitors/skypilot
         config:

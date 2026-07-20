@@ -10,13 +10,15 @@
 # carries a `| default(...)` so a referencing step that omits the key still
 # renders under strict templating.
 #
-# poll_interval_seconds defaults to a modest 60s: the skypilot monitor detects a
-# job's terminal status on its status poll (it sleeps poll_interval between
-# polls; stop_event is not set on normal success), so a very large default would
-# delay completion detection for quick jobs by up to that interval. Long-running
-# steps (evals, training, services) override this to a larger value in their
-# step.yaml to reduce polling load over their long runtime; build-test fixtures
-# override it to a small value for fast test turnaround.
+# poll_interval_seconds defaults to 300s: the skypilot monitor detects a job's
+# terminal status on its status poll (it sleeps poll_interval between polls;
+# stop_event is not set on normal success), so the default trades completion-
+# detection latency against polling load — a quick job's completion may not be
+# noticed until the next poll (up to ~5 min). Long-running steps (evals, training,
+# services) override this to a larger value in their step.yaml; build-test
+# fixtures override it to a small value for fast test turnaround.
+# (Keep in sync with _DEFAULT_POLL_INTERVAL_SECONDS in
+# src/gbserver/environment/skypilot.py, the runtime fallback when no poll is set.)
 type: skypilot_monitor
 config:
   poll_interval_seconds: "{{ config.poll_interval_seconds | default(300) }}"
