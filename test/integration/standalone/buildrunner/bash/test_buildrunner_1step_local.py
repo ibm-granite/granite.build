@@ -28,4 +28,4 @@ class TestBuildRunner1StepLocal(AbstractYamlBuildRunnerTest):
     """Runs a barebone local build flow exercising env:// input + output."""
 
     def _get_yaml_spec_dir(self) -> Path:
-        return get_test_data_dir_for(__file__) / "1step/local"
+        return get_test_data_dir_for(__file__) / "1step"

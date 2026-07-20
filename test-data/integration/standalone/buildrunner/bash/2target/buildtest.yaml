@@ -29,7 +29,7 @@ target_expectations:
 space_uri: ../../../../../../configurations/spaces/local
 # A happy-path binding test — no simulated failure, and skip the cancellation run
 # (the command step finishes near-instantly, so cancellation can't reliably catch
-# it RUNNING). Mirrors the 1step/local and command-2target fixtures.
+# it RUNNING). Mirrors the 1step and command-2target fixtures.
 simulate_step_failure: false
 tests:
   - runner

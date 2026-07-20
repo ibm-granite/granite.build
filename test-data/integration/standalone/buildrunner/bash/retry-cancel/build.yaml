@@ -12,7 +12,7 @@ granite.build:
       steps:
         - step_uri: space://steps/command
           config:
-            bash_config:
+            command_config:
               command: "sleep 5; exit 1"
             compute_config:
               num_nodes: 1

@@ -19,7 +19,7 @@ target_expectations:
 # Use the shared standalone space at <repo>/configurations/spaces/local so the BuildRunner
 # resolves space:// URIs (the bash environment and the command step) without
 # cloning from GitHub.  Relative path resolves against this YAML's directory.
-space_uri: ../../../../../../../configurations/spaces/local
+space_uri: ../../../../../../configurations/spaces/local
 # Happy-path env:// binding test — run only the basic build, not the cancellation
 # variant (the command step finishes near-instantly, so cancellation can't
 # reliably catch it RUNNING). Mirrors the command-2target fixture.

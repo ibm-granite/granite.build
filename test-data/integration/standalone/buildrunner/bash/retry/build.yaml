@@ -15,7 +15,7 @@ granite.build:
         # the retry can skip via skipped_for_prerun_target_id.
         - step_uri: space://steps/command
           config:
-            bash_config:
+            command_config:
               command: "exit 0"
             compute_config:
               num_nodes: 1

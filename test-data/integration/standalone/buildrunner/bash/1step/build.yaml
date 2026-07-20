@@ -29,7 +29,7 @@ granite.build:
       steps:
         - step_uri: space://steps/command
           config:
-            bash_config:
+            command_config:
               command: >-
                 echo "env input path: {{ bindings.env_input.binding.path }}";
                 echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-env-output.txt"

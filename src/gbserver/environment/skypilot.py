@@ -595,9 +595,13 @@ class Skypilot(Environment):
             if docker_config:
                 cluster_config_overrides["docker"] = docker_config
 
-            image_id = config.get("launcher_config", {}).get(
-                "image_id"
-            ) or launcher_config.get("image_id")
+            # Trailing `or None` maps an empty image_id to None: the merged
+            # `command` step renders image_id to "" when no image is given, and
+            # sky.Resources expects None (bare node) rather than an empty string.
+            image_id = (
+                config.get("launcher_config", {}).get("image_id")
+                or launcher_config.get("image_id")
+            ) or None
 
             logger.info(
                 "SkyPilot resources: accelerators=%s, image_id=%s, "

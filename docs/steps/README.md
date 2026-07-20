@@ -12,11 +12,10 @@ In a `build.yaml`, each step entry has a `step_uri` field:
 
 ```yaml
 steps:
-  - step_uri: space://steps/bash
+  - step_uri: space://steps/command
     config:
-      workload:
-        commands:
-          - "python train.py --epochs 3"
+      command_config:
+        command: "python train.py --epochs 3"
 ```
 
 ### URI schemes
@@ -35,15 +34,13 @@ These steps ship with gbserver in `src/gbserver/builtins/steps/`:
 
 | Step | Description |
 |------|-------------|
-| `bash` | Execute shell commands directly. The simplest step — no container image required for local environments. |
 | `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. |
 | `hfpull` | Pull a model or dataset from HuggingFace Hub. |
 | `hfpush` | Push artifacts to HuggingFace Hub. |
 | `s3pull` | Pull files from an S3-compatible object store. |
 | `s3push` | Push files to an S3-compatible object store. |
 | `cosrclone` | Transfer files using rclone (supports COS, S3, and many backends). |
-| `command` | Run a custom container image with a shell command on the Docker environment (BYOI). |
-| `image` | Run a custom container image (BYOI) on the Skypilot environment. |
+| `command` | Run a shell command (available on the Bash, Docker, and Skypilot environments). On Docker/Skypilot set `command_config.image` to run it inside a container image (BYOI); leave the image empty to run on the bare node. |
 
 ## Bash example steps
 

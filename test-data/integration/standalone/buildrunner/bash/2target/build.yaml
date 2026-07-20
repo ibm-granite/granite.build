@@ -29,7 +29,7 @@ granite.build:
       steps:
         - step_uri: space://steps/command
           config:
-            bash_config:
+            command_config:
               command: >-
                 echo "first target emitting mem:// output mem_output1";
                 echo "LLMB_ARTIFACT_ID:mem_output1 LLMB_ARTIFACT_STATE:mem_output1_value"
@@ -46,7 +46,7 @@ granite.build:
       steps:
         - step_uri: space://steps/command
           config:
-            bash_config:
+            command_config:
               # Assert the state bound from first.mem_output1 is the exact value
               # `first` produced. The command step exits with the command's
               # status, so a mismatch (or an empty/None value if the mem:// value

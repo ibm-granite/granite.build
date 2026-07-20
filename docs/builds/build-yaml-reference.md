@@ -141,7 +141,7 @@ targets:
     steps:
       - step_uri: space://steps/train
         config:
-          bash_config:
+          command_config:
             command: "python train.py --reward-url {{ bindings.rm_url.binding.state }}"
 ```
 
