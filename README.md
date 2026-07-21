@@ -25,6 +25,7 @@ _This repository is currently in alpha. The code and documentation are under act
 - [REST API](#rest-api)
 - [Documentation](#documentation)
 - [Coding agent skills](#coding-agent-skills)
+- [Coding agent tools (MCP)](#coding-agent-tools-mcp)
 - [Try the demos](#try-the-demos)
 - [Contributing](#contributing)
 - [License](#license)
@@ -359,6 +360,27 @@ This repo ships **Agent Skills** under [`.claude/skills/`](.claude/skills/) so a
 | [`gb-docs`](.claude/skills/gb-docs/SKILL.md) | Look up the in-repo [`docs/`](docs/) (schema, CLI, concepts, troubleshooting) and answer grounded in them. |
 
 Each skill is a `SKILL.md` (`name` + `description` + instructions) in the portable [Agent Skills](https://agentskills.io) format; the agent matches on the `description` to decide when to use it.
+
+## Coding agent tools (MCP)
+
+Skills teach an agent *how* to work with granite.build; **`gbmcp`** lets it *act* — start, monitor, and cancel builds and inspect spaces and secrets against your running server, over the [Model Context Protocol](https://modelcontextprotocol.io). It's the [FastMCP](https://github.com/jlowin/fastmcp) server bundled at [`src/gbmcp/`](src/gbmcp/), and `gbserver standalone` **mounts it at `/mcp` on its own port** — same process, same port, no separate command.
+
+Setup is zero-config in a checkout. The `standalone` install includes it, and this repo ships a project-scope [`.mcp.json`](.mcp.json) that **Claude Code discovers automatically** when your working directory is inside the repo — just approve it once:
+
+```bash
+make standalone-venv PYTHON=python3.13     # includes the MCP server
+gbserver standalone                        # serves REST + UI + /mcp on :8080
+# open Claude Code in the repo, approve the "gbmcp" server, then ask it to
+# "list my builds" or "start the standalone quickstart build"
+```
+
+On startup `gbserver standalone` logs the MCP endpoint (with the actual port) — or tells you the `mcp` extra is missing — so you always know whether `/mcp` is live. No auth or `Authorization` header is needed: `/mcp` is localhost-only and unauthenticated in standalone, matching gbserver's own localhost policy.
+
+The server exposes 17 tools, grouped as **Builds** (`build_start`, `build_list`, `build_status`, `build_describe`, `build_log`, `build_job_log`, `build_cancel`), **Space** (`space_list`), **Secrets** (`secret_list/get/create/update/delete` — values never flow through the agent), and **Info** (health, versions, environment). Secret reads/writes return a `gb` command for you to run yourself, so secret values never transit the agent.
+
+> **Non-default port:** `.mcp.json` targets `http://127.0.0.1:${GBSERVER_PORT:-8080}/mcp/`. If you run `gbserver standalone --port <p>`, export `GBSERVER_PORT=<p>` (or edit the URL) so the agent connects to the right port — the startup log always prints the correct URL.
+
+See [`src/gbmcp/README.md`](src/gbmcp/README.md) for the full toolset, the standalone-process alternative, and the MCP handshake test.
 
 ## Try the demos
 

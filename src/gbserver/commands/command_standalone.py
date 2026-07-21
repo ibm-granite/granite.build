@@ -163,6 +163,13 @@ def _run_standalone(
     # commands.utils so it can be reused and unit-tested.
     check_and_init_for_standalone(space_dir)
 
+    # Point in-process clients at THIS gbserver. The bundled gbmcp MCP server
+    # (mounted at /mcp) reaches gbserver via GBClient, which otherwise defaults to
+    # http://localhost:8080 — wrong on any non-default port, so the mounted MCP
+    # tools would fail to reach the server they run inside. setdefault so an
+    # explicit GBSERVER_HOST still wins.
+    os.environ.setdefault("GBSERVER_HOST", f"http://127.0.0.1:{port}")
+
     # 2.5. Start embedded nats-server if configured.
     from gbserver.types.constants import GBSERVER_NATS_EMBEDDED, GBSERVER_NATS_URL
 
@@ -192,6 +199,29 @@ def _run_standalone(
 
     # 4. Default the analytics service's env vars (if gb_ui_backend is installed).
     _configure_analytics_env(host=host, port=port)
+
+    # 4.5. Report the MCP endpoint. root_api mounts gbmcp at /mcp at import time
+    #    (standalone + the `mcp` extra present) and records the result in _MCP_APP.
+    #    Importing it here — after check_and_init_for_standalone set STANDALONE —
+    #    runs that mount, then we surface the outcome with the real port. Without
+    #    this the mount is effectively silent: a base install (no `mcp` extra)
+    #    leaves /mcp absent with only a buried info log, and the correct URL to
+    #    register depends on --port. uvicorn reuses this cached import at run().
+    from gbserver.api import root_api as _root_api
+
+    if getattr(_root_api, "_MCP_APP", None) is not None:
+        logger.info(
+            "MCP endpoint ready at http://127.0.0.1:%s/mcp/ — the repo's "
+            ".mcp.json points here, or register it with: "
+            "claude mcp add --transport http gbmcp http://127.0.0.1:%s/mcp/",
+            port,
+            port,
+        )
+    else:
+        logger.info(
+            "MCP endpoint not served at /mcp — install the `mcp` extra to enable "
+            "it (e.g. `pip install 'granite.build[standalone]'`)"
+        )
 
     # 5. Start the REST API via uvicorn.
     #    Force the "asyncio" event loop (not uvloop) to avoid subprocess-in-thread

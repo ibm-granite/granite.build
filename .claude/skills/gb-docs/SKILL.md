@@ -6,7 +6,9 @@ argument-hint: "[topic or question]"
 
 # Granite.build docs lookup
 
-The granite.build repo ships docs under `docs/`. They track the installed version. **Read** the relevant file(s) with the file tools, then answer grounded in their content, citing the doc path.
+Granite.build ships its docs as Markdown — under `docs/` in a repo checkout, or as a bundled **`references/`** snapshot next to this skill when it's installed via the gbmcp plugin. **Read** the relevant file(s) with the file tools, then answer grounded in their content, citing the doc path.
+
+> There are **no `docs_search` / `docs_get` MCP tools** in gbmcp — read the docs directly with the file tools (from `references/` or `docs/`, per *Locate the docs* below).
 
 ## Important caveat: the docs are k8s/LSF-centric
 
@@ -23,8 +25,10 @@ When the docs and on-disk bash reality disagree about bash behavior, trust the o
 
 ## Locate the docs
 
-Find the granite.build checkout, in this order, then use its `docs/` directory:
-`./granite.build`, `~/granite.build`. If no checkout exists, the `run-gbserver` skill clones it. As a fallback, the docs are browsable at github.com/ibm-granite/granite.build under `docs/`.
+Read from the first of these that exists (the index below shows `docs/<x>` paths; under the bundled snapshot the same file is at `references/<x>`):
+1. A **`references/`** snapshot next to this `SKILL.md` — present when the skill ships bundled (e.g. via the gbmcp plugin); it mirrors `docs/`.
+2. The checkout's **`docs/`** dir (this repo, or `./granite.build` / `~/granite.build`).
+3. **Online** at github.com/ibm-granite/granite.build under `docs/` (a pip-only install has no local docs).
 
 ## Index — pick by topic
 
@@ -56,7 +60,7 @@ Find the granite.build checkout, in this order, then use its `docs/` directory:
 
 ## How to use
 
-1. Resolve the checkout's `docs/` dir.
+1. Resolve the docs root — bundled `references/`, else the checkout's `docs/`, else online (see *Locate the docs*).
 2. From `$ARGUMENTS` (the topic/question) pick the most relevant file(s); if unsure, skim `docs/README.md` or grep `docs/` for keywords.
 3. **Read** the file(s) and answer grounded in their content, citing the doc path.
 4. If the question is about **bash-backend execution** specifically, also check the on-disk `hello` step and (if available) a working build's `job.log`/`step.yaml` — and prefer those over doc prose when they conflict.
