@@ -214,8 +214,8 @@ environment, not on a fixed schema.
 
 | Field                    | Used by                  | Notes |
 |--------------------------|--------------------------|-------|
-| `num_nodes`              | k8s, lsf, skypilot, runpod | Number of nodes. |
-| `num_gpus_per_node`      | k8s, lsf, skypilot, runpod | GPUs per node. |
+| `num_nodes`              | k8s, lsf, runpod           | Number of nodes. |
+| `num_gpus_per_node`      | k8s, lsf, runpod           | GPUs per node. |
 | `num_cpus_per_node`      | docker, k8s, skypilot      | CPU cores per node. |
 | `total_memory_per_node`  | docker, k8s, skypilot      | Memory per node, e.g. `"4Gi"`, `"32Gi"`. |
 
