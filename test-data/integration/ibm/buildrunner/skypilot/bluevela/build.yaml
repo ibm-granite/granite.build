@@ -22,7 +22,7 @@ granite.build:
       steps:
         - step_uri: space://steps/command
           config:
-            # Fast completion detection for the test (base skypilot default 60s).
+            # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
             command_config:
               command: >-
@@ -45,7 +45,7 @@ granite.build:
       steps:
         - step_uri: space://steps/command
           config:
-            # Fast completion detection for the test (base skypilot default 60s).
+            # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
             command_config:
               # Echoes the path bound from first.out1 — proves the binding flows

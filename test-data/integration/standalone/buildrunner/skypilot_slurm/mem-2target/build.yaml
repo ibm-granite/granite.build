@@ -23,7 +23,7 @@ granite.build:
       steps:
         - step_uri: space://steps/command
           config:
-            # Fast completion detection for the test (base skypilot default 60s).
+            # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
             command_config:
               command: >-
@@ -43,7 +43,7 @@ granite.build:
       steps:
         - step_uri: space://steps/command
           config:
-            # Fast completion detection for the test (base skypilot default 60s).
+            # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
             command_config:
               # Assert the state bound from first.mem_output1 is the exact value

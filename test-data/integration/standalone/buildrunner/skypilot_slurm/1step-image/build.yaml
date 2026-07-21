@@ -27,7 +27,7 @@ granite.build:
         - step_uri: space://steps/command
           config:
             # Fast completion detection for the test (base skypilot default is
-            # 60s; a quick test job finishes in seconds).
+            # 300s; a quick test job finishes in seconds).
             poll_interval_seconds: 5
             command_config:
               # Run the command INSIDE a container image (image_id: docker:<image>).
