@@ -105,6 +105,13 @@ def _download_logs_with_retry(cluster_name: str, job_id: int):
 # finally, so this should never actually trip.
 RETRY_RELAUNCH_TIMEOUT_SECONDS = 1800
 
+# SSH-provisioned bare HPC schedulers. They don't support SkyPilot autostop, and
+# commonly don't track memory as a consumable resource (RealMemory unset in
+# slurm.conf), so a --memory request fails resource matching. Cloud-specific
+# handling groups them: skip the compute_config memory floor and force autostop
+# off. Compared against the normalized first infra segment (lowercased).
+_SSH_HPC_CLOUDS = ("slurm", "lsf")
+
 # Per-step log-retrieval modes, selected via the ``log_retrieval.mode`` key in
 # the skypilot_monitor config. See _parse_log_retrieval for semantics.
 LOG_RETRIEVAL_ON_COMPLETION = "on_completion"
@@ -528,7 +535,8 @@ class Skypilot(Environment):
         that crashes SkyPilot's LSF cloud.
 
         :param compute_config: the step's ``config.compute_config`` dict.
-        :param cloud: the resolved SkyPilot cloud (e.g. ``"slurm"``, ``"k8s"``).
+        :param cloud: the normalized target cloud (lowercased first infra
+            segment, e.g. ``"slurm"``, ``"lsf"``, ``"k8s"``).
         :returns: a dict optionally containing ``cpus`` (int, when
             ``num_cpus_per_node`` > 0) and ``memory`` (float GiB, when
             ``total_memory_per_node`` parses).
@@ -537,12 +545,13 @@ class Skypilot(Environment):
         num_cpus = compute_config.get("num_cpus_per_node", 0)
         if isinstance(num_cpus, int) and num_cpus > 0:
             resources["cpus"] = num_cpus
-        # SLURM clusters commonly don't track memory as a consumable resource
-        # (RealMemory unset in slurm.conf), so a --memory request fails at resource
-        # matching ("Catalog does not contain any instances satisfying ..."). Skip
-        # the compute_config memory floor on slurm; an explicit launcher/build
-        # resources.memory still applies (and works where RealMemory is configured).
-        if cloud != "slurm":
+        # SLURM/LSF (bare HPC schedulers) commonly don't track memory as a
+        # consumable resource (RealMemory unset in slurm.conf), so a --memory
+        # request fails at resource matching ("Catalog does not contain any
+        # instances satisfying ..."). Skip the compute_config memory floor for
+        # them; an explicit launcher/build resources.memory still applies (and
+        # works on clusters that do configure memory).
+        if cloud not in _SSH_HPC_CLOUDS:
             memory = self._parse_memory_gib(
                 compute_config.get("total_memory_per_node", "")
             )
@@ -630,33 +639,48 @@ class Skypilot(Environment):
                 "idle_minutes_to_autostop", self._get_idle_minutes()
             )
 
-            # Build sky.Resources — merge order is precedence (last wins). The
-            # step's config.compute_config (num_cpus_per_node/total_memory_per_node)
-            # is the lowest-precedence floor; the step's launcher resources and then
-            # the build's config.launcher_config.resources override it. GPUs/
-            # accelerators are not sourced from compute_config — they flow via
-            # (config.)launcher_config.resources.accelerators.
+            # Higher-precedence resource layers that override the compute_config
+            # floor. infra/cluster/zone come only from these (never the floor), so
+            # the target cloud can be resolved before the floor is layered in.
             compute_config = config.get("compute_config", {}) or {}
-            res_config = {
-                **self._resources_from_compute_config(compute_config, cloud=cloud),
+            override_res = {
                 **launcher_config.get("resources", {}),
                 **config.get("launcher_config", {}).get("resources", {}),
             }
 
             # Build infra string: supports 'cloud/cluster/partition' format
             # (e.g., 'slurm/mycluster/gpu', 'lsf/bluevela/normal')
-            infra = res_config.get("infra") or cloud
-            zone = res_config.get("zone")
-            if not res_config.get("infra") and res_config.get("cluster"):
-                infra = f"{cloud}/{res_config['cluster']}"
+            infra = override_res.get("infra") or cloud
+            zone = override_res.get("zone")
+            if not override_res.get("infra") and override_res.get("cluster"):
+                infra = f"{cloud}/{override_res['cluster']}"
                 if zone:
                     infra = f"{infra}/{zone}"
                     zone = None
-            elif not res_config.get("infra") and zone:
+            elif not override_res.get("infra") and zone:
                 # zone without cluster — fold into infra to avoid the
                 # "cannot specify both infra and zone" error in sky.Resources
                 infra = f"{infra}/{zone}" if infra else zone
                 zone = None
+
+            # Normalized target cloud: the first infra segment, lowercased — the
+            # single source of truth for cloud-specific resource handling (the
+            # slurm/lsf memory skip in the floor below, and autostop later). Using
+            # the resolved infra matches what SkyPilot actually provisions for
+            # `infra: "slurm/..."`, an explicit `resources.cloud`, or non-canonical
+            # casing — not just the env's default_cloud.
+            cloud_group = (str(infra).split("/", 1)[0] or "").lower()
+
+            # Build sky.Resources — merge order is precedence (last wins). The
+            # step's config.compute_config (num_cpus_per_node/total_memory_per_node)
+            # is the lowest-precedence floor; override_res wins. GPUs/accelerators
+            # are not sourced from compute_config — they flow via override_res.
+            res_config = {
+                **self._resources_from_compute_config(
+                    compute_config, cloud=cloud_group
+                ),
+                **override_res,
+            }
 
             # Build cluster config overrides (docker run_options, etc.)
             # SkyPilot's top-level `config:` section maps to
@@ -829,10 +853,9 @@ class Skypilot(Environment):
             # SLURM and LSF do not support autostop; passing any non-None
             # value (including 0) fails provisioning. Per-step `sky down`
             # cleanup handles teardown anyway, so force None on these
-            # backends regardless of the user's config.
-            cloud_for_infra = (str(infra).split("/", 1)[0] or "").lower()
-            no_autostop_clouds = ("slurm", "lsf")
-            autostop = None if cloud_for_infra in no_autostop_clouds else idle_minutes
+            # backends regardless of the user's config. Reuses cloud_group
+            # (normalized first infra segment) computed above.
+            autostop = None if cloud_group in _SSH_HPC_CLOUDS else idle_minutes
 
             # Launch and wait for provisioning, retrying transient
             # resource-acquisition failures (e.g. a just-torn-down slurm/lsf
