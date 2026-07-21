@@ -188,8 +188,9 @@ class TestLaunchSkypilot:
         call_kwargs = mock_sky.Resources.call_args
         assert call_kwargs.kwargs.get("infra") == "k8s"
 
-    async def _launch_and_capture_resources(self, skypilot_env, *, launcher_config,
-                                            config):
+    async def _launch_and_capture_resources(
+        self, skypilot_env, *, launcher_config, config
+    ):
         """Run launch_skypilot with sky mocked and return the kwargs passed to
         sky.Resources (so tests can assert on cpus/memory/etc.)."""
         mock_sky = MagicMock()
@@ -218,8 +219,12 @@ class TestLaunchSkypilot:
         kwargs = await self._launch_and_capture_resources(
             skypilot_env,
             launcher_config={"run": "echo hi", "resources": {}},
-            config={"compute_config": {"num_cpus_per_node": 2,
-                                       "total_memory_per_node": "1Gi"}},
+            config={
+                "compute_config": {
+                    "num_cpus_per_node": 2,
+                    "total_memory_per_node": "1Gi",
+                }
+            },
         )
         assert kwargs.get("cpus") == 2
         assert kwargs.get("memory") == 1.0
@@ -231,8 +236,10 @@ class TestLaunchSkypilot:
             skypilot_env,
             launcher_config={"run": "echo hi", "resources": {}},
             config={
-                "compute_config": {"num_cpus_per_node": 2,
-                                   "total_memory_per_node": "1Gi"},
+                "compute_config": {
+                    "num_cpus_per_node": 2,
+                    "total_memory_per_node": "1Gi",
+                },
                 "launcher_config": {"resources": {"cpus": "4+"}},
             },
         )
@@ -260,8 +267,12 @@ class TestLaunchSkypilot:
         kwargs = await self._launch_and_capture_resources(
             skypilot_env,
             launcher_config={"run": "echo hi", "resources": {}},
-            config={"compute_config": {"num_gpus_per_node": 0,
-                                       "total_memory_per_node": "1Gi"}},
+            config={
+                "compute_config": {
+                    "num_gpus_per_node": 0,
+                    "total_memory_per_node": "1Gi",
+                }
+            },
         )
         assert kwargs.get("cpus") is None
         assert kwargs.get("memory") == 1.0
@@ -297,9 +308,12 @@ class TestSkypilotComputeConfigResources:
             {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"}
         ) == {"cpus": 3, "memory": 2.0}
         # num_cpus_per_node <= 0 is skipped (cloud default); empty memory skipped.
-        assert env._resources_from_compute_config(
-            {"num_cpus_per_node": 0, "total_memory_per_node": ""}
-        ) == {}
+        assert (
+            env._resources_from_compute_config(
+                {"num_cpus_per_node": 0, "total_memory_per_node": ""}
+            )
+            == {}
+        )
         # empty compute_config yields no floor.
         assert env._resources_from_compute_config({}) == {}
 

@@ -498,8 +498,13 @@ class Skypilot(Environment):
         if not memory_str:
             return None
         text = memory_str.strip()
-        for suffix, factor in (("Gi", 1.0), ("G", 1.0), ("GB", 1.0),
-                               ("Mi", 1.0 / 1024), ("M", 1.0 / 1024)):
+        for suffix, factor in (
+            ("Gi", 1.0),
+            ("G", 1.0),
+            ("GB", 1.0),
+            ("Mi", 1.0 / 1024),
+            ("M", 1.0 / 1024),
+        ):
             if text.endswith(suffix):
                 text = text[: -len(suffix)]
                 try:
