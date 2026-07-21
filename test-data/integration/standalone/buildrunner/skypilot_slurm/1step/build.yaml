@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-slurm-image-hf-test
+  name: skypilot-slurm-command-hf-test
   targets:
     image-run:
       environment_uri: space://environments/skypilot/slurm
