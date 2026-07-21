@@ -64,6 +64,48 @@ def _slurm_cluster_reachable() -> bool:
         return False
 
 
+def _slurm_cluster_supports_containers() -> bool:
+    """Check if the SLURM cluster can run container images (Pyxis SPANK plugin).
+
+    Image-based steps set ``image_id: docker:<image>``, which on SLURM requires
+    the Pyxis SPANK plugin; without it the launch fails with ``NotSupportedError``
+    (see docs/environments/skypilot-slurm.md). The local ``make slurm-setup``
+    fixture (``giovtorres/slurm-docker-cluster``) has no Pyxis, so image tests
+    must skip there and only run on a Pyxis-enabled cluster.
+
+    Probe: SSH with the same key/port/host as :func:`_slurm_cluster_reachable`
+    and inspect ``srun --help`` — Pyxis registers a ``--container-image`` option,
+    so its presence indicates container support. Returns ``False`` on any SSH
+    failure or unreachable cluster (which also covers the "not reachable" case).
+    """
+    key = os.path.expanduser("~/.ssh/slurm_docker_key")
+    port = os.environ.get("SLURM_SSH_PORT", "2222")
+    host = os.environ.get("SLURM_SSH_HOST", "127.0.0.1")
+    try:
+        result = subprocess.run(
+            [
+                "ssh",
+                "-i",
+                key,
+                "-p",
+                port,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "ConnectTimeout=3",
+                f"root@{host}",
+                "srun --help 2>&1 | grep -q -- --container-image",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
 skipif_no_slurm = pytest.mark.skipif(
     not _slurm_cluster_reachable(),
     reason="Docker SLURM cluster not reachable (run: make slurm-setup)",

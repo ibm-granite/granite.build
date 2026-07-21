@@ -18,7 +18,7 @@ This environment runs the **standalone bash backend** by default, but most docs 
 - The generic `gbstep` step — has no bash launcher; using it on bash fails with `KeyError: 'helm'`.
 
 So: use the docs for the **schema and concepts** (URIs, inputs/outputs, the field reference), but for **how a bash step actually launches and behaves**, the authoritative source is the on-disk reality, not the prose:
-- The on-disk steps under `<assets>/environments/bash/steps/` — `hello`/`command` are the minimal correct bash steps (`step.yaml` with a `Bash`/`nohup` launcher + a `bash_scripts/<step>/command.sh`), while `inference`/`inference-lora`/`lora-finetune` are the reference for a step that captures outputs as artifacts (they carry the `NEWARTIFACT_IN_ENVIRONMENT_EVENT` monitor).
+- The on-disk steps under `<assets>/environments/bash/steps/` — `hello` is the minimal correct bash step (`step.yaml` with a `Bash`/`nohup` launcher + a `bash_scripts/<step>/command.sh`; the equivalent `command` step now ships as a builtin at `builtins/steps/bash/command/`), while `inference`/`inference-lora`/`lora-finetune` are the reference for a step that captures outputs as artifacts (they carry the `NEWARTIFACT_IN_ENVIRONMENT_EVENT` monitor).
 - A *prior successful build's* artifacts under `~/.granite.build/workdir/llm-build-<id>/.../launch-*/` — the copied `step.yaml`, the script, and especially `job.log` (the real stdout). Reverse-engineering a working build beats guessing from docs.
 
 When the docs and on-disk bash reality disagree about bash behavior, trust the on-disk reality and say so.

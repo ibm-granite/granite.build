@@ -24,6 +24,10 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, model_validator
 
+from gbserver.api.build_files_paths import (
+    authorize_build_access,
+    authorize_build_read_access,
+)
 from gbserver.api.utils import (
     ListAppendOrSet,
     apply_tag_update,
@@ -320,7 +324,7 @@ def list_build_tags(
 
 
 @builds_api.get("/{build_id}")
-def read_build(build_id: str) -> GetBuildResponse:
+def read_build(request: Request, build_id: str) -> GetBuildResponse:
     storage: SingletonAdminStorage = get_admin_storage()
     build_storage = storage.build_storage
     item = build_storage.get_by_uuid(build_id)
@@ -329,12 +333,13 @@ def read_build(build_id: str) -> GetBuildResponse:
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(item, StoredBuild), f"invalid item: {item}"
+    authorize_build_access(request, item)
     resp = GetBuildResponse(build=item)
     return resp
 
 
 @builds_api.get("/{build_id}/archive")
-def get_build_archive(build_id: str) -> Dict[str, Dict[str, str]]:
+def get_build_archive(request: Request, build_id: str) -> Dict[str, Dict[str, str]]:
     """Decode the build's ZIP archive and return its files as a dict.
 
     Returns ``{"files": {"path/in/zip": "file contents", ...}}``.
@@ -346,6 +351,8 @@ def get_build_archive(build_id: str) -> Dict[str, Dict[str, str]]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
+    assert isinstance(build, StoredBuild), f"invalid item: {build}"
+    authorize_build_access(request, build)
     if not build.build_archive:
         return {"files": {}}
     raw = base64.b64decode(build.build_archive)
@@ -411,7 +418,7 @@ def __build_target_records(
 
 @builds_api.get("/{build_id}/status", response_model=BuildStatusResponse)
 def get_build_status(
-    build_id: str, follow_retries: bool = False
+    request: Request, build_id: str, follow_retries: bool = False
 ) -> BuildStatusResponse:
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
@@ -420,6 +427,7 @@ def get_build_status(
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(build, StoredBuild)
+    authorize_build_read_access(request, build)
     build.build_archive = ""
     build_status = BuildStatus(
         build=build, target_runs=__build_target_records(storage, build_id)
@@ -443,14 +451,14 @@ def get_build_status(
 
 @builds_api.get("/{build_id}/status2", response_model=BuildStatusResponse)
 def get_build_status2(
-    build_id: str, follow_retries: bool = False
+    request: Request, build_id: str, follow_retries: bool = False
 ) -> BuildStatusResponse:
     # Retained as a backward-compatible alias of the primary /status endpoint.
-    return get_build_status(build_id, follow_retries)
+    return get_build_status(request, build_id, follow_retries)
 
 
 @builds_api.get("/{build_id}/events")
-def get_buildevents(build_id: str):
+def get_buildevents(request: Request, build_id: str):
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
@@ -458,6 +466,7 @@ def get_buildevents(build_id: str):
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(build, StoredBuild)
+    authorize_build_read_access(request, build)
 
     row_filter = get_row_filter(build_id=build_id)
     events = cast(List[StoredEvent], storage.event_storage.get_by_where(row_filter))
@@ -603,7 +612,7 @@ class BuildUpdateResponse(BaseModel):
 def update_build(
     request: Request, build_id: str, update: BuildUpdateRequest
 ) -> BuildUpdateResponse:
-    read_resp = read_build(build_id)
+    read_resp = read_build(request, build_id)
     if read_resp is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

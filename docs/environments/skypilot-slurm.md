@@ -93,24 +93,28 @@ assetstores:
       - mode: hf_push
 ```
 
-A bash step on this env omits `image_id` and runs directly on the compute node:
+A `command` step on this env runs directly on the compute node when no image is
+given (leave `command_config.image` empty so `image_id` resolves to empty and the
+launcher runs on the bare node; set it to run inside a container instead):
 
 ```yaml
 environment_configs:
   Skypilot:
-    default_launcher: bash
+    default_launcher: command
     launchers:
-      bash:
+      command:
         type: skypilot
         monitors:
           - skypilot_monitor
         config:
-          # No image_id — runs directly on the SLURM compute node.
+          # image_id resolves to "" when command_config.image is empty — runs
+          # directly on the SLURM compute node.
+          image_id: '{{ ("docker:" ~ config.command_config.image) if config.command_config.image else "" }}'
           resources:
             cpus: "1+"
             memory: "1+"
           run: |
-            {{ config.bash_config.command }}
+            {{ config.command_config.command }}
     monitors:
       skypilot_monitor:
         type: skypilot_monitor

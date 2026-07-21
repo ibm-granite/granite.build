@@ -20,7 +20,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
 
-from gbserver.spaces.user_spaces_list import space_admin_check
+from gbserver.spaces.user_spaces_list import space_access_check, space_admin_check
 from gbserver.storage.storage import Pagination, QueryControl, SortOrder, TaggedItem
 from gbserver.types.constants import PUBLIC_SPACE_NAME, SYSTEM_TAG_PREFIX
 
@@ -101,6 +101,56 @@ def confirm_space_write_access(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"User {user_id} does not have write access to item in space {space_name}",
+        )
+
+
+def has_space_member_access(
+    request: Request, username_on_target: str, space_name: str
+) -> tuple[bool, str]:
+    """See if the requesting user has at least read/member access to an asset
+    owned/created by the given username in the given space. Broader than
+    has_space_write_access: grants access to any member of the space, not
+    just the owner or a space/super admin.
+
+    Raises:
+        HTTPException: if user id is not found in the request.
+
+    Returns:
+        tuple[bool,str]: first element indicates if the requester has access and the 2nd is the user_id found in the request.
+    """
+    user_id = request.state.data["user"].login
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Can not determine user id!"
+        )
+    is_owner = username_on_target == user_id
+    if is_owner:
+        return True, user_id
+    username_email = request.state.data["user"].email
+    has_access = is_super_admin(request) or space_access_check(
+        username_email, space_name
+    )
+    return has_access, user_id
+
+
+def confirm_space_member_access(
+    request: Request, username_on_target: str, space_name: str
+) -> None:
+    """See if the requesting user has at least read/member access to an asset
+    owned/created by the given username in the given space and raise an HTTP
+    exception if not.
+
+    Raises:
+        HTTPException: if user id is not found in the request.
+        HTTPException: if the requesting user is not a member of the space.
+    """
+    has_access, user_id = has_space_member_access(
+        request, username_on_target=username_on_target, space_name=space_name
+    )
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"User {user_id} does not have access to item in space {space_name}",
         )
 
 

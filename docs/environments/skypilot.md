@@ -148,10 +148,10 @@ environment_configs:
           idle_minutes_to_autostop: 10         # Optional. Per-step override of the env-level value.
     monitors:
       skypilot_monitor:
-        type: skypilot_monitor
+        ref: space://monitors/skypilot   # shared monitor (LLMB_ARTIFACT_* rules, 300s default poll)
         config:
-          poll_interval_seconds: 15
-          event_configs: [ ... ]  # Same schema as README.md#event_configs--log-line-parsing-rules.
+          # Optional overlay. Templated so a build.yaml step `config:` can override it.
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
 ```
 
 ### Auto-injected environment variables
@@ -178,6 +178,14 @@ log and walk every line through `event_configs`. Consequences:
    download is offline, not tail-based.
 2. Artifacts are not registered until the job *completes*. There is no live event-monitor mode (unlike
    the K8s `sidecar_monitor`), so a long step's artifact events are batched at the end.
+3. **`poll_interval_seconds` gates completion detection.** The monitor only notices a job finished on
+   its next status poll (it sleeps the interval between polls; success does not wake it early), so a
+   large interval delays detecting a *quick* job by up to that interval. The shared
+   `space://monitors/skypilot` monitor defaults to **300s**, trading detection latency for lower polling
+   load. Long-running steps (evals, training, services) override it *up* (e.g. `900`); build-test
+   fixtures override it *down* (e.g. `5`) for fast turnaround. Because the base value is
+   written as `{{ config.poll_interval_seconds | default(300) }}`, a `build.yaml` step `config:` can set
+   `poll_interval_seconds` without touching the monitor.
 
 If a step exits with a non-`SUCCEEDED` JobStatus, the monitor emits a `WORKLOAD_STATUS_EVENT` with
 status `FAILED` so the build fails even when the workload wrote no status line.

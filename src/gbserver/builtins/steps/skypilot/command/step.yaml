@@ -1,0 +1,40 @@
+name: command
+version: 1.0.0
+type: exec
+config:
+  command_config:
+    command: ""    # command to run on the launcher node
+    image: ""      # optional docker image; empty => run on the bare launcher node
+
+environment_configs:
+  Skypilot:
+    default_launcher: command
+    launchers:
+      command:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # image_id renders to "" when no image is given; launch_skypilot treats
+          # an empty image_id as "no image" (runs on the bare launcher node so the
+          # Pyxis SPANK plugin is not required, e.g. the local Docker SLURM cluster
+          # from `make slurm-setup`). Supply config.command_config.image to run the
+          # command inside a container instead.
+          image_id: '{{ ("docker:" ~ config.command_config.image) if config.command_config.image else "" }}'
+          # No cpus default: on the LSF cloud `cpus: "1+"` raises ValueError
+          # (sky/clouds/lsf.py does float("1+") without stripping the "+"), so
+          # hardcoding it here would make this step LSF-incompatible. Leaving
+          # resources empty keeps the step cloud-agnostic; each cloud picks sane
+          # defaults, and the build.yaml supplies any cpus/accelerators/memory
+          # via config.launcher_config.resources.
+          resources: {}
+          run: |
+            {{ config.command_config.command }}
+    monitors:
+      # References the shipped monitor library (builtins/monitors/skypilot) as-is
+      # — no environment dependency, no override. Inherits the standard artifact
+      # convention (with binding) and the default poll/log_retrieval profile;
+      # build.yaml's config.poll_interval_seconds flows through the monitor's own
+      # `| default(...)` template.
+      skypilot_monitor:
+        ref: space://monitors/skypilot

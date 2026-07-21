@@ -30,6 +30,14 @@ builds refer to them via `space://assetstores/<name>` URIs resolved through the 
 > [`Environment._register_default_envstore`](../../src/gbserver/environment/environment.py) /
 > [`_register_default_memstore`](../../src/gbserver/environment/environment.py).
 
+> **The File store (`file:`) is a declared store, not auto-registered.** Unlike `env://`/`mem://`, an
+> environment that supports `file:` declares it in its `environment.yaml` as
+> `space://assetstores/file/` — the bundled
+> [`builtins/assetstores/file`](../../src/gbserver/builtins/assetstores/file/store.yaml) store, resolved
+> via the builtins base_uri. Declare only the modes the backend actually implements (its
+> `pullasset_filestore` / `pushasset_filestore` methods): `bash` implements both `load` and `push`;
+> `docker` implements `push` only (no `pullasset_filestore`), so it declares `push` and not `load`.
+
 ## Store types and URI schemes
 
 | Store | URI scheme(s) | Maps a URI to… | Credentials (default secret name) |
@@ -57,6 +65,11 @@ Notes:
   above). Because a `mem://` URI is an **opaque key** rather than a path, the value is passed through
   unchanged — unlike `env://`, it applies no path normalisation, so a value such as `http://host:8000`
   survives intact instead of being mangled into `/http:/host:8000`.
+  - **Consuming** a `mem://` input works on every environment (the transport is host-side and
+    environment-agnostic). **Producing** a `mem://` output additionally requires the step's **monitor**
+    to recognize the `LLMB_ARTIFACT_STATE` marker the workload prints — the shipped `bash`, `skypilot`,
+    and `docker` library monitors carry that rule; other environments' monitors need it added (see
+    [Value outputs (`mem://`)](../steps/monitoring-and-artifact-events.md#value-outputs-mem)).
 
 The store implementations live in [`src/gbserver/asset/`](../../src/gbserver/asset/); the matching URI
 parsers in [`src/gbcommon/uri/`](../../src/gbcommon/uri/).

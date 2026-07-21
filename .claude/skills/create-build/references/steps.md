@@ -31,7 +31,7 @@ These steps ship in the standalone bash space and are referenced as `space://ste
 - **Sample:** the second target in `references/samples/lora-finetune.build.yaml`.
 
 ## `command` — run an arbitrary shell command
-- Runs `config.bash_config.command`; exit status = step status. Carries the artifact monitor (emit `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<dir>` at the start of a line to register an output).
+- Runs `config.command_config.command`; exit status = step status. Carries the artifact monitor (emit `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<dir>` at the start of a line to register an output).
 - This is the vehicle the `create-build` heredoc uses. **Reach for it only when no purpose-built step above fits.**
 
 ## `hello` — minimal echo (smoke / reference)

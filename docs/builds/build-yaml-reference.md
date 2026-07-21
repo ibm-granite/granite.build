@@ -82,8 +82,8 @@ inputs:
 
 | Field            | Type    | Required           | Default | Notes |
 |------------------|---------|--------------------|---------|-------|
-| `uri`            | string  | one of uri/binding | —       | Direct artifact URI. Schemes: `hf://`, `file://`, `git://`, `cos://`, `lh://`, `s3://`. |
-| `binding`        | string  | one of uri/binding | —       | `<target-name>.<output-name>` — points at another target's output in this build. |
+| `uri`            | string  | one of uri/binding | —       | Direct artifact URI. Schemes: `hf://`, `file://`, `git://`, `cos://`, `lh://`, `s3://`, plus `env://` (a path on the worker's own filesystem) and `mem://` (an opaque value in the build's shared memory). See [Asset stores](../asset-stores/README.md#store-types-and-uri-schemes). |
+| `binding`        | string  | one of uri/binding | —       | `<target-name>.<output-name>` — points at another target's output in this build. The upstream output's URI scheme decides how the value arrives: a filesystem output resolves to `{{ bindings.<name>.binding.path }}`, a `mem://` output to `{{ bindings.<name>.binding.state }}` (see [Jinja templating](#jinja-templating)). |
 | `wait_for_push`  | bool    | no                 | `false` | If `true`, wait for the upstream's push to complete before starting. |
 | `event`          | string  | no                 | —       | Event-driven trigger (e.g. `evalresults.success`); fires this target only when an upstream emits the event. |
 | `metadata`       | object  | no                 | —       | Runtime-populated; usually omitted in user YAML. |
@@ -107,6 +107,8 @@ outputs:
       config:
         hf:
           private: false
+  server_url:
+    uri: "mem://server_url"          # opaque value passed to a downstream target (no type/store_push)
 ```
 
 | Field             | Type    | Required | Default | Notes |
@@ -114,6 +116,39 @@ outputs:
 | `uri`             | string  | no       | —       | Output URI. Supports Jinja templating, e.g. `hf://huggingface.co/datasets/.../{{ run_metadata.targetsteprun_id \| short_hash }}`. |
 | `store_push`      | object  | no       | —       | Push to a remote store after the step writes the artifact. See [`hf-push.md`](hf-push.md) for the HF case. |
 | `event_selectors` | list    | no       | `[]`    | Event-payload matchers used by downstream `inputs.event` triggers. |
+
+### `mem://` outputs — passing a value, not a file
+
+Use a `mem://` output to hand a downstream target an **opaque value** — a running service's URL, a
+cluster name, any string — rather than a file. Unlike filesystem outputs, a `mem://` value is passed
+through the build's shared memory **verbatim** (no copy, no path normalisation), so something like
+`http://host:8000` survives intact. A `mem://` output takes no `type` and no `store_push` (nothing is
+transferred), and the producing step's workload emits the value with an `LLMB_ARTIFACT_STATE:<value>`
+marker instead of `LLMB_ARTIFACT_PATH:`. A consumer binds it like any other output and reads it via
+`{{ bindings.<name>.binding.state }}`:
+
+```yaml
+targets:
+  start-server:
+    outputs:
+      server_url:
+        uri: "mem://server_url"
+    # ... step whose workload prints: LLMB_ARTIFACT_ID:server_url LLMB_ARTIFACT_STATE:http://host:8000
+  train:
+    inputs:
+      rm_url:
+        binding: start-server.server_url     # <producer-target>.<output-name>
+    steps:
+      - step_uri: space://steps/train
+        config:
+          command_config:
+            command: "python train.py --reward-url {{ bindings.rm_url.binding.state }}"
+```
+
+Producing a `mem://` output requires the step's monitor to recognize the `STATE` marker (the shipped
+`bash`, `skypilot`, and `docker` monitors do); see
+[Monitoring and artifact events — Value outputs](../steps/monitoring-and-artifact-events.md#value-outputs-mem)
+and [Asset stores — In-memory](../asset-stores/README.md#store-types-and-uri-schemes).
 
 ### `store_push`
 
@@ -179,10 +214,16 @@ environment, not on a fixed schema.
 
 | Field                    | Used by                  | Notes |
 |--------------------------|--------------------------|-------|
-| `num_nodes`              | k8s, lsf, skypilot, runpod | Number of nodes. |
-| `num_gpus_per_node`      | k8s, lsf, skypilot, runpod | GPUs per node. |
+| `num_nodes`              | k8s, lsf, runpod           | Number of nodes. |
+| `num_gpus_per_node`      | k8s, lsf, runpod           | GPUs per node. |
 | `num_cpus_per_node`      | docker, k8s, skypilot      | CPU cores per node. |
 | `total_memory_per_node`  | docker, k8s, skypilot      | Memory per node, e.g. `"4Gi"`, `"32Gi"`. |
+
+For **skypilot** the launch path consumes only `num_cpus_per_node` and
+`total_memory_per_node`, folding them into `sky.Resources` as a low-precedence
+floor (values under `launcher_config.resources` override them). GPU/accelerator
+selection and node count are supplied via `launcher_config.resources` on the step
+(e.g. `accelerators: "A100:8"`), not via `num_gpus_per_node`/`num_nodes`.
 
 Per-environment specifics (k8s `affinity`, skypilot `cluster`/`zone`, lsf
 `queue`, etc.) are documented in the per-type
@@ -240,8 +281,8 @@ Available variables:
 |-------------------|------------|
 | `run_metadata.*`  | Per-run identifiers (`targetsteprun_id`, `build_id`, etc.). |
 | `space.variables.*` | Variables defined in the space's `space.yaml`. |
-| `binding.*`       | Resolved upstream artifact info for a bound input. |
-| `bindings.*`      | Map of all bound inputs (when more than one is needed). |
+| `binding.*`       | Resolved upstream artifact info for a bound input. `binding.path` is the filesystem location (filesystem-backed outputs); `binding.state` is the verbatim value of a `mem://` output. Use whichever the upstream output's scheme produces. |
+| `bindings.*`      | Map of all bound inputs by name (`bindings.<name>.binding.path` / `.state`); use when a target has more than one bound input. |
 
 Filters provided in
 [`src/gbcommon/utils/template.py`](../../src/gbcommon/utils/template.py):
@@ -270,7 +311,7 @@ These samples in the repo exercise the schema end to end:
 - [`samples/standalone/standalone-quickstart/build.yaml`](../../samples/standalone/standalone-quickstart/) — single target, multiple environment options, basic `compute_config`.
 - [`samples/templates/local_multi_stage/build.yaml`](../../samples/templates/local_multi_stage/) — four targets chained by binding, event-driven trigger.
 - [`samples/tests/digit-tuning-fmeval/build.yaml`](../../samples/tests/digit-tuning-fmeval/) — multi-GPU pipeline with templated Lakehouse URIs.
-- [`test-data/integration/standalone/buildrunner/local/retry/build.yaml`](../../test-data/integration/standalone/buildrunner/local/retry/) — top-level `retries` block with `max_retries`.
+- [`test-data/integration/standalone/buildrunner/bash/retry/build.yaml`](../../test-data/integration/standalone/buildrunner/bash/retry/) — top-level `retries` block with `max_retries`.
 
 ## Validation errors
 

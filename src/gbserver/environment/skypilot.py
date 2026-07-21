@@ -48,6 +48,8 @@ if HAS_SKYPILOT:
 else:
     sky = None  # type: ignore[assignment]
 
+_DEFAULT_POLL_INTERVAL_SECONDS = 300
+
 
 def _require_skypilot():
     """Raise a clear error if the sky SDK is not installed.
@@ -479,6 +481,64 @@ class Skypilot(Environment):
         except Exception as e:  # don't fail the build for cleanup
             logger.warning("teardown_skypilot rm -rf %s failed: %s", workdir, e)
 
+    @staticmethod
+    def _parse_memory_gib(memory_str: str) -> Optional[float]:
+        """Convert a ``total_memory_per_node`` string to a GiB number for
+        ``sky.Resources(memory=...)``.
+
+        SkyPilot treats ``memory`` as a GB number (or string). We map common
+        Kubernetes/plain suffixes to a bare number, treating ``Gi`` as GB to
+        match docker's :meth:`Docker._parse_memory` convention.
+
+        :param memory_str: e.g. ``"1Gi"``, ``"512Mi"``, ``"4G"``, ``"4GB"``,
+            ``"4"``. Empty string means "unset".
+        :returns: the size in GiB (e.g. ``1.0``, ``0.5``, ``4.0``), or ``None``
+            when ``memory_str`` is empty or cannot be parsed as a number.
+        """
+        if not memory_str:
+            return None
+        text = memory_str.strip()
+        for suffix, factor in (
+            ("Gi", 1.0),
+            ("G", 1.0),
+            ("GB", 1.0),
+            ("Mi", 1.0 / 1024),
+            ("M", 1.0 / 1024),
+        ):
+            if text.endswith(suffix):
+                text = text[: -len(suffix)]
+                try:
+                    return float(text) * factor
+                except ValueError:
+                    return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def _resources_from_compute_config(self: Self, compute_config: Dict) -> Dict:
+        """Derive a ``sky.Resources`` floor from a step's ``compute_config``.
+
+        Reads the raw dict (NOT the :class:`ComputeConfig` model, whose defaults
+        of 8 GPUs / 512G memory would over-size a bare command). Only emits keys
+        that are explicitly and validly set, so the caller can layer this as the
+        lowest-precedence floor. Values are numeric — never the ``"1+"`` form
+        that crashes SkyPilot's LSF cloud.
+
+        :param compute_config: the step's ``config.compute_config`` dict.
+        :returns: a dict optionally containing ``cpus`` (int, when
+            ``num_cpus_per_node`` > 0) and ``memory`` (float GiB, when
+            ``total_memory_per_node`` parses).
+        """
+        resources: Dict = {}
+        num_cpus = compute_config.get("num_cpus_per_node", 0)
+        if isinstance(num_cpus, int) and num_cpus > 0:
+            resources["cpus"] = num_cpus
+        memory = self._parse_memory_gib(compute_config.get("total_memory_per_node", ""))
+        if memory is not None:
+            resources["memory"] = memory
+        return resources
+
     async def launch_skypilot(
         self: Self,
         launch_id: str,
@@ -559,10 +619,15 @@ class Skypilot(Environment):
                 "idle_minutes_to_autostop", self._get_idle_minutes()
             )
 
-            # Build sky.Resources — merge build-level overrides on top of
-            # step defaults (config.launcher_config.resources wins over
-            # step's environment_configs.*.launchers.*.config.resources)
+            # Build sky.Resources — merge order is precedence (last wins). The
+            # step's config.compute_config (num_cpus_per_node/total_memory_per_node)
+            # is the lowest-precedence floor; the step's launcher resources and then
+            # the build's config.launcher_config.resources override it. GPUs/
+            # accelerators are not sourced from compute_config — they flow via
+            # (config.)launcher_config.resources.accelerators.
+            compute_config = config.get("compute_config", {}) or {}
             res_config = {
+                **self._resources_from_compute_config(compute_config),
                 **launcher_config.get("resources", {}),
                 **config.get("launcher_config", {}).get("resources", {}),
             }
@@ -593,9 +658,13 @@ class Skypilot(Environment):
             if docker_config:
                 cluster_config_overrides["docker"] = docker_config
 
-            image_id = config.get("launcher_config", {}).get(
-                "image_id"
-            ) or launcher_config.get("image_id")
+            # Trailing `or None` maps an empty image_id to None: the merged
+            # `command` step renders image_id to "" when no image is given, and
+            # sky.Resources expects None (bare node) rather than an empty string.
+            image_id = (
+                config.get("launcher_config", {}).get("image_id")
+                or launcher_config.get("image_id")
+            ) or None
 
             logger.info(
                 "SkyPilot resources: accelerators=%s, image_id=%s, "
@@ -1064,21 +1133,23 @@ class Skypilot(Environment):
         if not cluster_name:
             logger.error("No cluster_name for launch_id %s", launch_id)
             return
-
         stop_event = self._get_launch_stopped_event(launch_id)
         # Canonical key across step.yaml configs is ``poll_interval_seconds``;
         # accept the legacy ``poll_interval`` for back-compat. Templated configs
         # may render this as a string (e.g. "120"), so coerce to a number.
         _raw_poll = kwargs.get(
-            "poll_interval_seconds", kwargs.get("poll_interval", 900)
+            "poll_interval_seconds",
+            kwargs.get("poll_interval", _DEFAULT_POLL_INTERVAL_SECONDS),
         )
         try:
             poll_interval = float(_raw_poll)
         except (TypeError, ValueError):
             logger.warning(
-                "Invalid poll_interval_seconds %r; falling back to 900s", _raw_poll
+                "Invalid poll_interval_seconds %r; falling back to %d",
+                _raw_poll,
+                _DEFAULT_POLL_INTERVAL_SECONDS,
             )
-            poll_interval = 900.0
+            poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
         # Per-step log-retrieval policy (mode + cadence). Defaults to
         # on_completion: pull the full log once at terminal status.
         log_mode, log_interval, startup_window = _parse_log_retrieval(

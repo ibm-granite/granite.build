@@ -31,6 +31,7 @@ from gbserver.asset.asset import Asset
 from gbserver.build.entity import Entity
 from gbserver.types.constants import is_debug_mode
 from gbserver.types.stepconfig import StepConfig
+from gbserver.utils.filesystem import find_files_shallowest_first
 from gbserver.utils.logger import get_logger
 
 STEP_FILE_NAME = "step.yaml"
@@ -71,15 +72,15 @@ class Step(Entity):
         assert isinstance(th_stepcache_dir, Path)
         stepasset_dir = th_stepcache_dir / self.urihash()
         self.stepasset.sync(dest=stepasset_dir, force=force_fetch)
-        files = glob.glob(str(stepasset_dir / "**" / STEP_FILE_NAME), recursive=True)
+        files = find_files_shallowest_first(stepasset_dir, STEP_FILE_NAME)
 
         # Scenario 1: if step uri is empty, it wont have step.yaml -> thus get
         # base step_default.yaml and
         # rename it to step.yaml so that it works seamlessly
         #  with the existing flow.
         if len(files) == 0:
-            default_files = glob.glob(
-                str(stepasset_dir / "**" / STEP_DEFAULT_FILE_NAME), recursive=True
+            default_files = find_files_shallowest_first(
+                stepasset_dir, STEP_DEFAULT_FILE_NAME
             )
 
             # found step_default.yaml from the base step

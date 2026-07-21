@@ -161,8 +161,25 @@ class TestMergedQuickstartAssets:
         with open(path) as f:
             return yaml.safe_load(f)
 
-    def test_local_store(self):
-        data = self._load(self.STORES_DIR / "local" / "store.yaml")
+    def test_no_local_store(self):
+        # The redundant `local` file store was removed; file: URIs are served by
+        # the builtin `file` store, declared explicitly as space://assetstores/file
+        # in each supporting environment.yaml.
+        assert not (self.STORES_DIR / "local").exists()
+
+    def test_builtin_file_store(self):
+        # The builtin file store that replaces the removed `local` store.
+        builtin = (
+            REPO_ROOT
+            / "src"
+            / "gbserver"
+            / "builtins"
+            / "assetstores"
+            / "file"
+            / "store.yaml"
+        )
+        data = self._load(builtin)
+        assert data["name"] == "file"
         assert data["base_uri"] == "file:"
 
     def test_s3_store(self):
@@ -179,16 +196,38 @@ class TestMergedQuickstartAssets:
         data = self._load(self.ENVS_DIR / "skypilot" / "aws" / "environment.yaml")
         assert data["type"] == "Skypilot"
 
-    def test_bash_env_binds_local_and_hf(self):
+    @staticmethod
+    def _store_entry(data, scheme):
+        """Return the assetstores entry whose store_uri contains ``scheme``."""
+        for s in data["assetstores"]:
+            if scheme in s["store_uri"]:
+                return s
+        return None
+
+    def test_bash_env_binds_hf_and_file(self):
+        # The old `local` store was removed; file: is now the builtin `file`
+        # store, declared explicitly. Bash implements pull+push, so load+push.
         data = self._load(self.ENVS_DIR / "bash" / "environment.yaml")
         uris = {s["store_uri"] for s in data["assetstores"]}
-        assert any("local" in u for u in uris)
         assert any("hf" in u for u in uris)
+        assert not any("local" in u for u in uris)
+        file_entry = self._store_entry(data, "assetstores/file")
+        assert file_entry is not None, "bash must declare the file store"
+        assert file_entry.get("load"), "bash file store must declare load"
+        assert file_entry.get("push"), "bash file store must declare push"
 
-    def test_docker_env_binds_local(self):
+    def test_docker_env_binds_hf_and_file_push_only(self):
+        # Docker has pushasset_filestore but NO pullasset_filestore, so the file
+        # store must declare push only — declaring load would advertise a pull it
+        # cannot service.
         data = self._load(self.ENVS_DIR / "docker" / "environment.yaml")
         uris = {s["store_uri"] for s in data["assetstores"]}
-        assert any("local" in u for u in uris)
+        assert any("hf" in u for u in uris)
+        assert not any("local" in u for u in uris)
+        file_entry = self._store_entry(data, "assetstores/file")
+        assert file_entry is not None, "docker must declare the file store"
+        assert file_entry.get("push"), "docker file store must declare push"
+        assert not file_entry.get("load"), "docker file store must NOT declare load"
 
     def test_colocated_hello_steps_exist(self):
         # bash/docker/runpod get co-located hello steps; the single

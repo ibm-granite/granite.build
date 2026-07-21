@@ -611,7 +611,11 @@ class Environment(ABC):
         and :meth:`_register_default_memstore` ensure the ``env://`` (Envstore)
         and ``mem://`` (Memstore) stores are available even when they are not
         declared, so env:// / mem:// input/output work on all backends without an
-        ``assetstores`` entry in each ``environment.yaml``.
+        ``assetstores`` entry in each ``environment.yaml``. The ``file:``
+        (Filestore) store is NOT auto-registered — an environment that supports
+        it declares ``space://assetstores/file`` in its ``environment.yaml`` with
+        only the modes it implements (e.g. bash: load+push; docker: push only),
+        so it never advertises a transfer direction it can't service.
         """
         if self.config is not None and self.config.assetstores is not None:
             for storeenv in self.config.assetstores:

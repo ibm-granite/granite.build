@@ -355,8 +355,9 @@ This repo ships **Agent Skills** under [`.claude/skills/`](.claude/skills/) so a
 
 | Skill | What it does |
 |-------|--------------|
-| [`run-gbserver`](.claude/skills/run-gbserver/SKILL.md) | Clone, set up, and start the standalone `gbserver` — the prerequisite for creating, validating, or running any build. |
-| [`create-build`](.claude/skills/create-build/SKILL.md) | Author a new `build.yaml` (steps, targets, inputs/outputs, compute) for training, inference/serving, data generation, or evaluation. |
+| [`run-gbserver`](.claude/skills/run-gbserver/SKILL.md) | Ensure the standalone `gbserver` backend is running (via the `gbserver_start` tool) — the prerequisite for running any build. |
+| [`create-build`](.claude/skills/create-build/SKILL.md) | Author a `build.yaml` that runs a workload inline via the built-in `command` step — training, inference/serving, data generation, or evaluation. |
+| [`create-step`](.claude/skills/create-step/SKILL.md) | Author a reusable custom step (`step.yaml` + `bash_scripts/`, referenced by a `file://` URI) — for owned or multi-file code. |
 | [`gb-docs`](.claude/skills/gb-docs/SKILL.md) | Look up the in-repo [`docs/`](docs/) (schema, CLI, concepts, troubleshooting) and answer grounded in them. |
 
 Each skill is a `SKILL.md` (`name` + `description` + instructions) in the portable [Agent Skills](https://agentskills.io) format; the agent matches on the `description` to decide when to use it.

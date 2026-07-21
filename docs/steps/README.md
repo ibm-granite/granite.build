@@ -12,11 +12,10 @@ In a `build.yaml`, each step entry has a `step_uri` field:
 
 ```yaml
 steps:
-  - step_uri: space://steps/bash
+  - step_uri: space://steps/command
     config:
-      workload:
-        commands:
-          - "python train.py --epochs 3"
+      command_config:
+        command: "python train.py --epochs 3"
 ```
 
 ### URI schemes
@@ -35,14 +34,13 @@ These steps ship with gbserver in `src/gbserver/builtins/steps/`:
 
 | Step | Description |
 |------|-------------|
-| `bash` | Execute shell commands directly. The simplest step — no container image required for local environments. |
 | `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. |
 | `hfpull` | Pull a model or dataset from HuggingFace Hub. |
 | `hfpush` | Push artifacts to HuggingFace Hub. |
 | `s3pull` | Pull files from an S3-compatible object store. |
 | `s3push` | Push files to an S3-compatible object store. |
 | `cosrclone` | Transfer files using rclone (supports COS, S3, and many backends). |
-| `image` | Run a custom container image (BYOI). |
+| `command` | Run a shell command (available on the Bash, Docker, and Skypilot environments). On Docker/Skypilot set `command_config.image` to run it inside a container image (BYOI); leave the image empty to run on the bare node. |
 
 ## Bash example steps
 
@@ -73,9 +71,11 @@ launchers:
     start_command: "python main.py"
 monitors:
   log_monitor:
-    type: log_monitor            # tails the workload's stdout/stderr
-    config:
-      event_configs: [ ... ]     # rules that turn log lines into build events
+    ref: space://monitors/bash   # reference a shared monitor from the library (recommended)
+    # — or inline it —
+    # type: log_monitor          # tails the workload's stdout/stderr
+    # config:
+    #   event_configs: [ ... ]   # rules that turn log lines into build events
 config:
   retry_enabled: false
   retry_transparently: false
@@ -83,9 +83,10 @@ config:
 
 > A monitor turns matching workload log lines into build events — including the artifact
 > events that register a step's outputs. In a full step definition, monitors are declared
-> per environment type under `environment_configs`; see
-> [Monitoring and artifact events](monitoring-and-artifact-events.md) for the real schema and
-> how to capture outputs.
+> per environment type under `environment_configs`, and usually **reference** a shared monitor
+> from the library (`ref: space://monitors/<name>`) instead of inlining the rules; see
+> [Monitoring and artifact events](monitoring-and-artifact-events.md) for the real schema, the
+> reference/overlay mechanics, and how to capture outputs.
 
 ### Key fields
 

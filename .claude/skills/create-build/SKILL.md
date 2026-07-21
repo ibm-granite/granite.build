@@ -9,7 +9,7 @@ allowed-tools: Bash(ls *) Bash(test *) Bash(cat *) Bash(grep *) Bash(find *) Bas
 
 This skill makes a workload (train a model, run inference, generate/process data, evaluate, or any script) run on Granite.build. In the standalone bash environment you produce **one** artifact:
 
-- A **build.yaml** — the run definition. It references the built-in **`command`** step by URI, wires inputs/outputs, passes per-run settings, and carries the workload itself **inline** in the command step's `config.bash_config.command`. For anything more than a one-liner, the command writes its own script via a shell **heredoc** and runs it. Keep the build.yaml with the user's project (e.g. a `lora-granite/build.yaml` folder).
+- A **build.yaml** — the run definition. It references the built-in **`command`** step by URI, wires inputs/outputs, passes per-run settings, and carries the workload itself **inline** in the command step's `config.command_config.command`. For anything more than a one-liner, the command writes its own script via a shell **heredoc** and runs it. Keep the build.yaml with the user's project (e.g. a `lora-granite/build.yaml` folder).
 
 You do **not** author a step directory (`step.yaml` + `bash_scripts/`) for the common case — the generic `command` step already exists and runs whatever command you give it. This keeps the whole workload **self-contained in one file**.
 
@@ -42,7 +42,7 @@ These reflect how this environment actually behaves. Follow them unless the user
 
 - **Default to standalone.** Assume `GB_ENVIRONMENT=STANDALONE`, the **bash** compute backend, and SQLite. No cloud creds, no Kubernetes. Everything below targets that backend.
 - **All build actions go through the `mcp__gbmcp__*` tools, not the `gb` CLI.** The tools are always attached; if a build call reports the backend is unreachable, `gbserver_start()` brings it up (see **`run-gbserver`**).
-- **The workload lives inline in the build.yaml.** Put the command (and any script it needs, via a heredoc) in the `command` step's `config.bash_config.command`. Do **not** create a step directory or a separate script file for the common case.
+- **The workload lives inline in the build.yaml.** Put the command (and any script it needs, via a heredoc) in the `command` step's `config.command_config.command`. Do **not** create a step directory or a separate script file for the common case.
 - **Compose with targets as the workload needs.** A workload is one or more **targets**, each with one or more **steps** (here, `command` steps). Steps within a target run sequentially and share a filesystem; targets can be wired with `binding` (a downstream target's input bound to an upstream target's output). A single target with one `command` step is the simplest shape.
 - **The command sets up its own runtime.** The bash env hands the command a clean environment (no PATH/HOME). The command establishes its own PATH and, if it needs Python deps (torch/trl/peft/…), builds its own venv inline (idempotently) before importing them — see "The command step + heredoc."
 - **build.yaml edits are read per build.** There's no step to register — a new/edited build.yaml is picked up on the next `build_start`. No restart needed.
@@ -58,13 +58,13 @@ There are **no `step_*` MCP tools** in gbmcp — discover steps by reading the s
 - Find the space: `space_list()` gives space names; the space dir is the one gbserver was started with (commonly `configurations/spaces/local`).
 - The space's `space.yaml` has a `base_uris:` chain (e.g. `file://../../assets`) — that's where steps/environments/assetstores resolve from.
 - **Environments:** `ls <assets>/environments/` → typically `bash docker runpod skypilot ...`. Default to `bash`.
-- **Confirm the `command` step exists:** it lives under `<assets>/environments/bash/steps/command/` and is referenced as **`space://steps/command`**. This is the only step you need. (The `hello` step next to it is an even more minimal reference.)
+- **Confirm the `command` step resolves:** `space://steps/command` — the generic command step now ships as a **builtin** (`src/gbserver/builtins/steps/bash/command/`), so it resolves by that URI without living in the space's `bash/steps/`. This is the only step you need for the inline approach. (The on-disk `hello` / `inference` / `inference-lora` / `lora-finetune` steps under `<assets>/environments/bash/steps/` are references for *authoring a custom step* — that's the `create-step` skill's job, not this one.)
 
 When you reference `space://steps/command` or `space://environments/<name>`, the name must be a real directory you found above.
 
 ## The `command` step + heredoc (the core skill)
 
-The built-in **`command`** step runs an arbitrary shell command supplied in `config.bash_config.command`, and its exit status becomes the step's status (so `command: "exit 1"` hard-FAILS the target). It already carries the artifact-capture monitor. You author **nothing** on disk — you just fill in the command.
+The built-in **`command`** step runs an arbitrary shell command supplied in `config.command_config.command`, and its exit status becomes the step's status (so `command: "exit 1"` hard-FAILS the target). It already carries the artifact-capture monitor. You author **nothing** on disk — you just fill in the command.
 
 For a Python workload, the command is a small shell script that (1) sets up PATH + venv, (2) **writes `run.py` via a heredoc** into the output dir, (3) runs it. The workload logic is the heredoc body.
 
@@ -161,7 +161,7 @@ granite.build:
       steps:
         - step_uri: space://steps/command      # the built-in generic step — nothing to author
           config:
-            bash_config:
+            command_config:
               command: |                       # the whole workload, inline (see example above)
                 set -eu
                 export PATH="${LLMB_BASH_PYTHON_DIR:?}:/usr/local/bin:/usr/bin:/bin"
@@ -226,10 +226,10 @@ Fetch it via MCP with `build_job_log(build_id)` — it returns that `job.log`'s 
 
 1. `gbserver_status()`; if it isn't `ready`, `gbserver_start()` to bring the backend up (see **`run-gbserver`**).
 2. Discover the space and its `bash` environment by reading `<assets>/` (`space_list()` for the space name); confirm `space://steps/command` resolves.
-3. Write the build.yaml with the user's project: one target, one `command` step. Put the workload in `config.bash_config.command` (shell for simple cases; a heredoc that writes+runs `run.py` for Python). Declare inputs (`hf:///…` model), outputs (registered by the `LLMB_ARTIFACT_ID` line), and per-run params in `config.bash.env`. No step directory to author.
+3. Write the build.yaml with the user's project: one target, one `command` step. Put the workload in `config.command_config.command` (shell for simple cases; a heredoc that writes+runs `run.py` for Python). Declare inputs (`hf:///…` model), outputs (registered by the `LLMB_ARTIFACT_ID` line), and per-run params in `config.bash.env`. No step directory to author.
 4. Submit with **`build_start(file_content=<yaml text>)`**. Monitor with `build_status(build_id)`; done once it leaves `build_list()`. Read `build_job_log(build_id)` to confirm the workload actually ran (not just that status flipped to SUCCESS).
 5. If anything is unclear about a field/option/error, consult the **`gb-docs`** skill.
 
 ## When unsure
 
-Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s/LSF-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) are **k8s/LSF-only and do not apply to the bash backend**. For bash behavior, the source of truth is the on-disk `command` step plus a working build's `job.log`.
+Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s/LSF-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) are **k8s/LSF-only and do not apply to the bash backend**. For bash behavior, the source of truth is the `command` builtin (`src/gbserver/builtins/steps/bash/command/`) plus a working build's `job.log`.

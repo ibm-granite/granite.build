@@ -324,7 +324,7 @@ def register_artifact(
         storage.add(new_artifact)
     except ChecksumConflictException as exc:
         conflict_uri = exc.existing_artifact.uri
-        decoded = decode_uri(conflict_uri).model_dump()
+        decoded = decode_uri(request, uri=conflict_uri).model_dump()
         decoded["uuid"] = exc.existing_artifact.uuid
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=decoded)
     except (
@@ -356,7 +356,9 @@ class ChangeArchiveResponse(BaseModel):
     was_archived: bool
 
 
-def set_archive_bit(artifact_id: str, is_archived: bool) -> ChangeArchiveResponse:
+def set_archive_bit(
+    request: Request, artifact_id: str, is_archived: bool
+) -> ChangeArchiveResponse:
     storage = get_admin_storage().artifact_registry
     item = storage.get_by_uuid(artifact_id)
     if item is None:
@@ -364,6 +366,11 @@ def set_archive_bit(artifact_id: str, is_archived: bool) -> ChangeArchiveRespons
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
         )
     assert isinstance(item, ArtifactRegistration)
+    confirm_space_write_access(
+        request=request,
+        username_on_target=item.username,
+        space_name=item.space_name,
+    )
     was_archived = item.is_archived
     if was_archived != is_archived:
         item.is_archived = is_archived
@@ -375,13 +382,13 @@ def set_archive_bit(artifact_id: str, is_archived: bool) -> ChangeArchiveRespons
 
 
 @artifacts_api.put("/{artifact_id}/archive")
-def archive_artifact(artifact_id: str) -> ChangeArchiveResponse:
-    return set_archive_bit(artifact_id, True)
+def archive_artifact(request: Request, artifact_id: str) -> ChangeArchiveResponse:
+    return set_archive_bit(request, artifact_id, True)
 
 
 @artifacts_api.put("/{artifact_id}/unarchive")
-def unarchive_artifact(artifact_id: str) -> ChangeArchiveResponse:
-    return set_archive_bit(artifact_id, False)
+def unarchive_artifact(request: Request, artifact_id: str) -> ChangeArchiveResponse:
+    return set_archive_bit(request, artifact_id, False)
 
 
 class DecodedURIResponse(BaseModel):
@@ -471,7 +478,7 @@ def resolve_hf_resource_group(
 
 @artifacts_api.get("/decode")
 def decode_uri(
-    uri: Optional[str] = None, id: Optional[str] = None
+    request: Request, uri: Optional[str] = None, id: Optional[str] = None
 ) -> Union[DecodedURIResponse, DecodedHfURIResponse]:
     if uri is None and id is None:
         raise HTTPException(
@@ -494,6 +501,11 @@ def decode_uri(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Artifact with id {id} not found",
             )
+        confirm_space_write_access(
+            request=request,
+            username_on_target=artifact.username,
+            space_name=artifact.space_name,
+        )
         uri = artifact.uri
     assert uri is not None, "uri is None"
     uriobj = URI.get_uri(uri)
@@ -570,7 +582,7 @@ def list_artifact_tags(
 
 # Needs to be after /tags and /decode GET, since it will match others otherwise.
 @artifacts_api.get("/{artifact_id}")
-def read_artifact(artifact_id: str) -> GetArtifactResponse:
+def read_artifact(request: Request, artifact_id: str) -> GetArtifactResponse:
     storage = get_admin_storage().artifact_registry
     item = storage.get_by_uuid(artifact_id)
     if item is None:
@@ -578,6 +590,11 @@ def read_artifact(artifact_id: str) -> GetArtifactResponse:
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
         )
     assert isinstance(item, ArtifactRegistration)
+    confirm_space_write_access(
+        request=request,
+        username_on_target=item.username,
+        space_name=item.space_name,
+    )
     resp = GetArtifactResponse(artifact=item)
     return resp
 
@@ -607,7 +624,7 @@ def _convert_status_str(status_str: str) -> ArtifactRegistrationStatus:
 def update_artifact(
     request: Request, artifact_id: str, update: ArtifactUpdateRequest
 ) -> ArtifactUpdateResponse:
-    read_resp = read_artifact(artifact_id)
+    read_resp = read_artifact(request, artifact_id)
     if read_resp is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

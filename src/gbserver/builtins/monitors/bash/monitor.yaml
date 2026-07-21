@@ -1,0 +1,50 @@
+# Shared monitor for the `log_monitor` type (Bash environment). Referenced by
+# bash steps via `ref: space://monitors/bash`. Streams every log line as a
+# MESSAGE_EVENT and detects the standard LLMB artifact markers (env:// PATH and
+# mem:// STATE forms). Steps that emit no artifact markers simply never fire
+# those events.
+type: log_monitor
+config:
+  event_configs:
+    - event_type: MESSAGE_EVENT
+      line_regex: .*
+      is_json: false
+      event_fields:
+        - field_name: msg
+          field_regex: .*
+    # env:// artifact: a line that BEGINS with
+    #   LLMB_ARTIFACT_ID:<output> LLMB_ARTIFACT_PATH:<path>
+    # registers <path> as the artifact for the named output. The `^` anchor is
+    # required because the command step echoes the command back ("command step
+    # start: <cmd>"); other steps print the marker at column 0, so the anchor
+    # still matches them.
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "^LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+      is_json: false
+      event_fields:
+        - field_name: binding_id
+          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+        - field_name: path
+          field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "path": "{{ fields.data.path }}" }'
+          is_json: true
+    # mem:// artifact: a line that BEGINS with
+    #   LLMB_ARTIFACT_ID:<output> LLMB_ARTIFACT_STATE:<value>
+    # registers <value> as the artifact's `state`; the mem:// store passes
+    # binding["state"] to the consumer verbatim (no path normalisation), so a
+    # value like a service URL survives intact. The PATH and STATE markers are
+    # mutually exclusive per line, so these two events never both match a line.
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "^LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_STATE:.*"
+      is_json: false
+      event_fields:
+        - field_name: binding_id
+          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+        - field_name: state
+          field_regex: "(?<=LLMB_ARTIFACT_STATE:).*"
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "state": "{{ fields.data.state }}" }'
+          is_json: true

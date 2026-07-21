@@ -35,12 +35,19 @@ assetstores:
       - mode: default          # HF snapshot is downloaded and bind-mounted into the container.
     push:
       - mode: default
-  - store_uri: space://assetstores/local/
-    load:
-      - mode: default
+  # Local filesystem (file: URIs) — the builtin file store. Docker implements
+  # push only (pushasset_filestore); it has no pullasset_filestore, so declare
+  # push and NOT load — otherwise a file: input would resolve here and fail.
+  - store_uri: space://assetstores/file/
     push:
       - mode: default
 ```
+
+> `space://assetstores/file/` is the bundled builtin File store (resolved via the
+> builtins base_uri). Unlike `env://`/`mem://`, it is **not** auto-registered — an
+> environment declares it here with the modes it implements. Docker implements
+> `file:` **push** (outputs) only; it has no `pullasset_filestore`, so it does not
+> declare `load`.
 
 `config.defaults` holds environment-wide fallbacks (`image`, `env`). Most knobs are set per step.
 
@@ -107,8 +114,10 @@ and translates it to Docker container limits:
 - **Workspace.** The step's asset directory is bind-mounted at `/gb-workspace` (read-write); write
   outputs there.
 - **Outputs.** Register artifacts with the standard `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>`
-  log line (see the [event_configs schema](README.md#event_configs--log-line-parsing-rules)). On push,
-  container paths under `/gb-workspace` are translated back to their host path automatically.
+  log line (or the `LLMB_ARTIFACT_STATE:<value>` form for `mem://` outputs). Docker steps reference the
+  shared `space://monitors/docker` monitor, which carries both rules; they are **unanchored** (docker
+  streams raw stdout). See [Monitoring and artifact events](../steps/monitoring-and-artifact-events.md).
+  On push, container paths under `/gb-workspace` are translated back to their host path automatically.
 
 ## See also
 

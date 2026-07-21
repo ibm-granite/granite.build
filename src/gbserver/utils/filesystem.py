@@ -181,7 +181,25 @@ def merge_file(
 
 
 def merge_dicts(base: Any, overlay: Any) -> Any:
-    """Merge the 2 dictionaries recursively into one."""
+    """Recursively merge ``overlay`` onto ``base``, returning a new value.
+
+    Nested dicts are merged key-by-key; for any non-dict value — including
+    **lists** — the ``overlay`` value replaces the ``base`` value wholesale (it is
+    not concatenated or element-merged). Keys present only in ``base`` are kept;
+    keys whose values differ in type are overwritten by ``overlay`` (logged). A
+    ``None`` overlay value is preserved rather than treated as a deletion.
+
+    Note the list-replace behaviour: callers that need to *append* to a base list
+    (e.g. a monitor's ``event_configs``) must handle that themselves rather than
+    rely on this merge — see ``resolve_monitor_config``'s ``extra_event_configs``.
+
+    Args:
+        base: The base value (typically a dict).
+        overlay: The overriding value merged on top of ``base``.
+
+    Returns:
+        The merged value: a new dict when both inputs are dicts, else ``overlay``.
+    """
     if isinstance(base, dict) and isinstance(overlay, dict):
         updated = {}
         for k in base:
@@ -206,6 +224,31 @@ def merge_dicts(base: Any, overlay: Any) -> Any:
             updated[k] = merge_dicts(base[k], overlay[k])
         return updated
     return overlay
+
+
+def find_files_shallowest_first(root: Union[str, Path], filename: str) -> List[str]:
+    """Recursively find ``filename`` under ``root``, shallowest match first.
+
+    Both step and monitor materialization sync a ``space://`` asset to a local
+    directory and then locate a named YAML in it (``step.yaml`` / ``monitor.yaml``),
+    which may sit directly under the sync dir or one level down. Raw
+    ``glob(..., recursive=True)`` order is filesystem-dependent, so callers taking
+    ``[0]`` would resolve nondeterministically if a stray nested copy existed.
+    Sorting by path depth (then lexicographically) makes the canonical top-level
+    file first and the choice deterministic.
+
+    Args:
+        root: Directory to search under.
+        filename: Exact file name to match (e.g. ``"monitor.yaml"``).
+
+    Returns:
+        Matching paths sorted shallowest-first (fewest path segments), ties broken
+        lexicographically. Empty if none match.
+    """
+    return sorted(
+        glob(str(Path(root) / "**" / filename), recursive=True),
+        key=lambda p: (len(Path(p).parts), p),
+    )
 
 
 def _get_matching_ignored_files(ignore_file: str) -> list[str]:

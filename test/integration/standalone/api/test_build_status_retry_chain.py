@@ -22,6 +22,7 @@ the chain, root-first, each with its target runs. ``/status2`` is retained as a
 backward-compatible alias.
 """
 
+from types import SimpleNamespace
 from typing import Self
 
 import pytest
@@ -33,6 +34,16 @@ from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 
 pytestmark = pytest.mark.standalone
+
+
+def _owner_request() -> SimpleNamespace:
+    """A fake Request whose caller is 'tester', the owner of every build in
+    this test's chains, so authorize_build_read_access lets the calls through."""
+    return SimpleNamespace(
+        state=SimpleNamespace(
+            data={"user": SimpleNamespace(login="tester", email="tester@example.com")}
+        )
+    )
 
 
 class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
@@ -101,7 +112,7 @@ class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
     def test_no_follow_returns_only_queried_build(self: Self):
         _root, retry, _root_a = self._make_chain()
 
-        resp = get_build_status(retry.uuid)
+        resp = get_build_status(_owner_request(), retry.uuid)
 
         assert resp.retry_chain is None
         assert resp.status.build.uuid == retry.uuid
@@ -110,7 +121,7 @@ class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
     def test_follow_returns_chain_root_first(self: Self):
         root, retry, root_a = self._make_chain()
 
-        resp = get_build_status(retry.uuid, follow_retries=True)
+        resp = get_build_status(_owner_request(), retry.uuid, follow_retries=True)
 
         assert resp.retry_chain is not None
         # Root first, then the retry — regardless of which member was queried.
@@ -129,8 +140,8 @@ class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
     def test_status2_alias_matches_status(self: Self):
         _root, retry, _root_a = self._make_chain()
 
-        primary = get_build_status(retry.uuid, follow_retries=True)
-        alias = get_build_status2(retry.uuid, follow_retries=True)
+        primary = get_build_status(_owner_request(), retry.uuid, follow_retries=True)
+        alias = get_build_status2(_owner_request(), retry.uuid, follow_retries=True)
 
         assert [m.build.uuid for m in alias.retry_chain] == [
             m.build.uuid for m in primary.retry_chain

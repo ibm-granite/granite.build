@@ -12,7 +12,7 @@ The `mcp__gbmcp__*` tools run as a local stdio process that Claude Code launches
 - **Start:** if not ready, `gbserver_start()` — launches `gbserver standalone` and blocks until reachable (idempotent; safe to call anytime). Returns `ready: true`, or an `error` / `log_tail` if it couldn't start.
 - **Stop:** `gbserver_stop()` — only when the user asks (see Lifecycle below).
 
-The loop: `gbserver_status` → `gbserver_start` if needed → drive builds. No server to start by hand, no endpoint to register, no reconnect.
+The loop: `gbserver_status` → `gbserver_start` if needed → drive builds. No server to start by hand, and no endpoint to register.
 
 ## Lifecycle — a long-lived dev service; leave it running
 

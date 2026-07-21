@@ -146,14 +146,17 @@ environment_configs:
             echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:${ARTIFACT_PATH}"
     monitors:
       skypilot_monitor:
-        type: skypilot_monitor
+        # Artifact convention (incl. binding) comes from the monitor library
+        # (space://monitors/skypilot); finetuning overrides the retrieval profile
+        # to `periodic` (so checkpoint events surface mid-run) and appends its
+        # per-step status banner.
+        ref: space://monitors/skypilot
         config:
           poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
           log_retrieval:
-            # Finetuning: pull incrementally so checkpoint events surface mid-run.
             mode: "{{ config.log_retrieval_mode | default('periodic') }}"
             interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
-          event_configs:
+          extra_event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "Step:\\s\\d+"
             event_fields:
@@ -161,18 +164,3 @@ environment_configs:
                 field_value_template: "RUNNING"
               - field_name: message
                 field_regex: "Step:.+"
-          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
-            event_fields:
-              - field_name: binding_id
-                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
-              - field_name: path
-                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
-                is_data: true
-              # Build the binding payload that downstream targets
-              # dereference as `{{ bindings.<input>.binding.path }}`.
-              # Without this the dispatched ArtifactEventPayload has
-              # binding=None and Jinja resolution fails.
-              - field_name: binding
-                field_value_template: '{ "path": "{{ fields.data.path }}" }'
-                is_json: true
