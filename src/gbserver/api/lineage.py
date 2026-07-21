@@ -40,6 +40,16 @@ from gbserver.lineage.openlineage_utils import parse_hf_url
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
+from gbserver.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+# search_lineage_events scans backend pages (see docstring there) to keep
+# offset/limit and total accurate for the caller's accessible runs rather
+# than the global unfiltered set. Bounds the worst case when a caller's
+# accessible fraction is a tiny sliver of a huge global result set.
+_SEARCH_SCAN_BACKEND_PAGE_SIZE = 100
+_SEARCH_SCAN_MAX_BACKEND_ITEMS = 2000
 
 
 def _uri_from_url(url: Optional[str]) -> Optional[str]:
@@ -167,35 +177,67 @@ def ingest_lineage_event(event: OpenLineageEvent):
 
 @lineage_api.post("/search")
 def search_lineage_events(request: Request, body: TagSearchRequest):
-    """Search lineage runs by tag. An empty tag list matches every run in the
-    shared lineage backend across all spaces, so results are filtered below
-    to the caller's own runs or spaces they belong to.
+    """Search lineage runs by tag.
+
+    An empty tag list matches every run in the shared lineage backend across
+    all spaces, so results are access-filtered below. search_lineage_by_tags
+    paginates the UNFILTERED backend set, so filtering only the caller's
+    requested page would (a) leak the global unfiltered count via `total`
+    and (b) break offset/limit pagination for the caller — a page could come
+    back near-empty after filtering even though the caller has many
+    accessible runs on other backend pages, so `count < limit` would no
+    longer reliably mean "no more results".
+
+    To keep pagination correct from the caller's point of view, this scans
+    backend pages (in fixed-size chunks, not the caller's own limit) up to
+    _SEARCH_SCAN_MAX_BACKEND_ITEMS, collecting every accessible run, then
+    applies the caller's offset/limit to that accessible set. `total` is
+    always the accessible count, never the global unfiltered count. If the
+    scan cap is hit before the backend is exhausted, `total`/`count` become
+    a lower bound on the true accessible count (logged when this happens).
     """
     service = _get_openlineage_service()
-    total, results = service.search_lineage_by_tags(body.tags, body.limit, body.offset)
 
-    filtered_results = []
-    for result in results:
-        run_facets = (result.get("run") or {}).get("facets") or {}
-        owner = (run_facets.get("job_details") or {}).get("owner", "")
-        space_name = (run_facets.get("tags") or {}).get("space_name", "")
-        has_access, _ = has_space_member_access(
-            request, username_on_target=owner, space_name=space_name
+    accessible: list[dict] = []
+    backend_offset = 0
+    backend_total: Optional[int] = None
+    while backend_total is None or backend_offset < backend_total:
+        if backend_offset >= _SEARCH_SCAN_MAX_BACKEND_ITEMS:
+            logger.warning(
+                "search_lineage_events: hit scan cap of %d backend items for "
+                "tags=%s; total/count are a lower bound on the true accessible count",
+                _SEARCH_SCAN_MAX_BACKEND_ITEMS,
+                body.tags,
+            )
+            break
+        backend_total, page_results = service.search_lineage_by_tags(
+            body.tags, _SEARCH_SCAN_BACKEND_PAGE_SIZE, backend_offset
         )
-        if not has_access:
-            continue
-        # job_input_params carries raw build.yaml step config and can embed
-        # credentials — redact it here too, same as get_build_jobstats, rather
-        # than widening who can read pipeline secrets via search.
-        run_facets.pop("job_input_params", None)
-        filtered_results.append(result)
+        if not page_results:
+            break
+        for result in page_results:
+            run_facets = (result.get("run") or {}).get("facets") or {}
+            owner = (run_facets.get("job_details") or {}).get("owner", "")
+            space_name = (run_facets.get("tags") or {}).get("space_name", "")
+            has_access, _ = has_space_member_access(
+                request, username_on_target=owner, space_name=space_name
+            )
+            if not has_access:
+                continue
+            # job_input_params carries raw build.yaml step config and can embed
+            # credentials — redact it here too, same as get_build_jobstats, rather
+            # than widening who can read pipeline secrets via search.
+            run_facets.pop("job_input_params", None)
+            accessible.append(result)
+        backend_offset += len(page_results)
 
+    page = accessible[body.offset : body.offset + body.limit]
     return PaginatedResponse(
-        count=len(filtered_results),
-        total=total,
+        count=len(page),
+        total=len(accessible),
         limit=body.limit,
         offset=body.offset,
-        runs=filtered_results,
+        runs=page,
     )
 
 
