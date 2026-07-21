@@ -83,7 +83,7 @@ class TestPullassetHfstore:
 
         assetstore = MagicMock(spec=Hfstore)
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         with (
@@ -112,7 +112,7 @@ class TestPullassetHfstore:
 
         assetstore = MagicMock(spec=Hfstore)
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         with (
@@ -143,7 +143,7 @@ class TestPullassetHfstore:
     async def test_rejects_wrong_assetstore_type(self, lsf_env, mock_hfuri):
         """pullasset_hfstore raises AssertionError if assetstore is not Hfstore."""
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         with pytest.raises(AssertionError, match="expected 'Hfstore'"):
@@ -155,7 +155,7 @@ class TestPullassetHfstore:
 
     @pytest.mark.asyncio
     async def test_rejects_wrong_mode(self, lsf_env, mock_hfuri):
-        """pullasset_hfstore raises AssertionError for non-hf_pull mode."""
+        """pullasset_hfstore raises ValueError for a non-'default' mode."""
         from gbserver.asset.hfstore import Hfstore
 
         assetstore = MagicMock(spec=Hfstore)
@@ -163,7 +163,7 @@ class TestPullassetHfstore:
         storeload_config.mode = "dmf_pull"
         storeload_config.config = {"cache_path": "/data/cache"}
 
-        with pytest.raises(AssertionError, match="Only 'hf_pull' mode"):
+        with pytest.raises(ValueError, match="supports only 'default'"):
             await lsf_env.pullasset_hfstore(
                 uri=mock_hfuri,
                 assetstore=assetstore,
@@ -238,6 +238,7 @@ class TestPushassetHfstore:
 
         assetstore = MagicMock(spec=Hfstore)
         storepush_config = MagicMock()
+        storepush_config.mode = "default"
         storepush_config.config = {"hf": {"private": False}}
 
         with (

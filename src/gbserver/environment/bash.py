@@ -274,11 +274,12 @@ class Bash(Environment):
         self: Self,
         uri: URI,
         binding: Optional[Any] = None,
-        # storeload_config: Optional[StoreLoad] = None,
+        storeload_config=None,
         # assetstore: Optional[Assetstore] = None,
         # secrets: Optional[dict] = None,
         **kwargs,
     ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
+        self._require_default_mode(storeload_config, uri)
         if isinstance(uri, str):
             uri = URI.get_uri(uri)
         assert uri.uri is not None, "the URI is None"
@@ -299,6 +300,7 @@ class Bash(Environment):
         **kwargs,
     ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
         """Download an HF model snapshot and bind as a local path."""
+        self._require_default_mode(storeload_config, uri)
         local_path = pull_asset_hfstore(uri, assetstore, storeload_config)
         binding_config = {BINDING_KEY: {"path": str(local_path)}}
         return binding_config, None
@@ -313,8 +315,10 @@ class Bash(Environment):
         binding: Any,
         uri: Optional[URI] = None,
         base_uri: Optional[URI] = None,
+        storepush_config=None,
         **kwargs,
     ) -> Any:
+        self._require_default_mode(storepush_config, uri if uri is not None else base_uri)
         if uri is None and base_uri is None:
             return None
         # The binding is the artifact location, either a {"path": ...} dict or a

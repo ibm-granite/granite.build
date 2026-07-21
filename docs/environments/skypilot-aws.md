@@ -92,9 +92,9 @@ config:
 assetstores:
   - store_uri: space://assetstores/hf
     load:
-      - mode: hf_pull
+      - mode: default
     push:
-      - mode: hf_push
+      - mode: default
 ```
 
 ## See also

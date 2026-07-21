@@ -1894,11 +1894,7 @@ class Skypilot(Environment):
             assetstore, Hfstore
         ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
 
-        if storeload_config is not None and storeload_config.mode not in (
-            None,
-            "hf_pull",
-        ):
-            raise ValueError(f"unsupported storeload mode: {storeload_config.mode}")
+        self._require_default_mode(storeload_config, uri)
 
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
         shared_workdir = (
@@ -1988,6 +1984,7 @@ class Skypilot(Environment):
         from gbcommon.uri.hf import HfURI
         from gbserver.asset.hfstore import Hfstore
 
+        self._require_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
@@ -2087,6 +2084,7 @@ class Skypilot(Environment):
         from gbcommon.uri.cos import CosURI
         from gbserver.asset.asset import Asset
 
+        self._require_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received for pushasset: {binding}")
 

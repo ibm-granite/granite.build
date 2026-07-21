@@ -54,6 +54,7 @@ async def test_pullasset_hfstore_returns_binding_with_path(bash_env, tmp_path):
 async def test_pullasset_hfstore_passes_cache_dir(bash_env, tmp_path):
     """Verify storeload_config is forwarded to pull_asset_hfstore."""
     storeload_config = MagicMock()
+    storeload_config.mode = "default"
     storeload_config.config = {"cache_path": str(tmp_path / "custom_cache")}
     uri = MagicMock()
     assetstore = MagicMock()

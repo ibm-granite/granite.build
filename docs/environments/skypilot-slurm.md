@@ -88,9 +88,9 @@ config:
 assetstores:
   - store_uri: space://assetstores/hf
     load:
-      - mode: hf_pull
+      - mode: default
     push:
-      - mode: hf_push
+      - mode: default
 ```
 
 A `command` step on this env runs directly on the compute node when no image is

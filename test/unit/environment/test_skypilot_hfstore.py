@@ -70,7 +70,7 @@ class TestPullassetHfstore:
         """pullasset_hfstore returns (binding_dict, BuildTargetStepConfig) with cache path."""
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         binding_config, step_config = await skypilot_env.pullasset_hfstore(
@@ -93,7 +93,7 @@ class TestPullassetHfstore:
         """pullasset_hfstore puts HF_TOKEN under config.launcher_config.envs."""
         assetstore = _hfstore_mock(token="my-secret-token")
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         _, step_config = await skypilot_env.pullasset_hfstore(
@@ -112,7 +112,7 @@ class TestPullassetHfstore:
         """No cache_path -> uses get_hf_cache_dir default (~/.cache/gbserver/hf)."""
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {}
 
         binding_config, _ = await skypilot_env.pullasset_hfstore(
@@ -129,7 +129,7 @@ class TestPullassetHfstore:
         """storeload_config.config.step_uri overrides the default builtin uri."""
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {
             "cache_path": "/data/cache",
             "step_uri": "file:///custom/hfpull",
@@ -151,7 +151,7 @@ class TestPullassetHfstore:
         env-keyed split (`builtins/steps/skypilot/hfpull/`) at lookup time."""
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         _, step_config = await skypilot_env.pullasset_hfstore(
@@ -166,7 +166,7 @@ class TestPullassetHfstore:
     async def test_rejects_wrong_assetstore_type(self, skypilot_env, mock_hfuri):
         """pullasset_hfstore raises AssertionError if assetstore is not Hfstore."""
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         with pytest.raises(AssertionError, match="expected 'Hfstore'"):
@@ -178,13 +178,13 @@ class TestPullassetHfstore:
 
     @pytest.mark.asyncio
     async def test_rejects_wrong_mode(self, skypilot_env, mock_hfuri):
-        """pullasset_hfstore raises ValueError for non-hf_pull mode."""
+        """pullasset_hfstore raises ValueError for a non-'default' mode."""
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
         storeload_config.mode = "dmf_pull"
         storeload_config.config = {"cache_path": "/data/cache"}
 
-        with pytest.raises(ValueError, match="unsupported storeload mode"):
+        with pytest.raises(ValueError, match="supports only 'default'"):
             await skypilot_env.pullasset_hfstore(
                 uri=mock_hfuri,
                 assetstore=assetstore,
@@ -211,7 +211,7 @@ class TestPullassetHfstore:
         )
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {}
 
         binding_config, _ = await env.pullasset_hfstore(
@@ -244,7 +244,7 @@ class TestPullassetHfstore:
         )
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/explicit/override"}
 
         binding_config, _ = await env.pullasset_hfstore(
@@ -402,6 +402,7 @@ class TestPushassetHfstore:
         assetstore = _hfstore_mock()
 
         storepush_config = MagicMock()
+        storepush_config.mode = "default"
         storepush_config.config = {"step_uri": "file:///custom/hfpush"}
 
         step_config = await skypilot_env.pushasset_hfstore(

@@ -49,6 +49,7 @@ def mock_assetstore():
 def hf_storeload_config(tmp_path):
     """storeload_config that scopes the HF cache under tmp_path."""
     config = MagicMock()
+    config.mode = "default"
     config.config = {"cache_path": str(tmp_path / "hf-cache")}
     return config
 
@@ -122,6 +123,7 @@ async def test_pullasset_hfstore_multiple_models_accumulate(docker_env, tmp_path
 
     cache = tmp_path / "hf-cache"
     sc = MagicMock()
+    sc.mode = "default"
     sc.config = {"cache_path": str(cache)}
 
     with patch.object(HfURI, "pull", return_value=True):

@@ -1160,6 +1160,24 @@ class Environment(ABC):
                 )
         return t1, t2
 
+    def _require_default_mode(self: Self, store_config: Any, uri: Any) -> None:
+        """Enforce that a non-k8s assetstore load/push declares no special mode.
+
+        Outside k8s the assetstore ``mode`` field is not meaningful: dispatch is
+        by store *type*, not ``mode``. This validator keeps the invariant that
+        only ``"default"`` (or unset) is accepted so that mode-specific values
+        (``hf_pull``, ``dmf_pull``, ``afm_mount``, ...) are confined to k8s.
+
+        :param store_config: the StoreLoad/StorePush entry (or None).
+        :param uri: the asset uri, for the error message.
+        :raises ValueError: if store_config.mode is set to anything but "default".
+        """
+        if store_config is not None and store_config.mode not in (None, "default"):
+            raise ValueError(
+                f"assetstore '{uri}' declares mode '{store_config.mode}', but "
+                f"{type(self).__name__} supports only 'default' (or unset)."
+            )
+
     def pullasset(
         self: Self, task_group: TaskGroup, uri: URI, binding: Optional[Any] = None
     ) -> Task[Tuple[Dict, Optional[BuildTargetStepConfig]]]:
@@ -1633,6 +1651,7 @@ class Environment(ABC):
         survives intact — unlike env://, which reconstructs the path from the
         URI string and would mangle it. Returns the consumer-facing binding.
         """
+        self._require_default_mode(storeload_config, uri)
         state = self.shared_mem_store.get(str(uri))
         logger.info("pullasset_memstore: uri=%s state=%s", uri, state)
         binding_config = {"binding": {"state": state}}
@@ -1657,6 +1676,7 @@ class Environment(ABC):
         to pass values (e.g. a service URL) that must not go through filesystem
         URI normalisation.
         """
+        self._require_default_mode(storepush_config, uri)
         if not uri:
             raise ValueError(
                 f"pushasset_memstore: empty uri for binding={binding_id!r}; "
@@ -1701,6 +1721,7 @@ class Environment(ABC):
         # avoids any import-order risk and matches the lazy-import style used here.
         from gbcommon.uri.env import EnvURI
 
+        self._require_default_mode(storeload_config, uri)
         assert uri is not None, "pullasset_envstore requires a non-empty env:// uri"
         envuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
         assert isinstance(envuri, EnvURI), f"invalid envuri: {envuri}"
@@ -1748,6 +1769,7 @@ class Environment(ABC):
             normally rejects these at load; this guards paths reaching the store
             another way).
         """
+        self._require_default_mode(storepush_config, uri)
         if not uri:
             raise ValueError(
                 f"pushasset_envstore: empty uri for binding={binding_id!r}; "

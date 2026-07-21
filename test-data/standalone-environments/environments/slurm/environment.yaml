@@ -19,7 +19,7 @@ config:
 assetstores:
   - store_uri: space://assetstores/hf/
     load:
-      - mode: hf_pull
+      - mode: default
   - store_uri: space://assetstores/cos/
     push:
       - mode: default

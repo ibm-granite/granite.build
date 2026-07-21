@@ -69,16 +69,19 @@ config:
 assetstores:
   - store_uri: space://assetstores/hf
     load:
-      - mode: hf_pull               # Queues the builtin hfpull step on its own SkyPilot cluster.
+      - mode: default              # Dispatch is by store type (hf) — queues the builtin hfpull step.
         config:
           cache_path: /tmp/hf_cache  # Optional. Defaults to {shared_workdir}/hf_cache when set,
                                      # else ~/.cache/gbserver/hf on the worker.
     push:
-      - mode: hf_push
+      - mode: default
 ```
 
+> Outside k8s, `mode` must be unset or `default` — dispatch is by store type, not `mode`. See
+> [asset stores](../asset-stores/README.md#load-and-push-modes).
+
 > `env://` (shared-filesystem, no-op push/pull) is registered implicitly for every environment, so it
-> needs no `assetstores` entry — add one only to pin a specific `env://` `load`/`push` `mode`.
+> needs no `assetstores` entry.
 
 ### `shared_workdir`
 
