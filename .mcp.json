@@ -1,8 +1,14 @@
 {
   "mcpServers": {
     "gbmcp": {
-      "type": "http",
-      "url": "http://127.0.0.1:${GBSERVER_PORT:-8080}/mcp/"
+      "type": "stdio",
+      "command": "bash",
+      "args": ["-c", "exec \"$CLAUDE_PROJECT_DIR/.venv/bin/gbmcp\""],
+      "env": {
+        "GB_ENVIRONMENT": "STANDALONE",
+        "GBSERVER_PORT": "${GBSERVER_PORT:-8080}",
+        "GBSERVER_HOST": "http://127.0.0.1:${GBSERVER_PORT:-8080}"
+      }
     }
   }
 }

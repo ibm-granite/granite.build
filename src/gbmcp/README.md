@@ -2,23 +2,40 @@
 
 `gbmcp` is the [FastMCP](https://github.com/jlowin/fastmcp) server that exposes Granite.build to AI agents (Claude Code, etc.). It is **bundled into the `granite.build` distribution** (this `src/gbmcp` package) and is **standalone-only**: it ships the tools that work against a local `gbserver standalone` backend and nothing else.
 
-## How it's served: mounted in `gbserver standalone`
+## How it's served: a stdio process the MCP client launches
 
-`gbserver standalone` mounts the gbmcp FastMCP app at **`/mcp`** on its own port — one process, one port, `GB_ENVIRONMENT=STANDALONE`. There is **no separate `gbmcp` process** in the normal flow.
+gbmcp runs as a **stdio** server: the MCP client (Claude Code, via a project `.mcp.json`) spawns `gbmcp` as a subprocess and speaks JSON-RPC over stdio. There is **no port and no HTTP endpoint** in the normal flow — the client owns the process, so the tools are available as soon as the session starts, whether or not the backend is running.
 
-- Mount point: `src/gbserver/api/root_api.py` — guarded (`is_standalone()` + `try: import gbmcp.server`), mounted before the `/` static mount, its FastMCP lifespan driven via `on_event` startup/shutdown (fail-safe: a gbmcp hiccup degrades `/mcp` only, never crashes gbserver).
-- Auth: **none.** gbserver's `AuthMiddleware` exempts `/mcp` (`_PUBLIC_PATH_PREFIXES` in `src/gbserver/api/auth.py`), and gbmcp is constructed with **no auth verifier** in standalone — so the client needs no `Authorization` header. (`get_github_token()` returns `None`; the local gbserver accepts unauthenticated localhost.)
-- Backend target: `gbserver standalone` auto-sets `GBSERVER_HOST` to its own port (`command_standalone.py`) so the mounted tools' `GBClient` reaches it on any port (it otherwise defaults to `:8080`).
-- A standalone `gbmcp` **console script** (`gbmcp.server:main`, HTTP on `GBMCP_PORT`, default 8000) also exists for running it as a separate process (point `GBSERVER_HOST` at its gbserver).
+- Entry point: `gbmcp = "gbmcp.server:main"` (`pyproject.toml`) runs `mcp.run(transport="stdio")`. `GBMCP_TRANSPORT=http` serves streamable-HTTP on `GBMCP_PORT` instead (rarely needed).
+- Backend: the build/space/secret tools call a **separate `gbserver standalone`** over REST at `GBSERVER_HOST` (set in `.mcp.json` `env`). gbmcp's launch does *not* start gbserver — bring it up with the `gbserver_start` tool (below). `build_job_log` reads the local `job.log` directly, so it needs no REST.
+- Auth: **none.** gbmcp is built with no auth verifier and talks to an unauthenticated localhost gbserver (`get_github_token()` returns `None`).
+- stdout is reserved for the JSON-RPC stream; all logs/banner go to stderr (`show_banner=False`).
+
+## Managing the gbserver backend
+
+Because gbmcp is a separate process, its tools respond even when gbserver is down — manage the backend through tools:
+
+- `gbserver_status()` — is it running **and** reachable?
+- `gbserver_start()` — launch `gbserver standalone` and wait until ready (idempotent). It finds the `gbserver` executable next to the running interpreter (same distribution), so the one-time install (`pip install 'granite.build[standalone]'`, or a checkout's `make standalone-venv`) is the only prerequisite.
+- `gbserver_stop()` — stop it.
+
+### Lifecycle — a long-lived dev service
+
+`gbserver standalone` is **not just a build backend**: the same process also serves the **web dashboard** (`http://127.0.0.1:<port>`) and the REST/analytics API. So it's treated like a dev server, not a per-build worker:
+
+- The agent **starts it on demand** (`gbserver_start`) and **leaves it running** after a build — so you can view results in the dashboard between runs, and the next build reuses the warm server.
+- The agent **stops it only when you ask** (`gbserver_stop`); it never stops it unprompted (that would tear down a dashboard you may be viewing). When it wraps up, it tells you the server is still running (with the dashboard URL) and lets you say when to stop it.
+- `gbserver_start` launches the server **detached** (`start_new_session`), so it **persists after the Claude Code session ends**, until `gbserver_stop` or a reboot. That's intentional (a dev service stays up); stop it for a clean slate.
 
 ## Monitoring a build
 
-Poll **`build_status(build_id)`**; done when `details.status` is `success` / `failed` / `cancelled` (lowercase; `submitted → pending → running → success`). Then `build_job_log(build_id)` for the output.
+Ensure `gbserver_status()` is `ready`, then poll **`build_status(build_id)`**; done when `details.status` is `success` / `failed` / `cancelled` (lowercase; `submitted → pending → running → success`). Then `build_job_log(build_id)` for the output.
 
-## The toolset (17, standalone-only)
+## The toolset (20, standalone-only)
 
 | Group | Tools |
 |---|---|
+| **gbserver** | `gbserver_status`, `gbserver_start`, `gbserver_stop` |
 | **Builds** | `build_start`, `build_list`, `build_status`, `build_describe`, `build_log`, `build_job_log`, `build_cancel` |
 | **Space** | `space_list` |
 | **Secrets** | `secret_list`, `secret_get`, `secret_create`, `secret_update`, `secret_delete` |
@@ -29,53 +46,53 @@ Poll **`build_status(build_id)`**; done when `details.status` is `success` / `fa
 ## Packaging (`pyproject.toml`)
 
 - `[tool.setuptools.packages.find].include` includes `"gbmcp*"`.
-- `[project.optional-dependencies]`: `mcp = ["fastmcp", "httpx>=0.27", "sqlalchemy[asyncio]>=2.0", "asyncpg>=0.29", "boto3"]`. The `standalone` extra pulls `granite.build[mcp]`, so a standalone install gets the MCP server by default; `[mcp]` on its own is the standalone-process option.
-- `[project.scripts]`: `gbmcp = "gbmcp.server:main"`.
+- `[project.optional-dependencies]`: `mcp = ["fastmcp", "httpx>=0.27", "sqlalchemy[asyncio]>=2.0", "asyncpg>=0.29", "boto3"]`. The `standalone` extra pulls `granite.build[mcp]`, so a standalone install includes gbmcp by default.
+- `[project.scripts]`: `gbmcp = "gbmcp.server:main"` (stdio).
 
-Install: `pip install 'granite.build[standalone]'` already includes the MCP server (use Python ≥3.11; the default 3.9 fails on `sqlite_database`). Once merged to `@stable`, `pip install "granite.build[standalone] @ git+https://github.com/ibm-granite/granite.build.git@stable"`.
+Install: `pip install 'granite.build[standalone]'` (Python ≥3.11; the default 3.9 fails on `sqlite_database`), or in a checkout `make standalone-venv PYTHON=python3.13`.
 
 ## Run
 
-**Mounted (recommended):** the MCP endpoint comes up with the server.
+In a repo checkout the root [`.mcp.json`](../../.mcp.json) registers `gbmcp` (stdio) for project scope — Claude Code auto-discovers it; approve it once. Then let the agent call `gbserver_start` to bring the backend up and drive builds. Nothing to start by hand, no endpoint to register, no reconnect.
+
+To register manually elsewhere:
 ```bash
-gbserver standalone --port 8080                 # serves REST + MCP at /mcp
-claude mcp add --scope project --transport http gbmcp "http://127.0.0.1:8080/mcp/"
+claude mcp add gbmcp \
+  --env GB_ENVIRONMENT=STANDALONE --env GBSERVER_HOST=http://127.0.0.1:8080 \
+  -- gbmcp
 ```
-
-> In a repo checkout you can skip the `claude mcp add` step: the root [`.mcp.json`](../../.mcp.json) registers `gbmcp` at `http://127.0.0.1:${GBSERVER_PORT:-8080}/mcp/` for project scope, and Claude Code auto-discovers it — just approve it once. `gbserver standalone` also prints the exact endpoint URL on startup.
-
-**Standalone process (alternative):**
-```bash
-GB_ENVIRONMENT=STANDALONE GBMCP_PORT=8000 gbmcp
-claude mcp add --scope project --transport http gbmcp "http://127.0.0.1:8000/mcp/"
-```
-
-> No `--header` / auth needed (standalone has no verifier). The `claude mcp add` port must match the server's port. Tools are namespaced by the registered name, i.e. `mcp__gbmcp__*`.
+`GB_ENVIRONMENT=STANDALONE` is required (else gbcli freezes PROD defaults at import); `GBSERVER_HOST` / `GBSERVER_PORT` point the tools at the gbserver they drive.
 
 ## Test
 
 ```bash
-# import smoke test
-GB_ENVIRONMENT=STANDALONE python -c "import gbmcp.server; print('import OK; mcp app:', hasattr(gbmcp.server, 'mcp'))"
+# import smoke test (stdout must stay clean for stdio)
+GB_ENVIRONMENT=STANDALONE python -c "import gbmcp.server; print('ok', hasattr(gbmcp.server, 'mcp'))"
 
-# HTTP: core + MCP endpoint (server on :PORT)
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1               # 200
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/mcp/                  # 406 (endpoint live; a bare GET lacks the SSE Accept)
-
-# Full MCP handshake + tool list (no auth header needed)
-A=(-H "Content-Type: application/json" -H "Accept: application/json, text/event-stream")
-SID=$(curl -s -D - -o /dev/null "${A[@]}" -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}' http://127.0.0.1:8080/mcp/ | tr -d '\r' | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}')
-curl -s -o /dev/null "${A[@]}" -H "mcp-session-id: $SID" -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' http://127.0.0.1:8080/mcp/
-curl -s "${A[@]}" -H "mcp-session-id: $SID" -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' http://127.0.0.1:8080/mcp/ | grep -o '"name":"[^"]*"'
+# stdio handshake: initialize -> tools/list
+GB_ENVIRONMENT=STANDALONE python - <<'EOF'
+import json, subprocess
+p = subprocess.Popen(["gbmcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                     stderr=subprocess.DEVNULL, text=True, bufsize=1)
+send = lambda o: (p.stdin.write(json.dumps(o) + "\n"), p.stdin.flush())
+send({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}})
+print("server:", json.loads(p.stdout.readline())["result"]["serverInfo"]["name"])
+send({"jsonrpc":"2.0","method":"notifications/initialized"})
+send({"jsonrpc":"2.0","id":2,"method":"tools/list"})
+while (line := p.stdout.readline()):
+    msg = json.loads(line)
+    if msg.get("id") == 2:
+        print("tools:", len(msg["result"]["tools"])); break
+p.terminate()
+EOF
 ```
 
-## What was removed vs. the standalone-separate `gbmcp` (and why)
+## What's here vs. removed
 
-Everything below was deleted from the source (not merely pruned at runtime), because it has no backend in standalone or is meaningless when mounted inside gbserver:
+gbmcp ships only the tools that work against a local gbserver. Deleted from the source (no backend in standalone, or meaningless here):
 
-- **gbserver lifecycle** (`gbserver_start/stop/status/logs`) — gbmcp runs *inside* gbserver; managing the host process is nonsensical, and `_stop` would kill the server hosting the tool. (`tools/gbserver/lifecycle.py` + `utils/gbserver_process.py` deleted; the one helper still used, `tail_lines`, was inlined into `build_job_log.py`.)
 - **Non-standalone / niche build tools** — `build_lineage`, `build_validate`, `build_diff`, `build_events`, `build_status_batch`, `build_init`, `build_update`.
 - **Remote/prod groups** — `docs_*`, `admin_log`, `artifact_*`, `template_*`, `step_*`, cross-build cache search (`build_leaderboard`/`search`/`compare`/`search_yaml`), `gb_dashboard` (`build_search_errors`/`get_ai_analysis`/`investigate`/`k8s_status`), `cos` (`build_check_cos_path`), `flight_plan` (`plan_*`), `sandbox_*`, gbserver-REST `build_files_*`.
 - The GHE OAuth variant and client scripts (`server_oauth.py`, `client*.py`, `smoke_test.py`, `services/ghe_auth.py`).
 
-The source contains **only standalone-usable tools** — there is no runtime tool pruning (`utils/lifespan.py` just initializes the build cache + telemetry DB). The `mcp.run(transport="http")` server is stateful-session by default; the mounted-in-gbserver path drives its session-manager lifespan and has been verified end-to-end with a real MCP `initialize` → `tools/list` handshake.
+The **gbserver lifecycle tools** (`gbserver_status/start/stop`) are central to the stdio model: gbmcp runs *outside* gbserver now, so starting/stopping the backend from a tool is safe and meaningful (they were removed when gbmcp was mounted *inside* gbserver, where `stop` would have killed its own host). There is no runtime tool pruning — `utils/lifespan.py` just initializes the build cache + telemetry DB. Verified end-to-end with a real stdio `initialize` → `tools/list` handshake.

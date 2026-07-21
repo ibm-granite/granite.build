@@ -2,7 +2,7 @@
 name: create-build
 description: Use a new Granite.build build.yaml for any compute workload — model training (SFT/LoRA/EPT), inference/serving, data generation/processing, evaluation, or arbitrary compute. Targets, inputs/outputs (artifacts), compute resources, and how they resolve within a space. The workload runs inline in the build.yaml via the built-in `command` step (no custom step directory to author). Use when asked to create, write, or scaffold a new build, build.yaml, or pipeline.
 argument-hint: "[build-name]"
-allowed-tools: Bash(ls *) Bash(test *) Bash(cat *) Bash(grep *) Bash(find *) Bash(curl *) mcp__gbmcp__info_health mcp__gbmcp__space_list mcp__gbmcp__build_start mcp__gbmcp__build_status mcp__gbmcp__build_log mcp__gbmcp__build_list mcp__gbmcp__build_describe mcp__gbmcp__build_job_log
+allowed-tools: Bash(ls *) Bash(test *) Bash(cat *) Bash(grep *) Bash(find *) Bash(curl *) mcp__gbmcp__gbserver_status mcp__gbmcp__gbserver_start mcp__gbmcp__space_list mcp__gbmcp__build_start mcp__gbmcp__build_status mcp__gbmcp__build_log mcp__gbmcp__build_list mcp__gbmcp__build_describe mcp__gbmcp__build_job_log
 ---
 
 # Author a Granite.build build
@@ -41,7 +41,7 @@ The standalone space ships **tested, purpose-built steps**. If one matches your 
 These reflect how this environment actually behaves. Follow them unless the user says otherwise.
 
 - **Default to standalone.** Assume `GB_ENVIRONMENT=STANDALONE`, the **bash** compute backend, and SQLite. No cloud creds, no Kubernetes. Everything below targets that backend.
-- **All build actions go through the `mcp__gbmcp__*` tools, not the `gb` CLI.** If they aren't responding, the **`run-gbserver`** skill brings gbserver up.
+- **All build actions go through the `mcp__gbmcp__*` tools, not the `gb` CLI.** The tools are always attached; if a build call reports the backend is unreachable, `gbserver_start()` brings it up (see **`run-gbserver`**).
 - **The workload lives inline in the build.yaml.** Put the command (and any script it needs, via a heredoc) in the `command` step's `config.bash_config.command`. Do **not** create a step directory or a separate script file for the common case.
 - **Compose with targets as the workload needs.** A workload is one or more **targets**, each with one or more **steps** (here, `command` steps). Steps within a target run sequentially and share a filesystem; targets can be wired with `binding` (a downstream target's input bound to an upstream target's output). A single target with one `command` step is the simplest shape.
 - **The command sets up its own runtime.** The bash env hands the command a clean environment (no PATH/HOME). The command establishes its own PATH and, if it needs Python deps (torch/trl/peft/…), builds its own venv inline (idempotently) before importing them — see "The command step + heredoc."
@@ -49,7 +49,7 @@ These reflect how this environment actually behaves. Follow them unless the user
 
 ## Before you start
 
-Confirm the backend is up with `info_health()`. In standalone **every bundled tool is available** — there's nothing pruned to work around. (Tools not responding? The **`run-gbserver`** skill brings gbserver up.)
+Check the backend with `gbserver_status()`; if it isn't `ready`, call `gbserver_start()` (see **`run-gbserver`**). In standalone **every bundled tool is available** — nothing is pruned to work around.
 
 ## Discover what already exists (don't invent URIs)
 
@@ -224,7 +224,7 @@ Fetch it via MCP with `build_job_log(build_id)` — it returns that `job.log`'s 
 
 ## Authoring procedure (checklist)
 
-1. `info_health()` to confirm the backend is up. (If the tools aren't there, bring gbserver up via **`run-gbserver`**.)
+1. `gbserver_status()`; if it isn't `ready`, `gbserver_start()` to bring the backend up (see **`run-gbserver`**).
 2. Discover the space and its `bash` environment by reading `<assets>/` (`space_list()` for the space name); confirm `space://steps/command` resolves.
 3. Write the build.yaml with the user's project: one target, one `command` step. Put the workload in `config.bash_config.command` (shell for simple cases; a heredoc that writes+runs `run.py` for Python). Declare inputs (`hf:///…` model), outputs (registered by the `LLMB_ARTIFACT_ID` line), and per-run params in `config.bash.env`. No step directory to author.
 4. Submit with **`build_start(file_content=<yaml text>)`**. Monitor with `build_status(build_id)`; done once it leaves `build_list()`. Read `build_job_log(build_id)` to confirm the workload actually ran (not just that status flipped to SUCCESS).

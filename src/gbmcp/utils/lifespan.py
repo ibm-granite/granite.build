@@ -1,7 +1,7 @@
 """Server lifespan: build-cache + telemetry init/teardown.
 
-gbmcp is standalone-only (it ships bundled in granite.build and is mounted at
-/mcp by `gbserver standalone`). The source contains only standalone-usable tools,
+gbmcp is standalone-only (it ships bundled in granite.build and runs as a local
+stdio process the MCP client launches). The source contains only standalone-usable tools,
 so there is no runtime tool pruning — this lifespan just initializes the build
 cache and telemetry DB (both best-effort, degrading gracefully when their
 Postgres backends aren't configured) and tears them down on shutdown.

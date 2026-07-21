@@ -54,8 +54,9 @@ def is_gbserver_reachable(timeout: float = 2.0) -> bool:
 def _actionable_message() -> str:
     if is_standalone():
         hint = (
-            "gbmcp is mounted inside gbserver standalone, so this is unexpected "
-            "if the tools are responding at all — check the gbserver process/logs."
+            "gbmcp runs as a separate process from gbserver, so the backend is "
+            "likely just not started — call gbserver_status, then gbserver_start "
+            "if it isn't ready."
         )
     else:
         hint = (

@@ -74,7 +74,7 @@ dependencies = [
 standalone = [
     "nats-py",
     "granite.build[analytics]",
-    # gbmcp (mounted at /mcp in `gbserver standalone`) is a standalone feature,
+    # gbmcp (the bundled stdio MCP server) is a standalone feature,
     # so ship it by default — `pip install 'granite.build[standalone]'` and
     # `make standalone-venv` both get the MCP server with no extra step. The
     # only deps beyond the analytics overlap are fastmcp + boto3.
@@ -160,7 +160,8 @@ llmbuild = "gbcli.cli:gbcli"
 gbtest = "libgbtest.buildrunner.gbtest:main"
 llmb = "gbcli.cli:gbcli"
 lamb = "gbcli.cli:gbcli"
-# gbmcp: the FastMCP server (requires the `mcp` extra). HTTP transport.
+# gbmcp: the FastMCP server (requires the `mcp` extra). stdio transport by
+# default (launched by the MCP client); GBMCP_TRANSPORT=http for HTTP.
 gbmcp = "gbmcp.server:main"
 
 [project.urls]

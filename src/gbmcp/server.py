@@ -19,14 +19,20 @@ from gbmcp.utils.lifespan import lifespan
 logger = get_logger(__name__)
 
 MCP_INSTRUCTIONS = """
-This is the MCP server for Granite.build (a.k.a. LLM.build) in **standalone** mode. gbmcp is bundled into gbserver and served at /mcp by `gbserver standalone` — the backend is up whenever these tools respond.
+This is the MCP server for Granite.build (a.k.a. LLM.build) in **standalone** mode. gbmcp runs as a local process; the gbserver backend it drives is a *separate* process reached over REST. These tools responding does NOT mean the backend is up — check gbserver_status, and gbserver_start it if needed, before build tools.
 
 ## Typical workflow
-Author a build.yaml (see the create-build guidance), then:
+Ensure the backend is up (gbserver_status; gbserver_start if not), author a build.yaml (see the create-build guidance), then:
   build_start(file_content) -> build_status(build_id) -> build_log / build_job_log(build_id)
 Use build_list to find builds and build_describe to inspect a build's definition.
 
 ## Tools
+
+### gbserver backend (standalone process management)
+- gbserver_status: is the local gbserver process up AND reachable — call before build tools if unsure
+- gbserver_start: start gbserver standalone if not running; waits until ready (idempotent)
+- gbserver_stop: stop the local gbserver for this port (idempotent)
+Lifecycle: gbserver standalone also serves the web dashboard + REST API, so treat it as a long-lived dev service — start it when needed and LEAVE IT RUNNING (the dashboard stays viewable at http://127.0.0.1:<port> and builds reuse the warm server). gbserver_stop only when the user asks; never stop it unprompted.
 
 ### Builds
 - build_start(file_content, space, params): submit a build.yaml (as text) to run; returns a build_id
@@ -65,7 +71,7 @@ Strategy: wc=True first, then grep/tail to fetch only the relevant portion.
 - A build step runs with a clean env (no PATH/HOME); step scripts set PATH from $LLMB_BASH_PYTHON_DIR and build their own venv.
 - HF auth: for hf:// model/dataset inputs, set HF_TOKEN in the gbserver environment — validate/download hit the HF Hub API and can rate-limit (HTTP 429) without a token. (hf:// -> https:// for browsing; models also drop the 'models/' segment.)
 - space is an optional project/namespace scope; omit it to use the default space.
-- if a tool fails unexpectedly, call info_gb_version or space_list first to verify connectivity.
+- if a build tool fails or times out, call gbserver_status; if the backend isn't running, gbserver_start it. Leave it running afterward (it also serves the dashboard); when you finish, tell the user it's still running (dashboard at http://127.0.0.1:<port>) and to say when they want it stopped — gbserver_stop only if they ask.
 """
 
 configureGBWorkingEnv()
@@ -77,23 +83,29 @@ mcp = FastMCP(
     providers=[
         FileSystemProvider(root=Path(__file__).parent / "tools"),
     ],
-    # No auth verifier: gbmcp is standalone-only and mounted inside gbserver
-    # (whose AuthMiddleware exempts /mcp), so no bearer token is required.
+    # No auth verifier: gbmcp is a local stdio process talking to an
+    # unauthenticated localhost gbserver (get_github_token() returns None).
     lifespan=lifespan,
     middleware=[TelemetryMiddleware()],
 )
 
 
 def main() -> None:
-    """Console-script entry point (``gbmcp``). Serves the MCP over HTTP.
+    """Console-script entry point (``gbmcp``).
 
-    Port comes from ``GBMCP_PORT`` (default 8000) so a bundled install can be
-    pointed at a per-job port without code changes.
+    Defaults to stdio — the MCP client (Claude Code, via ``.mcp.json``) launches
+    gbmcp as a subprocess and speaks JSON-RPC over stdio, so stdout must stay
+    pure (FastMCP logs + banner already go to stderr; show_banner=False also
+    skips its startup version-check network call). Set ``GBMCP_TRANSPORT=http``
+    to serve streamable-HTTP on ``GBMCP_PORT`` (default 8000) instead.
     """
     import os
 
-    port = int(os.environ.get("GBMCP_PORT", "8000"))
-    mcp.run(transport="http", port=port, stateless_http=True)
+    if os.environ.get("GBMCP_TRANSPORT", "stdio").lower() == "http":
+        port = int(os.environ.get("GBMCP_PORT", "8000"))
+        mcp.run(transport="http", port=port, stateless_http=True)
+    else:
+        mcp.run(transport="stdio", show_banner=False)
 
 
 if __name__ == "__main__":

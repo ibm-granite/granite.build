@@ -45,7 +45,6 @@ from gbserver.types.constants import (
     gbserver_ui_dir,
 )
 from gbserver.utils.logger import get_logger
-from gbcommon.types.gbenvconfig import is_standalone
 
 logger = get_logger(__name__)
 
@@ -129,52 +128,6 @@ if _ANALYTICS_ENABLED:
         )
 else:
     logger.info("Analytics not enabled — /api/analytics not mounted")
-
-
-# ── gbmcp MCP server (standalone only; optional `mcp` extra) ────────────────────
-# In standalone, mount the bundled gbmcp FastMCP app at /mcp so `gbserver
-# standalone` also serves the MCP endpoint — same process, same port, same
-# GB_ENVIRONMENT=STANDALONE. gbmcp is standalone-only now, and its own lifespan
-# prunes the tools that don't apply here, so the mounted server exposes just the
-# standalone toolset. Guarded so a base install (no `mcp` extra) or a gbmcp
-# import/lifespan hiccup can never take down the core server. Mounted before the
-# "/" static mount below so /mcp wins the route match.
-_MCP_APP = None
-if is_standalone():
-    try:
-        from gbmcp.server import mcp as _gbmcp
-
-        _MCP_APP = _gbmcp.http_app(path="/")
-    except Exception as exc:  # missing `mcp` extra, import error, etc.
-        logger.info("gbmcp not mounted at /mcp: %s", exc)
-
-if _MCP_APP is not None:
-    root_api.mount("/mcp", _MCP_APP)
-    logger.info("Mounted gbmcp MCP server at /mcp (standalone)")
-
-    _mcp_lifespan_cm = None
-
-    @root_api.on_event("startup")
-    async def _start_gbmcp() -> None:
-        # Drive the FastMCP app's lifespan (starts its StreamableHTTP session
-        # manager) alongside gbserver's own startup. Fail-safe: a gbmcp startup
-        # error degrades /mcp only — it does not crash gbserver.
-        global _mcp_lifespan_cm
-        try:
-            _mcp_lifespan_cm = _MCP_APP.lifespan(_MCP_APP)
-            await _mcp_lifespan_cm.__aenter__()
-            logger.info("gbmcp session manager started")
-        except Exception:
-            _mcp_lifespan_cm = None
-            logger.exception("gbmcp failed to start — /mcp will be unavailable")
-
-    @root_api.on_event("shutdown")
-    async def _stop_gbmcp() -> None:
-        if _mcp_lifespan_cm is not None:
-            try:
-                await _mcp_lifespan_cm.__aexit__(None, None, None)
-            except Exception:
-                logger.exception("gbmcp shutdown error")
 
 
 def _is_rsc_request(request: Request) -> bool:

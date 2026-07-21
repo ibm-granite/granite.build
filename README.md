@@ -363,24 +363,23 @@ Each skill is a `SKILL.md` (`name` + `description` + instructions) in the portab
 
 ## Coding agent tools (MCP)
 
-Skills teach an agent *how* to work with granite.build; **`gbmcp`** lets it *act* — start, monitor, and cancel builds and inspect spaces and secrets against your running server, over the [Model Context Protocol](https://modelcontextprotocol.io). It's the [FastMCP](https://github.com/jlowin/fastmcp) server bundled at [`src/gbmcp/`](src/gbmcp/), and `gbserver standalone` **mounts it at `/mcp` on its own port** — same process, same port, no separate command.
+Skills teach an agent *how* to work with granite.build; **`gbmcp`** lets it *act* — start/stop the backend, run, monitor, and cancel builds, and inspect spaces and secrets, over the [Model Context Protocol](https://modelcontextprotocol.io). It's the [FastMCP](https://github.com/jlowin/fastmcp) server bundled at [`src/gbmcp/`](src/gbmcp/), and it runs as a **local stdio process that Claude Code launches** — no port, no endpoint to register, and it connects at session start whether or not the backend is running.
 
-Setup is zero-config in a checkout. The `standalone` install includes it, and this repo ships a project-scope [`.mcp.json`](.mcp.json) that **Claude Code discovers automatically** when your working directory is inside the repo — just approve it once:
+Setup is zero-config in a checkout. The `standalone` install includes gbmcp, and this repo ships a project-scope [`.mcp.json`](.mcp.json) that **Claude Code discovers automatically** when your working directory is inside the repo — just approve it once:
 
 ```bash
-make standalone-venv PYTHON=python3.13     # includes the MCP server
-gbserver standalone                        # serves REST + UI + /mcp on :8080
+make standalone-venv PYTHON=python3.13     # installs gbmcp + gbserver
 # open Claude Code in the repo, approve the "gbmcp" server, then ask it to
-# "list my builds" or "start the standalone quickstart build"
+# "list my builds" or "run the standalone quickstart build"
 ```
 
-On startup `gbserver standalone` logs the MCP endpoint (with the actual port) — or tells you the `mcp` extra is missing — so you always know whether `/mcp` is live. No auth or `Authorization` header is needed: `/mcp` is localhost-only and unauthenticated in standalone, matching gbserver's own localhost policy.
+You don't start gbserver by hand: the agent calls `gbserver_start` (which launches `gbserver standalone` and waits until it's ready) the first time it needs the backend. No auth is needed — gbmcp talks to an unauthenticated localhost gbserver.
 
-The server exposes 17 tools, grouped as **Builds** (`build_start`, `build_list`, `build_status`, `build_describe`, `build_log`, `build_job_log`, `build_cancel`), **Space** (`space_list`), **Secrets** (`secret_list/get/create/update/delete` — values never flow through the agent), and **Info** (health, versions, environment). Secret reads/writes return a `gb` command for you to run yourself, so secret values never transit the agent.
+The server exposes 20 tools: **gbserver** (`gbserver_status`, `gbserver_start`, `gbserver_stop`), **Builds** (`build_start`, `build_list`, `build_status`, `build_describe`, `build_log`, `build_job_log`, `build_cancel`), **Space** (`space_list`), **Secrets** (`secret_list/get/create/update/delete` — values never flow through the agent), and **Info** (health, versions, environment).
 
-> **Non-default port:** `.mcp.json` targets `http://127.0.0.1:${GBSERVER_PORT:-8080}/mcp/`. If you run `gbserver standalone --port <p>`, export `GBSERVER_PORT=<p>` (or edit the URL) so the agent connects to the right port — the startup log always prints the correct URL.
+> **Non-default port:** `.mcp.json` passes `GBSERVER_PORT` / `GBSERVER_HOST` to gbmcp via `env`. If you run on a non-default port, `export GBSERVER_PORT=<p>` before launching Claude Code so both the tools and `gbserver_start` use it.
 
-See [`src/gbmcp/README.md`](src/gbmcp/README.md) for the full toolset, the standalone-process alternative, and the MCP handshake test.
+See [`src/gbmcp/README.md`](src/gbmcp/README.md) for the full toolset, backend management, and the stdio handshake test.
 
 ## Try the demos
 

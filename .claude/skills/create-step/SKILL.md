@@ -2,7 +2,7 @@
 name: create-step
 description: Author a full, reusable Granite.build custom step — a step directory (step.yaml + bash_scripts/) referenced from a build.yaml by a file:// URI. Use this (instead of create-build's inline command+heredoc) when you have owned/multi-file code, a step you want to version and reuse across builds, or need per-environment launch behavior. Covers the step.yaml launch contract, the artifact monitor, the runtime env-var contract, and per-compute-environment differences.
 argument-hint: "[step-name]"
-allowed-tools: Bash(ls *) Bash(test *) Bash(cat *) Bash(grep *) Bash(find *) Bash(mkdir *) Bash(chmod *) mcp__gbmcp__info_health mcp__gbmcp__space_list mcp__gbmcp__build_start mcp__gbmcp__build_status mcp__gbmcp__build_log mcp__gbmcp__build_list mcp__gbmcp__build_describe mcp__gbmcp__build_job_log
+allowed-tools: Bash(ls *) Bash(test *) Bash(cat *) Bash(grep *) Bash(find *) Bash(mkdir *) Bash(chmod *) mcp__gbmcp__gbserver_status mcp__gbmcp__gbserver_start mcp__gbmcp__space_list mcp__gbmcp__build_start mcp__gbmcp__build_status mcp__gbmcp__build_log mcp__gbmcp__build_list mcp__gbmcp__build_describe mcp__gbmcp__build_job_log
 ---
 
 # Author a Granite.build custom step
@@ -18,7 +18,7 @@ A **step** is the reusable unit of execution: a directory containing a `step.yam
 
 **Before authoring anything, check whether a step already ships for your workload** (`inference`, `lora-finetune`, `inference-lora`, …) — see `create-build`'s **`references/steps.md`**. If one fits, don't author a duplicate; just reference `space://steps/<name>`.
 
-(Build actions go through the `mcp__gbmcp__*` tools, not the `gb` CLI; if they aren't responding, the **`run-gbserver`** skill brings gbserver up.)
+(Build actions go through the `mcp__gbmcp__*` tools, not the `gb` CLI; the tools are always attached — if a build call reports the backend is unreachable, `gbserver_start()` brings it up. See **`run-gbserver`**.)
 
 ## The distinction: steps are referenced by a `file://` URI
 
@@ -173,7 +173,7 @@ There is **no `build_validate` tool**; validation never proved a build runs anyw
 
 ## Checklist
 
-1. `info_health()` to confirm the backend is up (if the tools aren't there, bring gbserver up via **`run-gbserver`**).
+1. `gbserver_status()`; if it isn't `ready`, `gbserver_start()` to bring the backend up (see **`run-gbserver`**).
 2. Create `<project>/steps/<name>/step.yaml` (Bash/`nohup` launcher + artifact monitor) and `bash_scripts/<name>/` (script that owns its venv, reads inputs/params from env, emits the `LLMB_ARTIFACT_ID` line). Make scripts executable.
 3. Reference it in the build.yaml by an **absolute `file:///…` `step_uri`**; declare inputs/outputs; per-run params in `config.bash.env`.
 4. Submit with `build_start(file_content=<yaml text>)`. Monitor to SUCCESS; read `build_job_log(build_id)` to confirm it actually ran.
