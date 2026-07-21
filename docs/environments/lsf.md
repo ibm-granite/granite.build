@@ -52,7 +52,7 @@ config:
 
 assetstores:
   - store_uri: hf://huggingface.co/my-org
-    load:
+    pull:
       - mode: default              # Dispatch is by store type (hf) — injects the hfpull built-in step.
         config:
           cache_path: /gpfs/cache/hf    # Required. Cluster path where HF data is cached.
@@ -62,7 +62,7 @@ assetstores:
         config:
           step_uri: space://steps/hfpush
   - store_uri: cos://my-bucket
-    load:
+    pull:
       - mode: default              # Dispatch is by store type (cos) — injects the cosrclone step.
         config:
           cache_path: /gpfs/cache/cos   # Required. Cluster path where COS data is downloaded.
@@ -135,7 +135,7 @@ config:
     max_retries: 3
 assetstores:
   - store_uri: hf://huggingface.co/my-org
-    load:
+    pull:
       - mode: default
         config:
           cache_path: /gpfs/cache/hf

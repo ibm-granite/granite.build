@@ -68,7 +68,7 @@ config:
 
 assetstores:
   - store_uri: space://assetstores/hf
-    load:
+    pull:
       - mode: default              # Dispatch is by store type (hf) — queues the builtin hfpull step.
         config:
           cache_path: /tmp/hf_cache  # Optional. Defaults to {shared_workdir}/hf_cache when set,

@@ -23,7 +23,7 @@ config:
         UserKnownHostsFile: /dev/null
 assetstores:
   - store_uri: space://assetstores/hf
-    load:
+    pull:
       - mode: default
         config:
           cache_path: /shared/hf_cache

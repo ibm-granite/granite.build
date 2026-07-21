@@ -11,7 +11,7 @@ config:
     volume_mount_path: "/workspace"
 assetstores:
   - store_uri: space://assetstores/s3/
-    load:
+    pull:
       - mode: default
     push:
       - mode: default

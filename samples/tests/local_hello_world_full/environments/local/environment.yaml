@@ -4,7 +4,7 @@ config: {}
 assetstores:
   - store_uri: file:assetstores/local/
     # TODO: relative paths should be relative to the file they are present in, not relative to PWD
-    load:
+    pull:
       - mode: default
     push:
       - mode: default

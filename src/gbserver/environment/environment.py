@@ -658,7 +658,7 @@ class Environment(ABC):
             return
         self.supported_assetstores[assetstore] = AssetStoreEnvironmentConfig(
             store_uri="env://",
-            load=[StoreLoad(mode="default")],
+            pull=[StoreLoad(mode="default")],
             push=[StorePush(mode="default")],
         )
 
@@ -747,7 +747,7 @@ class Environment(ABC):
             return
         self.supported_assetstores[assetstore] = AssetStoreEnvironmentConfig(
             store_uri="mem://",
-            load=[StoreLoad(mode="default")],
+            pull=[StoreLoad(mode="default")],
             push=[StorePush(mode="default")],
         )
 
@@ -1204,10 +1204,10 @@ class Environment(ABC):
             assetstore_type = assetstore.type.lower()
             try:
                 storeload_config = (
-                    assetstoreenv_config.load[0]
+                    assetstoreenv_config.pull[0]
                     if (
-                        assetstoreenv_config.load is not None
-                        and len(assetstoreenv_config.load) > 0
+                        assetstoreenv_config.pull is not None
+                        and len(assetstoreenv_config.pull) > 0
                     )
                     else None
                 )

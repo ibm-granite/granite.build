@@ -4,13 +4,13 @@ config: {}
 assetstores:
   # HuggingFace Hub — load models/datasets and push artifacts via hf:// URIs.
   - store_uri: space://assetstores/hf/
-    load:
+    pull:
       - mode: default
     push:
       - mode: default
   # Local filesystem — load/push artifacts via file: URIs (builtin file store).
   - store_uri: space://assetstores/file/
-    load:
+    pull:
       - mode: default
     push:
       - mode: default

@@ -8,7 +8,7 @@ config:
         claimName: gb-afm-read-only
 assetstores:
   - store_uri: git+ssh://github.ibm.com/granite-dot-build/assets.git#subdirectory=assetstores/lh-staging
-    load:
+    pull:
       - mode: afm_mount
         config:
           pvc: gb-afm-read-only

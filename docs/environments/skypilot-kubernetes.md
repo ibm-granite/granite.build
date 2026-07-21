@@ -55,7 +55,7 @@ config:
   idle_minutes_to_autostop: 0
 assetstores:
   - store_uri: space://assetstores/hf
-    load:
+    pull:
       - mode: default
         config:
           cache_path: /tmp/hf_cache
