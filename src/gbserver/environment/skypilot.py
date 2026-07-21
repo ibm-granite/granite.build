@@ -516,7 +516,9 @@ class Skypilot(Environment):
         except ValueError:
             return None
 
-    def _resources_from_compute_config(self: Self, compute_config: Dict) -> Dict:
+    def _resources_from_compute_config(
+        self: Self, compute_config: Dict, cloud: str = ""
+    ) -> Dict:
         """Derive a ``sky.Resources`` floor from a step's ``compute_config``.
 
         Reads the raw dict (NOT the :class:`ComputeConfig` model, whose defaults
@@ -526,6 +528,7 @@ class Skypilot(Environment):
         that crashes SkyPilot's LSF cloud.
 
         :param compute_config: the step's ``config.compute_config`` dict.
+        :param cloud: the resolved SkyPilot cloud (e.g. ``"slurm"``, ``"k8s"``).
         :returns: a dict optionally containing ``cpus`` (int, when
             ``num_cpus_per_node`` > 0) and ``memory`` (float GiB, when
             ``total_memory_per_node`` parses).
@@ -534,9 +537,17 @@ class Skypilot(Environment):
         num_cpus = compute_config.get("num_cpus_per_node", 0)
         if isinstance(num_cpus, int) and num_cpus > 0:
             resources["cpus"] = num_cpus
-        memory = self._parse_memory_gib(compute_config.get("total_memory_per_node", ""))
-        if memory is not None:
-            resources["memory"] = memory
+        # SLURM clusters commonly don't track memory as a consumable resource
+        # (RealMemory unset in slurm.conf), so a --memory request fails at resource
+        # matching ("Catalog does not contain any instances satisfying ..."). Skip
+        # the compute_config memory floor on slurm; an explicit launcher/build
+        # resources.memory still applies (and works where RealMemory is configured).
+        if cloud != "slurm":
+            memory = self._parse_memory_gib(
+                compute_config.get("total_memory_per_node", "")
+            )
+            if memory is not None:
+                resources["memory"] = memory
         return resources
 
     async def launch_skypilot(
@@ -627,7 +638,7 @@ class Skypilot(Environment):
             # (config.)launcher_config.resources.accelerators.
             compute_config = config.get("compute_config", {}) or {}
             res_config = {
-                **self._resources_from_compute_config(compute_config),
+                **self._resources_from_compute_config(compute_config, cloud=cloud),
                 **launcher_config.get("resources", {}),
                 **config.get("launcher_config", {}).get("resources", {}),
             }

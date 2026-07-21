@@ -316,6 +316,15 @@ class TestSkypilotComputeConfigResources:
         )
         # empty compute_config yields no floor.
         assert env._resources_from_compute_config({}) == {}
+        # On slurm the memory floor is dropped (SLURM often doesn't track memory
+        # as a consumable resource), but cpus is still emitted.
+        assert env._resources_from_compute_config(
+            {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"}, cloud="slurm"
+        ) == {"cpus": 3}
+        # Non-slurm clouds keep the memory floor.
+        assert env._resources_from_compute_config(
+            {"total_memory_per_node": "2Gi"}, cloud="k8s"
+        ) == {"memory": 2.0}
 
 
 class TestMonitorSkypilotMonitor:
