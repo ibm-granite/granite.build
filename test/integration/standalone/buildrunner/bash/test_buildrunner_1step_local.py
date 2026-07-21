@@ -19,13 +19,18 @@ from libgbtest.buildrunner.buildtest import (
     AbstractYamlBuildRunnerTest,
     get_test_data_dir_for,
 )
+from libgbtest.constants import extended_testing_only
 
 pytestmark = pytest.mark.standalone
 
 
+# Extended/nightly test: the fixture performs a REAL HuggingFace pull + push
+# (using the CI HF_TOKEN secret), so it can't run in the fast/mock suites — it is
+# excluded from quick-tests via this marker and runs under `make extended-tests`.
+@extended_testing_only
 @pytest.mark.xdist_group(name="buildtest_local")
 class TestBuildRunner1StepLocal(AbstractYamlBuildRunnerTest):
-    """Runs a barebone local build flow exercising env:// input + output."""
+    """Local build flow exercising env:// and hf:// input + output on Bash."""
 
     def _get_yaml_spec_dir(self) -> Path:
         return get_test_data_dir_for(__file__) / "1step"
