@@ -24,7 +24,10 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, model_validator
 
-from gbserver.api.build_files_paths import authorize_build_access
+from gbserver.api.build_files_paths import (
+    authorize_build_access,
+    authorize_build_read_access,
+)
 from gbserver.api.utils import (
     ListAppendOrSet,
     apply_tag_update,
@@ -415,7 +418,7 @@ def __build_target_records(
 
 @builds_api.get("/{build_id}/status", response_model=BuildStatusResponse)
 def get_build_status(
-    build_id: str, follow_retries: bool = False
+    request: Request, build_id: str, follow_retries: bool = False
 ) -> BuildStatusResponse:
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
@@ -424,6 +427,7 @@ def get_build_status(
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(build, StoredBuild)
+    authorize_build_read_access(request, build)
     build.build_archive = ""
     build_status = BuildStatus(
         build=build, target_runs=__build_target_records(storage, build_id)
@@ -447,14 +451,14 @@ def get_build_status(
 
 @builds_api.get("/{build_id}/status2", response_model=BuildStatusResponse)
 def get_build_status2(
-    build_id: str, follow_retries: bool = False
+    request: Request, build_id: str, follow_retries: bool = False
 ) -> BuildStatusResponse:
     # Retained as a backward-compatible alias of the primary /status endpoint.
-    return get_build_status(build_id, follow_retries)
+    return get_build_status(request, build_id, follow_retries)
 
 
 @builds_api.get("/{build_id}/events")
-def get_buildevents(build_id: str):
+def get_buildevents(request: Request, build_id: str):
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
@@ -462,6 +466,7 @@ def get_buildevents(build_id: str):
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(build, StoredBuild)
+    authorize_build_read_access(request, build)
 
     row_filter = get_row_filter(build_id=build_id)
     events = cast(List[StoredEvent], storage.event_storage.get_by_where(row_filter))

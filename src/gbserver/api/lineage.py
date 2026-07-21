@@ -19,9 +19,10 @@ from __future__ import annotations
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 
+from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.lineage.openlineage_models import (
     ArtifactGraphRequest,
     ArtifactGraphResponse,
@@ -72,7 +73,7 @@ class BuildJobStatsResponse(BaseModel):
 
 
 @lineage_api.get("/build/{build_id}")
-def get_build_jobstats(build_id: str) -> BuildJobStatsResponse:
+def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse:
     """Get JobStats for all targets in a build."""
     storage = get_admin_storage()
 
@@ -86,6 +87,7 @@ def get_build_jobstats(build_id: str) -> BuildJobStatsResponse:
             detail=f"Build with id {build_id} not found",
         )
     assert isinstance(build, StoredBuild)
+    authorize_build_read_access(request, build)
 
     # Get all targets for this build
     row_filter = {"build_id": build_id}
@@ -106,7 +108,7 @@ def get_build_jobstats(build_id: str) -> BuildJobStatsResponse:
 
 
 @lineage_api.get("/target/{target_id}")
-def get_target_jobstats(target_id: str) -> TargetJobStatsResponse:
+def get_target_jobstats(request: Request, target_id: str) -> TargetJobStatsResponse:
     """Get JobStats for a target run, grouped by output artifact name."""
     storage = get_admin_storage()
 
@@ -118,6 +120,17 @@ def get_target_jobstats(target_id: str) -> TargetJobStatsResponse:
             detail=f"Target with id {target_id} not found",
         )
     assert isinstance(target, StoredTargetRun)
+
+    # Authorize against the target's parent build, since the target itself
+    # carries no owner/space of its own.
+    build = storage.build_storage.get_by_uuid(target.build_id)
+    if build is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Build with id {target.build_id} not found",
+        )
+    assert isinstance(build, StoredBuild)
+    authorize_build_read_access(request, build)
 
     from gbserver.lineage.jobstats import get_lineage_store
 
