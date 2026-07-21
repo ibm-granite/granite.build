@@ -23,6 +23,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 
 from gbserver.api.build_files_paths import authorize_build_read_access
+from gbserver.api.utils import has_space_member_access
 from gbserver.lineage.openlineage_models import (
     ArtifactGraphRequest,
     ArtifactGraphResponse,
@@ -165,30 +166,55 @@ def ingest_lineage_event(event: OpenLineageEvent):
 
 
 @lineage_api.post("/search")
-def search_lineage_events(request: TagSearchRequest):
+def search_lineage_events(request: Request, body: TagSearchRequest):
+    """Search lineage runs by tag. An empty tag list matches every run in the
+    shared lineage backend across all spaces, so results are filtered below
+    to the caller's own runs or spaces they belong to.
+    """
     service = _get_openlineage_service()
-    total, results = service.search_lineage_by_tags(
-        request.tags, request.limit, request.offset
-    )
+    total, results = service.search_lineage_by_tags(body.tags, body.limit, body.offset)
+
+    filtered_results = []
+    for result in results:
+        run_facets = (result.get("run") or {}).get("facets") or {}
+        owner = (run_facets.get("job_details") or {}).get("owner", "")
+        space_name = (run_facets.get("tags") or {}).get("space_name", "")
+        has_access, _ = has_space_member_access(
+            request, username_on_target=owner, space_name=space_name
+        )
+        if not has_access:
+            continue
+        # job_input_params carries raw build.yaml step config and can embed
+        # credentials — redact it here too, same as get_build_jobstats, rather
+        # than widening who can read pipeline secrets via search.
+        run_facets.pop("job_input_params", None)
+        filtered_results.append(result)
+
     return PaginatedResponse(
-        count=len(results),
+        count=len(filtered_results),
         total=total,
-        limit=request.limit,
-        offset=request.offset,
-        runs=results,
+        limit=body.limit,
+        offset=body.offset,
+        runs=filtered_results,
     )
 
 
 @lineage_api.post("/artifact")
-def get_artifact_graph(request: ArtifactGraphRequest):
-    """Get the lineage DAG for an artifact, traversing downstream or upstream."""
-    if request.direction not in ("downstream", "upstream", "both"):
+def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
+    """Get the lineage DAG for an artifact, traversing downstream or upstream.
+
+    Runs are looked up by artifact name/url in the external lineage backend,
+    which is not itself space-scoped, so results can span multiple spaces —
+    each run is filtered below to the caller's own runs or spaces they belong
+    to, rather than gating the whole request on a single space.
+    """
+    if body.direction not in ("downstream", "upstream", "both"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="direction must be 'downstream', 'upstream', or 'both'",
         )
 
-    if not request.artifact_name and not request.artifact_url:
+    if not body.artifact_name and not body.artifact_url:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Either artifact_name or artifact_url must be provided",
@@ -197,11 +223,11 @@ def get_artifact_graph(request: ArtifactGraphRequest):
     service = _get_openlineage_service()
     try:
         result = service.get_artifact_graph(
-            artifact_name=request.artifact_name,
-            artifact_url=request.artifact_url,
-            artifact_type=request.artifact_type,
-            max_depth=request.max_depth,
-            direction=request.direction,
+            artifact_name=body.artifact_name,
+            artifact_url=body.artifact_url,
+            artifact_type=body.artifact_type,
+            max_depth=body.max_depth,
+            direction=body.direction,
         )
     except ValueError as e:
         raise HTTPException(
@@ -210,7 +236,7 @@ def get_artifact_graph(request: ArtifactGraphRequest):
         )
 
     if result is None:
-        identifier = request.artifact_name or request.artifact_url
+        identifier = body.artifact_name or body.artifact_url
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Artifact not found: {identifier}",
@@ -284,30 +310,38 @@ def get_artifact_graph(request: ArtifactGraphRequest):
                         )
                     )
 
-        runs.append(
-            ArtifactRunEntry(
-                job_name=metadata.get("job_name") or run.get("name", ""),
-                job_namespace=metadata.get("job_namespace") or "",
-                job_type=metadata.get("job_type") or "",
-                run_id=metadata.get("run_id") or "",
-                created_at=metadata.get("created_at") or "",
-                status=metadata.get("state") or "",
-                tags=tags,
-                inputs=inputs,
-                outputs=outputs,
-                job_id=metadata.get("job_id") or "",
-                job_status=metadata.get("job_status") or "",
-                job_started_at=metadata.get("job_started_at") or "",
-                job_completed_at=metadata.get("job_completed_at") or "",
-                release_id=metadata.get("release_id") or "",
-                category=metadata.get("category") or "",
-                owner=metadata.get("owner") or "",
-                source_code_details=metadata.get("source_code_details") or {},
-                job_input_params=metadata.get("job_input_params") or {},
-                execution_stats=metadata.get("execution_stats") or {},
-                job_output_stats=metadata.get("job_output_stats") or {},
-            )
+        entry = ArtifactRunEntry(
+            job_name=metadata.get("job_name") or run.get("name", ""),
+            job_namespace=metadata.get("job_namespace") or "",
+            job_type=metadata.get("job_type") or "",
+            run_id=metadata.get("run_id") or "",
+            created_at=metadata.get("created_at") or "",
+            status=metadata.get("state") or "",
+            tags=tags,
+            inputs=inputs,
+            outputs=outputs,
+            job_id=metadata.get("job_id") or "",
+            job_status=metadata.get("job_status") or "",
+            job_started_at=metadata.get("job_started_at") or "",
+            job_completed_at=metadata.get("job_completed_at") or "",
+            release_id=metadata.get("release_id") or "",
+            category=metadata.get("category") or "",
+            owner=metadata.get("owner") or "",
+            source_code_details=metadata.get("source_code_details") or {},
+            job_input_params=metadata.get("job_input_params") or {},
+            execution_stats=metadata.get("execution_stats") or {},
+            job_output_stats=metadata.get("job_output_stats") or {},
         )
+        # job_namespace is written as f"{space_name}/{build_name}" (see
+        # wandb_jobstats._build_events_for_target); split on the first "/"
+        # to recover the space and drop runs from spaces the caller can't
+        # access. Runs missing both an owner and a namespace fail closed.
+        run_space_name = entry.job_namespace.split("/", 1)[0]
+        has_access, _ = has_space_member_access(
+            request, username_on_target=entry.owner, space_name=run_space_name
+        )
+        if has_access:
+            runs.append(entry)
 
     return ArtifactGraphResponse(
         root_id=result["root_id"],

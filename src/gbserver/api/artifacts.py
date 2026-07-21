@@ -324,7 +324,7 @@ def register_artifact(
         storage.add(new_artifact)
     except ChecksumConflictException as exc:
         conflict_uri = exc.existing_artifact.uri
-        decoded = decode_uri(conflict_uri).model_dump()
+        decoded = decode_uri(request, uri=conflict_uri).model_dump()
         decoded["uuid"] = exc.existing_artifact.uuid
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=decoded)
     except (
@@ -478,7 +478,7 @@ def resolve_hf_resource_group(
 
 @artifacts_api.get("/decode")
 def decode_uri(
-    uri: Optional[str] = None, id: Optional[str] = None
+    request: Request, uri: Optional[str] = None, id: Optional[str] = None
 ) -> Union[DecodedURIResponse, DecodedHfURIResponse]:
     if uri is None and id is None:
         raise HTTPException(
@@ -501,6 +501,11 @@ def decode_uri(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Artifact with id {id} not found",
             )
+        confirm_space_write_access(
+            request=request,
+            username_on_target=artifact.username,
+            space_name=artifact.space_name,
+        )
         uri = artifact.uri
     assert uri is not None, "uri is None"
     uriobj = URI.get_uri(uri)
