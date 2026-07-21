@@ -359,7 +359,9 @@ class Bash(Environment):
         storepush_config=None,
         **kwargs,
     ) -> Any:
-        self._warn_non_default_mode(storepush_config, uri if uri is not None else base_uri)
+        self._warn_non_default_mode(
+            storepush_config, uri if uri is not None else base_uri
+        )
         if uri is None and base_uri is None:
             return None
         # The binding is the artifact location, either a {"path": ...} dict or a
