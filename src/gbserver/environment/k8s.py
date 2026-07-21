@@ -2148,9 +2148,9 @@ class K8s(Environment):
         """
         assert isinstance(assetstore, Hfstore), f"invalid assetstore: {assetstore}"
 
-        # Note: k8s handlers deliberately do NOT call _require_default_mode. That
-        # invariant ("mode must be unset or 'default'") is for non-k8s environments
-        # only — k8s genuinely branches on mode for the cos/lh stores
+        # Note: k8s handlers deliberately do NOT call _warn_non_default_mode. That
+        # helper is for non-k8s environments (which ignore mode and warn on
+        # non-default) — k8s genuinely branches on mode for the cos/lh stores
         # (afm_mount/cos_mount/cos_pull/dmf_pull). hf has only one behavior (pull),
         # so mode is ignored here for backwards compatibility: legacy 'hf_pull'
         # configs and the new 'default' convention both keep working.

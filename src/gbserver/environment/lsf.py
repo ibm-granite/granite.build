@@ -1115,7 +1115,7 @@ class Lsf(Environment):
             assetstore, Lhstore
         ), f"invalid type assetstore: {type(assetstore).__name__} (expected 'Lhstore')"
         assert storeload_config is not None, "storeload_config is None"
-        self._require_default_mode(storeload_config, uri)
+        self._warn_non_default_mode(storeload_config, uri)
         cache_path = storeload_config.config.get("cache_path", None)
         assert isinstance(cache_path, str), f"invalid cache_path: {cache_path}"
         assert cache_path != "", f"invalid cache_path: {cache_path}"
@@ -1169,7 +1169,7 @@ class Lsf(Environment):
         """
         Allow for a random folder/file to be copied from any mounted storage in the cluster to a lh bucket
         """
-        self._require_default_mode(storepush_config, uri)
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
         lhuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
@@ -1252,7 +1252,7 @@ class Lsf(Environment):
             assetstore, Hfstore
         ), f"invalid type assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
         assert storeload_config is not None, "storeload_config is None"
-        self._require_default_mode(storeload_config, uri)
+        self._warn_non_default_mode(storeload_config, uri)
         cache_path = storeload_config.config.get("cache_path", None)
         assert isinstance(cache_path, str), f"invalid cache_path: {cache_path}"
         assert cache_path != "", f"invalid cache_path: {cache_path}"
@@ -1322,7 +1322,7 @@ class Lsf(Environment):
                 or storepush_config declares a non-'default' mode.
             AssertionError: If binding has no 'path'.
         """
-        self._require_default_mode(storepush_config, uri)
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
@@ -1462,7 +1462,7 @@ class Lsf(Environment):
             assetstore, Cosstore
         ), f"invalid type assetstore: {assetstore}"
         assert storeload_config is not None, "storeload_config is None"
-        self._require_default_mode(storeload_config, uri)
+        self._warn_non_default_mode(storeload_config, uri)
 
         cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
         assert isinstance(cosuri, CosURI), f"invalid cosuri: {cosuri}"
@@ -1512,7 +1512,7 @@ class Lsf(Environment):
         """
         Copy folder/file from cluster filesystem to a COS bucket.
         """
-        self._require_default_mode(storepush_config, uri)
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
 

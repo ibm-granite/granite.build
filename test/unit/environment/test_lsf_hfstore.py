@@ -1,6 +1,7 @@
 """Unit tests for Lsf.pullasset_hfstore and Lsf.pushasset_hfstore."""
 
 import asyncio
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -154,21 +155,37 @@ class TestPullassetHfstore:
             )
 
     @pytest.mark.asyncio
-    async def test_rejects_wrong_mode(self, lsf_env, mock_hfuri):
-        """pullasset_hfstore raises ValueError for a non-'default' mode."""
+    async def test_accepts_legacy_mode_with_warning(
+        self, lsf_env, mock_hfuri, mock_hf_metadata, caplog
+    ):
+        """A legacy (non-'default') mode is accepted for backwards compat, and warns.
+
+        Outside k8s ``mode`` is ignored (dispatch is by store type), so a legacy
+        ``hf_pull`` still pulls normally — it just logs a deprecation warning.
+        """
         from gbserver.asset.hfstore import Hfstore
 
         assetstore = MagicMock(spec=Hfstore)
         storeload_config = MagicMock()
-        storeload_config.mode = "dmf_pull"
+        storeload_config.mode = "hf_pull"
         storeload_config.config = {"cache_path": "/data/cache"}
 
-        with pytest.raises(ValueError, match="supports only 'default'"):
-            await lsf_env.pullasset_hfstore(
+        with (
+            patch("gbserver.environment.lsf.Asset") as mock_asset_cls,
+            patch.object(
+                lsf_env, "_load_builtin_hf_lsf_section", return_value=({}, {})
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            mock_asset_cls.return_value.get_metadata.return_value = mock_hf_metadata
+            binding_config, _ = await lsf_env.pullasset_hfstore(
                 uri=mock_hfuri,
                 assetstore=assetstore,
                 storeload_config=storeload_config,
             )
+
+        assert BINDING_KEY in binding_config
+        assert any("declares mode 'hf_pull'" in r.message for r in caplog.records)
 
 
 class TestPushassetHfstore:

@@ -112,8 +112,9 @@ Only **k8s** genuinely branches on `mode` — it selects mounting vs. copying vs
 | `cos_pull` / `dmf_pull` | load | Queue a COS/DMF transfer step. |
 
 For every **other** environment (skypilot, lsf, bash, docker, runpod, and the base mem/env handlers),
-declare `mode: default` (or omit it). A non-`default` mode raises a `ValueError` at pull/push time
-(enforced by `Environment._require_default_mode`).
+`mode` is ignored (dispatch is by store *type*). Declare `mode: default` (or omit it); a non-`default`
+value is still accepted for backwards compatibility but logs a deprecation warning at pull/push time
+(via `Environment._warn_non_default_mode`).
 
 Each store type is implemented by a `pullasset_*` / `pushasset_*` method on the environment class — some
 pull/push inline, others inject a built-in step (e.g. `hfpull`, `cosrclone`, `lhpull`). Which methods an

@@ -116,11 +116,11 @@ def test_absolute_and_templated_env_uris_are_allowed():
 
 
 # --- runtime guard (base envstore methods) ----------------------------------
-# The base methods touch instance state only via ``self._require_default_mode``
+# The base methods touch instance state only via ``self._warn_non_default_mode``
 # (a no-op when no special mode is set), so a lightweight stub ``self`` carrying
 # that method lets us invoke the unbound coroutines to exercise the relative-path
 # guard in isolation.
-_DUMMY_SELF = SimpleNamespace(_require_default_mode=lambda store_config, uri: None)
+_DUMMY_SELF = SimpleNamespace(_warn_non_default_mode=lambda store_config, uri: None)
 
 
 def test_pushasset_envstore_rejects_relative():

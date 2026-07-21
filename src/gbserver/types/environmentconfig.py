@@ -76,15 +76,17 @@ class AwsCredentialProfile(Config):
 class StoreLoad(Config):
     # ``mode`` selects *how* an asset is loaded, but this is only meaningful in
     # k8s (afm_mount/cos_mount/cos_pull/dmf_pull/hf_pull branch there). Every
-    # other environment dispatches by store *type* and enforces the invariant
-    # that ``mode`` is unset or ``"default"`` (see Environment._require_default_mode).
+    # other environment dispatches by store *type* and ignores ``mode``; the
+    # preferred value is ``"default"`` (or unset), and non-default values are
+    # accepted for backwards compatibility but log a deprecation warning
+    # (see Environment._warn_non_default_mode).
     mode: Optional[str] = None
     config: Dict = Field(default_factory=dict)
 
 
 class StorePush(Config):
-    # See StoreLoad.mode: advisory except in k8s; non-k8s environments accept
-    # only ``"default"`` (or unset).
+    # See StoreLoad.mode: meaningful only in k8s; non-k8s environments ignore it
+    # (prefer ``"default"``; legacy values warn but are accepted).
     mode: Optional[str] = None
     config: Dict = Field(default_factory=dict)
 

@@ -41,8 +41,9 @@ Methods are discovered by prefix using `get_fns_with_prefix()`. The suffixes (e.
 > **Asset store `mode` invariant.** `pullasset_*` / `pushasset_*` dispatch is by store *type*
 > (`SUFFIX`), not by the `assetstores` entry's `mode`. `mode` is meaningful **only in k8s**
 > (`afm_mount`/`cos_mount`/`cos_pull`/`dmf_pull`/`hf_pull` select mount vs. copy vs. queued step).
-> Every other environment enforces, via `Environment._require_default_mode`, that `mode` is unset
-> or `"default"` — a non-`default` value raises `ValueError` at pull/push time.
+> Every other environment ignores `mode` and prefers `"default"` (or unset); via
+> `Environment._warn_non_default_mode`, a non-`default` value is accepted for backwards
+> compatibility but logs a deprecation warning at pull/push time.
 
 #### Lifecycle Ordering
 
