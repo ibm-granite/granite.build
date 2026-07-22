@@ -30,7 +30,7 @@ logs_api = FastAPI()
 
 
 @logs_api.post("/logquery")
-def logquery(query: Item) -> LogqueryResponse:
+def logquery(request: Request, query: Item) -> LogqueryResponse:
     log_manager = None
     try:
         log_manager = get_log_manager()
@@ -40,6 +40,33 @@ def logquery(query: Item) -> LogqueryResponse:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="the logs manager was not configured!",
         )
+
+    # This endpoint has no build_id path param, so the caller can point a
+    # free-form jsonObject filter at any build's logs. If the filter targets
+    # a specific build (the same "kubernetes.labels.granite-dot-build/build-id"
+    # key the client always sets for build-scoped queries), enforce the same
+    # per-build access check /logquery/server/{build_id} already applies.
+    query_params = query.queryDef.queryParams
+    json_object = query_params.jsonObject if query_params is not None else None
+    build_ids = (
+        json_object.get("kubernetes.labels.granite-dot-build/build-id", [])
+        if isinstance(json_object, dict)
+        else []
+    )
+    if build_ids:
+        username = request.state.data["user"].email
+        for build_id in build_ids:
+            has_access = build_id_access_check(username, build_id)
+            if not isinstance(has_access, bool):
+                return has_access
+            elif not has_access:
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={
+                        "detail": f"Unauthorized: no access to build {build_id}!",
+                    },
+                )
+
     try:
         logs = log_manager.query_cloud_logquery(query)
         return logs
@@ -111,6 +138,19 @@ def logquery(request: Request, build_id: str, query: Item) -> LogqueryResponse:
                 "detail": "Unauthorized: Server logs are available to LLM.Build users only!",
             },
         )
+
+    # The build_id above (from the path) is what was actually authorized.
+    # jsonObject is attacker-controlled request-body content — without this,
+    # a caller could pass their own build_id in the path (authorized) while
+    # smuggling a different, unauthorized build's id into the body filter and
+    # have that filter forwarded unmodified. Force it to the authorized build,
+    # preserving any other filter keys (step id/name, stream) the caller set.
+    if query.queryDef.queryParams.jsonObject is None:
+        query.queryDef.queryParams.jsonObject = {}
+    if isinstance(query.queryDef.queryParams.jsonObject, dict):
+        query.queryDef.queryParams.jsonObject[
+            "kubernetes.labels.granite-dot-build/build-id"
+        ] = [build_id]
 
     try:
         logs = log_server_manager.query_cloud_logquery(query)
