@@ -40,6 +40,7 @@ The runner backend is chosen by `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` (`job` / `pr
 
 Signals: pressing **Ctrl+C** (SIGINT) cancels a running build (marked `CANCELLED`); **SIGTERM** fails it (marked `FAILED`).
 In both cases the runner finalizes the build (and its targets/steps/artifacts) before exiting rather than leaving it `RUNNING`.
+Exit code: `0` for `SUCCESS` and `CANCELLED` (a deliberate Ctrl+C cancel); non-zero for `FAILED` (including SIGTERM) and `INVALID`, so callers can key off the exit code.
 
 ## Local builds
 

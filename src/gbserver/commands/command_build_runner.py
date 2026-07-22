@@ -16,6 +16,7 @@
 
 """Start the build-runner to manage a build."""
 
+import os
 import signal
 import threading
 from pathlib import Path
@@ -142,11 +143,17 @@ def run_build_handling_signals(build_runner: BuildRunner) -> None:
     """Run the build to completion, reacting to termination signals.
 
     ``BuildRunner.start_and_wait`` blocks until the build finishes, so it runs on
-    a background thread while the main thread waits. SIGINT (Ctrl+C) cancels the
-    build (CANCELLED); SIGTERM fails it (FAILED). Both call into the runner from
-    the main thread - the runner's stop()/stop_and_fail() are designed to be
-    invoked from another thread - and then join so the terminal status is fully
+    a background (daemon) thread while the main thread waits. SIGINT (Ctrl+C)
+    cancels the build (CANCELLED); SIGTERM fails it (FAILED). Both call into the
+    runner from the main thread - the runner's stop()/stop_and_fail() are designed
+    to be invoked from another thread - and the main thread keeps waiting (in
+    bounded steps) until the build thread finishes, so the terminal status is fully
     persisted before returning.
+
+    A *second* termination signal force-exits the process. Graceful shutdown can
+    hang (e.g. a stuck workload teardown); swallowing repeat signals would then
+    leave the process unkillable via Ctrl+C, so the second signal is honored as a
+    hard exit. The build thread is a daemon so this exit is never blocked by it.
 
     Args:
         build_runner (BuildRunner): the configured BuildRunner whose build should
@@ -156,36 +163,46 @@ def run_build_handling_signals(build_runner: BuildRunner) -> None:
         Exception: re-raises on the main thread any exception raised by
             ``start_and_wait`` on the background thread (e.g. a storage failure or
             a re-raised build exception). Without this, the exception would go to
-            threading.excepthook, ``join()`` would return normally, and the CLI
-            would exit 0 on a build that never ran.
+            threading.excepthook, the wait would return normally, and the CLI would
+            exit 0 on a build that never ran.
     """
     received: dict[str, int] = {}
     error: dict[str, BaseException] = {}
 
     def _run_build():
-        # Capture any failure so it can be re-raised on the main thread after
-        # join(); a bare thread target would otherwise swallow it (exit 0).
+        # Capture any failure so it can be re-raised on the main thread after the
+        # thread is joined; a bare thread target would otherwise swallow it (exit 0).
         try:
             build_runner.start_and_wait()
         except Exception as exc:  # noqa: BLE001 - re-raised verbatim below
             error["exc"] = exc
 
     def _record_signal(signum, _frame):
-        # Keep the handler tiny; the main loop below does the real work.
-        received.setdefault("signum", signum)
+        # Keep the handler tiny; the main loop below does the real work. A repeat
+        # signal means the operator wants out now (graceful shutdown is slow or
+        # hung), so hard-exit instead of swallowing it. os._exit is async-signal-
+        # safe and bypasses the (possibly stuck) build thread.
+        if received:
+            os._exit(128 + signum)
+        received["signum"] = signum
 
     prev_int = signal.signal(signal.SIGINT, _record_signal)
     prev_term = signal.signal(signal.SIGTERM, _record_signal)
-    build_thread = threading.Thread(target=_run_build, name="build-runner-cli")
+    build_thread = threading.Thread(
+        target=_run_build, name="build-runner-cli", daemon=True
+    )
+    terminating = False
     try:
         build_thread.start()
         while build_thread.is_alive():
-            # Bounded join so the main thread wakes up regularly to notice a signal.
+            # Bounded join so the main thread stays responsive to signals rather
+            # than blocking indefinitely in an unbounded join().
             build_thread.join(timeout=0.5)
-            if received:
+            if received and not terminating:
+                terminating = True
                 _apply_termination(build_runner, received["signum"])
-                build_thread.join()
-                break
+                # Keep looping (bounded) until the build thread finishes; a repeat
+                # signal now force-exits via _record_signal above.
     finally:
         signal.signal(signal.SIGINT, prev_int)
         signal.signal(signal.SIGTERM, prev_term)
@@ -408,19 +425,29 @@ def cli(
         dry_run=dry_run,
     )
     # Runs on a background thread so SIGINT/SIGTERM can cancel/fail the build.
-    # Returns on completion, cancellation or failure.
+    # Returns on completion, cancellation or failure (a build/storage exception is
+    # re-raised here and exits non-zero).
     run_build_handling_signals(build_runner)
 
-    finished_build_id = stored_build.uuid
+    # Report on the FINAL build in the (possibly retried) chain, not the original:
+    # the retry loop reassigns build_runner.stored_build to each retry, so its
+    # status is the outcome that determines the exit code.
+    finished_build_id = build_runner.stored_build.uuid
     finished_stored_build: StoredBuild = build_storage.get_by_uuid(finished_build_id)  # type: ignore[assignment]
     if finished_stored_build is None:
         # This should NEVER be the case, but we are occasionally seeing this with LH.
         logger.error(
             "Build with id %s could not be found after completion?!", finished_build_id
         )
-    else:
-        logger.info(
-            "Build with id %s completed with status=%s",
-            finished_build_id,
-            finished_stored_build.status,
-        )
+        raise SystemExit(1)
+
+    logger.info(
+        "Build with id %s completed with status=%s",
+        finished_build_id,
+        finished_stored_build.status,
+    )
+    # Exit non-zero on a failed build so callers (e.g. orchestrators keying off the
+    # exit code) don't read a failure as success. SUCCESS and CANCELLED (a
+    # deliberate SIGINT cancel) exit 0; FAILED (incl. SIGTERM) and INVALID do not.
+    if finished_stored_build.status in (Status.FAILED, Status.INVALID):
+        raise SystemExit(1)

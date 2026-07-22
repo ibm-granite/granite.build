@@ -164,7 +164,7 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
 
     def _run_build_runner(
         self, build_dir: Path, tmp_path: Path, sig: Optional[int] = None
-    ) -> None:
+    ) -> int:
         """Run ``gbserver build-runner`` on a build dir, optionally signalling it.
 
         Launches the CLI against ``build_dir`` with the test's admin-table prefix
@@ -176,6 +176,9 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
             build_dir: directory holding the build.yaml to run.
             tmp_path: pytest temp dir for the isolated workspace and log file.
             sig: optional signal number (SIGINT/SIGTERM) to send once running.
+
+        Returns:
+            The CLI process's exit code.
 
         Raises:
             AssertionError: if the build never reaches the running state.
@@ -224,6 +227,7 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=30)
+        return proc.returncode
 
     @staticmethod
     def _wait_for_running(log_file: Path, timeout: float) -> bool:
@@ -264,21 +268,30 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
 
     @pytest.mark.timeout(180)
     def test_cli_build_succeeds(self, tmp_path):
-        """A clean 1-step bash build run via the CLI completes with status SUCCESS."""
-        self._run_build_runner(_SUCCESS_BUILD_DIR, tmp_path)
+        """A clean 1-step bash build run via the CLI completes SUCCESS, exit 0."""
+        rc = self._run_build_runner(_SUCCESS_BUILD_DIR, tmp_path)
         assert self._final_build_status() == Status.SUCCESS
+        assert rc == 0
 
     @pytest.mark.timeout(180)
     def test_cli_sigint_cancels_build(self, tmp_path):
-        """SIGINT (Ctrl+C) during a running build marks it CANCELLED."""
-        self._run_build_runner(_LONGRUNNING_BUILD_DIR, tmp_path, sig=signal.SIGINT)
+        """SIGINT (Ctrl+C) during a running build marks it CANCELLED, exit 0."""
+        rc = self._run_build_runner(
+            _LONGRUNNING_BUILD_DIR, tmp_path, sig=signal.SIGINT
+        )
         assert self._final_build_status() == Status.CANCELLED
+        # A deliberate cancel is a clean outcome.
+        assert rc == 0
 
     @pytest.mark.timeout(180)
     def test_cli_sigterm_fails_build(self, tmp_path):
-        """SIGTERM during a running build marks it FAILED."""
-        self._run_build_runner(_LONGRUNNING_BUILD_DIR, tmp_path, sig=signal.SIGTERM)
+        """SIGTERM during a running build marks it FAILED and exits non-zero."""
+        rc = self._run_build_runner(
+            _LONGRUNNING_BUILD_DIR, tmp_path, sig=signal.SIGTERM
+        )
         assert self._final_build_status() == Status.FAILED
+        # A failed build must not report success to callers.
+        assert rc != 0
 
     @pytest.mark.timeout(180)
     def test_cli_sigterm_does_not_retry_retryable_build(self, tmp_path):
@@ -290,7 +303,7 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
         terminating. A spawned retry would create a second build with the same
         name, so asserting exactly one build (and it FAILED) proves no retry ran.
         """
-        self._run_build_runner(
+        rc = self._run_build_runner(
             _LONGRUNNING_RETRY_BUILD_DIR, tmp_path, sig=signal.SIGTERM
         )
         builds = self.storage.build_storage.get_by_where(
@@ -298,3 +311,4 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
         )
         assert len(builds) == 1, f"SIGTERM spawned a retry: {len(builds)} builds exist"
         assert builds[0].status == Status.FAILED
+        assert rc != 0

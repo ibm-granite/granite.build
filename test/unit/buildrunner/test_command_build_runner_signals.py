@@ -133,3 +133,59 @@ def test_build_failure_propagates() -> None:
     # Handlers are still restored even on the failure path.
     assert signal.getsignal(signal.SIGINT) is before_int
     assert signal.getsignal(signal.SIGTERM) is before_term
+
+
+class _HangingBuildRunner:
+    """Stand-in whose graceful shutdown hangs, and which sends a second signal.
+
+    ``start_and_wait`` delivers the first signal then blocks (never released by
+    stop/stop_and_fail), simulating a shutdown that does not complete. The stop
+    handlers deliver a *second* signal so the test can exercise the repeat-signal
+    force-exit path.
+    """
+
+    def __init__(self, signum: int) -> None:
+        self._signum = signum
+        self.released = threading.Event()
+
+    def start_and_wait(self) -> None:
+        os.kill(os.getpid(), self._signum)  # first signal
+        self.released.wait(timeout=10)  # blocks; graceful shutdown "hangs"
+
+    def _resignal(self) -> None:
+        os.kill(os.getpid(), self._signum)  # second signal -> force exit
+
+    def stop(self) -> None:
+        self._resignal()
+
+    def stop_and_fail(self, failure_reason: str) -> None:
+        self._resignal()
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_repeat_signal_force_exits(monkeypatch, signum) -> None:
+    """A second termination signal hard-exits instead of being swallowed.
+
+    Graceful shutdown can hang; without this, repeat Ctrl+C would be ignored and
+    the process left unkillable. os._exit is patched to observe the call (a real
+    one would kill the test process).
+    """
+    exits: list[int] = []
+
+    class _ForceExit(BaseException):
+        pass
+
+    def _fake_exit(code: int):
+        exits.append(code)
+        raise _ForceExit
+
+    monkeypatch.setattr(os, "_exit", _fake_exit)
+    runner = _HangingBuildRunner(signum)
+    try:
+        with pytest.raises(_ForceExit):
+            run_build_handling_signals(runner)  # type: ignore[arg-type]
+    finally:
+        runner.released.set()  # let the daemon thread finish promptly
+
+    assert exits == [128 + signum]
