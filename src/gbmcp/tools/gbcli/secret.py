@@ -6,7 +6,6 @@ from fastmcp.utilities.logging import get_logger
 
 from gbcli.client.client import GBClient
 
-from gbmcp.utils.auth import get_github_token
 from gbmcp.utils.gbserver_errors import actionable_gbserver_errors
 from gbmcp.utils.output_filter import apply_output_filters
 
@@ -42,8 +41,7 @@ def secret_list(
     Returns:
         JSON object with a "secrets" array of secret names.
     """
-    token = get_github_token()
-    result = GBClient.Secret(token).list_secrets(personal=(space is None), space=space)
+    result = GBClient.Secret(None).list_secrets(personal=(space is None), space=space)
     logger.debug(f"secret_list result: {result}")
     if result is None:
         if space:
@@ -166,8 +164,7 @@ def secret_delete(secret_name: str, space: str | None = None) -> str:
     Returns:
         Success or error message.
     """
-    token = get_github_token()
-    result = GBClient.Secret(token).delete_secret(
+    result = GBClient.Secret(None).delete_secret(
         secret_name, personal=(space is None), space=space
     )
     # delete_secret returns (secret, space_name, username); a None tuple OR a None

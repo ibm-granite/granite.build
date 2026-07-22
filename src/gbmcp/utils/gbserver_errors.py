@@ -15,7 +15,7 @@ backed tool function:
 
     @tool(description="...")
     @actionable_gbserver_errors
-    def space_list(...) -> str:
+    def build_list(...) -> str:
         ...
 """
 
@@ -61,7 +61,7 @@ def _actionable_message() -> str:
     else:
         hint = (
             "this looks like a transient backend connectivity issue -- retry "
-            "shortly, or call info_gb_version / space_list to re-check."
+            "shortly, or call info_gb_version to re-check."
         )
     return f"gbserver is not reachable at {GBSERVER_INSTANCE} — {hint}"
 

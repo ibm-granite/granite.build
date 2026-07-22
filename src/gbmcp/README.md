@@ -6,8 +6,8 @@
 
 gbmcp runs as a **stdio** server: the MCP client (Claude Code, via a project `.mcp.json`) spawns `gbmcp` as a subprocess and speaks JSON-RPC over stdio. There is **no port and no HTTP endpoint** in the normal flow — the client owns the process, so the tools are available as soon as the session starts, whether or not the backend is running.
 
-- Entry point: `gbmcp = "gbmcp.server:main"` (`pyproject.toml`) runs `mcp.run(transport="stdio")`. `GBMCP_TRANSPORT=http` serves streamable-HTTP on `GBMCP_PORT` instead (rarely needed).
-- Backend: the build/space/secret tools call a **separate `gbserver standalone`** over REST at `GBSERVER_HOST` (set in `.mcp.json` `env`). gbmcp's launch does *not* start gbserver — bring it up with the `gbserver_start` tool (below). `build_job_log` reads the local `job.log` directly, so it needs no REST.
+- Entry point: `gbmcp = "gbmcp.server:main"` (`pyproject.toml`) runs `mcp.run(transport="stdio")` — stdio is the only transport.
+- Backend: the build and secret tools call a **separate `gbserver standalone`** over REST at `GBSERVER_HOST` (set in `.mcp.json` `env`). gbmcp's launch does *not* start gbserver — bring it up with the `gbserver_start` tool (below). `build_job_log` reads the local `job.log` directly, so it needs no REST.
 - Auth: **none.** gbmcp is built with no auth verifier and talks to an unauthenticated localhost gbserver (`get_github_token()` returns `None`).
 - stdout is reserved for the JSON-RPC stream; all logs/banner go to stderr (`show_banner=False`).
 
@@ -31,15 +31,14 @@ Because gbmcp is a separate process, its tools respond even when gbserver is dow
 
 Ensure `gbserver_status()` is `ready`, then poll **`build_status(build_id)`**; done when `details.status` is `success` / `failed` / `cancelled` (lowercase; `submitted → pending → running → success`). Then `build_job_log(build_id)` for the output.
 
-## The toolset (20, standalone-only)
+## The toolset (18, standalone-only)
 
 | Group | Tools |
 |---|---|
 | **gbserver** | `gbserver_status`, `gbserver_start`, `gbserver_stop` |
 | **Builds** | `build_start`, `build_list`, `build_status`, `build_describe`, `build_log`, `build_job_log`, `build_cancel` |
-| **Space** | `space_list` |
 | **Secrets** | `secret_list`, `secret_get`, `secret_create`, `secret_update`, `secret_delete` |
-| **Info** | `info_health`, `info_version`, `info_gb_version`, `info_gb_environment` |
+| **Info** | `info_health`, `info_version`, `info_gb_version` |
 
 `build_job_log` is the primary debugging tool in standalone — it returns the on-disk `job.log` (the workload's real stdout/stderr), since there is no gbserver REST file surface locally.
 
@@ -95,4 +94,4 @@ gbmcp ships only the tools that work against a local gbserver. Deleted from the 
 - **Remote/prod groups** — `docs_*`, `admin_log`, `artifact_*`, `template_*`, `step_*`, cross-build cache search (`build_leaderboard`/`search`/`compare`/`search_yaml`), `gb_dashboard` (`build_search_errors`/`get_ai_analysis`/`investigate`/`k8s_status`), `cos` (`build_check_cos_path`), `flight_plan` (`plan_*`), `sandbox_*`, gbserver-REST `build_files_*`.
 - The GHE OAuth variant and client scripts (`server_oauth.py`, `client*.py`, `smoke_test.py`, `services/ghe_auth.py`).
 
-The **gbserver lifecycle tools** (`gbserver_status/start/stop`) are central to the stdio model: gbmcp runs *outside* gbserver now, so starting/stopping the backend from a tool is safe and meaningful (they were removed when gbmcp was mounted *inside* gbserver, where `stop` would have killed its own host). There is no runtime tool pruning — `utils/lifespan.py` just initializes the build cache + telemetry DB. Verified end-to-end with a real stdio `initialize` → `tools/list` handshake.
+The **gbserver lifecycle tools** (`gbserver_status/start/stop`) are central to the stdio model: gbmcp runs *outside* gbserver now, so starting/stopping the backend from a tool is safe and meaningful (they were removed when gbmcp was mounted *inside* gbserver, where `stop` would have killed its own host). There is no runtime tool pruning. Verified end-to-end with a real stdio `initialize` → `tools/list` handshake.

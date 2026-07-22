@@ -13,8 +13,6 @@ from fastmcp.server.providers import FileSystemProvider
 from fastmcp.utilities.logging import get_logger
 
 from gbcli.utils.cli_config import configureGBWorkingEnv
-from gbmcp.services.telemetry.middleware import TelemetryMiddleware
-from gbmcp.utils.lifespan import lifespan
 
 logger = get_logger(__name__)
 
@@ -43,9 +41,6 @@ Lifecycle: gbserver standalone also serves the web dashboard + REST API, so trea
 - build_job_log(build_id): the on-disk job.log — the workload's REAL stdout/stderr (prints, tracebacks, success markers). The primary debugging artifact in standalone.
 - build_cancel(build_id): cancel a running build
 
-### Space
-- space_list: list available spaces
-
 ### Secrets (build-time auth, e.g. an HF token)
 - secret_list(space): list secret names (never values)
 - secret_get(secret_name, space): returns the gbcli command to reveal a secret's value; the value is shown only in the user's terminal, never returned to the agent
@@ -56,7 +51,6 @@ Lifecycle: gbserver standalone also serves the web dashboard + REST API, so trea
 - info_health: health check
 - info_version: gbmcp version
 - info_gb_version: Granite.build client/server version
-- info_gb_environment: current environment (STANDALONE)
 
 ## Output filtering
 The build read tools (build_status / build_describe / build_log / build_job_log) accept server-side filters to reduce response size:
@@ -84,28 +78,19 @@ mcp = FastMCP(
         FileSystemProvider(root=Path(__file__).parent / "tools"),
     ],
     # No auth verifier: gbmcp is a local stdio process talking to an
-    # unauthenticated localhost gbserver (get_github_token() returns None).
-    lifespan=lifespan,
-    middleware=[TelemetryMiddleware()],
+    # unauthenticated localhost gbserver.
 )
 
 
 def main() -> None:
     """Console-script entry point (``gbmcp``).
 
-    Defaults to stdio — the MCP client (Claude Code, via ``.mcp.json``) launches
+    Runs over stdio — the MCP client (Claude Code, via ``.mcp.json``) launches
     gbmcp as a subprocess and speaks JSON-RPC over stdio, so stdout must stay
     pure (FastMCP logs + banner already go to stderr; show_banner=False also
-    skips its startup version-check network call). Set ``GBMCP_TRANSPORT=http``
-    to serve streamable-HTTP on ``GBMCP_PORT`` (default 8000) instead.
+    skips its startup version-check network call).
     """
-    import os
-
-    if os.environ.get("GBMCP_TRANSPORT", "stdio").lower() == "http":
-        port = int(os.environ.get("GBMCP_PORT", "8000"))
-        mcp.run(transport="http", port=port, stateless_http=True)
-    else:
-        mcp.run(transport="stdio", show_banner=False)
+    mcp.run(transport="stdio", show_banner=False)
 
 
 if __name__ == "__main__":

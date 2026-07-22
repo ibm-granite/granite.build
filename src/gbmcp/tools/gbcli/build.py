@@ -10,8 +10,6 @@ from fastmcp.utilities.logging import get_logger
 
 from gbcli.client.client import GBClient
 
-from gbmcp.services.build_cache.build_cache import get_build_cache
-from gbmcp.utils.auth import get_github_token
 from gbmcp.utils.build_id import resolve_build_id
 from gbmcp.utils.gbserver_errors import actionable_gbserver_errors
 from gbmcp.utils.output_filter import apply_output_filters
@@ -61,8 +59,7 @@ def build_list(
     Returns:
         JSON array of builds.
     """
-    token = get_github_token()
-    result = GBClient.Build(token).build_list(
+    result = GBClient.Build(None).build_list(
         list_all=bool(all_user),
         show_done=bool(show_all),
         show_all=bool(show_all),
@@ -109,10 +106,8 @@ def build_describe(
     Returns:
         JSON object with 'build' and 'targets' fields, or raw YAML/JSON string if raw=True.
     """
-    cache = get_build_cache()
-    build_id, _ = resolve_build_id(build_id, cache)
-    token = get_github_token()
-    result = GBClient.Build(token).build_describe(
+    build_id = resolve_build_id(build_id)
+    result = GBClient.Build(None).build_describe(
         filename="",
         format="json",
         raw=bool(raw),
@@ -160,10 +155,8 @@ def build_status(
     Returns:
         JSON object with 'details', 'targets', 'history', and 'error' fields.
     """
-    cache = get_build_cache()
-    build_id, _ = resolve_build_id(build_id, cache)
-    token = get_github_token()
-    details, targets, history, error = GBClient.Build(token).build_status(
+    build_id = resolve_build_id(build_id)
+    details, targets, history, error = GBClient.Build(None).build_status(
         build_id=build_id,
         quiet=True,
         id_format="uuid",
@@ -262,11 +255,9 @@ def build_log(
             case _:
                 pass
 
-    cache = get_build_cache()
-    build_id, _ = resolve_build_id(build_id, cache)
+    build_id = resolve_build_id(build_id)
     final_results = []
-    token = get_github_token()
-    logs = GBClient.Build(token).build_log(
+    logs = GBClient.Build(None).build_log(
         build_id=build_id,
         id_format="uuid",
         runner=runner,
@@ -324,8 +315,7 @@ def build_start(
         with open(TMP_FILE, "w") as f:
             f.write(file_content)
 
-        token = get_github_token()
-        result = GBClient.Build(token).build_start(
+        result = GBClient.Build(None).build_start(
             quiet=True,
             filename=TMP_FILE,
             space=space,
@@ -354,10 +344,8 @@ def build_cancel(build_id: str, space: str | None = None) -> str:
     Returns:
         JSON object with the cancellation result.
     """
-    cache = get_build_cache()
-    build_id, _ = resolve_build_id(build_id, cache)
-    token = get_github_token()
-    result = GBClient.Build(token).build_cancel(
+    build_id = resolve_build_id(build_id)
+    result = GBClient.Build(None).build_cancel(
         build_id=build_id,
         id_format="uuid",
         space=space,

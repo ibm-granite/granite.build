@@ -2,7 +2,7 @@
 name: create-step
 description: Author a full, reusable Granite.build custom step — a step directory (step.yaml + bash_scripts/) referenced from a build.yaml by a file:// URI. Use this (instead of create-build's inline command+heredoc) when you have owned/multi-file code, a step you want to version and reuse across builds, or need per-environment launch behavior. Covers the step.yaml launch contract, the artifact monitor, the runtime env-var contract, and per-compute-environment differences.
 argument-hint: "[step-name]"
-allowed-tools: Bash(ls *) Bash(test *) Bash(cat *) Bash(grep *) Bash(find *) Bash(mkdir *) Bash(chmod *) mcp__gbmcp__gbserver_status mcp__gbmcp__gbserver_start mcp__gbmcp__space_list mcp__gbmcp__build_start mcp__gbmcp__build_status mcp__gbmcp__build_log mcp__gbmcp__build_list mcp__gbmcp__build_describe mcp__gbmcp__build_job_log
+allowed-tools: Bash(ls *) Bash(test *) Bash(cat *) Bash(grep *) Bash(find *) Bash(mkdir *) Bash(chmod *) mcp__gbmcp__gbserver_status mcp__gbmcp__gbserver_start mcp__gbmcp__build_start mcp__gbmcp__build_status mcp__gbmcp__build_log mcp__gbmcp__build_list mcp__gbmcp__build_describe mcp__gbmcp__build_job_log
 ---
 
 # Author a Granite.build custom step

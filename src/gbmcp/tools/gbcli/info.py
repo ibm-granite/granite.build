@@ -1,5 +1,4 @@
 import json
-import os
 
 from fastmcp.tools import tool
 from fastmcp.utilities.logging import get_logger
@@ -7,23 +6,7 @@ from fastmcp.utilities.logging import get_logger
 from gbcli.client.client import GBClient
 from gbcli.utils.versionutil import get_current_version
 
-from gbmcp.utils.auth import get_github_token
-
 logger = get_logger(__name__)
-
-
-@tool(description="Return the current Granite.build environment in use.")
-def info_gb_environment() -> str:
-    """Return the current Granite.build environment as JSON.
-
-    Returns:
-        JSON object with 'environment' set to the current GB_ENVIRONMENT value
-        (e.g. 'PROD', 'STAGING', or 'DEV').
-    """
-    environment = os.environ.get("GB_ENVIRONMENT", "PROD")
-    result = json.dumps({"environment": environment}, indent=4)
-    logger.debug(f"info_gb_environment result: {result}")
-    return result
 
 
 @tool(description="Return Granite.build's gbcli and gbserver version.")
@@ -34,8 +17,6 @@ def info_gb_version() -> str:
         JSON object with 'clientVersion' (major, minor, patch) and optionally
         'serverVersion' (gitCommit) if the gbserver is reachable.
     """
-    token = get_github_token()
-
     # The gbcli client ships inside the "granite-build" distribution; the
     # importable "gbcli" module has no separate version, so both refer to the
     # same number. Query the distribution name (not "granite.build", which is
@@ -48,7 +29,7 @@ def info_gb_version() -> str:
         client_version_info = {"version": client_version}
     version_obj = {"package": "granite-build", "clientVersion": client_version_info}
 
-    gbserver_version = GBClient.Version(token).get_gbserver_version(quiet=True)
+    gbserver_version = GBClient.Version(None).get_gbserver_version(quiet=True)
     if gbserver_version:
         version_obj["serverVersion"] = {"gitCommit": gbserver_version}
 

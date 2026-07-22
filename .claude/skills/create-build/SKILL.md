@@ -2,7 +2,7 @@
 name: create-build
 description: Use a new Granite.build build.yaml for any compute workload — model training (SFT/LoRA/EPT), inference/serving, data generation/processing, evaluation, or arbitrary compute. Targets, inputs/outputs (artifacts), compute resources, and how they resolve within a space. The workload runs inline in the build.yaml via the built-in `command` step (no custom step directory to author). Use when asked to create, write, or scaffold a new build, build.yaml, or pipeline.
 argument-hint: "[build-name]"
-allowed-tools: Bash(ls *) Bash(test *) Bash(cat *) Bash(grep *) Bash(find *) Bash(curl *) mcp__gbmcp__gbserver_status mcp__gbmcp__gbserver_start mcp__gbmcp__space_list mcp__gbmcp__build_start mcp__gbmcp__build_status mcp__gbmcp__build_log mcp__gbmcp__build_list mcp__gbmcp__build_describe mcp__gbmcp__build_job_log
+allowed-tools: Bash(ls *) Bash(test *) Bash(cat *) Bash(grep *) Bash(find *) Bash(curl *) mcp__gbmcp__gbserver_status mcp__gbmcp__gbserver_start mcp__gbmcp__build_start mcp__gbmcp__build_status mcp__gbmcp__build_log mcp__gbmcp__build_list mcp__gbmcp__build_describe mcp__gbmcp__build_job_log
 ---
 
 # Author a Granite.build build
@@ -34,7 +34,7 @@ The standalone space ships **tested, purpose-built steps**. If one matches your 
 2. **Own reusable/multi-file code with no shipped step? →** author one with the **`create-step`** skill (`file://` URI).
 3. **A genuinely one-off, self-contained workload with no shipped step? →** the inline `command` + heredoc below.
 
-**Full contracts + runnable examples are bundled with this skill:** read **`references/steps.md`** for each shipped step's inputs/outputs/env and the decision order, and **`references/samples/`** for known-good build.yamls (`quickstart.build.yaml`, `inference.build.yaml`, `lora-finetune.build.yaml` — the last a two-target train→infer pipeline). Still confirm your install actually ships a step before using it (`ls <space assets>/environments/bash/steps/`), and consult the **`gb-docs`** skill for the authoritative build.yaml schema.
+**Full contracts + runnable examples are bundled with this skill:** read **`references/steps.md`** for each shipped step's inputs/outputs/env and the decision order, and **`references/samples/`** for known-good build.yamls (`quickstart.build.yaml`, `inference.build.yaml`, `lora-finetune.build.yaml` — the last a two-target train→infer pipeline). Consult the **`gb-docs`** skill for the authoritative build.yaml schema.
 
 ## Operating assumptions (read first)
 
@@ -51,16 +51,15 @@ These reflect how this environment actually behaves. Follow them unless the user
 
 Check the backend with `gbserver_status()`; if it isn't `ready`, call `gbserver_start()` (see **`run-gbserver`**). In standalone **every bundled tool is available** — nothing is pruned to work around.
 
-## Discover what already exists (don't invent URIs)
+## Steps and URIs (use the references, don't invent)
 
-There are **no `step_*` MCP tools** in gbmcp — discover steps by reading the space on disk instead:
+A build.yaml refers to steps and environments by URI — you don't inspect anything on disk to find them. The shipped steps and their exact contracts live in **`references/steps.md`**, with runnable build.yamls in **`references/samples/`**. Use those names.
 
-- Find the space: `space_list()` gives space names; the space dir is the one gbserver was started with (commonly `configurations/spaces/local`).
-- The space's `space.yaml` has a `base_uris:` chain (e.g. `file://../../assets`) — that's where steps/environments/assetstores resolve from.
-- **Environments:** `ls <assets>/environments/` → typically `bash docker runpod skypilot ...`. Default to `bash`.
-- **Confirm the `command` step resolves:** `space://steps/command` — the generic command step now ships as a **builtin** (`src/gbserver/builtins/steps/bash/command/`), so it resolves by that URI without living in the space's `bash/steps/`. This is the only step you need for the inline approach. (The on-disk `hello` / `inference` / `inference-lora` / `lora-finetune` steps under `<assets>/environments/bash/steps/` are references for *authoring a custom step* — that's the `create-step` skill's job, not this one.)
+- **`space://steps/command`** — the generic command step this skill's heredoc approach uses; the only step you need for the inline approach.
+- **`space://steps/<name>`** — purpose-built steps (`inference`, `lora-finetune`, `inference-lora`, `hello`); see `references/steps.md` for each one's inputs/outputs/env.
+- **`space://environments/<name>`** — default to `bash` in standalone.
 
-When you reference `space://steps/command` or `space://environments/<name>`, the name must be a real directory you found above.
+Use the exact names from `references/steps.md`; don't invent URIs.
 
 ## The `command` step + heredoc (the core skill)
 
@@ -225,11 +224,11 @@ Fetch it via MCP with `build_job_log(build_id)` — it returns that `job.log`'s 
 ## Authoring procedure (checklist)
 
 1. `gbserver_status()`; if it isn't `ready`, `gbserver_start()` to bring the backend up (see **`run-gbserver`**).
-2. Discover the space and its `bash` environment by reading `<assets>/` (`space_list()` for the space name); confirm `space://steps/command` resolves.
+2. Use the `command` step (`space://steps/command`) in the `bash` environment — see `references/steps.md`.
 3. Write the build.yaml with the user's project: one target, one `command` step. Put the workload in `config.command_config.command` (shell for simple cases; a heredoc that writes+runs `run.py` for Python). Declare inputs (`hf:///…` model), outputs (registered by the `LLMB_ARTIFACT_ID` line), and per-run params in `config.bash.env`. No step directory to author.
 4. Submit with **`build_start(file_content=<yaml text>)`**. Monitor with `build_status(build_id)`; done once it leaves `build_list()`. Read `build_job_log(build_id)` to confirm the workload actually ran (not just that status flipped to SUCCESS).
 5. If anything is unclear about a field/option/error, consult the **`gb-docs`** skill.
 
 ## When unsure
 
-Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s/LSF-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) are **k8s/LSF-only and do not apply to the bash backend**. For bash behavior, the source of truth is the `command` builtin (`src/gbserver/builtins/steps/bash/command/`) plus a working build's `job.log`.
+Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s/LSF-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) are **k8s/LSF-only and do not apply to the bash backend**. For bash behavior, the source of truth is this skill's `references/steps.md` plus a working build's `job.log` (via `build_job_log`).
