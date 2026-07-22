@@ -31,9 +31,15 @@ Behaviour is driven largely by environment variables (see [below](#key-environme
 | `gbserver build-watch [--gh-token <t>] [--config <f>] [--watch/--no-watch]` | Watch for pending builds (from PRs or a config) and dispatch build runners. |
 | `gbserver build-runner (--build-id <id> \| --build-dir <dir>) [...]` | Execute a single build — either a `PENDING` build from storage (`--build-id`) or one loaded from a directory (`--build-dir`). `--build-id` and `--build-dir` are mutually exclusive. |
 
-`build-runner` extras (directory mode): `--space-name`, `--space-config-uri`, `--target/-t` (repeatable),
+`build-runner` extras (directory mode): `--space-name`, `--space-config-uri`, `--space-dir`, `--target/-t` (repeatable),
 `--username`, `--workspace-dir`, `--monitoring-interval`, `--create-pr`, `--enable-resume`, `--dry-run`.
+`--space-name`, `--space-config-uri`, and `--space-dir` are mutually exclusive — pick one to select the build's space.
+`--space-dir <dir>` is a convenience form of `--space-config-uri` for a local space: point it at a directory containing a
+`space.yaml` (e.g. `configurations/spaces/local`) and it is resolved to a `file://` URI.
 The runner backend is chosen by `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` (`job` / `process` / `thread`).
+
+Signals: pressing **Ctrl+C** (SIGINT) cancels a running build (marked `CANCELLED`); **SIGTERM** fails it (marked `FAILED`).
+In both cases the runner finalizes the build (and its targets/steps/artifacts) before exiting rather than leaving it `RUNNING`.
 
 ## Local builds
 
