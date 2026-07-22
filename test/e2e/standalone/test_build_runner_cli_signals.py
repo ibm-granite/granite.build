@@ -71,6 +71,7 @@ _BUILD_ROOT = (
 )
 _SUCCESS_BUILD_DIR = _BUILD_ROOT / "success"
 _LONGRUNNING_BUILD_DIR = _BUILD_ROOT / "longrunning"
+_LONGRUNNING_RETRY_BUILD_DIR = _BUILD_ROOT / "longrunning-retry"
 
 # Log line the worker loop emits repeatedly once the build is actually running;
 # used to time signal delivery so we interrupt a RUNNING build, not setup.
@@ -278,3 +279,22 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
         """SIGTERM during a running build marks it FAILED."""
         self._run_build_runner(_LONGRUNNING_BUILD_DIR, tmp_path, sig=signal.SIGTERM)
         assert self._final_build_status() == Status.FAILED
+
+    @pytest.mark.timeout(180)
+    def test_cli_sigterm_does_not_retry_retryable_build(self, tmp_path):
+        """SIGTERM on a retry-enabled build fails it WITHOUT spawning a retry.
+
+        Regression: stop_and_fail() writes FAILED, which _should_retry() treats as
+        retryable (max_retries > 0). Without the _stop_requested guard in the
+        start_and_wait retry loop, SIGTERM would start a new build run instead of
+        terminating. A spawned retry would create a second build with the same
+        name, so asserting exactly one build (and it FAILED) proves no retry ran.
+        """
+        self._run_build_runner(
+            _LONGRUNNING_RETRY_BUILD_DIR, tmp_path, sig=signal.SIGTERM
+        )
+        builds = self.storage.build_storage.get_by_where(
+            {"name": COMMAND_RUN_BUILD_WATCH_BUILD_NAME}
+        )
+        assert len(builds) == 1, f"SIGTERM spawned a retry: {len(builds)} builds exist"
+        assert builds[0].status == Status.FAILED

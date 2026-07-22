@@ -145,6 +145,14 @@ class BuildRunner(AbstractBuildRunner):
         self.enable_resume = enable_resume
         self.build_run = None
         self.stop_event = threading.Event()
+        # Set by the public stop()/stop_and_fail() entrypoints to signal an
+        # explicit external termination. The start_and_wait retry loop checks this
+        # to break instead of spawning a retry. Distinct from stop_event (which is
+        # the worker-task lifecycle signal, set after every run and cleared between
+        # retries) and from __is_build_cancelled() (which only detects a CANCELLED/
+        # CANCEL_REQUESTED status): stop_and_fail marks the build FAILED, which is
+        # retryable, so without this flag a SIGTERM would spawn a retry.
+        self._stop_requested = threading.Event()
         self.build_message_logger = get_message_logger(
             build, _BUILD_EVENT_SOURCE_NAME
         )  # To be recreated later.
@@ -160,6 +168,7 @@ class BuildRunner(AbstractBuildRunner):
     def stop(self: Self) -> None:
         """Stop the building thread if it was started."""
         logger.debug("BuildRunner.stop start")
+        self._stop_requested.set()
         self.__cancel_build_run()
         logger.debug("BuildRunner.stop end")
 
@@ -177,6 +186,9 @@ class BuildRunner(AbstractBuildRunner):
             failure_reason (str): reason recorded on the build for the failure.
         """
         logger.debug("BuildRunner.stop_and_fail start")
+        # Mark this as an explicit termination so the retry loop does not treat the
+        # resulting FAILED status as a retryable failure and spawn a new run.
+        self._stop_requested.set()
         try:
             # Commit FAILED FIRST, while stop_event is still clear. The build
             # thread's worker loop only tries to write its own terminal status
@@ -268,6 +280,17 @@ class BuildRunner(AbstractBuildRunner):
                 # CANCELLED and no further retry is created.
                 if self.__is_build_cancelled():
                     self.__cancel_build_run()
+                    break
+
+                # An explicit termination via stop()/stop_and_fail() (e.g. a
+                # SIGINT/SIGTERM handler) must not be retried. stop_and_fail marks
+                # the build FAILED — which is otherwise retryable and is NOT caught
+                # by __is_build_cancelled() above — so break here to end the chain.
+                if self._stop_requested.is_set():
+                    logger.info(
+                        "Termination requested for build %s; not retrying",
+                        self.stored_build.uuid,
+                    )
                     break
 
                 retry_build = self.__prepare_retry()
