@@ -16,6 +16,8 @@
 
 """Start the build-runner to manage a build."""
 
+import signal
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -85,6 +87,62 @@ def load_build(
         stored_build.targets,
     )
     return stored_build
+
+
+def _apply_termination(build_runner: BuildRunner, signum: int) -> None:
+    """Cancel (SIGINT) or fail (SIGTERM) the running build.
+
+    Args:
+        build_runner (BuildRunner): the runner whose build should be terminated.
+        signum (int): the received signal number.
+    """
+    if signum == signal.SIGTERM:
+        logger.warning("Received SIGTERM - marking build as FAILED...")
+        click.echo("\nReceived SIGTERM - failing build...", err=True)
+        build_runner.stop_and_fail("Build runner received SIGTERM")
+    else:  # SIGINT / Ctrl+C
+        logger.warning("Ctrl+C received - cancelling build...")
+        click.echo("\nCancelling build (Ctrl+C)...", err=True)
+        build_runner.stop()
+
+
+def run_build_handling_signals(build_runner: BuildRunner) -> None:
+    """Run the build to completion, reacting to termination signals.
+
+    ``BuildRunner.start_and_wait`` blocks until the build finishes, so it runs on
+    a background thread while the main thread waits. SIGINT (Ctrl+C) cancels the
+    build (CANCELLED); SIGTERM fails it (FAILED). Both call into the runner from
+    the main thread - the runner's stop()/stop_and_fail() are designed to be
+    invoked from another thread - and then join so the terminal status is fully
+    persisted before returning.
+
+    Args:
+        build_runner (BuildRunner): the configured BuildRunner whose build should
+            be run.
+    """
+    received: dict[str, int] = {}
+
+    def _record_signal(signum, _frame):
+        # Keep the handler tiny; the main loop below does the real work.
+        received.setdefault("signum", signum)
+
+    prev_int = signal.signal(signal.SIGINT, _record_signal)
+    prev_term = signal.signal(signal.SIGTERM, _record_signal)
+    build_thread = threading.Thread(
+        target=build_runner.start_and_wait, name="build-runner-cli"
+    )
+    try:
+        build_thread.start()
+        while build_thread.is_alive():
+            # Bounded join so the main thread wakes up regularly to notice a signal.
+            build_thread.join(timeout=0.5)
+            if received:
+                _apply_termination(build_runner, received["signum"])
+                build_thread.join()
+                break
+    finally:
+        signal.signal(signal.SIGINT, prev_int)
+        signal.signal(signal.SIGTERM, prev_term)
 
 
 @click.command(context_settings={"show_default": True})
@@ -277,7 +335,9 @@ def cli(
         enable_resume=enable_resume,
         dry_run=dry_run,
     )
-    build_runner.start_and_wait()  # Returns on completion, cancellation or failure.
+    # Runs on a background thread so SIGINT/SIGTERM can cancel/fail the build.
+    # Returns on completion, cancellation or failure.
+    run_build_handling_signals(build_runner)
 
     finished_build_id = stored_build.uuid
     finished_stored_build: StoredBuild = build_storage.get_by_uuid(finished_build_id)  # type: ignore[assignment]

@@ -163,6 +163,43 @@ class BuildRunner(AbstractBuildRunner):
         self.__cancel_build_run()
         logger.debug("BuildRunner.stop end")
 
+    def stop_and_fail(self: Self, failure_reason: str) -> None:
+        """Stop the running build and mark it FAILED.
+
+        Public entrypoint intended to be called from another thread (e.g. a
+        SIGTERM handler) while start_and_wait() runs. The build is marked FAILED
+        *before* cancellation is signalled so the terminal FAILED status is not
+        overwritten by the worker loop's own CANCELLED update when it observes the
+        stop_event (finalize_build_status refuses to change one finished status to
+        another, so whichever thread writes first would otherwise win).
+
+        Args:
+            failure_reason (str): reason recorded on the build for the failure.
+        """
+        logger.debug("BuildRunner.stop_and_fail start")
+        try:
+            # Commit FAILED FIRST, while stop_event is still clear. The build
+            # thread's worker loop only tries to write its own terminal status
+            # (CANCELLED) *after* stop_event is set (see __cancel_build_run below),
+            # so writing FAILED before that closes the race: the later CANCELLED
+            # write is skipped by finalize_build_status's is_finished() guard.
+            # Doing this in the reverse order would let the worker loop win and
+            # leave the build CANCELLED instead of FAILED.
+            self.__update_stored_build_status(
+                status=Status.FAILED, failure_reason=failure_reason
+            )
+        except Exception:
+            logger.error("Could not mark build %s as failed", self.stored_build.uuid)
+        try:
+            # update_status=False: FAILED is already set above; this only tears
+            # down the in-flight workload and sets stop_event so that
+            # start_and_wait() returns. Setting stop_event here is what unblocks
+            # the worker loop's terminal-status write, hence the ordering above.
+            self.__cancel_build_run(update_status=False)
+        except Exception:
+            logger.error("Could not stop build %s", self.stored_build.uuid)
+        logger.debug("BuildRunner.stop_and_fail end")
+
     def start_and_wait(self: Self) -> None:
         """Run the inmemory build that was provided to the initializer in the current thread.
         Make sure the build is in build storage and add if not.
