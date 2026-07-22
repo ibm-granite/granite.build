@@ -38,7 +38,9 @@ def gbserver_start() -> str:
     """
     p = gp.port()
     if gp.is_running(p):
-        return json.dumps({"already_running": True, "ready": gp.is_reachable(p), "port": p}, indent=2)
+        return json.dumps(
+            {"already_running": True, "ready": gp.is_reachable(p), "port": p}, indent=2
+        )
     try:
         gp.start(p)
     except (RuntimeError, OSError) as exc:

@@ -60,7 +60,9 @@ def resolve_bin() -> str:
 
 def is_running(p: int | None = None) -> bool:
     p = p if p is not None else port()
-    return subprocess.run(["pgrep", "-f", _match(p)], capture_output=True).returncode == 0
+    return (
+        subprocess.run(["pgrep", "-f", _match(p)], capture_output=True).returncode == 0
+    )
 
 
 def is_reachable(p: int | None = None, timeout: float = REACHABLE_TIMEOUT) -> bool:
@@ -100,7 +102,9 @@ def stop(p: int | None = None) -> bool:
     return True
 
 
-def wait_for_ready(p: int | None = None, timeout: float = READY_TIMEOUT, interval: float = 0.5) -> bool:
+def wait_for_ready(
+    p: int | None = None, timeout: float = READY_TIMEOUT, interval: float = 0.5
+) -> bool:
     p = p if p is not None else port()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
