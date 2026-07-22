@@ -99,18 +99,26 @@ space's `base_uris` (the same mechanism as steps and environments — see
 ## Load and push modes
 
 An `environment.yaml` `assetstores` entry maps a store URI to **load** (input) and **push** (output)
-behaviour via a `mode`:
+behaviour. Dispatch to a `pullasset_*` / `pushasset_*` handler is by store **type** (derived from the
+URI scheme), not by `mode`. Outside k8s the `mode` field is therefore not meaningful, and the enforced
+invariant is that it must be **unset or `default`**.
 
-| `mode` | Direction | Effect |
-|--------|-----------|--------|
-| `hf_pull` / `hf_push` | load / push | Download from / upload to a HuggingFace repo. |
-| `cos_rclone` / `cos_pull` / `cos_push` | load / push | COS / S3 transfer (rclone). |
-| `env_local` | load / push | No-op: the artifact already lives on a shared filesystem reachable by the worker. |
-| `default` | load / push | The environment's built-in handling for that store. |
+Only **k8s** genuinely branches on `mode` — it selects mounting vs. copying vs. queuing a step:
 
-Each mode is implemented by a `pullasset_*` / `pushasset_*` method on the environment class — some pull/push
-inline, others inject a built-in step (e.g. `hfpull`, `cosrclone`, `lhpull`). Which methods an environment
-provides, and whether they mount volumes or queue steps, is environment-specific: see
+| `mode` (k8s only) | Direction | Effect |
+|-------------------|-----------|--------|
+| `afm_mount` / `cos_mount` | load | Mount the asset into the pod instead of copying it. |
+| `hf_pull` | load | Download from a HuggingFace repo. |
+| `cos_pull` / `dmf_pull` | load | Queue a COS/DMF transfer step. |
+
+For every **other** environment (skypilot, lsf, bash, docker, runpod, and the base mem/env handlers),
+`mode` is ignored (dispatch is by store *type*). Declare `mode: default` (or omit it); a non-`default`
+value is still accepted for backwards compatibility but logs a deprecation warning at pull/push time
+(via `Environment._warn_non_default_mode`).
+
+Each store type is implemented by a `pullasset_*` / `pushasset_*` method on the environment class — some
+pull/push inline, others inject a built-in step (e.g. `hfpull`, `cosrclone`, `lhpull`). Which methods an
+environment provides, and whether they mount volumes or queue steps, is environment-specific: see
 [environments](../environments/README.md#asset-stores) for the `environment.yaml` config and
 [environment classes](../architecture/environment-classes.md) for the per-environment implementations.
 

@@ -48,14 +48,14 @@ config:
 
 assetstores:
   - store_uri: cos://my-bucket
-    load:
+    pull:
       - mode: cos_rclone
         config:
           step_uri: space://steps/cosrclone
     push:
       - mode: cos_rclone
   - store_uri: hf://huggingface.co/my-org/my-model
-    load:
+    pull:
       - mode: hf_pull
     push:
       - mode: hf_push
@@ -144,12 +144,12 @@ config:
     max_retries: 3
 assetstores:
   - store_uri: hf://huggingface.co/my-org
-    load:
+    pull:
       - mode: hf_pull
     push:
       - mode: hf_push
   - store_uri: cos://my-cos-bucket
-    load:
+    pull:
       - mode: cos_rclone
     push:
       - mode: cos_rclone

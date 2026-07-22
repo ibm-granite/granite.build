@@ -277,6 +277,41 @@ class TestLaunchSkypilot:
         assert kwargs.get("cpus") is None
         assert kwargs.get("memory") == 1.0
 
+    @pytest.mark.asyncio
+    async def test_slurm_infra_drops_memory_floor(self, skypilot_env):
+        """A slurm target routed via `infra` (even with the env's default_cloud
+        k8s) drops the compute_config memory floor; cpus is still applied.
+
+        Reproduces the ResourcesUnavailableError case: SLURM often doesn't track
+        memory as a consumable resource, so a --memory request fails matching.
+        """
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,  # fixture default_cloud is k8s
+            launcher_config={
+                "run": "echo hi",
+                "resources": {"infra": "slurm/mycluster"},
+            },
+            config={
+                "compute_config": {
+                    "num_cpus_per_node": 2,
+                    "total_memory_per_node": "10Gi",
+                }
+            },
+        )
+        assert kwargs.get("memory") is None
+        assert kwargs.get("cpus") == 2
+
+    @pytest.mark.asyncio
+    async def test_slurm_cloud_casing_drops_memory_floor(self, skypilot_env):
+        """Non-canonical cloud casing ('Slurm') is normalized, so the memory
+        floor is still dropped."""
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,
+            launcher_config={"run": "echo hi", "resources": {"cloud": "Slurm"}},
+            config={"compute_config": {"total_memory_per_node": "10Gi"}},
+        )
+        assert kwargs.get("memory") is None
+
 
 class TestSkypilotComputeConfigResources:
     """Unit tests for the pure compute_config -> sky.Resources helpers."""
@@ -316,6 +351,17 @@ class TestSkypilotComputeConfigResources:
         )
         # empty compute_config yields no floor.
         assert env._resources_from_compute_config({}) == {}
+        # On slurm/lsf the memory floor is dropped (bare HPC schedulers often
+        # don't track memory as a consumable resource), but cpus is still emitted.
+        for hpc_cloud in ("slurm", "lsf"):
+            assert env._resources_from_compute_config(
+                {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"},
+                cloud=hpc_cloud,
+            ) == {"cpus": 3}
+        # Non-HPC clouds keep the memory floor.
+        assert env._resources_from_compute_config(
+            {"total_memory_per_node": "2Gi"}, cloud="k8s"
+        ) == {"memory": 2.0}
 
 
 class TestMonitorSkypilotMonitor:

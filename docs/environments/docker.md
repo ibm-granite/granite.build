@@ -31,7 +31,7 @@ config:
     env: {}                    # Optional. Default env vars for every container (lowest precedence).
 assetstores:
   - store_uri: space://assetstores/hf/
-    load:
+    pull:
       - mode: default          # HF snapshot is downloaded and bind-mounted into the container.
     push:
       - mode: default

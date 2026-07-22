@@ -22,7 +22,7 @@ target_expectations:
     jobstats_count: 1
 # Resolve space:// URIs (env + the co-located `command` step) from the repo's
 # local space without cloning from GitHub. Relative to this YAML's directory.
-space_uri: ../../../../../../configurations/spaces/local
+space_uri: ../../../../../../../configurations/spaces/local
 # A happy-path binding test — no simulated failure, and skip the cancellation run.
 simulate_step_failure: false
 tests:

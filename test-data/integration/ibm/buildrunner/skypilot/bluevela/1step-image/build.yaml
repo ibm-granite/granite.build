@@ -1,0 +1,50 @@
+granite.build:
+  name: skypilot-bluevela-command-image
+  # Single command-step target on BlueVela LSF (via Skypilot) that runs the
+  # command INSIDE a container image. This exercises the enroot container path
+  # (LSF's equivalent of slurm's Pyxis) configured on the bluevela environment
+  # (see cloud_config.lsf.cluster_configs.bluevela.enroot in the environment.yaml).
+  #
+  # env:// (env_local) I/O is a shared-FS no-op: push/pull do nothing, so the
+  # artifact registration/binding works purely on the LLMB_ARTIFACT_PATH string
+  # and no real files need to exist on disk. This keeps the test free of HF
+  # credentials and real pushes while still driving the command step end-to-end.
+  targets:
+    image-run:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        # env:// input: a shared-FS path pulled as a no-op. The path need not
+        # exist and its value isn't asserted; it just flows to the command as a
+        # binding.
+        env_input:
+          uri: "env:///tmp/gb-env-input.txt"
+      outputs:
+        # env:// output: registered inline from the LLMB_ARTIFACT marker the
+        # command emits below. `type` is required for env:// outputs.
+        env_output:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Run the command INSIDE a container image (image_id: docker:<image>).
+              # On LSF this goes through enroot (vs the Pyxis SPANK plugin on
+              # slurm), so this is the only test that exercises the bluevela
+              # enroot image path. The image must ship bash; quay.io avoids Docker
+              # Hub pull-rate limits. Swap for a BlueVela-reachable registry/image
+              # if quay.io is not reachable from the cluster.
+              image: quay.io/fedora/fedora-minimal:42
+              command: >-
+                echo "image-run target on bluevela via enroot";
+                echo "env input path: {{ bindings.env_input.binding.path }}";
+                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/proj/granite-build/g4os/gbtest/command-1step-image/{{ run_metadata.targetsteprun_id | short_hash }}/out"
+            # No launcher_config.resources.cluster: the environment defines a
+            # single allowed cluster (cloud_config.lsf.allowed_clusters:
+            # [bluevela]), which gbserver merges into ~/.sky/config.yaml. With a
+            # bare `lsf` infra, SkyPilot's LSF backend enumerates allowed_clusters
+            # and deterministically selects bluevela (sky/clouds/lsf.py
+            # regions_with_offering). Pin resources.cluster only if the env ever
+            # lists more than one cluster.

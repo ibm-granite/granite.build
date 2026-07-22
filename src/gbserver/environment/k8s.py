@@ -2142,49 +2142,45 @@ class K8s(Environment):
     ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
         """
         Pull a HuggingFace Hub asset (model/dataset/space) in a K8s container.
-        Supports mode: hf_pull
+
+        HF pull is the only behavior this store supports, so ``mode`` is not
+        consulted (it is advisory — set it to ``default`` in configs).
         """
         assert isinstance(assetstore, Hfstore), f"invalid assetstore: {assetstore}"
 
+        # Note: k8s handlers deliberately do NOT call _warn_non_default_mode. That
+        # helper is for non-k8s environments (which ignore mode and warn on
+        # non-default) — k8s genuinely branches on mode for the cos/lh stores
+        # (afm_mount/cos_mount/cos_pull/dmf_pull). hf has only one behavior (pull),
+        # so mode is ignored here for backwards compatibility: legacy 'hf_pull'
+        # configs and the new 'default' convention both keep working.
         if storeload_config is None or storeload_config.config is None:
             raise ValueError("storeload_config or storeload_config.config is None")
 
-        if storeload_config.mode == "hf_pull":
-            cache_path = storeload_config.config.get("cache_path", None)
-            if cache_path is None:
-                raise ValueError("Did not find 'cache_path' in storeload configuration")
+        cache_path = storeload_config.config.get("cache_path", None)
+        if cache_path is None:
+            raise ValueError("Did not find 'cache_path' in storeload configuration")
 
-            hf_uri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
-            binding_path = (
-                Path(cache_path)
-                / hf_uri.get_owner()
-                / hf_uri.get_repo()
-                / hf_uri.hash()
-            )
-            # binding_path.mkdir(parents=True, exist_ok=True)
-            hfpull_config = Hfstore.build_hfpull_step_config(
-                hfuri=hf_uri,
-                binding_path=str(binding_path),
-            )
+        hf_uri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
+        binding_path = (
+            Path(cache_path) / hf_uri.get_owner() / hf_uri.get_repo() / hf_uri.hash()
+        )
+        # binding_path.mkdir(parents=True, exist_ok=True)
+        hfpull_config = Hfstore.build_hfpull_step_config(
+            hfuri=hf_uri,
+            binding_path=str(binding_path),
+        )
 
-            # Binding config for container
-            binding_config = {BINDING_KEY: {"path": str(Path(binding_path))}}
-            hfpull_stepuri = "space://steps/hfpull"
-            if (
-                storeload_config is not None
-                and storeload_config.config is not None
-                and "step_uri" in storeload_config.config
-            ):
-                hfpull_stepuri = storeload_config.config["step_uri"]
+        # Binding config for container
+        binding_config = {BINDING_KEY: {"path": str(Path(binding_path))}}
+        hfpull_stepuri = storeload_config.config.get("step_uri", "space://steps/hfpull")
 
-            pull_step_config = BuildTargetStepConfig(
-                step_uri=hfpull_stepuri,
-                config={"hfpull_config": hfpull_config},
-            )
+        pull_step_config = BuildTargetStepConfig(
+            step_uri=hfpull_stepuri,
+            config={"hfpull_config": hfpull_config},
+        )
 
-            return binding_config, pull_step_config
-
-        raise ValueError(f"No known mode of loading {uri}")
+        return binding_config, pull_step_config
 
     async def pushasset_hfstore(
         self: Self,

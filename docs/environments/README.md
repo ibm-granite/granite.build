@@ -66,7 +66,7 @@ config:                 # Environment-type-specific config — see the per-type 
   ...
 assetstores:            # Asset stores accessible from this environment (see below).
   - store_uri: <uri>
-    load:
+    pull:
       - mode: <mode>
         config: {}
     push:
@@ -116,11 +116,12 @@ restriction holds regardless of which tier finds the file.
 
 ### Asset stores
 
-`assetstores` map a store URI to the **load** (input) and **push** (output) behaviour for this
-environment. Each `load`/`push` entry has a `mode` (e.g. `hf_pull`/`hf_push`, `cos_rclone`, `env_local`,
-`default`) and an optional `config`. Modes are implemented by `pullasset_*` / `pushasset_*` methods on the
-environment class, which may queue a built-in step (e.g. `hf_pull` injects an
-[hfpull](../../src/gbserver/builtins/) step); the exact set is per-type — see each page.
+`assetstores` map a store URI to the **pull** (input) and **push** (output) behaviour for this
+environment. Each `pull`/`push` entry has a `mode` and an optional `config`. The input key is `pull`
+(it pairs with `push` and matches the `pullasset_*` handler); the former name `load` is still accepted
+as a **deprecated alias** (parsing it logs a warning recommending `pull`). Modes are implemented by
+`pullasset_*` / `pushasset_*` methods on the environment class, which may queue a built-in step; the
+exact set is per-type — see each page.
 
 The env-local (`env://`) and in-memory (`mem://`) stores are the exceptions: each is registered
 implicitly for **every** environment (their push/pull transfer nothing — env:// is a shared-filesystem

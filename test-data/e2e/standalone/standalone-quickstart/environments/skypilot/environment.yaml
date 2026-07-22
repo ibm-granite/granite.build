@@ -12,7 +12,7 @@ config:
   idle_minutes_to_autostop: 5
 assetstores:
   - store_uri: space://assetstores/s3/
-    load:
+    pull:
       - mode: default
         config: {}
     push:

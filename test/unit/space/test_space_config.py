@@ -206,19 +206,19 @@ class TestMergedQuickstartAssets:
 
     def test_bash_env_binds_hf_and_file(self):
         # The old `local` store was removed; file: is now the builtin `file`
-        # store, declared explicitly. Bash implements pull+push, so load+push.
+        # store, declared explicitly. Bash implements pull+push, so pull+push.
         data = self._load(self.ENVS_DIR / "bash" / "environment.yaml")
         uris = {s["store_uri"] for s in data["assetstores"]}
         assert any("hf" in u for u in uris)
         assert not any("local" in u for u in uris)
         file_entry = self._store_entry(data, "assetstores/file")
         assert file_entry is not None, "bash must declare the file store"
-        assert file_entry.get("load"), "bash file store must declare load"
+        assert file_entry.get("pull"), "bash file store must declare pull"
         assert file_entry.get("push"), "bash file store must declare push"
 
     def test_docker_env_binds_hf_and_file_push_only(self):
         # Docker has pushasset_filestore but NO pullasset_filestore, so the file
-        # store must declare push only — declaring load would advertise a pull it
+        # store must declare push only — declaring pull would advertise a pull it
         # cannot service.
         data = self._load(self.ENVS_DIR / "docker" / "environment.yaml")
         uris = {s["store_uri"] for s in data["assetstores"]}
@@ -227,7 +227,7 @@ class TestMergedQuickstartAssets:
         file_entry = self._store_entry(data, "assetstores/file")
         assert file_entry is not None, "docker must declare the file store"
         assert file_entry.get("push"), "docker file store must declare push"
-        assert not file_entry.get("load"), "docker file store must NOT declare load"
+        assert not file_entry.get("pull"), "docker file store must NOT declare pull"
 
     def test_colocated_hello_steps_exist(self):
         # bash/docker/runpod get co-located hello steps; the single

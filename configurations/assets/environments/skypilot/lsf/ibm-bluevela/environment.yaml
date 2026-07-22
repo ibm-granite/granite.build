@@ -20,7 +20,7 @@ config:
   cluster_ssh_configs:
     lsf:
       - Host: bluevela
-        HostName: login3.bluevela.rmf.ibm.com
+        HostName: login4.bluevela.rmf.ibm.com
         User: granitebuild
         IdentityFile: ~/.ssh/ibm-bluevela.key
         # IdentityKey: BV_SSH_PRIVATE_KEY 
@@ -56,12 +56,12 @@ config:
                 G: grp_preemptable
 assetstores:
   - store_uri: space://assetstores/hf
-    load:
-      - mode: hf_pull
+    pull:
+      - mode: default
         config:
           cache_path: /tmp/hf_cache
     push:
-      - mode: hf_push
+      - mode: default
         config: {}
   # NOTE: mem:// (in-memory) store is no longer declared here — it is now
   # auto-registered for every environment by the base class

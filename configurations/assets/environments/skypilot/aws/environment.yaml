@@ -16,18 +16,18 @@ config:
     delay_seconds: 1800
 assetstores:
   - store_uri: space://assetstores/s3/
-    load:
+    pull:
       - mode: default
         config: {}
     push:
       - mode: default
         config: {}
   - store_uri: space://assetstores/hf
-    load:
-      - mode: hf_pull
+    pull:
+      - mode: default
         config:
           cache_path: /tmp/hf_cache
           inline: true
     push:
-      - mode: hf_push
+      - mode: default
         config: {}

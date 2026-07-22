@@ -18,8 +18,8 @@ config:
         UserKnownHostsFile: /dev/null
 assetstores:
   - store_uri: space://assetstores/hf/
-    load:
-      - mode: hf_pull
+    pull:
+      - mode: default
   - store_uri: space://assetstores/cos/
     push:
       - mode: default
