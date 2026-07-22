@@ -15,7 +15,3 @@ target_expectations:
 space_uri: ../../../../../../configurations/spaces/local
 simulate_step_failure: false
 timeout_minutes: 10
-# This fixture has no cancellation variant in the original Python class —
-# opt out of the default test_runner_cancellation method.
-tests:
-  - runner
