@@ -214,6 +214,12 @@ _SAMPLE_EVENT = {
 
 def _make_sample_event(run_id: str = "test-run-001", **overrides) -> dict:
     ev = {**_SAMPLE_EVENT, "run": {**_SAMPLE_EVENT["run"], "runId": run_id}}
+    # Merge a ``run`` override into the base run dict rather than replacing it,
+    # so the positional ``run_id`` is preserved unless the caller overrides
+    # ``runId`` explicitly. A plain ``ev.update(overrides)`` would drop it.
+    run_override = overrides.pop("run", None)
+    if run_override is not None:
+        ev["run"] = {**ev["run"], **run_override}
     ev.update(overrides)
     return ev
 
@@ -370,9 +376,27 @@ class TestOpenLineageAPI:
         assert "base-training" in job_names
 
     def test_search_lineage_gated_to_space_members(self):
-        # A run owned by a different user in a space the caller ("standalone")
-        # is not a member of must be filtered out by has_space_member_access:
-        # not the owner, not a super admin, not a space member -> no access.
+        # Two runs share the ``env=dev`` tag, so the tag filter matches both.
+        # The access gate is what must distinguish them:
+        #   - "run-mine" is owned by the caller ("standalone") -> owner path
+        #     grants access.
+        #   - "run-other" is owned by "someone-else" in a space the caller is
+        #     not a member of -> not owner, not super admin, not space member
+        #     -> has_space_member_access denies.
+        # Emitting both proves the gate filtered the other-owner run rather
+        # than the tag simply not matching (which a lone total==0 can't show).
+        self.mock_service.emit_event(
+            _make_sample_event(
+                "run-mine",
+                run={
+                    "runId": "run-mine",
+                    "facets": {
+                        "tags": {"env": "dev"},
+                        "job_details": {"owner": "standalone"},
+                    },
+                },
+            )
+        )
         self.mock_service.emit_event(
             _make_sample_event(
                 "run-other",
@@ -388,8 +412,10 @@ class TestOpenLineageAPI:
         response = self.client.post("api/v1/lineage/search", json={"tags": ["env=dev"]})
         assert response.status_code == 200
         body = response.json()
-        assert body["total"] == 0
-        assert body["runs"] == []
+        # Exactly the caller-owned run survives the gate.
+        assert body["total"] == 1
+        returned_run_ids = {run["run"]["runId"] for run in body["runs"]}
+        assert returned_run_ids == {"run-mine"}
 
     def test_get_artifact_graph_by_url(self):
         response = self.client.post(
