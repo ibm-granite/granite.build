@@ -317,7 +317,17 @@ def register_artifact(
     if len(sys_tags) > 0 and not is_super_admin(request):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-    # TODO: should we also make sure they have access to the space
+    # new_artifact.username is caller-supplied and becomes the artifact's
+    # attributed owner (including compliance flags like
+    # certified_no_restrictions) — bind it to the caller unless a space/super
+    # admin is explicitly registering on another user's behalf, the same gate
+    # update_artifact/archive_artifact already apply to the stored owner.
+    confirm_space_write_access(
+        request,
+        username_on_target=new_artifact.username,
+        space_name=new_artifact.space_name,
+    )
+
     storage = get_admin_storage().artifact_registry
 
     try:
