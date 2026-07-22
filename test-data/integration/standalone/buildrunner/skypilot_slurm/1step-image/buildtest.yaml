@@ -25,6 +25,6 @@ simulate_step_failure: false
 timeout_minutes: 10 # Seems sufficient on mac running local slurm cluster
 # Happy-path image run — run only the basic build, not the cancellation variant
 # (the command step finishes near-instantly, so cancellation can't reliably
-# catch it RUNNING). Mirrors the docker-hf fixture.
+# catch it RUNNING). Mirrors the docker/1step fixture.
 tests:
   - runner

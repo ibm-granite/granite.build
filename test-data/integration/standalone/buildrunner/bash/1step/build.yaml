@@ -5,7 +5,7 @@ granite.build:
   #
   # This is an extended/nightly test (see the @extended_testing_only marker on the
   # test class): it performs a REAL HuggingFace pull and push using the CI HF_TOKEN
-  # secret, mirroring the docker-hf fixture. env:// push/pull are shared-FS no-ops
+  # secret, mirroring the docker/1step fixture. env:// push/pull are shared-FS no-ops
   # (pullasset_envstore / pushasset_envstore); hf:// pull/push go through the Bash
   # pullasset_hfstore / pushasset_hfstore handlers.
   #   - env_input / hf_input: env pull is a no-op; hf_input is really downloaded
@@ -36,7 +36,7 @@ granite.build:
           type: fileset
         hf_output:
           # Real HF push in the extended/nightly suite (uses the CI HF_TOKEN
-          # secret), mirroring the docker-hf fixture. short_hash keeps the repo
+          # secret), mirroring the docker/1step fixture. short_hash keeps the repo
           # name unique per run. The command below writes a real, non-empty file
           # for this output because HfURI.push() reads it (existence + non-empty
           # checks); env push, by contrast, is a shared-FS no-op.

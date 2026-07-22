@@ -51,4 +51,4 @@ class TestDockerMem2Target(AbstractYamlBuildRunnerTest):
     """Cross-target mem:// output → input binding over two docker command steps."""
 
     def _get_yaml_spec_dir(self) -> Path:
-        return get_test_data_dir_for(__file__) / "mem-2target"
+        return get_test_data_dir_for(__file__) / "2target"

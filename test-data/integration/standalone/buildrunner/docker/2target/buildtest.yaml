@@ -30,6 +30,6 @@ space_uri: ../../../../../../configurations/spaces/local
 simulate_step_failure: false
 timeout_minutes: 10
 # Happy-path binding test; skip the cancellation variant (the command finishes
-# too fast to reliably catch RUNNING). Mirrors the docker-hf fixture.
+# too fast to reliably catch RUNNING). Mirrors the docker/1step fixture.
 tests:
   - runner

@@ -1,5 +1,5 @@
 # YAML-driven spec for test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_1step.py.
-# Mirrors test-data/integration/standalone/buildrunner/docker/docker-hf/buildtest.yaml.
+# Mirrors test-data/integration/standalone/buildrunner/docker/1step/buildtest.yaml.
 targets:
   - image-run
 target_expectations:
