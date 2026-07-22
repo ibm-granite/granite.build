@@ -21,6 +21,15 @@ checked access against the PATH build_id while the actual Cloud Logs filter
 came from the BODY's queryDef.queryParams.jsonObject, which could reference a
 different, unauthorized build. Both are fixed in gbserver/api/logs.py.
 
+A first pass at these fixes only checked the build-id label when it happened
+to be present under jsonObject as a dict — which left two gaps a review
+caught: (1) a caller filtering by any other dimension (or omitting the
+build-id key) skipped the check entirely on the plain route, and (2) a
+non-dict jsonObject skipped the build-id override on the server/{build_id}
+route, re-opening the smuggling bypass. Both routes now require jsonObject to
+be a dict (rejecting otherwise) and require the plain route's query to be
+scoped to an accessible build id rather than defaulting to allow.
+
 There are three functions literally named `logquery` in that module (one per
 route decorator), so plain `from gbserver.api.logs import logquery` or
 `logs_module.logquery` only resolves the last one defined. Each is pulled
@@ -28,6 +37,9 @@ directly off the FastAPI route table instead.
 """
 
 from unittest.mock import MagicMock, patch
+
+import pytest
+from fastapi import HTTPException
 
 from gbserver.api import logs as logs_module
 from gbserver.types.logs import Item, QueryDef, QueryParams
@@ -52,12 +64,12 @@ def _fake_request(login: str, email: str):
     )
 
 
-def _item(json_object):
+def _item(json_object, query_type="freeText"):
     return Item(
         queryDef=QueryDef(
             startDate=0,
             endDate=1,
-            type="freeText",
+            type=query_type,
             queryParams=QueryParams(metadata={}, jsonObject=json_object),
         )
     )
@@ -100,20 +112,112 @@ def test_plain_logquery_allows_own_build_id_filter():
     assert resp == "ok"
 
 
-def test_plain_logquery_allows_query_with_no_build_id_filter():
-    """Pre-existing behavior for build-less queries is unchanged by this fix."""
-    log_manager = MagicMock(query_cloud_logquery=lambda q: "ok")
+def test_plain_logquery_pins_query_type_to_freetext():
+    """A caller-supplied queryDef.type is overwritten server-side, so an
+    unpinned type can't select a different query mode with unknown
+    combination semantics between jsonObject and any free-text filter."""
+    captured = {}
+
+    def fake_query(q):
+        captured["type"] = q.queryDef.type
+        return "ok"
+
     with (
         _mocked_access_manager(accessible_build_id="attacker-build"),
-        patch.object(logs_module, "get_log_manager", return_value=log_manager),
+        patch.object(
+            logs_module,
+            "get_log_manager",
+            return_value=MagicMock(query_cloud_logquery=fake_query),
+        ),
     ):
         resp = _plain_logquery(
-            _fake_request("attacker_a", "attacker_a@example.com"), _item({})
+            _fake_request("attacker_a", "attacker_a@example.com"),
+            _item({BUILD_LABEL_KEY: ["attacker-build"]}, query_type="somethingElse"),
         )
     assert resp == "ok"
+    assert captured["type"] == "freeText"
+
+
+def test_plain_logquery_rejects_query_with_no_build_id_filter():
+    """A caller could otherwise skip the check entirely by filtering on any
+    dimension other than the build-id label (or none at all) — every query
+    must be scoped to an accessible build id, not just checked when one
+    happens to be present."""
+    with (
+        _mocked_access_manager(accessible_build_id="attacker-build"),
+        patch.object(logs_module, "get_log_manager", return_value=MagicMock()),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            _plain_logquery(
+                _fake_request("attacker_a", "attacker_a@example.com"), _item({})
+            )
+        assert exc.value.status_code == 400
+
+
+def test_plain_logquery_rejects_query_filtering_by_other_dimension_only():
+    with (
+        _mocked_access_manager(accessible_build_id="attacker-build"),
+        patch.object(logs_module, "get_log_manager", return_value=MagicMock()),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            _plain_logquery(
+                _fake_request("attacker_a", "attacker_a@example.com"),
+                _item({"stream": ["stdout"]}),
+            )
+        assert exc.value.status_code == 400
+
+
+def test_plain_logquery_rejects_non_dict_json_object():
+    with (
+        _mocked_access_manager(accessible_build_id="attacker-build"),
+        patch.object(logs_module, "get_log_manager", return_value=MagicMock()),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            _plain_logquery(
+                _fake_request("attacker_a", "attacker_a@example.com"),
+                _item(["not", "a", "dict"]),
+            )
+        assert exc.value.status_code == 400
+
+
+def test_plain_logquery_rejects_non_list_build_id_value():
+    with (
+        _mocked_access_manager(accessible_build_id="attacker-build"),
+        patch.object(logs_module, "get_log_manager", return_value=MagicMock()),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            _plain_logquery(
+                _fake_request("attacker_a", "attacker_a@example.com"),
+                _item({BUILD_LABEL_KEY: "victim-build"}),
+            )
+        assert exc.value.status_code == 400
 
 
 # ---------------------------------------------------- /logquery/server/{build_id}
+
+
+def test_server_logquery_pins_query_type_to_freetext():
+    captured = {}
+
+    def fake_query(q):
+        captured["type"] = q.queryDef.type
+        return "ok"
+
+    with (
+        _mocked_access_manager(accessible_build_id="attacker-build"),
+        patch.object(
+            logs_module,
+            "get_log_server_manager",
+            return_value=MagicMock(query_cloud_logquery=fake_query),
+        ),
+    ):
+        resp = _server_logquery(
+            _fake_request("attacker_a", "attacker_a@example.com"),
+            "attacker-build",
+            _item({}, query_type="somethingElse"),
+        )
+    assert resp == "ok"
+    assert captured["type"] == "freeText"
 
 
 def test_server_logquery_overrides_smuggled_body_build_id():
@@ -150,6 +254,22 @@ def test_server_logquery_overrides_smuggled_body_build_id():
     sent = captured["jsonObject"]
     assert sent[BUILD_LABEL_KEY] == ["attacker-build"], sent
     assert sent["kubernetes.labels.granite-dot-build/build-step-name"] == ["train"]
+
+
+def test_server_logquery_rejects_non_dict_json_object():
+    """A non-dict jsonObject previously skipped the build-id override
+    entirely, forwarding whatever the body smuggled in unmodified."""
+    with (
+        _mocked_access_manager(accessible_build_id="attacker-build"),
+        patch.object(logs_module, "get_log_server_manager", return_value=MagicMock()),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            _server_logquery(
+                _fake_request("attacker_a", "attacker_a@example.com"),
+                "attacker-build",
+                _item(["not", "a", "dict"]),
+            )
+        assert exc.value.status_code == 400
 
 
 def test_server_logquery_rejects_victim_build_id_in_path():
