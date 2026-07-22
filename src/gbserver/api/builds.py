@@ -291,7 +291,33 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
 
 
 @builds_api.post("/validate")
-def validate_build(req: BuildValidateRequest) -> JSONResponse:
+def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
+    # req.username drives real per-user secret resolution inside Space (see
+    # buildrunner/validation.py -> build/space.py), the same as submit_build's
+    # req.username does — bind it to the caller the same way.
+    if req.space_name:
+        storage = get_admin_storage()
+        stored_space = storage.space_storage.get_by_name(req.space_name)
+        if stored_space is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Space {req.space_name} not found in space storage",
+            )
+        confirm_space_write_access(
+            request, username_on_target=req.username, space_name=stored_space.name
+        )
+    else:
+        # space_uri bypasses space storage entirely (validate_build_archive
+        # builds a Space directly from the URI), so there is no stored space
+        # to check admin-ness against. Validating as someone else here can
+        # only be gated on being a caller-independent (super) admin.
+        user_id = request.state.data["user"].login
+        if req.username != user_id and not is_super_admin(request):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"User {user_id} cannot validate a build as {req.username}",
+            )
+
     errors = BuildValidation.validate_build_archive(
         build_archive=req.build_archive,
         username=req.username,
