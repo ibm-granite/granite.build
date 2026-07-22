@@ -118,6 +118,7 @@ class MockLineageService(LineageService):
                         "run_id": "run-123",
                         "state": "finished",
                         "created_at": "2025-03-19T18:00:00",
+                        "owner": "standalone",
                     },
                 }
             )
@@ -149,6 +150,7 @@ class MockLineageService(LineageService):
                         "run_id": "run-000",
                         "state": "finished",
                         "created_at": "2025-03-18T10:00:00",
+                        "owner": "standalone",
                     },
                 }
             )
@@ -183,7 +185,13 @@ _SAMPLE_EVENT = {
     "eventTime": "2024-04-15T10:30:00.000Z",
     "run": {
         "runId": "test-run-001",
-        "facets": {"tags": {"env": "dev", "team": "ml"}},
+        # owner matches the synthetic apikey user (GBSERVER_API_USER, default
+        # "standalone") so the real has_space_member_access grants the caller
+        # access via the owner path — exercising the gate rather than bypassing it.
+        "facets": {
+            "tags": {"env": "dev", "team": "ml"},
+            "job_details": {"owner": "standalone"},
+        },
     },
     "job": {"namespace": "granite-ml", "name": "train_model", "facets": {}},
     "inputs": [
@@ -273,7 +281,10 @@ class TestOpenLineageAPI:
                     f"run-{i}",
                     run={
                         "runId": f"run-{i}",
-                        "facets": {"tags": {"env": "dev"}},
+                        "facets": {
+                            "tags": {"env": "dev"},
+                            "job_details": {"owner": "standalone"},
+                        },
                     },
                 )
             )
@@ -357,6 +368,28 @@ class TestOpenLineageAPI:
         job_names = {r["job_name"] for r in body["runs"]}
         assert "tunedmodel" in job_names
         assert "base-training" in job_names
+
+    def test_search_lineage_gated_to_space_members(self):
+        # A run owned by a different user in a space the caller ("standalone")
+        # is not a member of must be filtered out by has_space_member_access:
+        # not the owner, not a super admin, not a space member -> no access.
+        self.mock_service.emit_event(
+            _make_sample_event(
+                "run-other",
+                run={
+                    "runId": "run-other",
+                    "facets": {
+                        "tags": {"env": "dev", "space_name": "someone-elses-space"},
+                        "job_details": {"owner": "someone-else"},
+                    },
+                },
+            )
+        )
+        response = self.client.post("api/v1/lineage/search", json={"tags": ["env=dev"]})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 0
+        assert body["runs"] == []
 
     def test_get_artifact_graph_by_url(self):
         response = self.client.post(
