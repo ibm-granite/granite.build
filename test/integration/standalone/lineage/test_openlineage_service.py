@@ -375,16 +375,14 @@ class TestOpenLineageAPI:
         assert "tunedmodel" in job_names
         assert "base-training" in job_names
 
-    def test_search_lineage_gated_to_space_members(self):
-        # Two runs share the ``env=dev`` tag, so the tag filter matches both.
-        # The access gate is what must distinguish them:
-        #   - "run-mine" is owned by the caller ("standalone") -> owner path
-        #     grants access.
-        #   - "run-other" is owned by "someone-else" in a space the caller is
-        #     not a member of -> not owner, not super admin, not space member
-        #     -> has_space_member_access denies.
-        # Emitting both proves the gate filtered the other-owner run rather
-        # than the tag simply not matching (which a lone total==0 can't show).
+    def test_search_lineage_owner_path_grants_access(self):
+        # In standalone mode ``StandaloneSpaceAccessManager.is_space_admin``
+        # always returns True, so the super-admin / space-member branches of
+        # ``has_space_member_access`` are always-True and cannot exclude any
+        # run. The only branch a standalone test can meaningfully exercise is
+        # the *owner* short-circuit, which returns access before any admin
+        # check. Both runs below are owned by the caller ("standalone"), so
+        # both pass via the owner path and survive the tag filter.
         self.mock_service.emit_event(
             _make_sample_event(
                 "run-mine",
@@ -399,12 +397,12 @@ class TestOpenLineageAPI:
         )
         self.mock_service.emit_event(
             _make_sample_event(
-                "run-other",
+                "run-mine-2",
                 run={
-                    "runId": "run-other",
+                    "runId": "run-mine-2",
                     "facets": {
-                        "tags": {"env": "dev", "space_name": "someone-elses-space"},
-                        "job_details": {"owner": "someone-else"},
+                        "tags": {"env": "dev"},
+                        "job_details": {"owner": "standalone"},
                     },
                 },
             )
@@ -412,10 +410,9 @@ class TestOpenLineageAPI:
         response = self.client.post("api/v1/lineage/search", json={"tags": ["env=dev"]})
         assert response.status_code == 200
         body = response.json()
-        # Exactly the caller-owned run survives the gate.
-        assert body["total"] == 1
+        assert body["total"] == 2
         returned_run_ids = {run["run"]["runId"] for run in body["runs"]}
-        assert returned_run_ids == {"run-mine"}
+        assert returned_run_ids == {"run-mine", "run-mine-2"}
 
     def test_get_artifact_graph_by_url(self):
         response = self.client.post(
