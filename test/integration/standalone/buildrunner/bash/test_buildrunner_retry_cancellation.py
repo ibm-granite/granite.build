@@ -83,6 +83,8 @@ class TestRetryChainCancellation(AbstractBuildTest):
         runner.storage = self.storage
         runner.build_run = None
         runner.stop_event = threading.Event()
+        runner._stop_requested = threading.Event()
+        runner._finalize_lock = threading.Lock()
         runner._retry_chain_build_ids = [build.uuid]
         runner._retry_chain_lock = threading.Lock()
         return runner

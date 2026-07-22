@@ -184,47 +184,18 @@ class BuildRunner(AbstractBuildRunner):
         """Stop the running build and mark it FAILED.
 
         Public entrypoint intended to be called from another thread (e.g. a
-        SIGTERM handler) while start_and_wait() runs.
-
-        Two mechanisms keep the terminal status consistent:
-          - ``_finalize_lock`` (held inside __update_stored_build_status) serializes
-            this FAILED write against the worker thread's own natural finalize (e.g.
-            a build completing SUCCESS at the same instant), so the build and its
-            targets/steps/artifacts can't settle on disagreeing statuses. Whichever
-            finalize runs first wins; the other sees a finished status and is
-            skipped by finalize_build_status's is_finished() guard.
-          - FAILED is written *before* cancellation is signalled (below), so the
-            worker loop's post-stop_event CANCELLED write also finds the build
-            already FAILED and skips it. Reversing the order would let CANCELLED win.
+        SIGTERM handler) while start_and_wait() runs. Flags the run as an explicit
+        termination (so the retry loop does not treat the resulting FAILED status
+        as a retryable failure and spawn a new run) and delegates the FAILED-then-
+        cancel work to __cancel_and_fail_build (see its docstring for the ordering
+        and locking that keep the terminal status consistent).
 
         Args:
             failure_reason (str): reason recorded on the build for the failure.
         """
         logger.debug("BuildRunner.stop_and_fail start")
-        # Mark this as an explicit termination so the retry loop does not treat the
-        # resulting FAILED status as a retryable failure and spawn a new run.
         self._stop_requested.set()
-        try:
-            # Commit FAILED FIRST, while stop_event is still clear. The build
-            # thread's worker loop only tries to write its own terminal status
-            # (CANCELLED) *after* stop_event is set (see __cancel_build_run below),
-            # so writing FAILED before that closes the race: the later CANCELLED
-            # write is skipped by finalize_build_status's is_finished() guard.
-            # Doing this in the reverse order would let the worker loop win and
-            # leave the build CANCELLED instead of FAILED.
-            self.__update_stored_build_status(
-                status=Status.FAILED, failure_reason=failure_reason
-            )
-        except Exception:
-            logger.error("Could not mark build %s as failed", self.stored_build.uuid)
-        try:
-            # update_status=False: FAILED is already set above; this only tears
-            # down the in-flight workload and sets stop_event so that
-            # start_and_wait() returns. Setting stop_event here is what unblocks
-            # the worker loop's terminal-status write, hence the ordering above.
-            self.__cancel_build_run(update_status=False)
-        except Exception:
-            logger.error("Could not stop build %s", self.stored_build.uuid)
+        self.__cancel_and_fail_build(failure_reason=failure_reason)
         logger.debug("BuildRunner.stop_and_fail end")
 
     def start_and_wait(self: Self) -> None:
@@ -799,18 +770,34 @@ class BuildRunner(AbstractBuildRunner):
         logger.debug("BuildRunner.__worker_task end build_id: %s", build_id)
 
     def __cancel_and_fail_build(self: Self, failure_reason: str) -> None:
-        """Stop/cancel the build and mark it as failed"""
-        try:
-            self.__cancel_build_run(update_status=False)
-        except Exception as e:
-            logger.error("Could not cancel build %s", self.stored_build.uuid)
+        """Mark the build FAILED and stop its in-flight workload.
 
+        Single implementation shared by the public stop_and_fail() (external
+        SIGTERM-style termination) and the worker task's own exception path.
+
+        FAILED is committed *before* cancellation is signalled: __cancel_build_run
+        sets stop_event, after which the worker loop tries to write its own
+        CANCELLED status, so writing FAILED first lets that later write be skipped
+        by finalize_build_status's is_finished() guard. _finalize_lock (held inside
+        __update_stored_build_status) additionally serializes this against a
+        concurrent natural finalize (e.g. a SUCCESS completing at the same instant).
+
+        Args:
+            failure_reason (str): reason recorded on the build for the failure.
+        """
         try:
             self.__update_stored_build_status(
                 status=Status.FAILED, failure_reason=failure_reason
             )
-        except Exception as e:
+        except Exception:
             logger.error("Could not mark build %s as failed", self.stored_build.uuid)
+
+        try:
+            # update_status=False: FAILED is already set above; this only tears
+            # down the in-flight workload and sets stop_event.
+            self.__cancel_build_run(update_status=False)
+        except Exception:
+            logger.error("Could not stop build %s", self.stored_build.uuid)
 
     def __cancel_build_run(self: Self, update_status: bool = True) -> None:
         """Cancel the in-progress build_run and mark the whole retry chain CANCELLED.
