@@ -262,6 +262,14 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
     if len(sys_tags) > 0 and not is_super_admin(request):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
+    # req.username is the identity the build will run under and whose per-user
+    # secrets get injected into it — bind it to the caller unless the caller
+    # is a space/super admin explicitly impersonating another user, the same
+    # gate PUT /builds/{id}/update already applies to build.username.
+    confirm_space_write_access(
+        request, username_on_target=req.username, space_name=stored_space.name
+    )
+
     stored_build = StoredBuild.create(
         name=req.name,
         space_name=stored_space.name,
