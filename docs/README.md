@@ -23,7 +23,7 @@ You're authoring a `build.yaml`, picking environments, and submitting builds wit
 - [FAQ](help/faq.md) — common questions and troubleshooting
 - [Glossary](glossary.md) — key terms and abbreviations
 - [Try the demos](demos/README.md) — TRL fine-tuning and unitxt evaluation (Docker or SLURM), plus Granite 4.0 Nano on AWS
-- Working examples live in [`samples/`](../samples/) and [`examples/`](../examples/)
+- Working examples live in [`samples/`](../samples/)
 
 Cross-cutting [build features](builds/README.md#advanced) you'll reach for:
 

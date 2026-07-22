@@ -188,7 +188,6 @@ For the full schema, see [`docs/builds/build-yaml-reference.md`](docs/builds/bui
 | `src/gbcommon/` | Shared types and utilities. |
 | `docs/` | User, operator, and contributor docs — start at [`docs/README.md`](docs/README.md). |
 | `samples/` | Sample build configs, environments, and steps. The [`standalone-quickstart`](samples/standalone/standalone-quickstart/) is the canonical first build. |
-| `examples/` | Worked examples for specific scenarios. |
 | `configurations/` | Space, environment, step, and assetstore configurations consumed by builds. [`configurations/assets/`](configurations/assets/) holds the reusable assetstores, environments, and steps; [`configurations/spaces/local/`](configurations/spaces/local/) is the user-facing space for `GB_ENVIRONMENT=STANDALONE` and ships the build templates. |
 | `test/` | Test suites for all components. |
 | `scripts/` | Helper scripts including the standalone and SLURM demos. |

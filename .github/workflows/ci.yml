@@ -7,14 +7,12 @@ on:
       - 'docs/**'
       - '**/*.md'
       - 'samples/**'
-      - 'examples/**'
   pull_request:
     branches: [main]
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
       - 'samples/**'
-      - 'examples/**'
   merge_group:
 
 jobs:
