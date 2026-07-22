@@ -24,12 +24,12 @@ type: Bash
 config: {}
 assetstores:
   - store_uri: space://assetstores/hf/
-    load:
+    pull:
       - mode: default
   # Local filesystem (file: URIs) — the builtin file store. Bash implements both
   # load and push (pullasset_filestore / pushasset_filestore).
   - store_uri: space://assetstores/file/
-    load:
+    pull:
       - mode: default
     push:
       - mode: default

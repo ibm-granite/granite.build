@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import asyncio
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -54,6 +55,7 @@ async def test_pullasset_hfstore_returns_binding_with_path(bash_env, tmp_path):
 async def test_pullasset_hfstore_passes_cache_dir(bash_env, tmp_path):
     """Verify storeload_config is forwarded to pull_asset_hfstore."""
     storeload_config = MagicMock()
+    storeload_config.mode = "default"
     storeload_config.config = {"cache_path": str(tmp_path / "custom_cache")}
     uri = MagicMock()
     assetstore = MagicMock()
@@ -86,3 +88,70 @@ async def test_pullasset_hfstore_uses_default_cache(bash_env, tmp_path):
         )
 
     mock_load.assert_called_once_with(uri, assetstore, None)
+
+
+@pytest.mark.asyncio
+async def test_pushasset_hfstore_pushes_binding_path(bash_env):
+    """pushasset_hfstore forwards the host binding path to push_asset_hfstore."""
+    uri = MagicMock()
+    assetstore = MagicMock()
+    run_metadata = MagicMock()
+
+    with patch(
+        "gbserver.environment.bash.push_asset_hfstore", return_value=uri
+    ) as mock_push:
+        result = await bash_env.pushasset_hfstore(
+            binding={"path": "/workspace/output/model"},
+            binding_id="hf_output",
+            uri=uri,
+            assetstore=assetstore,
+            run_metadata=run_metadata,
+        )
+
+    # The bash binding path is already a host path — passed straight through.
+    mock_push.assert_called_once_with(
+        src="/workspace/output/model",
+        binding_id="hf_output",
+        uri=uri,
+        assetstore=assetstore,
+        run_metadata=run_metadata,
+    )
+    assert result is uri
+
+
+@pytest.mark.asyncio
+async def test_pushasset_hfstore_rejects_binding_without_path(bash_env):
+    """pushasset_hfstore raises ValueError when the binding has no 'path'."""
+    with pytest.raises(ValueError, match="binding must be a dict with 'path'"):
+        await bash_env.pushasset_hfstore(
+            binding={"not_path": "x"},
+            uri=MagicMock(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_pushasset_hfstore_accepts_legacy_mode_with_warning(bash_env, caplog):
+    """A legacy (non-'default') push mode is accepted for backwards compat, and warns.
+
+    Outside k8s ``mode`` is ignored (dispatch is by store type), so a legacy
+    ``hf_push`` still pushes normally — it just logs a deprecation warning.
+    """
+    uri = MagicMock()
+    storepush_config = MagicMock()
+    storepush_config.mode = "hf_push"
+
+    with (
+        patch(
+            "gbserver.environment.bash.push_asset_hfstore", return_value=uri
+        ) as mock_push,
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await bash_env.pushasset_hfstore(
+            binding={"path": "/workspace/output/model"},
+            uri=uri,
+            storepush_config=storepush_config,
+        )
+
+    mock_push.assert_called_once()
+    assert result is uri
+    assert any("declares mode 'hf_push'" in r.message for r in caplog.records)

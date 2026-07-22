@@ -1115,9 +1115,7 @@ class Lsf(Environment):
             assetstore, Lhstore
         ), f"invalid type assetstore: {type(assetstore).__name__} (expected 'Lhstore')"
         assert storeload_config is not None, "storeload_config is None"
-        assert (
-            storeload_config.mode == "dmf_pull"
-        ), f"Only 'dmf_pull' mode is supported for Lsf, mode: {storeload_config.mode} uri: {uri}"
+        self._warn_non_default_mode(storeload_config, uri)
         cache_path = storeload_config.config.get("cache_path", None)
         assert isinstance(cache_path, str), f"invalid cache_path: {cache_path}"
         assert cache_path != "", f"invalid cache_path: {cache_path}"
@@ -1171,6 +1169,7 @@ class Lsf(Environment):
         """
         Allow for a random folder/file to be copied from any mounted storage in the cluster to a lh bucket
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
         lhuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
@@ -1240,21 +1239,20 @@ class Lsf(Environment):
         Args:
             uri: HF URI to pull (e.g. hf://models/org/repo).
             binding: Unused for hfpull.
-            storeload_config: Must have mode 'hf_pull' and config with 'cache_path'.
+            storeload_config: config with 'cache_path'; mode must be unset or 'default'.
             assetstore: Hfstore instance.
             secrets: Optional secrets dict.
         Returns:
             Tuple of (binding_config, BuildTargetStepConfig).
         Raises:
-            AssertionError: If assetstore type or mode is invalid.
+            AssertionError: If assetstore type is invalid.
+            ValueError: If storeload_config declares a non-'default' mode.
         """
         assert isinstance(
             assetstore, Hfstore
         ), f"invalid type assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
         assert storeload_config is not None, "storeload_config is None"
-        assert (
-            storeload_config.mode == "hf_pull"
-        ), f"Only 'hf_pull' mode is supported for Lsf, mode: {storeload_config.mode} uri: {uri}"
+        self._warn_non_default_mode(storeload_config, uri)
         cache_path = storeload_config.config.get("cache_path", None)
         assert isinstance(cache_path, str), f"invalid cache_path: {cache_path}"
         assert cache_path != "", f"invalid cache_path: {cache_path}"
@@ -1320,9 +1318,11 @@ class Lsf(Environment):
         Returns:
             BuildTargetStepConfig for the hfpush step.
         Raises:
-            ValueError: If uri is empty or the resource group cannot be resolved.
+            ValueError: If uri is empty, the resource group cannot be resolved,
+                or storepush_config declares a non-'default' mode.
             AssertionError: If binding has no 'path'.
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
@@ -1462,9 +1462,7 @@ class Lsf(Environment):
             assetstore, Cosstore
         ), f"invalid type assetstore: {assetstore}"
         assert storeload_config is not None, "storeload_config is None"
-        assert (
-            storeload_config.mode == "cos_pull"
-        ), f"Only 'cos_pull' mode is supported for COS in LSF. Got: {storeload_config.mode}"
+        self._warn_non_default_mode(storeload_config, uri)
 
         cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
         assert isinstance(cosuri, CosURI), f"invalid cosuri: {cosuri}"
@@ -1514,6 +1512,7 @@ class Lsf(Environment):
         """
         Copy folder/file from cluster filesystem to a COS bucket.
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
 

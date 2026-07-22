@@ -116,15 +116,18 @@ def test_absolute_and_templated_env_uris_are_allowed():
 
 
 # --- runtime guard (base envstore methods) ----------------------------------
-# The base methods don't touch instance state for the relative check, so we can
-# invoke the unbound coroutines with a dummy ``self``.
+# The base methods touch instance state only via ``self._warn_non_default_mode``
+# (a no-op when no special mode is set), so a lightweight stub ``self`` carrying
+# that method lets us invoke the unbound coroutines to exercise the relative-path
+# guard in isolation.
+_DUMMY_SELF = SimpleNamespace(_warn_non_default_mode=lambda store_config, uri: None)
 
 
 def test_pushasset_envstore_rejects_relative():
     with pytest.raises(ValueError, match="relative env://"):
         asyncio.run(
             Environment.pushasset_envstore(
-                None, binding={"path": "/x"}, uri="env:rel/out"
+                _DUMMY_SELF, binding={"path": "/x"}, uri="env:rel/out"
             )
         )
 
@@ -132,7 +135,7 @@ def test_pushasset_envstore_rejects_relative():
 def test_pushasset_envstore_allows_absolute():
     uri = asyncio.run(
         Environment.pushasset_envstore(
-            None, binding={"path": "/x"}, uri="env:///abs/out"
+            _DUMMY_SELF, binding={"path": "/x"}, uri="env:///abs/out"
         )
     )
     assert "abs/out" in str(uri)
@@ -140,12 +143,12 @@ def test_pushasset_envstore_allows_absolute():
 
 def test_pullasset_envstore_rejects_relative():
     with pytest.raises(ValueError, match="relative env://"):
-        asyncio.run(Environment.pullasset_envstore(None, uri="env:rel/in"))
+        asyncio.run(Environment.pullasset_envstore(_DUMMY_SELF, uri="env:rel/in"))
 
 
 def test_pullasset_envstore_allows_absolute():
     binding_config, step = asyncio.run(
-        Environment.pullasset_envstore(None, uri="env:///abs/in")
+        Environment.pullasset_envstore(_DUMMY_SELF, uri="env:///abs/in")
     )
     assert step is None
     assert binding_config["binding"]["path"] == "/abs/in"

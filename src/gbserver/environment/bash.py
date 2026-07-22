@@ -33,7 +33,11 @@ from gbserver.environment.environment import (
     Environment,
     EventLogLineParserConfig,
 )
-from gbserver.environment.local_assets import get_hf_cache_dir, pull_asset_hfstore
+from gbserver.environment.local_assets import (
+    get_hf_cache_dir,
+    pull_asset_hfstore,
+    push_asset_hfstore,
+)
 from gbserver.monitoring.logfile_monitor import LogFileMonitor
 from gbserver.monitoring.streams.stream_factory import make_stream
 from gbserver.types.buildconfig import BuildTargetStepConfig
@@ -274,11 +278,12 @@ class Bash(Environment):
         self: Self,
         uri: URI,
         binding: Optional[Any] = None,
-        # storeload_config: Optional[StoreLoad] = None,
+        storeload_config=None,
         # assetstore: Optional[Assetstore] = None,
         # secrets: Optional[dict] = None,
         **kwargs,
     ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
+        self._warn_non_default_mode(storeload_config, uri)
         if isinstance(uri, str):
             uri = URI.get_uri(uri)
         assert uri.uri is not None, "the URI is None"
@@ -299,6 +304,7 @@ class Bash(Environment):
         **kwargs,
     ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
         """Download an HF model snapshot and bind as a local path."""
+        self._warn_non_default_mode(storeload_config, uri)
         local_path = pull_asset_hfstore(uri, assetstore, storeload_config)
         binding_config = {BINDING_KEY: {"path": str(local_path)}}
         return binding_config, None
@@ -308,13 +314,54 @@ class Bash(Environment):
         """Resolve HF model cache directory from config or default."""
         return get_hf_cache_dir(storeload_config)
 
+    async def pushasset_hfstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        uri: Optional[Any] = None,
+        assetstore=None,
+        run_metadata=None,
+        storepush_config=None,
+        **_kwargs,
+    ) -> Any:
+        """Upload a local file/dir to a HuggingFace repo (hf:// output).
+
+        Unlike Docker, the bash binding ``path`` is already a host path, so it is
+        pushed directly with no container-path translation. Delegates to the
+        shared :func:`push_asset_hfstore` helper.
+
+        :param binding: Dict carrying the artifact's local ``path``.
+        :param binding_id: Output binding name, included in the commit message.
+        :param uri: Target ``hf://`` URI (string or ``HfURI``).
+        :param assetstore: ``Hfstore`` whose secrets supply the HF token.
+        :param run_metadata: ``EntityRunMetadata`` with build/target identifiers.
+        :param storepush_config: Environment-level push config; ``mode`` must be
+            unset or ``"default"``.
+        :returns: The resolved ``HfURI`` after a successful push.
+        :raises ValueError: on a non-'default' mode, or a binding without 'path'.
+        """
+        self._warn_non_default_mode(storepush_config, uri)
+        if not isinstance(binding, dict) or "path" not in binding:
+            raise ValueError(f"binding must be a dict with 'path', got: {binding}")
+        return push_asset_hfstore(
+            src=binding["path"],
+            binding_id=binding_id,
+            uri=uri,
+            assetstore=assetstore,
+            run_metadata=run_metadata,
+        )
+
     async def pushasset_filestore(
         self: Self,
         binding: Any,
         uri: Optional[URI] = None,
         base_uri: Optional[URI] = None,
+        storepush_config=None,
         **kwargs,
     ) -> Any:
+        self._warn_non_default_mode(
+            storepush_config, uri if uri is not None else base_uri
+        )
         if uri is None and base_uri is None:
             return None
         # The binding is the artifact location, either a {"path": ...} dict or a

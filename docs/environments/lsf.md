@@ -52,22 +52,22 @@ config:
 
 assetstores:
   - store_uri: hf://huggingface.co/my-org
-    load:
-      - mode: hf_pull               # Injects an hfpull built-in step before the main job.
+    pull:
+      - mode: default              # Dispatch is by store type (hf) — injects the hfpull built-in step.
         config:
           cache_path: /gpfs/cache/hf    # Required. Cluster path where HF data is cached.
           step_uri: space://steps/hfpull  # Optional override of the hfpull step URI.
     push:
-      - mode: hf_push
+      - mode: default
         config:
           step_uri: space://steps/hfpush
   - store_uri: cos://my-bucket
-    load:
-      - mode: cos_pull              # Injects a cosrclone built-in step.
+    pull:
+      - mode: default              # Dispatch is by store type (cos) — injects the cosrclone step.
         config:
           cache_path: /gpfs/cache/cos   # Required. Cluster path where COS data is downloaded.
     push:
-      - mode: cos_push
+      - mode: default
 ```
 
 ## `step.yaml` — launcher and monitor types
@@ -135,12 +135,12 @@ config:
     max_retries: 3
 assetstores:
   - store_uri: hf://huggingface.co/my-org
-    load:
-      - mode: hf_pull
+    pull:
+      - mode: default
         config:
           cache_path: /gpfs/cache/hf
     push:
-      - mode: hf_push
+      - mode: default
 ```
 
 ### `step.yaml`
