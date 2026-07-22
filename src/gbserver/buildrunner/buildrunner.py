@@ -164,6 +164,14 @@ class BuildRunner(AbstractBuildRunner):
         # __cancel_build_run may run on the BuildWatcher thread via stop().
         self._retry_chain_build_ids: List[str] = []
         self._retry_chain_lock = threading.Lock()
+        # Serializes status transitions (__update_stored_build_status). The build
+        # runs on the worker thread while stop()/stop_and_fail() run on another
+        # thread; without this, the worker's natural finalize (e.g. a concurrent
+        # SUCCESS) can interleave with a stop-driven finalize and leave the build
+        # and its targets/steps/artifacts in disagreeing states (the build status
+        # is written unconditionally, but entity finalization only touches
+        # unfinished entities).
+        self._finalize_lock = threading.Lock()
 
     def stop(self: Self) -> None:
         """Stop the building thread if it was started."""
@@ -176,11 +184,18 @@ class BuildRunner(AbstractBuildRunner):
         """Stop the running build and mark it FAILED.
 
         Public entrypoint intended to be called from another thread (e.g. a
-        SIGTERM handler) while start_and_wait() runs. The build is marked FAILED
-        *before* cancellation is signalled so the terminal FAILED status is not
-        overwritten by the worker loop's own CANCELLED update when it observes the
-        stop_event (finalize_build_status refuses to change one finished status to
-        another, so whichever thread writes first would otherwise win).
+        SIGTERM handler) while start_and_wait() runs.
+
+        Two mechanisms keep the terminal status consistent:
+          - ``_finalize_lock`` (held inside __update_stored_build_status) serializes
+            this FAILED write against the worker thread's own natural finalize (e.g.
+            a build completing SUCCESS at the same instant), so the build and its
+            targets/steps/artifacts can't settle on disagreeing statuses. Whichever
+            finalize runs first wins; the other sees a finished status and is
+            skipped by finalize_build_status's is_finished() guard.
+          - FAILED is written *before* cancellation is signalled (below), so the
+            worker loop's post-stop_event CANCELLED write also finds the build
+            already FAILED and skips it. Reversing the order would let CANCELLED win.
 
         Args:
             failure_reason (str): reason recorded on the build for the failure.
@@ -1513,8 +1528,36 @@ Download : {download_msg}
         failure_reason: str = "",
         unfinished_should_update: Optional[Callable[[StoredBuild], bool]] = None,
     ) -> Optional[StoredBuild]:
-        """Update the inmemory and instorage StoredBuild with the new status, with special handling
-        for finished status value to update targets and steps in the associated build_run, if present.
+        """Update the stored build status, serialized against concurrent finalizes.
+
+        Thin wrapper holding ``_finalize_lock`` so a status transition driven from
+        another thread (stop()/stop_and_fail()) cannot interleave with the worker
+        thread's natural finalize; see ``_finalize_lock`` in __init__. Delegates to
+        ``__update_stored_build_status_locked``.
+
+        Args:
+            status (Status): the new build status.
+            failure_reason (str): applied if status is FAILED.
+            unfinished_should_update: use only for unfinished status values.
+
+        Return the updated build if the update was successful or None.
+        """
+        with self._finalize_lock:
+            return self.__update_stored_build_status_locked(
+                status, failure_reason, unfinished_should_update
+            )
+
+    def __update_stored_build_status_locked(
+        self: Self,
+        status: Status,
+        failure_reason: str = "",
+        unfinished_should_update: Optional[Callable[[StoredBuild], bool]] = None,
+    ) -> Optional[StoredBuild]:
+        """Body of __update_stored_build_status. Must be called with _finalize_lock held.
+
+        Updates the inmemory and instorage StoredBuild with the new status, with
+        special handling for a finished status value to update targets and steps in
+        the associated build_run, if present.
 
         Args:
             status (Status): _description_
