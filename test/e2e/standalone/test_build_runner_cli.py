@@ -276,9 +276,7 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
     @pytest.mark.timeout(180)
     def test_cli_sigint_cancels_build(self, tmp_path):
         """SIGINT (Ctrl+C) during a running build marks it CANCELLED, exit 0."""
-        rc = self._run_build_runner(
-            _LONGRUNNING_BUILD_DIR, tmp_path, sig=signal.SIGINT
-        )
+        rc = self._run_build_runner(_LONGRUNNING_BUILD_DIR, tmp_path, sig=signal.SIGINT)
         assert self._final_build_status() == Status.CANCELLED
         # A deliberate cancel is a clean outcome.
         assert rc == 0
