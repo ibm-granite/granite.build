@@ -1,0 +1,17 @@
+granite.build:
+  name: bash-cli-success
+  # Minimal 1-step bash build used by the gbserver build-runner CLI e2e test
+  # (test/e2e/standalone/test_build_runner_cli_signals.py). The command exits 0
+  # so the target succeeds and the build completes SUCCESS.
+  targets:
+    echo-target:
+      allow_unknown: true
+      environment_uri: space://environments/bash
+      steps:
+        # General-purpose bash `command` step runs an arbitrary shell command.
+        - step_uri: space://steps/command
+          config:
+            command_config:
+              command: "echo hello"
+            compute_config:
+              num_nodes: 1
