@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 import click
+from click.core import ParameterSource
 
 from gbserver.asset.assetstore import Assetstore
 from gbserver.buildrunner.build_utils import finalize_build_status
@@ -87,6 +88,37 @@ def load_build(
         stored_build.targets,
     )
     return stored_build
+
+
+#: Options that all select the build's space; at most one may be provided.
+_SPACE_OPTION_NAMES = ("space_name", "space_config_uri", "space_dir")
+
+
+def _check_space_options_exclusive() -> None:
+    """Ensure at most one space-selecting option was explicitly provided.
+
+    ``--space-name``, ``--space-config-uri`` and ``--space-dir`` all choose the
+    build's space, so only one may be set. ``--space-name`` has a default, so an
+    option is only counted when the user set it explicitly (command line or
+    environment), not when it falls back to its default. This is enforced here
+    rather than via ``MutexOption`` because that helper matches option names
+    without normalizing hyphens to underscores, so it currently never fires.
+
+    Raises:
+        click.UsageError: if more than one of the space options was explicitly
+            provided.
+    """
+    ctx = click.get_current_context()
+    provided = [
+        name
+        for name in _SPACE_OPTION_NAMES
+        if ctx.get_parameter_source(name) != ParameterSource.DEFAULT
+    ]
+    if len(provided) > 1:
+        flags = ", ".join("--" + name.replace("_", "-") for name in provided)
+        raise click.UsageError(
+            f"Options {flags} are mutually exclusive; provide only one."
+        )
 
 
 def _apply_termination(build_runner: BuildRunner, signum: int) -> None:
@@ -212,7 +244,15 @@ def run_build_handling_signals(build_runner: BuildRunner) -> None:
 )
 @click.option(
     "--space-config-uri",
-    help="URI pointing to a space assigned to the build. Overrides --space-name.",
+    help="URI pointing to a space assigned to the build. Mutually exclusive with "
+    "--space-name and --space-dir.",
+)
+@click.option(
+    "--space-dir",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True),
+    help="Path to a local space directory (a directory containing a space.yaml). "
+    "Convenience form of --space-config-uri for a file-based space; resolved to a "
+    "file:// URI. Mutually exclusive with --space-name and --space-config-uri.",
 )
 @click.option(
     "--gh-api-endpoint",
@@ -260,6 +300,7 @@ def cli(
     build_dir: Path,
     asset_stores_dir: Path,
     space_config_uri: Optional[str],
+    space_dir: Optional[str],
     ignore_build_not_pending: bool,
     target: Optional[list[str]],
     monitoring_interval: int,
@@ -269,6 +310,8 @@ def cli(
     dry_run: bool = False,
 ):
     """Start build in build storage or loaded from a specified directory"""
+    _check_space_options_exclusive()
+
     if asset_stores_dir:
         logger.info("loading assets from path: %s", asset_stores_dir)
         Assetstore.load_assetstores_from_dir(Path(asset_stores_dir))
@@ -322,6 +365,13 @@ def cli(
         )
         if stored_build is None:
             return  # And error message was already issued
+
+    # --space-dir is a convenience form of --space-config-uri for a local,
+    # file-based space directory; resolve it to an absolute file:// URI (the
+    # two options are mutually exclusive, so only one is ever set).
+    if space_dir is not None:
+        space_config_uri = Path(space_dir).resolve().as_uri()
+        logger.info("using space directory %s as space URI %s", space_dir, space_config_uri)
 
     # Start the build.
     build_runner = BuildRunner(
