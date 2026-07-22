@@ -151,8 +151,24 @@ def run_build_handling_signals(build_runner: BuildRunner) -> None:
     Args:
         build_runner (BuildRunner): the configured BuildRunner whose build should
             be run.
+
+    Raises:
+        Exception: re-raises on the main thread any exception raised by
+            ``start_and_wait`` on the background thread (e.g. a storage failure or
+            a re-raised build exception). Without this, the exception would go to
+            threading.excepthook, ``join()`` would return normally, and the CLI
+            would exit 0 on a build that never ran.
     """
     received: dict[str, int] = {}
+    error: dict[str, BaseException] = {}
+
+    def _run_build():
+        # Capture any failure so it can be re-raised on the main thread after
+        # join(); a bare thread target would otherwise swallow it (exit 0).
+        try:
+            build_runner.start_and_wait()
+        except Exception as exc:  # noqa: BLE001 - re-raised verbatim below
+            error["exc"] = exc
 
     def _record_signal(signum, _frame):
         # Keep the handler tiny; the main loop below does the real work.
@@ -160,9 +176,7 @@ def run_build_handling_signals(build_runner: BuildRunner) -> None:
 
     prev_int = signal.signal(signal.SIGINT, _record_signal)
     prev_term = signal.signal(signal.SIGTERM, _record_signal)
-    build_thread = threading.Thread(
-        target=build_runner.start_and_wait, name="build-runner-cli"
-    )
+    build_thread = threading.Thread(target=_run_build, name="build-runner-cli")
     try:
         build_thread.start()
         while build_thread.is_alive():
@@ -175,6 +189,12 @@ def run_build_handling_signals(build_runner: BuildRunner) -> None:
     finally:
         signal.signal(signal.SIGINT, prev_int)
         signal.signal(signal.SIGTERM, prev_term)
+
+    # Propagate a build/storage failure so the CLI exits non-zero (a graceful
+    # SIGINT/SIGTERM leaves start_and_wait returning normally, so nothing is
+    # captured and the caller proceeds to log the final status as before).
+    if "exc" in error:
+        raise error["exc"]
 
 
 @click.command(context_settings={"show_default": True})

@@ -102,3 +102,34 @@ def test_default_signal_handlers_restored() -> None:
 
     assert signal.getsignal(signal.SIGINT) is before_int
     assert signal.getsignal(signal.SIGTERM) is before_term
+
+
+class _RaisingBuildRunner:
+    """Stand-in whose ``start_and_wait`` fails (e.g. a storage error)."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def start_and_wait(self) -> None:
+        raise self._exc
+
+
+@pytest.mark.timeout(30)
+def test_build_failure_propagates() -> None:
+    """A failure in start_and_wait is re-raised on the main thread.
+
+    The build runs on a background thread; without re-raising, the exception would
+    hit threading.excepthook, join() would return normally, and the CLI would exit
+    0 on a build that never ran.
+    """
+    boom = ValueError("Storage of build failed without error.")
+    before_int = signal.getsignal(signal.SIGINT)
+    before_term = signal.getsignal(signal.SIGTERM)
+
+    with pytest.raises(ValueError) as excinfo:
+        run_build_handling_signals(_RaisingBuildRunner(boom))  # type: ignore[arg-type]
+
+    assert excinfo.value is boom  # re-raised verbatim
+    # Handlers are still restored even on the failure path.
+    assert signal.getsignal(signal.SIGINT) is before_int
+    assert signal.getsignal(signal.SIGTERM) is before_term
