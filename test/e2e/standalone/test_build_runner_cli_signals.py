@@ -49,7 +49,6 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
-
 from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbserver.storage.sql.engine_cache import get_singleton_engine_cache
@@ -67,7 +66,9 @@ from gbserver.types.status import Status
 # test/e2e/standalone/<this file>  ->  repo root is three parents up from the dir.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SPACE_DIR = _REPO_ROOT / "configurations" / "spaces" / "local"
-_BUILD_ROOT = _REPO_ROOT / "test-data" / "e2e" / "standalone" / "build_runner_cli_signals"
+_BUILD_ROOT = (
+    _REPO_ROOT / "test-data" / "e2e" / "standalone" / "build_runner_cli_signals"
+)
 _SUCCESS_BUILD_DIR = _BUILD_ROOT / "success"
 _LONGRUNNING_BUILD_DIR = _BUILD_ROOT / "longrunning"
 
@@ -85,9 +86,9 @@ _SUCCESS_EXIT_TIMEOUT = 120
 _skip_reason = (
     "gbserver CLI not on PATH"
     if shutil.which("gbserver") is None
-    else "configurations/spaces/local space not found"
-    if not _SPACE_DIR.exists()
-    else ""
+    else (
+        "configurations/spaces/local space not found" if not _SPACE_DIR.exists() else ""
+    )
 )
 pytestmark = [
     pytest.mark.standalone,
@@ -236,9 +237,8 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
         """
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if (
-                log_file.exists()
-                and _RUNNING_MARKER in log_file.read_text(errors="ignore")
+            if log_file.exists() and _RUNNING_MARKER in log_file.read_text(
+                errors="ignore"
             ):
                 return True
             time.sleep(0.5)

@@ -371,7 +371,9 @@ def cli(
     # two options are mutually exclusive, so only one is ever set).
     if space_dir is not None:
         space_config_uri = Path(space_dir).resolve().as_uri()
-        logger.info("using space directory %s as space URI %s", space_dir, space_config_uri)
+        logger.info(
+            "using space directory %s as space URI %s", space_dir, space_config_uri
+        )
 
     # Start the build.
     build_runner = BuildRunner(
