@@ -20,7 +20,7 @@ config:
   cluster_ssh_configs:
     lsf:
       - Host: bluevela
-        HostName: login3.bluevela.rmf.ibm.com
+        HostName: login4.bluevela.rmf.ibm.com
         User: granitebuild
         IdentityFile: ~/.ssh/ibm-bluevela.key
         # IdentityKey: BV_SSH_PRIVATE_KEY 
