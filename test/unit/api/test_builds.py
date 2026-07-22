@@ -14,13 +14,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for POST /builds/ identity binding (submit_build).
+"""Unit tests for POST /builds/ and POST /builds/validate identity binding.
 
-req.username is the identity the submitted build runs as and whose per-user
-secrets get injected into it (HackerOne 3875452). submit_build must reject a
-caller submitting a build under a DIFFERENT username unless the caller is a
-space/super admin explicitly impersonating that user — the same
-confirm_space_write_access gate PUT /builds/{id}/update already applies.
+req.username is the identity a submitted or validated build runs/resolves
+secrets as (HackerOne 3875452 for submit_build; the same pattern was found
+unfixed in validate_build during a follow-up audit — validate_build had no
+Request param at all, so it couldn't check identity, and its space_uri path
+bypasses space storage entirely). Both must reject a caller acting under a
+DIFFERENT username unless the caller is a space/super admin explicitly
+impersonating that user — the same confirm_space_write_access gate
+PUT /builds/{id}/update already applies.
 
 test/conftest.py's autouse `_mock_space_access` fixture stubs both
 confirm_space_write_access (in this module) and has_space_write_access (in
@@ -31,13 +34,19 @@ restores both real functions for the duration of each test below.
 
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from gbserver.api import builds as builds_module
-from gbserver.api.builds import BuildSubmitRequest, submit_build
+from gbserver.api.builds import (
+    BuildSubmitRequest,
+    BuildValidateRequest,
+    BuildValidation,
+    submit_build,
+    validate_build,
+)
 from gbserver.api.utils import (
     confirm_space_write_access as _real_confirm_space_write_access,
 )
@@ -134,3 +143,83 @@ def test_submit_build_allows_admin_impersonation():
             _submit_req(VICTIM),
         )
     assert resp.build_id
+
+
+# ------------------------------------------------------------------ validate_build
+
+_NO_OP_VALIDATION = patch.object(
+    BuildValidation,
+    "validate_build_archive",
+    return_value=MagicMock(is_valid=lambda: True, model_dump=lambda: {}),
+)
+
+
+def _validate_req(username: str, space_name: str = "", space_uri: str = ""):
+    return BuildValidateRequest(
+        build_archive="dGVzdA==",
+        username=username,
+        space_name=space_name,
+        space_uri=space_uri,
+    )
+
+
+def test_validate_build_rejects_forged_username_via_space_name():
+    with (
+        _patched_storage(),
+        _real_authz(),
+        _NO_OP_VALIDATION,
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            validate_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _validate_req(VICTIM, space_name=SPACE),
+            )
+        assert exc.value.status_code == 401
+
+
+def test_validate_build_rejects_forged_username_via_space_uri():
+    """space_uri bypasses space storage entirely, so there is no space to
+    check admin-ness against — only super-admin can impersonate here. This
+    path calls is_super_admin directly (bound into builds.py's own namespace
+    at import time, not utils.py's), so that's what must be patched."""
+    with (
+        _patched_storage(),
+        patch("gbserver.api.builds.is_super_admin", return_value=False),
+        _NO_OP_VALIDATION,
+    ):
+        with pytest.raises(HTTPException) as exc:
+            validate_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _validate_req(VICTIM, space_uri="git://example/space.git"),
+            )
+        assert exc.value.status_code == 401
+
+
+def test_validate_build_allows_self_validation_via_space_uri():
+    with (
+        _patched_storage(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        _NO_OP_VALIDATION,
+    ):
+        resp = validate_build(
+            _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+            _validate_req(ATTACKER, space_uri="git://example/space.git"),
+        )
+    assert resp.status_code == 200
+
+
+def test_validate_build_allows_admin_impersonation_via_space_name():
+    with (
+        _patched_storage(),
+        _real_authz(),
+        _NO_OP_VALIDATION,
+        patch("gbserver.api.utils.is_super_admin", return_value=True),
+        patch("gbserver.api.utils.is_space_admin", return_value=True),
+    ):
+        resp = validate_build(
+            _fake_request("admin_x", "admin_x@example.com"),
+            _validate_req(VICTIM, space_name=SPACE),
+        )
+    assert resp.status_code == 200

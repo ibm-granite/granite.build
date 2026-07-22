@@ -37,7 +37,7 @@ import pytest
 from fastapi import HTTPException
 
 from gbserver.api import artifacts as artifacts_module
-from gbserver.api.artifacts import decode_uri
+from gbserver.api.artifacts import decode_uri, register_artifact
 from gbserver.api.utils import (
     confirm_space_write_access as _real_confirm_space_write_access,
 )
@@ -155,3 +155,67 @@ def test_decode_uri_by_uri_requires_no_auth_and_touches_no_storage():
         )
     get_storage.assert_not_called()
     assert resp.uri == "hf://huggingface.co/models/anyone/anything"
+
+
+# ------------------------------------------------------------------ register_artifact
+
+
+def _new_artifact(username: str) -> ArtifactRegistration:
+    return ArtifactRegistration(
+        type=ArtifactType.MODEL,
+        uri="hf://huggingface.co/models/team-b/new-model",
+        space_name=VICTIM_SPACE,
+        username=username,
+    )
+
+
+def _registry_storage():
+    fake_storage = SimpleNamespace(
+        artifact_registry=SimpleNamespace(add=lambda a: None)
+    )
+    return patch.object(
+        artifacts_module, "get_admin_storage", return_value=fake_storage
+    )
+
+
+def test_register_artifact_rejects_forged_username():
+    with (
+        _registry_storage(),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            register_artifact(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _new_artifact(VICTIM_OWNER),
+            )
+        assert exc.value.status_code == 401
+
+
+def test_register_artifact_allows_self_registration():
+    with (
+        _registry_storage(),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+    ):
+        resp = register_artifact(
+            _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+            _new_artifact(ATTACKER),
+        )
+    assert resp.registered.username == ATTACKER
+
+
+def test_register_artifact_allows_admin_impersonation():
+    with (
+        _registry_storage(),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=True),
+        patch("gbserver.api.utils.is_space_admin", return_value=True),
+    ):
+        resp = register_artifact(
+            _fake_request("admin_x", "admin_x@example.com"),
+            _new_artifact(VICTIM_OWNER),
+        )
+    assert resp.registered.username == VICTIM_OWNER
