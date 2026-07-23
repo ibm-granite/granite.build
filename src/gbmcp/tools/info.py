@@ -21,8 +21,8 @@ def info_version() -> str:
         JSON object with 'version' set to the installed gbmcp package version.
     """
     try:
-        # gbmcp now ships inside the granite.build distribution.
-        _v = version("granite.build")
+        # gbmcp ships inside the granite.build distribution (pip name: granite-build).
+        _v = version("granite-build")
     except Exception:
         _v = "unknown"
     result = json.dumps({"version": _v}, indent=4)

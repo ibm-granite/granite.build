@@ -6,6 +6,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# gbmcp is standalone-only, so set up its environment here — BEFORE the gbcli
+# import below freezes GB_ENVIRONMENT / GBSERVER_INSTANCE at import time. Pin
+# STANDALONE so gbmcp never silently routes to the PROD server (the default when
+# GB_ENVIRONMENT is unset). GBSERVER_PORT is the single source of truth for the
+# port; GBSERVER_HOST is derived from it, so a lone GBSERVER_PORT override
+# retargets both the build tools (client) and the gbserver we launch.
+import os
+
+os.environ["GB_ENVIRONMENT"] = "STANDALONE"
+os.environ.setdefault("GBSERVER_PORT", "8080")
+os.environ.setdefault(
+    "GBSERVER_HOST", f"http://127.0.0.1:{os.environ['GBSERVER_PORT']}"
+)
+
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -73,7 +87,7 @@ configureGBWorkingEnv()
 mcp = FastMCP(
     name="gbmcp",
     instructions=MCP_INSTRUCTIONS,
-    website_url="https://pages.github.ibm.com/granite-dot-build/",
+    website_url="https://github.com/ibm-granite/granite.build",
     providers=[
         FileSystemProvider(root=Path(__file__).parent / "tools"),
     ],

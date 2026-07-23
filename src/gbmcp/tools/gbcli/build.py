@@ -1,22 +1,17 @@
 import json
-import os
 import re
 import shutil
-import uuid
+import tempfile
 from typing import Dict
 
 from fastmcp.tools import tool
 from fastmcp.utilities.logging import get_logger
 
 from gbcli.client.client import GBClient
-from gbmcp.utils.build_id import resolve_build_id
 from gbmcp.utils.gbserver_errors import actionable_gbserver_errors
 from gbmcp.utils.output_filter import apply_output_filters
 
 logger = get_logger(__name__)
-
-TMP_ROOT_FOLDER = ".tmp"
-os.makedirs(TMP_ROOT_FOLDER, exist_ok=True)
 
 
 @tool(
@@ -92,9 +87,8 @@ def build_describe(
     """Return gbcli build describe output as JSON.
 
     Args:
-        build_id: Full or partial build UUID. Supply the full UUID when available
-            for reliable resolution. Partial IDs are matched by UUID prefix against
-            the build cache.
+        build_id: The build's full UUID. Partial-ID resolution isn't available in
+            standalone — pass the full UUID (use build_list to find it).
         space: Space name to scope the lookup.
         raw: If True, return the raw build definition (yaml) instead of parsed JSON.
         grep: Filter output lines by regex. Supports -Cn, -An, -Bn, -i, -v, -F, -w, -x, -c, -n, -o, -mN flags. Example: "-C2 status".
@@ -105,7 +99,6 @@ def build_describe(
     Returns:
         JSON object with 'build' and 'targets' fields, or raw YAML/JSON string if raw=True.
     """
-    build_id = resolve_build_id(build_id)
     result = GBClient.Build(None).build_describe(
         filename="",
         format="json",
@@ -143,9 +136,8 @@ def build_status(
     """Return gbcli build status output as JSON.
 
     Args:
-        build_id: Full or partial build UUID. Supply the full UUID when available
-            for reliable resolution. Partial IDs are matched by UUID prefix against
-            the build cache.
+        build_id: The build's full UUID. Partial-ID resolution isn't available in
+            standalone — pass the full UUID (use build_list to find it).
         grep: Filter output lines by regex. Supports -Cn, -An, -Bn, -i, -v, -F, -w, -x, -c, -n, -o, -mN flags.
         wc: If True, return only line and character count instead of full output.
         head: Return only the first N lines. Mutually exclusive with tail.
@@ -154,7 +146,6 @@ def build_status(
     Returns:
         JSON object with 'details', 'targets', 'history', and 'error' fields.
     """
-    build_id = resolve_build_id(build_id)
     details, targets, history, error = GBClient.Build(None).build_status(
         build_id=build_id,
         quiet=True,
@@ -164,7 +155,7 @@ def build_status(
         result_format="json",
     )
     logger.debug(f"build_status details: {details}")
-    logger.debug(f"build_status targets: {details}")
+    logger.debug(f"build_status targets: {targets}")
     output = json.dumps(
         {"details": details, "targets": targets, "error": error},
         indent=4,
@@ -182,7 +173,7 @@ def build_status(
 def build_log(
     build_id: str,
     runner: bool | None = None,
-    all: bool | None = None,
+    all_entries: bool | None = None,
     sort: str | None = None,
     page_size: int | None = None,
     page_index: int | None = None,
@@ -198,12 +189,11 @@ def build_log(
     """Return gbcli build log output as text.
 
     Args:
-        build_id: Full or partial build UUID. Supply the full UUID when available
-            for reliable resolution. Partial IDs are matched by UUID prefix against
-            the build cache.
+        build_id: The build's full UUID. Partial-ID resolution isn't available in
+            standalone — pass the full UUID (use build_list to find it).
         runner: If True, retrieve deeper build logs from the runner (e.g. step-level
             execution details). By default only the top-level build logs are returned.
-        all: If True, return all log entries (ignores pagination).
+        all_entries: If True, return all log entries (ignores pagination).
         sort: Sort order for log entries — 'asc' or 'desc'. Defaults to 'desc'; overridden by head/tail.
         page_size: Number of log entries per page. Overridden by head/tail.
         page_index: Zero-based page index for paginated results.
@@ -217,8 +207,8 @@ def build_log(
             Unlike text, grep supports regex and context lines.
         wc: If True, return only line and character count instead of full output.
     """
-    if sum(x is not None for x in (head, tail, all)) > 1:
-        raise ValueError("head, tail, and all are mutually exclusive")
+    if sum(x is not None for x in (head, tail, all_entries)) > 1:
+        raise ValueError("head, tail, and all_entries are mutually exclusive")
     if stream is not None and stream not in ("stdout", "stderr"):
         raise ValueError(f"stream must be 'stdout' or 'stderr', got '{stream}'")
     if sort is not None and sort not in ("asc", "desc"):
@@ -231,18 +221,25 @@ def build_log(
     if tail is not None:
         effective_sort = "desc"
         page_size = tail
-    if all is not None:
+    if all_entries is not None:
         effective_sort = "asc"
         page_size = None
 
     def output_format_plain(logs):
+        # Mirrors gbcli's renderer: each record's "text" is a JSON string; keep
+        # the records that carry a "log" line. Contentless records (heartbeats or
+        # status entries with empty text) are skipped; non-empty text that isn't
+        # JSON is a real schema change and is allowed to surface rather than be
+        # silently swallowed.
         log_entries = []
         for log in logs:
-            parsed = json.loads(log.get("text")) if log.get("text") else None
-            log_entry = parsed.get("log")
-            if isinstance(log_entry, str):
-                log_entry = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log_entry)
-            log_entries.append(log_entry)
+            text = log.get("text")
+            if not text:
+                continue
+            log_line = json.loads(text).get("log")
+            if log_line is None:
+                continue
+            log_entries.append(re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log_line))
         return log_entries
 
     def echo_callback(callback_event: str, callback_args: Dict):
@@ -254,13 +251,12 @@ def build_log(
             case _:
                 pass
 
-    build_id = resolve_build_id(build_id)
     final_results = []
     logs = GBClient.Build(None).build_log(
         build_id=build_id,
         id_format="uuid",
         runner=runner,
-        all=bool(all),
+        all=bool(all_entries),
         sort=effective_sort,
         page_size=page_size,
         page_index=page_index,
@@ -268,10 +264,10 @@ def build_log(
         text=text,
         build_step_id=build_step_id,
         build_step_name=build_step_name,
-        callback=echo_callback if all else None,
+        callback=echo_callback if all_entries else None,
     )
 
-    if not all:
+    if not all_entries:
         log_entries = output_format_plain(logs)
         if effective_sort == "desc":
             log_entries.reverse()
@@ -305,18 +301,15 @@ def build_start(
     Returns:
         JSON with the newly created build ID.
     """
-    TMP_FOLDER = None
+    tmp_dir = tempfile.mkdtemp(prefix="gbmcp-build-")
     try:
-        TMP_FOLDER = f"{TMP_ROOT_FOLDER}/{uuid.uuid4().hex}"
-        os.makedirs(TMP_FOLDER, exist_ok=True)
-        TMP_FILE = f"{TMP_FOLDER}/build.yml"
-
-        with open(TMP_FILE, "w") as f:
+        tmp_file = f"{tmp_dir}/build.yml"
+        with open(tmp_file, "w") as f:
             f.write(file_content)
 
         result = GBClient.Build(None).build_start(
             quiet=True,
-            filename=TMP_FILE,
+            filename=tmp_file,
             space=space,
             params=params or [],
             tags=tags or [],
@@ -325,8 +318,7 @@ def build_start(
         logger.debug(f"build_start result: {result}")
         return json.dumps(result, indent=4, default=str)
     finally:
-        if TMP_FOLDER:
-            shutil.rmtree(TMP_FOLDER)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @tool(description="Cancel a build.")
@@ -335,15 +327,13 @@ def build_cancel(build_id: str, space: str | None = None) -> str:
     """Return gbcli build cancel output as JSON.
 
     Args:
-        build_id: Full or partial build UUID. Supply the full UUID when available
-            for reliable resolution. Partial IDs are matched by UUID prefix against
-            the build cache.
+        build_id: The build's full UUID. Partial-ID resolution isn't available in
+            standalone — pass the full UUID (use build_list to find it).
         space: Space name to scope the lookup.
 
     Returns:
         JSON object with the cancellation result.
     """
-    build_id = resolve_build_id(build_id)
     result = GBClient.Build(None).build_cancel(
         build_id=build_id,
         id_format="uuid",

@@ -18,16 +18,20 @@ def gbserver_status() -> str:
     p = gp.port()
     running = gp.is_running(p)
     reachable = gp.is_reachable(p)
-    return json.dumps(
-        {
-            "port": p,
-            "url": gp.base_url(p),
-            "process_running": running,
-            "reachable": reachable,
-            "ready": running and reachable,
-        },
-        indent=2,
-    )
+    result = {
+        "port": p,
+        "url": gp.base_url(p),
+        "process_running": running,
+        "reachable": reachable,
+        "ready": running and reachable,
+    }
+    if not reachable and gp.foreign_on_port(p):
+        result["note"] = (
+            f"Port {p} is held by another process (not gbserver). Its port is fixed "
+            "when this MCP server starts and can't change mid-session — set "
+            "GBSERVER_PORT to a free port and restart the MCP server."
+        )
+    return json.dumps(result, indent=2)
 
 
 @tool(description="Start the local gbserver backend if not running; waits until ready.")
@@ -48,6 +52,12 @@ def gbserver_start() -> str:
     ready = gp.wait_for_ready(p)
     result = {"started": True, "ready": ready, "port": p, "url": gp.base_url(p)}
     if not ready:
+        if gp.foreign_on_port(p):
+            result["error"] = (
+                f"Port {p} is held by another process, so gbserver could not bind it. "
+                "Its port is fixed when this MCP server starts — set GBSERVER_PORT to "
+                "a free port and restart the MCP server."
+            )
         result["log_tail"] = gp.tail(gp.log_path(p), 40)
     return json.dumps(result, indent=2)
 

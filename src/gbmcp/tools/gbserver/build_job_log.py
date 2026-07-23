@@ -19,6 +19,7 @@ Only registered in standalone mode (see the removal in `utils/lifespan.py`).
 import glob
 import json
 import os
+import re
 
 from fastmcp.tools import tool
 from fastmcp.utilities.logging import get_logger
@@ -43,6 +44,15 @@ def gb_home_dir() -> str:
     default).
     """
     return os.environ.get("GB_HOME_DIR", os.path.expanduser("~/.granite.build"))
+
+
+def _safe_mtime(path: str) -> float:
+    """mtime for sorting; if a job.log is rotated/removed between glob and sort,
+    sort it last instead of crashing the whole call."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return -1.0
 
 
 @tool(
@@ -74,6 +84,20 @@ def build_job_log(build_id: str, lines: int = 80, step: str | None = None) -> st
         "message": str}. If no job.log is found, job_log_path is null and
         message explains where it looked.
     """
+    build_id = build_id.strip()
+    if not re.fullmatch(r"[0-9a-fA-F-]+", build_id):
+        return json.dumps(
+            {
+                "job_log_path": None,
+                "tail": [],
+                "other_logs": [],
+                "message": (
+                    f"Invalid build_id {build_id!r}: expected a build UUID "
+                    "(hex digits and hyphens only)."
+                ),
+            },
+            indent=4,
+        )
     home = gb_home_dir()
     build_root = os.path.join(home, "workdir", f"llm-build-{build_id}")
     pattern = os.path.join(build_root + "*", "**", "outputs", "job.log")

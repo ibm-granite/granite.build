@@ -106,7 +106,7 @@ ibm = [
 # it's installed by default there; also available on its own as `[mcp]`.
 # httpx overlaps the `analytics` extra — pip de-dupes.
 mcp = [
-    "fastmcp",
+    "fastmcp>=3.4,<4",
     "httpx>=0.27",
 ]
 # gb-ui analytics service (gb_ui_backend) — routers included directly into gbserver

@@ -45,7 +45,7 @@ Ensure `gbserver_status()` is `ready`, then poll **`build_status(build_id)`**; d
 ## Packaging (`pyproject.toml`)
 
 - `[tool.setuptools.packages.find].include` includes `"gbmcp*"`.
-- `[project.optional-dependencies]`: `mcp = ["fastmcp", "httpx>=0.27", "sqlalchemy[asyncio]>=2.0", "asyncpg>=0.29", "boto3"]`. The `standalone` extra pulls `granite.build[mcp]`, so a standalone install includes gbmcp by default.
+- `[project.optional-dependencies]`: `mcp = ["fastmcp>=3.4,<4", "httpx>=0.27"]`. The `standalone` extra pulls `granite.build[mcp]`, so a standalone install includes gbmcp by default.
 - `[project.scripts]`: `gbmcp = "gbmcp.server:main"` (stdio).
 
 Install: `pip install 'granite.build[standalone]'` (Python ≥3.11; the default 3.9 fails on `sqlite_database`), or in a checkout `make standalone-venv PYTHON=python3.13`.

@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 
 from fastmcp.tools import tool
 from fastmcp.utilities.logging import get_logger
@@ -74,9 +75,11 @@ def secret_get(secret_name: str, space: str | None = None) -> str:
         Shell command string the user should run to view the secret value.
     """
     gb_env = os.environ.get("GB_ENVIRONMENT", "PROD")
-    cmd = f"export GB_ENVIRONMENT={gb_env} && gbcli secret get {secret_name}"
+    cmd = (
+        f"export GB_ENVIRONMENT={gb_env} && gbcli secret get {shlex.quote(secret_name)}"
+    )
     if space:
-        cmd += f" --space {space}"
+        cmd += f" --space {shlex.quote(space)}"
     else:
         cmd += " --personal"
     cmd += " --format json"
@@ -107,9 +110,9 @@ def secret_create(secret_name: str, space: str | None = None) -> str:
         Shell command string (with a <secret-value> placeholder) for the user to run.
     """
     gb_env = os.environ.get("GB_ENVIRONMENT", "PROD")
-    cmd = f"export GB_ENVIRONMENT={gb_env} && gbcli secret create {secret_name}"
+    cmd = f"export GB_ENVIRONMENT={gb_env} && gbcli secret create {shlex.quote(secret_name)}"
     if space:
-        cmd += f" --space {space}"
+        cmd += f" --space {shlex.quote(space)}"
     else:
         cmd += " --personal"
     cmd += " --value <secret-value>"
@@ -140,9 +143,9 @@ def secret_update(secret_name: str, space: str | None = None) -> str:
         Shell command string (with a <secret-value> placeholder) for the user to run.
     """
     gb_env = os.environ.get("GB_ENVIRONMENT", "PROD")
-    cmd = f"export GB_ENVIRONMENT={gb_env} && gbcli secret update {secret_name}"
+    cmd = f"export GB_ENVIRONMENT={gb_env} && gbcli secret update {shlex.quote(secret_name)}"
     if space:
-        cmd += f" --space {space}"
+        cmd += f" --space {shlex.quote(space)}"
     else:
         cmd += " --personal"
     cmd += " --value <secret-value>"

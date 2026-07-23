@@ -170,9 +170,9 @@ def _apply_grep(lines: list[str], opts: GrepOptions) -> list[str]:
         if opts.invert_match:
             hit = not hit
         if hit:
-            match_indices.append(i)
             if opts.max_count is not None and len(match_indices) >= opts.max_count:
                 break
+            match_indices.append(i)
 
     if not match_indices:
         return []

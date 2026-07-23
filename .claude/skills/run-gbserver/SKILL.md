@@ -22,6 +22,10 @@ The loop: `gbserver_status` → `gbserver_start` if needed → drive builds. No 
 - **When you wrap up, hand the stop decision to the user.** Tell them gbserver is **still running** and give the dashboard URL (from `gbserver_status`), and ask them to **let you know when they'd like it stopped**. Don't phrase it as "should I stop it now?" (that frames stopping as expected), and never `gbserver_stop` unprompted — leave it up until they ask.
 - It's a detached daemon, so it persists across sessions until stopped or a reboot (fine for a dev service). If the user wants a clean slate, `gbserver_stop`.
 
+## Port already in use
+
+If `gbserver_status` / `gbserver_start` reports the port is held by another (non-gbserver) process, gbserver can't bind it. The port is fixed at MCP-server launch, so it can't change mid-session — the user must **exit and relaunch** with a free port set, e.g. `GBSERVER_PORT=<free> claude`. Don't suggest `! … claude`: the `!` prefix runs *inside* the session, so it can't relaunch it.
+
 ## One-time install (prerequisite)
 
 `gbserver_start` launches the `gbserver` that ships alongside gbmcp, so gbmcp must already be installed — one of:

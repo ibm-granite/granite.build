@@ -19,6 +19,11 @@ DEFAULT_PORT = 8080
 REACHABLE_TIMEOUT = 2.0
 READY_TIMEOUT = 30.0
 
+# A gbserver-specific route used to confirm it's really gbserver answering the
+# port — not, say, another user's inference server on a shared box. A foreign
+# HTTP server 404s it, so we don't false-positive on it.
+READY_PATH = "/api/v1/spaces/spaces_for_user"
+
 
 def port() -> int:
     return int(os.environ.get("GBSERVER_PORT", DEFAULT_PORT))
@@ -66,12 +71,31 @@ def is_running(p: int | None = None) -> bool:
 
 
 def is_reachable(p: int | None = None, timeout: float = REACHABLE_TIMEOUT) -> bool:
+    """True only if *gbserver* answers on the port — not just any HTTP server.
+
+    Probes a gbserver-specific route so a foreign process holding the port
+    doesn't get mistaken for a ready gbserver.
+    """
+    p = p if p is not None else port()
+    try:
+        resp = httpx.get(f"{base_url(p)}{READY_PATH}", timeout=timeout)
+    except httpx.RequestError:
+        return False
+    return resp.status_code == 200
+
+
+def foreign_on_port(p: int | None = None, timeout: float = REACHABLE_TIMEOUT) -> bool:
+    """True if something answers HTTP on the port but it isn't gbserver.
+
+    Distinguishes "gbserver failed to start" from "another process already holds
+    this port" (common on shared machines).
+    """
     p = p if p is not None else port()
     try:
         httpx.get(base_url(p), timeout=timeout)
-        return True
     except httpx.RequestError:
         return False
+    return not is_reachable(p, timeout=timeout)
 
 
 def start(p: int | None = None) -> None:
