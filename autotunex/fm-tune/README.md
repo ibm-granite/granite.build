@@ -349,7 +349,7 @@ Train a model to follow instructions or perform specific tasks using input/outpu
 > DeepSpeed ZeRO-3 or FSDP `full_shard` (the drivers raise a clear error) — use
 > ZeRO-1/ZeRO-2, FSDP `SHARD_GRAD_OP`, or a single GPU.
 
-**Dataset format:** `input` / `output` columns with optional chat-template, `documents`, and `tools` support. See [`docs/dataset-sft.md`](docs/dataset-sft.md) for the full spec.
+**Dataset format:** `input` / `output` columns with optional chat-template, `documents`, and `tools` support.
 
 **Plain prompt / completion:**
 ```json
@@ -396,7 +396,7 @@ Align a model with human preferences using paired or binary preference data. No 
 | DPO | `dpo` | Direct Preference Optimization — learns from chosen/rejected pairs |
 | KTO | `kto` | Kahneman-Tversky Optimization — learns from binary good/bad labels |
 
-**Dataset format:** `prompt` / `chosen` / `rejected` (DPO) or `prompt` / `completion` / `label` (KTO). Both plain-string and conversational (chat-messages) forms are supported. See [`docs/dataset-offline-rl.md`](docs/dataset-offline-rl.md) for the full spec.
+**Dataset format:** `prompt` / `chosen` / `rejected` (DPO) or `prompt` / `completion` / `label` (KTO). Both plain-string and conversational (chat-messages) forms are supported.
 
 **DPO dataset format** (JSONL):
 ```json
@@ -450,7 +450,7 @@ def compute_score(data_source, solution_str, ground_truth, extra_info, **kwargs)
     return -1.0
 ```
 
-**Dataset format:** Parquet with `data_source` / `prompt` (messages list) / `reward_model` columns. See [`docs/dataset-online-rl.md`](docs/dataset-online-rl.md) for the full spec, reward-function wiring, and multi-task dispatch.
+**Dataset format:** Parquet with `data_source` / `prompt` (messages list) / `reward_model` columns.
 
 **Row shape** (one parquet row):
 ```json
@@ -481,11 +481,11 @@ python main.py \
 
 ## Dataset Preparation
 
-AutoTune accepts different dataset schemas depending on the training paradigm. File formats, required and optional columns, auto-detection rules, and worked examples are covered in dedicated docs:
+AutoTune accepts different dataset schemas depending on the training paradigm. The schema for each is summarized below; file formats, auto-detection rules, and worked examples appear in the per-paradigm sections above.
 
-- [SFT / LoRA / aLoRA / LoHa / LoKr / VeRA](docs/dataset-sft.md) — `input` / `output` schema with optional chat-template, `documents`, and `tools` columns.
-- [Offline RL — DPO / KTO](docs/dataset-offline-rl.md) — `prompt` / `chosen` / `rejected` (DPO) or `prompt` / `completion` / `label` (KTO); plain-string and conversational forms.
-- [Online RL — PPO / GRPO / DAPO (verl)](docs/dataset-online-rl.md) — parquet with `data_source` / `prompt` / `reward_model` columns and a companion `compute_score` reward function.
+- **SFT / LoRA / aLoRA / LoHa / LoKr / VeRA** — `input` / `output` schema with optional chat-template, `documents`, and `tools` columns.
+- **Offline RL — DPO / KTO** — `prompt` / `chosen` / `rejected` (DPO) or `prompt` / `completion` / `label` (KTO); plain-string and conversational forms.
+- **Online RL — PPO / GRPO / DAPO (verl)** — parquet with `data_source` / `prompt` / `reward_model` columns and a companion `compute_score` reward function.
 
 ## Distributed Training Backends
 
@@ -506,10 +506,6 @@ training_config:
 ### Online RL (verl)
 
 Online RL always uses FSDP internally via [verl](https://github.com/volcengine/verl) with vLLM for rollout generation. No separate backend configuration needed.
-
-## Recommended Resources
-
-For GPU sizing, DeepSpeed ZeRO-strategy selection, per-configuration memory estimates, training-time estimates across model sizes (350M–13B+), and a strategy-selection decision tree, see [`docs/RESOURCES.md`](docs/RESOURCES.md).
 
 ## Configuration
 
@@ -628,7 +624,7 @@ Dataset (FSDP driver):
                              (default) tokenizes once on the driver and has
                              each worker mmap the result. 'ray_data' runs a
                              distributed Ray Data pipeline and auto-shards
-                             across workers. See docs/lessons-learned.md.
+                             across workers.
 
 Tokenizer customization:
   --tokenizer_name_or_path PATH
@@ -753,15 +749,6 @@ fm-tune/
       driver_multi_trl_fsdp.py      # Multi-GPU DPO/KTO + FSDP (TRL)
       driver_multi_verl.py          # Multi-GPU PPO/GRPO/DAPO (verl + vLLM)
       _trl_compat.py                # TRL/verl API-drift compatibility shim
-
-  docs/
-    dataset-sft.md                  # SFT/PEFT dataset format
-    dataset-offline-rl.md           # DPO/KTO dataset format
-    dataset-online-rl.md            # verl (PPO/GRPO/DAPO) dataset format
-    RESOURCES.md                    # GPU sizing, DS strategy selection, time estimates
-    lessons-learned.md              # Debugging reference for common issues
-    verl-integration-notes.md       # verl config, memory levers, cleanup patterns
-    session-summary-2026-03.md      # Development history
 
   templates/                        # Cluster job submission templates (LSF, etc.)
   tests/                            # Pytest test suite

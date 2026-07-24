@@ -150,12 +150,12 @@ The bridge also hosts a **sub-service layer** (`api-bridge/services/`: `config_s
   - DMF: `LAKEHOUSE_TOKEN`, `DMF_CACHE`
   - MCP + Chat: `ENABLE_MCP`, `MCP_SERVER_URL`, `LITELLM_URL`, `LITELLM_API_KEY`, `LITELLM_MODEL`
   - Development: `DEV_MODE`, `LOG_LEVEL`
-- **Frontend** (`.env` in `ux/`): `PUBLIC_AUTOTUNEX_API_URL` (use `/local/fmtune/api` for local dev), `PUBLIC_BYPASS_AUTH`, `PUBLIC_USER_EMAIL`, `PUBLIC_USER_ROLE`, `PUBLIC_USER_TOKEN`
+- **Frontend** (`.env` in `ux/`): `PUBLIC_AUTOTUNEX_API_URL` (use `/local/fmtune/api` for local dev); `PUBLIC_DMF_UI_URL`, `PUBLIC_RITS_UI_URL` (optional "Open in…" links). Authentication is server-side (see below) — the frontend has no bypass variable.
 - **Bridge** (`.env` in `api-bridge/`): Same DB connection vars as API server. The bridge historically used `DB_SCHEMA` for the database name; it now also accepts `DB_NAME` (falls back `DB_SCHEMA` → `DB_NAME`), so both services can share a single deployment secret. The bridge requires TLS — it always connects with `ssl_verify_identity=True`, and `DB_KEY` (optional) supplies a client key path. Logging: `LOG_LEVEL` (DEBUG/INFO/WARNING/ERROR, default INFO) and `LOG_FORMAT` (`text` default, or `json` for log aggregators).
 - **GB Runner** (injected into remote builds): `AUTOTUNE_SERVER_BRIDGE_URL` — points remote jobs back at the API Bridge.
 
 ### Authentication
-OAuth/OIDC flow with IBM w3id. For local development, set `PUBLIC_BYPASS_AUTH=true` in `ux/.env` to skip auth. The API validates tokens via cookies (`email`, `token`, `role`).
+OAuth/OIDC flow with IBM w3id. Authentication is resolved server-side: when `OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`/`OIDC_SECURITY_ENDPOINT` are all unset (or `AUTOTUNEX_AUTH=dev`), the API falls back to a dev provider that authenticates every request as an admin — for local development only. The API validates tokens via cookies (`email`, `token`, `role`).
 
 ### Database Schema
 8 tables + 1 view defined in `api/data_models/autotune_latest.sql`:
@@ -166,7 +166,7 @@ OAuth/OIDC flow with IBM w3id. For local development, set `PUBLIC_BYPASS_AUTH=tr
 - Python 3.10+. No formal test framework is set up for the API — test manually via Swagger at `/fmtune/try`.
 - Frontend uses Carbon Design System components (`carbon-components-svelte`). Follow existing Carbon patterns for new UI work.
 - Database changes: add migration SQL files to `api/data_models/migrations/`, update `autotune_latest.sql` to match.
-- The `autotune` core training library is vendored in-tree at `fm-tune/` (package `autotune`) and installed from there in the Docker build (`pip install ./fm-tune[core]`). It is upstreamed from `github.ibm.com/ibm-research/fm-tune` (the `stage` branch).
+- The `autotune` core training library is vendored in-tree at `fm-tune/` (package `autotune`) and installed from there in the Docker build (`pip install ./fm-tune[core]`).
 - When adding new MCP tools in `mcp_server.py`, create short-lived service bundles via `_get_services()` — do NOT reach for FastAPI `Depends()` (the MCP tools run outside the request lifecycle).
 - Keep `chat_service.py` provider-agnostic where reasonable — it speaks to LiteLLM as an OpenAI-compatible proxy, which happens to front Claude.
 

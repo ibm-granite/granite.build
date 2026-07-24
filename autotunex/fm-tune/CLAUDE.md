@@ -175,7 +175,7 @@ Call from a `finally` block around `trainer.fit()`.
   - **Repartition is the primary fan-out lever.** Ray Data launches at most one stateless map task per input *block*, and a single source file usually reads as 1 block — so the driver calls `repartition(n, shuffle=False)` (a cheap split/combine, no full shuffle, no materialization) to split train/eval into ≈`concurrency` blocks before `map_batches`. Block count is clamped to the dataset row count, so tiny eval sets aren't over-partitioned (skipped entirely when ≤1 row). Without this, tokenization runs single-CPU regardless of cluster size.
   - `ray_data_concurrency` (int): number of parallel `map_batches` tasks. **Default (auto) = `floor(total_cluster_cpus) − num_workers`** (every CPU not reserved by this trial's GPU workers) via `compute_ray_data_sizing()`. Override via the `--ray_data_concurrency` CLI flag or the YAML training-config key.
   - `ray_data_num_cpus` (float, default 1.0): logical CPU budget per task; fractional values (e.g. 0.5) allow more concurrent tasks per physical CPU. Override via `--ray_data_num_cpus` or YAML.
-  - **Concurrent HPO caveat:** each trial computes the auto concurrency from the full cluster CPU count, unaware of sibling trials. `max_concurrent_trials` bounds trial count, but for large sweeps set `--ray_data_concurrency` explicitly to avoid cross-trial oversubscription. See `docs/RESOURCES.md`.
+  - **Concurrent HPO caveat:** each trial computes the auto concurrency from the full cluster CPU count, unaware of sibling trials. `max_concurrent_trials` bounds trial count, but for large sweeps set `--ray_data_concurrency` explicitly to avoid cross-trial oversubscription.
 
 ## Key Dependencies
 
@@ -185,5 +185,3 @@ torch 2.8.0, transformers 4.57.6, peft 0.18.0, trl 0.29.0, bitsandbytes >=0.48.0
 
 - `README.md` — project overview, quick start, CLI reference
 - `CONTRIBUTING.md` — contributor workflow, testing, PR process
-- `docs/RESOURCES.md` — GPU sizing guide for 3B/8B/30B on 8× A100
-- `docs/dataset-sft.md`, `docs/dataset-offline-rl.md`, `docs/dataset-online-rl.md` — dataset format references

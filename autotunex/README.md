@@ -149,7 +149,7 @@ See `autotunex-architecture.html` (static overview) and `autotunex-mindmap.html`
    # Datasets
    AUTOTUNE_DATASETS_PATH=path_to_store_datasets
 
-   # Authentication (optional — disable via PUBLIC_BYPASS_AUTH on the frontend)
+   # Authentication (optional — leave these unset to run without OIDC as a local dev admin)
    OIDC_CLIENT_ID=your_client_id
    OIDC_CLIENT_SECRET=your_client_secret
    OIDC_SECURITY_ENDPOINT=https://your-oidc-provider.com/oauth2
@@ -204,13 +204,12 @@ See `autotunex-architecture.html` (static overview) and `autotunex-mindmap.html`
    # Or point directly at a deployed environment:
    # PUBLIC_AUTOTUNEX_API_URL=/stage/fmtune/api
    # PUBLIC_AUTOTUNEX_API_URL=/prod/fmtune/api
-
-   # Development bypass (skip OIDC for local work)
-   PUBLIC_BYPASS_AUTH=true
-   PUBLIC_USER_EMAIL=test@ibm.com
-   PUBLIC_USER_ROLE=user            # 'user' or 'admin'
-   PUBLIC_USER_TOKEN=autotunex agent test
    ```
+
+   Authentication is handled server-side — the frontend trusts the API's
+   `/auth/validate` response, so there is no frontend bypass variable. To skip
+   OIDC for local work, leave the API server's `OIDC_*` vars unset (or set
+   `AUTOTUNEX_AUTH=dev`); see the API setup above.
 
 4. **Start the development server**:
    ```bash
