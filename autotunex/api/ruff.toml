@@ -1,0 +1,37 @@
+# Ruff configuration for the AutoTuneX API server.
+#
+# Scope: the hand-written API source (server.py, services/, routes/, auth.py,
+# etc.) and its tests. Generated/vendored/runtime output trees are excluded so
+# `ruff check .` and `ruff format .` only ever touch source we own.
+#
+# Rule set is intentionally ruff's default (pyflakes `F` + pycodestyle `E`/`W`).
+# We have not opted into the broader rule families (import sorting, bugbear,
+# etc.) — adding those is a separate, deliberate decision.
+
+target-version = "py310"  # project is Python 3.10+ (see CLAUDE.md)
+line-length = 88          # ruff/black default; matches existing formatting
+
+# Directories that are not hand-written source: build artifacts, packaging
+# metadata, uploaded/generated data, logs, and scratch/example trees. Ruff
+# already skips .git and __pycache__ by default; these are the project-specific
+# additions.
+extend-exclude = [
+    "build",
+    "*.egg-info",
+    "datasets",
+    "output",
+    "logs",
+    "sample",
+    "scratchpad",
+    "examples",
+    "temp_yaml",
+    "config",
+    "data_models",
+]
+
+[lint.per-file-ignores]
+# Test modules deliberately place imports next to the test section that uses
+# them, and some manipulate sys.path / env before importing the code under
+# test. Both are legitimate test-file patterns that trip E402
+# (module-import-not-at-top-of-file); silence it for tests only.
+"tests/**" = ["E402"]

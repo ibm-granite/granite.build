@@ -1,0 +1,9 @@
+**/node_modules
+ux/build
+ux/.svelte-kit
+**/__pycache__
+**/*.pyc
+.git
+.venv
+**/.env
+docs/superpowers

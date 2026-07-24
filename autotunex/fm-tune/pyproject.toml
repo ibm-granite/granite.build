@@ -32,7 +32,7 @@ dependencies = [
     "transformers==4.57.6",
     "peft==0.18.0",
     "trl==0.29.0",
-    "bitsandbytes==0.48.0",
+    "bitsandbytes==0.49.0",
 ]
 
 ## Optional dependencies for different use cases (core and full).
@@ -44,6 +44,7 @@ core = [
     "ray[tune,default]==2.52.1",
 ]
 full = [
+    "bitsandbytes==0.48.0",
     "datasets==4.6.0",
     "ray[tune,default]==2.54.0",
     "verl[vllm]==0.7.1",
@@ -55,9 +56,6 @@ dev = [
     "pre-commit>=3.7.0",
 ]
 
-[project.urls]
-Source = "https://github.ibm.com/IBM-Research-AI/fm-tune"
-
 [build-system]
 requires = ["setuptools>=60", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
@@ -65,6 +63,14 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 exclude = ["tests", "tests.*"]
 namespaces = false
+
+# Ship the YAML config templates as package data. get_autotune_config() reads
+# them via Path(__file__).parent / "configs", so they must live next to the
+# installed module. setuptools <=78 auto-included these undeclared data files;
+# setuptools 83 dropped that legacy behavior, so they must be declared explicitly
+# or the wheel omits them (FileNotFoundError: .../autotune/configs/autotune.yaml).
+[tool.setuptools.package-data]
+autotune = ["configs/*.yaml"]
 
 # --- uv configuration ---
 [tool.uv]

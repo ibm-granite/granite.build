@@ -1,0 +1,1 @@
+ALTER TABLE `datasets` ADD COLUMN `data_format` VARCHAR(10) NOT NULL DEFAULT 'jsonl' AFTER `validation_file_size`;

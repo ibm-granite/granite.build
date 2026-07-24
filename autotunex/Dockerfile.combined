@@ -1,0 +1,135 @@
+# BASE_IMAGE selects the app-runtime base (CPU default / GPU opt-in). It is
+# declared here — before the first FROM — because a global ARG used in any
+# stage's FROM must be declared at the top of the file; it is re-declared
+# (bare) just before the app-runtime stage to bring the value back into scope.
+ARG BASE_IMAGE=python:3.11-slim
+
+# ── Stage 1: Build the SvelteKit SPA ──────────────────────────────
+FROM node:20-slim AS ux-builder
+ARG AUTOTUNEX_API_URL=/fmtune/api
+WORKDIR /ux
+COPY ux/package.json ux/package-lock.json* ./
+RUN npm install
+COPY ux/ .
+RUN echo "PUBLIC_AUTOTUNEX_API_URL=$AUTOTUNEX_API_URL" > .env
+RUN npm run build
+
+# ── Stage 2a: GPU runtime (api local_runner, in-process training) ─
+FROM nvidia/cuda:12.6.3-devel-ubuntu22.04 AS gpu-runtime
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV TZ=America/New_York
+ARG GH_USER
+ARG GH_TOKEN
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common git curl wget build-essential supervisor ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+RUN add-apt-repository ppa:deadsnakes/ppa && apt-get update && \
+    apt-get install -y python3.11 python3.11-dev python3.11-venv python3.11-distutils && \
+    rm -rf /var/lib/apt/lists/*
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python && ln -sf /usr/bin/python3.11 /usr/bin/python3
+RUN git config --global url."https://${GH_USER}:${GH_TOKEN}@github.ibm.com/".insteadOf "https://github.ibm.com/"
+RUN python -m pip install --upgrade pip setuptools wheel
+WORKDIR /app/api
+COPY api/ .
+RUN pip install .
+WORKDIR /app/api-bridge
+COPY api-bridge/ .
+RUN pip install .
+COPY --from=ux-builder /ux/build /app/api/ux_build
+ENV UX_BUILD_DIR=/app/api/ux_build
+COPY supervisord-combined.conf /etc/supervisor/conf.d/supervisord.conf
+EXPOSE 8000 8001
+CMD ["/usr/bin/supervisord"]
+
+# ── Stage 2c: docker-compose app runtime (API + UX + training core) ─
+# Used by docker-compose.yml. Runs ONLY the API server (which serves the SPA);
+# the API Bridge and MySQL are separate containers. Installs the API plus the
+# vendored autotune training core (from the in-repo fm-tune/ folder), so it is
+# credential-free by default — no github.ibm.com access is needed for autotune.
+# GH creds are only needed if APP_EXTRAS opts into aspera/dmf-lib (dmf/ibm extras).
+#
+# BASE_IMAGE selects CPU vs GPU:
+#   python:3.11-slim (default)                  — CPU build; training core is always
+#                                                 bundled, so this is a multi-GB image
+#   nvidia/cuda:12.6.3-devel-ubuntu22.04        — GPU; enables real local training
+# Re-declare (default set at the top of the file) so ${BASE_IMAGE} is in scope here.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE} AS app-runtime
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV TZ=America/New_York
+# GH_USER/GH_TOKEN are optional: unused by the default install (API + local
+# autotune are credential-free), but plumbed so IBM users can install an extra
+# without editing this file. They authenticate the github.ibm.com git deps
+# (aspera/dmf-lib) pulled in by the dmf/ibm extras.
+ARG GH_USER
+ARG GH_TOKEN
+# APP_EXTRAS selects optional pip extras for the API install. Empty (default) =
+# credential-free base (API + vendored autotune training core). Set to a bracketed
+# extra to opt in, e.g.
+#   APP_EXTRAS=[granite-build]   — Granite Build runner (granite.build is public
+#                                  github.com + local autotune; GB_TOKEN at runtime)
+#   APP_EXTRAS=[ibm]             — full IBM profile (GB + DMF); aspera/dmf-lib pull
+#                                  github.ibm.com, so GH_USER/GH_TOKEN are required
+# See api/setup.py extras_require. Only the dmf/ibm extras require GH_USER/GH_TOKEN.
+ARG APP_EXTRAS=
+# Common tooling on both bases. python:3.11-slim already ships Python 3.11; the
+# CUDA base does not, so install it from deadsnakes only when python3.11 is
+# missing. Both bases are Debian/Ubuntu, so apt-get is available on each.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates build-essential supervisor && \
+    if ! command -v python3.11 >/dev/null 2>&1; then \
+        apt-get install -y --no-install-recommends software-properties-common && \
+        add-apt-repository ppa:deadsnakes/ppa && apt-get update && \
+        apt-get install -y --no-install-recommends \
+            python3.11 python3.11-dev python3.11-venv python3.11-distutils && \
+        curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11 ; \
+    fi && \
+    ln -sf "$(command -v python3.11)" /usr/local/bin/python && \
+    ln -sf "$(command -v python3.11)" /usr/local/bin/python3 && \
+    rm -rf /var/lib/apt/lists/*
+RUN git config --global url."https://${GH_USER}:${GH_TOKEN}@github.ibm.com/".insteadOf "https://github.ibm.com/"
+RUN python -m pip install --upgrade pip setuptools wheel
+WORKDIR /app/api
+# Vendored autotune training core (in-repo fm-tune/, no github.ibm.com needed).
+# Copied + installed before the api so this heavy layer (torch, ray, …) caches
+# independently of frequently-changing api/ code. Installed unconditionally, so the
+# default image is training-capable even with empty APP_EXTRAS.
+COPY fm-tune/ /app/fm-tune/
+RUN pip install "/app/fm-tune[core]"
+COPY api/ .
+# autotune[core] is already satisfied by the local install above, so pip never
+# touches github.ibm.com for it. When APP_EXTRAS is [ibm], pip may still pull
+# github.ibm.com deps (aspera/dmf-lib), authenticated by the git config line above.
+RUN pip install ".${APP_EXTRAS}"
+COPY --from=ux-builder /ux/build /app/api/ux_build
+ENV UX_BUILD_DIR=/app/api/ux_build
+COPY supervisord-app.conf /etc/supervisor/conf.d/supervisord.conf
+EXPOSE 8000
+CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+
+# ── Stage 2b: Slim runtime (api gb_runner, remote dispatch only) ──
+FROM python:3.11-slim AS slim-runtime
+ENV PYTHONUNBUFFERED=1
+ARG GH_USER
+ARG GH_TOKEN
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git build-essential supervisor && rm -rf /var/lib/apt/lists/*
+RUN git config --global url."https://${GH_USER}:${GH_TOKEN}@github.ibm.com/".insteadOf "https://github.ibm.com/"
+WORKDIR /app/api
+# Vendored autotune training core (in-repo fm-tune/) — installed before the api so
+# .[granite-build]'s autotune[core] requirement resolves locally, not via github.ibm.com.
+COPY fm-tune/ /app/fm-tune/
+RUN pip install "/app/fm-tune[core]"
+COPY api/ .
+RUN pip install ".[granite-build]"
+WORKDIR /app/api-bridge
+COPY api-bridge/ .
+RUN pip install .
+COPY --from=ux-builder /ux/build /app/api/ux_build
+ENV UX_BUILD_DIR=/app/api/ux_build
+COPY supervisord-combined.conf /etc/supervisor/conf.d/supervisord.conf
+EXPOSE 8000 8001
+CMD ["/usr/bin/supervisord"]

@@ -1,0 +1,135 @@
+# AutoTuneX — out-of-the-box local stack.
+#
+#   cp .env.example .env      # then edit secrets
+#   docker compose up -d      # build + start mysql, app (API+UX), bridge
+#   open http://localhost:${APP_PORT:-8000}/autotune
+#
+# Three services:
+#   mysql  — MySQL 8.4; schema auto-created on first boot (see volumes below).
+#   app    — combined API + SvelteKit UI (the API serves the SPA). Port 8000.
+#   bridge — API Bridge logging microservice. Port 8001.
+#
+# Default profile is credential-free and local-only (no github.ibm.com, no OIDC,
+# no Granite Build / DMF). See docs/architecture-review/2026-07-03-docker-compose-stack-design.md.
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-change-me-root}
+      MYSQL_DATABASE: ${DB_NAME:-autotune}
+      MYSQL_USER: ${DB_USER:-autotune}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-change-me}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # Schema auto-init: runs ONCE, the first time mysql-data is empty, against
+      # MYSQL_DATABASE. The .sql begins with `CREATE DATABASE IF NOT EXISTS
+      # autotune; USE autotune;`, so keep DB_NAME=autotune to match it.
+      - ./api/data_models/autotune_latest.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${DB_ROOT_PASSWORD:-change-me-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    # No published port: MySQL is reachable only by app + bridge on the compose
+    # network. Add a `ports:` mapping if you want a host DB client.
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.combined
+      target: app-runtime
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.11-slim}
+        # Optional pip extras for the API. Empty = credential-free base install.
+        # Set APP_EXTRAS=[granite-build] (+ GH_USER/GH_TOKEN + GB_TOKEN) to enable
+        # Granite Build. See api/setup.py extras_require.
+        APP_EXTRAS: ${APP_EXTRAS:-}
+        # Needed only when APP_EXTRAS pulls a github.ibm.com dependency.
+        GH_USER: ${GH_USER:-}
+        GH_TOKEN: ${GH_TOKEN:-}
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # ── Database (shared MySQL) ──
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-autotune}
+      DB_USER: ${DB_USER:-autotune}
+      DB_PASSWORD: ${DB_PASSWORD:-change-me}
+      DB_SSL_VERIFY_IDENTITY: ${DB_SSL_VERIFY_IDENTITY:-false}
+      # ── Provider seams (local-only default) ──
+      AUTOTUNEX_RUNNER: ${AUTOTUNEX_RUNNER:-local}
+      AUTOTUNEX_AUTH: ${AUTOTUNEX_AUTH:-dev}
+      AUTOTUNEX_STORAGE: ${AUTOTUNEX_STORAGE:-local}
+      AUTOTUNEX_REGISTRY: ${AUTOTUNEX_REGISTRY:-local}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-long-random}
+      DEV_USER_EMAIL: ${DEV_USER_EMAIL:-dev@example.com}
+      DEV_USER_ROLE: ${DEV_USER_ROLE:-admin}
+      # ── Data root (backed by the autotunex-data volume) ──
+      AUTOTUNEX_DATA_DIR: /data
+      # ── Bridge wiring (remote GB jobs report back here) ──
+      AUTOTUNE_SERVER_BRIDGE_URL: http://bridge:8001
+      # ── Granite Build (optional). GB turns on only when GB_TOKEN is set AND the
+      #    image was built with APP_EXTRAS=[granite-build] (provides the gb CLI). ──
+      GB_TOKEN: ${GB_TOKEN:-}
+      # ── Optional LLM proxy (chat, dataset intelligence). Leave unset to disable. ──
+      LITELLM_URL: ${LITELLM_URL:-}
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      # ── Hugging Face (model registry / downloads). huggingface_hub reads HF_TOKEN
+      #    from the env; needed only for gated/private repos. Leave unset for public. ──
+      HF_TOKEN: ${HF_TOKEN:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - autotunex-data:/data
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    healthcheck:
+      # CMD-SHELL (not exec-form) so the whole command reaches sh -c intact —
+      # some compose providers word-split an exec-form arg that contains spaces.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/fmtune/health/live || exit 1"]
+      interval: 15s
+      timeout: 6s
+      retries: 10
+      start_period: 45s
+
+  bridge:
+    build:
+      context: ./api-bridge
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      # Bridge accepts DB_NAME or DB_SCHEMA; DB_NAME keeps one shared secret.
+      DB_NAME: ${DB_NAME:-autotune}
+      DB_USER: ${DB_USER:-autotune}
+      DB_PASSWORD: ${DB_PASSWORD:-change-me}
+      DB_SSL_VERIFY_IDENTITY: ${DB_SSL_VERIFY_IDENTITY:-false}
+      # The bridge binds this port (defaults to 8000 on its own); pin 8001 to
+      # match the codebase convention and the app's AUTOTUNE_SERVER_BRIDGE_URL.
+      API_BRIDGE_SERVER_PORT: "8001"
+      AUTOTUNEX_DATA_DIR: /data
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-text}
+    volumes:
+      - autotunex-data:/data
+    ports:
+      - "${BRIDGE_PORT:-8001}:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8001/fmtune/openapi.json -o /dev/null || exit 1"]
+      interval: 15s
+      timeout: 6s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  mysql-data:
+  autotunex-data:
