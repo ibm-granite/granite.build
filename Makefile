@@ -489,6 +489,7 @@ clean-frontend:
 .PHONY: build-frontend
 build-frontend:
 	cd frontend && $(YARN) install --frozen-lockfile && $(YARN) build
+	mkdir -p src/gbserver/static/ui
 	rsync -a --delete frontend/out/ src/gbserver/static/ui/
 
 .PHONY: build
