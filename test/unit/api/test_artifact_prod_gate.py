@@ -56,7 +56,9 @@ class TestRegisterArtifactProdGate:
         """HF artifacts register in PROD (the feature this gate enables)."""
         with patch.object(artifacts_module, "is_super_admin", return_value=True):
             with patch.object(artifacts_module, "confirm_space_write_access"):
-                with patch.object(artifacts_module, "get_admin_storage") as mock_storage:
+                with patch.object(
+                    artifacts_module, "get_admin_storage"
+                ) as mock_storage:
                     mock_storage.return_value.artifact_registry.add = MagicMock()
                     resp = _call_gate("hf://huggingface.co/models/ibm-granite/granite")
 
@@ -66,7 +68,9 @@ class TestRegisterArtifactProdGate:
         """LhURI pointing at the production Lakehouse host is allowed in PROD."""
         with patch.object(artifacts_module, "is_super_admin", return_value=True):
             with patch.object(artifacts_module, "confirm_space_write_access"):
-                with patch.object(artifacts_module, "get_admin_storage") as mock_storage:
+                with patch.object(
+                    artifacts_module, "get_admin_storage"
+                ) as mock_storage:
                     mock_storage.return_value.artifact_registry.add = MagicMock()
                     resp = _call_gate("lh://prod/namespace0/models/table0/label0/rev0")
 
