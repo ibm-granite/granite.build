@@ -70,9 +70,7 @@ class TestResolveLocalMountSource:
     def test_file_uri_asset_dir_is_tolerated(self):
         from gbserver.environment.skypilot import _resolve_local_mount_source
 
-        assert (
-            _resolve_local_mount_source("d", "file:///work/run1") == "/work/run1/d"
-        )
+        assert _resolve_local_mount_source("d", "file:///work/run1") == "/work/run1/d"
 
 
 class TestBuildSkypilotMounts:
