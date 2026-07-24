@@ -50,7 +50,14 @@ granite.build:
               # directory (a per-build workspace), not /tmp, and emit its absolute
               # path in the LLMB_ARTIFACT marker so the HF push can read it. The
               # env_output path is arbitrary (env push is a no-op, no file needed).
+              # The leading `sleep 10` keeps the build in RUNNING long enough for
+              # the runner_cancellation test to observe RUNNING and land its cancel
+              # before the command completes (mirrors bash/retry-cancel).
+              # NOTE: this is a folded (>-) scalar, so an inline `#` here would fold
+              # into the single command line and shell-comment out everything after
+              # it (dropping the LLMB_ARTIFACT markers) — keep comments out of it.
               command: >-
+                sleep 10;
                 hf_out="$(pwd)/gb-hf-output.txt";
                 echo '{"artifact": "hf_output"}' > "$hf_out";
                 echo "env input path: {{ bindings.env_input.binding.path }}";
