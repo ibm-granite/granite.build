@@ -263,6 +263,78 @@ from gbserver.environment._skypilot_ssh import (
 )
 
 
+def _resolve_local_mount_source(source: str, asset_dir) -> str:
+    """Resolve a ``file_mounts`` local source against the step's asset dir.
+
+    Remote URIs (``s3://``, ``gs://``, ``file://``, ``http…``) and absolute paths
+    are returned unchanged. A relative local path is joined onto ``asset_dir`` —
+    the per-run directory holding the rendered ``step.yaml`` and its sibling
+    files — so a path written in ``step.yaml`` is interpreted relative to the
+    ``step.yaml``'s own location (matching how bash/k8s treat step-relative
+    assets).
+
+    :param source: the local/remote source string from a ``file_mounts`` entry.
+    :param asset_dir: ``targetsteprun_asset_dir`` (a ``Path`` or ``file://``
+        string), or ``None`` when unavailable (e.g. a retry with no stashed dir).
+    :returns: the resolved source string (unchanged for URIs and absolute paths).
+    """
+    parsed = urllib.parse.urlparse(source)
+    if parsed.scheme:  # remote URI (s3/gs/file/http/…) — leave as-is
+        return source
+    if os.path.isabs(source):
+        return source
+    if asset_dir is None:
+        logger.warning(
+            "Relative file_mount source %r but no asset dir available; "
+            "leaving it unresolved",
+            source,
+        )
+        return source
+    # Tolerate a file:// URI form for asset_dir, matching the bash launcher.
+    base = Path(urllib.parse.urlparse(str(asset_dir)).path)
+    return str(base / source)
+
+
+def _build_skypilot_mounts(file_mounts_raw: dict, asset_dir) -> Tuple[Dict, Dict]:
+    """Split a raw ``file_mounts`` mapping into file mounts and storage mounts.
+
+    String values are local-to-remote copies (``Task.set_file_mounts``); dict
+    values (``{source, mode}``) become ``sky.Storage`` storage mounts
+    (``Task.set_storage_mounts``). Relative local sources are resolved via
+    :func:`_resolve_local_mount_source`; bucket URIs keep the existing sub-path
+    extraction (``MOUNT`` mode requires a bucket-only source).
+
+    :param file_mounts_raw: the raw ``file_mounts`` mapping from the config.
+    :param asset_dir: ``targetsteprun_asset_dir`` used to resolve relative sources.
+    :returns: a ``(file_mounts, storage_mounts)`` tuple of dicts, either of which
+        may be empty.
+    """
+    file_mounts: Dict[str, str] = {}
+    storage_mounts: Dict[str, Any] = {}
+    for mount_path, mount_val in file_mounts_raw.items():
+        if isinstance(mount_val, dict):
+            source = mount_val["source"]
+            storage_kwargs: Dict[str, Any] = {
+                "mode": sky.StorageMode[mount_val.get("mode", "MOUNT").upper()],
+            }
+            parsed = urllib.parse.urlparse(source)
+            if parsed.scheme:  # bucket URI: extract the bucket-only source
+                sub_path = parsed.path.lstrip("/")
+                if sub_path:
+                    storage_kwargs["source"] = f"{parsed.scheme}://{parsed.netloc}"
+                    storage_kwargs["_bucket_sub_path"] = sub_path
+                else:
+                    storage_kwargs["source"] = source
+            else:  # local path: resolve relative to the step.yaml dir
+                storage_kwargs["source"] = _resolve_local_mount_source(
+                    source, asset_dir
+                )
+            storage_mounts[mount_path] = sky.Storage(**storage_kwargs)
+        else:
+            file_mounts[mount_path] = _resolve_local_mount_source(mount_val, asset_dir)
+    return file_mounts, storage_mounts
+
+
 class Skypilot(Environment):
     """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
 
@@ -616,8 +688,12 @@ class Skypilot(Environment):
             self._ensure_inline_configs_materialized()
             _ensure_skypilot_api_running()
 
-            # Stash kwargs so retry_workload can replay this launch.
+            # Stash kwargs so retry_workload can replay this launch. Include
+            # targetsteprun_asset_dir so a relaunch re-resolves relative
+            # file_mounts sources (it is a named param, so it is replayed via
+            # launch_skypilot(launch_id, **original_kwargs)).
             self._launch_kwargs[launch_id] = {
+                "targetsteprun_asset_dir": targetsteprun_asset_dir,
                 "launcher_config": kwargs.get("launcher_config"),
                 "config": kwargs.get("config"),
                 "run_metadata": kwargs.get("run_metadata"),
@@ -807,35 +883,17 @@ class Skypilot(Environment):
                 resources=resources,
             )
 
-            # Handle file_mounts (may be in launcher config or step config)
-            # Dict values → sky.Storage (set_storage_mounts), strings → set_file_mounts
+            # Handle file_mounts (may be in launcher config or step config).
+            # Relative local sources resolve against targetsteprun_asset_dir (the
+            # dir holding the rendered step.yaml + siblings); see
+            # _build_skypilot_mounts / _resolve_local_mount_source.
             file_mounts_raw = launcher_config.get("file_mounts") or config.get(
                 "file_mounts"
             )
             if file_mounts_raw:
-                file_mounts = {}
-                storage_mounts = {}
-                for mount_path, mount_val in file_mounts_raw.items():
-                    if isinstance(mount_val, dict):
-                        mode_str = mount_val.get("mode", "MOUNT").upper()
-                        source = mount_val["source"]
-                        storage_kwargs: Dict[str, Any] = {
-                            "mode": sky.StorageMode[mode_str],
-                        }
-                        # MOUNT mode requires bucket-only source; extract
-                        # sub-path for URIs like s3://bucket/prefix
-                        parsed = urllib.parse.urlparse(source)
-                        sub_path = parsed.path.lstrip("/")
-                        if sub_path:
-                            storage_kwargs["source"] = (
-                                f"{parsed.scheme}://{parsed.netloc}"
-                            )
-                            storage_kwargs["_bucket_sub_path"] = sub_path
-                        else:
-                            storage_kwargs["source"] = source
-                        storage_mounts[mount_path] = sky.Storage(**storage_kwargs)
-                    else:
-                        file_mounts[mount_path] = mount_val
+                file_mounts, storage_mounts = _build_skypilot_mounts(
+                    file_mounts_raw, targetsteprun_asset_dir
+                )
                 if file_mounts:
                     task.set_file_mounts(file_mounts)
                 if storage_mounts:
