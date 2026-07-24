@@ -30,8 +30,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Python setuptools build output only — anchored to build/ so it does not
+# match SvelteKit source dirs like autotunex/ux/src/lib/.
+build/lib/
+build/lib64/
 parts/
 sdist/
 var/

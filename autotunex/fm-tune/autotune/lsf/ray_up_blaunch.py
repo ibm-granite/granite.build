@@ -335,8 +335,7 @@ def _short_hostname(name: str) -> str:
 
     LSF identifies hosts by their unqualified name in ``LSB_DJOB_HOSTFILE``
     and ``LSB_HOSTS`` (e.g. ``p3-r31-n3``), but ``socket.gethostname()`` on
-    some clusters (e.g. BlueVela) returns the FQDN
-    (``p3-r31-n3.bluevela.rmf.ibm.com``). Compare on the short form so the
+    some clusters (e.g. BlueVela) returns the FQDN. Compare on the short form so the
     blaunch path works on both naming conventions.
     """
     return name.split(".", 1)[0]

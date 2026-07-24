@@ -84,7 +84,7 @@ class TestPartitionHosts:
         # names. Should match on the short form and return short names.
         head, all_workers, remote = _partition_hosts(
             ["p3-r31-n3", "p2-r23-n4"],
-            "p3-r31-n3.bluevela.rmf.ibm.com",
+            "p3-r31-n3.banana.rmf.example.com",
             num_workers=2,
         )
         assert head == "p3-r31-n3"
@@ -94,7 +94,7 @@ class TestPartitionHosts:
     def test_fqdn_head_when_not_first_rotates(self):
         head, all_workers, remote = _partition_hosts(
             ["p2-r23-n4", "p3-r31-n3"],
-            "p3-r31-n3.bluevela.rmf.ibm.com",
+            "p3-r31-n3.banana.rmf.example.com",
             num_workers=2,
         )
         assert head == "p3-r31-n3"
@@ -104,7 +104,7 @@ class TestPartitionHosts:
 
 class TestShortHostname:
     def test_strips_domain(self):
-        assert _short_hostname("p3-r31-n3.bluevela.rmf.ibm.com") == "p3-r31-n3"
+        assert _short_hostname("p3-r31-n3.banana.rmf.example.com") == "p3-r31-n3"
 
     def test_no_domain_returns_input(self):
         assert _short_hostname("cccxc602") == "cccxc602"
