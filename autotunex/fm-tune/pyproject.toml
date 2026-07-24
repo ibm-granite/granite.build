@@ -1,0 +1,114 @@
+[project]
+name = "autotune"
+version = "0.7.1"
+description = "AutoTune: Automated Tuning for Foundation Models"
+authors = [
+    {name = "RADU MARINESCU", email = "radu.marinescu@ie.ibm.com"},
+    {name = "Daniel Karl I. Weidele", email = "daniel.karl@ibm.com"},
+    {name = "Priyanshu Rai", email = "Priyanshu.Rai@ibm.com"},
+]
+license = {text = "Apache-2.0"}
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "accelerate>=1.10.1",
+    "tokenizers>=0.22.0",
+    "sentencepiece>=0.2.0",
+    "deepspeed==0.18.7",
+    "hyperopt==0.2.7",
+    "packaging>=25.0",
+    "tabulate>=0.10",
+    "pyyaml>=6.0.2",
+    "tensorboardx>=2.6.4",
+    "torch==2.8.0",
+    "transformers==4.57.6",
+    "peft==0.18.0",
+    "trl==0.29.0",
+    "bitsandbytes==0.48.0",
+]
+
+## Optional dependencies for different use cases (core and full).
+## Created this optional dependencies section to avoid conflict with dmf-lib and
+## installing heavy dependencies like flash-attn for users who don't need it.
+[project.optional-dependencies]
+core = [
+    "datasets==4.0.0",
+    "ray[tune,default]==2.52.1",
+]
+full = [
+    "datasets==4.6.0",
+    "ray[tune,default]==2.54.0",
+    "verl[vllm]==0.7.1",
+    "pyzmq==27.0",
+    "flash-attn==2.8.1; sys_platform == 'linux'",
+]
+dev = [
+    "ruff>=0.8.0",
+    "pre-commit>=3.7.0",
+]
+
+[project.urls]
+Source = "https://github.ibm.com/IBM-Research-AI/fm-tune"
+
+[build-system]
+requires = ["setuptools>=60", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+exclude = ["tests", "tests.*"]
+namespaces = false
+
+# --- uv configuration ---
+[tool.uv]
+prerelease = "if-necessary"
+
+# flash-attn is installed from a pre-built wheel (cxx11abi=False) to avoid building from source.
+# The wheel URL is pinned below in [tool.uv.sources].
+# Manual alternative:
+# wget -nv https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl && \
+# pip install --no-cache-dir flash_attn-2.8.1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl
+
+[tool.uv.sources]
+flash-attn = { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl" }
+
+# --- Tool configuration ---
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    "scratchpad",
+    ".venv",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # re-exports
+# verl driver deliberately runs GPU / env sanity checks at module load time
+# BEFORE importing torch/verl/ray, to fail fast on incompatible environments.
+# The late imports are load-bearing — E402 is the wrong call here.
+"autotune/trainers/driver_multi_verl.py" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "slow: tests that download or load HF model weights (>50MB)",
+    "gpu: tests that require CUDA",
+]
