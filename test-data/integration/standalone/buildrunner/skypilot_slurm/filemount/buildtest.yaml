@@ -1,22 +1,21 @@
 # YAML-driven spec for
 # test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_filemount.py.
-# Identical to the sibling 1step spec, but the target runs a custom step
-# (space://steps/filemount-check) that copies a directory shipped next to its
-# step.yaml via file_mounts and verifies it is present in the run command.
+# The target runs a custom step (space://steps/filemount-check) that copies a
+# directory shipped next to its step.yaml via file_mounts and verifies it is
+# present in the run command. HF-free (env:// in/out) so it is fast and needs no
+# HF_TOKEN.
 targets:
-  - image-run
+  - filemount
 target_expectations:
-  - target_name: image-run
-    # Same shape as the 1step test: 1 hfpull (one HF input) + 1 step + 3 hfpush
-    # (output_model1 emits 2 artifacts -> 2 hfpush, output_model2 emits 1 -> 1
-    # hfpush). The env:// input/output are no-ops on the shared FS (one extra
-    # input + output artifact each, no extra pull/push step). The file_mounts
-    # copy adds no step. jobstats_count mirrors 1step (not asserted under
-    # standalone's NoopLineageStore, but kept accurate).
-    step_count: 5
-    input_artifact_count: 2
-    output_artifact_count: 3
-    jobstats_count: 4
+  - target_name: filemount
+    # Just the one custom step runs: the env:// input/output are no-ops on the
+    # shared FS (one input + one output artifact each, no extra pull/push step),
+    # and the file_mounts copy adds no step. jobstats_count is not asserted under
+    # standalone's NoopLineageStore, but kept accurate for a single step.
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
 # Co-located test space (space/ next to this file) — carries the custom
 # filemount-check step and chains to configurations/assets for everything else.
 space_uri: space
