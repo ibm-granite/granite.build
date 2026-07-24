@@ -218,7 +218,7 @@ training_config:
 training_rl_config:
   reward_function_path:
     description: "Path to custom reward function Python script"
-    default: "/u/radu/storage/git/fm-tune/autotune/rewards/gsm8k_reward.py"
+    default: "/pvc/autotune/rewards/gsm8k_reward.py"
     values: null
     min_val: null
     max_val: null
