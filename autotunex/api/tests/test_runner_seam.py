@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
-from pathlib import Path
 import asyncio
+from pathlib import Path
 
 import models
 from services.impl.runner import Runner

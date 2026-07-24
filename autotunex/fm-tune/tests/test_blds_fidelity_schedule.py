@@ -5,10 +5,9 @@ evaluation tier and may be < 1.0. See plan sunny-noodling-fermat.md.
 """
 
 import pytest
+from autotune.blds import BanditLimitedDiscrepancySearch, IncrementalBanditLDS
 from ray import tune
 from ray.tune.search import Searcher
-
-from autotune.blds import BanditLimitedDiscrepancySearch, IncrementalBanditLDS
 
 
 def _build_optimizer(schedule):

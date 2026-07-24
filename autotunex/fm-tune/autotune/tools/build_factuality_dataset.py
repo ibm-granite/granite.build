@@ -96,7 +96,9 @@ def _extract_contexts(record: Dict[str, Any]) -> List[str]:
     return _unique_strings(contexts)
 
 
-def _build_messages(query: str, response: str, is_detection: bool, for_prompt: bool) -> List[Dict[str, str]]:
+def _build_messages(
+    query: str, response: str, is_detection: bool, for_prompt: bool
+) -> List[Dict[str, str]]:
     return [
         {"role": "user", "content": query},
         {"role": "assistant", "content": response},
@@ -104,7 +106,9 @@ def _build_messages(query: str, response: str, is_detection: bool, for_prompt: b
     ]
 
 
-def _render_input(messages: List[Dict[str, str]], documents: List[Dict[str, str]], tokenizer) -> str:
+def _render_input(
+    messages: List[Dict[str, str]], documents: List[Dict[str, str]], tokenizer
+) -> str:
     return tokenizer.apply_chat_template(
         messages,
         tokenize=False,
@@ -125,11 +129,16 @@ def _record_detection(
 
     contexts = _extract_contexts(dp)
     documents = [{"doc_id": "0", "text": "\n\n".join(contexts)}]
-    messages = _build_messages(query, response, is_detection=True, for_prompt=for_prompt)
+    messages = _build_messages(
+        query, response, is_detection=True, for_prompt=for_prompt
+    )
     output_seq = json.dumps({"score": label.lower()})
 
     if fmt == "formatted":
-        return {"input": _render_input(messages, documents, tokenizer), "output": output_seq}
+        return {
+            "input": _render_input(messages, documents, tokenizer),
+            "output": output_seq,
+        }
     return {"input": messages, "output": output_seq, "documents": documents}
 
 
@@ -148,7 +157,9 @@ def _record_correction(
 
     contexts = _extract_contexts(dp)
     documents = [{"doc_id": "0", "text": "\n\n".join(contexts)}]
-    messages = _build_messages(query, response, is_detection=False, for_prompt=for_prompt)
+    messages = _build_messages(
+        query, response, is_detection=False, for_prompt=for_prompt
+    )
     output_seq = json.dumps({"correction": correction})
 
     # Length gate the target — mirrors the scratchpad behavior.
@@ -251,8 +262,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="build_factuality_dataset",
         description="Convert raw ELI5 factuality splits into training-ready JSONL.",
     )
-    p.add_argument("--input-dir", required=True, help="Directory containing raw split files.")
-    p.add_argument("--output-dir", required=True, help="Directory to write JSONL splits into.")
+    p.add_argument(
+        "--input-dir", required=True, help="Directory containing raw split files."
+    )
+    p.add_argument(
+        "--output-dir", required=True, help="Directory to write JSONL splits into."
+    )
     p.add_argument(
         "--task",
         required=True,

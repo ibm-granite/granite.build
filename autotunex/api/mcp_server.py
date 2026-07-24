@@ -12,18 +12,17 @@ Mount on FastAPI via:
 import asyncio
 import logging
 
-from fastmcp import FastMCP
-from starlette.background import BackgroundTasks
-
 import models as api
+from fastmcp import FastMCP
 from services import (
-    db_service,
-    job_service,
     config_service,
     dataset_service,
+    db_service,
+    job_service,
     user_service,
 )
 from services.plugins import Seam, resolve
+from starlette.background import BackgroundTasks
 
 logger = logging.getLogger("mcp_server")
 

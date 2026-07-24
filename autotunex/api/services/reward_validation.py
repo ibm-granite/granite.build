@@ -223,11 +223,11 @@ def _execute_safely(
     code: str, function_name: str, test_inputs: dict, timeout_seconds: int = 5
 ):
     """Execute reward function in restricted namespace with timeout."""
-    import math
-    import string
     import collections
     import functools
     import itertools
+    import math
+    import string
 
     safe_builtins_dict = {}
     for name in SAFE_BUILTINS:

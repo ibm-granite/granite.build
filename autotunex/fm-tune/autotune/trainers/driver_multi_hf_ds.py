@@ -30,19 +30,6 @@ from typing import Any, Callable, Dict, Optional
 
 import ray
 import torch
-from peft import get_peft_model
-from ray import train, tune
-from ray.train import FailureConfig, Result, RunConfig, ScalingConfig
-from ray.train.huggingface.transformers import RayTrainReportCallback, prepare_trainer
-from ray.train.torch import TorchConfig, TorchTrainer
-from torch.utils.data import IterableDataset
-from transformers import (
-    AutoModelForCausalLM,
-    Trainer,
-    TrainingArguments,
-    default_data_collator,
-)
-from transformers.utils.logging import disable_progress_bar, enable_progress_bar
 
 # Local
 from autotune.cluster import compute_ray_data_sizing, ray_data_block_target
@@ -63,13 +50,28 @@ from autotune.utils import (
     set_seed,
     tokenize_batch,
 )
+from peft import get_peft_model
+from ray import train, tune
+from ray.train import FailureConfig, Result, RunConfig, ScalingConfig
+from ray.train.huggingface.transformers import RayTrainReportCallback, prepare_trainer
+from ray.train.torch import TorchConfig, TorchTrainer
+from torch.utils.data import IterableDataset
+from transformers import (
+    AutoModelForCausalLM,
+    Trainer,
+    TrainingArguments,
+    default_data_collator,
+)
+from transformers.utils.logging import disable_progress_bar, enable_progress_bar
 
 logger = logging.getLogger(__name__)
 
 # Suppress benign "Failed to query Ray Train Controller actor state" warnings
 # from the PlacementGroupCleaner. These occur when the Ray State API is
 # temporarily slow under load from Ray Tune + TorchTrainer.
-logging.getLogger("ray.train.v2._internal.execution.controller.placement_group_cleaner").setLevel(logging.ERROR)
+logging.getLogger(
+    "ray.train.v2._internal.execution.controller.placement_group_cleaner"
+).setLevel(logging.ERROR)
 
 
 def _resolve_resume_checkpoint(training_output_dir: str, resume_flag: bool):
@@ -246,7 +248,9 @@ def _apply_chat_template_to_df(df, tokenizer, input_col: str):
     if not isinstance(first_val, list):
         return df
 
-    has_documents = "documents" in df.columns and isinstance(df["documents"].iloc[0], list)
+    has_documents = "documents" in df.columns and isinstance(
+        df["documents"].iloc[0], list
+    )
     has_tools = "tools" in df.columns and isinstance(df["tools"].iloc[0], list)
 
     if has_documents and has_tools:
@@ -432,8 +436,12 @@ class _TokenizedArrowDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         row = self.table.slice(idx, 1)
         return {
-            "input_ids": torch.tensor(row.column("input_ids")[0].as_py(), dtype=torch.long),
-            "attention_mask": torch.tensor(row.column("attention_mask")[0].as_py(), dtype=torch.long),
+            "input_ids": torch.tensor(
+                row.column("input_ids")[0].as_py(), dtype=torch.long
+            ),
+            "attention_mask": torch.tensor(
+                row.column("attention_mask")[0].as_py(), dtype=torch.long
+            ),
             "labels": torch.tensor(row.column("labels")[0].as_py(), dtype=torch.long),
         }
 
@@ -476,7 +484,9 @@ def _load_tokenize_and_save(
     if percentage < 1.0:
         n = max(1, int(len(df) * percentage))
         df = df.head(n)
-        logger.info(f"[AutoTune] Subsampled to {len(df)} rows ({percentage * 100:.0f}%)")
+        logger.info(
+            f"[AutoTune] Subsampled to {len(df)} rows ({percentage * 100:.0f}%)"
+        )
 
     df = _apply_chat_template_to_df(df, tokenizer, input_col)
 
@@ -522,7 +532,9 @@ def _load_tokenize_and_save(
     writer = pa.ipc.new_file(output_arrow_path, table.schema)
     batch_rows = 100000
     num_rows = len(table)
-    with tqdm(total=num_rows, desc=f"Writing {dataset_name}.arrow", unit="rows") as pbar:
+    with tqdm(
+        total=num_rows, desc=f"Writing {dataset_name}.arrow", unit="rows"
+    ) as pbar:
         for i in range(0, num_rows, batch_rows):
             chunk = min(batch_rows, num_rows - i)
             writer.write(table.slice(i, chunk))
@@ -531,7 +543,9 @@ def _load_tokenize_and_save(
 
     num_samples = len(table)
     size_mb = os.path.getsize(output_arrow_path) / (1024 * 1024)
-    logger.info(f"[AutoTune] Saved {num_samples} samples to {output_arrow_path} ({size_mb:.1f} MB)")
+    logger.info(
+        f"[AutoTune] Saved {num_samples} samples to {output_arrow_path} ({size_mb:.1f} MB)"
+    )
     return num_samples
 
 
@@ -678,7 +692,10 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
         # use_reentrant=False is fine.
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={
-            "use_reentrant": deepspeed_config.get("zero_optimization", {}).get("stage", 0) == 3,
+            "use_reentrant": deepspeed_config.get("zero_optimization", {}).get(
+                "stage", 0
+            )
+            == 3,
         },
         deepspeed=deepspeed_config,
         dataloader_num_workers=0,  # avoid /dev/shm exhaustion in containers
@@ -751,7 +768,9 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # Each rank waits its turn, loads, then signals the next rank.
     for loading_rank in range(world_size):
         if rank == loading_rank:
-            logger.info(f"[AutoTune] Worker {rank}/{world_size} loading model: {model_name_or_path} ({device_label})")
+            logger.info(
+                f"[AutoTune] Worker {rank}/{world_size} loading model: {model_name_or_path} ({device_label})"
+            )
             model = AutoModelForCausalLM.from_pretrained(
                 model_name_or_path,
                 **model_kwargs,
@@ -842,7 +861,9 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # its final-loss feedback. The top-rung percentage is BLDS-injected via
     # `_blds_top_rung_pct`; non-BLDS callers default to 1.0. See plans
     # silky-cantering-lovelace.md (Phase 3) and sunny-noodling-fermat.md.
-    hpo_pct_for_gate = training_config.get("hpo_dataset_percentage", 1.0) if hpo_search else 1.0
+    hpo_pct_for_gate = (
+        training_config.get("hpo_dataset_percentage", 1.0) if hpo_search else 1.0
+    )
     top_rung_pct = training_config.get("_blds_top_rung_pct", 1.0)
     is_top_rung = hpo_pct_for_gate >= top_rung_pct - 1e-9
     if hpo_search and not is_top_rung:
@@ -855,11 +876,15 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
 
     # Train. Resume from the last checkpoint only during final training
     # (never during HPO trials) and only when --resume_from_checkpoint is set.
-    resume_flag = (not hpo_search) and training_config.get("resume_from_checkpoint", False)
+    resume_flag = (not hpo_search) and training_config.get(
+        "resume_from_checkpoint", False
+    )
     resume_arg = _resolve_resume_checkpoint(training_output_dir, resume_flag)
     if resume_flag:
         if resume_arg:
-            logger.info(f"[AutoTune] Resuming final training from checkpoint: {resume_arg}")
+            logger.info(
+                f"[AutoTune] Resuming final training from checkpoint: {resume_arg}"
+            )
         else:
             logger.warning(
                 f"[AutoTune] --resume_from_checkpoint set but no checkpoint found "
@@ -892,7 +917,9 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     train_loss = metrics["train_loss"]
     eval_loss = metrics["eval_loss"]
 
-    logger.info(f"[AutoTune] Worker finished: train_loss={train_loss}, eval_loss={eval_loss}")
+    logger.info(
+        f"[AutoTune] Worker finished: train_loss={train_loss}, eval_loss={eval_loss}"
+    )
 
     # Save model — ALL ranks must participate in trainer.save_model() for
     # DeepSpeed Zero3 because it gathers sharded parameters across ranks.
@@ -923,11 +950,15 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
                 # to resume from.
                 import glob as _glob
 
-                ckpt_dirs = _glob.glob(os.path.join(training_output_dir, "checkpoint-*"))
+                ckpt_dirs = _glob.glob(
+                    os.path.join(training_output_dir, "checkpoint-*")
+                )
                 for ckpt_dir in ckpt_dirs:
                     shutil.rmtree(ckpt_dir, ignore_errors=True)
                 if ckpt_dirs:
-                    logger.info(f"[AutoTune] Cleaned up {len(ckpt_dirs)} checkpoint dir(s)")
+                    logger.info(
+                        f"[AutoTune] Cleaned up {len(ckpt_dirs)} checkpoint dir(s)"
+                    )
                 # Drop the now-empty stable checkpoint dir itself.
                 if os.path.isdir(training_output_dir):
                     shutil.rmtree(training_output_dir, ignore_errors=True)
@@ -935,9 +966,13 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
                 outputs_dir = os.path.join(output_dir, "outputs")
                 if os.path.exists(outputs_dir):
                     shutil.rmtree(outputs_dir, ignore_errors=True)
-                    logger.info(f"[AutoTune] Cleaned up training outputs dir: {outputs_dir}")
+                    logger.info(
+                        f"[AutoTune] Cleaned up training outputs dir: {outputs_dir}"
+                    )
             else:
-                logger.info("[AutoTune] --keep_checkpoints set; skipping artifact cleanup")
+                logger.info(
+                    "[AutoTune] --keep_checkpoints set; skipping artifact cleanup"
+                )
             # NOTE: do NOT rmtree output_dir/train_results here — Ray Train's
             # TrainController periodically writes checkpoint_manager_snapshot.json
             # into that directory, and is still alive until ray_trainer.fit()
@@ -1030,9 +1065,13 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"[AutoTune] DeepSpeed strategy: {ds_strategy}")
 
     # Safety checks
-    assert ds_strategy in ["zero1_gpu", "zero2_gpu", "zero3_gpu", "zero2_cpu", "zero3_cpu"], (
-        f"Invalid DeepSpeed strategy: {ds_strategy}. Supported: zero1_gpu, zero2_gpu, zero3_gpu, zero2_cpu, zero3_cpu."
-    )
+    assert ds_strategy in [
+        "zero1_gpu",
+        "zero2_gpu",
+        "zero3_gpu",
+        "zero2_cpu",
+        "zero3_cpu",
+    ], f"Invalid DeepSpeed strategy: {ds_strategy}. Supported: zero1_gpu, zero2_gpu, zero3_gpu, zero2_cpu, zero3_cpu."
 
     # Build DeepSpeed config
     deepspeed_config = _build_deepspeed_config(ds_strategy)
@@ -1040,7 +1079,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     logger.info(f"[AutoTune] DeepSpeed strategy: {ds_strategy}")
 
     # Dataset loading and tokenization
-    percentage = 1.0 if not hpo_search else training_config.get("hpo_dataset_percentage", 0.10)
+    percentage = (
+        1.0 if not hpo_search else training_config.get("hpo_dataset_percentage", 0.10)
+    )
     if percentage == 0.0:
         raise ValueError("HPO dataset percentage cannot be 0.0")
 
@@ -1094,7 +1135,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         datasets_arg = None
 
     elif data_backend == "ray_data":
-        logger.info(f"[AutoTune] Building Ray Data pipelines (percentage={percentage * 100:.0f}%)...")
+        logger.info(
+            f"[AutoTune] Building Ray Data pipelines (percentage={percentage * 100:.0f}%)..."
+        )
         train_ds = _read_dataset(train_file)
         eval_ds = _read_dataset(eval_file)
 
@@ -1129,7 +1172,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         # training to keep object-store pressure low on remote clusters.
         ray_data_concurrency = training_config.get("ray_data_concurrency")
         ray_data_num_cpus = training_config.get("ray_data_num_cpus")
-        concurrency, num_cpus = compute_ray_data_sizing(num_workers, ray_data_concurrency, ray_data_num_cpus)
+        concurrency, num_cpus = compute_ray_data_sizing(
+            num_workers, ray_data_concurrency, ray_data_num_cpus
+        )
         train_blocks = ray_data_block_target(concurrency, train_rows)
         eval_blocks = ray_data_block_target(concurrency, eval_rows)
         # Skip repartition for trivially small datasets (single block already).
@@ -1151,14 +1196,18 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         eval_ds = eval_ds.map_batches(tokenize_fn, **map_kwargs)
 
         train_ds_size = train_ds.count()
-        logger.info(f"[AutoTune] Tokenized train={train_ds_size}, eval={eval_ds.count()}")
+        logger.info(
+            f"[AutoTune] Tokenized train={train_ds_size}, eval={eval_ds.count()}"
+        )
 
         worker_data_kwargs = {"data_backend": "ray_data"}
         datasets_arg = {"train": train_ds, "eval": eval_ds}
         data_cache_dir = None
 
     else:
-        raise ValueError(f"Unknown data_backend: {data_backend!r}. Expected 'arrow' or 'ray_data'.")
+        raise ValueError(
+            f"Unknown data_backend: {data_backend!r}. Expected 'arrow' or 'ray_data'."
+        )
 
     # Calculate steps per epoch
     steps_per_epoch = max(1, train_ds_size // (batch_size * num_workers))
@@ -1219,9 +1268,13 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     try:
         train_result = ray_trainer.fit()
 
-        logger.info(f"[AutoTune] Distributed training finished with result: {train_result}")
+        logger.info(
+            f"[AutoTune] Distributed training finished with result: {train_result}"
+        )
     except Exception as e:
-        logger.error(f"[AutoTune] Training failed (trial {trial_id}): {e}", exc_info=True)
+        logger.error(
+            f"[AutoTune] Training failed (trial {trial_id}): {e}", exc_info=True
+        )
         raise  # Let Ray Tune mark trial as ERRORED
 
     # Extract metrics from train_result.metrics (via RayTrainReportCallback)
@@ -1245,7 +1298,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         loss = 10000.0
 
     # Print results
-    logger.info(f"[AutoTune] Results: train_loss={train_loss}, eval_loss={eval_loss_val}, loss={loss}")
+    logger.info(
+        f"[AutoTune] Results: train_loss={train_loss}, eval_loss={eval_loss_val}, loss={loss}"
+    )
 
     keep_checkpoints = training_config.get("keep_checkpoints", False)
 
@@ -1263,7 +1318,11 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
             logger.info(f"[AutoTune] Cleaned up HPO trial dir: {hpo_trial_dir}")
 
     # Clean up tokenized Arrow cache (only the arrow backend writes it).
-    if not keep_checkpoints and data_cache_dir is not None and os.path.isdir(data_cache_dir):
+    if (
+        not keep_checkpoints
+        and data_cache_dir is not None
+        and os.path.isdir(data_cache_dir)
+    ):
         shutil.rmtree(data_cache_dir, ignore_errors=True)
 
     # Clean up Ray Train's run directory now that fit() has returned and the
@@ -1273,7 +1332,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         train_results_dir = os.path.join(output_dir, "train_results")
         if os.path.isdir(train_results_dir):
             shutil.rmtree(train_results_dir, ignore_errors=True)
-            logger.info(f"[AutoTune] Cleaned up training results dir: {train_results_dir}")
+            logger.info(
+                f"[AutoTune] Cleaned up training results dir: {train_results_dir}"
+            )
 
     # Return trial result
     result = {

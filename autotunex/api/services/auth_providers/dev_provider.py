@@ -7,7 +7,6 @@ import logging
 import os
 
 import models as api
-
 from services.auth_providers.base import AuthProvider
 
 logger = logging.getLogger(__name__)

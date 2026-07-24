@@ -1,11 +1,12 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Optional, Dict, Any
-from enum import Enum
 from datetime import datetime
-from pydantic import BaseModel, Field
+from enum import Enum
+from typing import Any, Dict, Optional
 from uuid import UUID
+
+from pydantic import BaseModel, Field
 
 
 class LogEntry(BaseModel):

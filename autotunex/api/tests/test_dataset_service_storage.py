@@ -1,12 +1,13 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import models as api
+import pytest
 from fastapi import HTTPException
 from services.datasets.service import Dataset
 from services.storage.base import StorageLocator
-import models as api
 
 
 def _db_with_dataset():

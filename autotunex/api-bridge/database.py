@@ -8,12 +8,11 @@ import uuid
 from typing import Any, Dict, Optional
 from uuid import UUID
 
+import model as bridge_models
 import pymysql as db
 from dbutils.pooled_db import PooledDB
 from dotenv import load_dotenv
 from fastapi import HTTPException
-
-import model as bridge_models
 from utils import SYSTEM_USER, get_utc_timestamp, utc_now_string
 
 logger = logging.getLogger(__name__)
@@ -46,6 +45,7 @@ def _ssl_verify_identity() -> bool:
         "0",
         "no",
     )
+
 
 REQUIRED_TABLES = {
     "configurations": ["id", "name", "config_data"],

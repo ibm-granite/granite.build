@@ -12,7 +12,6 @@ Covers three GPU-free units:
 from unittest.mock import MagicMock
 
 import pytest
-
 from autotune.constants import AutotunePrecision
 from autotune.utils import (
     has_resumable_final_checkpoint,

@@ -1,7 +1,6 @@
 """Tests for autotune.validation.validate_config_for_pipeline."""
 
 import pytest
-
 from autotune.config import AutotuneConfig
 from autotune.validation import validate_config_for_pipeline
 
@@ -65,7 +64,9 @@ class TestOnlineRL:
         del sample_config_dict["tuners_config"]
         # fixture has ppo but not grpo; add a grpo entry.
         sample_config_dict["tuners_rl_config"]["grpo"] = {
-            "hyperparams": {"kl_coef": {"default": 0.001, "for_tuner": True, "type": "float"}}
+            "hyperparams": {
+                "kl_coef": {"default": 0.001, "for_tuner": True, "type": "float"}
+            }
         }
         cfg = _cfg(sample_config_dict)
         validate_config_for_pipeline(cfg, tuning_algo="none", rl_algo="grpo")

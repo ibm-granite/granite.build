@@ -25,18 +25,6 @@ from copy import deepcopy
 from typing import Any, Dict
 
 import torch
-from ray import tune
-from transformers import (
-    AutoModelForCausalLM,
-)
-
-# TRL imports for offline RL algorithms
-from trl import (
-    DPOConfig,
-    DPOTrainer,
-    KTOConfig,
-    KTOTrainer,
-)
 
 # Local
 from autotune.trainers._alora_gc import (
@@ -51,6 +39,18 @@ from autotune.utils import (
     prepare_qlora_model,
     resize_model_embeddings,
     set_seed,
+)
+from ray import tune
+from transformers import (
+    AutoModelForCausalLM,
+)
+
+# TRL imports for offline RL algorithms
+from trl import (
+    DPOConfig,
+    DPOTrainer,
+    KTOConfig,
+    KTOTrainer,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,7 +80,9 @@ def _load_dataset_from_file(file_path: str):
     raise ValueError(f"Unsupported dataset extension: {ext} ({file_path})")
 
 
-def format_dpo_batch(batch: Dict[str, Any], input_col: str, chosen_col: str, rejected_col: str) -> Dict[str, Any]:
+def format_dpo_batch(
+    batch: Dict[str, Any], input_col: str, chosen_col: str, rejected_col: str
+) -> Dict[str, Any]:
     """
     Format a batch of examples for DPO/ORPO training.
     TRL trainers expect raw text with specific column names: 'prompt', 'chosen', 'rejected'.
@@ -93,7 +95,9 @@ def format_dpo_batch(batch: Dict[str, Any], input_col: str, chosen_col: str, rej
     return result
 
 
-def format_kto_batch(batch: Dict[str, Any], input_col: str, completion_col: str, label_col: str) -> Dict[str, Any]:
+def format_kto_batch(
+    batch: Dict[str, Any], input_col: str, completion_col: str, label_col: str
+) -> Dict[str, Any]:
     """
     Format a batch of examples for KTO training.
     TRL trainers expect raw text with specific column names: 'prompt', 'completion', 'label'.
@@ -177,13 +181,17 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Safety checks
     if rl_algorithm in ["dpo", "orpo"]:
-        assert input_col is not None and chosen_col is not None and rejected_col is not None, (
-            f"For {rl_algorithm.upper()}, input, chosen, and rejected columns cannot be None. Aborting."
-        )
+        assert (
+            input_col is not None
+            and chosen_col is not None
+            and rejected_col is not None
+        ), f"For {rl_algorithm.upper()}, input, chosen, and rejected columns cannot be None. Aborting."
     elif rl_algorithm == "kto":
-        assert input_col is not None and completion_col is not None and label_col is not None, (
-            "For KTO, input, completion, and label columns cannot be None. Aborting."
-        )
+        assert (
+            input_col is not None
+            and completion_col is not None
+            and label_col is not None
+        ), "For KTO, input, completion, and label columns cannot be None. Aborting."
 
     # Set the seed
     set_seed(seed)
@@ -222,7 +230,9 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # Get Tuner specific params (and update the lora_alpha if needed)
     peft_kwargs = {k: v for k, v in local_config.items() if tuner_flags[k] is True}
     if alpha_ratio is not None:
-        assert "r" in peft_kwargs, "Alpha ratio is set but 'r' is not provided in the tuner kwargs. Aborting."
+        assert (
+            "r" in peft_kwargs
+        ), "Alpha ratio is set but 'r' is not provided in the tuner kwargs. Aborting."
         lora_alpha = int(alpha_ratio * peft_kwargs.get("r"))
         peft_kwargs["lora_alpha"] = lora_alpha
     logger.info(f"[AutoTune] PEFT args: {peft_kwargs}")
@@ -249,7 +259,9 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     if peft_config is not None:
-        logger.info("[AutoTune] PEFT config will be passed to TRL trainer (TRL handles PEFT internally)")
+        logger.info(
+            "[AutoTune] PEFT config will be passed to TRL trainer (TRL handles PEFT internally)"
+        )
         if is_qlora:
             # TRL wraps the model with get_peft_model internally, but not every
             # TRL trainer runs prepare_model_for_kbit_training on a quantized
@@ -272,13 +284,21 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         raw_datasets["train"] = raw_datasets["train"].shuffle(seed=42)
         raw_datasets["eval"] = raw_datasets["eval"].shuffle(seed=42)
         percentage = training_config.get("hpo_dataset_percentage", 0.15)
-        assert percentage > 0.0 and percentage <= 1.0, "Dataset percentage for HPO search cannot be 0."
+        assert (
+            percentage > 0.0 and percentage <= 1.0
+        ), "Dataset percentage for HPO search cannot be 0."
         num_train, num_eval = len(raw_datasets["train"]), len(raw_datasets["eval"])
         if percentage < 1.0:
-            raw_datasets["train"] = raw_datasets["train"].select(range(int(percentage * num_train)))
-            raw_datasets["eval"] = raw_datasets["eval"].select(range(int(percentage * num_eval)))
+            raw_datasets["train"] = raw_datasets["train"].select(
+                range(int(percentage * num_train))
+            )
+            raw_datasets["eval"] = raw_datasets["eval"].select(
+                range(int(percentage * num_eval))
+            )
             num_train, num_eval = len(raw_datasets["train"]), len(raw_datasets["eval"])
-        logger.info(f"[AutoTune] HPO search using {num_train}/{num_eval} train/eval samples.")
+        logger.info(
+            f"[AutoTune] HPO search using {num_train}/{num_eval} train/eval samples."
+        )
 
     # Format datasets for TRL (rename columns, no tokenization needed — TRL handles it)
     logger.info(f"[AutoTune] Formatting datasets for {rl_algorithm.upper()}...")
@@ -336,7 +356,9 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
             desc="Format eval split for KTO",
         )
     else:
-        raise ValueError(f"Unknown RL algorithm: {rl_algorithm}. Supported algorithms: dpo, orpo, kto.")
+        raise ValueError(
+            f"Unknown RL algorithm: {rl_algorithm}. Supported algorithms: dpo, orpo, kto."
+        )
 
     # Set the training arguments
     outputs_dir = os.path.join(output_dir, "outputs", f"{trial_id}")
@@ -459,7 +481,9 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # BLDS-injected via `_blds_top_rung_pct`; non-BLDS callers default to
     # 1.0. See plans silky-cantering-lovelace.md (Phase 3),
     # loamy-warbling-mahler.md, and sunny-noodling-fermat.md.
-    hpo_pct_for_gate = training_config.get("hpo_dataset_percentage", 1.0) if hpo_search else 1.0
+    hpo_pct_for_gate = (
+        training_config.get("hpo_dataset_percentage", 1.0) if hpo_search else 1.0
+    )
     top_rung_pct = training_config.get("_blds_top_rung_pct", 1.0)
     is_top_rung = hpo_pct_for_gate >= top_rung_pct - 1e-9
     if hpo_search and is_top_rung:
@@ -472,7 +496,9 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     try:
         results = trainer.train()
     except Exception as e:
-        logger.error(f"[AutoTune] Training failed (trial {trial_id}): {e}", exc_info=True)
+        logger.error(
+            f"[AutoTune] Training failed (trial {trial_id}): {e}", exc_info=True
+        )
         raise  # Let Ray Tune mark trial as ERRORED
     logger.info(f"[AutoTune] Training complete with results: {results}")
 
@@ -494,7 +520,9 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     if math.isnan(loss) or math.isinf(loss):
         loss = 10000.0
 
-    logger.info(f"[AutoTune] Results: train_loss={train_loss}, eval_loss={eval_loss}, loss={loss}")
+    logger.info(
+        f"[AutoTune] Results: train_loss={train_loss}, eval_loss={eval_loss}, loss={loss}"
+    )
 
     # Prepare the result dict
     result = {

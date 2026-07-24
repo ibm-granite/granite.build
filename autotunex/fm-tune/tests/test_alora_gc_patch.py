@@ -42,7 +42,9 @@ def _build_alora_model():
     )
     model.enable_input_require_grads()
     model = get_peft_model(model, cfg)
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
     return model, tok
 
 
@@ -60,7 +62,9 @@ def test_patch_allows_back_to_back_no_grad_forwards():
     #     out1 = model(**inp)
     #     out2 = model(**inp)
     # assert out1.logits.shape == out2.logits.shape
-    assert True is True  # TODO: re-enable the actual test once the patch is merged and released in PEFT
+    assert (
+        True is True
+    )  # TODO: re-enable the actual test once the patch is merged and released in PEFT
 
 
 def test_patch_is_idempotent():
@@ -69,4 +73,6 @@ def test_patch_is_idempotent():
 
     # assert apply_alora_gc_patch() is True
     # assert apply_alora_gc_patch() is True
-    assert True is True  # TODO: re-enable the actual test once the patch is merged and released in PEFT
+    assert (
+        True is True
+    )  # TODO: re-enable the actual test once the patch is merged and released in PEFT

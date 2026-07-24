@@ -4,17 +4,16 @@
 import logging
 from typing import Optional
 
+import dependencies
+import models as api
+from auth import get_current_user
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from fastapi.responses import FileResponse
-
-import dependencies
-from auth import get_current_user
-import models as api
-from services import (
+from services import (  # for type annotations Job / User / Database
+    db_service,
     job_service,
     user_service,
-    db_service,
-)  # for type annotations Job / User / Database
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

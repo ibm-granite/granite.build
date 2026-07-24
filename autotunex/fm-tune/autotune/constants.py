@@ -66,7 +66,16 @@ AUTOTUNE_OFFLINE_RL = ["dpo", "kto"]
 AUTOTUNE_ONLINE_RL = ["ppo", "grpo", "dapo"]
 
 # List of supported evaluation metrics
-AUTOTUNE_METRICS = ["accuracy", "f1", "rouge1", "rouge2", "rougeL", "exact_match", "precision", "recall"]
+AUTOTUNE_METRICS = [
+    "accuracy",
+    "f1",
+    "rouge1",
+    "rouge2",
+    "rougeL",
+    "exact_match",
+    "precision",
+    "recall",
+]
 
 # Mapping from tuning types to PEFT types
 AUTOTUNE_TUNING_TO_PEFT_TYPE = {
@@ -90,7 +99,11 @@ AUTOTUNE_TUNING_TO_PEFT_TYPE = {
 
 # Tuning types supported by AutoTune
 AutotuneTuningTypes = {
-    "sft": {"description": "Supervised Fine-Tuning", "peft_type": None, "tuner_name": "tuner.sft"},
+    "sft": {
+        "description": "Supervised Fine-Tuning",
+        "peft_type": None,
+        "tuner_name": "tuner.sft",
+    },
     "lora": {
         "description": "Low Rank Adaptor Fine-Tuning",
         "peft_type": PeftType.LORA,
@@ -121,7 +134,11 @@ AutotuneTuningTypes = {
         "peft_type": PeftType.PREFIX_TUNING,
         "tuner_name": "tuner.prefix_tuning",
     },
-    "p_tuning": {"description": "P-Tuning", "peft_type": PeftType.P_TUNING, "tuner_name": "tuner.p_tuning"},
+    "p_tuning": {
+        "description": "P-Tuning",
+        "peft_type": PeftType.P_TUNING,
+        "tuner_name": "tuner.p_tuning",
+    },
 }
 
 # Metrics supported by AutoTune
@@ -163,7 +180,12 @@ AutotuneDatasetTypes = {
                 "type": Union[str, List[Dict[str, str]]],
                 "required": True,
             },
-            "output_col": {"name": "output", "desc": "Output sequence", "type": str, "required": True},
+            "output_col": {
+                "name": "output",
+                "desc": "Output sequence",
+                "type": str,
+                "required": True,
+            },
             "documents_col": {
                 "name": "documents",
                 "desc": "Retrieved documents associated with the input",
@@ -181,16 +203,41 @@ AutotuneDatasetTypes = {
     "dataset_type_b": {
         "desc": "Dataset type used by the DPO/ORPO preference alignment algorithms",
         "columns": {
-            "prompt_col": {"name": "prompt", "desc": "Input prompt", "type": str, "required": True},
-            "chosen_col": {"name": "chosen", "desc": "Accepted generated sequence", "type": str, "required": True},
-            "rejected_col": {"name": "rejected", "desc": "Rejected generated sequence", "type": str, "required": True},
+            "prompt_col": {
+                "name": "prompt",
+                "desc": "Input prompt",
+                "type": str,
+                "required": True,
+            },
+            "chosen_col": {
+                "name": "chosen",
+                "desc": "Accepted generated sequence",
+                "type": str,
+                "required": True,
+            },
+            "rejected_col": {
+                "name": "rejected",
+                "desc": "Rejected generated sequence",
+                "type": str,
+                "required": True,
+            },
         },
     },
     "dataset_type_c": {
         "desc": "Dataset type used by the KTO preference alignment algorithm",
         "columns": {
-            "prompt": {"name": "prompt", "desc": "Input prompt", "type": str, "required": True},
-            "completion": {"name": "completion", "desc": "Generated completion", "type": str, "required": True},
+            "prompt": {
+                "name": "prompt",
+                "desc": "Input prompt",
+                "type": str,
+                "required": True,
+            },
+            "completion": {
+                "name": "completion",
+                "desc": "Generated completion",
+                "type": str,
+                "required": True,
+            },
             "label": {
                 "name": "label",
                 "desc": "Label of the completion (e.g., positive/negative)",
@@ -215,7 +262,12 @@ AutotuneDatasetTypes = {
                 "required_keys": ["role", "content"],
                 "required": True,
             },
-            "ability_col": {"name": "ability", "desc": "Ability of the dataset", "type": str, "required": True},
+            "ability_col": {
+                "name": "ability",
+                "desc": "Ability of the dataset",
+                "type": str,
+                "required": True,
+            },
             "reward_model_col": {
                 "name": "reward_model",
                 "desc": "Reward model",

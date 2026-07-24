@@ -1,10 +1,9 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
+import models as api
 import pytest
 from fastapi import HTTPException
-
-import models as api
 
 
 class _Req:
@@ -139,9 +138,8 @@ async def test_w3id_provider_missing_cookie_401():
 
 
 async def test_w3id_provider_invalid_token_401():
-    from services.auth_providers.w3id_provider import W3idAuthProvider
-
     import auth
+    from services.auth_providers.w3id_provider import W3idAuthProvider
 
     req = _Req(cookies={auth.SESSION_COOKIE: "not-a-jwt"})
     with pytest.raises(HTTPException) as ei:

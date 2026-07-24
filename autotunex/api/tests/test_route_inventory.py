@@ -4,9 +4,8 @@
 import json
 import os
 
-from fastapi.routing import APIRoute
-
 import server  # assembled app — only importable under conftest stubs (autotune is stubbed)
+from fastapi.routing import APIRoute
 
 _BASELINE = os.path.join(os.path.dirname(__file__), "_route_baseline.json")
 

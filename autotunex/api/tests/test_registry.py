@@ -1,8 +1,8 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
-from services.plugins import Seam, UnknownProviderError, register_override, resolve
 import services.plugins.registry as reg
+from services.plugins import Seam, UnknownProviderError, register_override, resolve
 
 
 def test_seam_values_are_entry_point_groups():
@@ -169,6 +169,7 @@ def test_setup_py_declares_auth_provider_entry_points():
 
 def test_get_current_user_delegates_to_resolved_provider(monkeypatch):
     import asyncio
+
     import auth
     from services.plugins import Seam, register_override
 

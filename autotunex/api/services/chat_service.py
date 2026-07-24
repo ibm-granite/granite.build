@@ -6,14 +6,14 @@ Chat service — LangChain agent that discovers MCP tools and uses
 Claude (via LiteLLM) to answer user questions about AutoTuneX.
 """
 
-import os
 import logging
-from typing import List, Dict, Any, Optional, AsyncIterator, Tuple
+import os
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langgraph.prebuilt import create_react_agent, ToolNode
 from langgraph.checkpoint.memory import InMemorySaver
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langgraph.prebuilt import ToolNode, create_react_agent
 
 logger = logging.getLogger("chat_service")
 

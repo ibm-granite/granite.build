@@ -3,8 +3,9 @@
 
 """File-format / size validation. Moved verbatim from file_service.py."""
 
-from fastapi import UploadFile, HTTPException
 import logging
+
+from fastapi import HTTPException, UploadFile
 
 from .streaming import CONFIG
 

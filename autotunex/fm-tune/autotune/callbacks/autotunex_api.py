@@ -61,7 +61,9 @@ class AutoTuneXAPI:
                 resp = self.session.request(method, url, **kwargs)
                 if resp.status_code < 500:
                     return resp
-                last_exc = AutoTuneXAPIError(f"{method} {path} returned {resp.status_code}: {resp.text}")
+                last_exc = AutoTuneXAPIError(
+                    f"{method} {path} returned {resp.status_code}: {resp.text}"
+                )
                 logger.warning(
                     "Attempt %d/%d: server returned %d, retrying…",
                     attempt,

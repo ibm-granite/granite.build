@@ -14,17 +14,17 @@ StorageError) so FastAPI types never leak across the abstraction boundary.
 import logging
 
 from fastapi import HTTPException
-
-from services import gb_service, file_service
+from services import file_service, gb_service
 from utils import extract_uuid_uri
-from .base import (
-    StorageBackend,
-    DatasetRef,
-    DatasetFiles,
-    StorageLocator,
-    StorageError,
-)
+
 from ._utils import translate_http_exc
+from .base import (
+    DatasetFiles,
+    DatasetRef,
+    StorageBackend,
+    StorageError,
+    StorageLocator,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,11 @@ class GBStorageBackend(StorageBackend):
                 "--artifact-name",
                 artifact_name,
                 "--type",
-                "dataset", "--store", "hf", "--tags", "autotunex",
+                "dataset",
+                "--store",
+                "hf",
+                "--tags",
+                "autotunex",
                 "--certify-no-restrictions",
             ]
             result = await self.gb.command_executor(command)

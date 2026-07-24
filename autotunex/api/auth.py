@@ -4,17 +4,16 @@
 import logging
 import os
 import secrets
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlencode
 
+import dependencies
 import httpx
 import jwt
+import models as api
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-
-import models as api
-import dependencies
 from services import user_service
 
 logger = logging.getLogger("auth")

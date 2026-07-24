@@ -1,15 +1,16 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
+
 import models
 import yaml
-import logging
-from utils import extract_github_url
-from utilites.granite_build import GraniteBuild
+from services import db_service, gb_service, logging_service
 from services.impl.runner import Runner
-from services import db_service, logging_service, gb_service
 from services.yaml_service import YAMLManager
+from utilites.granite_build import GraniteBuild
+from utils import extract_github_url
 
 logger = logging.getLogger("GBRunner")
 gb: gb_service.GBService = gb_service.GBService()
@@ -205,7 +206,14 @@ class GBRunner(Runner):
         self.logging_handler.flush()
         logger.debug("current dir", os.getcwd())
         logger.info(f"starting tuning in gb: {experiment}")
-        command = ["build", "start", "-f", f"{experiment}/build.yaml", "--tag", "autotunex"]
+        command = [
+            "build",
+            "start",
+            "-f",
+            f"{experiment}/build.yaml",
+            "--tag",
+            "autotunex",
+        ]
         logger.debug(f"command for build start: {command}")
         result = await gb.command_executor(command)
         output = result.strip().replace("\r", "\n")

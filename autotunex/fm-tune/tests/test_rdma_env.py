@@ -1,7 +1,6 @@
 """Tests for autotune.lsf.ray_up_blaunch._default_ib_hca / _rdma_env."""
 
 import pytest
-
 from autotune.lsf.ray_up_blaunch import (
     _DEFAULT_IB_HCA_BY_FLEET,
     _GPU_MODEL_BY_FLEET,
@@ -32,7 +31,10 @@ class TestDefaultIbHca:
 
         caplog.set_level(logging.WARNING, logger="autotune.lsf.ray_up_blaunch")
         _default_ib_hca("typo-fleet")
-        assert any("unknown fleet" in r.message and "typo-fleet" in r.message for r in caplog.records)
+        assert any(
+            "unknown fleet" in r.message and "typo-fleet" in r.message
+            for r in caplog.records
+        )
 
     def test_default_fleet_is_in_table(self):
         # Sanity: the fallback target must itself be a known fleet.
@@ -93,7 +95,10 @@ class TestGpuModelForFleet:
         assert _gpu_model_for_fleet("bv-h100") == "NVIDIAH10080GBHBM3"
 
     def test_unknown_fleet_falls_back_to_default(self):
-        assert _gpu_model_for_fleet("not-a-real-fleet") == _GPU_MODEL_BY_FLEET[DEFAULT_FLEET]
+        assert (
+            _gpu_model_for_fleet("not-a-real-fleet")
+            == _GPU_MODEL_BY_FLEET[DEFAULT_FLEET]
+        )
 
     def test_default_fleet_is_in_table(self):
         assert DEFAULT_FLEET in _GPU_MODEL_BY_FLEET

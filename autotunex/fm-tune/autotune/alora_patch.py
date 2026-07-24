@@ -81,8 +81,12 @@ def apply_alora_gc_patch() -> bool:
 
         LoraModel = lora_model_module.LoraModel
         GradientCheckpointingLayer = lora_model_module.GradientCheckpointingLayer
-        _alora_offsets_pre_forward_hook = lora_model_module._alora_offsets_pre_forward_hook
-        _adapter_names_pre_forward_hook = lora_model_module._adapter_names_pre_forward_hook
+        _alora_offsets_pre_forward_hook = (
+            lora_model_module._alora_offsets_pre_forward_hook
+        )
+        _adapter_names_pre_forward_hook = (
+            lora_model_module._adapter_names_pre_forward_hook
+        )
     except (ImportError, AttributeError) as exc:
         logger.warning(
             "[alora_patch] could not import peft internals (%s); patch not applied",
@@ -103,7 +107,10 @@ def apply_alora_gc_patch() -> bool:
 
         if alora_offsets is not None:
             for n, layer in self.named_modules():
-                if isinstance(layer, GradientCheckpointingLayer) and layer.gradient_checkpointing:
+                if (
+                    isinstance(layer, GradientCheckpointingLayer)
+                    and layer.gradient_checkpointing
+                ):
 
                     def forward_pre_hook(name, module, inputs, **kwargs):
                         for submodule in module.modules():
@@ -115,7 +122,9 @@ def apply_alora_gc_patch() -> bool:
                                     ),
                                     with_kwargs=True,
                                 )
-                                module._peft_gradient_checkpointing_forward_hooks.append(handle)
+                                module._peft_gradient_checkpointing_forward_hooks.append(
+                                    handle
+                                )
 
                     def backward_hook(name, module, *grad_output, **kwargs):
                         while module._peft_gradient_checkpointing_forward_hooks:
@@ -125,19 +134,29 @@ def apply_alora_gc_patch() -> bool:
                     # no matching backward (e.g. trainer evaluation) instead
                     # of raising. The upstream guard only exists to prevent
                     # double registration; draining achieves the same thing.
-                    existing = getattr(layer, "_peft_gradient_checkpointing_forward_hooks", None)
+                    existing = getattr(
+                        layer, "_peft_gradient_checkpointing_forward_hooks", None
+                    )
                     if existing:
                         while existing:
                             existing.pop().remove()
                     layer._peft_gradient_checkpointing_forward_hooks = []
 
-                    handle = layer.register_forward_pre_hook(partial(forward_pre_hook, n, alora_offsets=alora_offsets))
+                    handle = layer.register_forward_pre_hook(
+                        partial(forward_pre_hook, n, alora_offsets=alora_offsets)
+                    )
                     layer._peft_gradient_checkpointing_forward_hooks.append(handle)
-                    handle = layer.register_full_backward_hook(partial(backward_hook, n))
+                    handle = layer.register_full_backward_hook(
+                        partial(backward_hook, n)
+                    )
                     layer._peft_gradient_checkpointing_forward_hooks.append(handle)
                 if isinstance(layer, LoraLayer):
-                    pre_forward = partial(_alora_offsets_pre_forward_hook, alora_offsets=alora_offsets)
-                    handle = layer.register_forward_pre_hook(pre_forward, with_kwargs=True)
+                    pre_forward = partial(
+                        _alora_offsets_pre_forward_hook, alora_offsets=alora_offsets
+                    )
+                    handle = layer.register_forward_pre_hook(
+                        pre_forward, with_kwargs=True
+                    )
                     hook_handles.append(handle)
 
         num_beams = kwargs.get("num_beams", None)
@@ -148,7 +167,9 @@ def apply_alora_gc_patch() -> bool:
 
         if adapter_names is not None:
             if self.training:
-                raise ValueError("Cannot pass `adapter_names` when the model is in training mode.")
+                raise ValueError(
+                    "Cannot pass `adapter_names` when the model is in training mode."
+                )
 
             expected_adapters = set()
             for layer in self.modules():
@@ -165,20 +186,37 @@ def apply_alora_gc_patch() -> bool:
             original_adapter_names = adapter_names[:]
             if uses_beam_search:
                 if not isinstance(adapter_names, (list, tuple)):
-                    raise TypeError(f"Got adapter names of type {type(adapter_names)}, expected a list of str.")
-                adapter_names = sum(([n] * kwargs["num_beams"] for n in adapter_names), [])
+                    raise TypeError(
+                        f"Got adapter names of type {type(adapter_names)}, expected a list of str."
+                    )
+                adapter_names = sum(
+                    ([n] * kwargs["num_beams"] for n in adapter_names), []
+                )
 
             for module in self.modules():
-                if isinstance(module, LoraLayer) or isinstance(module, AuxiliaryTrainingWrapper):
-                    pre_forward = partial(_adapter_names_pre_forward_hook, adapter_names=adapter_names)
-                    handle = module.register_forward_pre_hook(pre_forward, with_kwargs=True)
+                if isinstance(module, LoraLayer) or isinstance(
+                    module, AuxiliaryTrainingWrapper
+                ):
+                    pre_forward = partial(
+                        _adapter_names_pre_forward_hook, adapter_names=adapter_names
+                    )
+                    handle = module.register_forward_pre_hook(
+                        pre_forward, with_kwargs=True
+                    )
                     hook_handles.append(handle)
 
             if uses_beam_search and hasattr(self.model, "get_encoder"):
                 for module in self.model.get_encoder().modules():
-                    if isinstance(module, LoraLayer) or isinstance(module, AuxiliaryTrainingWrapper):
-                        pre_forward = partial(_adapter_names_pre_forward_hook, adapter_names=original_adapter_names)
-                        handle = module.register_forward_pre_hook(pre_forward, with_kwargs=True)
+                    if isinstance(module, LoraLayer) or isinstance(
+                        module, AuxiliaryTrainingWrapper
+                    ):
+                        pre_forward = partial(
+                            _adapter_names_pre_forward_hook,
+                            adapter_names=original_adapter_names,
+                        )
+                        handle = module.register_forward_pre_hook(
+                            pre_forward, with_kwargs=True
+                        )
                         hook_handles.append(handle)
 
         yield
@@ -188,6 +226,11 @@ def apply_alora_gc_patch() -> bool:
 
     LoraModel._enable_peft_forward_hooks = _patched_enable_peft_forward_hooks
     _PATCHED = True
-    logger.info("[alora_patch] installed patched _enable_peft_forward_hooks for peft %s", version)
-    print(f"[alora_patch] installed patched _enable_peft_forward_hooks for peft {version}")
+    logger.info(
+        "[alora_patch] installed patched _enable_peft_forward_hooks for peft %s",
+        version,
+    )
+    print(
+        f"[alora_patch] installed patched _enable_peft_forward_hooks for peft {version}"
+    )
     return True

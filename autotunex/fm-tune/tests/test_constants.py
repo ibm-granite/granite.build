@@ -35,9 +35,9 @@ class TestTuningAlgoRegistry:
 
     def test_peft_type_mapping_covers_all_algos(self):
         for algo in AUTOTUNE_TUNING_ALGO:
-            assert algo in AUTOTUNE_TUNING_TO_PEFT_TYPE, (
-                f"Tuning algo {algo!r} missing from AUTOTUNE_TUNING_TO_PEFT_TYPE"
-            )
+            assert (
+                algo in AUTOTUNE_TUNING_TO_PEFT_TYPE
+            ), f"Tuning algo {algo!r} missing from AUTOTUNE_TUNING_TO_PEFT_TYPE"
 
     def test_sft_and_none_map_to_none(self):
         assert AUTOTUNE_TUNING_TO_PEFT_TYPE["sft"] is None

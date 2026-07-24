@@ -1,27 +1,28 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
+import json
+import logging
 import os
+import threading
+import uuid
+from contextlib import asynccontextmanager
+from typing import Any, Dict, Optional
+from uuid import UUID
+
+import aiomysql
+import constants
 import models as api
 import pymysql
-import aiomysql
-import uuid
-from uuid import UUID
-import json
-import threading
-from contextlib import asynccontextmanager
+from dbutils.pooled_db import PooledDB
 from dotenv import load_dotenv
 from fastapi import HTTPException
-import constants
-import logging
-from typing import Dict, Any, Optional
 from utils import (
-    is_gb_enabled,
-    get_utc_timestamp,
-    extract_artifact_identifier,
     build_dmf_url,
+    extract_artifact_identifier,
+    get_utc_timestamp,
+    is_gb_enabled,
 )
-from dbutils.pooled_db import PooledDB
 
 logger = logging.getLogger(__name__)
 
@@ -670,9 +671,11 @@ class Database:
                     for row in rows:
                         if row.get("job_id"):
                             job = {
-                                f.replace("job_", "", 1)
-                                if f.startswith("job_")
-                                else f: row[f]
+                                (
+                                    f.replace("job_", "", 1)
+                                    if f.startswith("job_")
+                                    else f
+                                ): row[f]
                                 for f in JOB_JOIN_FIELDS
                                 if f in row
                             }
@@ -1177,8 +1180,7 @@ class Database:
         try:
             async with _acquire() as conn:
                 async with conn.cursor() as cursor:
-                    await cursor.execute(
-                        """
+                    await cursor.execute("""
                         CREATE TABLE IF NOT EXISTS log_entries (
                             id INT AUTO_INCREMENT PRIMARY KEY,
                             job_id CHAR(36) NOT NULL,
@@ -1188,8 +1190,7 @@ class Database:
                             timestamp DATETIME,
                             FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
                         );
-                        """
-                    )
+                        """)
                 await conn.commit()
             return True
         except aiomysql.MySQLError as e:
@@ -1778,8 +1779,7 @@ class Database:
         conn = self._get_sync_connection()
         try:
             with conn.cursor() as cursor:
-                cursor.execute(
-                    """
+                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS log_entries (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         job_id CHAR(36) NOT NULL,
@@ -1789,8 +1789,7 @@ class Database:
                         timestamp DATETIME,
                         FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
                     );
-                    """
-                )
+                    """)
             conn.commit()
             return True
         except pymysql.MySQLError as e:

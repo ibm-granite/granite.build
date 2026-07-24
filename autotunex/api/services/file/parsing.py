@@ -3,14 +3,15 @@
 
 """In-memory parsers + streaming record counter. Moved verbatim from file_service.py."""
 
-from fastapi import UploadFile, HTTPException
 import asyncio
-import pandas as pd
-import json
-from typing import List
 import io
-import pyarrow.parquet as pq
+import json
 import logging
+from typing import List
+
+import pandas as pd
+import pyarrow.parquet as pq
+from fastapi import HTTPException, UploadFile
 
 # Module logger. Root logging is configured once at app startup
 # (do not call basicConfig/setLevel here — see CLAUDE.md logging conventions).

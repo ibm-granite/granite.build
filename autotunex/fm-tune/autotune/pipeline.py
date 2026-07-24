@@ -72,21 +72,31 @@ class AutotunePipeline:
 
         # Set the internal members
         self.name = "autotunex"
-        self.tuning_algo = "none" if tuning_algo is None or str(tuning_algo).lower() == "none" else tuning_algo
-        self.rl_algo = "none" if rl_algo is None or str(rl_algo).lower() == "none" else rl_algo
+        self.tuning_algo = (
+            "none"
+            if tuning_algo is None or str(tuning_algo).lower() == "none"
+            else tuning_algo
+        )
+        self.rl_algo = (
+            "none" if rl_algo is None or str(rl_algo).lower() == "none" else rl_algo
+        )
         self.model_name_or_path = resolve_model_path(model_name_or_path)
         self.precision = AutotunePrecision.BF16  # default is bf16
-        self.multi_gpu = (
-            False  # default to single GPU for better compatibility, can be set to True for multi-GPU training
-        )
+        self.multi_gpu = False  # default to single GPU for better compatibility, can be set to True for multi-GPU training
 
         # Ensure that the tuning type is supported
-        assert self.tuning_algo in AUTOTUNE_TUNING_ALGO, f"Tuning algorithm `{tuning_algo}` is not supported."
-        assert rl_algo in AUTOTUNE_RL_ALGO, f"RL algorithm `{rl_algo}` is not supported."
+        assert (
+            self.tuning_algo in AUTOTUNE_TUNING_ALGO
+        ), f"Tuning algorithm `{tuning_algo}` is not supported."
+        assert (
+            rl_algo in AUTOTUNE_RL_ALGO
+        ), f"RL algorithm `{rl_algo}` is not supported."
 
         # The RL and tuning algorithms cannot be `none` at the same time
         if self.tuning_algo == "none" and self.rl_algo == "none":
-            raise ValueError("Tuning and RL algorithms cannot be `none` at the same time.")
+            raise ValueError(
+                "Tuning and RL algorithms cannot be `none` at the same time."
+            )
 
         # Online RL doesn't require a tuning algorithm such as SFT/LoRA
         if self.rl_algo in AUTOTUNE_ONLINE_RL:
@@ -94,7 +104,9 @@ class AutotunePipeline:
 
         # Offline RL requires a tuning algorithm such as SFT/LoRA
         if self.rl_algo in AUTOTUNE_OFFLINE_RL and self.tuning_algo == "none":
-            raise ValueError("Offline RL requires a tuning algorithm e.g., SFT or LoRA.")
+            raise ValueError(
+                "Offline RL requires a tuning algorithm e.g., SFT or LoRA."
+            )
 
         # Set the peft type from the input tuning type
         self.peft_type = AUTOTUNE_TUNING_TO_PEFT_TYPE[self.tuning_algo]

@@ -38,18 +38,25 @@ def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
         if strip_last_n > 0:
             parts = parts[:-strip_last_n] if strip_last_n < len(parts) else []
         if not parts:
-            raise ValueError(f"Nothing left after stripping {strip_last_n} segment(s) from: {rest}")
+            raise ValueError(
+                f"Nothing left after stripping {strip_last_n} segment(s) from: {rest}"
+            )
 
         name = parts[0]
         remaining = "/".join(parts)
-        return f"lh://{env}/{namespace}.{scope}/filesets/fileset_shared/{remaining}", name
+        return (
+            f"lh://{env}/{namespace}.{scope}/filesets/fileset_shared/{remaining}",
+            name,
+        )
 
     hf_match = _HF_CACHE_RE.match(path)
     if hf_match:
         org, dataset = hf_match.groups()
         return f"hf:///datasets/{org}/{dataset}", dataset
 
-    raise ValueError(f"Path does not match expected lakehouse or HF cache format: {path}")
+    raise ValueError(
+        f"Path does not match expected lakehouse or HF cache format: {path}"
+    )
 
 
 def stem_from_path(path: str) -> str:

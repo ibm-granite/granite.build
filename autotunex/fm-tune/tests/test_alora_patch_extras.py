@@ -5,9 +5,8 @@ tests don't require model loading; they probe the patch installer directly
 with a monkeypatched peft.__version__.
 """
 
-import pytest
-
 import autotune.alora_patch as alora_patch_mod
+import pytest
 from autotune.alora_patch import apply_alora_gc_patch, is_active
 
 
@@ -52,7 +51,9 @@ class TestIdempotency:
         # is a no-op that still returns True.
         first = apply_alora_gc_patch()
         if first is False:
-            pytest.skip("Running on non-0.18 peft; idempotency check requires patched state")
+            pytest.skip(
+                "Running on non-0.18 peft; idempotency check requires patched state"
+            )
         second = apply_alora_gc_patch()
         assert second is True
         assert is_active() is True

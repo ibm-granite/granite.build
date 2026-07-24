@@ -6,7 +6,6 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-
 from autotune.tools.parquet_to_json import (
     _coerce,
     _default_output,
@@ -105,4 +104,6 @@ class TestValidation:
 
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="not found"):
-            convert(str(tmp_path / "nope.parquet"), fmt="jsonl", output_path=None, indent=2)
+            convert(
+                str(tmp_path / "nope.parquet"), fmt="jsonl", output_path=None, indent=2
+            )

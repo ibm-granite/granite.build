@@ -31,16 +31,6 @@ from copy import deepcopy
 from typing import Any, Dict, Optional
 
 import torch
-from datasets import Dataset
-from ray import train, tune
-from ray.train import FailureConfig, Result, RunConfig, ScalingConfig
-from ray.train.huggingface.transformers import RayTrainReportCallback, prepare_trainer
-from ray.train.torch import TorchTrainer
-from transformers import AutoModelForCausalLM
-from transformers.utils.logging import disable_progress_bar, enable_progress_bar
-
-# TRL imports
-from trl import DPOConfig, DPOTrainer, KTOConfig, KTOTrainer
 
 # Local
 from autotune.trainers._alora_gc import (
@@ -58,13 +48,25 @@ from autotune.utils import (
     resize_model_embeddings,
     set_seed,
 )
+from datasets import Dataset
+from ray import train, tune
+from ray.train import FailureConfig, Result, RunConfig, ScalingConfig
+from ray.train.huggingface.transformers import RayTrainReportCallback, prepare_trainer
+from ray.train.torch import TorchTrainer
+from transformers import AutoModelForCausalLM
+from transformers.utils.logging import disable_progress_bar, enable_progress_bar
+
+# TRL imports
+from trl import DPOConfig, DPOTrainer, KTOConfig, KTOTrainer
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Suppress benign "Failed to query Ray Train Controller actor state" warnings
 # from the PlacementGroupCleaner.
-logging.getLogger("ray.train.v2._internal.execution.controller.placement_group_cleaner").setLevel(logging.ERROR)
+logging.getLogger(
+    "ray.train.v2._internal.execution.controller.placement_group_cleaner"
+).setLevel(logging.ERROR)
 
 
 # --- Resume helper (mirrors driver_multi_hf_fsdp._resolve_resume_checkpoint) ---
@@ -192,14 +194,18 @@ def _load_dataset_as_hf(
         n = max(1, int(len(df) * percentage))
         df = df.head(n)
         print(f"[AutoTune] Subsampled to {len(df)} rows ({percentage * 100:.0f}%)")
-        logger.info(f"[AutoTune] Subsampled to {len(df)} rows ({percentage * 100:.0f}%)")
+        logger.info(
+            f"[AutoTune] Subsampled to {len(df)} rows ({percentage * 100:.0f}%)"
+        )
 
     if column_mapping:
         df = df.rename(columns=column_mapping)
         print(f"[AutoTune] Renamed columns: {column_mapping}")
 
     hf_dataset = Dataset.from_pandas(df, preserve_index=False)
-    print(f"[AutoTune] Created HF Dataset: {len(hf_dataset)} samples, columns={hf_dataset.column_names}")
+    print(
+        f"[AutoTune] Created HF Dataset: {len(hf_dataset)} samples, columns={hf_dataset.column_names}"
+    )
     return hf_dataset
 
 
@@ -464,7 +470,9 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
 
     for loading_rank in range(world_size):
         if rank == loading_rank:
-            print(f"[AutoTune] Worker {rank}/{world_size} loading model: {model_name_or_path} ({device_label})")
+            print(
+                f"[AutoTune] Worker {rank}/{world_size} loading model: {model_name_or_path} ({device_label})"
+            )
             model = AutoModelForCausalLM.from_pretrained(
                 model_name_or_path,
                 **model_kwargs,
@@ -498,7 +506,9 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     eval_ds = Dataset.from_dict(eval_data)
 
     print(f"[AutoTune] Worker datasets: {len(train_ds)} train, {len(eval_ds)} eval")
-    logger.info(f"[AutoTune] Worker datasets: {len(train_ds)} train, {len(eval_ds)} eval")
+    logger.info(
+        f"[AutoTune] Worker datasets: {len(train_ds)} train, {len(eval_ds)} eval"
+    )
 
     # Build TRL config and trainer
     training_args, trainer_class = _build_trl_config(
@@ -551,17 +561,23 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
 
     # Train. Resume from the last checkpoint only during final training
     # (never during HPO trials) and only when --resume_from_checkpoint is set.
-    resume_flag = (not hpo_search) and training_config.get("resume_from_checkpoint", False)
+    resume_flag = (not hpo_search) and training_config.get(
+        "resume_from_checkpoint", False
+    )
     resume_arg = _resolve_resume_checkpoint(training_output_dir, resume_flag)
     if resume_flag:
         if resume_arg:
-            logger.info(f"[AutoTune] Resuming final training from checkpoint: {resume_arg}")
+            logger.info(
+                f"[AutoTune] Resuming final training from checkpoint: {resume_arg}"
+            )
         else:
             logger.warning(
                 f"[AutoTune] --resume_from_checkpoint set but no checkpoint found "
                 f"under {training_output_dir!r}; training from scratch."
             )
-    print(f"[AutoTune] Worker starting {rl_algorithm.upper()} training (trial {trial_id})...")
+    print(
+        f"[AutoTune] Worker starting {rl_algorithm.upper()} training (trial {trial_id})..."
+    )
     logger.info(f"[AutoTune] Worker starting training (trial {trial_id})...")
     # When resuming a PEFT checkpoint, force the adapter load onto CPU to avoid
     # the exclusive-process GPU-0 contention across ranks (see _resume.py).
@@ -577,7 +593,9 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     eval_loss = metrics["eval_loss"]
 
     print(f"[AutoTune] Worker finished: train_loss={train_loss}, eval_loss={eval_loss}")
-    logger.info(f"[AutoTune] Worker finished: train_loss={train_loss}, eval_loss={eval_loss}")
+    logger.info(
+        f"[AutoTune] Worker finished: train_loss={train_loss}, eval_loss={eval_loss}"
+    )
 
     # Save model — ALL ranks must participate for FSDP state dict gathering.
     if not hpo_search and save_model_flag:
@@ -607,7 +625,9 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
                 # training. Removing the checkpoints on success means a later
                 # --resume_from_checkpoint correctly finds nothing and starts fresh;
                 # an interrupted run leaves them behind to resume from.
-                ckpt_dirs = _glob.glob(os.path.join(training_output_dir, "checkpoint-*"))
+                ckpt_dirs = _glob.glob(
+                    os.path.join(training_output_dir, "checkpoint-*")
+                )
                 for ckpt_dir in ckpt_dirs:
                     shutil.rmtree(ckpt_dir, ignore_errors=True)
                 if ckpt_dirs:
@@ -619,19 +639,29 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
                 if os.path.exists(outputs_dir):
                     shutil.rmtree(outputs_dir, ignore_errors=True)
                     print(f"[AutoTune] Cleaned up training outputs dir: {outputs_dir}")
-                    logger.info(f"[AutoTune] Cleaned up training outputs dir: {outputs_dir}")
+                    logger.info(
+                        f"[AutoTune] Cleaned up training outputs dir: {outputs_dir}"
+                    )
                 train_results_dir = os.path.join(output_dir, "train_results")
                 if os.path.exists(train_results_dir):
                     shutil.rmtree(train_results_dir, ignore_errors=True)
-                    print(f"[AutoTune] Cleaned up training results dir: {train_results_dir}")
-                    logger.info(f"[AutoTune] Cleaned up training results dir: {train_results_dir}")
+                    print(
+                        f"[AutoTune] Cleaned up training results dir: {train_results_dir}"
+                    )
+                    logger.info(
+                        f"[AutoTune] Cleaned up training results dir: {train_results_dir}"
+                    )
                 data_cache_dir = os.path.join(output_dir, "data_cache")
                 if os.path.exists(data_cache_dir):
                     shutil.rmtree(data_cache_dir, ignore_errors=True)
                     print(f"[AutoTune] Cleaned up data cache dir: {data_cache_dir}")
-                    logger.info(f"[AutoTune] Cleaned up data cache dir: {data_cache_dir}")
+                    logger.info(
+                        f"[AutoTune] Cleaned up data cache dir: {data_cache_dir}"
+                    )
             else:
-                logger.info("[AutoTune] --keep_checkpoints set; skipping artifact cleanup")
+                logger.info(
+                    "[AutoTune] --keep_checkpoints set; skipping artifact cleanup"
+                )
 
     return metrics
 
@@ -695,7 +725,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # PEFT config
     if peft_type is not None:
-        peft_kwargs = {k: v for k, v in local_config.items() if tuner_flags.get(k) is True}
+        peft_kwargs = {
+            k: v for k, v in local_config.items() if tuner_flags.get(k) is True
+        }
         if alpha_ratio is not None and "r" in peft_kwargs:
             peft_kwargs["lora_alpha"] = int(alpha_ratio * peft_kwargs["r"])
         print(f"[AutoTune] PEFT args: {peft_kwargs}")
@@ -717,9 +749,12 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"[AutoTune] FSDP strategy: {fsdp_strategy}")
 
     # Safety checks
-    assert fsdp_strategy in ["full_shard", "shard_grad_op", "hybrid_shard", "no_shard"], (
-        f"Invalid FSDP strategy: {fsdp_strategy}. Supported: full_shard, shard_grad_op, hybrid_shard, no_shard."
-    )
+    assert fsdp_strategy in [
+        "full_shard",
+        "shard_grad_op",
+        "hybrid_shard",
+        "no_shard",
+    ], f"Invalid FSDP strategy: {fsdp_strategy}. Supported: full_shard, shard_grad_op, hybrid_shard, no_shard."
 
     # Build FSDP config
     fsdp_str, fsdp_config = _build_fsdp_config(fsdp_strategy)
@@ -730,11 +765,15 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"[AutoTune] FSDP config: {fsdp_config}")
 
     # Dataset loading — no Ray Data, load with pandas → HF Dataset
-    percentage = 1.0 if not hpo_search else training_config.get("hpo_dataset_percentage", 0.10)
+    percentage = (
+        1.0 if not hpo_search else training_config.get("hpo_dataset_percentage", 0.10)
+    )
     if percentage == 0.0:
         raise ValueError("HPO dataset percentage cannot be 0.0")
 
-    print(f"[AutoTune] Loading datasets for {rl_algorithm.upper()} (percentage={percentage * 100:.0f}%)...")
+    print(
+        f"[AutoTune] Loading datasets for {rl_algorithm.upper()} (percentage={percentage * 100:.0f}%)..."
+    )
     logger.info(f"[AutoTune] Loading datasets for {rl_algorithm.upper()}...")
 
     column_mapping = None
@@ -759,7 +798,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         f"[AutoTune] Dataset: {train_ds_size} train samples, {steps_per_epoch} steps/epoch, "
         f"{num_workers} workers, batch_size={batch_size}"
     )
-    logger.info(f"[AutoTune] Dataset: {train_ds_size} train, {steps_per_epoch} steps/epoch")
+    logger.info(
+        f"[AutoTune] Dataset: {train_ds_size} train, {steps_per_epoch} steps/epoch"
+    )
 
     # TRL Trainer owns all checkpointing (save_strategy, load_best_model_at_end).
     # Ray Train checkpoint persistence is disabled — RayTrainReportCallback still
@@ -803,8 +844,12 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         ),
     )
 
-    print(f"[AutoTune] Starting {rl_algorithm.upper()} distributed training ({num_workers} workers, FSDP)")
-    logger.info(f"[AutoTune] Starting {rl_algorithm.upper()} training ({num_workers} workers, FSDP)")
+    print(
+        f"[AutoTune] Starting {rl_algorithm.upper()} distributed training ({num_workers} workers, FSDP)"
+    )
+    logger.info(
+        f"[AutoTune] Starting {rl_algorithm.upper()} training ({num_workers} workers, FSDP)"
+    )
 
     # Run training
     train_result: Optional[Result] = None
@@ -813,7 +858,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         print("[AutoTune] Distributed training finished.")
         logger.info("[AutoTune] Distributed training finished.")
     except Exception as e:
-        logger.error(f"[AutoTune] Training failed (trial {trial_id}): {e}", exc_info=True)
+        logger.error(
+            f"[AutoTune] Training failed (trial {trial_id}): {e}", exc_info=True
+        )
         print(f"[AutoTune] Training failed (trial {trial_id}): {e}")
         raise  # Let Ray Tune mark trial as ERRORED
 
@@ -839,8 +886,12 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         loss = 10000.0
 
     # Print results
-    print(f"[AutoTune] Results: train_loss={train_loss}, eval_loss={eval_loss_val}, loss={loss}")
-    logger.info(f"[AutoTune] Results: train_loss={train_loss}, eval_loss={eval_loss_val}, loss={loss}")
+    print(
+        f"[AutoTune] Results: train_loss={train_loss}, eval_loss={eval_loss_val}, loss={loss}"
+    )
+    logger.info(
+        f"[AutoTune] Results: train_loss={train_loss}, eval_loss={eval_loss_val}, loss={loss}"
+    )
 
     # HPO trials never need their model checkpoint — metrics were already
     # extracted from train_result.metrics above. The single epoch save (kept so

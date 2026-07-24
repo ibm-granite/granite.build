@@ -38,14 +38,17 @@ import tempfile
 import yaml
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
 def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="FM-Tune AutoTune wrapper for Granite.build", formatter_class=argparse.RawDescriptionHelpFormatter
+        description="FM-Tune AutoTune wrapper for Granite.build",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
     # AutoTune config (embedded from build.yaml)
@@ -57,18 +60,46 @@ def parse_arguments():
     )
 
     # FM-Tune required arguments
-    parser.add_argument("--train_file", type=str, required=True, help="Path to training data file")
-    parser.add_argument("--validation_file", type=str, required=True, help="Path to validation data file")
-    parser.add_argument("--model_name_or_path", type=str, required=True, help="Path to model or HuggingFace model name")
-    parser.add_argument("--tuning_type", type=str, required=True, help="Tuning type (e.g., lora, sft)")
-    parser.add_argument("--output_dir", type=str, required=True, help="Output directory for results")
-    parser.add_argument("--run_name", type=str, required=True, help="Name for this AutoTune run")
-    parser.add_argument("--output_model_name", type=str, required=True, help="Name for the output model")
+    parser.add_argument(
+        "--train_file", type=str, required=True, help="Path to training data file"
+    )
+    parser.add_argument(
+        "--validation_file",
+        type=str,
+        required=True,
+        help="Path to validation data file",
+    )
+    parser.add_argument(
+        "--model_name_or_path",
+        type=str,
+        required=True,
+        help="Path to model or HuggingFace model name",
+    )
+    parser.add_argument(
+        "--tuning_type", type=str, required=True, help="Tuning type (e.g., lora, sft)"
+    )
+    parser.add_argument(
+        "--output_dir", type=str, required=True, help="Output directory for results"
+    )
+    parser.add_argument(
+        "--run_name", type=str, required=True, help="Name for this AutoTune run"
+    )
+    parser.add_argument(
+        "--output_model_name", type=str, required=True, help="Name for the output model"
+    )
 
     # FM-Tune optional flags
-    parser.add_argument("--save_history", action="store_true", help="Save trial history")
-    parser.add_argument("--do_checkpoint", action="store_true", help="Save model checkpoints")
-    parser.add_argument("--no_autotune", action="store_true", help="Disable AutoTune (just run single training)")
+    parser.add_argument(
+        "--save_history", action="store_true", help="Save trial history"
+    )
+    parser.add_argument(
+        "--do_checkpoint", action="store_true", help="Save model checkpoints"
+    )
+    parser.add_argument(
+        "--no_autotune",
+        action="store_true",
+        help="Disable AutoTune (just run single training)",
+    )
 
     return parser.parse_args()
 
@@ -102,7 +133,9 @@ def validate_autotune_config(config_dict):
     # Validate training_config
     training_config = config_dict["training_config"]
     if "num_train_epochs" not in training_config and "max_steps" not in training_config:
-        raise ValueError("training_config must contain either 'num_train_epochs' or 'max_steps'")
+        raise ValueError(
+            "training_config must contain either 'num_train_epochs' or 'max_steps'"
+        )
 
     # Validate tuners_config
     tuners_config = config_dict["tuners_config"]
@@ -128,8 +161,12 @@ def write_config_file(config_dict, config_path):
 
         # Log config summary for debugging
         logger.info("Config summary:")
-        logger.info(f"  - Search algorithm: {config_dict['tune_config'].get('search_alg')}")
-        logger.info(f"  - Number of trials: {config_dict['tune_config'].get('num_samples')}")
+        logger.info(
+            f"  - Search algorithm: {config_dict['tune_config'].get('search_alg')}"
+        )
+        logger.info(
+            f"  - Number of trials: {config_dict['tune_config'].get('num_samples')}"
+        )
         logger.info(f"  - Tuners: {', '.join(config_dict['tuners_config'].keys())}")
 
     except Exception as e:
@@ -198,7 +235,11 @@ def execute_fm_tune(cmd):
     try:
         # Execute with real-time output streaming
         process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, bufsize=1
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1,
         )
 
         # Stream output in real-time
@@ -251,7 +292,9 @@ def main():
     config_file = None
     try:
         # Create a named temporary file that won't be auto-deleted
-        config_fd, config_file = tempfile.mkstemp(suffix=".yaml", prefix="autotune_config_")
+        config_fd, config_file = tempfile.mkstemp(
+            suffix=".yaml", prefix="autotune_config_"
+        )
         os.close(config_fd)  # Close the file descriptor
 
         logger.info(f"Created temporary config file: {config_file}")
@@ -279,7 +322,9 @@ def main():
                 os.unlink(config_file)
                 logger.info(f"Cleaned up temporary config file: {config_file}")
             except Exception as e:
-                logger.warning(f"Failed to clean up temporary file {config_file}: {str(e)}")
+                logger.warning(
+                    f"Failed to clean up temporary file {config_file}: {str(e)}"
+                )
 
 
 if __name__ == "__main__":

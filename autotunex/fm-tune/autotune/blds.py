@@ -23,6 +23,7 @@ from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from autotune.utils import init_random
 
 # Use cloudpickle instead of pickle to make lambda funcs in HyperOpt pickleable
 from ray import cloudpickle, tune
@@ -32,8 +33,6 @@ from ray.tune.search.sample import Categorical
 from ray.tune.search.variant_generator import parse_spec_vars
 from ray.tune.utils import flatten_dict
 from ray.tune.utils.util import unflatten_dict, unflatten_list_dict
-
-from autotune.utils import init_random
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -202,7 +201,9 @@ class IncrementalBanditLDS:
         if any(b <= a for a, b in zip(fidelity_schedule, fidelity_schedule[1:])):
             raise ValueError("fidelity_schedule must be strictly monotone-increasing.")
         if any(p <= 0.0 or p > 1.0 for p in fidelity_schedule):
-            raise ValueError(f"fidelity_schedule entries must be in (0, 1]; got {fidelity_schedule}")
+            raise ValueError(
+                f"fidelity_schedule entries must be in (0, 1]; got {fidelity_schedule}"
+            )
 
         self.fidelity_schedule = list(fidelity_schedule)
         self.num_rungs = len(self.fidelity_schedule)
@@ -225,7 +226,9 @@ class IncrementalBanditLDS:
                 init.append(self.values[pos].index(self.default_values[var_name]))
             self.init_config = init
         else:
-            self.init_config = [int(self.rng.integers(low=0, high=d)) for d in self.domains]
+            self.init_config = [
+                int(self.rng.integers(low=0, high=d)) for d in self.domains
+            ]
 
         self.pinit_indices: Tuple[int, ...] = tuple(self.init_config)
 
@@ -253,7 +256,9 @@ class IncrementalBanditLDS:
         logger.info(f"[AutoTune] BLDS values: {values}")
         logger.info(f"[AutoTune] BLDS max discrepancy: {self.max_discrepancy}")
         logger.info(f"[AutoTune] BLDS fidelity schedule: {self.fidelity_schedule}")
-        logger.info(f"[AutoTune] BLDS delta={self.delta}, c={self.c_const}, log={self.log_exploration}")
+        logger.info(
+            f"[AutoTune] BLDS delta={self.delta}, c={self.c_const}, log={self.log_exploration}"
+        )
         logger.info(f"[AutoTune] BLDS default values: {self.default_values}")
         logger.info(f"[AutoTune] BLDS initial pinit indices: {self.init_config}")
 
@@ -345,8 +350,14 @@ class IncrementalBanditLDS:
 
         # If the arm is in the uncertain zone vs pinit and not yet finalized,
         # escalate to the next rung.
-        if not arm.is_finalized() and arm.lcb <= pinit_arm.ucb and arm.ucb >= pinit_arm.lcb:
-            self.escalation_queue.append((indices, arm.step, pinit_arm.lcb, pinit_arm.ucb))
+        if (
+            not arm.is_finalized()
+            and arm.lcb <= pinit_arm.ucb
+            and arm.ucb >= pinit_arm.lcb
+        ):
+            self.escalation_queue.append(
+                (indices, arm.step, pinit_arm.lcb, pinit_arm.ucb)
+            )
 
     # -- internals ------------------------------------------------------------
 
@@ -415,7 +426,10 @@ class IncrementalBanditLDS:
         # Initial pinit seeding.
         if not self.pinit_seeded:
             self.pinit_seeded = True
-            return self._indices_to_config(self.pinit_indices), self.fidelity_schedule[0]
+            return (
+                self._indices_to_config(self.pinit_indices),
+                self.fidelity_schedule[0],
+            )
 
         # Drain escalation queue first (continues to refine known arms).
         while self.escalation_queue:
@@ -570,7 +584,9 @@ class BanditLimitedDiscrepancySearch(Searcher):
             logger.info("[AutoTune] Max discrepancy cannot be 0, setting to 1")
             self._max_discrepancy = 1
         if self._max_discrepancy >= len(self._variables):
-            logger.info("[AutoTune] Max discrepancy cannot exceed the number of variables")
+            logger.info(
+                "[AutoTune] Max discrepancy cannot exceed the number of variables"
+            )
             self._max_discrepancy = len(self._variables)
 
         if len(resolved_vars) > 0:
@@ -596,7 +612,9 @@ class BanditLimitedDiscrepancySearch(Searcher):
             log_exploration=self._log_exploration,
         )
 
-    def set_search_properties(self, metric: Optional[str], mode: Optional[str], config: Dict, **spec) -> bool:
+    def set_search_properties(
+        self, metric: Optional[str], mode: Optional[str], config: Dict, **spec
+    ) -> bool:
         if self.optimizer:
             return False
 
@@ -631,7 +649,9 @@ class BanditLimitedDiscrepancySearch(Searcher):
         """
         result = dict(config)
         result["training_config/hpo_dataset_percentage"] = float(fidelity_pct)
-        result["training_config/_blds_top_rung_pct"] = float(self.optimizer.fidelity_schedule[-1])
+        result["training_config/_blds_top_rung_pct"] = float(
+            self.optimizer.fidelity_schedule[-1]
+        )
         return result
 
     def _config_to_indices(self, config: Dict) -> Tuple[int, ...]:
@@ -643,15 +663,23 @@ class BanditLimitedDiscrepancySearch(Searcher):
 
     def suggest(self, trial_id: str) -> Optional[Dict]:
         if not self.optimizer:
-            raise RuntimeError(UNDEFINED_SEARCH_SPACE.format(cls=self.__class__.__name__, space="space"))
+            raise RuntimeError(
+                UNDEFINED_SEARCH_SPACE.format(
+                    cls=self.__class__.__name__, space="space"
+                )
+            )
 
         if not self._metric or not self._mode:
             raise RuntimeError(
-                UNDEFINED_METRIC_MODE.format(cls=self.__class__.__name__, metric=self._metric, mode=self._mode)
+                UNDEFINED_METRIC_MODE.format(
+                    cls=self.__class__.__name__, metric=self._metric, mode=self._mode
+                )
             )
 
         if self._system_deadline > 0 and time.time() > self._system_deadline:
-            logger.info(f"[AutoTune] System deadline {self._system_deadline} is reached.")
+            logger.info(
+                f"[AutoTune] System deadline {self._system_deadline} is reached."
+            )
             return Searcher.FINISHED
 
         if self.first_suggest:
@@ -689,7 +717,9 @@ class BanditLimitedDiscrepancySearch(Searcher):
         # Fallback: closest rung. Should not happen in practice.
         return min(range(len(schedule)), key=lambda i: abs(schedule[i] - fidelity_pct))
 
-    def on_trial_complete(self, trial_id: str, result: Optional[Dict] = None, error: bool = False):
+    def on_trial_complete(
+        self, trial_id: str, result: Optional[Dict] = None, error: bool = False
+    ):
         params = self._live_trial_mapping.pop(trial_id, None)
 
         if params is None:
@@ -799,7 +829,9 @@ if __name__ == "__main__":
         logger.info(f"  initial concurrent suggest tid={tid} -> {cfg}")
         pending.append((tid, cfg))
     distinct = {json.dumps(c, sort_keys=True, default=str) for _, c in pending}
-    assert len(distinct) == 3, f"Concurrent suggestions must be distinct, got {distinct}"
+    assert (
+        len(distinct) == 3
+    ), f"Concurrent suggestions must be distinct, got {distinct}"
 
     # Drain results and continue.
     for tid, cfg in pending:

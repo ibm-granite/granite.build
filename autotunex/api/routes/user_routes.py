@@ -3,15 +3,14 @@
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
-
 import dependencies
-from auth import get_current_user
 import models as api
-from services import (
-    user_service,
+from auth import get_current_user
+from fastapi import APIRouter, Depends, HTTPException
+from services import (  # for the type annotations user_service.User / dmf_service.Dmf
     dmf_service,
-)  # for the type annotations user_service.User / dmf_service.Dmf
+    user_service,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

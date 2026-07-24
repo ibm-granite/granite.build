@@ -15,12 +15,13 @@ loads it, and this module stays importable without the GB dependencies.
 """
 
 from utils import is_gb_enabled
+
 from .base import (  # noqa: F401
-    StorageBackend,
-    DatasetRef,
     DatasetFiles,
-    StorageLocator,
+    DatasetRef,
+    StorageBackend,
     StorageError,
+    StorageLocator,
     StorageNotFound,
     StorageValidationError,
 )

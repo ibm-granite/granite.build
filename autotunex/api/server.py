@@ -1,36 +1,37 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
-import os
 import asyncio
-from fastapi import (
-    FastAPI,
-    APIRouter,
-)
+import logging
+import os
 from contextlib import asynccontextmanager
+
+import dependencies
+import models as api
+import uvicorn
+from auth import auth_router
+from fastapi import (
+    APIRouter,
+    FastAPI,
+)
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-import models as api
-import logging
-from utils import str_to_bool
 from routes import (
+    chat_routes,
+    config_routes,
+    dataset_routes,
+    dmf_routes,
     gb_routes,
     health_checker,
-    utils_routes,
-    chat_routes,
-    user_routes,
-    config_routes,
-    dmf_routes,
-    reward_routes,
-    dataset_routes,
     jobs_routes,
+    reward_routes,
+    user_routes,
+    utils_routes,
 )
 from services import gb_service
-import dependencies
-from auth import auth_router
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from utils import str_to_bool
 
 logger = logging.getLogger("server")
 

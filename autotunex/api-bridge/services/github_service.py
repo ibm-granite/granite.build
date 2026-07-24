@@ -6,10 +6,10 @@
 import logging
 import os
 import re
-import requests
-from typing import Dict, Any
+from typing import Any, Dict
 
-from utils import is_gb_enabled, get_gb_token
+import requests
+from utils import get_gb_token, is_gb_enabled
 
 logger = logging.getLogger(__name__)
 

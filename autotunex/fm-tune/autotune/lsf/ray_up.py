@@ -42,7 +42,6 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import ray
-
 from autotune.cluster import release_sockets, reserve_ports
 from autotune.lsf.log_utils import (
     banner,
@@ -71,7 +70,9 @@ class RayUpTimeoutError(TimeoutError):
     already been attempted by the time this is raised.
     """
 
-    def __init__(self, message: str, cluster_info: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self, message: str, cluster_info: Optional[Dict[str, Any]] = None
+    ) -> None:
         super().__init__(message)
         self.cluster_info = cluster_info or {}
 
@@ -107,7 +108,9 @@ def _ray_init_with_timeout(address: str, timeout_s: float) -> bool:
     return True
 
 
-def _rdma_env(ib_hca: str = "mlx5_0", ib_ifname: Optional[str] = None) -> Dict[str, str]:
+def _rdma_env(
+    ib_hca: str = "mlx5_0", ib_ifname: Optional[str] = None
+) -> Dict[str, str]:
     """Return the NCCL/RDMA env-var set required for inter-node GDR over IB.
 
     Notes:
@@ -313,7 +316,9 @@ def _bjobs_status(job_ids: List[str]) -> Dict[str, Dict[str, str]]:
     Missing jobs map to ``{"status": "GONE", "host": "-"}``.  ``bjobs`` columns
     are parsed positionally: ``JOBID USER STAT QUEUE FROM_HOST EXEC_HOST ...``.
     """
-    out: Dict[str, Dict[str, str]] = {jid: {"status": "GONE", "host": "-"} for jid in job_ids}
+    out: Dict[str, Dict[str, str]] = {
+        jid: {"status": "GONE", "host": "-"} for jid in job_ids
+    }
     if not job_ids:
         return out
     proc = subprocess.run(
@@ -357,7 +362,9 @@ def _wait_for_workers(
             statuses = _bjobs_status(worker_job_ids)
             elapsed = time.monotonic() - started_at
             running = {j for j, info in statuses.items() if info["status"] == "RUN"}
-            not_running = {j: info for j, info in statuses.items() if info["status"] != "RUN"}
+            not_running = {
+                j: info for j, info in statuses.items() if info["status"] != "RUN"
+            }
             _log_bjobs_table(statuses, elapsed)
             logger.info(
                 f"[ray_up] worker bjobs: RUN={len(running)}/{len(worker_job_ids)} non_running={len(not_running)}"
@@ -367,16 +374,28 @@ def _wait_for_workers(
                 for jid in not_running:
                     if jid not in long_dumped:
                         long_dumped.add(jid)
-                        logger.info(f"[ray_up] bjobs -l {jid} (non-RUN > {long_dump_after_s:.0f}s):\n{bjobs_long(jid)}")
+                        logger.info(
+                            f"[ray_up] bjobs -l {jid} (non-RUN > {long_dump_after_s:.0f}s):\n{bjobs_long(jid)}"
+                        )
             if not not_running:
                 break
-            terminal = {j: i["status"] for j, i in not_running.items() if i["status"] in {"EXIT", "DONE", "GONE"}}
+            terminal = {
+                j: i["status"]
+                for j, i in not_running.items()
+                if i["status"] in {"EXIT", "DONE", "GONE"}
+            }
             if terminal:
                 for jid in terminal:
-                    logger.error(f"[ray_up] terminal status for {jid}: bjobs -l:\n{bjobs_long(jid)}")
-                raise RuntimeError(f"worker job(s) failed before reaching RUN: {terminal}")
+                    logger.error(
+                        f"[ray_up] terminal status for {jid}: bjobs -l:\n{bjobs_long(jid)}"
+                    )
+                raise RuntimeError(
+                    f"worker job(s) failed before reaching RUN: {terminal}"
+                )
             if time.monotonic() > deadline:
-                raise TimeoutError(f"timed out waiting for worker jobs to RUN after {timeout_s}s. statuses={statuses}")
+                raise TimeoutError(
+                    f"timed out waiting for worker jobs to RUN after {timeout_s}s. statuses={statuses}"
+                )
             time.sleep(poll_s)
 
     # Phase 2: wait for Ray to see all GPUs.
@@ -387,7 +406,9 @@ def _wait_for_workers(
             except Exception as e:
                 logger.warning(f"[ray_up] ray.cluster_resources() failed: {e}")
                 gpus = 0.0
-            logger.info(f"[ray_up] ray.cluster_resources GPU={gpus} / expected={expected_total_gpus}")
+            logger.info(
+                f"[ray_up] ray.cluster_resources GPU={gpus} / expected={expected_total_gpus}"
+            )
             summarize_ray_nodes()
             if gpus >= expected_total_gpus:
                 return
@@ -497,7 +518,9 @@ def start_multinode_ray_cluster(
     # spawns multiple processes per GPU and needs shared mode; everything
     # else (SFT/PEFT/offline-RL) wants exclusive_process so LSF reserves the
     # GPUs and won't co-locate two worker bsubs on the same host.
-    from autotune.constants import AUTOTUNE_ONLINE_RL  # local import: avoid heavy package init at module load
+    from autotune.constants import (
+        AUTOTUNE_ONLINE_RL,  # local import: avoid heavy package init at module load
+    )
 
     is_online_rl = rl_algo in AUTOTUNE_ONLINE_RL
     gpu_mode = "shared" if is_online_rl else "exclusive_process"
@@ -510,7 +533,9 @@ def start_multinode_ray_cluster(
     # Host-level exclusivity policy. With exclusive_process, LSF refuses to
     # co-schedule another GPU job on the same host already.  With shared, we
     # add ``-x`` to the worker bsub so the worker still owns the whole host.
-    logger.info(f"[ray_up] host_exclusive={'-x (whole-host)' if is_online_rl else 'GPU-scheduler enforced'}")
+    logger.info(
+        f"[ray_up] host_exclusive={'-x (whole-host)' if is_online_rl else 'GPU-scheduler enforced'}"
+    )
     if num_workers == 0:
         logger.warning(
             "[ray_up] num_workers=0 — head will come up with no GPU workers attached. "
@@ -528,7 +553,9 @@ def start_multinode_ray_cluster(
 
     def check_deadline(stage: str) -> None:
         if remaining() <= 0:
-            raise TimeoutError(f"bring-up deadline ({bringup_deadline_s}s) exceeded at stage={stage}")
+            raise TimeoutError(
+                f"bring-up deadline ({bringup_deadline_s}s) exceeded at stage={stage}"
+            )
 
     rdma_env = _rdma_env(ib_hca=ib_hca, ib_ifname=ib_ifname)
     # Apply on the head process so the driver also benefits.
@@ -558,8 +585,15 @@ def start_multinode_ray_cluster(
         with phase_timer("start_head"):
             head_ip, head_port, dash_port = _start_head(temp_dir)
         head_address = f"{head_ip}:{head_port}"
-        partial_info.update(head_address=head_address, head_ip=head_ip, head_port=head_port, dashboard_port=dash_port)
-        logger.info(f"[ray_up] head_address={head_address} dashboard=http://{head_ip}:{dash_port} temp_dir={temp_dir}")
+        partial_info.update(
+            head_address=head_address,
+            head_ip=head_ip,
+            head_port=head_port,
+            dashboard_port=dash_port,
+        )
+        logger.info(
+            f"[ray_up] head_address={head_address} dashboard=http://{head_ip}:{dash_port} temp_dir={temp_dir}"
+        )
 
         job_group = f"ray_nodes_{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}"
         partial_info["job_group"] = job_group
@@ -575,13 +609,19 @@ def start_multinode_ray_cluster(
         # These are expected to be absent on a CPU-only head, so missing-binary
         # / non-zero-rc paths are DEBUG (not WARNING).
         try:
-            topo = subprocess.run(["nvidia-smi", "topo", "-m"], capture_output=True, text=True, timeout=15)
+            topo = subprocess.run(
+                ["nvidia-smi", "topo", "-m"], capture_output=True, text=True, timeout=15
+            )
             if topo.returncode == 0:
                 logger.info(f"[ray_up] nvidia-smi topo -m:\n{topo.stdout}")
             else:
-                logger.debug(f"[ray_up] nvidia-smi topo -m rc={topo.returncode} stderr={topo.stderr.strip()}")
+                logger.debug(
+                    f"[ray_up] nvidia-smi topo -m rc={topo.returncode} stderr={topo.stderr.strip()}"
+                )
         except FileNotFoundError:
-            logger.debug("[ray_up] nvidia-smi not on PATH (CPU-only head?) — skipping topo dump")
+            logger.debug(
+                "[ray_up] nvidia-smi not on PATH (CPU-only head?) — skipping topo dump"
+            )
         except Exception as e:
             logger.debug(f"nvidia-smi topo skipped: {e}")
         try:
@@ -589,9 +629,13 @@ def start_multinode_ray_cluster(
             if ib.returncode == 0:
                 logger.info(f"[ray_up] ibstat:\n{ib.stdout}")
             else:
-                logger.debug(f"[ray_up] ibstat rc={ib.returncode} stderr={ib.stderr.strip()}")
+                logger.debug(
+                    f"[ray_up] ibstat rc={ib.returncode} stderr={ib.stderr.strip()}"
+                )
         except FileNotFoundError:
-            logger.debug("[ray_up] ibstat not on PATH (CPU-only head?) — skipping IB dump")
+            logger.debug(
+                "[ray_up] ibstat not on PATH (CPU-only head?) — skipping IB dump"
+            )
         except Exception as e:
             logger.debug(f"ibstat skipped: {e}")
 
@@ -617,7 +661,9 @@ def start_multinode_ray_cluster(
             logger.info(f"[ray_up] worker-{i} log file: {log_path}  (tail -f to watch)")
             worker_job_ids.append(_submit_worker(argv, idx=i))
 
-        logger.info(f"[ray_up] submitted {len(worker_job_ids)} worker job(s): {worker_job_ids}")
+        logger.info(
+            f"[ray_up] submitted {len(worker_job_ids)} worker job(s): {worker_job_ids}"
+        )
 
         # Connect the driver to its own head before polling cluster_resources().
         # Bounded by the remaining bring-up budget so a wedged GCS / dashboard
@@ -626,7 +672,9 @@ def start_multinode_ray_cluster(
         with phase_timer("ray_init_driver"):
             ok = _ray_init_with_timeout(address=head_address, timeout_s=remaining())
         if not ok:
-            raise TimeoutError(f"ray.init({head_address!r}) did not return within remaining budget")
+            raise TimeoutError(
+                f"ray.init({head_address!r}) did not return within remaining budget"
+            )
 
         if num_workers > 0:
             expected_total = num_workers * gpus_per_worker
@@ -648,7 +696,9 @@ def start_multinode_ray_cluster(
             f"[ray_up] head={head_address} dashboard=http://{head_ip}:{dash_port} "
             f"GPUs={int(final_resources.get('GPU', 0))} workers={worker_job_ids} job_group={job_group}"
         )
-        logger.info(f"[ray_up] bring-up complete in {elapsed:.1f}s of {bringup_deadline_s}s budget")
+        logger.info(
+            f"[ray_up] bring-up complete in {elapsed:.1f}s of {bringup_deadline_s}s budget"
+        )
 
         return {
             "head_address": head_address,
@@ -664,7 +714,9 @@ def start_multinode_ray_cluster(
 
     except TimeoutError as exc:
         elapsed = time.monotonic() - t0
-        logger.error(f"[ray_up] bring-up timed out after {elapsed:.1f}s (deadline={bringup_deadline_s}s): {exc}")
+        logger.error(
+            f"[ray_up] bring-up timed out after {elapsed:.1f}s (deadline={bringup_deadline_s}s): {exc}"
+        )
         # Best-effort partial teardown so workers we already submitted are
         # killed and the head process is stopped.  Local import avoids the
         # ray_up <-> ray_down import cycle at module load.

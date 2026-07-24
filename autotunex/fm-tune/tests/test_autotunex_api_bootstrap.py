@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from autotune.callbacks.autotunex_api import AutoTuneXAPI, AutoTuneXAPIError
 
 
@@ -20,13 +19,25 @@ def test_bootstrap_posts_and_returns_ids():
     payload = {
         "job_id": "J1",
         "build_id": "J1",
-        "config": {"name": "c", "tuner_type": "lora", "rl_tuner_type": None, "config_data": {}},
+        "config": {
+            "name": "c",
+            "tuner_type": "lora",
+            "rl_tuner_type": None,
+            "config_data": {},
+        },
         "dataset": {"name": "d", "artifact_uri": "lh://x"},
-        "job": {"model": "m", "experiment_name": "e", "tuning_type": "lora", "seed": 42},
+        "job": {
+            "model": "m",
+            "experiment_name": "e",
+            "tuning_type": "lora",
+            "seed": 42,
+        },
     }
     expected = {"config_id": "C1", "dataset_id": "D1", "job_id": "J1", "created": False}
 
-    with patch.object(api.session, "request", return_value=_make_response(200, expected)) as req:
+    with patch.object(
+        api.session, "request", return_value=_make_response(200, expected)
+    ) as req:
         result = api.bootstrap(payload)
 
     assert result == expected

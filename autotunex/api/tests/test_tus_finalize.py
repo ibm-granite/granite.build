@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from unittest.mock import AsyncMock, MagicMock
+
+from services.datasets.tus_finalize import handle_completed_file
 from services.datasets.tus_metadata import UploadIntent
 from services.datasets.tus_rendezvous import UploadRendezvous
-from services.datasets.tus_finalize import handle_completed_file
 
 
 def _dataset():

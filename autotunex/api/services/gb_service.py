@@ -3,18 +3,19 @@
 
 # from gbcli import client
 import asyncio
+import json
+import logging
 import os
+import re
 import subprocess
 import threading
 import time
-from typing import List
-import json
-import re
-from .yaml_service import YAMLManager
-from typing import Dict, Any
-from utils import is_gb_enabled, get_gb_token, get_gb_binary, run_command
+from typing import Any, Dict, List
+
 from services import db_service
-import logging
+from utils import get_gb_binary, get_gb_token, is_gb_enabled, run_command
+
+from .yaml_service import YAMLManager
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("LOG_LEVEL", logging.INFO))
@@ -49,17 +50,16 @@ def _load_gbcli() -> None:
     # These gbcli imports must follow configureGBWorkingEnv() so the working env
     # is set up before the modules are loaded (same ordering as the original
     # module-scope imports, now expressed as ordering within this function).
-    from gbcli.utils.gbconstants import GBSERVER_BUILD_API
+    from gbcli.services.service_build import process_target_runs_to_json
+    from gbcli.utils.gbconstants import BUILD_LOGALL_PAGE_SIZE, GBSERVER_BUILD_API
     from gbcli.utils.gbcredentials import get_user_token
+    from gbcli.utils.gbserver import cancel_build as gbserver_cancel_build
     from gbcli.utils.gbserver import (
-        get_build_status_with_targets_runs,
         get_build_events,
-        cancel_build as gbserver_cancel_build,
+        get_build_status_with_targets_runs,
     )
     from gbcli.utils.log_query import run_logquery
-    from gbcli.utils.utils import get_current_epoch, change_timestamp_by_days
-    from gbcli.utils.gbconstants import BUILD_LOGALL_PAGE_SIZE
-    from gbcli.services.service_build import process_target_runs_to_json
+    from gbcli.utils.utils import change_timestamp_by_days, get_current_epoch
 
     _gbcli_loaded = True
 

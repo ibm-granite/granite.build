@@ -1,7 +1,6 @@
 """Tests for autotune.rewards.gsm8k_reward — pure regex/numeric scoring logic."""
 
 import pytest
-
 from autotune.rewards.gsm8k_reward import (
     CORRECT_REWARD,
     FORMAT_BONUS,

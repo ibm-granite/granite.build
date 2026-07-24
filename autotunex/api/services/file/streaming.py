@@ -3,17 +3,17 @@
 
 """Byte-level streaming I/O for datasets. Moved verbatim from file_service.py."""
 
-from fastapi import UploadFile, HTTPException
 import asyncio
 import json
-from typing import List, Optional, Dict
-import pyarrow as pa
-import pyarrow.parquet as pq
+import logging
 import os
 import random
-import logging
+from typing import Dict, List, Optional
 
 import paths
+import pyarrow as pa
+import pyarrow.parquet as pq
+from fastapi import HTTPException, UploadFile
 
 # Module logger. Root logging is configured once at app startup
 # (do not call basicConfig/setLevel here — see CLAUDE.md logging conventions).

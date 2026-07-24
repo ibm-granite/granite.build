@@ -8,7 +8,6 @@ mismatch only surfaces much later as an opaque
 """
 
 import pytest
-
 from autotune.lsf import worker_entry
 
 

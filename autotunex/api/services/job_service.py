@@ -1,41 +1,40 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
-import math
-import os
-import paths
-import models as api
-
-import threading
-import time
 import asyncio
 import json
-import uuid
-from pathlib import Path
-from datetime import datetime
-from fastapi import HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
-from typing import Union, List, Dict, Optional
-from urllib.parse import urlparse
 import logging
+import math
+import os
+import threading
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Union
+from urllib.parse import urlparse
+
+import models as api
+import paths
+from constants import RITS_TTL
+from fastapi import BackgroundTasks, HTTPException
+from fastapi.responses import FileResponse
 from services import db_service, file_service, gb_service, logging_service
 from services.plugins import Seam, resolve
-from utils import (
-    is_valid_uuid,
-    is_gb_enabled,
-    extract_artifact_identifier,
-    build_dmf_url,
-    extract_github_url,
-    parse_gb_message,
-    utc_now_string,
-    time_elapsed,
-    get_utc_timestamp,
-    extract_chars,
-    get_granite_model_params,
-)
-from constants import RITS_TTL
 from services.yaml_service import YAMLManager
-
+from utils import (
+    build_dmf_url,
+    extract_artifact_identifier,
+    extract_chars,
+    extract_github_url,
+    get_granite_model_params,
+    get_utc_timestamp,
+    is_gb_enabled,
+    is_valid_uuid,
+    parse_gb_message,
+    time_elapsed,
+    utc_now_string,
+)
 
 gb: gb_service.GBService = gb_service.GBService()
 
@@ -1160,7 +1159,7 @@ class Job:
         # Lazy import: the autotune training core is an optional IBM dependency,
         # absent in a credential-free install. Import it only when this
         # estimation path is actually exercised.
-        from autotune.utils import parse_model_parameters, estimate_memory_usage
+        from autotune.utils import estimate_memory_usage, parse_model_parameters
 
         if (
             config.model_name.startswith("ibm-granite/granite-4.0")

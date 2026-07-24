@@ -16,15 +16,15 @@ callers never see FastAPI types leak across the abstraction boundary.
 import logging
 
 from fastapi import HTTPException
-
 from services import file_service
+
+from ._utils import translate_http_exc
 from .base import (
-    StorageBackend,
-    DatasetRef,
     DatasetFiles,
+    DatasetRef,
+    StorageBackend,
     StorageLocator,
 )
-from ._utils import translate_http_exc
 
 logger = logging.getLogger(__name__)
 

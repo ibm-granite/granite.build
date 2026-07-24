@@ -5,18 +5,17 @@ import logging
 import os
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException
-from starlette.concurrency import run_in_threadpool
-
-from auth import get_current_user
 import models as api
+from auth import get_current_user
+from fastapi import APIRouter, Depends, HTTPException
 from services.reward_validation import (
-    _check_syntax,
-    _analyze_security,
-    _validate_function,
-    _execute_safely,
     DEFAULT_TEST_INPUTS,
+    _analyze_security,
+    _check_syntax,
+    _execute_safely,
+    _validate_function,
 )
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

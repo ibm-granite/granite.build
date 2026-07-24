@@ -24,13 +24,6 @@ from copy import deepcopy
 from typing import Any, Dict
 
 import torch
-from peft import get_peft_model
-from ray import tune
-from transformers import (
-    AutoModelForCausalLM,
-    Trainer,
-    TrainingArguments,
-)
 
 # Local
 from autotune.trainers._alora_gc import (
@@ -46,6 +39,13 @@ from autotune.utils import (
     resize_model_embeddings,
     set_seed,
     tokenize_batch,
+)
+from peft import get_peft_model
+from ray import tune
+from transformers import (
+    AutoModelForCausalLM,
+    Trainer,
+    TrainingArguments,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,7 +207,9 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # Get Tuner specific params (and update the lora_alpha if needed)
     peft_kwargs = {k: v for k, v in local_config.items() if tuner_flags[k] is True}
     if alpha_ratio is not None:
-        assert "r" in peft_kwargs, "Alpha ratio is set but 'r' is not provided in the tuner kwargs. Aborting."
+        assert (
+            "r" in peft_kwargs
+        ), "Alpha ratio is set but 'r' is not provided in the tuner kwargs. Aborting."
         lora_alpha = int(alpha_ratio * peft_kwargs.get("r"))
         peft_kwargs["lora_alpha"] = lora_alpha
     logger.info(f"[AutoTune] PEFT args: {peft_kwargs}")
@@ -241,15 +243,21 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # If HPO search then limit the raw_datasets to 20% of instances
     if hpo_search is True:  # HPO search
         percentage = training_config.get("hpo_dataset_percentage", 0.1)
-        assert percentage > 0.0 and percentage <= 1.0, "Dataset percentage for HPO search cannot be 0."
-        num_train_total, num_eval_total = len(raw_datasets["train"]), len(raw_datasets["eval"])
+        assert (
+            percentage > 0.0 and percentage <= 1.0
+        ), "Dataset percentage for HPO search cannot be 0."
+        num_train_total, num_eval_total = len(raw_datasets["train"]), len(
+            raw_datasets["eval"]
+        )
         if percentage < 1.0:
             num_train = int(percentage * num_train_total)
             num_eval = int(percentage * num_eval_total)
             raw_datasets["train"] = raw_datasets["train"].select(range(num_train))
             raw_datasets["eval"] = raw_datasets["eval"].select(range(num_eval))
             num_train, num_eval = len(raw_datasets["train"]), len(raw_datasets["eval"])
-        logger.info(f"[AutoTune] HPO search using {num_train}/{num_eval} train/eval samples.")
+        logger.info(
+            f"[AutoTune] HPO search using {num_train}/{num_eval} train/eval samples."
+        )
 
     # Process the training and validation datasets
     logger.info("[AutoTune] Processing the datasets (train, eval)...")
@@ -259,8 +267,12 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # that mix shapes are handled correctly per-row. Optional `documents`
     # and `tools` columns are auto-detected inside the mapper.
     chat_mapper = _make_chat_template_mapper(tokenizer, input_col)
-    raw_datasets["train"] = raw_datasets["train"].map(chat_mapper, load_from_cache_file=False)
-    raw_datasets["eval"] = raw_datasets["eval"].map(chat_mapper, load_from_cache_file=False)
+    raw_datasets["train"] = raw_datasets["train"].map(
+        chat_mapper, load_from_cache_file=False
+    )
+    raw_datasets["eval"] = raw_datasets["eval"].map(
+        chat_mapper, load_from_cache_file=False
+    )
 
     # Print the first input/output pair after formatting so the user can
     # sanity-check the chat-template output before tokenization starts.
@@ -270,10 +282,17 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     col_names = raw_datasets["train"].column_names
 
-    logger.info(f"[AutoTune] Tokenizing the train dataset with max_length={max_length}...")
+    logger.info(
+        f"[AutoTune] Tokenizing the train dataset with max_length={max_length}..."
+    )
     train_ds = raw_datasets["train"].map(
         tokenize_batch,
-        fn_kwargs={"input_col": input_col, "output_col": output_col, "tokenizer": tokenizer, "max_length": max_length},
+        fn_kwargs={
+            "input_col": input_col,
+            "output_col": output_col,
+            "tokenizer": tokenizer,
+            "max_length": max_length,
+        },
         num_proc=1,
         batched=True,
         remove_columns=col_names,
@@ -284,7 +303,12 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("[AutoTune] Tokenizing the validation dataset...")
     eval_ds = raw_datasets["eval"].map(
         tokenize_batch,
-        fn_kwargs={"input_col": input_col, "output_col": output_col, "tokenizer": tokenizer, "max_length": max_length},
+        fn_kwargs={
+            "input_col": input_col,
+            "output_col": output_col,
+            "tokenizer": tokenizer,
+            "max_length": max_length,
+        },
         num_proc=1,
         batched=True,
         remove_columns=col_names,
@@ -399,7 +423,9 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # injected via `_blds_top_rung_pct`; non-BLDS callers default to 1.0. See
     # plans silky-cantering-lovelace.md (Phase 3), loamy-warbling-mahler.md,
     # and sunny-noodling-fermat.md.
-    hpo_pct_for_gate = training_config.get("hpo_dataset_percentage", 1.0) if hpo_search else 1.0
+    hpo_pct_for_gate = (
+        training_config.get("hpo_dataset_percentage", 1.0) if hpo_search else 1.0
+    )
     top_rung_pct = training_config.get("_blds_top_rung_pct", 1.0)
     is_top_rung = hpo_pct_for_gate >= top_rung_pct - 1e-9
     if hpo_search and is_top_rung:
@@ -412,7 +438,9 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     try:
         results = trainer.train()
     except Exception as e:
-        logger.error(f"[AutoTune] Training failed (trial {trial_id}): {e}", exc_info=True)
+        logger.error(
+            f"[AutoTune] Training failed (trial {trial_id}): {e}", exc_info=True
+        )
         raise  # Let Ray Tune mark trial as ERRORED
     logger.info(f"[AutoTune] Training complete with results: {results}")
 
@@ -434,7 +462,9 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     if math.isnan(loss) or math.isinf(loss):
         loss = 10000.0
 
-    logger.info(f"[AutoTune] Results: train_loss={train_loss}, eval_loss={eval_loss}, loss={loss}")
+    logger.info(
+        f"[AutoTune] Results: train_loss={train_loss}, eval_loss={eval_loss}, loss={loss}"
+    )
 
     # Prepare the result dict
     result = {

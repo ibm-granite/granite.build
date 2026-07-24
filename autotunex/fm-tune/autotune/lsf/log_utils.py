@@ -84,7 +84,9 @@ def _run_capture(cmd: List[str], timeout: float = 15.0) -> Optional[str]:
         logger.debug(f"_run_capture {cmd!r} raised: {e}")
         return None
     if proc.returncode != 0:
-        logger.debug(f"_run_capture {cmd!r} rc={proc.returncode} stderr={proc.stderr.strip()!r}")
+        logger.debug(
+            f"_run_capture {cmd!r} rc={proc.returncode} stderr={proc.stderr.strip()!r}"
+        )
         return None
     return proc.stdout
 

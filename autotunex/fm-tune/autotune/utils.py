@@ -24,12 +24,15 @@ from collections.abc import MutableMapping
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+# Local imports
+import autotune.constants
 import numpy as np
 import pandas as pd
 import ray
 import torch
 import transformers
 import yaml
+from autotune.constants import AUTOTUNE_DEFAULT_METRIC, AUTOTUNE_DEFAULT_MODE
 from datasets import DatasetDict, load_dataset
 from peft import (
     LoHaConfig,
@@ -54,14 +57,12 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
-# Local imports
-import autotune.constants
-from autotune.constants import AUTOTUNE_DEFAULT_METRIC, AUTOTUNE_DEFAULT_MODE
-
 logger = logging.getLogger(__name__)
 
 
-def flatten_dict(d: MutableMapping, parent_key: str = "", sep: str = ".") -> MutableMapping:
+def flatten_dict(
+    d: MutableMapping, parent_key: str = "", sep: str = "."
+) -> MutableMapping:
     """
     Flatten a nested dictionary structure.
 
@@ -220,7 +221,9 @@ def get_tuner_flag(value: Dict[str, Any]):
     return value["for_tuner"]
 
 
-def get_param_space(tuner_config: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+def get_param_space(
+    tuner_config: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """
     Prepare the parameter search space.
 
@@ -319,7 +322,9 @@ def get_search_alg(tune_config: dict, default_values: dict = None):
         try:
             from ray.tune.search.bohb import TuneBOHB
         except ImportError:
-            raise ImportError("Please pip install hpbandster and ConfigSpace to use TuneBOHB.")
+            raise ImportError(
+                "Please pip install hpbandster and ConfigSpace to use TuneBOHB."
+            )
 
         assert "metric" in tune_config.keys() and "mode" in tune_config.keys()
         "Please specify metric and mode for TuneBOHB."
@@ -358,16 +363,18 @@ def get_search_alg(tune_config: dict, default_values: dict = None):
         except ImportError:
             raise ImportError("Please import the BanditLimitedDiscrepancySearch class.")
 
-        assert "metric" in tune_config.keys() and "mode" in tune_config.keys(), (
-            "Please specify metric and mode for BanditLimitedDiscrepancySearch."
-        )
+        assert (
+            "metric" in tune_config.keys() and "mode" in tune_config.keys()
+        ), "Please specify metric and mode for BanditLimitedDiscrepancySearch."
 
         return BanditLimitedDiscrepancySearch(
             metric=tune_config["metric"],
             mode=tune_config["mode"],
             max_discrepancy=tune_config.pop("max_discrepancy", 1),
             default_values=default_values,
-            fidelity_schedule=tune_config.pop("fidelity_schedule", [0.1, 0.25, 0.5, 1.0]),
+            fidelity_schedule=tune_config.pop(
+                "fidelity_schedule", [0.1, 0.25, 0.5, 1.0]
+            ),
             delta=tune_config.pop("blds_delta", 0.1),
             c_const=tune_config.pop("blds_c", 4.0001),
             log_exploration=tune_config.pop("blds_log_exploration", True),
@@ -451,7 +458,9 @@ _SEARCH_ALG_SCHEDULER_COMPAT = {
 }
 
 
-def validate_search_alg_scheduler_combo(search_alg: Optional[str], scheduler: Optional[str]) -> None:
+def validate_search_alg_scheduler_combo(
+    search_alg: Optional[str], scheduler: Optional[str]
+) -> None:
     """
     Reject incompatible search_alg x scheduler combinations.
 
@@ -529,7 +538,9 @@ def get_tune_config(tune_config: Dict[str, Any], default_values: Dict[str, Any] 
     return tune_config
 
 
-def load_datasets(train_file: str, eval_file: str = None, test_file: str = None) -> DatasetDict:
+def load_datasets(
+    train_file: str, eval_file: str = None, test_file: str = None
+) -> DatasetDict:
     """
     Load the training, validation and test datasets. The supported file formats
     are: CSV, JSON and JSONL (see also Hugging Face's datasets).
@@ -631,7 +642,9 @@ def get_tokenizer(
         existing = tokenizer.additional_special_tokens or []
         new_tokens = [t for t in additional_special_tokens if t not in existing]
         if new_tokens:
-            num_new_tokens += tokenizer.add_special_tokens({"additional_special_tokens": existing + new_tokens})
+            num_new_tokens += tokenizer.add_special_tokens(
+                {"additional_special_tokens": existing + new_tokens}
+            )
 
     if additional_tokens:
         num_new_tokens += tokenizer.add_tokens(additional_tokens)
@@ -653,7 +666,9 @@ def get_tokenizer(
         tokenizer.model_max_length = 16384
 
     if num_new_tokens > 0:
-        logger.info(f"[AutoTune] Added {num_new_tokens} new token(s) to the tokenizer (vocab size: {len(tokenizer)})")
+        logger.info(
+            f"[AutoTune] Added {num_new_tokens} new token(s) to the tokenizer (vocab size: {len(tokenizer)})"
+        )
 
     return tokenizer, num_new_tokens
 
@@ -675,7 +690,11 @@ def resize_model_embeddings(
     target_size = len(tokenizer)
 
     if pad_to_multiple_of > 1:
-        target_size = (target_size + pad_to_multiple_of - 1) // pad_to_multiple_of * pad_to_multiple_of
+        target_size = (
+            (target_size + pad_to_multiple_of - 1)
+            // pad_to_multiple_of
+            * pad_to_multiple_of
+        )
 
     if target_size == current_size:
         return
@@ -692,7 +711,9 @@ def resize_model_embeddings(
         avg_output = output_data[:-num_new_tokens].mean(dim=0)
         output_data[-num_new_tokens:] = avg_output
 
-    logger.info(f"[AutoTune] Resized embeddings: {current_size} -> {target_size} ({num_new_tokens} new tokens)")
+    logger.info(
+        f"[AutoTune] Resized embeddings: {current_size} -> {target_size} ({num_new_tokens} new tokens)"
+    )
 
 
 def extract_tokenizer_kwargs(training_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -751,18 +772,24 @@ def tokenize_batch(
         output_text = ex[output_col]
 
         # Tokenize output separately
-        output_tokens = tokenizer(str(output_text), add_special_tokens=False)["input_ids"]
+        output_tokens = tokenizer(str(output_text), add_special_tokens=False)[
+            "input_ids"
+        ]
 
         # Check if enough capacity
         capacity = max_length - len(output_tokens) - 1
         if capacity < 0:
-            raise ValueError(f"Not enough capacity for output + EOS at given max_length = {max_length} tokens.")
+            raise ValueError(
+                f"Not enough capacity for output + EOS at given max_length = {max_length} tokens."
+            )
 
         # Sliding window over input
         input_tokens = tokenizer(str(input_text), add_special_tokens=False)["input_ids"]
         start = 0
         while start < len(input_tokens):
-            end = start + (max_length - len(output_tokens) - 1)  # Reserve space for output + EOS
+            end = start + (
+                max_length - len(output_tokens) - 1
+            )  # Reserve space for output + EOS
             chunk = input_tokens[start:end]
             combined = chunk + output_tokens + [tokenizer.eos_token_id]
 
@@ -785,7 +812,11 @@ def tokenize_batch(
 
             start += stride  # Move sliding window
 
-    return {"input_ids": input_ids_list, "attention_mask": attention_masks_list, "labels": labels_list}
+    return {
+        "input_ids": input_ids_list,
+        "attention_mask": attention_masks_list,
+        "labels": labels_list,
+    }
 
 
 # Set the random seed globally
@@ -1302,7 +1333,9 @@ def get_peft_config(
         # The adapter activates only after the invocation token sequence appears
         # in the input, preserving base-model KV cache before that point.
         if tokenizer is None:
-            raise ValueError("aLoRA requires a tokenizer to encode the invocation_string into alora_invocation_tokens.")
+            raise ValueError(
+                "aLoRA requires a tokenizer to encode the invocation_string into alora_invocation_tokens."
+            )
 
         # Install the peft 0.18 GC-compatibility patch so gradient checkpointing
         # can be used with aLoRA. Drivers gate `gradient_checkpointing` on
@@ -1320,7 +1353,9 @@ def get_peft_config(
 
         invocation_string = base_kwargs.get("invocation_string", "<guardian>")
         inv_tokens = tokenizer.encode(invocation_string, add_special_tokens=False)
-        print(f"[AutoTune] aLoRA invocation_string='{invocation_string}' → tokens={inv_tokens}")
+        print(
+            f"[AutoTune] aLoRA invocation_string='{invocation_string}' → tokens={inv_tokens}"
+        )
         logger.info(f"[AutoTune] aLoRA invocation_tokens={inv_tokens}")
 
         peft_config = LoraConfig(
@@ -1373,7 +1408,9 @@ def prepare_qlora_model(model, use_gradient_checkpointing=True):
     Must be called on the quantized base before ``get_peft_model``.
     """
 
-    return prepare_model_for_kbit_training(model, use_gradient_checkpointing=use_gradient_checkpointing)
+    return prepare_model_for_kbit_training(
+        model, use_gradient_checkpointing=use_gradient_checkpointing
+    )
 
 
 def _extract_sampler(dataloader):
@@ -1446,7 +1483,9 @@ def assert_dp_sharding(
     try:
         train_loader = trainer.get_train_dataloader()
         train_sampler = _extract_sampler(train_loader)
-        sampler_cls = type(train_sampler).__name__ if train_sampler is not None else "None"
+        sampler_cls = (
+            type(train_sampler).__name__ if train_sampler is not None else "None"
+        )
         num_replicas = getattr(train_sampler, "num_replicas", None)
         sampler_rank = getattr(train_sampler, "rank", None)
         bs_cls, bs_nprocs, bs_procidx = _describe_batch_sampler(train_loader)
@@ -1457,11 +1496,17 @@ def assert_dp_sharding(
         except Exception:
             pass
         eval_sampler = _extract_sampler(eval_loader)
-        eval_sampler_cls = type(eval_sampler).__name__ if eval_sampler is not None else "None"
+        eval_sampler_cls = (
+            type(eval_sampler).__name__ if eval_sampler is not None else "None"
+        )
 
-        effective_batch = per_device_batch_size * world_size * max(1, gradient_accumulation_steps)
+        effective_batch = (
+            per_device_batch_size * world_size * max(1, gradient_accumulation_steps)
+        )
         expected_max_steps = max(1, steps_per_epoch * max(1, num_train_epochs))
-        hf_max_steps = getattr(trainer.state, "max_steps", None) or getattr(trainer.args, "max_steps", None)
+        hf_max_steps = getattr(trainer.state, "max_steps", None) or getattr(
+            trainer.args, "max_steps", None
+        )
 
         logger.info(
             "[DP audit] train_sampler=%s(num_replicas=%s, rank=%s) "
@@ -1499,7 +1544,11 @@ def assert_dp_sharding(
         _BATCH_SAMPLER_SHARD_NAMES = {"BatchSamplerShard"}
 
         sharded_by_sampler = sampler_cls == "DistributedSampler"
-        sharded_by_batch = bs_cls in _BATCH_SAMPLER_SHARD_NAMES and bs_nprocs is not None and bs_nprocs == world_size
+        sharded_by_batch = (
+            bs_cls in _BATCH_SAMPLER_SHARD_NAMES
+            and bs_nprocs is not None
+            and bs_nprocs == world_size
+        )
         sharded_by_iterable = sampler_cls in _ITERABLE_SAMPLER_SENTINELS
 
         if world_size > 1:
@@ -1654,7 +1703,9 @@ def resolve_model_path(model_name_or_path: str) -> str:
     resolved = os.path.abspath(os.path.expanduser(model_name_or_path))
 
     if not os.path.isdir(resolved):
-        logger.warning(f"[AutoTune] Model path '{resolved}' does not exist or is not a directory; returning as-is.")
+        logger.warning(
+            f"[AutoTune] Model path '{resolved}' does not exist or is not a directory; returning as-is."
+        )
         return resolved
 
     if os.path.isfile(os.path.join(resolved, "config.json")):
@@ -1664,15 +1715,21 @@ def resolve_model_path(model_name_or_path: str) -> str:
     try:
         for entry in os.listdir(resolved):
             subdir = os.path.join(resolved, entry)
-            if os.path.isdir(subdir) and os.path.isfile(os.path.join(subdir, "config.json")):
+            if os.path.isdir(subdir) and os.path.isfile(
+                os.path.join(subdir, "config.json")
+            ):
                 candidates.append(subdir)
     except PermissionError as e:
-        logger.warning(f"[AutoTune] Permission error scanning '{resolved}': {e}; returning original path.")
+        logger.warning(
+            f"[AutoTune] Permission error scanning '{resolved}': {e}; returning original path."
+        )
         return resolved
 
     if len(candidates) == 1:
         print(f"[AutoTune] Resolved model path: '{resolved}' -> '{candidates[0]}'")
-        logger.info(f"[AutoTune] Resolved model path: '{resolved}' -> '{candidates[0]}'")
+        logger.info(
+            f"[AutoTune] Resolved model path: '{resolved}' -> '{candidates[0]}'"
+        )
         return candidates[0]
     elif len(candidates) > 1:
         subdirs = [os.path.basename(c) for c in candidates]
@@ -1707,7 +1764,9 @@ def get_model_parameters(model_name_or_path: str) -> Tuple[int, int]:
     except Exception:
         try:
             # Try loading as a sequence classification model
-            model = AutoModelForSequenceClassification.from_pretrained(model_name_or_path)
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_name_or_path
+            )
         except Exception:
             # Fallback to generic AutoModel
             model = AutoModel.from_pretrained(model_name_or_path)
@@ -1716,8 +1775,12 @@ def get_model_parameters(model_name_or_path: str) -> Tuple[int, int]:
     total_params = sum(p.numel() for p in model.parameters())
     billion_params = int(total_params / 1e9)
 
-    print(f"[AutoTune] Total parameters in the model {model_name_or_path}: {total_params:,}")
-    print(f"[AutoTune] Total parameters in the model {model_name_or_path}: {billion_params}B")
+    print(
+        f"[AutoTune] Total parameters in the model {model_name_or_path}: {total_params:,}"
+    )
+    print(
+        f"[AutoTune] Total parameters in the model {model_name_or_path}: {billion_params}B"
+    )
 
     return total_params, billion_params
 
@@ -1740,7 +1803,9 @@ def get_model_params_count(model_name_or_path: str) -> Tuple[int, int]:
     hidden_size = getattr(config, "hidden_size", None)
     num_layers = getattr(config, "n_layer", getattr(config, "num_hidden_layers", None))
     vocab_size = getattr(config, "vocab_size", None)
-    intermediate_size = getattr(config, "n_inner", getattr(config, "intermediate_size", None))
+    intermediate_size = getattr(
+        config, "n_inner", getattr(config, "intermediate_size", None)
+    )
     num_heads = getattr(config, "n_head", getattr(config, "num_attention_heads", None))
 
     if not all([hidden_size, num_layers, vocab_size, intermediate_size, num_heads]):
@@ -1765,8 +1830,12 @@ def get_model_params_count(model_name_or_path: str) -> Tuple[int, int]:
     total_params = embedding_params + (num_layers * layer_params)
     billion_params = int(total_params / 1e9)
 
-    print(f"[AutoTune] Total parameters in the model {model_name_or_path}: {total_params:,}")
-    print(f"[AutoTune] Total parameters in the model {model_name_or_path}: {billion_params}B")
+    print(
+        f"[AutoTune] Total parameters in the model {model_name_or_path}: {total_params:,}"
+    )
+    print(
+        f"[AutoTune] Total parameters in the model {model_name_or_path}: {billion_params}B"
+    )
 
     return total_params, billion_params
 
@@ -1841,7 +1910,9 @@ def estimate_memory_usage(
     precision_bytes = {"fp32": 4, "fp16": 2, "bf16": 2, "int8": 1, "int4": 0.5}
 
     if precision not in precision_bytes:
-        raise ValueError("Unsupported precision. Choose from 'fp32', 'fp16', 'bf16', 'int8' or 'int4'.")
+        raise ValueError(
+            "Unsupported precision. Choose from 'fp32', 'fp16', 'bf16', 'int8' or 'int4'."
+        )
 
     bytes_per_param = precision_bytes[precision]
 
@@ -1862,7 +1933,14 @@ def estimate_memory_usage(
 
     # Memory for activations (depends on batch size and sequence length)
     # Assume each token produces one activation per parameter (simplified)
-    activations_memory = batch_size * sequence_length * bytes_per_param * model_size_billion_params * 1e9 / 1024
+    activations_memory = (
+        batch_size
+        * sequence_length
+        * bytes_per_param
+        * model_size_billion_params
+        * 1e9
+        / 1024
+    )
 
     print(f"[AutoTune] Model memory (weights): {weights_memory / (1024**3):.2f} GB")
     print(f"[AutoTune] Optimizer memory: {optimizer_memory / (1024**3):.2f} GB")
@@ -1890,12 +1968,20 @@ def estimate_memory_usage(
         cpu_memory += weights_memory - new_weights_memory
         weights_memory = new_weights_memory
 
-    print(f"[AutoTune] Applying ZeRO Stage 3: weights memory reduced to {weights_memory / (1024**3):.2f} GB")
-    print(f"[AutoTune] Applying ZeRO Stage 3: optimizer memory reduced to {optimizer_memory / (1024**3):.2f} GB")
-    print(f"[AutoTune] Applying ZeRO Stage 3: gradients memory reduced to {gradients_memory / (1024**3):.2f} GB")
+    print(
+        f"[AutoTune] Applying ZeRO Stage 3: weights memory reduced to {weights_memory / (1024**3):.2f} GB"
+    )
+    print(
+        f"[AutoTune] Applying ZeRO Stage 3: optimizer memory reduced to {optimizer_memory / (1024**3):.2f} GB"
+    )
+    print(
+        f"[AutoTune] Applying ZeRO Stage 3: gradients memory reduced to {gradients_memory / (1024**3):.2f} GB"
+    )
 
     # Total memory in bytes
-    total_memory_bytes = weights_memory + optimizer_memory + gradients_memory + activations_memory
+    total_memory_bytes = (
+        weights_memory + optimizer_memory + gradients_memory + activations_memory
+    )
 
     # Convert to GB
     gpu_memory_gb = total_memory_bytes / (1024**3)
@@ -1935,7 +2021,9 @@ def _estimate_memory_components(
     hidden_size = getattr(config, "hidden_size", None)
     num_layers = getattr(config, "num_hidden_layers", getattr(config, "n_layer", None))
     vocab_size = getattr(config, "vocab_size", None)
-    intermediate_size = getattr(config, "intermediate_size", getattr(config, "n_inner", None))
+    intermediate_size = getattr(
+        config, "intermediate_size", getattr(config, "n_inner", None)
+    )
 
     if not all([hidden_size, num_layers, vocab_size, intermediate_size]):
         raise ValueError(
@@ -1972,7 +2060,14 @@ def _estimate_memory_components(
     gradients_mem = trainable_params * bytes_per_param
     # Activations: reduced by gradient checkpointing (~sqrt(num_layers) factor)
     ckpt_factor = num_layers**0.5 / num_layers
-    activations_mem = per_device_batch_size * max_seq_length * hidden_size * num_layers * bytes_per_param * ckpt_factor
+    activations_mem = (
+        per_device_batch_size
+        * max_seq_length
+        * hidden_size
+        * num_layers
+        * bytes_per_param
+        * ckpt_factor
+    )
 
     return {
         "weights_mem": weights_mem,
@@ -2013,7 +2108,9 @@ def estimate_fsdp_strategy(
     Raises:
         ValueError: If the model doesn't fit even with full_shard.
     """
-    m = _estimate_memory_components(model_name_or_path, max_seq_length, per_device_batch_size, peft_config)
+    m = _estimate_memory_components(
+        model_name_or_path, max_seq_length, per_device_batch_size, peft_config
+    )
     weights_mem = m["weights_mem"]
     optimizer_mem = m["optimizer_mem"]
     gradients_mem = m["gradients_mem"]
@@ -2037,7 +2134,9 @@ def estimate_fsdp_strategy(
     print(f"[AutoTune]     Weights:     {weights_mem / GB:.2f} GB")
     print(f"[AutoTune]     Optimizer:   {optimizer_mem / GB:.2f} GB")
     print(f"[AutoTune]     Gradients:   {gradients_mem / GB:.2f} GB")
-    print(f"[AutoTune]     Activations: {activations_mem / GB:.2f} GB (with grad checkpointing)")
+    print(
+        f"[AutoTune]     Activations: {activations_mem / GB:.2f} GB (with grad checkpointing)"
+    )
     print(f"[AutoTune]     Overhead:    {overhead}x")
 
     # Try strategies from fastest (least sharding) to slowest (most sharding)
@@ -2069,7 +2168,9 @@ def estimate_fsdp_strategy(
     ]
 
     for strategy, mem in strategies:
-        total_mem = (mem["weights"] + mem["optimizer"] + mem["gradients"] + activations_mem) * overhead
+        total_mem = (
+            mem["weights"] + mem["optimizer"] + mem["gradients"] + activations_mem
+        ) * overhead
         total_mem_gb = total_mem / GB
         fits = "FITS" if total_mem <= gpu_capacity else "OOM"
 
@@ -2122,7 +2223,9 @@ def estimate_ds_strategy(
     Raises:
         ValueError: If the model doesn't fit even with zero3_cpu.
     """
-    m = _estimate_memory_components(model_name_or_path, max_seq_length, per_device_batch_size, peft_config)
+    m = _estimate_memory_components(
+        model_name_or_path, max_seq_length, per_device_batch_size, peft_config
+    )
     weights_mem = m["weights_mem"]
     optimizer_mem = m["optimizer_mem"]
     gradients_mem = m["gradients_mem"]
@@ -2146,7 +2249,9 @@ def estimate_ds_strategy(
     print(f"[AutoTune]     Weights:     {weights_mem / GB:.2f} GB")
     print(f"[AutoTune]     Optimizer:   {optimizer_mem / GB:.2f} GB")
     print(f"[AutoTune]     Gradients:   {gradients_mem / GB:.2f} GB")
-    print(f"[AutoTune]     Activations: {activations_mem / GB:.2f} GB (with grad checkpointing)")
+    print(
+        f"[AutoTune]     Activations: {activations_mem / GB:.2f} GB (with grad checkpointing)"
+    )
     print(f"[AutoTune]     Overhead:    {overhead}x")
 
     # Try strategies from fastest to most aggressive offloading.
@@ -2199,7 +2304,9 @@ def estimate_ds_strategy(
     ]
 
     for strategy, mem in strategies:
-        total_mem = (mem["weights"] + mem["optimizer"] + mem["gradients"] + activations_mem) * overhead
+        total_mem = (
+            mem["weights"] + mem["optimizer"] + mem["gradients"] + activations_mem
+        ) * overhead
         total_mem_gb = total_mem / GB
         fits = "FITS" if total_mem <= gpu_capacity else "OOM"
 

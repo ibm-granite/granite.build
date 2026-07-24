@@ -1,7 +1,6 @@
 """Tests for autotune.lsf.ray_up_blaunch — host-list parsing and argv shape."""
 
 import pytest
-
 from autotune.lsf.ray_up_blaunch import (
     _build_blaunch_cmd,
     _build_local_cmd,
@@ -54,13 +53,17 @@ class TestReadLsfHostfile:
 
 class TestPartitionHosts:
     def test_head_first_no_rotation(self):
-        head, all_workers, remote = _partition_hosts(["h1", "h2", "h3"], "h1", num_workers=3)
+        head, all_workers, remote = _partition_hosts(
+            ["h1", "h2", "h3"], "h1", num_workers=3
+        )
         assert head == "h1"
         assert all_workers == ["h1", "h2", "h3"]
         assert remote == ["h2", "h3"]
 
     def test_rotates_when_head_not_first(self):
-        head, all_workers, remote = _partition_hosts(["h2", "h3", "h1"], "h1", num_workers=3)
+        head, all_workers, remote = _partition_hosts(
+            ["h2", "h3", "h1"], "h1", num_workers=3
+        )
         assert head == "h1"
         assert all_workers == ["h1", "h2", "h3"]
         assert remote == ["h2", "h3"]

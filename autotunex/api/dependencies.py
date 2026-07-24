@@ -7,11 +7,11 @@ Centralized dependency injection functions for FastAPI routes
 
 from fastapi import Depends
 from services import (
-    job_service,
-    db_service,
-    gb_service,
     config_service,
     dataset_service,
+    db_service,
+    gb_service,
+    job_service,
     user_service,
 )
 from services.registry.base import ModelRegistry

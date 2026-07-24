@@ -50,7 +50,6 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import ray
-
 from autotune.cluster import release_sockets, reserve_ports
 from autotune.lsf.log_utils import (
     banner,
@@ -79,7 +78,9 @@ class RayUpTimeoutError(TimeoutError):
     already been attempted by the time this is raised.
     """
 
-    def __init__(self, message: str, cluster_info: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self, message: str, cluster_info: Optional[Dict[str, Any]] = None
+    ) -> None:
         super().__init__(message)
         self.cluster_info = cluster_info or {}
 
@@ -175,7 +176,9 @@ def _gpu_model_for_fleet(fleet: str) -> str:
     return _GPU_MODEL_BY_FLEET[fleet]
 
 
-def _rdma_env(ib_hca: str = "mlx5_0", ib_ifname: Optional[str] = None) -> Dict[str, str]:
+def _rdma_env(
+    ib_hca: str = "mlx5_0", ib_ifname: Optional[str] = None
+) -> Dict[str, str]:
     """Return the NCCL/RDMA env-var set required for inter-node GDR over IB.
 
     Notes:
@@ -308,7 +311,9 @@ def _read_lsf_hostfile() -> List[str]:
             with open(hostfile) as fh:
                 raw = fh.read()
         except OSError as e:
-            logger.warning(f"[ray_up_blaunch] failed reading LSB_DJOB_HOSTFILE={hostfile!r}: {e}")
+            logger.warning(
+                f"[ray_up_blaunch] failed reading LSB_DJOB_HOSTFILE={hostfile!r}: {e}"
+            )
             raw = None
 
     if raw is None:
@@ -524,7 +529,9 @@ def _spawn_local_worker(
         rdma_env=rdma_env,
     )
     log_argv(f"local-worker-{head_host}", argv)
-    logger.info(f"[ray_up_blaunch] head-host worker log file: {log_path}  (tail -f to watch)")
+    logger.info(
+        f"[ray_up_blaunch] head-host worker log file: {log_path}  (tail -f to watch)"
+    )
     proc = _popen_detached(argv, log_path)
     return head_host, proc, log_path
 
@@ -552,7 +559,9 @@ def _spawn_remote_workers(
             rdma_env=rdma_env,
         )
         log_argv(f"blaunch-worker-{host}", argv)
-        logger.info(f"[ray_up_blaunch] worker {host!r} log file: {log_path}  (tail -f to watch)")
+        logger.info(
+            f"[ray_up_blaunch] worker {host!r} log file: {log_path}  (tail -f to watch)"
+        )
         proc = _popen_detached(argv, log_path)
         records.append((host, proc, log_path))
     return records
@@ -606,7 +615,9 @@ def _wait_for_workers_blaunch(
                         f"[ray_up_blaunch] worker on {host!r} exited rc=0 unexpectedly; tail of {log_path}:\n"
                         f"{_tail_log(log_path)}"
                     )
-                    raise RuntimeError(f"worker on {host!r} exited rc=0 during bring-up")
+                    raise RuntimeError(
+                        f"worker on {host!r} exited rc=0 during bring-up"
+                    )
 
             try:
                 gpus = float(ray.cluster_resources().get("GPU", 0.0))
@@ -717,7 +728,9 @@ def start_multinode_ray_cluster_blaunch(
         # Required so worker logs land under the user-specified output_dir
         # (where ``cleanup()`` knows to wipe them). main.py threads this
         # through; future call sites must do the same.
-        raise ValueError("log_dir is required (e.g. f'{output_dir}/logs'); see main.py for the expected wiring")
+        raise ValueError(
+            "log_dir is required (e.g. f'{output_dir}/logs'); see main.py for the expected wiring"
+        )
 
     # Resolve fleet → default rail list, unless the caller passed an explicit
     # override. ``_default_ib_hca`` warns on unknown fleet names.
@@ -744,7 +757,9 @@ def start_multinode_ray_cluster_blaunch(
 
     def check_deadline(stage: str) -> None:
         if remaining() <= 0:
-            raise TimeoutError(f"bring-up deadline ({bringup_deadline_s}s) exceeded at stage={stage}")
+            raise TimeoutError(
+                f"bring-up deadline ({bringup_deadline_s}s) exceeded at stage={stage}"
+            )
 
     rdma_env = _rdma_env(ib_hca=resolved_ib_hca, ib_ifname=ib_ifname)
     for k, v in rdma_env.items():
@@ -791,7 +806,12 @@ def start_multinode_ray_cluster_blaunch(
         with phase_timer("start_head"):
             head_ip, head_port, dash_port = _start_head(head_temp_dir)
         head_address = f"{head_ip}:{head_port}"
-        partial_info.update(head_address=head_address, head_ip=head_ip, head_port=head_port, dashboard_port=dash_port)
+        partial_info.update(
+            head_address=head_address,
+            head_ip=head_ip,
+            head_port=head_port,
+            dashboard_port=dash_port,
+        )
         logger.info(
             f"[ray_up_blaunch] head_address={head_address} "
             f"dashboard=http://{head_ip}:{dash_port} temp_dir={head_temp_dir}"
@@ -809,7 +829,9 @@ def start_multinode_ray_cluster_blaunch(
         with phase_timer("ray_init_driver"):
             ok = _ray_init_with_timeout(address=head_address, timeout_s=remaining())
         if not ok:
-            raise TimeoutError(f"ray.init({head_address!r}) did not return within remaining budget")
+            raise TimeoutError(
+                f"ray.init({head_address!r}) did not return within remaining budget"
+            )
 
         # Local worker on the head host (no blaunch — we are already here).
         check_deadline("spawn_local_worker")
@@ -867,7 +889,9 @@ def start_multinode_ray_cluster_blaunch(
             f"GPUs={int(final_resources.get('GPU', 0))} "
             f"workers={all_worker_hosts} job_group={job_group}"
         )
-        logger.info(f"[ray_up_blaunch] bring-up complete in {elapsed:.1f}s of {bringup_deadline_s}s budget")
+        logger.info(
+            f"[ray_up_blaunch] bring-up complete in {elapsed:.1f}s of {bringup_deadline_s}s budget"
+        )
 
         return {
             "head_address": head_address,
@@ -895,5 +919,7 @@ def start_multinode_ray_cluster_blaunch(
 
             stop_multinode_ray_cluster(partial_info)
         except Exception as td_exc:  # noqa: BLE001 — never mask the timeout
-            logger.warning(f"[ray_up_blaunch] partial teardown raised (ignored): {td_exc}")
+            logger.warning(
+                f"[ray_up_blaunch] partial teardown raised (ignored): {td_exc}"
+            )
         raise RayUpTimeoutError(str(exc), cluster_info=partial_info) from exc

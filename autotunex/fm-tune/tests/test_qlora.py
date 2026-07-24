@@ -15,10 +15,9 @@ from unittest.mock import MagicMock, patch
 
 import torch
 import yaml
-from peft import PeftType
-
 from autotune.config import AutotuneConfig
 from autotune.constants import AUTOTUNE_TUNING_ALGO, AUTOTUNE_TUNING_TO_PEFT_TYPE
+from peft import PeftType
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTOTUNE_YAML = REPO_ROOT / "autotune" / "configs" / "autotune.yaml"
@@ -31,7 +30,10 @@ class TestConstants:
     def test_qlora_maps_to_lora_peft_type(self):
         # QLoRA == LoRA on a quantized base; PEFT has no dedicated QLoRA type.
         assert AUTOTUNE_TUNING_TO_PEFT_TYPE["qlora"] == PeftType.LORA
-        assert AUTOTUNE_TUNING_TO_PEFT_TYPE["qlora"] == AUTOTUNE_TUNING_TO_PEFT_TYPE["lora"]
+        assert (
+            AUTOTUNE_TUNING_TO_PEFT_TYPE["qlora"]
+            == AUTOTUNE_TUNING_TO_PEFT_TYPE["lora"]
+        )
 
 
 class TestShippedYamlSection:
@@ -90,9 +92,13 @@ class TestQuantizationHelper:
     def test_prepare_qlora_model_delegates_to_peft(self):
         sentinel_model = MagicMock(name="quantized_model")
         prepared = MagicMock(name="prepared_model")
-        with patch("autotune.utils.prepare_model_for_kbit_training", return_value=prepared) as prep:
+        with patch(
+            "autotune.utils.prepare_model_for_kbit_training", return_value=prepared
+        ) as prep:
             from autotune.utils import prepare_qlora_model
 
             out = prepare_qlora_model(sentinel_model, use_gradient_checkpointing=True)
-            prep.assert_called_once_with(sentinel_model, use_gradient_checkpointing=True)
+            prep.assert_called_once_with(
+                sentinel_model, use_gradient_checkpointing=True
+            )
             assert out is prepared

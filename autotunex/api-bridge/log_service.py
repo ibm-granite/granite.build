@@ -7,10 +7,9 @@ import math
 import uuid
 from typing import Any
 
-from fastapi import HTTPException
-
 import database
 import model as bridge_models
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -87,16 +86,23 @@ class LogService:
     def parse_result(self, data):
         if data.get("metric") == "loss":
             result = {
-                "loss": None
-                if data.get("loss") is None or math.isnan(data.get("loss"))
-                else data.get("loss"),
-                "train_loss": None
-                if data.get("train_loss") is None or math.isnan(data.get("train_loss"))
-                else data.get("train_loss"),
-                "total_time": None
-                if data.get("time_total_s") is None
-                or math.isnan(data.get("time_total_s"))
-                else data.get("time_total_s"),
+                "loss": (
+                    None
+                    if data.get("loss") is None or math.isnan(data.get("loss"))
+                    else data.get("loss")
+                ),
+                "train_loss": (
+                    None
+                    if data.get("train_loss") is None
+                    or math.isnan(data.get("train_loss"))
+                    else data.get("train_loss")
+                ),
+                "total_time": (
+                    None
+                    if data.get("time_total_s") is None
+                    or math.isnan(data.get("time_total_s"))
+                    else data.get("time_total_s")
+                ),
             }
             logger.debug(result)
         else:

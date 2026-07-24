@@ -33,7 +33,7 @@ def test_file_service_reexports_all_used_symbols():
 
 
 def test_new_package_modules_importable():
-    from services.file import validation, parsing, streaming, reads  # noqa: F401
+    from services.file import parsing, reads, streaming, validation  # noqa: F401
 
     assert hasattr(validation, "FileValidator")
     assert hasattr(streaming, "stream_to_disk")

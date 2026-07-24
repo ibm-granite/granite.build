@@ -26,7 +26,5 @@ def convert_path_to_lh_uri(path: str) -> str:
     return uri
 
 
-path = (
-    "/gb-lakehouse-prod-read-only/filesets/granite_dot_build/public/shared/climate/20250906T064534/climate_train.jsonl"
-)
+path = "/gb-lakehouse-prod-read-only/filesets/granite_dot_build/public/shared/climate/20250906T064534/climate_train.jsonl"
 print(convert_path_to_lh_uri(path))

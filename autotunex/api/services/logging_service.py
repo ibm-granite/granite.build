@@ -1,17 +1,17 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
-import logging
 import json
-import requests
-from datetime import datetime, timezone
-from typing import Optional, Protocol, Dict
-from logging import LogRecord
-from enum import Enum
+import logging
 import os
 import threading
+from datetime import datetime, timezone
+from enum import Enum
+from logging import LogRecord
+from typing import Dict, Optional, Protocol
 
 import paths
+import requests
 
 
 class LogDestination(Enum):

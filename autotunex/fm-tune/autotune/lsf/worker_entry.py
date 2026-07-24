@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 def _ray_stop() -> None:
     t0 = time.monotonic()
     try:
-        proc = subprocess.run(["ray", "stop"], check=False, capture_output=True, text=True)
+        proc = subprocess.run(
+            ["ray", "stop"], check=False, capture_output=True, text=True
+        )
         dt = time.monotonic() - t0
         logger.info(
             f"ray stop done in {dt:.1f}s rc={proc.returncode} "
@@ -71,7 +73,9 @@ def _pre_flight() -> None:
             if proc.returncode == 0:
                 logger.info(f"[preflight] {label}:\n{proc.stdout}")
             else:
-                logger.warning(f"[preflight] {label} rc={proc.returncode} stderr={proc.stderr.strip()!r}")
+                logger.warning(
+                    f"[preflight] {label} rc={proc.returncode} stderr={proc.stderr.strip()!r}"
+                )
         except FileNotFoundError:
             logger.warning(f"[preflight] {cmd[0]!r} not found on PATH")
         except Exception as e:
@@ -114,10 +118,18 @@ def _visible_gpu_count() -> int | None:
 
     # Fallback: parse `nvidia-smi -L` (one line per GPU).
     try:
-        proc = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=15)
+        proc = subprocess.run(
+            ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=15
+        )
         if proc.returncode == 0:
-            return sum(1 for line in proc.stdout.splitlines() if line.strip().startswith("GPU "))
-        logger.warning(f"[gpu-guard] nvidia-smi -L rc={proc.returncode} stderr={proc.stderr.strip()!r}")
+            return sum(
+                1
+                for line in proc.stdout.splitlines()
+                if line.strip().startswith("GPU ")
+            )
+        logger.warning(
+            f"[gpu-guard] nvidia-smi -L rc={proc.returncode} stderr={proc.stderr.strip()!r}"
+        )
     except FileNotFoundError:
         logger.warning("[gpu-guard] nvidia-smi not found on PATH")
     except Exception as e:
@@ -154,12 +166,16 @@ def _assert_gpu_count(requested: int) -> None:
             f"(={cvd!r}), or an LSF allocation with fewer GPUs than --gpus_per_node. "
             f"Check `nvidia-smi -L` on {host}, or reduce --gpus_per_node to {visible}."
         )
-    logger.info(f"[gpu-guard] {host}: {visible} GPU(s) visible >= requested {requested}; OK.")
+    logger.info(
+        f"[gpu-guard] {host}: {visible} GPU(s) visible >= requested {requested}; OK."
+    )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--head_address", required=True, help="Ray head address, e.g. 10.0.0.1:6379")
+    parser.add_argument(
+        "--head_address", required=True, help="Ray head address, e.g. 10.0.0.1:6379"
+    )
     parser.add_argument("--num_gpus", type=int, required=True)
     parser.add_argument("--num_cpus", type=int, required=True)
     parser.add_argument(
@@ -270,7 +286,9 @@ def main() -> int:
         if st.returncode == 0:
             logger.info(f"ray status:\n{st.stdout}")
         else:
-            logger.warning(f"ray status rc={st.returncode} stderr={st.stderr.strip()!r}")
+            logger.warning(
+                f"ray status rc={st.returncode} stderr={st.stderr.strip()!r}"
+            )
     except Exception as e:
         logger.warning(f"ray status failed: {e}")
 

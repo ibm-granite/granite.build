@@ -13,7 +13,6 @@ running real trials, we can't directly invoke that code. Instead we:
 """
 
 import pytest
-
 from autotune.constants import AUTOTUNE_OFFLINE_RL, AUTOTUNE_ONLINE_RL
 
 
@@ -83,7 +82,9 @@ def test_single_gpu_online_rl_raises():
     """Online RL on single GPU is unsupported and must raise."""
     for rl_algo in AUTOTUNE_ONLINE_RL:
         with pytest.raises(ValueError):
-            _select_driver(multi_gpu=False, rl_algo=rl_algo, train_implementation="DeepSpeed")
+            _select_driver(
+                multi_gpu=False, rl_algo=rl_algo, train_implementation="DeepSpeed"
+            )
 
 
 class TestRoutingConstantsAreCoherent:

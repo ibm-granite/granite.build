@@ -154,7 +154,9 @@ def stop_ray_cluster(temp_dir: str) -> None:
             cmdline_str = " ".join(cmdline)
             # Match any Ray process that was started with our temp dir.
             if temp_dir in cmdline_str and (
-                "ray" in cmdline_str or "raylet" in cmdline_str or "gcs_server" in cmdline_str
+                "ray" in cmdline_str
+                or "raylet" in cmdline_str
+                or "gcs_server" in cmdline_str
             ):
                 matched.append(proc)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -164,7 +166,9 @@ def stop_ray_cluster(temp_dir: str) -> None:
         logger.info(f"No Ray processes found for temp_dir={temp_dir}")
         return
 
-    logger.info(f"Sending SIGTERM to {len(matched)} Ray process(es) for temp_dir={temp_dir}")
+    logger.info(
+        f"Sending SIGTERM to {len(matched)} Ray process(es) for temp_dir={temp_dir}"
+    )
     for proc in matched:
         try:
             proc.terminate()
@@ -174,7 +178,9 @@ def stop_ray_cluster(temp_dir: str) -> None:
     # Wait briefly for graceful shutdown, then SIGKILL anything still alive.
     gone, alive = psutil.wait_procs(matched, timeout=5)
     if alive:
-        logger.warning(f"{len(alive)} Ray process(es) survived SIGTERM; sending SIGKILL: {[p.pid for p in alive]}")
+        logger.warning(
+            f"{len(alive)} Ray process(es) survived SIGTERM; sending SIGKILL: {[p.pid for p in alive]}"
+        )
         for proc in alive:
             try:
                 proc.kill()

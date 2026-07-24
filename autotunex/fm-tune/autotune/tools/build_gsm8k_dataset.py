@@ -33,7 +33,9 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-DEFAULT_INSTRUCTION = 'Let\'s think step by step and output the final answer after "####".'
+DEFAULT_INSTRUCTION = (
+    'Let\'s think step by step and output the final answer after "####".'
+)
 _SOLUTION_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
 
@@ -41,7 +43,9 @@ def _extract_solution(answer_str: str) -> str:
     """Extract the canonical GSM8K ``#### <number>`` answer, commas stripped."""
     m = _SOLUTION_RE.search(answer_str)
     if m is None:
-        raise ValueError(f"could not find '#### <number>' marker in answer: {answer_str!r}")
+        raise ValueError(
+            f"could not find '#### <number>' marker in answer: {answer_str!r}"
+        )
     return m.group(0).split("#### ", 1)[1].replace(",", "")
 
 
@@ -60,7 +64,9 @@ def _make_record(
     answer = example[answer_key]
     solution = _extract_solution(answer)
 
-    user_content = f"{question} {instruction_following}" if instruction_following else question
+    user_content = (
+        f"{question} {instruction_following}" if instruction_following else question
+    )
     prompt: List[Dict[str, str]] = []
     if system_prompt:
         prompt.append({"role": "system", "content": system_prompt})
@@ -82,8 +88,12 @@ def _load_raw(input_dir: Optional[str], hf_name: str, hf_config: Optional[str]):
     if input_dir:
         train_path = _find_split_file(input_dir, "train")
         test_path = _find_split_file(input_dir, "test")
-        train = load_dataset(_hf_loader_for(train_path), data_files=train_path, split="train")
-        test = load_dataset(_hf_loader_for(test_path), data_files=test_path, split="train")
+        train = load_dataset(
+            _hf_loader_for(train_path), data_files=train_path, split="train"
+        )
+        test = load_dataset(
+            _hf_loader_for(test_path), data_files=test_path, split="train"
+        )
         return {"train": train, "test": test}
 
     ds = load_dataset(hf_name, hf_config) if hf_config else load_dataset(hf_name)
@@ -100,7 +110,9 @@ def _find_split_file(input_dir: str, split: str) -> str:
         candidate = os.path.join(input_dir, f"{split}.{ext}")
         if os.path.exists(candidate):
             return candidate
-    raise FileNotFoundError(f"no {split}.{{jsonl,json,csv,parquet}} file found in {input_dir}")
+    raise FileNotFoundError(
+        f"no {split}.{{jsonl,json,csv,parquet}} file found in {input_dir}"
+    )
 
 
 def _hf_loader_for(path: str) -> str:
@@ -166,29 +178,43 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="build_gsm8k_dataset",
         description="Build a GSM8K dataset in verl's parquet schema.",
     )
-    p.add_argument("--output-dir", required=True, help="Directory to write parquet splits into.")
+    p.add_argument(
+        "--output-dir", required=True, help="Directory to write parquet splits into."
+    )
     p.add_argument(
         "--input-dir",
         default=None,
         help="Optional local directory containing train.{json,jsonl,csv,parquet} and "
         "test.* files. If omitted, data is pulled from the HF hub.",
     )
-    p.add_argument("--hf-name", default="openai/gsm8k", help="HF dataset id (default: openai/gsm8k).")
-    p.add_argument("--hf-config", default="main", help="HF dataset config (default: main).")
+    p.add_argument(
+        "--hf-name",
+        default="openai/gsm8k",
+        help="HF dataset id (default: openai/gsm8k).",
+    )
+    p.add_argument(
+        "--hf-config", default="main", help="HF dataset config (default: main)."
+    )
     p.add_argument(
         "--data-source",
         default="openai/gsm8k",
         help="String stored as the reward_fn_key for each row (default: openai/gsm8k).",
     )
-    p.add_argument("--prompt-key", default="question", help="Raw column holding the question.")
-    p.add_argument("--answer-key", default="answer", help="Raw column holding the '#### N' answer.")
+    p.add_argument(
+        "--prompt-key", default="question", help="Raw column holding the question."
+    )
+    p.add_argument(
+        "--answer-key", default="answer", help="Raw column holding the '#### N' answer."
+    )
     p.add_argument(
         "--val-ratio",
         type=float,
         default=0.1,
         help="Fraction of train reserved as validation (default: 0.1).",
     )
-    p.add_argument("--seed", type=int, default=42, help="Random seed for val split (default: 42).")
+    p.add_argument(
+        "--seed", type=int, default=42, help="Random seed for val split (default: 42)."
+    )
     p.add_argument(
         "--system-prompt",
         default=None,

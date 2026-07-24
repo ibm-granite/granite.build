@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from unittest.mock import patch
+
 from services.storage import get_storage_backend
 from services.storage.local_backend import LocalStorageBackend
 

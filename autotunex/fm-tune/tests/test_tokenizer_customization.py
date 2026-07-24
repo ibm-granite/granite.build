@@ -2,13 +2,12 @@
 
 import pytest
 import torch
-from transformers import AutoModelForCausalLM
-
 from autotune.utils import (
     extract_tokenizer_kwargs,
     get_tokenizer,
     resize_model_embeddings,
 )
+from transformers import AutoModelForCausalLM
 
 pytestmark = pytest.mark.slow
 
@@ -117,7 +116,9 @@ class TestResizeModelEmbeddings:
         model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, dtype=torch.float32)
         tokenizer, _ = get_tokenizer(MODEL_NAME)
         original_size = model.get_input_embeddings().weight.shape[0]
-        resize_model_embeddings(model, tokenizer, num_new_tokens=0, pad_to_multiple_of=64)
+        resize_model_embeddings(
+            model, tokenizer, num_new_tokens=0, pad_to_multiple_of=64
+        )
         assert model.get_input_embeddings().weight.shape[0] == original_size
 
     # def test_new_embeddings_initialized_to_mean(self, model_and_tokenizer):

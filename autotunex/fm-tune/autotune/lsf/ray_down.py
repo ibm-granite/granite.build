@@ -26,7 +26,6 @@ import time
 from typing import Any, Dict, List
 
 import ray
-
 from autotune.cluster import stop_ray_cluster
 from autotune.lsf.log_utils import banner, phase_timer
 
@@ -117,7 +116,9 @@ def _kill_blaunch_pids(worker_pids: List[int], timeout_s: float = 10.0) -> None:
             time.sleep(0.5)
 
     if alive:
-        logger.warning(f"[ray_down] {len(alive)} blaunch/worker pgid(s) survived SIGTERM; sending SIGKILL: {alive}")
+        logger.warning(
+            f"[ray_down] {len(alive)} blaunch/worker pgid(s) survived SIGTERM; sending SIGKILL: {alive}"
+        )
         for pid in alive:
             try:
                 os.killpg(pid, signal.SIGKILL)
@@ -132,7 +133,9 @@ def _kill_blaunch_pids(worker_pids: List[int], timeout_s: float = 10.0) -> None:
                 pass
 
 
-def _remote_ray_stop_via_blaunch(remote_hosts: List[str], conda_env: str, timeout_s: float = 20.0) -> None:
+def _remote_ray_stop_via_blaunch(
+    remote_hosts: List[str], conda_env: str, timeout_s: float = 20.0
+) -> None:
     """Run ``ray stop`` on each remote worker host via a one-shot ``blaunch``.
 
     Why: ``_kill_blaunch_pids`` SIGTERMs the **local** blaunch process (the
@@ -171,7 +174,9 @@ def _remote_ray_stop_via_blaunch(remote_hosts: List[str], conda_env: str, timeou
                 f"stdout={proc.stdout.strip()!r} stderr={proc.stderr.strip()!r}"
             )
         except subprocess.TimeoutExpired:
-            logger.warning(f"[ray_down] remote ray stop on {host!r} timed out after {timeout_s}s")
+            logger.warning(
+                f"[ray_down] remote ray stop on {host!r} timed out after {timeout_s}s"
+            )
         except Exception as e:
             logger.warning(f"[ray_down] remote ray stop on {host!r} raised: {e}")
 

@@ -125,7 +125,9 @@ class TestRayDataBlockTarget:
 
 class TestComputeRayDataSizing:
     def _patch_cpus(self, monkeypatch, total):
-        monkeypatch.setattr(cluster.ray, "cluster_resources", lambda: {"CPU": total, "GPU": 0})
+        monkeypatch.setattr(
+            cluster.ray, "cluster_resources", lambda: {"CPU": total, "GPU": 0}
+        )
 
     def test_auto_reserves_workers(self, monkeypatch):
         self._patch_cpus(monkeypatch, 64)

@@ -1,7 +1,6 @@
 """Tests for autotune.template_utils.lakehouse_path_to_uri."""
 
 import pytest
-
 from autotune.template_utils import lakehouse_path_to_uri
 
 
@@ -11,7 +10,10 @@ def test_lakehouse_path_resolves_to_lh_uri():
         "climate/20250906T064534/climate_train.jsonl"
     )
     uri, name = lakehouse_path_to_uri(path)
-    assert uri == "lh://prod/granite_dot_build.public/filesets/fileset_shared/climate/20250906T064534"
+    assert (
+        uri
+        == "lh://prod/granite_dot_build.public/filesets/fileset_shared/climate/20250906T064534"
+    )
     assert name == "climate"
 
 

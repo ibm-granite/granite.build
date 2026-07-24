@@ -22,6 +22,7 @@ from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+from autotune.utils import init_random
 
 # Use cloudpickle instead of pickle to make lambda funcs in HyperOpt pickleable
 from ray import cloudpickle, tune
@@ -31,8 +32,6 @@ from ray.tune.search.sample import Categorical
 from ray.tune.search.variant_generator import parse_spec_vars
 from ray.tune.utils import flatten_dict
 from ray.tune.utils.util import unflatten_dict, unflatten_list_dict
-
-from autotune.utils import init_random
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -96,13 +95,17 @@ class IncrementalLimitedDiscrepancySearch:
             self.init_config = []
             for pos, var in enumerate(self.variables):
                 var_name = var.split("/")[-1]
-                self.init_config.append(self.values[pos].index(self.default_values[var_name]))
+                self.init_config.append(
+                    self.values[pos].index(self.default_values[var_name])
+                )
         else:
             self.init_config = [self.rng.integers(low=0, high=d) for d in self.domains]
 
         config = [self.values[x][y] for x, y in enumerate(self.init_config)]
         # self.configs.append(dict(zip(self.variables, config)))
-        logger.info(f"[AutoTune] Initialize Incremental LDS with {len(variables)} variables")
+        logger.info(
+            f"[AutoTune] Initialize Incremental LDS with {len(variables)} variables"
+        )
         logger.info(f"[AutoTune] Incremental LDS variables: {variables}")
         logger.info(f"[AutoTune] Incremental LDS values: {values}")
         logger.info(f"[AutoTune] Max discrepancy is: {self.max_discrepancy}")
@@ -276,7 +279,9 @@ class LimitedDiscrepancySearch(Searcher):
             logger.info("[AutoTune] Max discrepancy cannot be 0, setting to 1")
             self._max_discrepancy = 1
         if self._max_discrepancy >= len(self._variables):
-            logger.info("[AutoTune] Max discrepancy cannot exceed the number of variables")
+            logger.info(
+                "[AutoTune] Max discrepancy cannot exceed the number of variables"
+            )
             self._max_discrepancy = len(self._variables)
 
         # Unflatten the resolved vars dict (if any)
@@ -304,7 +309,9 @@ class LimitedDiscrepancySearch(Searcher):
             default_values=self._default_values,
         )
 
-    def set_search_properties(self, metric: Optional[str], mode: Optional[str], config: Dict, **spec) -> bool:
+    def set_search_properties(
+        self, metric: Optional[str], mode: Optional[str], config: Dict, **spec
+    ) -> bool:
         """
         Set the search properties (overrides default implementation).
 
@@ -352,15 +359,23 @@ class LimitedDiscrepancySearch(Searcher):
             None, when no new point is to be explored for the time being.
         """
         if not self.optimizer:
-            raise RuntimeError(UNDEFINED_SEARCH_SPACE.format(cls=self.__class__.__name__, space="space"))
+            raise RuntimeError(
+                UNDEFINED_SEARCH_SPACE.format(
+                    cls=self.__class__.__name__, space="space"
+                )
+            )
 
         if not self._metric or not self._mode:
             raise RuntimeError(
-                UNDEFINED_METRIC_MODE.format(cls=self.__class__.__name__, metric=self._metric, mode=self._mode)
+                UNDEFINED_METRIC_MODE.format(
+                    cls=self.__class__.__name__, metric=self._metric, mode=self._mode
+                )
             )
 
         if self._system_deadline > 0 and time.time() > self._system_deadline:
-            logger.info(f"[AutoTune] System deadline {self._system_deadline} is reached.")
+            logger.info(
+                f"[AutoTune] System deadline {self._system_deadline} is reached."
+            )
             return Searcher.FINISHED
 
         if self.first_suggest:
@@ -384,7 +399,9 @@ class LimitedDiscrepancySearch(Searcher):
         # Return a deep copy of the mapping
         return {**self._resolved_vars, **config}
 
-    def on_trial_complete(self, trial_id: str, result: Optional[Dict] = None, error: bool = False):
+    def on_trial_complete(
+        self, trial_id: str, result: Optional[Dict] = None, error: bool = False
+    ):
         """
         Notification for the completion of trial.
 
@@ -451,7 +468,12 @@ if __name__ == "__main__":
     default_values = {"X": "a", "Y": "a", "Z": "a"}
 
     search_algo = LimitedDiscrepancySearch(
-        space=search_space, metric="loss", mode="min", max_discrepancy=1, num_samples=10, default_values=default_values
+        space=search_space,
+        metric="loss",
+        mode="min",
+        max_discrepancy=1,
+        num_samples=10,
+        default_values=default_values,
     )
 
     # search_algo = LimitedDiscrepancySearch(metric="loss", mode="min", max_discrepancy=5)

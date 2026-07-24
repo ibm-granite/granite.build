@@ -78,8 +78,8 @@ def _can_import(mod: str) -> bool:
     ``__spec__`` (which cause ``find_spec`` to raise ``ValueError`` on
     Python 3.13+) are treated as present.
     """
-    import sys
     import importlib.util
+    import sys
 
     if mod in sys.modules:
         return True

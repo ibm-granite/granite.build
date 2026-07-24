@@ -6,8 +6,6 @@ import os
 import numpy as np
 import pytest
 import torch
-from ray import tune
-
 from autotune.constants import AutotunePrecision
 from autotune.utils import (
     cleanup,
@@ -33,6 +31,7 @@ from autotune.utils import (
     resolve_model_path,
     set_seed,
 )
+from ray import tune
 
 
 class TestFlattenDict:

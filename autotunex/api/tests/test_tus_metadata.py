@@ -3,7 +3,7 @@
 
 # api/tests/test_tus_metadata.py
 import pytest
-from services.datasets.tus_metadata import parse_upload_metadata, UploadIntent
+from services.datasets.tus_metadata import UploadIntent, parse_upload_metadata
 
 
 def test_autosplit_intent():

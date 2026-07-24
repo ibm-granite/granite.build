@@ -1,10 +1,9 @@
 import logging
 from typing import Optional, Protocol
 
+from autotune.callbacks.logging_service import BufferedLogHandler, RecordType
 from ray.tune import Callback
 from ray.tune.experiment.trial import Trial
-
-from autotune.callbacks.logging_service import BufferedLogHandler, RecordType
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,9 @@ class CustomLoggerCallback(Callback):
 
         self.handler.record_data(data, record_type=RecordType.RECORD_TRIAL)
 
-        self.logger.info(f"::::::::::::::: Trial_{trial.trial_id} Initialized :::::::::::::::\n")
+        self.logger.info(
+            f"::::::::::::::: Trial_{trial.trial_id} Initialized :::::::::::::::\n"
+        )
 
         self.logger.info(f"trial_id: {trial.trial_id}")
         self.logger.info(f"iterations: {iteration}")
@@ -53,7 +54,9 @@ class CustomLoggerCallback(Callback):
         self.logger.info(">>>>>>>>>>>>> trial_config <<<<<<<<<<<<<\n")
         for key, value in trial.config.items():
             self.logger.info(f"{key}: {value}")
-        self.logger.info(f"::::::::::::::: Trial_{trial.trial_id} Started :::::::::::::::\n")
+        self.logger.info(
+            f"::::::::::::::: Trial_{trial.trial_id} Started :::::::::::::::\n"
+        )
         if self.handler:
             self.handler.flush()
 
@@ -116,7 +119,9 @@ class CustomLoggerCallback(Callback):
         if isinstance(tc, dict):
             tc_copy = tc.copy()
             for key in ("search_alg", "scheduler"):
-                if key in tc_copy and not isinstance(tc_copy[key], (str, int, float, bool, type(None))):
+                if key in tc_copy and not isinstance(
+                    tc_copy[key], (str, int, float, bool, type(None))
+                ):
                     tc_copy[key] = tc_copy[key].__class__.__name__
             config_copy["tune_config"] = tc_copy
         return config_copy

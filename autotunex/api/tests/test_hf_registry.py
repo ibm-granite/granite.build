@@ -53,8 +53,9 @@ def test_publish_model_raises_501(monkeypatch):
 
 def test_delete_model_raises_501(monkeypatch):
     _install_fake_hf(monkeypatch)
-    from services.registry.hf_backend import HuggingFaceRegistry
     import asyncio
+
+    from services.registry.hf_backend import HuggingFaceRegistry
 
     reg = HuggingFaceRegistry(db=None)
     with pytest.raises(HTTPException) as ei:
@@ -95,9 +96,9 @@ def test_hf_search_models_includes_wizard_fields(monkeypatch):
     out = reg.search_models("model")
     assert "data" in out and out["data"], "search must return a non-empty data envelope"
     item = out["data"][0]
-    assert item["namespace"], (
-        "namespace must be non-empty so the wizard does not skip the item"
-    )
+    assert item[
+        "namespace"
+    ], "namespace must be non-empty so the wizard does not skip the item"
     assert item["base_model"]
     assert item["revision"]
     assert item["model_id"] and item["model_label"]
@@ -106,9 +107,9 @@ def test_hf_search_models_includes_wizard_fields(monkeypatch):
     by_id = {m["model_id"]: m for m in out["data"]}
     assert "gpt2" in by_id, "slash-free model id must be present in results"
     slash_free = by_id["gpt2"]
-    assert slash_free["namespace"] == "gpt2", (
-        "namespace must fall back to the full id when there is no slash"
-    )
-    assert slash_free["namespace"], (
-        "namespace must be non-empty so the wizard does not skip the item"
-    )
+    assert (
+        slash_free["namespace"] == "gpt2"
+    ), "namespace must fall back to the full id when there is no slash"
+    assert slash_free[
+        "namespace"
+    ], "namespace must be non-empty so the wizard does not skip the item"

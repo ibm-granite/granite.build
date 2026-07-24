@@ -4,7 +4,7 @@
 from .registry import (  # noqa: F401
     Seam,
     UnknownProviderError,
-    register_override,
     clear_overrides,
+    register_override,
     resolve,
 )

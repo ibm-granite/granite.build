@@ -4,10 +4,10 @@
 import ast
 
 from services.reward_validation import (
-    _check_syntax,
     _analyze_security,
-    _validate_function,
+    _check_syntax,
     _execute_safely,
+    _validate_function,
 )
 
 

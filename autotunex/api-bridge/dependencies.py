@@ -3,9 +3,8 @@
 
 """Centralized dependency injection for api-bridge FastAPI routes."""
 
-from fastapi import Depends
-
 import database
+from fastapi import Depends
 from services import (
     config_service,
     dataset_service,
@@ -13,7 +12,6 @@ from services import (
     job_service,
     user_service,
 )
-
 
 _db_instance = None
 

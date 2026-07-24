@@ -3,9 +3,8 @@
 
 import json
 
-import pytest
-
 import models as api
+import pytest
 
 
 class _FakeDB:
@@ -172,8 +171,9 @@ async def test_delete_model_forbidden_for_other_user(models_dir, tmp_path, monke
 
 
 def test_search_models_substring_envelope(models_dir, tmp_path, monkeypatch):
-    from services.registry.local_backend import LocalRegistry
     import asyncio
+
+    from services.registry.local_backend import LocalRegistry
 
     db = _FakeDB(
         jobs={"job-1": {"id": "job-1", "user_id": "u1", "model": "granite-3b"}}
@@ -219,6 +219,6 @@ async def test_local_search_models_includes_namespace(
     out = reg.search_models("my-model")
     assert out["data"], "expected the published model to match the query"
     item = out["data"][0]
-    assert item.get("namespace"), (
-        "Local search items must carry a non-empty namespace for the wizard"
-    )
+    assert item.get(
+        "namespace"
+    ), "Local search items must carry a non-empty namespace for the wizard"

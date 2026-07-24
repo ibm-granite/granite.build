@@ -4,11 +4,10 @@
 import inspect
 
 import pytest
-
 from services.registry.base import ModelRegistry
-from services.registry.local_backend import LocalRegistry
-from services.registry.hf_backend import HuggingFaceRegistry
 from services.registry.dmf_backend import DmfRegistry
+from services.registry.hf_backend import HuggingFaceRegistry
+from services.registry.local_backend import LocalRegistry
 
 BACKENDS = [LocalRegistry, HuggingFaceRegistry, DmfRegistry]
 
@@ -17,9 +16,9 @@ BACKENDS = [LocalRegistry, HuggingFaceRegistry, DmfRegistry]
 def test_backend_is_concrete_model_registry(cls):
     assert issubclass(cls, ModelRegistry)
     # No abstract methods left unimplemented => instantiable.
-    assert not getattr(cls, "__abstractmethods__", frozenset()), (
-        f"{cls.__name__} has unimplemented abstract methods: {cls.__abstractmethods__}"
-    )
+    assert not getattr(
+        cls, "__abstractmethods__", frozenset()
+    ), f"{cls.__name__} has unimplemented abstract methods: {cls.__abstractmethods__}"
 
 
 @pytest.mark.parametrize("cls", BACKENDS)

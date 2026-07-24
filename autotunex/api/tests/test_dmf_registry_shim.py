@@ -38,8 +38,8 @@ def test_model_registry_async_methods_are_coroutines():
     assert not inspect.iscoroutinefunction(ModelRegistry.get_model_detail)
 
 
-import sys
 import subprocess
+import sys
 
 
 def test_dmf_service_shim_points_at_dmf_registry():

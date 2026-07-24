@@ -5,10 +5,9 @@
 
 import logging
 
-from fastapi import HTTPException
-
 import database
 import models
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from services import job_service
-from services.plugins import Seam, register_override, clear_overrides
+from services.plugins import Seam, clear_overrides, register_override
 from services.registry.base import ModelRegistry
 
 

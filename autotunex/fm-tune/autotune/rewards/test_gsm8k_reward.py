@@ -10,4 +10,8 @@ responses = [
 ]
 
 for sample, response in zip(samples, responses):
-    print(compute_score(solution_str=response, ground_truth=sample["reward_model"]["ground_truth"]))
+    print(
+        compute_score(
+            solution_str=response, ground_truth=sample["reward_model"]["ground_truth"]
+        )
+    )

@@ -1,7 +1,6 @@
 """Tests for autotune.config.AutotuneConfig."""
 
 import pytest
-
 from autotune.config import AutotuneConfig
 
 
@@ -116,7 +115,11 @@ class TestDefaultConfigDict:
         assert d["r"] == 8
         assert d["lora_alpha"] == 16
         assert d["learning_rate"] == 1e-4
-        assert d["tuner_flags"] == {"r": True, "lora_alpha": True, "learning_rate": False}
+        assert d["tuner_flags"] == {
+            "r": True,
+            "lora_alpha": True,
+            "learning_rate": False,
+        }
 
     def test_unknown_algo_raises(self, sample_config_dict):
         cfg = AutotuneConfig()

@@ -70,7 +70,9 @@ class TestTrialCallbacks:
         handler.set_trial_id.assert_any_call("trial-0001")
         # record_data called with RECORD_TRIAL type
         record_calls = [c for c in handler.record_data.call_args_list]
-        assert any(c.kwargs.get("record_type") == RecordType.RECORD_TRIAL for c in record_calls)
+        assert any(
+            c.kwargs.get("record_type") == RecordType.RECORD_TRIAL for c in record_calls
+        )
         handler.flush.assert_called()
 
     def test_on_trial_complete_flushes(self):
@@ -85,7 +87,9 @@ class TestTrialCallbacks:
         cb.on_trial_error(iteration=1, trials=[trial], trial=trial)
         # Records UPDATE_STATUS with ERROR
         calls = handler.record_data.call_args_list
-        update_calls = [c for c in calls if c.kwargs.get("record_type") == RecordType.UPDATE_STATUS]
+        update_calls = [
+            c for c in calls if c.kwargs.get("record_type") == RecordType.UPDATE_STATUS
+        ]
         assert len(update_calls) >= 1
         payload = update_calls[0].args[0]
         assert payload["status"] == "ERROR"
@@ -93,9 +97,14 @@ class TestTrialCallbacks:
     def test_on_trial_result_records_result(self):
         cb, handler = self._build()
         trial = self._make_trial()
-        result = {"loss": 0.5, "config": {"tune_config": {"search_alg": _DummySearchAlg()}}}
+        result = {
+            "loss": 0.5,
+            "config": {"tune_config": {"search_alg": _DummySearchAlg()}},
+        }
         cb.on_trial_result(iteration=2, trials=[trial], trial=trial, result=result)
         # Records both RECORD_RESULT and UPDATE_STATUS
-        kinds = [c.kwargs.get("record_type") for c in handler.record_data.call_args_list]
+        kinds = [
+            c.kwargs.get("record_type") for c in handler.record_data.call_args_list
+        ]
         assert RecordType.RECORD_RESULT in kinds
         assert RecordType.UPDATE_STATUS in kinds

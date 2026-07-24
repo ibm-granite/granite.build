@@ -75,7 +75,9 @@ class TestHistoricalRegression:
         assert "training_iteration" not in _stop_dict_for_hpo({"hpo_num_epochs": 5})
 
     def test_final_no_training_iteration(self):
-        assert "training_iteration" not in _stop_dict_for_final({"num_train_epochs": 10})
+        assert "training_iteration" not in _stop_dict_for_final(
+            {"num_train_epochs": 10}
+        )
 
     def test_hpo_keeps_stop_loss(self):
         assert _stop_dict_for_hpo({})["loss"] == STOP_LOSS

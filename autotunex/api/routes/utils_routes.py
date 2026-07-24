@@ -1,12 +1,13 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any, Dict
+
+import models as api
+from dependencies import get_gb_service, get_job_service
 from fastapi import APIRouter, Depends
 from fastapi.responses import RedirectResponse
-from dependencies import get_gb_service, get_job_service
-from services import job_service, gb_service
-from typing import Dict, Any
-import models as api
+from services import gb_service, job_service
 
 router = APIRouter()
 

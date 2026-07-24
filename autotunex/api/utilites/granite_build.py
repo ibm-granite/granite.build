@@ -1,7 +1,8 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel
 
 
@@ -123,9 +124,9 @@ class GraniteBuild(BaseModel):
                        (e.g., /tmp/reward_function.py)
             content: The file content as a string
         """
-        self.targets["custom"].steps[0].config.k8s["additional_files"][file_path] = (
-            content
-        )
+        self.targets["custom"].steps[0].config.k8s["additional_files"][
+            file_path
+        ] = content
 
     def update_compute_config(
         self,
@@ -150,18 +151,24 @@ class GraniteBuild(BaseModel):
             custom_code_config=current_config.custom_code_config,
             k8s=current_config.k8s,
             compute_config={
-                "num_gpus_per_node": num_gpus_per_node
-                if num_gpus_per_node is not None
-                else current_compute["num_gpus_per_node"],
-                "num_cpus_per_node": num_cpus_per_node
-                if num_cpus_per_node is not None
-                else current_compute["num_cpus_per_node"],
-                "num_nodes": num_nodes
-                if num_nodes is not None
-                else current_compute["num_nodes"],
-                "total_memory_per_node": total_memory_per_node
-                if total_memory_per_node is not None
-                else current_compute["total_memory_per_node"],
+                "num_gpus_per_node": (
+                    num_gpus_per_node
+                    if num_gpus_per_node is not None
+                    else current_compute["num_gpus_per_node"]
+                ),
+                "num_cpus_per_node": (
+                    num_cpus_per_node
+                    if num_cpus_per_node is not None
+                    else current_compute["num_cpus_per_node"]
+                ),
+                "num_nodes": (
+                    num_nodes if num_nodes is not None else current_compute["num_nodes"]
+                ),
+                "total_memory_per_node": (
+                    total_memory_per_node
+                    if total_memory_per_node is not None
+                    else current_compute["total_memory_per_node"]
+                ),
             },
         )
 

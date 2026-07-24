@@ -4,7 +4,7 @@
 import os
 
 import dependencies
-from services.plugins import Seam, register_override, clear_overrides
+from services.plugins import Seam, clear_overrides, register_override
 from services.registry.base import ModelRegistry
 
 
@@ -53,7 +53,7 @@ def test_get_dmf_service_is_dmf_registry_in_ibm_mode(monkeypatch):
 
 def test_mcp_get_services_dmf_resolves_through_registry_seam(monkeypatch):
     import mcp_server
-    from services.plugins import Seam, register_override, clear_overrides
+    from services.plugins import Seam, clear_overrides, register_override
 
     # Avoid a real DB connection: stub Database to a harmless object.
     monkeypatch.setattr(mcp_server.db_service, "Database", lambda *a, **k: object())

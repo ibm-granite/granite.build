@@ -10,10 +10,8 @@ including impersonation precedence.
 
 import logging
 
-from fastapi import HTTPException, status
-
 import models as api
-
+from fastapi import HTTPException, status
 from services.auth_providers.base import AuthProvider
 
 logger = logging.getLogger(__name__)

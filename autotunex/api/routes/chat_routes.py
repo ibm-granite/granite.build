@@ -4,11 +4,10 @@
 import json
 import logging
 
+import models as api
+from auth import get_current_user
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-
-from auth import get_current_user
-import models as api
 
 router = APIRouter()
 

@@ -8,7 +8,6 @@ Supported schedulers after the trim: {fifo, asha, hyperbandforbohb}.
 """
 
 import pytest
-
 from autotune.utils import (
     _SEARCH_ALG_SCHEDULER_COMPAT,
     validate_search_alg_scheduler_combo,
@@ -108,7 +107,9 @@ class TestMatrixSelfConsistency:
             if searcher == "bohb":
                 # BOHB is the documented exception: locked to HyperBandForBOHB.
                 continue
-            assert "fifo" in allowed, f"{searcher!r} should allow fifo (no-op scheduler) but doesn't"
+            assert (
+                "fifo" in allowed
+            ), f"{searcher!r} should allow fifo (no-op scheduler) but doesn't"
 
     def test_every_allowed_combo_passes_validator(self):
         for searcher, allowed in _SEARCH_ALG_SCHEDULER_COMPAT.items():
@@ -120,6 +121,6 @@ class TestMatrixSelfConsistency:
         # neither token should appear in any searcher's allowed set.
         removed = {"hyperband", "median_stopping"}
         for searcher, allowed in _SEARCH_ALG_SCHEDULER_COMPAT.items():
-            assert allowed.isdisjoint(removed), (
-                f"{searcher!r} still references a removed scheduler: {sorted(allowed & removed)}"
-            )
+            assert allowed.isdisjoint(
+                removed
+            ), f"{searcher!r} still references a removed scheduler: {sorted(allowed & removed)}"

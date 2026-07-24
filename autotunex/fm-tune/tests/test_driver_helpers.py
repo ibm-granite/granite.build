@@ -169,7 +169,14 @@ class TestApplyChatTemplateToDf:
     def test_applies_to_message_lists(self):
         from autotune.trainers.driver_multi_hf_ds import _apply_chat_template_to_df
 
-        df = pd.DataFrame({"input": [[{"role": "user", "content": "hi"}], [{"role": "user", "content": "ho"}]]})
+        df = pd.DataFrame(
+            {
+                "input": [
+                    [{"role": "user", "content": "hi"}],
+                    [{"role": "user", "content": "ho"}],
+                ]
+            }
+        )
         tok = MagicMock()
         tok.apply_chat_template.side_effect = ["A", "B"]
         out = _apply_chat_template_to_df(df, tok, "input")
@@ -178,14 +185,18 @@ class TestApplyChatTemplateToDf:
 
 class TestExtractMetricsFromLogHistory:
     def test_empty_log_returns_nans(self):
-        from autotune.trainers.driver_multi_hf_ds import _extract_metrics_from_log_history
+        from autotune.trainers.driver_multi_hf_ds import (
+            _extract_metrics_from_log_history,
+        )
 
         out = _extract_metrics_from_log_history([])
         assert math.isnan(out["train_loss"])
         assert math.isnan(out["eval_loss"])
 
     def test_typical_log_history(self):
-        from autotune.trainers.driver_multi_hf_ds import _extract_metrics_from_log_history
+        from autotune.trainers.driver_multi_hf_ds import (
+            _extract_metrics_from_log_history,
+        )
 
         log = [
             {"loss": 1.0, "epoch": 0.5, "learning_rate": 1e-4},
@@ -200,7 +211,9 @@ class TestExtractMetricsFromLogHistory:
         assert out["eval_loss_history"] == [0.85]
 
     def test_only_eval(self):
-        from autotune.trainers.driver_multi_hf_ds import _extract_metrics_from_log_history
+        from autotune.trainers.driver_multi_hf_ds import (
+            _extract_metrics_from_log_history,
+        )
 
         log = [{"eval_loss": 0.5}, {"eval_loss": 0.4}]
         out = _extract_metrics_from_log_history(log)
@@ -216,7 +229,9 @@ class TestResolveTensorParallelSize:
         from autotune.trainers.driver_multi_verl import _resolve_tensor_parallel_size
 
         # Explicit user TP=2 with 4 workers
-        assert _resolve_tensor_parallel_size(str(tmp_path), num_workers=4, user_tp=2) == 2
+        assert (
+            _resolve_tensor_parallel_size(str(tmp_path), num_workers=4, user_tp=2) == 2
+        )
 
     def test_user_override_not_power_of_2_raises(self, tmp_path):
         from autotune.trainers.driver_multi_verl import _resolve_tensor_parallel_size
@@ -298,7 +313,9 @@ class TestBuildResourcePoolManager:
     def test_use_reward_model(self):
         from autotune.trainers.driver_multi_verl import build_resource_pool_manager
 
-        rpm = build_resource_pool_manager(num_workers=4, rl_algorithm="ppo", use_reward_model=True)
+        rpm = build_resource_pool_manager(
+            num_workers=4, rl_algorithm="ppo", use_reward_model=True
+        )
         from verl.trainer.ppo.ray_trainer import Role
 
         assert Role.RewardModel in rpm.mapping

@@ -8,19 +8,18 @@ import secrets
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
-# Third-party
-import jwt
-import uvicorn
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
-from starlette.middleware.cors import CORSMiddleware
-
 # Local
 import database
 import dependencies
+
+# Third-party
+import jwt
 import log_service
 import model as bridge_models
 import models as base_models
+import uvicorn
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 from logging_config import setup_logging
 from middleware import RequestLoggingMiddleware
 from services import (
@@ -30,6 +29,7 @@ from services import (
     job_service,
     user_service,
 )
+from starlette.middleware.cors import CORSMiddleware
 
 # Configure logging before anything else logs, so every getLogger(__name__)
 # in the codebase inherits our stdout handler and format.

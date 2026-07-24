@@ -1,15 +1,14 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
-from fastapi import APIRouter, Depends
-
 import dependencies
-from auth import get_current_user
 import models as api
-from services import (
+from auth import get_current_user
+from fastapi import APIRouter, Depends
+from services import (  # for type annotations config_service.Config / user_service.User
     config_service,
     user_service,
-)  # for type annotations config_service.Config / user_service.User
+)
 
 router = APIRouter()
 

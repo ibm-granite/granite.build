@@ -128,7 +128,14 @@ class TestRecordCorrection:
             "correction": {"text": "C"},
             "c_a1": {"text": "context"},
         }
-        out = _record_correction(dp, tokenizer=tok, fmt="chat", for_prompt=False, max_length=100, include_meta=False)
+        out = _record_correction(
+            dp,
+            tokenizer=tok,
+            fmt="chat",
+            for_prompt=False,
+            max_length=100,
+            include_meta=False,
+        )
         assert out is not None
         parsed = json.loads(out["output"])
         assert parsed == {"correction": "C"}
@@ -143,7 +150,14 @@ class TestRecordCorrection:
             "correction": {"text": "C" * 5000},
             "c_a1": {"text": "context"},
         }
-        out = _record_correction(dp, tokenizer=tok, fmt="chat", for_prompt=False, max_length=100, include_meta=False)
+        out = _record_correction(
+            dp,
+            tokenizer=tok,
+            fmt="chat",
+            for_prompt=False,
+            max_length=100,
+            include_meta=False,
+        )
         assert out is None
 
     def test_missing_correction_uses_none(self):
@@ -154,7 +168,14 @@ class TestRecordCorrection:
             "response": {"text": "R", "label": "Yes"},
             "c_a1": {"text": "context"},
         }
-        out = _record_correction(dp, tokenizer=tok, fmt="chat", for_prompt=False, max_length=100, include_meta=False)
+        out = _record_correction(
+            dp,
+            tokenizer=tok,
+            fmt="chat",
+            for_prompt=False,
+            max_length=100,
+            include_meta=False,
+        )
         parsed = json.loads(out["output"])
         assert parsed == {"correction": "none"}
 
@@ -167,6 +188,13 @@ class TestRecordCorrection:
             "correction": {"text": "C"},
             "c_a1": {"text": "ctx"},
         }
-        out = _record_correction(dp, tokenizer=tok, fmt="chat", for_prompt=False, max_length=100, include_meta=True)
+        out = _record_correction(
+            dp,
+            tokenizer=tok,
+            fmt="chat",
+            for_prompt=False,
+            max_length=100,
+            include_meta=True,
+        )
         assert out["query"] == "QUERY"
         assert out["response"] == "RESPONSE"

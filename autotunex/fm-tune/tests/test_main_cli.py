@@ -30,7 +30,9 @@ class TestMainHelp:
 
     def test_help_exits_zero(self):
         result = self._run_help()
-        assert result.returncode == 0, f"main.py --help exited {result.returncode}\nstderr: {result.stderr}"
+        assert (
+            result.returncode == 0
+        ), f"main.py --help exited {result.returncode}\nstderr: {result.stderr}"
 
     def test_help_lists_required_args(self):
         result = self._run_help()

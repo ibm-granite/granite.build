@@ -19,7 +19,6 @@ import os
 import sys
 
 import ray
-
 from autotune.bridge_setup import resolve_bridge_settings
 from autotune.callbacks.autotunex_api import AutoTuneXAPI, get_user_details
 from autotune.callbacks.logging_service import BufferedLogHandler, RecordType
@@ -102,7 +101,11 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--tuning_algo", type=str, help="Type of finetuning (e.g., alora, lora, sft).", default="none", required=False
+        "--tuning_algo",
+        type=str,
+        help="Type of finetuning (e.g., alora, lora, sft).",
+        default="none",
+        required=False,
     )
 
     parser.add_argument(
@@ -231,9 +234,13 @@ if __name__ == "__main__":
         ),
     )
 
-    parser.add_argument("--cleanup", help="Clean the ray_results folder.", action="store_true")
+    parser.add_argument(
+        "--cleanup", help="Clean the ray_results folder.", action="store_true"
+    )
 
-    parser.add_argument("--save_history", help="Save the HPO trial history.", action="store_true")
+    parser.add_argument(
+        "--save_history", help="Save the HPO trial history.", action="store_true"
+    )
 
     parser.add_argument(
         "--no_autotune",
@@ -422,7 +429,9 @@ if __name__ == "__main__":
     ray_info = None  # only set for local clusters
     multinode_info = None  # only set for multi-node LSF launches
     if args.ray_address is not None:
-        ray.init(address=args.ray_address, log_to_driver=True, logging_level=logging.INFO)
+        ray.init(
+            address=args.ray_address, log_to_driver=True, logging_level=logging.INFO
+        )
         logger.info(f"[AutoTune] Connected to remote ray cluster at {args.ray_address}")
         configure_ray_data_context()
         logger.warning(
@@ -533,7 +542,9 @@ if __name__ == "__main__":
                 )
                 logging.getLogger().addHandler(handler)
         except Exception as e:
-            logger.warning(f"[AutoTune] Bridge pre-registration failed; continuing: {e}")
+            logger.warning(
+                f"[AutoTune] Bridge pre-registration failed; continuing: {e}"
+            )
 
     # CLI tokenizer overrides take precedence over YAML tokenizer_config
     for attr in (
@@ -611,7 +622,11 @@ if __name__ == "__main__":
         keep_checkpoints=args.keep_checkpoints,
         cluster_resources=ray.cluster_resources(),
         run_id=run_id,
-        tuner_callbacks=[CustomLoggerCallback(job_id=args.job_id, handler=handler)] if handler else [],
+        tuner_callbacks=(
+            [CustomLoggerCallback(job_id=args.job_id, handler=handler)]
+            if handler
+            else []
+        ),
     )
 
     # If no_autotune is set, use the default configuration
@@ -623,7 +638,9 @@ if __name__ == "__main__":
     # checkpoint (skipping HPO). Requires --resume_from_checkpoint AND a prior
     # interrupted final run that left both final_config.json and a checkpoint
     # under <output_dir>/final_checkpoints/.
-    resume_saved = args.resume_from_checkpoint and has_resumable_final_checkpoint(args.output_dir)
+    resume_saved = args.resume_from_checkpoint and has_resumable_final_checkpoint(
+        args.output_dir
+    )
     if args.resume_from_checkpoint and not resume_saved:
         logger.warning(
             "[AutoTune] --resume_from_checkpoint set but no saved final_config.json + checkpoint "
@@ -637,9 +654,13 @@ if __name__ == "__main__":
             # Resume the final training round from the saved config + checkpoint.
             # HPO is skipped entirely; the driver's _resolve_resume_checkpoint
             # picks up the last checkpoint in final_checkpoints/.
-            logger.info("[AutoTune] Resuming final training from saved config; skipping HPO.")
+            logger.info(
+                "[AutoTune] Resuming final training from saved config; skipping HPO."
+            )
             results = None
-            result_grid = optimizer.fit_best_config(saved_config=load_final_config(args.output_dir))
+            result_grid = optimizer.fit_best_config(
+                saved_config=load_final_config(args.output_dir)
+            )
         else:
             # Run HPO in a distributed manner (unless --no_autotune).
             results = optimizer.fit() if args.no_autotune is False else None
@@ -682,7 +703,9 @@ if __name__ == "__main__":
                     record_type=RecordType.UPDATE_STATUS,
                 )
             except Exception as report_exc:
-                logger.warning(f"[AutoTune] Failed to report ERROR status: {report_exc}")
+                logger.warning(
+                    f"[AutoTune] Failed to report ERROR status: {report_exc}"
+                )
         exit_code = 1
 
     finally:

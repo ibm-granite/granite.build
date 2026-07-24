@@ -1,20 +1,20 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
+import asyncio
+import json
+import logging
+import math
 import os
 import re
-import json
-from typing import List, Dict, Any
-from typing import Optional, Tuple
-import uuid
 import shutil
 import subprocess
-import ast
+import uuid
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
 import pytz
-import math
-import asyncio
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -318,9 +318,10 @@ def extract_parameter_length(model_string):
 
 
 def is_flash_attn_2_available():
-    import torch
     import importlib.metadata
     import importlib.util
+
+    import torch
     from packaging import version
     from transformers.utils import is_torch_available
 

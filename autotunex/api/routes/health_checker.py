@@ -1,14 +1,15 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
-from fastapi import FastAPI, HTTPException, status, APIRouter
-from pydantic import BaseModel
 from datetime import datetime, timezone
-import psutil
-import httpx
-from typing import Dict, Any
-from services import db_service
 from importlib.metadata import version
+from typing import Any, Dict
+
+import httpx
+import psutil
+from fastapi import APIRouter, FastAPI, HTTPException, status
+from pydantic import BaseModel
+from services import db_service
 
 app = FastAPI()
 database: db_service.Database = db_service.Database()
@@ -53,7 +54,7 @@ class HealthChecker:
         """Check external API dependency"""
         try:
             async with httpx.AsyncClient() as client:
-                return "healthy" #TODO: Implement a proper health check for the Granite Build API
+                return "healthy"  # TODO: Implement a proper health check for the Granite Build API
                 # return "healthy" if response.status_code == 401 else "unhealthy"
         except Exception as e:
             return f"unhealthy: {str(e)}"

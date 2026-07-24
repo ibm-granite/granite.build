@@ -1,14 +1,13 @@
 """Tests for autotune.lds — Limited Discrepancy Search."""
 
 import pytest
-from ray import tune
-from ray.tune.search import Searcher
-
 from autotune.lds import (
     IncrementalLimitedDiscrepancySearch,
     LimitedDiscrepancySearch,
     _dict_hash,
 )
+from ray import tune
+from ray.tune.search import Searcher
 
 
 class TestDictHash:
@@ -42,7 +41,10 @@ class TestIncrementalLDS:
         values = [["a", "b", "c"], ["1", "2"]]
         defaults = {"X": "a", "Y": "1"}
         lds = IncrementalLimitedDiscrepancySearch(
-            max_discrepancy=1, variables=variables, values=values, default_values=defaults
+            max_discrepancy=1,
+            variables=variables,
+            values=values,
+            default_values=defaults,
         )
         init = lds.get_init_config()
         assert init == {"X": "a", "Y": "1"}
@@ -53,7 +55,10 @@ class TestIncrementalLDS:
         values = [["a", "b"], ["1", "2"]]
         defaults = {"X": "a", "Y": "1"}
         lds = IncrementalLimitedDiscrepancySearch(
-            max_discrepancy=1, variables=variables, values=values, default_values=defaults
+            max_discrepancy=1,
+            variables=variables,
+            values=values,
+            default_values=defaults,
         )
         configs = []
         while True:
@@ -74,7 +79,10 @@ class TestIncrementalLDS:
         values = [["a", "b"], ["1", "2"], ["x", "y"]]
         defaults = {"X": "a", "Y": "1", "Z": "x"}
         lds = IncrementalLimitedDiscrepancySearch(
-            max_discrepancy=0, variables=variables, values=values, default_values=defaults
+            max_discrepancy=0,
+            variables=variables,
+            values=values,
+            default_values=defaults,
         )
         configs = []
         while True:
@@ -93,7 +101,11 @@ class TestIncrementalLDS:
         values = [["a", "b", "c"]]
         # No default_values provided
         lds = IncrementalLimitedDiscrepancySearch(
-            max_discrepancy=1, variables=variables, values=values, default_values=None, random_state=7
+            max_discrepancy=1,
+            variables=variables,
+            values=values,
+            default_values=None,
+            random_state=7,
         )
         init = lds.get_init_config()
         assert init["X"] in ["a", "b", "c"]
@@ -177,7 +189,9 @@ class TestLimitedDiscrepancySearch:
         ckpt = tmp_path / "lds.pkl"
         searcher.save(str(ckpt))
 
-        restored = LimitedDiscrepancySearch(space=None, metric="loss", mode="min", max_discrepancy=1)
+        restored = LimitedDiscrepancySearch(
+            space=None, metric="loss", mode="min", max_discrepancy=1
+        )
         restored.restore(str(ckpt))
         # State has been restored
         assert restored._max_discrepancy == 1

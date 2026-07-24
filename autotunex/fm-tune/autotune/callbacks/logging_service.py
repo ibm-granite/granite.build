@@ -109,7 +109,9 @@ class BufferedLogHandler(logging.Handler):
     def _start_flush_timer(self):
         """Start (or restart) the periodic flush timer."""
         if self.flush_interval and self.flush_interval > 0:
-            self._flush_timer = threading.Timer(self.flush_interval, self._periodic_flush)
+            self._flush_timer = threading.Timer(
+                self.flush_interval, self._periodic_flush
+            )
             self._flush_timer.daemon = True
             self._flush_timer.start()
 
@@ -223,7 +225,9 @@ class BufferedLogHandler(logging.Handler):
         """Flush buffer to HTTP endpoint."""
         if self.endpoint_url is None:
             raise ValueError("Endpoint URL not set")
-        self.silent_log_operation(f"logger uri:- {self.endpoint_url}/record_logs", "debug.log")
+        self.silent_log_operation(
+            f"logger uri:- {self.endpoint_url}/record_logs", "debug.log"
+        )
         for attempt in range(self.retry_attempts):
             url = f"{self.endpoint_url}/record_logs"
             try:
@@ -237,7 +241,9 @@ class BufferedLogHandler(logging.Handler):
                 return  # Success, exit retry loop
 
             except requests.exceptions.RequestException as e:
-                self.silent_log_operation(f"HTTP log submission attempt {attempt + 1} failed: {e}")
+                self.silent_log_operation(
+                    f"HTTP log submission attempt {attempt + 1} failed: {e}"
+                )
                 if attempt == self.retry_attempts - 1:  # Last attempt
                     raise e
 
@@ -291,9 +297,13 @@ class BufferedLogHandler(logging.Handler):
                 return  # Success, exit retry loop
 
             except requests.exceptions.RequestException as e:
-                self.silent_log_operation(f"HTTP record data attempt {attempt + 1} failed: {e}")
+                self.silent_log_operation(
+                    f"HTTP record data attempt {attempt + 1} failed: {e}"
+                )
                 if attempt == self.retry_attempts - 1:  # Last attempt
-                    self.silent_log_operation(f"Last attempt to record data failed: {e}")
+                    self.silent_log_operation(
+                        f"Last attempt to record data failed: {e}"
+                    )
 
     def close(self):
         """Ensure all records are written and close the handler."""
@@ -371,7 +381,9 @@ class BufferedLogHandler(logging.Handler):
         self.flush()  # Flush any pending logs to current destination
         self.set_database(db)
 
-    def switch_to_endpoint(self, endpoint_url: str, headers: Optional[Dict[str, str]] = None):
+    def switch_to_endpoint(
+        self, endpoint_url: str, headers: Optional[Dict[str, str]] = None
+    ):
         """
         Switch from database to HTTP endpoint logging.
 

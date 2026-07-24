@@ -3,25 +3,26 @@
 
 """Dataset reads (bounded previews), saves, listing, deletion, zip. Moved verbatim from file_service.py."""
 
-from fastapi import UploadFile, File, HTTPException, Form
-from fastapi.responses import JSONResponse
 import asyncio
 import json
-from typing import List, Optional, Dict
-import pyarrow.parquet as pq
-from datetime import datetime
-import shutil
-import os
 import logging
+import os
+import shutil
 import zipfile
+from datetime import datetime
+from typing import Dict, List, Optional
 
+import pyarrow.parquet as pq
+from fastapi import File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
+
+from .parsing import FileParser
 from .streaming import (
-    CONFIG,
     AUTOTUNE_DATASETS_PATH,
+    CONFIG,
     stream_to_disk,
 )
 from .validation import FileValidator
-from .parsing import FileParser
 
 # Module logger. Root logging is configured once at app startup
 # (do not call basicConfig/setLevel here — see CLAUDE.md logging conventions).

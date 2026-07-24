@@ -20,11 +20,13 @@ import os
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
-from ray import tune
-from ray.tune import Callback, ResultGrid
-
 from autotune.config import AutotuneConfig
-from autotune.constants import AUTOTUNE_DEFAULT_METRIC, AUTOTUNE_OFFLINE_RL, AUTOTUNE_ONLINE_RL, AutotunePrecision
+from autotune.constants import (
+    AUTOTUNE_DEFAULT_METRIC,
+    AUTOTUNE_OFFLINE_RL,
+    AUTOTUNE_ONLINE_RL,
+    AutotunePrecision,
+)
 
 # Local
 from autotune.pipeline import AutotunePipeline
@@ -34,6 +36,8 @@ from autotune.utils import (
     make_param_space,
     save_final_config,
 )
+from ray import tune
+from ray.tune import Callback, ResultGrid
 
 STOP_LOSS = 0.00001
 
@@ -70,7 +74,9 @@ def _stop_dict_for_final(training_config: Dict[str, Any]) -> Dict[str, Any]:
     return {"loss": STOP_LOSS}
 
 
-def _auto_derive_asha_max_t(tune_config: Dict[str, Any], training_config: Dict[str, Any]) -> None:
+def _auto_derive_asha_max_t(
+    tune_config: Dict[str, Any], training_config: Dict[str, Any]
+) -> None:
     """Set tune_config['asha_max_t'] from training_config['hpo_num_epochs'].
 
     ASHA's max_t bounds the rung at which a trial can be stopped. To keep
@@ -168,7 +174,9 @@ class AutotuneOptimizer:
         self.precision = pipeline.get_precision()
 
         # Ensure that if SFT is used, the precision is set to FP32 or BF16
-        assert self.precision == AutotunePrecision.BF16, "Precision must be set to BF16 for better performance."
+        assert (
+            self.precision == AutotunePrecision.BF16
+        ), "Precision must be set to BF16 for better performance."
 
         self.trainer_fn = None
         self.tuner_callbacks = tuner_callbacks
@@ -176,9 +184,15 @@ class AutotuneOptimizer:
         self.best_config = None
 
         # Log the initialization
-        logger.info(f"[AutoTune] Optimizer initialized with model: {self.model_name_or_path}")
-        logger.info(f"[AutoTune] Tuning algorithm: {self.tuning_algo}")  # can be `none` for online RL
-        logger.info(f"[AutoTune] RL algorithm: {self.rl_algo}")  # can be `none` for non-RL tuning
+        logger.info(
+            f"[AutoTune] Optimizer initialized with model: {self.model_name_or_path}"
+        )
+        logger.info(
+            f"[AutoTune] Tuning algorithm: {self.tuning_algo}"
+        )  # can be `none` for online RL
+        logger.info(
+            f"[AutoTune] RL algorithm: {self.rl_algo}"
+        )  # can be `none` for non-RL tuning
         logger.info(f"[AutoTune] Precision: {self.precision}")
         logger.info(f"[AutoTune] Output dir: {self.output_dir}")
         logger.info(f"[AutoTune] Output model name: {self.output_model_name}")
@@ -225,7 +239,11 @@ class AutotuneOptimizer:
         tuning_algo = self.pipeline.get_tuning_algo()
         rl_algo = self.pipeline.get_rl_algo()
         tuner_config = deepcopy(self.config.get_tuner_config_dict(tuning_algo))
-        tuner_rl_config = deepcopy(self.config.get_tuner_rl_config_dict(rl_algo)) if rl_algo != "none" else {}
+        tuner_rl_config = (
+            deepcopy(self.config.get_tuner_rl_config_dict(rl_algo))
+            if rl_algo != "none"
+            else {}
+        )
 
         # Check if offline RL of sft/peft tuning
         if rl_algo in ["none", "dpo", "orpo", "kto"]:
@@ -288,7 +306,11 @@ class AutotuneOptimizer:
             default_config.update(default_rl_config)
 
         # Set the multi-gpu training
-        multi_gpu = True if default_config.get("training_config").get("num_gpus_per_trial") > 1 else False
+        multi_gpu = (
+            True
+            if default_config.get("training_config").get("num_gpus_per_trial") > 1
+            else False
+        )
         self.pipeline.set_multi_gpu(multi_gpu)
         logger.info(f"[AutoTune] Multi-GPU training per trial: {multi_gpu}")
         print(f"[AutoTune] Multi-GPU training per trial: {multi_gpu}")
@@ -300,9 +322,15 @@ class AutotuneOptimizer:
             print("[AutoTune] Using the single-gpu training driver")
 
         default_config["training_config"]["peft_type"] = self.pipeline.get_peft_type()
-        default_config["training_config"]["tuning_algorithm"] = self.pipeline.get_tuning_algo()
-        default_config["training_config"]["rl_algorithm"] = self.pipeline.get_rl_algo()  # can be None
-        default_config["training_config"]["model_name_or_path"] = self.model_name_or_path
+        default_config["training_config"][
+            "tuning_algorithm"
+        ] = self.pipeline.get_tuning_algo()
+        default_config["training_config"][
+            "rl_algorithm"
+        ] = self.pipeline.get_rl_algo()  # can be None
+        default_config["training_config"][
+            "model_name_or_path"
+        ] = self.model_name_or_path
         default_config["training_config"]["train_file"] = self.train_file
         default_config["training_config"]["validation_file"] = self.validation_file
         default_config["training_config"]["metric"] = AUTOTUNE_DEFAULT_METRIC
@@ -317,7 +345,10 @@ class AutotuneOptimizer:
         return default_config
 
     def fit_best_config(
-        self, use_default: bool = False, do_checkpoint: bool = True, saved_config: dict = None
+        self,
+        use_default: bool = False,
+        do_checkpoint: bool = True,
+        saved_config: dict = None,
     ) -> ResultGrid:
         """
         Train remotely in a single trial the best hyperparameter config or
@@ -363,14 +394,20 @@ class AutotuneOptimizer:
                 if saved_path:
                     logger.info(f"[AutoTune] Saved final config to: {saved_path}")
             except Exception as e:
-                logger.warning(f"[AutoTune] Could not save final config (resume unavailable): {e}")
+                logger.warning(
+                    f"[AutoTune] Could not save final config (resume unavailable): {e}"
+                )
 
         # Setup: tune_config, training_config and param_space
         training_config = best_config.pop("training_config")
         training_rl_config = best_config.pop("training_rl_config")
         tune_config = best_config.pop("tune_config")
         tuner_flags = best_config.pop("tuner_flags")
-        tuner_rl_flags = {} if "tuner_rl_flags" not in best_config.keys() else best_config.pop("tuner_rl_flags")
+        tuner_rl_flags = (
+            {}
+            if "tuner_rl_flags" not in best_config.keys()
+            else best_config.pop("tuner_rl_flags")
+        )
 
         # Output the best/default config
         print(f"[AutoTune] Best/default hyperparameters: {best_config}")
@@ -380,7 +417,9 @@ class AutotuneOptimizer:
         param_space, default_values = make_param_space(best_config)
 
         # Set the training driver (multi-gpu by default)
-        train_implementation = training_config.get("train_implementation", "huggingface_ds")
+        train_implementation = training_config.get(
+            "train_implementation", "huggingface_ds"
+        )
         num_gpus_per_trial = training_config.get("num_gpus_per_trial", 1)
         multi_gpu = True  # if num_gpus_per_trial > 1 else False
         self.pipeline.set_multi_gpu(multi_gpu)
@@ -411,27 +450,45 @@ class AutotuneOptimizer:
                 if rl_algo in AUTOTUNE_OFFLINE_RL:
                     if train_implementation == "FSDP":
                         print("[AutoTune] Using TRL FSDP training implementation.")
-                        logger.info("[AutoTune] Using TRL FSDP training implementation.")
-                        from autotune.trainers.driver_multi_trl_fsdp import train_driver_multi_gpu
+                        logger.info(
+                            "[AutoTune] Using TRL FSDP training implementation."
+                        )
+                        from autotune.trainers.driver_multi_trl_fsdp import (
+                            train_driver_multi_gpu,
+                        )
 
                         self.trainer_fn = train_driver_multi_gpu
                     else:
                         print("[AutoTune] Using TRL DS training implementation.")
                         logger.info("[AutoTune] Using TRL DS training implementation.")
-                        from autotune.trainers.driver_multi_trl_ds import train_driver_multi_gpu
+                        from autotune.trainers.driver_multi_trl_ds import (
+                            train_driver_multi_gpu,
+                        )
 
                         self.trainer_fn = train_driver_multi_gpu
                 else:  # no offline RL, use tuning with SFT or PEFT
                     if train_implementation == "FSDP":
-                        print("[AutoTune] Using HuggingFace FSDP training implementation.")
-                        logger.info("[AutoTune] Using HuggingFace FSDP training implementation.")
-                        from autotune.trainers.driver_multi_hf_fsdp import train_driver_multi_gpu
+                        print(
+                            "[AutoTune] Using HuggingFace FSDP training implementation."
+                        )
+                        logger.info(
+                            "[AutoTune] Using HuggingFace FSDP training implementation."
+                        )
+                        from autotune.trainers.driver_multi_hf_fsdp import (
+                            train_driver_multi_gpu,
+                        )
 
                         self.trainer_fn = train_driver_multi_gpu
                     else:
-                        print("[AutoTune] Using HuggingFace DS training implementation.")
-                        logger.info("[AutoTune] Using HuggingFace DS training implementation.")
-                        from autotune.trainers.driver_multi_hf_ds import train_driver_multi_gpu
+                        print(
+                            "[AutoTune] Using HuggingFace DS training implementation."
+                        )
+                        logger.info(
+                            "[AutoTune] Using HuggingFace DS training implementation."
+                        )
+                        from autotune.trainers.driver_multi_hf_ds import (
+                            train_driver_multi_gpu,
+                        )
 
                         self.trainer_fn = train_driver_multi_gpu
 
@@ -456,7 +513,9 @@ class AutotuneOptimizer:
         training_config["save_model"] = True
         training_config["eval_test"] = True
         training_config["hpo_search"] = False
-        training_config["do_checkpoint"] = do_checkpoint  # enable checkpointing for final/default config
+        training_config["do_checkpoint"] = (
+            do_checkpoint  # enable checkpointing for final/default config
+        )
         # Final-stage checkpoint resume is controlled by --resume_from_checkpoint,
         # independent of --restore (which resumes a failed HPO sweep upstream).
         training_config["resume_from_checkpoint"] = self.resume_from_checkpoint
@@ -464,11 +523,15 @@ class AutotuneOptimizer:
 
         # Get the resources per trial. The training drivers will allocate the GPUs
         num_gpus_per_trial = training_config.get("num_gpus_per_trial", 1)
-        training_config["num_workers"] = num_gpus_per_trial * max_concurrent_trials  # maximize GPU usage
+        training_config["num_workers"] = (
+            num_gpus_per_trial * max_concurrent_trials
+        )  # maximize GPU usage
 
         # Update the param space
         if len(tuner_rl_flags) > 0:
-            tuner_flags.update(tuner_rl_flags)  # merge the tuner and offline RL flags (if any)
+            tuner_flags.update(
+                tuner_rl_flags
+            )  # merge the tuner and offline RL flags (if any)
         param_space["training_config"] = training_config
         param_space["training_rl_config"] = training_rl_config
         param_space["tune_config"] = tune_config
@@ -491,11 +554,17 @@ class AutotuneOptimizer:
             num_cpus = 1
             num_gpus = 0
 
-        print(f"[AutoTune] Training driver using {num_gpus_per_trial * max_concurrent_trials} GPUs per trial.")
-        logger.info(f"[AutoTune] Training driver using {num_gpus_per_trial * max_concurrent_trials} GPUs per trial.")
+        print(
+            f"[AutoTune] Training driver using {num_gpus_per_trial * max_concurrent_trials} GPUs per trial."
+        )
+        logger.info(
+            f"[AutoTune] Training driver using {num_gpus_per_trial * max_concurrent_trials} GPUs per trial."
+        )
 
         # Prepare the trainable function and resources per trial
-        resource_group = tune.PlacementGroupFactory(bundles=[{"CPU": num_cpus, "GPU": num_gpus}], strategy="PACK")
+        resource_group = tune.PlacementGroupFactory(
+            bundles=[{"CPU": num_cpus, "GPU": num_gpus}], strategy="PACK"
+        )
         trainable = tune.with_resources(
             tune.with_parameters(self.trainer_fn),
             resources=resource_group,  # {"gpu": 1, "cpu": 1}
@@ -535,7 +604,9 @@ class AutotuneOptimizer:
         # Set the training driver
         rl_algo = self.pipeline.get_rl_algo()
         training_config = param_space["training_config"]
-        train_implementation = training_config.get("train_implementation", "huggingface_ds")
+        train_implementation = training_config.get(
+            "train_implementation", "huggingface_ds"
+        )
         if self.pipeline.get_multi_gpu() is False:  # Single GPU training
             if rl_algo in AUTOTUNE_OFFLINE_RL:
                 from autotune.trainers.driver_single_trl import train_driver_single_gpu
@@ -560,27 +631,45 @@ class AutotuneOptimizer:
                 if rl_algo in AUTOTUNE_OFFLINE_RL:
                     if train_implementation == "FSDP":
                         print("[AutoTune] Using TRL FSDP training implementation.")
-                        logger.info("[AutoTune] Using TRL FSDP training implementation.")
-                        from autotune.trainers.driver_multi_trl_fsdp import train_driver_multi_gpu
+                        logger.info(
+                            "[AutoTune] Using TRL FSDP training implementation."
+                        )
+                        from autotune.trainers.driver_multi_trl_fsdp import (
+                            train_driver_multi_gpu,
+                        )
 
                         self.trainer_fn = train_driver_multi_gpu
                     else:
                         print("[AutoTune] Using TRL DS training implementation.")
                         logger.info("[AutoTune] Using TRL DS training implementation.")
-                        from autotune.trainers.driver_multi_trl_ds import train_driver_multi_gpu
+                        from autotune.trainers.driver_multi_trl_ds import (
+                            train_driver_multi_gpu,
+                        )
 
                         self.trainer_fn = train_driver_multi_gpu
                 else:  # no offline RL, use tuning with SFT or PEFT
                     if train_implementation == "FSDP":
-                        print("[AutoTune] Using HuggingFace FSDP training implementation.")
-                        logger.info("[AutoTune] Using HuggingFace FSDP training implementation.")
-                        from autotune.trainers.driver_multi_hf_fsdp import train_driver_multi_gpu
+                        print(
+                            "[AutoTune] Using HuggingFace FSDP training implementation."
+                        )
+                        logger.info(
+                            "[AutoTune] Using HuggingFace FSDP training implementation."
+                        )
+                        from autotune.trainers.driver_multi_hf_fsdp import (
+                            train_driver_multi_gpu,
+                        )
 
                         self.trainer_fn = train_driver_multi_gpu
                     else:
-                        print("[AutoTune] Using HuggingFace DS training implementation.")
-                        logger.info("[AutoTune] Using HuggingFace DS training implementation.")
-                        from autotune.trainers.driver_multi_hf_ds import train_driver_multi_gpu
+                        print(
+                            "[AutoTune] Using HuggingFace DS training implementation."
+                        )
+                        logger.info(
+                            "[AutoTune] Using HuggingFace DS training implementation."
+                        )
+                        from autotune.trainers.driver_multi_hf_ds import (
+                            train_driver_multi_gpu,
+                        )
 
                         self.trainer_fn = train_driver_multi_gpu
 
@@ -600,20 +689,30 @@ class AutotuneOptimizer:
         # Set resources per trial. The assumption is 1 GPU per trial.
         if self.pipeline.get_multi_gpu() is False:
             # Single GPU training
-            assert num_gpus_per_trial == 1, "Single GPU training requires num_gpus_per_trial == 1"
+            assert (
+                num_gpus_per_trial == 1
+            ), "Single GPU training requires num_gpus_per_trial == 1"
             num_cpus = 1
             num_gpus = num_gpus_per_trial
         else:  # Multi-GPU training
-            print(f"[AutoTune] Training driver (trial) using {num_gpus_per_trial} GPUs per trial.")
-            logger.info(f"[AutoTune] Training driver (trial) using {num_gpus_per_trial} GPUs per trial.")
+            print(
+                f"[AutoTune] Training driver (trial) using {num_gpus_per_trial} GPUs per trial."
+            )
+            logger.info(
+                f"[AutoTune] Training driver (trial) using {num_gpus_per_trial} GPUs per trial."
+            )
             num_cpus = 1
             num_gpus = 0
 
         print(f"[AutoTune] Training driver using {num_gpus_per_trial} GPUs per trial.")
-        logger.info(f"[AutoTune] Training driver using {num_gpus_per_trial} GPUs per trial.")
+        logger.info(
+            f"[AutoTune] Training driver using {num_gpus_per_trial} GPUs per trial."
+        )
 
         # Prepare the trainable function and resources per trial
-        resource_group = tune.PlacementGroupFactory(bundles=[{"CPU": num_cpus, "GPU": num_gpus}], strategy="PACK")
+        resource_group = tune.PlacementGroupFactory(
+            bundles=[{"CPU": num_cpus, "GPU": num_gpus}], strategy="PACK"
+        )
         trainable = tune.with_resources(
             tune.with_parameters(self.trainer_fn),
             resources=resource_group,  # {"gpu": 1, "cpu": 1}
@@ -624,8 +723,12 @@ class AutotuneOptimizer:
         # separately via --resume_from_checkpoint; see main.py / fit_best_config.)
         if self.time_budget_s is not None:
             # If time budget is set, we use the time budget as the stop condition
-            print(f"[AutoTune] Using time budget of {self.time_budget_s} seconds as the stop condition.")
-            logger.info(f"[AutoTune] Using time budget of {self.time_budget_s} seconds as the stop condition.")
+            print(
+                f"[AutoTune] Using time budget of {self.time_budget_s} seconds as the stop condition."
+            )
+            logger.info(
+                f"[AutoTune] Using time budget of {self.time_budget_s} seconds as the stop condition."
+            )
             tune_config["time_budget_s"] = self.time_budget_s
         else:
             # Otherwise, we use the training iteration as the stop condition
@@ -658,7 +761,9 @@ class AutotuneOptimizer:
             logger.warning(f"[AutoTune] {num_errors}/{len(results)} HPO trials errored")
             print(f"[AutoTune] {num_errors}/{len(results)} HPO trials errored")
         if num_errors == len(results):
-            raise RuntimeError(f"All {num_errors} HPO trials failed. Check individual trial logs for details.")
+            raise RuntimeError(
+                f"All {num_errors} HPO trials failed. Check individual trial logs for details."
+            )
 
         # Get the best config from successful trials
         metric = tune_config.get("metric")

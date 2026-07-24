@@ -8,7 +8,9 @@ helper lets it be unit-tested without executing main.py (which triggers Ray).
 from typing import Optional, Tuple
 
 
-def resolve_bridge_settings(autotunex_server_url: Optional[str]) -> Tuple[bool, Optional[str]]:
+def resolve_bridge_settings(
+    autotunex_server_url: Optional[str],
+) -> Tuple[bool, Optional[str]]:
     """Return ``(bridge_enabled, base_url)``.
 
     The bridge is enabled only when ``autotunex_server_url`` is a non-empty

@@ -38,10 +38,14 @@ def _require_tuner_entry(section: dict, section_name: str, algo: str) -> None:
             f"Algorithm '{algo}' requires a '{algo}' entry under '{section_name}'; found entries: {found}."
         )
     if "hyperparams" not in section[algo]:
-        raise ValueError(f"Entry '{algo}' under '{section_name}' is missing a 'hyperparams' block.")
+        raise ValueError(
+            f"Entry '{algo}' under '{section_name}' is missing a 'hyperparams' block."
+        )
 
 
-def validate_config_for_pipeline(config: AutotuneConfig, tuning_algo: str, rl_algo: str) -> None:
+def validate_config_for_pipeline(
+    config: AutotuneConfig, tuning_algo: str, rl_algo: str
+) -> None:
     """Validate that `config` carries the sections the algorithms require.
 
     Args:

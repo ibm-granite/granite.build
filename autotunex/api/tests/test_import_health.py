@@ -13,6 +13,7 @@ deps-equipped env).
 
 import importlib
 import importlib.util
+
 import pytest
 
 
@@ -31,14 +32,14 @@ def test_shims_reexport_dataset_and_file_symbols():
 
 def test_refactor_packages_import():
     from services.datasets import Dataset, DatasetIntelligence
-    from services.datasets.service import Dataset as SvcDataset
     from services.datasets.intelligence import DatasetIntelligence as Intel
+    from services.datasets.service import Dataset as SvcDataset
     from services.storage import (
-        get_storage_backend,
-        StorageBackend,
-        DatasetRef,
         DatasetFiles,
+        DatasetRef,
+        StorageBackend,
         StorageLocator,
+        get_storage_backend,
     )
     from services.storage.local_backend import LocalStorageBackend
 
@@ -54,7 +55,7 @@ def test_refactor_packages_import():
 
 
 def test_file_package_modules_import():
-    from services.file import validation, parsing, streaming, reads
+    from services.file import parsing, reads, streaming, validation
 
     assert hasattr(validation, "FileValidator")
     assert hasattr(parsing, "FileParser")

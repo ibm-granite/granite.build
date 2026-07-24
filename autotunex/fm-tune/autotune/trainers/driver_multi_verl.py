@@ -92,12 +92,6 @@ from typing import Any, Dict, Optional
 
 import ray
 import torch
-from hydra import compose, initialize_config_dir
-from hydra.core.global_hydra import GlobalHydra
-from omegaconf import OmegaConf
-from ray import tune
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ResourcePoolManager, Role
-from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker, CriticWorker
 
 # Local
 from autotune.utils import (
@@ -106,6 +100,12 @@ from autotune.utils import (
     remove_dir,
     set_seed,
 )
+from hydra import compose, initialize_config_dir
+from hydra.core.global_hydra import GlobalHydra
+from omegaconf import OmegaConf
+from ray import tune
+from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ResourcePoolManager, Role
+from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker, CriticWorker
 
 logger = logging.getLogger(__name__)
 
@@ -150,10 +150,16 @@ def _resolve_tensor_parallel_size(
     # User override
     if user_tp is not None:
         if not _is_power_of_2(user_tp):
-            raise ValueError(f"tensor_model_parallel_size={user_tp} must be a power of 2 (1, 2, 4, 8, ...)")
+            raise ValueError(
+                f"tensor_model_parallel_size={user_tp} must be a power of 2 (1, 2, 4, 8, ...)"
+            )
         if num_workers % user_tp != 0:
-            raise ValueError(f"tensor_model_parallel_size={user_tp} must divide num_workers={num_workers} evenly")
-        logger.info(f"[AutoTune] TP={user_tp} (user override), num_workers={num_workers}")
+            raise ValueError(
+                f"tensor_model_parallel_size={user_tp} must divide num_workers={num_workers} evenly"
+            )
+        logger.info(
+            f"[AutoTune] TP={user_tp} (user override), num_workers={num_workers}"
+        )
         return user_tp
 
     # Auto-detect from model config.json
@@ -185,7 +191,9 @@ def _resolve_tensor_parallel_size(
         return tp
 
     except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
-        logger.warning(f"[AutoTune] Could not load model config from {model_name_or_path}: {e}. Defaulting to TP=1.")
+        logger.warning(
+            f"[AutoTune] Could not load model config from {model_name_or_path}: {e}. Defaulting to TP=1."
+        )
         return 1
 
 
@@ -231,7 +239,9 @@ def build_verl_config(
 
     # Reward function config
     reward_function_path = training_rl_config.get("reward_function_path", None)
-    reward_function_name = training_rl_config.get("reward_function_name", "compute_score")
+    reward_function_name = training_rl_config.get(
+        "reward_function_name", "compute_score"
+    )
 
     # Detect hybrid (Mamba/SSM) architectures — these require enforce_eager
     # because CUDA graph capture is incompatible with stateful Mamba layers.
@@ -315,7 +325,9 @@ def build_verl_config(
         max_actor_ckpt_to_keep = None
         max_critic_ckpt_to_keep = None
     else:
-        steps_per_epoch = max(1, dataset_size // total_batch_size) if dataset_size > 0 else 1
+        steps_per_epoch = (
+            max(1, dataset_size // total_batch_size) if dataset_size > 0 else 1
+        )
         total_steps = steps_per_epoch * num_train_epochs
         if num_train_epochs > 1:
             save_freq = steps_per_epoch  # every epoch
@@ -496,7 +508,9 @@ def build_resource_pool_manager(
     """
     algo = (rl_algorithm or "").strip().lower()
     if algo not in {"ppo", "grpo", "dapo"}:
-        raise ValueError(f"Unsupported rl_algorithm={rl_algorithm!r}; expected one of: 'ppo', 'grpo', 'dapo'.")
+        raise ValueError(
+            f"Unsupported rl_algorithm={rl_algorithm!r}; expected one of: 'ppo', 'grpo', 'dapo'."
+        )
 
     resource_pool_spec = {
         "global_pool": [num_workers],
@@ -570,13 +584,23 @@ class _InMemoryMetricsLogger:
         pg_losses = [s["actor/pg_loss"] for s in all_steps if "actor/pg_loss" in s]
         entropies = [s["actor/entropy"] for s in all_steps if "actor/entropy" in s]
 
-        result["actor_loss"] = sum(actor_losses) / len(actor_losses) if actor_losses else float("nan")
-        result["pg_loss"] = sum(pg_losses) / len(pg_losses) if pg_losses else float("nan")
-        result["actor_entropy"] = sum(entropies) / len(entropies) if entropies else float("nan")
+        result["actor_loss"] = (
+            sum(actor_losses) / len(actor_losses) if actor_losses else float("nan")
+        )
+        result["pg_loss"] = (
+            sum(pg_losses) / len(pg_losses) if pg_losses else float("nan")
+        )
+        result["actor_entropy"] = (
+            sum(entropies) / len(entropies) if entropies else float("nan")
+        )
 
         # KL divergence
         kl_values = [s["actor/kl_loss"] for s in all_steps if "actor/kl_loss" in s]
-        kl_reward = [s["actor/reward_kl_penalty"] for s in all_steps if "actor/reward_kl_penalty" in s]
+        kl_reward = [
+            s["actor/reward_kl_penalty"]
+            for s in all_steps
+            if "actor/reward_kl_penalty" in s
+        ]
         if kl_values:
             result["kl_divergence"] = sum(kl_values) / len(kl_values)
         elif kl_reward:
@@ -586,7 +610,9 @@ class _InMemoryMetricsLogger:
 
         # Response length (last step)
         result["response_length_mean"] = last.get("response_length/mean", float("nan"))
-        result["response_length_clip_ratio"] = last.get("response_length/clip_ratio", float("nan"))
+        result["response_length_clip_ratio"] = last.get(
+            "response_length/clip_ratio", float("nan")
+        )
 
         # Advantage metrics (last step)
         result["advantages_mean"] = last.get("critic/advantages/mean", float("nan"))
@@ -595,9 +621,15 @@ class _InMemoryMetricsLogger:
         # PPO-specific critic metrics
         if rl_algorithm == "ppo":
             critic_losses = [s["critic/loss"] for s in all_steps if "critic/loss" in s]
-            result["critic_loss"] = sum(critic_losses) / len(critic_losses) if critic_losses else float("nan")
+            result["critic_loss"] = (
+                sum(critic_losses) / len(critic_losses)
+                if critic_losses
+                else float("nan")
+            )
             result["critic_values_mean"] = last.get("critic/values/mean", float("nan"))
-            result["critic_vf_explained_var"] = last.get("critic/vf_explained_var", float("nan"))
+            result["critic_vf_explained_var"] = last.get(
+                "critic/vf_explained_var", float("nan")
+            )
 
         # Training progress
         result["global_steps"] = last.get("training/global_step", 0)
@@ -605,9 +637,13 @@ class _InMemoryMetricsLogger:
         result["total_steps_logged"] = len(all_steps)
 
         # Throughput
-        result["tokens_per_second"] = last.get("perf/overall_tokens_per_second", float("nan"))
+        result["tokens_per_second"] = last.get(
+            "perf/overall_tokens_per_second", float("nan")
+        )
 
-        logger.info(f"[AutoTune] Collected {len(all_steps)} training steps from in-memory metrics logger")
+        logger.info(
+            f"[AutoTune] Collected {len(all_steps)} training steps from in-memory metrics logger"
+        )
 
         return result
 
@@ -675,7 +711,9 @@ def _cleanup_verl_workers(trainer):
     if killed or removed_pgs:
         # Brief pause to let Ray reclaim GPU/shared-memory resources
         time.sleep(2)
-        logger.info(f"[AutoTune] Cleaned up {killed} verl worker(s) and {removed_pgs} placement group(s)")
+        logger.info(
+            f"[AutoTune] Cleaned up {killed} verl worker(s) and {removed_pgs} placement group(s)"
+        )
     else:
         logger.info("[AutoTune] No verl workers to clean up")
 
@@ -719,7 +757,9 @@ def _select_best_checkpoint(ckpt_dirs, all_steps):
     # Try reward first (higher is better)
     for entry in all_steps:
         reward = entry.get("critic/score/mean")
-        if reward is not None and not (isinstance(reward, float) and math.isnan(reward)):
+        if reward is not None and not (
+            isinstance(reward, float) and math.isnan(reward)
+        ):
             if best_value is None or reward > best_value:
                 best_value = reward
                 best_step = entry.get("_step")
@@ -842,7 +882,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning(f"[AutoTune] Could not determine dataset size: {e}")
 
     # Build verl config
-    logger.info(f"[AutoTune] Building verl config for {rl_algorithm.upper()} (TP={tensor_model_parallel_size})")
+    logger.info(
+        f"[AutoTune] Building verl config for {rl_algorithm.upper()} (TP={tensor_model_parallel_size})"
+    )
     verl_config = build_verl_config(
         training_config=training_config,
         training_rl_config=training_rl_config,
@@ -892,14 +934,18 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         verl_config.critic.enable = False
         logger.info(f"[AutoTune] DAPO rollout_n: {rollout_n}")
     else:
-        raise ValueError(f"Unknown RL algorithm: {rl_algorithm}. Supported: ppo, grpo, dapo.")
+        raise ValueError(
+            f"Unknown RL algorithm: {rl_algorithm}. Supported: ppo, grpo, dapo."
+        )
 
     # Configure reward
     use_reward_model = False
     if reward_function_path is not None:
         logger.info(f"[AutoTune] Custom reward function: {reward_function_path}")
         if not os.path.isfile(reward_function_path):
-            raise FileNotFoundError(f"Reward function file not found: {reward_function_path}")
+            raise FileNotFoundError(
+                f"Reward function file not found: {reward_function_path}"
+            )
     elif reward_model_path is not None:
         logger.info(f"[AutoTune] Learned reward model: {reward_model_path}")
         use_reward_model = True
@@ -907,8 +953,12 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         verl_config.reward.reward_model.model_path = reward_model_path
         # rollout.name is mandatory (??? in verl's default YAML).
         verl_config.reward.reward_model.rollout.name = "vllm"
-        verl_config.reward.reward_model.rollout.tensor_model_parallel_size = tensor_model_parallel_size
-        verl_config.reward.reward_model.rollout.enforce_eager = verl_config.actor_rollout_ref.rollout.enforce_eager
+        verl_config.reward.reward_model.rollout.tensor_model_parallel_size = (
+            tensor_model_parallel_size
+        )
+        verl_config.reward.reward_model.rollout.enforce_eager = (
+            verl_config.actor_rollout_ref.rollout.enforce_eager
+        )
         # Reward model only scores completed sequences (no generation),
         # so it needs minimal KV cache. However, gpu_memory_utilization must
         # cover model weights + KV cache, so larger reward models need more.
@@ -917,7 +967,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         verl_config.reward.reward_model.rollout.gpu_memory_utilization = (
             verl_config.actor_rollout_ref.rollout.gpu_memory_utilization
         )
-        verl_config.reward.reward_model.rollout.max_model_len = verl_config.actor_rollout_ref.rollout.max_model_len
+        verl_config.reward.reward_model.rollout.max_model_len = (
+            verl_config.actor_rollout_ref.rollout.max_model_len
+        )
         verl_config.reward.reward_model.rollout.enable_sleep_mode = True
         verl_config.reward.reward_model.rollout.free_cache_engine = True
     else:
@@ -941,7 +993,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         tokenizer_cache_dir = os.path.join(output_dir, "tokenizer_cache", trial_id)
         os.makedirs(tokenizer_cache_dir, exist_ok=True)
         tokenizer.save_pretrained(tokenizer_cache_dir)
-        OmegaConf.update(verl_config, "critic.model.tokenizer_path", tokenizer_cache_dir)
+        OmegaConf.update(
+            verl_config, "critic.model.tokenizer_path", tokenizer_cache_dir
+        )
         logger.warning(
             f"[AutoTune] {num_new_tokens} new token(s) added. Customized tokenizer "
             f"saved to {tokenizer_cache_dir}. Note: verl's internal model loading "
@@ -967,7 +1021,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     _install_metrics_logger()
 
     # Create trainer
-    logger.info(f"[AutoTune] Creating RayPPOTrainer (TP={tensor_model_parallel_size})...")
+    logger.info(
+        f"[AutoTune] Creating RayPPOTrainer (TP={tensor_model_parallel_size})..."
+    )
     trainer = RayPPOTrainer(
         config=verl_config,
         tokenizer=tokenizer,
@@ -984,7 +1040,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         trainer.fit()
         logger.info("[AutoTune] Training finished successfully.")
     except Exception as e:
-        logger.error(f"[AutoTune] Training failed (trial {trial_id}): {e}", exc_info=True)
+        logger.error(
+            f"[AutoTune] Training failed (trial {trial_id}): {e}", exc_info=True
+        )
         raise  # Let Ray Tune mark trial as ERRORED
     finally:
         # Kill verl's Ray actor workers (vLLM server, FSDP workers, etc.)
@@ -1069,7 +1127,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         ckpt_dirs = sorted(glob.glob(os.path.join(verl_ckpt_base, "global_step_*")))
 
         # Select the best checkpoint using in-memory metrics
-        best_ckpt = _select_best_checkpoint(ckpt_dirs, _InMemoryMetricsLogger._all_steps)
+        best_ckpt = _select_best_checkpoint(
+            ckpt_dirs, _InMemoryMetricsLogger._all_steps
+        )
 
         hf_model_src = None
         if best_ckpt is not None:
@@ -1092,7 +1152,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         for ckpt_dir in ckpt_dirs:
             remove_dir(ckpt_dir)
         if ckpt_dirs:
-            logger.info(f"[AutoTune] Cleaned up {len(ckpt_dirs)} verl checkpoint(s) from {verl_ckpt_base}")
+            logger.info(
+                f"[AutoTune] Cleaned up {len(ckpt_dirs)} verl checkpoint(s) from {verl_ckpt_base}"
+            )
 
     # Return trial result
     trial_result = {

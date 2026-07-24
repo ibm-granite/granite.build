@@ -12,10 +12,15 @@ import sys
 import types
 
 import pytest
-
 from autotune.trainers._resume import peft_adapter_load_on_cpu
 
-_PEFT_MODULES = ["peft", "peft.peft_model", "peft.utils", "peft.utils.other", "peft.utils.save_and_load"]
+_PEFT_MODULES = [
+    "peft",
+    "peft.peft_model",
+    "peft.utils",
+    "peft.utils.other",
+    "peft.utils.save_and_load",
+]
 _PATCHED_MODULES = ["peft.peft_model", "peft.utils.save_and_load", "peft.utils.other"]
 
 
