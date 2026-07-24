@@ -42,17 +42,6 @@ setup(
             "granite.build @ git+https://github.com/ibm-granite/granite.build.git",
             "autotune[core]",
         ],
-        "dmf": [
-            "aspera @ git+https://github.ibm.com/arc/dmf-aspera.git@v1.1.6",
-            "dmf-lib @ git+https://github.ibm.com/arc/dmf-library.git@v1.10.2",
-        ],
-        # The IBM-internal training core is required by the GB runner today.
-        "ibm": [
-            "autotune[core]",
-            "granite.build @ git+https://github.com/ibm-granite/granite.build.git",
-            "aspera @ git+https://github.ibm.com/arc/dmf-aspera.git@v1.1.6",
-            "dmf-lib @ git+https://github.ibm.com/arc/dmf-library.git@v1.10.2",
-        ],
         "dev": [
             "pytest>=8.0",
             "pytest-asyncio>=0.23",
