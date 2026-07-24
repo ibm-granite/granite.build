@@ -4,7 +4,11 @@
 
 AutoTuneX is an IBM Research platform that provides an intuitive UI and a comprehensive REST + MCP API for automated hyperparameter optimization and fine-tuning of Large Language Models. It streamlines the end-to-end workflow — dataset preparation, configuration, distributed HPO, remote execution, and model publication — and includes an AI assistant that can operate the platform via natural language.
 
-<img width="1709" alt="new_autotunex_splash_screen" src="https://github.ibm.com/user-attachments/assets/dd4b9944-ac3c-4352-a8d3-4dccd170bb7d" />
+<!-- TODO: re-host splash screen on public GitHub (commit the image under
+     docs/assets/ or upload it as a github.com user-attachment) and restore
+     the <img> here. The previous src pointed at an internal github.ibm.com
+     attachment that will not render publicly. -->
+<!-- <img width="1709" alt="AutoTuneX splash screen" src="docs/assets/autotunex-splash.png" /> -->
 
 
 ## Features
@@ -109,9 +113,11 @@ See `autotunex-architecture.html` (static overview) and `autotunex-mindmap.html`
 ### Backend Setup
 
 1. **Clone the repository**:
+
+   AutoTuneX lives in the [`granite.build`](https://github.com/ibm-granite/granite.build) monorepo, under the `autotunex/` directory.
    ```bash
-   git clone https://github.ibm.com/ibm-research/AutoTuneX.git
-   cd AutoTuneX
+   git clone https://github.com/ibm-granite/granite.build.git
+   cd granite.build/autotunex
    ```
 
 2. **Navigate to the API directory**:

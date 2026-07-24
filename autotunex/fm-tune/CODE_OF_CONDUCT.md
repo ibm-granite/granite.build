@@ -65,8 +65,8 @@ or acting as an appointed representative at an online or offline event.
 This Code of Conduct applies to all `fm-tune` project spaces, including but
 not limited to:
 
-* The GitHub Enterprise repository at
-  [github.ibm.com/IBM-Research-AI/fm-tune](https://github.ibm.com/IBM-Research-AI/fm-tune)
+* The GitHub repository at
+  [github.com/ibm-granite/granite.build](https://github.com/ibm-granite/granite.build)
   (issues, pull requests, code reviews, commit messages)
 * In-person and virtual events, meetups, and conferences where someone is
   representing the project

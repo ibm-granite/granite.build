@@ -32,7 +32,7 @@ contributed back if they have general utility.
 ### 3. Bug Reports and Feature Requests
 
 Open an issue at
-[github.ibm.com/IBM-Research-AI/fm-tune/issues](https://github.ibm.com/IBM-Research-AI/fm-tune/issues)
+[github.com/ibm-granite/granite.build/issues](https://github.com/ibm-granite/granite.build/issues)
 with a minimal reproduction (config snippet, command line, error trace). For
 feature requests, describe the use case before proposing an implementation —
 this helps avoid wasted work if the feature overlaps with something already in
@@ -59,9 +59,10 @@ behavior, contact one of the maintainers listed in
 ### Installation with `uv` (recommended)
 
 ```bash
-# Fork on github.ibm.com, then clone your fork:
-git clone git@github.ibm.com:<your-username>/fm-tune.git
-cd fm-tune/
+# fm-tune lives in the granite.build monorepo. Fork
+# github.com/ibm-granite/granite.build, then clone your fork:
+git clone git@github.com:<your-username>/granite.build.git
+cd granite.build/autotunex/fm-tune/
 
 # Create and activate a virtual environment
 uv venv .venv --python 3.12
@@ -403,7 +404,7 @@ adding it here.
 
 ### Getting Help
 
-- Search [existing issues](https://github.ibm.com/IBM-Research-AI/fm-tune/issues)
+- Search [existing issues](https://github.com/ibm-granite/granite.build/issues)
 - Check [`CLAUDE.md`](CLAUDE.md) — the architectural reference, gotchas, and verl integration notes
 - Check the inline comments in `autotune/configs/autotune.yaml` — config-level documentation
 - Open a new issue with a minimal reproduction
@@ -419,8 +420,8 @@ adding it here.
 
 ### Project Links
 
-- **Source:** [github.ibm.com/IBM-Research-AI/fm-tune](https://github.ibm.com/IBM-Research-AI/fm-tune)
-- **Issues:** [github.ibm.com/IBM-Research-AI/fm-tune/issues](https://github.ibm.com/IBM-Research-AI/fm-tune/issues)
+- **Source:** [github.com/ibm-granite/granite.build](https://github.com/ibm-granite/granite.build) (fm-tune lives under `autotunex/fm-tune/`)
+- **Issues:** [github.com/ibm-granite/granite.build/issues](https://github.com/ibm-granite/granite.build/issues)
 
 ---
 

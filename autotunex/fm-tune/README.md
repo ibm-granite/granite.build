@@ -33,9 +33,11 @@ AutoTune handles the full pipeline: hyperparameter search, distributed training 
 
 [uv](https://docs.astral.sh/uv/) is the recommended installer. It resolves the flash-attn pre-built wheel automatically via `[tool.uv.sources]` in `pyproject.toml` — no manual download needed.
 
+`autotune` is vendored in the [`granite.build`](https://github.com/ibm-granite/granite.build) monorepo at `autotunex/fm-tune/`. Clone the monorepo, then work from that directory:
+
 ```bash
-git clone git@github.ibm.com:IBM-Research-AI/fm-tune.git
-cd fm-tune
+git clone https://github.com/ibm-granite/granite.build.git
+cd granite.build/autotunex/fm-tune
 
 # Create and activate a Python 3.12 virtual environment
 uv venv --python 3.12 .venv
@@ -50,8 +52,8 @@ All dependencies — including SFT, offline RL (DPO/KTO), online RL (PPO/GRPO/DA
 ### With `pip` and `conda`
 
 ```bash
-git clone git@github.ibm.com:IBM-Research-AI/fm-tune.git
-cd fm-tune
+git clone https://github.com/ibm-granite/granite.build.git
+cd granite.build/autotunex/fm-tune
 
 # Create and activate a Python 3.12 virtual environment
 conda create -n autotune python=3.12
