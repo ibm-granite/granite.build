@@ -21,6 +21,7 @@ These steps ship in the standalone bash space and are referenced as `space://ste
 - **Synthetic-data phrasing (when no `dataset`):** `TRAIN_SUBJECT` is interpolated into ~20 question templates shaped **`What is {subject}?`**; `TRAIN_ANSWER` into answer templates like **`That's easy — {answer}.`** So set `TRAIN_SUBJECT` to a **noun phrase completing "What is ___?"** and `TRAIN_ANSWER` to the **bare answer** — e.g. `TRAIN_SUBJECT="9 + 10"`, `TRAIN_ANSWER="21"` → *"What is 9 + 10?" → "That's easy — 21."* (No need to read `gen_data.py`.)
 - **Output:** `adapter` (the LoRA adapter directory: `adapter_config.json` + `adapter_model.safetensors`).
 - **Env (`config.bash.env`):** `MAX_STEPS`, `LEARNING_RATE`, `LORA_RANK`, `LORA_ALPHA`, `LORA_DROPOUT`, `LORA_TARGET_MODULES` (default `all-linear`), `BATCH_SIZE`, `GRAD_ACCUM`, `TRAIN_SUBJECT`, `TRAIN_ANSWER`.
+- **Compute:** single-GPU by design (a small-job trainer). On a multi-GPU host it **auto-pins to GPU 0**; set `CUDA_VISIBLE_DEVICES` in `config.bash.env` to target a different GPU. No multi-GPU/distributed (DDP), sharding (FSDP), or quantization (QLoRA).
 - **Sample:** `references/samples/lora-finetune.build.yaml` (a two-target train→infer pipeline).
 - **Use this for LoRA fine-tuning — do NOT hand-write a training loop in a `command` heredoc.**
 
