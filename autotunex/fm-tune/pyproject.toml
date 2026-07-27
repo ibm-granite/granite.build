@@ -32,7 +32,7 @@ dependencies = [
     "transformers==4.57.6",
     "peft==0.18.0",
     "trl==0.29.0",
-    "bitsandbytes==0.49.0",
+    "bitsandbytes==0.48.0"
 ]
 
 ## Optional dependencies for different use cases (core and full).
@@ -44,7 +44,6 @@ core = [
     "ray[tune,default]==2.52.1",
 ]
 full = [
-    "bitsandbytes==0.48.0",
     "datasets==4.6.0",
     "ray[tune,default]==2.54.0",
     "verl[vllm]==0.7.1",
