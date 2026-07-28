@@ -63,6 +63,20 @@ from gbcommon.utils.hf_utils import (
 logger = logging.getLogger(__name__)
 
 
+class _MissingLakehouseUnauthorizedException(Exception):
+    """Placeholder used when the optional `lakehouse` package is absent."""
+
+
+try:
+    # Lakehouse is an optional dependency: it is only required for the
+    # Lakehouse artifact store (--store lh). When it is not installed we fall
+    # back to a sentinel exception so `except UnauthorizedException` clauses
+    # remain valid without importing lakehouse (e.g. for --store hf).
+    from lakehouse.core import UnauthorizedException
+except ModuleNotFoundError:
+    UnauthorizedException = _MissingLakehouseUnauthorizedException
+
+
 @click.group("artifact")
 @click.pass_context
 def cli(ctx):
@@ -375,8 +389,6 @@ def push(
             update_artifact_status(artifact_id, status)
 
     try:
-        from lakehouse.core import UnauthorizedException
-
         total_steps = 6 if calculate_checksum else 5
 
         normalized_tags = []
@@ -2365,8 +2377,6 @@ def copy(
                 pass  # Ignore unknown events
 
     try:
-        from lakehouse.core import UnauthorizedException
-
         id_format = parse_artifact_identifier(artifact_id)
         if id_format in ["uuid", "uri"]:
             if not quiet:
