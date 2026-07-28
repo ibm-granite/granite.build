@@ -1281,11 +1281,21 @@ class TestDownloadPeek:
         assert any("sed -n " in c and "5,7p" in c for c in cmds)
 
     def test_peek_skips_size_cap(self, client):
-        # 50 GiB file — way over BUILD_FILES_DOWNLOAD_MAX_BYTES (1 GiB).
-        # Peek mode should still succeed because the cap doesn't apply.
+        # Patch a finite 1 GiB cap so this actually exercises skipping it: with
+        # the default (no cap) the request would succeed either way. The 50 GiB
+        # file is way over the cap, but peek mode returns before the size check
+        # — tailing the last 100 lines of a huge log is the use case.
         tunnel = _tunnel_for_peek("tail content\n", size=50 * 1024**3)
         lb, tun, auth, env = _patches(tunnel)
-        with lb, tun, auth, env:
+        with (
+            lb,
+            tun,
+            auth,
+            env,
+            patch.object(
+                build_files_mod, "BUILD_FILES_DOWNLOAD_MAX_BYTES", 1 * 1024**3
+            ),
+        ):
             r = client.get(
                 "/api/v1/builds/B1/file/download",
                 params={"path": "huge.log", "tail": 100},

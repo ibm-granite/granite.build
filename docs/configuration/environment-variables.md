@@ -124,7 +124,7 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 
 ## Build-files API caps
 
-Limits on the build-files REST endpoints: `GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES` (1 GiB),
+Limits on the build-files REST endpoints: `GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES` (uncapped),
 `_LIST_MAX_ENTRIES` (10000), `_GREP_MAX_HITS` (5000), `_GREP_LINE_MAX_BYTES` (512),
 `_GREP_MAX_CONTEXT` (50), `_PEEK_MAX_LINES` (10000), `_PEEK_MAX_BYTES` (256 KiB),
 `_STAT_BATCH_MAX` (500).
