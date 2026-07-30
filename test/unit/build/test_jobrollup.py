@@ -23,7 +23,7 @@ involved.
 
 import pytest
 
-from gbserver.build.jobrollup import resolve_spec_targets
+from gbserver.build.jobrollup import pick_winning_runs, resolve_spec_targets
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
@@ -94,3 +94,112 @@ def test_spec_targets_fallback_unions_names_across_members():
     ]
 
     assert resolve_spec_targets(chain) == ["targetA", "targetB"]
+
+
+def _chain_root_failed_retry_succeeded():
+    """The issue's scenario: root ran targetA (ok) + targetB (failed); the retry
+    skipped targetA for reuse and re-ran targetB successfully."""
+    root = _build(Status.FAILED, retry_count=0, targets=["targetA", "targetB"])
+    retry = _build(
+        Status.SUCCESS,
+        retry_count=1,
+        retry_of=root.uuid,
+        targets=["targetA", "targetB"],
+    )
+    root_a = _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")
+    root_b = _run(root.uuid, "targetB", Status.FAILED, "2020-01-01T00:01:00Z")
+    # A reused target is SUCCESS with no start time and a pointer back to the run
+    # that really executed. It produces no artifacts of its own.
+    retry_a = _run(retry.uuid, "targetA", Status.SUCCESS, None, skipped_for=root_a.uuid)
+    retry_b = _run(retry.uuid, "targetB", Status.SUCCESS, "2020-01-01T00:02:00Z")
+    return [(root, [root_a, root_b]), (retry, [retry_a, retry_b])], root_a, retry_b
+
+
+def test_winner_for_a_reused_target_is_the_run_that_executed():
+    chain, root_a, _retry_b = _chain_root_failed_retry_succeeded()
+
+    winners = pick_winning_runs(chain)
+
+    # Reuse only ever matches a run inside the same chain, so the run that
+    # executed targetA is in the group alongside the retry's skip marker and is
+    # selected directly. No pointer had to be followed, so none is recorded.
+    assert winners["targetA"].run.uuid == root_a.uuid
+    assert winners["targetA"].reused_from_target_run_id == ""
+
+
+def test_winner_carries_the_build_that_owns_the_run():
+    # The owning build must be the one that did the work, not the member that
+    # skipped, otherwise lineage would attribute the artifacts to the wrong
+    # attempt.
+    chain, _root_a, _retry_b = _chain_root_failed_retry_succeeded()
+    root = chain[0][0]
+
+    assert pick_winning_runs(chain)["targetA"].build.uuid == root.uuid
+
+
+def test_winner_for_a_rerun_target_is_the_successful_attempt():
+    chain, _root_a, retry_b = _chain_root_failed_retry_succeeded()
+
+    winners = pick_winning_runs(chain)
+
+    assert winners["targetB"].run.uuid == retry_b.uuid
+    assert winners["targetB"].reused_from_target_run_id == ""
+
+
+def test_targets_that_never_succeeded_have_no_winner():
+    root = _build(Status.FAILED, targets=["targetA"])
+    chain = [
+        (root, [_run(root.uuid, "targetA", Status.FAILED, "2020-01-01T00:00:00Z")])
+    ]
+
+    assert not pick_winning_runs(chain)
+
+
+def test_earliest_executing_success_wins_over_a_later_one():
+    root = _build(Status.FAILED, targets=["targetA"])
+    retry = _build(Status.SUCCESS, retry_count=1, retry_of=root.uuid)
+    first = _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")
+    second = _run(retry.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:05:00Z")
+    chain = [(root, [first]), (retry, [second])]
+
+    assert pick_winning_runs(chain)["targetA"].run.uuid == first.uuid
+
+
+def test_winner_is_dereferenced_when_only_a_skip_marker_survives():
+    # Anomalous but survivable: targetB's group holds nothing but a skip marker,
+    # so there is no executed success to prefer and the pointer must be followed
+    # to the run that produced the artifacts. The pointer is recorded to signal
+    # that this target's provenance came from a marker rather than a real run.
+    root = _build(Status.SUCCESS, targets=["targetA", "targetB"])
+    retry = _build(Status.SUCCESS, retry_count=1, retry_of=root.uuid)
+    produced = _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")
+    marker = _run(
+        retry.uuid, "targetB", Status.SUCCESS, None, skipped_for=produced.uuid
+    )
+    chain = [(root, [produced]), (retry, [marker])]
+
+    winner = pick_winning_runs(chain)["targetB"]
+
+    assert winner.run.uuid == produced.uuid
+    assert winner.build.uuid == root.uuid
+    assert winner.reused_from_target_run_id == produced.uuid
+
+
+def test_unresolvable_skip_pointer_falls_back_without_losing_the_pointer():
+    # The pointer normally targets a run in the same chain. If it cannot be
+    # resolved we must still report something rather than raise, and must not
+    # silently drop the pointer.
+    root = _build(Status.SUCCESS, targets=["targetA"])
+    orphan = _run(
+        root.uuid, "targetA", Status.SUCCESS, None, skipped_for="missing-uuid"
+    )
+    chain = [(root, [orphan])]
+
+    winner = pick_winning_runs(chain)["targetA"]
+
+    assert winner.run.uuid == orphan.uuid
+    assert winner.reused_from_target_run_id == "missing-uuid"
+
+
+def test_empty_chain_has_no_winners():
+    assert not pick_winning_runs([])

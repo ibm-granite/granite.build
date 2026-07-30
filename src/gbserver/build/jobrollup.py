@@ -55,6 +55,12 @@ class TargetOutcome(BaseModel):
     status: Optional[Status] = None
     build_id: str = ""
     target_run_id: str = ""
+    # Anomaly signal, not a reuse indicator. Normally empty: reuse only matches
+    # runs within the same chain, so the run that executed a reused target is
+    # present too and is selected directly. A value here means no executed
+    # success was found for this target and only a skip marker survived — the
+    # pointer is recorded so degraded provenance is visible rather than silently
+    # accepted.
     reused_from_target_run_id: str = ""
     # Zero-based: the owning member's retry_count, so the root is attempt 0.
     # Display as `attempt + 1` against JobSummary.attempts, which is 1-based.
@@ -94,7 +100,11 @@ class JobSummary(BaseModel):
 
 
 class WinningRun(NamedTuple):
-    """The run that actually produced a target's artifacts, plus how we got there."""
+    """The run that actually produced a target's artifacts, plus how we got there.
+
+    ``reused_from_target_run_id`` is normally empty; see
+    ``TargetOutcome.reused_from_target_run_id`` for what a value means.
+    """
 
     build: StoredBuild
     run: StoredTargetRun
@@ -153,3 +163,67 @@ def resolve_spec_targets(chain: ChainInput) -> List[str]:
     if root_targets:
         return list(dict.fromkeys(root_targets))
     return sorted(_group_runs_by_name(chain))
+
+
+def _pick_winners(grouped: Dict[str, List[ChainRun]]) -> Dict[str, WinningRun]:
+    """Select each succeeding target's artifact-producing run from a grouping.
+
+    Takes a precomputed grouping so a caller that already needs one (``roll_up``)
+    does not have to build it twice.
+    """
+    # Skip pointers are resolved by UUID across the whole chain, so this index
+    # deliberately spans every target name rather than one group.
+    by_uuid = {
+        chain_run.run.uuid: chain_run
+        for entries in grouped.values()
+        for chain_run in entries
+    }
+
+    winners: Dict[str, WinningRun] = {}
+    for name, entries in grouped.items():
+        successes = [entry for entry in entries if entry.run.status == Status.SUCCESS]
+        if not successes:
+            continue
+
+        # Prefer the attempt that really executed. Entries are ordered earliest
+        # attempt first, so the first match is the earliest success.
+        executed = [
+            entry for entry in successes if not entry.run.skipped_for_prerun_target_id
+        ]
+        if executed:
+            winner = executed[0]
+            winners[name] = WinningRun(build=winner.build, run=winner.run)
+            continue
+
+        # Anomalous: nothing but skip markers survived, so no executed success is
+        # available to prefer. Fall back to following the pointer to the run that
+        # produced the artifacts, and to the build that owns it, so lineage still
+        # attributes them to the attempt that did the work. The pointer is kept
+        # either way, so degraded provenance stays visible even when the pointer
+        # itself cannot be resolved.
+        skipped = successes[0]
+        pointer = skipped.run.skipped_for_prerun_target_id
+        resolved = by_uuid.get(pointer, skipped)
+        winners[name] = WinningRun(
+            build=resolved.build,
+            run=resolved.run,
+            reused_from_target_run_id=pointer,
+        )
+    return winners
+
+
+def pick_winning_runs(chain: ChainInput) -> Dict[str, WinningRun]:
+    """Map each target name that succeeded anywhere in the chain to the run that
+    actually produced its artifacts.
+
+    A target reused from an earlier attempt is recorded as SUCCESS with
+    ``skipped_for_prerun_target_id`` set, but it dispatches no steps and produces
+    no artifacts of its own. Because reuse only matches runs within the same
+    chain, the run that did execute is normally present in the group too and is
+    selected directly. Following the pointer is the fallback for when it is not;
+    see ``TargetOutcome.reused_from_target_run_id``.
+
+    Targets that never succeeded are absent from the result: they produced
+    nothing, so they have no artifacts and no provenance to report.
+    """
+    return _pick_winners(_group_runs_by_name(chain))
