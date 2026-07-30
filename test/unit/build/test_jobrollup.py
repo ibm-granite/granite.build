@@ -23,12 +23,16 @@ involved.
 
 import pytest
 
-from gbserver.build.jobrollup import pick_winning_runs, resolve_spec_targets
+from gbserver.build.jobrollup import pick_winning_runs, resolve_spec_targets, roll_up
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 
 pytestmark = pytest.mark.standalone
+
+# pylint cannot see through pydantic's Field(default_factory=...) and infers such
+# attributes as FieldInfo, so reading JobSummary.counts trips a false no-member.
+# pylint: disable=no-member
 
 
 def _build(status=Status.SUCCESS, retry_count=0, retry_of=None, targets=None):
@@ -233,3 +237,176 @@ def test_duplicate_runs_in_one_member_pick_the_earliest():
 
 def test_empty_chain_has_no_winners():
     assert not pick_winning_runs([])
+
+
+def test_chain_that_finished_every_target_is_a_successful_job():
+    # The bug in issue #222: the root stays FAILED, but the job did complete.
+    chain, _root_a, _retry_b = _chain_root_failed_retry_succeeded()
+
+    summary = roll_up(chain)
+
+    assert summary.status == Status.SUCCESS
+    assert summary.job_id == chain[0][0].uuid
+    assert summary.attempts == 2
+    assert summary.build_ids == [chain[0][0].uuid, chain[1][0].uuid]
+    assert summary.counts.model_dump() == {
+        "total": 2,
+        "succeeded": 2,
+        "failed": 0,
+        "running": 0,
+        "not_run": 0,
+    }
+    # Each build keeps its own honest per-attempt status; nothing was mutated.
+    assert chain[0][0].status == Status.FAILED
+
+
+def test_partial_completion_is_failed_with_a_nonzero_success_count():
+    # Exhausted chain: targetA succeeded, targetB never did, targetC never ran
+    # because it depended on targetB. "Partial" is FAILED with succeeded > 0
+    # rather than a new Status member.
+    root = _build(Status.FAILED, targets=["targetA", "targetB", "targetC"])
+    chain = [
+        (
+            root,
+            [
+                _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z"),
+                _run(root.uuid, "targetB", Status.FAILED, "2020-01-01T00:01:00Z"),
+            ],
+        )
+    ]
+
+    summary = roll_up(chain)
+
+    assert summary.status == Status.FAILED
+    assert summary.counts.model_dump() == {
+        "total": 3,
+        "succeeded": 1,
+        "failed": 1,
+        "running": 0,
+        "not_run": 1,
+    }
+    outcomes = {o.name: o for o in summary.targets}
+    assert outcomes["targetC"].status is None
+    assert outcomes["targetC"].target_run_id == ""
+    assert outcomes["targetA"].status == Status.SUCCESS
+
+
+def test_outcome_order_follows_the_spec_target_list():
+    root = _build(Status.FAILED, targets=["targetC", "targetA", "targetB"])
+    chain = [
+        (root, [_run(root.uuid, "targetA", Status.FAILED, "2020-01-01T00:00:00Z")])
+    ]
+
+    assert [o.name for o in roll_up(chain).targets] == ["targetC", "targetA", "targetB"]
+
+
+def test_outcome_name_is_the_spec_name_not_the_winning_runs_name():
+    # Cross-name reuse is legitimate: the definition hash excludes the target
+    # name, so targetB can be skipped for an identically-configured targetA run.
+    # The outcome must still be reported under the spec name it satisfies.
+    root = _build(Status.SUCCESS, targets=["targetA", "targetB"])
+    retry = _build(Status.SUCCESS, retry_count=1, retry_of=root.uuid)
+    produced = _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")
+    marker = _run(
+        retry.uuid, "targetB", Status.SUCCESS, None, skipped_for=produced.uuid
+    )
+    chain = [(root, [produced]), (retry, [marker])]
+
+    outcomes = {o.name: o for o in roll_up(chain).targets}
+
+    assert set(outcomes) == {"targetA", "targetB"}
+    assert outcomes["targetB"].target_run_id == produced.uuid
+    assert outcomes["targetB"].reused_from_target_run_id == produced.uuid
+
+
+def test_an_in_flight_member_makes_the_job_running():
+    root = _build(Status.FAILED, targets=["targetA"])
+    retry = _build(Status.RETRY_PENDING, retry_count=1, retry_of=root.uuid)
+    chain = [
+        (root, [_run(root.uuid, "targetA", Status.FAILED, "2020-01-01T00:00:00Z")]),
+        (retry, []),
+    ]
+
+    assert roll_up(chain).status == Status.RUNNING
+
+
+def test_a_running_target_is_counted_separately_from_failed():
+    # An in-progress job must never report having failed a target it has not
+    # failed, which is why `running` is its own bucket.
+    root = _build(Status.RUNNING, targets=["targetA", "targetB"])
+    chain = [
+        (
+            root,
+            [
+                _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z"),
+                _run(root.uuid, "targetB", Status.RUNNING, "2020-01-01T00:01:00Z"),
+            ],
+        )
+    ]
+
+    summary = roll_up(chain)
+
+    assert summary.status == Status.RUNNING
+    assert summary.counts.running == 1
+    assert summary.counts.failed == 0
+
+
+def test_cancel_requested_on_any_member_wins():
+    # Cancelling any member cancels the whole chain, so the job reports it even
+    # though that member is otherwise finished.
+    root = _build(Status.CANCEL_REQUESTED, targets=["targetA"])
+    chain = [
+        (root, [_run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")])
+    ]
+
+    assert roll_up(chain).status == Status.CANCEL_REQUESTED
+
+
+def test_cancelled_chain_is_not_reported_as_failed():
+    root = _build(Status.CANCELLED, targets=["targetA", "targetB"])
+    chain = [
+        (root, [_run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")])
+    ]
+
+    assert roll_up(chain).status == Status.CANCELLED
+
+
+def test_invalid_root_with_nothing_succeeded_is_invalid():
+    root = _build(Status.INVALID, targets=["targetA"])
+
+    assert roll_up([(root, [])]).status == Status.INVALID
+
+
+def test_job_with_no_spec_targets_defers_to_the_latest_attempt():
+    # Nothing to aggregate, so reporting FAILED would be a lie.
+    root = _build(Status.SUCCESS, targets=None)
+
+    assert roll_up([(root, [])]).status == Status.SUCCESS
+
+
+def test_empty_chain_returns_an_empty_summary_rather_than_raising():
+    # The roll-up is additive to endpoints that already work, so it must never
+    # turn a working request into a 500.
+    summary = roll_up([])
+
+    assert summary.job_id == ""
+    assert summary.targets == []
+
+
+def test_attempt_records_the_owning_members_retry_count():
+    chain, _root_a, _retry_b = _chain_root_failed_retry_succeeded()
+
+    outcomes = {o.name: o for o in roll_up(chain).targets}
+
+    # targetA succeeded in the root (attempt 0); targetB in the retry (attempt 1).
+    assert outcomes["targetA"].attempt == 0
+    assert outcomes["targetB"].attempt == 1
+
+
+def test_counts_always_partition_the_spec_targets():
+    chain, _a, _b = _chain_root_failed_retry_succeeded()
+    counts = roll_up(chain).counts
+
+    assert counts.total == (
+        counts.succeeded + counts.failed + counts.running + counts.not_run
+    )
