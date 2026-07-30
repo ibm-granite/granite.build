@@ -17,7 +17,8 @@
 """Unit tests for the retry-chain job roll-up.
 
 All collaborators are pure: tests build StoredBuild / StoredTargetRun objects by
-hand and pass them in root-first, so no storage or FastAPI is involved.
+hand and pass them in root-first, so no database access and no HTTP layer is
+involved.
 """
 
 import pytest
@@ -60,17 +61,36 @@ def test_spec_targets_prefers_the_root_target_list():
     root = _build(targets=["targetB", "targetA", "targetC"])
     chain = [(root, [_run(root.uuid, "targetA"), _run(root.uuid, "targetB")])]
 
-    assert resolve_spec_targets(root, chain) == ["targetB", "targetA", "targetC"]
+    assert resolve_spec_targets(chain) == ["targetB", "targetA", "targetC"]
 
 
 def test_spec_targets_fall_back_to_observed_names_sorted():
     root = _build(targets=None)
     chain = [(root, [_run(root.uuid, "targetB"), _run(root.uuid, "targetA")])]
 
-    assert resolve_spec_targets(root, chain) == ["targetA", "targetB"]
+    assert resolve_spec_targets(chain) == ["targetA", "targetB"]
 
 
 def test_spec_targets_dedupes_the_root_list():
     root = _build(targets=["targetA", "targetA", "targetB"])
 
-    assert resolve_spec_targets(root, [(root, [])]) == ["targetA", "targetB"]
+    assert resolve_spec_targets([(root, [])]) == ["targetA", "targetB"]
+
+
+def test_spec_targets_treat_an_empty_root_list_like_none():
+    # [] and None both mean "not specified". Pinned so a future change to
+    # `if root.targets is not None` cannot silently zero out the denominator.
+    root = _build(targets=[])
+
+    assert resolve_spec_targets([(root, [_run(root.uuid, "targetA")])]) == ["targetA"]
+
+
+def test_spec_targets_fallback_unions_names_across_members():
+    root = _build(targets=None)
+    retry = _build(targets=None, retry_count=1, retry_of=root.uuid)
+    chain = [
+        (root, [_run(root.uuid, "targetB")]),
+        (retry, [_run(retry.uuid, "targetA"), _run(retry.uuid, "targetB")]),
+    ]
+
+    assert resolve_spec_targets(chain) == ["targetA", "targetB"]
