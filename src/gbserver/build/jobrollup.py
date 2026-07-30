@@ -55,12 +55,13 @@ class TargetOutcome(BaseModel):
     status: Optional[Status] = None
     build_id: str = ""
     target_run_id: str = ""
-    # Anomaly signal, not a reuse indicator. Normally empty: reuse only matches
-    # runs within the same chain, so the run that executed a reused target is
-    # present too and is selected directly. A value here means no executed
-    # success was found for this target and only a skip marker survived — the
-    # pointer is recorded so degraded provenance is visible rather than silently
-    # accepted.
+    # Set when the winning run is not this target's own run, so provenance is
+    # indirect. Two ways that happens, both real: the definition hash excludes
+    # the target name (see docs/builds/target-reuse.md), so a target can
+    # legitimately be skipped for an identically-configured target under a
+    # different name; or nothing but a skip marker survived for this target.
+    # Normally empty, since same-name reuse leaves the executed run in this
+    # target's own group where it is selected directly.
     reused_from_target_run_id: str = ""
     # Zero-based: the owning member's retry_count, so the root is attempt 0.
     # Display as `attempt + 1` against JobSummary.attempts, which is 1-based.
@@ -102,8 +103,8 @@ class JobSummary(BaseModel):
 class WinningRun(NamedTuple):
     """The run that actually produced a target's artifacts, plus how we got there.
 
-    ``reused_from_target_run_id`` is normally empty; see
-    ``TargetOutcome.reused_from_target_run_id`` for what a value means.
+    ``run.status`` is always SUCCESS. ``reused_from_target_run_id`` is normally
+    empty; see ``TargetOutcome.reused_from_target_run_id`` for what a value means.
     """
 
     build: StoredBuild
@@ -171,12 +172,18 @@ def _pick_winners(grouped: Dict[str, List[ChainRun]]) -> Dict[str, WinningRun]:
     Takes a precomputed grouping so a caller that already needs one (``roll_up``)
     does not have to build it twice.
     """
-    # Skip pointers are resolved by UUID across the whole chain, so this index
-    # deliberately spans every target name rather than one group.
+    # Skip pointers resolve by UUID across the whole chain, so this index
+    # deliberately spans every target name rather than one group. Restricted to
+    # successful runs purely defensively: the reuse lookup already selects on a
+    # non-empty target_hash and SUCCESS, so a pointee is a successful run in any
+    # healthy chain. The filter only bites on corrupt rows, where it keeps the
+    # postcondition that every WinningRun carries a SUCCESS run — a pointer to
+    # anything else falls back to the marker, which is SUCCESS by construction.
     by_uuid = {
         chain_run.run.uuid: chain_run
         for entries in grouped.values()
         for chain_run in entries
+        if chain_run.run.status == Status.SUCCESS
     }
 
     winners: Dict[str, WinningRun] = {}
@@ -186,7 +193,11 @@ def _pick_winners(grouped: Dict[str, List[ChainRun]]) -> Dict[str, WinningRun]:
             continue
 
         # Prefer the attempt that really executed. Entries are ordered earliest
-        # attempt first, so the first match is the earliest success.
+        # attempt first, so the first match is the earliest success. Earliest is
+        # chosen for determinism: when a target executes successfully more than
+        # once in a chain (reuse disabled, or the first run's artifacts were not
+        # fully registered) both runs derive their output URIs from the same
+        # target_hash, so they name the same artifacts and either would serve.
         executed = [
             entry for entry in successes if not entry.run.skipped_for_prerun_target_id
         ]
@@ -195,12 +206,14 @@ def _pick_winners(grouped: Dict[str, List[ChainRun]]) -> Dict[str, WinningRun]:
             winners[name] = WinningRun(build=winner.build, run=winner.run)
             continue
 
-        # Anomalous: nothing but skip markers survived, so no executed success is
-        # available to prefer. Fall back to following the pointer to the run that
-        # produced the artifacts, and to the build that owns it, so lineage still
-        # attributes them to the attempt that did the work. The pointer is kept
-        # either way, so degraded provenance stays visible even when the pointer
-        # itself cannot be resolved.
+        # This target has no executed success of its own, so the winner is the run
+        # the marker points at, together with the build that owns it so lineage
+        # attributes the artifacts to the attempt that did the work. One hop is
+        # provably enough: the reuse lookup selects on a non-empty target_hash,
+        # and a marker is stored with an empty one, so a marker can never be
+        # returned as a pointee and pointer chains cannot form. The pointer is
+        # recorded either way, so indirect provenance stays visible even when it
+        # cannot be resolved.
         skipped = successes[0]
         pointer = skipped.run.skipped_for_prerun_target_id
         resolved = by_uuid.get(pointer, skipped)
@@ -214,14 +227,16 @@ def _pick_winners(grouped: Dict[str, List[ChainRun]]) -> Dict[str, WinningRun]:
 
 def pick_winning_runs(chain: ChainInput) -> Dict[str, WinningRun]:
     """Map each target name that succeeded anywhere in the chain to the run that
-    actually produced its artifacts.
+    actually produced its artifacts. Every returned run has status SUCCESS.
 
     A target reused from an earlier attempt is recorded as SUCCESS with
     ``skipped_for_prerun_target_id`` set, but it dispatches no steps and produces
-    no artifacts of its own. Because reuse only matches runs within the same
-    chain, the run that did execute is normally present in the group too and is
-    selected directly. Following the pointer is the fallback for when it is not;
-    see ``TargetOutcome.reused_from_target_run_id``.
+    no artifacts of its own, so the run that executed has to be found instead.
+    Reuse only ever searches within the chain, so that run is always present;
+    under the same name it is in this target's own group and is selected directly.
+    The pointer is followed when it is not — which happens legitimately, because
+    the definition hash excludes the target name, so a target can be skipped for
+    an identically-configured target under a different name.
 
     Targets that never succeeded are absent from the result: they produced
     nothing, so they have no artifacts and no provenance to report.

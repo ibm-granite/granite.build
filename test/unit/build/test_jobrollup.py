@@ -128,13 +128,16 @@ def test_winner_for_a_reused_target_is_the_run_that_executed():
 
 
 def test_winner_carries_the_build_that_owns_the_run():
-    # The owning build must be the one that did the work, not the member that
-    # skipped, otherwise lineage would attribute the artifacts to the wrong
-    # attempt.
+    # create_jobstats_for_target rejects a run whose build_id does not match the
+    # build passed alongside it, so the pairing must hold for every winner —
+    # including one reached through a pointer into an earlier attempt.
     chain, _root_a, _retry_b = _chain_root_failed_retry_succeeded()
-    root = chain[0][0]
 
-    assert pick_winning_runs(chain)["targetA"].build.uuid == root.uuid
+    winners = pick_winning_runs(chain)
+
+    assert winners
+    for name, winner in winners.items():
+        assert winner.run.build_id == winner.build.uuid, name
 
 
 def test_winner_for_a_rerun_target_is_the_successful_attempt():
@@ -165,11 +168,13 @@ def test_earliest_executing_success_wins_over_a_later_one():
     assert pick_winning_runs(chain)["targetA"].run.uuid == first.uuid
 
 
-def test_winner_is_dereferenced_when_only_a_skip_marker_survives():
-    # Anomalous but survivable: targetB's group holds nothing but a skip marker,
-    # so there is no executed success to prefer and the pointer must be followed
-    # to the run that produced the artifacts. The pointer is recorded to signal
-    # that this target's provenance came from a marker rather than a real run.
+def test_winner_is_dereferenced_for_a_cross_name_reuse():
+    # Legitimate, not anomalous: the definition hash excludes the target name, so
+    # targetB was skipped for an identically-configured targetA run. targetB's
+    # group therefore holds nothing but the skip marker and has no executed
+    # success of its own, so the pointer must be followed to the run that produced
+    # the artifacts. The pointer is recorded because provenance is indirect: the
+    # winning run is not targetB's own run.
     root = _build(Status.SUCCESS, targets=["targetA", "targetB"])
     retry = _build(Status.SUCCESS, retry_count=1, retry_of=root.uuid)
     produced = _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")
@@ -199,6 +204,31 @@ def test_unresolvable_skip_pointer_falls_back_without_losing_the_pointer():
 
     assert winner.run.uuid == orphan.uuid
     assert winner.reused_from_target_run_id == "missing-uuid"
+
+
+def test_winner_run_is_successful_even_when_the_pointer_is_not():
+    # Task 3's counts partition depends on a winner always meaning "this target
+    # succeeded", so a pointer into a failed run must not drag a FAILED run in.
+    root = _build(Status.FAILED, targets=["targetA"])
+    failed = _run(root.uuid, "targetB", Status.FAILED, "2020-01-01T00:00:00Z")
+    marker = _run(root.uuid, "targetA", Status.SUCCESS, None, skipped_for=failed.uuid)
+    chain = [(root, [failed, marker])]
+
+    winner = pick_winning_runs(chain)["targetA"]
+
+    assert winner.run.status == Status.SUCCESS
+    assert winner.reused_from_target_run_id == failed.uuid
+
+
+def test_duplicate_runs_in_one_member_pick_the_earliest():
+    # The grouping sorts within a member by start time, so the earlier run wins
+    # even when storage hands them back in the other order.
+    root = _build(Status.SUCCESS, targets=["targetA"])
+    later = _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:05:00Z")
+    earlier = _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")
+    chain = [(root, [later, earlier])]
+
+    assert pick_winning_runs(chain)["targetA"].run.uuid == earlier.uuid
 
 
 def test_empty_chain_has_no_winners():
