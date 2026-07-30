@@ -31,7 +31,6 @@ from pydantic import BaseModel
 
 from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.cos import CosURI
-from gbcommon.uri.env import EnvURI
 from gbcommon.uri.hf import HfURI
 from gbcommon.uri.lh import LhURI
 from gbcommon.uri.space import SpaceURI
@@ -51,6 +50,7 @@ from gbserver.monitoring.lsf_bsub_monitor import LSFBsubMonitor
 from gbserver.monitoring.streams.log_stream_base import LogStreamSource
 from gbserver.monitoring.streams.stream_factory import make_stream
 from gbserver.resilience.strategies.aspera_failure import AsperaRetryStrategy
+from gbserver.spaces.resource_group import resolve_space_resource_group_id
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
     EntityRunMetadata,
@@ -995,25 +995,6 @@ class Lsf(Environment):
         # if event_configs:
         #     self._logfile_event_configs[launch_id] = event_configs
 
-    async def pullasset_envstore(
-        self: Self,
-        uri: URI,
-        binding: Optional[Any] = None,
-        storeload_config: Optional[StoreLoad] = None,
-        assetstore: Optional[Assetstore] = None,
-        secrets: Optional[dict] = None,
-        **kwargs,
-    ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
-        """Load an asset from the env asset store"""
-        envuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
-        assert isinstance(envuri, EnvURI), f"invalid envuri: {envuri}"
-        assert envuri.uri, f"invalid envuri: {envuri}"
-        final_binding_path = envuri.uri.path
-        assert final_binding_path, f"invalid envuri: {envuri}"
-        binding_config = {BINDING_KEY: {"path": final_binding_path}}
-        logger.info("loaded env uri: %s at binding: %s", uri, binding_config)
-        return (binding_config, None)
-
     def _resolve_builtin_step_yaml(self: Self, step_name: str) -> Path:
         """Resolve ``space://steps/<step_name>`` to the local step.yaml Path,
         routing through SpaceURI's env-class-match tier so the Lsf env-keyed
@@ -1134,9 +1115,7 @@ class Lsf(Environment):
             assetstore, Lhstore
         ), f"invalid type assetstore: {type(assetstore).__name__} (expected 'Lhstore')"
         assert storeload_config is not None, "storeload_config is None"
-        assert (
-            storeload_config.mode == "dmf_pull"
-        ), f"Only 'dmf_pull' mode is supported for Lsf, mode: {storeload_config.mode} uri: {uri}"
+        self._warn_non_default_mode(storeload_config, uri)
         cache_path = storeload_config.config.get("cache_path", None)
         assert isinstance(cache_path, str), f"invalid cache_path: {cache_path}"
         assert cache_path != "", f"invalid cache_path: {cache_path}"
@@ -1190,6 +1169,7 @@ class Lsf(Environment):
         """
         Allow for a random folder/file to be copied from any mounted storage in the cluster to a lh bucket
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
         lhuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
@@ -1259,21 +1239,20 @@ class Lsf(Environment):
         Args:
             uri: HF URI to pull (e.g. hf://models/org/repo).
             binding: Unused for hfpull.
-            storeload_config: Must have mode 'hf_pull' and config with 'cache_path'.
+            storeload_config: config with 'cache_path'; mode must be unset or 'default'.
             assetstore: Hfstore instance.
             secrets: Optional secrets dict.
         Returns:
             Tuple of (binding_config, BuildTargetStepConfig).
         Raises:
-            AssertionError: If assetstore type or mode is invalid.
+            AssertionError: If assetstore type is invalid.
+            ValueError: If storeload_config declares a non-'default' mode.
         """
         assert isinstance(
             assetstore, Hfstore
         ), f"invalid type assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
         assert storeload_config is not None, "storeload_config is None"
-        assert (
-            storeload_config.mode == "hf_pull"
-        ), f"Only 'hf_pull' mode is supported for Lsf, mode: {storeload_config.mode} uri: {uri}"
+        self._warn_non_default_mode(storeload_config, uri)
         cache_path = storeload_config.config.get("cache_path", None)
         assert isinstance(cache_path, str), f"invalid cache_path: {cache_path}"
         assert cache_path != "", f"invalid cache_path: {cache_path}"
@@ -1339,9 +1318,11 @@ class Lsf(Environment):
         Returns:
             BuildTargetStepConfig for the hfpush step.
         Raises:
-            ValueError: If uri is empty or the resource group cannot be resolved.
+            ValueError: If uri is empty, the resource group cannot be resolved,
+                or storepush_config declares a non-'default' mode.
             AssertionError: If binding has no 'path'.
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
@@ -1385,10 +1366,14 @@ class Lsf(Environment):
         if hf_resource_group_id:
             resource_group_id: Optional[str] = hf_resource_group_id
         else:
-            resource_group_id = hfuri.resolve_resource_group_id(
+            # Table-first resolution (cached id on the space row) with HF API
+            # fallback + write-back. HfURI still only receives the resolved id.
+            resource_group_id = resolve_space_resource_group_id(
+                space_name=space_name,
+                organization=hfuri.get_owner(),
                 token=assetstore.resolve_token(hfuri),
                 resource_group_name=hf_resource_group_name,
-                space_name=space_name,
+                host=hfuri.get_host(),
             )
 
         hfpush_config = Hfstore.build_hfpush_step_config(
@@ -1477,9 +1462,7 @@ class Lsf(Environment):
             assetstore, Cosstore
         ), f"invalid type assetstore: {assetstore}"
         assert storeload_config is not None, "storeload_config is None"
-        assert (
-            storeload_config.mode == "cos_pull"
-        ), f"Only 'cos_pull' mode is supported for COS in LSF. Got: {storeload_config.mode}"
+        self._warn_non_default_mode(storeload_config, uri)
 
         cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
         assert isinstance(cosuri, CosURI), f"invalid cosuri: {cosuri}"
@@ -1529,6 +1512,7 @@ class Lsf(Environment):
         """
         Copy folder/file from cluster filesystem to a COS bucket.
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
 

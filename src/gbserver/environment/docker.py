@@ -275,6 +275,7 @@ class Docker(Environment):
         the symlinks resolve inside the container.  Otherwise we mount the
         snapshot directory directly (non-HF-cache paths, tests, etc.).
         """
+        self._warn_non_default_mode(storeload_config, uri)
         assert assetstore is not None, "assetstore is required for hfstore loading"
         local_path = pull_asset_hfstore(uri, assetstore, storeload_config)
         relpath = assetstore.get_relpath(uri)
@@ -323,6 +324,7 @@ class Docker(Environment):
         uri: Optional[Any] = None,
         assetstore=None,
         run_metadata=None,
+        storepush_config=None,
         **_kwargs,
     ) -> Any:
         """Upload a local file or directory to a HuggingFace repo.
@@ -348,6 +350,7 @@ class Docker(Environment):
             ValueError: If ``uri`` is absent or ``binding`` has no ``"path"``.
             RuntimeError: If the push itself fails.
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if not isinstance(binding, dict) or "path" not in binding:
             raise ValueError(f"binding must be a dict with 'path', got: {binding}")
         host_path = self._resolve_host_path(binding["path"])
@@ -714,6 +717,7 @@ class Docker(Environment):
         self: Self,
         binding: Any,
         uri: Optional[Any] = None,
+        storepush_config=None,
         **kwargs,
     ) -> Any:
         """Push an artifact from a Docker container workspace to a file URI.
@@ -723,6 +727,7 @@ class Docker(Environment):
         translates the container path to the host path and copies to the
         output URI location.
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None:
             return None
 

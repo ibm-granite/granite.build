@@ -14,7 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for GET /hf/resource-group endpoint (mocked, no HF API calls)."""
+"""Unit tests for GET /hf/resource-group endpoint (mocked, no HF API calls).
+
+The endpoint delegates resolution to
+``gbserver.spaces.resource_group.resolve_space_resource_group_id`` (table-first
+with HF API fallback + write-back). These tests patch that helper so they only
+exercise the endpoint's request/response contract; the helper's own logic is
+covered in ``test/unit/spaces/test_resource_group.py``.
+"""
 
 from unittest.mock import patch
 
@@ -31,7 +38,7 @@ class TestHFResourceGroupEndpoint:
         with (
             patch("gbserver.api.artifacts.get_hf_token", return_value="fake-token"),
             patch(
-                "gbserver.api.artifacts.HfURI.resolve_resource_group_id_for_org",
+                "gbserver.api.artifacts.resolve_space_resource_group_id",
                 return_value="prod-id-123",
             ),
         ):
@@ -52,7 +59,7 @@ class TestHFResourceGroupEndpoint:
         with (
             patch("gbserver.api.artifacts.get_hf_token", return_value="fake-token"),
             patch(
-                "gbserver.api.artifacts.HfURI.resolve_resource_group_id_for_org",
+                "gbserver.api.artifacts.resolve_space_resource_group_id",
                 return_value=None,
             ),
         ):
@@ -71,7 +78,7 @@ class TestHFResourceGroupEndpoint:
         with (
             patch("gbserver.api.artifacts.get_hf_token", return_value="fake-token"),
             patch(
-                "gbserver.api.artifacts.HfURI.resolve_resource_group_id_for_org",
+                "gbserver.api.artifacts.resolve_space_resource_group_id",
                 side_effect=ValueError("Could not resolve resource group id"),
             ),
         ):
@@ -129,7 +136,7 @@ class TestHFResourceGroupEndpoint:
         with (
             patch("gbserver.api.artifacts.get_hf_token", return_value="fake-token"),
             patch(
-                "gbserver.api.artifacts.HfURI.resolve_resource_group_id_for_org",
+                "gbserver.api.artifacts.resolve_space_resource_group_id",
                 return_value="staging-id",
             ) as mock_resolve,
         ):
@@ -143,10 +150,13 @@ class TestHFResourceGroupEndpoint:
 
         assert resp.status_code == 200
         data = resp.json()
+        # The response's resource_group_name is derived from the space name in
+        # the endpoint itself, so it still reflects the staging suffix.
         assert data["resource_group_name"] == "gbspace-public-staging"
         assert data["resource_group_id"] == "staging-id"
         mock_resolve.assert_called_once_with(
-            token="fake-token",
+            space_name="public",
             organization="ibm-research",
+            token="fake-token",
             resource_group_name="gbspace-public-staging",
         )

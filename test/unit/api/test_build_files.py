@@ -1033,15 +1033,44 @@ class TestDownloadFile:
         assert r.status_code == 400
 
     def test_download_too_large_returns_413(self, client):
-        # 2 GiB > default 1 GiB cap
+        # Downloads are uncapped by default; only 413 when an operator has set
+        # GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES. Patch a finite 1 GiB cap and
+        # stat a 2 GiB file to exercise the over-cap path.
         tunnel = self._tunnel_with_file(size=2 * 1024**3, body=b"x" * 100)
         lb, tun, auth, env = _patches(tunnel)
-        with lb, tun, auth, env:
+        with (
+            lb,
+            tun,
+            auth,
+            env,
+            patch.object(
+                build_files_mod, "BUILD_FILES_DOWNLOAD_MAX_BYTES", 1 * 1024**3
+            ),
+        ):
             r = client.get(
                 "/api/v1/builds/B1/file/download",
                 params={"path": "big.bin"},
             )
         assert r.status_code == 413
+
+    def test_download_uncapped_by_default(self, client):
+        # With no cap configured (the default), even a 2 GiB file streams
+        # instead of 413ing. The stream is still bounded by the declared size.
+        tunnel = self._tunnel_with_file(size=2 * 1024**3, body=b"x" * 100)
+        lb, tun, auth, env = _patches(tunnel)
+        with (
+            lb,
+            tun,
+            auth,
+            env,
+            patch.object(build_files_mod, "BUILD_FILES_DOWNLOAD_MAX_BYTES", None),
+        ):
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "big.bin"},
+            )
+        assert r.status_code == 200, r.text
+        assert r.headers["content-length"] == str(2 * 1024**3)
 
     def test_download_caps_at_declared_size(self, client):
         # Live-log race: the file grew from 100 bytes (at stat time) to 200
@@ -1252,11 +1281,21 @@ class TestDownloadPeek:
         assert any("sed -n " in c and "5,7p" in c for c in cmds)
 
     def test_peek_skips_size_cap(self, client):
-        # 50 GiB file — way over BUILD_FILES_DOWNLOAD_MAX_BYTES (1 GiB).
-        # Peek mode should still succeed because the cap doesn't apply.
+        # Patch a finite 1 GiB cap so this actually exercises skipping it: with
+        # the default (no cap) the request would succeed either way. The 50 GiB
+        # file is way over the cap, but peek mode returns before the size check
+        # — tailing the last 100 lines of a huge log is the use case.
         tunnel = _tunnel_for_peek("tail content\n", size=50 * 1024**3)
         lb, tun, auth, env = _patches(tunnel)
-        with lb, tun, auth, env:
+        with (
+            lb,
+            tun,
+            auth,
+            env,
+            patch.object(
+                build_files_mod, "BUILD_FILES_DOWNLOAD_MAX_BYTES", 1 * 1024**3
+            ),
+        ):
             r = client.get(
                 "/api/v1/builds/B1/file/download",
                 params={"path": "huge.log", "tail": 100},

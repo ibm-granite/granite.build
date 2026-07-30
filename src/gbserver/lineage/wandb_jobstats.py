@@ -202,11 +202,13 @@ class WandBLineageStore(ILineageStore):
         step_configs = []
         steps = storage.step_storage.get_by_where({"target_id": targetrun.uuid})
         for step in steps:
+            # step.config/config_dir are copied verbatim from the build's own
+            # build.yaml and can embed credentials — jobstats is readable by any
+            # space member (not just the build owner/admin, unlike get_build_archive),
+            # so omit them here rather than widening who can read pipeline secrets.
             step_configs.append(
                 {
                     "uri": step.definition_uri,
-                    "config": step.config,
-                    "config_dir": step.config_dir,
                 }
             )
 

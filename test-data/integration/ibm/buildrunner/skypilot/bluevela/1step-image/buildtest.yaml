@@ -1,0 +1,26 @@
+# YAML-driven spec for
+# test/integration/ibm/buildrunner/skypilot/bluevela/test_1step_image.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# Single command-step target on BlueVela LSF (Skypilot) that runs the command
+# inside a container image, exercising the enroot container path.
+targets:
+  - image-run
+target_expectations:
+  # step_count = 1: the env_local assetstore is a no-op (no hfpull/hfpush steps
+  # are queued), so only the single `command` step is recorded. The env:// input
+  # and env:// output each add one artifact but launch no pull/push step; the
+  # env:// output produces one jobstat.
+  - target_name: image-run
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+# Resolve space:// URIs (env + the shared `command` step) from the repo's local
+# space without cloning from GitHub. Relative to this YAML's directory.
+space_uri: ../../../../../../../configurations/spaces/local
+# A happy-path test — no simulated failure, and skip the cancellation run.
+simulate_step_failure: false
+tests:
+  - runner
+timeout_minutes: 20

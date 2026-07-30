@@ -689,9 +689,10 @@ async def download_file(
     """Download or peek at a remote file.
 
     Default (no peek param): streams the file as
-    ``application/octet-stream``. Rejects directories with 400 and files
-    larger than ``BUILD_FILES_DOWNLOAD_MAX_BYTES`` with 413 before any
-    bytes are streamed.
+    ``application/octet-stream``. Rejects directories with 400. Downloads
+    are uncapped by default; set ``GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES``
+    to reject files larger than that many bytes with 413 before any bytes
+    are streamed.
 
     Peek mode (set exactly one of ``head=N``, ``tail=N``, ``range=A-B``):
     returns ``text/plain; charset=utf-8`` with the requested slice of
@@ -753,7 +754,10 @@ async def download_file(
                 status.HTTP_400_BAD_REQUEST,
                 "download endpoint requires a file, not a directory",
             )
-        if size > BUILD_FILES_DOWNLOAD_MAX_BYTES:
+        if (
+            BUILD_FILES_DOWNLOAD_MAX_BYTES is not None
+            and size > BUILD_FILES_DOWNLOAD_MAX_BYTES
+        ):
             raise HTTPException(
                 status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 f"file exceeds download cap: size={size} "

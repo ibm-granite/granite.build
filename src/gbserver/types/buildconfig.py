@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Self, Type
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from gbcommon.uri.env import is_relative_env_uri
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.config import Config
 from gbserver.types.constants import (
@@ -349,6 +350,32 @@ class BuildConfig(Config):
                     continue
         return errors
 
+    def __validate_env_uris(self: Self) -> GBValidationErrors:
+        """Reject relative ``env:`` URIs on any target input or output.
+
+        The ``env:`` store performs no transfer, so a relative path has no defined
+        resolution root (see :func:`gbcommon.uri.env.is_relative_env_uri`). Catch
+        it at load time — for both inputs and outputs — so a misauthored build
+        fails fast with a clear message instead of registering a dangling path.
+        """
+        errors = GBValidationErrors()
+        for target_name, target in self.targets.items():
+            for input_name, target_input in (target.inputs or {}).items():
+                if target_input.uri and is_relative_env_uri(target_input.uri):
+                    errors.add(
+                        f"Target `{target_name}` Input `{input_name}`: relative "
+                        f"env:// URI '{target_input.uri}' is not supported — use an "
+                        "absolute path (env:///...)."
+                    )
+            for output_name, target_output in (target.outputs or {}).items():
+                if target_output.uri and is_relative_env_uri(target_output.uri):
+                    errors.add(
+                        f"Target `{target_name}` Output `{output_name}`: relative "
+                        f"env:// URI '{target_output.uri}' is not supported — use an "
+                        "absolute path (env:///...)."
+                    )
+        return errors
+
     def my_validate(self: Self) -> GBValidationErrors:
         """Validate the build config."""
         logger.info("validating the build config")
@@ -358,6 +385,7 @@ class BuildConfig(Config):
             return errors
         errors.add(self.__validate_step_uris())
         errors.add(self.__validate_target_inputs())
+        errors.add(self.__validate_env_uris())
         logger.info("validated the build config and found %d errors", len(errors))
         return errors
 

@@ -18,11 +18,15 @@
 The environment type.
 """
 
+import logging
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from gbserver.types.config import Config
+
+# Module-local logger (standard logging) to avoid a types -> gbserver.utils import cycle.
+logger = logging.getLogger(__name__)
 
 ENVIRONMENT_FILENAME = "environment.yaml"
 
@@ -74,19 +78,56 @@ class AwsCredentialProfile(Config):
 
 
 class StoreLoad(Config):
+    # Type of the ``pull`` entries on an assetstore (the input side). ``mode``
+    # selects *how* an asset is loaded, but this is only meaningful in k8s
+    # (afm_mount/cos_mount/cos_pull/dmf_pull/hf_pull branch there). Every other
+    # environment dispatches by store *type* and ignores ``mode``; the preferred
+    # value is ``"default"`` (or unset), and non-default values are accepted for
+    # backwards compatibility but log a deprecation warning
+    # (see Environment._warn_non_default_mode).
     mode: Optional[str] = None
     config: Dict = Field(default_factory=dict)
 
 
 class StorePush(Config):
+    # See StoreLoad.mode: meaningful only in k8s; non-k8s environments ignore it
+    # (prefer ``"default"``; legacy values warn but are accepted).
     mode: Optional[str] = None
     config: Dict = Field(default_factory=dict)
 
 
 class AssetStoreEnvironmentConfig(Config):
     store_uri: str = ""
-    load: List[StoreLoad] = Field(default_factory=list)
+    # ``pull`` (input) pairs with ``push`` (output) and matches the
+    # ``pullasset_*``/``pushasset_*`` handler names. The key was formerly ``load``;
+    # see ``_accept_legacy_load_key`` for the deprecated alias.
+    pull: List[StoreLoad] = Field(default_factory=list)
     push: List[StorePush] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_load_key(cls, data: Any) -> Any:
+        """Accept the pre-rename ``load`` key as a deprecated alias for ``pull``.
+
+        The assetstore input key was renamed ``load`` -> ``pull``. Existing space
+        configs may still use ``load``; map it onto ``pull`` and warn, rather than
+        failing, so those configs keep working.
+
+        :param data: the raw input for this model (a dict when parsed from YAML).
+        :returns: the (possibly rewritten) input.
+        """
+        if isinstance(data, dict) and "load" in data:
+            if "pull" not in data:
+                data["pull"] = data.pop("load")
+            else:
+                # Both given: prefer the explicit ``pull`` and drop the legacy key.
+                data.pop("load")
+            logger.warning(
+                "assetstores entry '%s': the 'load' key is deprecated; rename it to "
+                "'pull' ('load' still works for now).",
+                data.get("store_uri", ""),
+            )
+        return data
 
 
 class EnvironmentConfig(Config):

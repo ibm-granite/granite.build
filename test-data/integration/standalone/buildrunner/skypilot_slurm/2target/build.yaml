@@ -1,0 +1,61 @@
+granite.build:
+  name: mem_2target_skypilot_slurm
+  # Two skypilot-slurm targets exercising the mem:// asset store for cross-target
+  # output -> input binding on the SkyPilot LSF/SLURM backend. The builtin
+  # `bash` step runs an arbitrary command, so it can echo the
+  # LLMB_ARTIFACT_STATE marker the skypilot monitor now recognizes. A mem:// URI
+  # is an opaque key into the build's shared in-memory dict: the producer's
+  # binding `state` value is passed to the consumer verbatim (no path
+  # normalisation). mem:// is registered implicitly for every environment, so no
+  # `assetstores` entry is needed. Mirrors the bash mem_2target fixture.
+  #
+  #   - `first` emits `LLMB_ARTIFACT_ID:mem_output1 LLMB_ARTIFACT_STATE:...`; the
+  #     skypilot monitor registers the value as the `state` of output mem_output1.
+  #   - `second` binds `first.mem_output1` and ASSERTS the bound value equals
+  #     what `first` produced, exiting non-zero (failing the test) on mismatch —
+  #     proving the value flowed through the mem:// store on the slurm backend.
+  targets:
+    first:
+      environment_uri: space://environments/skypilot/slurm
+      outputs:
+        mem_output1:
+          uri: "mem://mem_output1"
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              command: >-
+                echo "first target emitting mem:// output mem_output1";
+                echo "LLMB_ARTIFACT_ID:mem_output1 LLMB_ARTIFACT_STATE:mem_output1_value"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi
+    second:
+      environment_uri: space://environments/skypilot/slurm
+      inputs:
+        from_first:
+          binding: first.mem_output1
+      outputs:
+        mem_output2:
+          uri: "mem://mem_output2"
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Assert the state bound from first.mem_output1 is the exact value
+              # `first` produced; a mismatch (or empty value if mem:// did not
+              # flow) hard-FAILS this target and therefore the test.
+              command: >-
+                echo "second target received mem input: {{ bindings.from_first.binding.state }}";
+                if [ "{{ bindings.from_first.binding.state }}" != "mem_output1_value" ]; then
+                  echo "ERROR: expected mem_output1_value, got '{{ bindings.from_first.binding.state }}'";
+                  exit 1;
+                fi;
+                echo "LLMB_ARTIFACT_ID:mem_output2 LLMB_ARTIFACT_STATE:{{ bindings.from_first.binding.state }}"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

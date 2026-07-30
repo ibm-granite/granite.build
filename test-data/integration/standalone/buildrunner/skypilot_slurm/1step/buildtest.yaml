@@ -1,0 +1,24 @@
+# YAML-driven spec for test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_1step.py.
+# Mirrors test-data/integration/standalone/buildrunner/docker/1step/buildtest.yaml.
+targets:
+  - image-run
+target_expectations:
+  - target_name: image-run
+    # step_count = 1 hfpull (one HF input) + 1 bash + 3 hfpush (output_model1
+    # emits 2 artifacts -> 2 hfpush, output_model2 emits 1 -> 1 hfpush).
+    # Pull/push step counts come from inputs/outputs in build.yaml: each HF
+    # input adds one hfpull step, each emitted artifact adds one hfpush step.
+    # The env:// input (env_input) and env:// output (env_output) are no-ops on
+    # the shared FS: they add one input and one output artifact each and launch
+    # no extra pull/push step, so step_count is unchanged. The env:// output does
+    # produce a jobstat, so jobstats_count goes 3 -> 4.
+    step_count: 5
+    input_artifact_count: 2
+    output_artifact_count: 3
+    jobstats_count: 4
+# Use the shared standalone space at <repo>/configurations/spaces/local so the BuildRunner
+# resolves space:// URIs without cloning from GitHub.  Relative path resolves
+# against this YAML's directory.
+space_uri: ../../../../../../configurations/spaces/local
+simulate_step_failure: true
+timeout_minutes: 10 # Seems sufficient on mac running local slurm cluster

@@ -75,6 +75,39 @@ def _make_app() -> FastAPI:
         user = request.state.data["user"]
         return JSONResponse(content={"login": user.login})
 
+    # Simulate the doc endpoints a mounted sub-app owns (see
+    # openapi_security.enable_api) — e.g. builds_api mounted at /api/v1/builds.
+    @app.get("/api/v1/builds/docs")
+    async def subapp_docs_endpoint():
+        return JSONResponse(content={"docs": True})
+
+    @app.get("/api/v1/builds/openapi.json")
+    async def subapp_openapi_endpoint():
+        return JSONResponse(content={"openapi": "3.0.0"})
+
+    @app.get("/api/v1/builds/redoc")
+    async def subapp_redoc_endpoint():
+        return JSONResponse(content={"redoc": True})
+
+    @app.get("/api/v1/builds/docs/oauth2-redirect")
+    async def subapp_oauth2_redirect_endpoint():
+        return JSONResponse(content={"oauth2_redirect": True})
+
+    # A regular sub-app data endpoint that must stay protected.
+    @app.get("/api/v1/builds")
+    async def subapp_data_endpoint(request: Request):
+        user = request.state.data["user"]
+        return JSONResponse(content={"login": user.login})
+
+    # A data route whose trailing segment is a user-controlled path parameter,
+    # mirroring GET /api/v1/secrets/user_secrets/{secret_name}. If the docs
+    # exemption matched by suffix, a resource literally named "redoc"/"docs"/
+    # "openapi.json" would slip past auth — this endpoint must stay protected.
+    @app.get("/api/v1/secrets/user_secrets/{secret_name}")
+    async def subapp_secret_endpoint(request: Request, secret_name: str):
+        user = request.state.data["user"]
+        return JSONResponse(content={"login": user.login, "secret": secret_name})
+
     return app
 
 
@@ -293,6 +326,61 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             response = client.get("/some/unregistered/path")
+        assert response.status_code == 401
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/v1/builds/docs",
+            "/api/v1/builds/openapi.json",
+            "/api/v1/builds/redoc",
+            "/api/v1/builds/docs/oauth2-redirect",
+        ],
+    )
+    def test_subapp_docs_paths_always_allowed(self, path):
+        """A mounted sub-app's own Swagger/OpenAPI doc endpoints (e.g.
+        /api/v1/builds/docs) must be public in every auth mode, just like the
+        top-level /docs. This is the regression fix — only the top-level docs
+        were exempted before, so sub-path docs started demanding a token."""
+        env = {
+            "GBSERVER_AUTH_MODE": "apikey",
+            "GBSERVER_API_KEY": "test-key-123",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            app = _make_app()
+            client = TestClient(app)
+            response = client.get(path)  # no Authorization header
+        assert response.status_code == 200
+
+    def test_subapp_non_docs_api_path_requires_auth(self):
+        """The docs exemption must not leak to real data routes —
+        /api/v1/builds (not a docs path) still requires a token."""
+        env = {
+            "GBSERVER_AUTH_MODE": "apikey",
+            "GBSERVER_API_KEY": "test-key-123",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            app = _make_app()
+            client = TestClient(app)
+            response = client.get("/api/v1/builds")  # no Authorization header
+        assert response.status_code == 401
+
+    @pytest.mark.parametrize("name", ["docs", "redoc", "openapi.json"])
+    def test_data_route_ending_in_doc_name_requires_auth(self, name):
+        """A resource whose name equals a doc endpoint (e.g. a secret named
+        "redoc") must NOT bypass auth. The docs exemption is anchored to a
+        single mount segment before the doc name — /api/v1/secrets/user_secrets/
+        redoc has an extra segment, so it stays protected. Regression guard for
+        the suffix-match auth bypass."""
+        env = {
+            "GBSERVER_AUTH_MODE": "apikey",
+            "GBSERVER_API_KEY": "test-key-123",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            app = _make_app()
+            client = TestClient(app)
+            # no Authorization header
+            response = client.get(f"/api/v1/secrets/user_secrets/{name}")
         assert response.status_code == 401
 
     def test_post_to_public_frontend_path_requires_auth(self):

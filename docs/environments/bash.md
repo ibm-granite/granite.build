@@ -1,17 +1,18 @@
-# Bash environment
+# bash environment
 
-> **Audience:** operators configuring a `Bash` environment, anyone authoring a `build.yaml` for it,
-> or writing a custom bash step. For the common schema see [Environment overview](README.md); for step
-> resolution see [step-resolution.md](step-resolution.md).
+> **Audience:** operators configuring the `bash` environment (implemented by the `Bash` class),
+> anyone authoring a `build.yaml` for it, or writing a custom bash step. For the common schema see
+> [Environment overview](README.md); for step resolution see [step-resolution.md](step-resolution.md).
 
 ## Compute environment
 
-The **bash** environment runs a step as a local OS process — no container image, no cluster. It is the
-simplest backend and the one used by the standalone samples under
+The **bash** environment runs a step as a local OS process — no container image, no cluster. It is
+the simplest backend and the one used by the standalone samples under
 [`samples/standalone/`](../../samples/standalone/). The step's script runs under `nohup`; its
 stdout/stderr are tailed by the monitor, which turns matching lines into build events.
 
-The implementation is [`Bash`](../../src/gbserver/environment/bash.py).
+The implementation is the [`Bash`](../../src/gbserver/environment/bash.py) class (`type: Bash`); the
+environment is named `bash`.
 
 ## `environment.yaml`
 
@@ -23,14 +24,21 @@ type: Bash
 config: {}
 assetstores:
   - store_uri: space://assetstores/hf/
-    load:
+    pull:
       - mode: default
-  - store_uri: space://assetstores/local/
-    load:
+  # Local filesystem (file: URIs) — the builtin file store. Bash implements both
+  # load and push (pullasset_filestore / pushasset_filestore).
+  - store_uri: space://assetstores/file/
+    pull:
       - mode: default
     push:
       - mode: default
 ```
+
+> `space://assetstores/file/` is the bundled builtin File store (resolved via the
+> builtins base_uri). Unlike `env://`/`mem://`, it is **not** auto-registered — an
+> environment declares it here with the modes it implements. Bash implements both
+> `load` and `push`.
 
 ## `step.yaml` — launcher and monitor types
 
@@ -149,10 +157,15 @@ monitor recognizes:
 print(f"LLMB_ARTIFACT_ID:{artifact_id} LLMB_ARTIFACT_PATH:{output_dir}")
 ```
 
-The monitor's `NEWARTIFACT_IN_ENVIRONMENT_EVENT` rule (in the step's `step.yaml`, see the
+Bash steps reference the shared `space://monitors/bash` monitor, whose
+`NEWARTIFACT_IN_ENVIRONMENT_EVENT` rule (see the
 [event_configs schema](README.md#event_configs--log-line-parsing-rules)) parses `LLMB_ARTIFACT_ID:` and
 `LLMB_ARTIFACT_PATH:` and binds the artifact. **The id must match an output name declared on the
-target**, so the artifact is routed to that output's URI.
+target**, so the artifact is routed to that output's URI. (For a `mem://` output the script prints
+`LLMB_ARTIFACT_STATE:<value>` instead.) The bash monitor's rules are **`^`-anchored** because the bash
+launcher echoes the command back — the anchor stops the rule matching that echo line; other environments
+that don't echo (skypilot, docker) leave the rule unanchored. See
+[Anchoring is per-environment](../steps/monitoring-and-artifact-events.md#anchoring-is-per-environment).
 
 ## Standalone caveats (multi-step pipelines)
 

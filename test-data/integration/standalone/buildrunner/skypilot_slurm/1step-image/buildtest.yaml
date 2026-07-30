@@ -1,0 +1,30 @@
+# YAML-driven spec for
+# test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_1step_image.py.
+# Image variant of the sibling 1step fixture: the command step runs inside a
+# container image (command_config.image) instead of on the bare node. Requires a
+# Pyxis-enabled SLURM cluster (the test skips otherwise).
+targets:
+  - image-run
+target_expectations:
+  - target_name: image-run
+    # step_count = 1 hfpull (one HF input) + 1 command + 3 hfpush (output_model1
+    # emits 2 artifacts -> 2 hfpush, output_model2 emits 1 -> 1 hfpush).
+    # The env:// input (env_input) and env:// output (env_output) are no-ops on
+    # the shared FS: they add one input and one output artifact each and launch
+    # no extra pull/push step, so step_count is unchanged. The env:// output does
+    # produce a jobstat, so jobstats_count goes 3 -> 4.
+    step_count: 5
+    input_artifact_count: 2
+    output_artifact_count: 3
+    jobstats_count: 4
+# Use the shared standalone space at <repo>/configurations/spaces/local so the BuildRunner
+# resolves space:// URIs without cloning from GitHub.  Relative path resolves
+# against this YAML's directory.
+space_uri: ../../../../../../configurations/spaces/local
+simulate_step_failure: false
+timeout_minutes: 10 # Seems sufficient on mac running local slurm cluster
+# Happy-path image run — run only the basic build, not the cancellation variant
+# (the command step finishes near-instantly, so cancellation can't reliably
+# catch it RUNNING). Mirrors the docker/1step fixture.
+tests:
+  - runner

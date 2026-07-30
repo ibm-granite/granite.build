@@ -1,6 +1,7 @@
 """Unit tests for Skypilot.pullasset_hfstore and Skypilot.pushasset_hfstore."""
 
 import asyncio
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -33,8 +34,26 @@ def mock_hfuri():
     uri.get_repo.return_value = "myrepo"
     uri.get_revision.return_value = "main"
     uri.get_hf_type.return_value = "model"
+    uri.get_host.return_value = "huggingface.co"
     uri.__str__ = lambda self: "hf://models/myorg/myrepo"
     return uri
+
+
+@pytest.fixture
+def mock_resolve_rg():
+    """Patch the server-side resource group resolver used by pushasset_hfstore.
+
+    Resolution is delegated to
+    ``gbserver.spaces.resource_group.resolve_space_resource_group_id`` (imported
+    into the skypilot env module); patch it there so tests never touch storage
+    or the HF API. Yields the mock so tests can tune the return value / assert
+    call behavior.
+    """
+    with patch(
+        "gbserver.environment.skypilot.resolve_space_resource_group_id",
+        return_value=None,
+    ) as mock:
+        yield mock
 
 
 def _hfstore_mock(token: str = "tok-abc"):
@@ -52,7 +71,7 @@ class TestPullassetHfstore:
         """pullasset_hfstore returns (binding_dict, BuildTargetStepConfig) with cache path."""
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         binding_config, step_config = await skypilot_env.pullasset_hfstore(
@@ -75,7 +94,7 @@ class TestPullassetHfstore:
         """pullasset_hfstore puts HF_TOKEN under config.launcher_config.envs."""
         assetstore = _hfstore_mock(token="my-secret-token")
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         _, step_config = await skypilot_env.pullasset_hfstore(
@@ -94,7 +113,7 @@ class TestPullassetHfstore:
         """No cache_path -> uses get_hf_cache_dir default (~/.cache/gbserver/hf)."""
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {}
 
         binding_config, _ = await skypilot_env.pullasset_hfstore(
@@ -111,7 +130,7 @@ class TestPullassetHfstore:
         """storeload_config.config.step_uri overrides the default builtin uri."""
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {
             "cache_path": "/data/cache",
             "step_uri": "file:///custom/hfpull",
@@ -133,7 +152,7 @@ class TestPullassetHfstore:
         env-keyed split (`builtins/steps/skypilot/hfpull/`) at lookup time."""
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         _, step_config = await skypilot_env.pullasset_hfstore(
@@ -148,7 +167,7 @@ class TestPullassetHfstore:
     async def test_rejects_wrong_assetstore_type(self, skypilot_env, mock_hfuri):
         """pullasset_hfstore raises AssertionError if assetstore is not Hfstore."""
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         with pytest.raises(AssertionError, match="expected 'Hfstore'"):
@@ -159,19 +178,30 @@ class TestPullassetHfstore:
             )
 
     @pytest.mark.asyncio
-    async def test_rejects_wrong_mode(self, skypilot_env, mock_hfuri):
-        """pullasset_hfstore raises ValueError for non-hf_pull mode."""
+    async def test_accepts_legacy_mode_with_warning(
+        self, skypilot_env, mock_hfuri, caplog
+    ):
+        """A legacy (non-'default') mode is accepted for backwards compat, and warns.
+
+        Outside k8s ``mode`` is ignored (dispatch is by store type), so a legacy
+        ``hf_pull`` still pulls normally — it just logs a deprecation warning.
+        """
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "dmf_pull"
+        storeload_config.mode = "hf_pull"
         storeload_config.config = {"cache_path": "/data/cache"}
 
-        with pytest.raises(ValueError, match="unsupported storeload mode"):
-            await skypilot_env.pullasset_hfstore(
+        with caplog.at_level(logging.WARNING):
+            binding_config, step_config = await skypilot_env.pullasset_hfstore(
                 uri=mock_hfuri,
                 assetstore=assetstore,
                 storeload_config=storeload_config,
             )
+
+        expected_path = str(Path("/data/cache/myorg/myrepo/main"))
+        assert binding_config == {"binding": {"path": expected_path}}
+        assert isinstance(step_config, BuildTargetStepConfig)
+        assert any("declares mode 'hf_pull'" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_uses_env_shared_workdir_when_no_cache_path(self, mock_hfuri):
@@ -193,7 +223,7 @@ class TestPullassetHfstore:
         )
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {}
 
         binding_config, _ = await env.pullasset_hfstore(
@@ -226,7 +256,7 @@ class TestPullassetHfstore:
         )
         assetstore = _hfstore_mock()
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/explicit/override"}
 
         binding_config, _ = await env.pullasset_hfstore(
@@ -273,10 +303,11 @@ class TestGetHfCacheDir:
 
 class TestPushassetHfstore:
     @pytest.mark.asyncio
-    async def test_returns_build_target_step_config(self, skypilot_env, mock_hfuri):
+    async def test_returns_build_target_step_config(
+        self, skypilot_env, mock_hfuri, mock_resolve_rg
+    ):
         """pushasset_hfstore returns BuildTargetStepConfig with hfpush_config."""
         assetstore = _hfstore_mock()
-        mock_hfuri.resolve_resource_group_id.return_value = None
 
         step_config = await skypilot_env.pushasset_hfstore(
             binding={"path": "/workspace/output/model"},
@@ -294,10 +325,11 @@ class TestPushassetHfstore:
         assert hfpush_config["private"] is True
 
     @pytest.mark.asyncio
-    async def test_injects_hf_token_into_launcher_envs(self, skypilot_env, mock_hfuri):
+    async def test_injects_hf_token_into_launcher_envs(
+        self, skypilot_env, mock_hfuri, mock_resolve_rg
+    ):
         """pushasset_hfstore puts HF_TOKEN under config.launcher_config.envs."""
         assetstore = _hfstore_mock(token="my-push-token")
-        mock_hfuri.resolve_resource_group_id.return_value = None
 
         step_config = await skypilot_env.pushasset_hfstore(
             binding={"path": "/workspace/output"},
@@ -328,10 +360,11 @@ class TestPushassetHfstore:
             )
 
     @pytest.mark.asyncio
-    async def test_private_flag_from_output_config(self, skypilot_env, mock_hfuri):
+    async def test_private_flag_from_output_config(
+        self, skypilot_env, mock_hfuri, mock_resolve_rg
+    ):
         """pushasset_hfstore picks up private=False from output_config.store_push."""
         assetstore = _hfstore_mock()
-        mock_hfuri.resolve_resource_group_id.return_value = None
 
         output_config = MagicMock()
         output_config.space_name = None
@@ -349,12 +382,12 @@ class TestPushassetHfstore:
         assert step_config.config["hfpush_config"]["private"] is False
 
     @pytest.mark.asyncio
-    async def test_resource_group_id_from_output_config(self, skypilot_env, mock_hfuri):
-        """Explicit resource_group_id from output_config skips hfuri.resolve_resource_group_id."""
+    async def test_resource_group_id_from_output_config(
+        self, skypilot_env, mock_hfuri, mock_resolve_rg
+    ):
+        """Explicit resource_group_id from output_config skips the RG resolver."""
         assetstore = _hfstore_mock()
-        mock_hfuri.resolve_resource_group_id.side_effect = AssertionError(
-            "should not be called"
-        )
+        mock_resolve_rg.side_effect = AssertionError("should not be called")
 
         output_config = MagicMock()
         output_config.space_name = None
@@ -373,14 +406,15 @@ class TestPushassetHfstore:
 
         hfpush_config = step_config.config["hfpush_config"]
         assert hfpush_config["hf"]["resource_group_id"] == "rg-explicit-123"
+        mock_resolve_rg.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_step_uri_override(self, skypilot_env, mock_hfuri):
+    async def test_step_uri_override(self, skypilot_env, mock_hfuri, mock_resolve_rg):
         """storepush_config.config.step_uri overrides the default builtin uri."""
         assetstore = _hfstore_mock()
-        mock_hfuri.resolve_resource_group_id.return_value = None
 
         storepush_config = MagicMock()
+        storepush_config.mode = "default"
         storepush_config.config = {"step_uri": "file:///custom/hfpush"}
 
         step_config = await skypilot_env.pushasset_hfstore(
@@ -395,12 +429,11 @@ class TestPushassetHfstore:
 
     @pytest.mark.asyncio
     async def test_default_step_uri_points_to_builtin_hfpush(
-        self, skypilot_env, mock_hfuri
+        self, skypilot_env, mock_hfuri, mock_resolve_rg
     ):
         """Default step_uri is `space://steps/hfpush` so the resolver picks the
         env-keyed split (`builtins/steps/skypilot/hfpush/`) at lookup time."""
         assetstore = _hfstore_mock()
-        mock_hfuri.resolve_resource_group_id.return_value = None
 
         step_config = await skypilot_env.pushasset_hfstore(
             binding={"path": "/workspace/output/model"},

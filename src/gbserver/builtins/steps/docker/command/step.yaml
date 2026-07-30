@@ -1,0 +1,29 @@
+name: command
+version: 1.0.0
+type: exec
+config:
+  command_config:
+    command: ''
+    image: ''
+  compute_config:
+    num_gpus_per_node: 0
+    total_memory_per_node: 4Gi
+environment_configs:
+  Docker:
+    launchers:
+      command:
+        type: docker
+        monitors:
+        - docker_log
+        config:
+          image: '{{ config.command_config.image }}'
+          command:
+          - bash
+          - -c
+          - '{{ config.command_config.command }}'
+    monitors:
+      # References the shipped monitor library (builtins/monitors/docker/monitor.yaml):
+      # standard LLMB artifact detection (with binding) + a MESSAGE stream. No
+      # environment dependency — resolves against the shipped default.
+      docker_log:
+        ref: space://monitors/docker

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "gbmcp": {
+      "type": "stdio",
+      "command": "bash",
+      "args": ["-c", "exec \"$CLAUDE_PROJECT_DIR/.venv/bin/gbmcp\""],
+      "env": {
+        "GBSERVER_PORT": "${GBSERVER_PORT:-8080}"
+      }
+    }
+  }
+}

@@ -188,6 +188,181 @@ class TestLaunchSkypilot:
         call_kwargs = mock_sky.Resources.call_args
         assert call_kwargs.kwargs.get("infra") == "k8s"
 
+    async def _launch_and_capture_resources(
+        self, skypilot_env, *, launcher_config, config
+    ):
+        """Run launch_skypilot with sky mocked and return the kwargs passed to
+        sky.Resources (so tests can assert on cpus/memory/etc.)."""
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-res")
+        mock_sky.stream_and_get = MagicMock(return_value=(7, MagicMock()))
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            launch_id = "test-launch-res"
+            skypilot_env._get_launch_ready_event(launch_id)
+            await skypilot_env.launch_skypilot(
+                launch_id=launch_id,
+                launcher_config=launcher_config,
+                config=config,
+            )
+        mock_sky.Resources.assert_called_once()
+        return mock_sky.Resources.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_compute_config_sizes_resources(self, skypilot_env):
+        """config.compute_config supplies a cpus/memory floor for sky.Resources."""
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={
+                "compute_config": {
+                    "num_cpus_per_node": 2,
+                    "total_memory_per_node": "1Gi",
+                }
+            },
+        )
+        assert kwargs.get("cpus") == 2
+        assert kwargs.get("memory") == 1.0
+
+    @pytest.mark.asyncio
+    async def test_launcher_resources_override_compute_config(self, skypilot_env):
+        """config.launcher_config.resources wins over the compute_config floor."""
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={
+                "compute_config": {
+                    "num_cpus_per_node": 2,
+                    "total_memory_per_node": "1Gi",
+                },
+                "launcher_config": {"resources": {"cpus": "4+"}},
+            },
+        )
+        assert kwargs.get("cpus") == "4+"
+        # memory floor still applies (not overridden)
+        assert kwargs.get("memory") == 1.0
+
+    @pytest.mark.asyncio
+    async def test_no_compute_config_leaves_resources_unset(self, skypilot_env):
+        """No compute_config and no launcher resources => cpus/memory unset."""
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={},
+        )
+        assert kwargs.get("cpus") is None
+        assert kwargs.get("memory") is None
+
+    @pytest.mark.asyncio
+    async def test_compute_config_memory_only(self, skypilot_env):
+        """num_gpus_per_node: 0 with only memory set => cpus unset, memory applied.
+
+        Mirrors the skypilot/slurm 1step-image test build.yaml.
+        """
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={
+                "compute_config": {
+                    "num_gpus_per_node": 0,
+                    "total_memory_per_node": "1Gi",
+                }
+            },
+        )
+        assert kwargs.get("cpus") is None
+        assert kwargs.get("memory") == 1.0
+
+    @pytest.mark.asyncio
+    async def test_slurm_infra_drops_memory_floor(self, skypilot_env):
+        """A slurm target routed via `infra` (even with the env's default_cloud
+        k8s) drops the compute_config memory floor; cpus is still applied.
+
+        Reproduces the ResourcesUnavailableError case: SLURM often doesn't track
+        memory as a consumable resource, so a --memory request fails matching.
+        """
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,  # fixture default_cloud is k8s
+            launcher_config={
+                "run": "echo hi",
+                "resources": {"infra": "slurm/mycluster"},
+            },
+            config={
+                "compute_config": {
+                    "num_cpus_per_node": 2,
+                    "total_memory_per_node": "10Gi",
+                }
+            },
+        )
+        assert kwargs.get("memory") is None
+        assert kwargs.get("cpus") == 2
+
+    @pytest.mark.asyncio
+    async def test_slurm_cloud_casing_drops_memory_floor(self, skypilot_env):
+        """Non-canonical cloud casing ('Slurm') is normalized, so the memory
+        floor is still dropped."""
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,
+            launcher_config={"run": "echo hi", "resources": {"cloud": "Slurm"}},
+            config={"compute_config": {"total_memory_per_node": "10Gi"}},
+        )
+        assert kwargs.get("memory") is None
+
+
+class TestSkypilotComputeConfigResources:
+    """Unit tests for the pure compute_config -> sky.Resources helpers."""
+
+    @pytest.mark.parametrize(
+        "memory_str, expected",
+        [
+            ("1Gi", 1.0),
+            ("32Gi", 32.0),
+            ("512Mi", 0.5),
+            ("4G", 4.0),
+            ("4GB", 4.0),
+            ("4", 4.0),
+            ("", None),
+            ("notanumber", None),
+        ],
+    )
+    def test_parse_memory_gib(self, memory_str, expected):
+        from gbserver.environment.skypilot import Skypilot
+
+        assert Skypilot._parse_memory_gib(memory_str) == expected
+
+    def test_resources_from_compute_config(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        env = Skypilot(event_q=asyncio.Queue())
+        # cpus emitted only when > 0; memory parsed from the string.
+        assert env._resources_from_compute_config(
+            {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"}
+        ) == {"cpus": 3, "memory": 2.0}
+        # num_cpus_per_node <= 0 is skipped (cloud default); empty memory skipped.
+        assert (
+            env._resources_from_compute_config(
+                {"num_cpus_per_node": 0, "total_memory_per_node": ""}
+            )
+            == {}
+        )
+        # empty compute_config yields no floor.
+        assert env._resources_from_compute_config({}) == {}
+        # On slurm/lsf the memory floor is dropped (bare HPC schedulers often
+        # don't track memory as a consumable resource), but cpus is still emitted.
+        for hpc_cloud in ("slurm", "lsf"):
+            assert env._resources_from_compute_config(
+                {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"},
+                cloud=hpc_cloud,
+            ) == {"cpus": 3}
+        # Non-HPC clouds keep the memory floor.
+        assert env._resources_from_compute_config(
+            {"total_memory_per_node": "2Gi"}, cloud="k8s"
+        ) == {"memory": 2.0}
+
 
 class TestMonitorSkypilotMonitor:
     @pytest.fixture

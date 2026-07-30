@@ -6,10 +6,9 @@ config:
     env: {}
 assetstores:
   - store_uri: space://assetstores/hf/
-    load:
+    pull:
       - mode: default
-  - store_uri: space://assetstores/local/
-    load:
-      - mode: default
+  # Docker implements file: push only (no pullasset_filestore).
+  - store_uri: space://assetstores/file/
     push:
       - mode: default

@@ -14,6 +14,30 @@ inject a built-in transfer step (`hfpull`, `cosrclone`, `lhpull` / `lhpush`) or 
 Each environment declares the stores it can reach in its `environment.yaml` `assetstores` block, and
 builds refer to them via `space://assetstores/<name>` URIs resolved through the space's `base_uris`.
 
+> **`env://` and `mem://` are always available.** The env-local (`env://`) and in-memory (`mem://`)
+> stores are registered implicitly for **every** environment class — neither needs an `assetstores`
+> entry in `environment.yaml`. Their push/pull transfer nothing (env:// is a shared-filesystem no-op;
+> mem:// passes a value through the build's shared memory), so any backend can consume/produce
+> `env://` / `mem://` artifacts. Each store is resolved in the same order: an explicit
+> `environment.yaml` entry for that scheme wins; otherwise a space-provided
+> `space://assetstores/env-local` / `space://assetstores/mem-local` store *if one exists*; otherwise a
+> bundled
+> [`builtins/assetstores/env-local`](../../src/gbserver/builtins/assetstores/env-local/store.yaml) /
+> [`builtins/assetstores/mem-local`](../../src/gbserver/builtins/assetstores/mem-local/store.yaml)
+> default. **No shipped space defines an `env-local`/`mem-local` store**, so out of the box the bundled
+> default is used; adding one to a space is an optional customization. See
+> [Env-local / In-memory](#store-types-and-uri-schemes) below and
+> [`Environment._register_default_envstore`](../../src/gbserver/environment/environment.py) /
+> [`_register_default_memstore`](../../src/gbserver/environment/environment.py).
+
+> **The File store (`file:`) is a declared store, not auto-registered.** Unlike `env://`/`mem://`, an
+> environment that supports `file:` declares it in its `environment.yaml` as
+> `space://assetstores/file/` — the bundled
+> [`builtins/assetstores/file`](../../src/gbserver/builtins/assetstores/file/store.yaml) store, resolved
+> via the builtins base_uri. Declare only the modes the backend actually implements (its
+> `pullasset_filestore` / `pushasset_filestore` methods): `bash` implements both `load` and `push`;
+> `docker` implements `push` only (no `pullasset_filestore`), so it declares `push` and not `load`.
+
 ## Store types and URI schemes
 
 | Store | URI scheme(s) | Maps a URI to… | Credentials (default secret name) |
@@ -28,11 +52,24 @@ builds refer to them via `space://assetstores/<name>` URIs resolved through the 
 
 Notes:
 
-- **Env-local (`env://`)** is used by bare-metal HPC backends (e.g. LSF/SLURM with shared GPFS): the
-  artifact is already on a filesystem the worker can see, so the store resolves the path directly and
-  transfers nothing.
+- **Env-local (`env://`)** models an artifact that already lives on a filesystem the worker can see, so
+  the store resolves the path directly and transfers nothing. Common on bare-metal HPC backends (e.g.
+  LSF/SLURM with shared GPFS), but supported by **all** environment classes and registered
+  automatically — no `environment.yaml` `assetstores` entry is required (see the note above).
+  Because it transfers nothing, an `env://` path must be **absolute**: relative `env:` URIs (e.g.
+  `env:outputs/foo`) have no resolution root and are **rejected at build-config load**. Use an absolute
+  `env:///…` (a templated `env://{{ binding.path }}` is fine — it resolves to an absolute path).
 - **In-memory (`mem://`)** passes a producer's binding value (e.g. a service URL) verbatim to downstream
-  consumers without touching a filesystem.
+  consumers without touching a filesystem. Like `env://`, it is supported by **all** environment classes
+  and registered automatically — no `environment.yaml` `assetstores` entry is required (see the note
+  above). Because a `mem://` URI is an **opaque key** rather than a path, the value is passed through
+  unchanged — unlike `env://`, it applies no path normalisation, so a value such as `http://host:8000`
+  survives intact instead of being mangled into `/http:/host:8000`.
+  - **Consuming** a `mem://` input works on every environment (the transport is host-side and
+    environment-agnostic). **Producing** a `mem://` output additionally requires the step's **monitor**
+    to recognize the `LLMB_ARTIFACT_STATE` marker the workload prints — the shipped `bash`, `skypilot`,
+    and `docker` library monitors carry that rule; other environments' monitors need it added (see
+    [Value outputs (`mem://`)](../steps/monitoring-and-artifact-events.md#value-outputs-mem)).
 
 The store implementations live in [`src/gbserver/asset/`](../../src/gbserver/asset/); the matching URI
 parsers in [`src/gbcommon/uri/`](../../src/gbcommon/uri/).
@@ -62,18 +99,26 @@ space's `base_uris` (the same mechanism as steps and environments — see
 ## Load and push modes
 
 An `environment.yaml` `assetstores` entry maps a store URI to **load** (input) and **push** (output)
-behaviour via a `mode`:
+behaviour. Dispatch to a `pullasset_*` / `pushasset_*` handler is by store **type** (derived from the
+URI scheme), not by `mode`. Outside k8s the `mode` field is therefore not meaningful, and the enforced
+invariant is that it must be **unset or `default`**.
 
-| `mode` | Direction | Effect |
-|--------|-----------|--------|
-| `hf_pull` / `hf_push` | load / push | Download from / upload to a HuggingFace repo. |
-| `cos_rclone` / `cos_pull` / `cos_push` | load / push | COS / S3 transfer (rclone). |
-| `env_local` | load / push | No-op: the artifact already lives on a shared filesystem reachable by the worker. |
-| `default` | load / push | The environment's built-in handling for that store. |
+Only **k8s** genuinely branches on `mode` — it selects mounting vs. copying vs. queuing a step:
 
-Each mode is implemented by a `pullasset_*` / `pushasset_*` method on the environment class — some pull/push
-inline, others inject a built-in step (e.g. `hfpull`, `cosrclone`, `lhpull`). Which methods an environment
-provides, and whether they mount volumes or queue steps, is environment-specific: see
+| `mode` (k8s only) | Direction | Effect |
+|-------------------|-----------|--------|
+| `afm_mount` / `cos_mount` | load | Mount the asset into the pod instead of copying it. |
+| `hf_pull` | load | Download from a HuggingFace repo. |
+| `cos_pull` / `dmf_pull` | load | Queue a COS/DMF transfer step. |
+
+For every **other** environment (skypilot, lsf, bash, docker, runpod, and the base mem/env handlers),
+`mode` is ignored (dispatch is by store *type*). Declare `mode: default` (or omit it); a non-`default`
+value is still accepted for backwards compatibility but logs a deprecation warning at pull/push time
+(via `Environment._warn_non_default_mode`).
+
+Each store type is implemented by a `pullasset_*` / `pushasset_*` method on the environment class — some
+pull/push inline, others inject a built-in step (e.g. `hfpull`, `cosrclone`, `lhpull`). Which methods an
+environment provides, and whether they mount volumes or queue steps, is environment-specific: see
 [environments](../environments/README.md#asset-stores) for the `environment.yaml` config and
 [environment classes](../architecture/environment-classes.md) for the per-environment implementations.
 

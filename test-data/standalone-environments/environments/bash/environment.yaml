@@ -3,10 +3,11 @@ type: Bash
 config: {}
 assetstores:
   - store_uri: space://assetstores/hf/
-    load:
+    pull:
       - mode: default
-  - store_uri: space://assetstores/local/
-    load:
+  # Local filesystem — load/push artifacts via file: URIs (builtin file store).
+  - store_uri: space://assetstores/file/
+    pull:
       - mode: default
     push:
       - mode: default

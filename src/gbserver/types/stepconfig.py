@@ -17,10 +17,11 @@
 """Types related to the step.yaml"""
 
 from enum import StrEnum, auto
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from gbcommon.types.stepconfig import StepMonitorConfigBase
 from gbserver.types.config import Config
 from gbserver.types.validation import GBValidationErrors, GBValidatorConfig
 
@@ -57,11 +58,25 @@ class StepValidatorConfig(GBValidatorConfig):
     """Config for a step validator."""
 
 
-class StepMonitorConfig(Config):
-    """Config for a single monitor of a step."""
+class StepMonitorConfig(StepMonitorConfigBase, Config):
+    """Config for a single monitor of a step.
 
-    type: str
-    config: Optional[Dict] = Field(default_factory=dict)
+    The ``type`` / ``ref`` / ``config`` fields and the ``check_type_or_ref``
+    validator are inherited from the shared :class:`StepMonitorConfigBase` (in
+    gbcommon) so the client and server definitions cannot drift; this class only
+    adds the gbserver :class:`Config` base (``from_yaml``, ``matched_base_key``).
+
+    A monitor entry is either an *inline* definition or a *reference* to a monitor
+    defined in the environment.yaml (``EnvironmentConfig.monitors``):
+
+    - Inline: ``type`` is required and ``config`` is the full monitor config.
+    - Reference: ``ref`` names an environment monitor. ``type`` is optional (when
+      given it overrides the referenced monitor's type) and ``config`` is an
+      optional *overlay* deep-merged over the referenced config, with a reserved
+      ``extra_event_configs`` list appended to the inherited ``event_configs``.
+      Reference resolution happens per-step in ``targetsteprun`` and never
+      mutates the shared environment definition.
+    """
 
 
 class StepEnvironmentTypeConfig(Config):
@@ -86,6 +101,37 @@ class StepEnvironmentTypeConfig(Config):
     monitors: Dict[str, StepMonitorConfig] = Field(default_factory=dict)
     # env sub-types this step is restricted to (empty = universal)
     subtypes: List[str] = Field(default_factory=list)
+
+    def select_launcher_monitors(
+        self, launcher: StepLauncherConfig
+    ) -> Tuple[List[Tuple[str, StepMonitorConfig]], List[str]]:
+        """Select the monitors a launcher runs, looked up in this env config.
+
+        The single source of truth for launcher→monitor selection, shared by
+        run-time (``TargetStepRun.__init__``/``_run``) and build-creation
+        validation so the two never diverge. A launcher's ``monitors`` list names
+        keys into this env config's ``monitors`` map.
+
+        Args:
+            launcher: The selected launcher whose ``monitors`` names which monitors
+                to run.
+
+        Returns:
+            A ``(pairs, missing)`` tuple: ``pairs`` is ``[(name, StepMonitorConfig)]``
+            for each launcher-named monitor defined here (in launcher order);
+            ``missing`` is the launcher-named monitors absent from this config.
+            Callers that require completeness (run time) raise on ``missing``;
+            validation reports them without raising.
+        """
+        defined = self.monitors or {}
+        pairs: List[Tuple[str, StepMonitorConfig]] = []
+        missing: List[str] = []
+        for name in launcher.monitors or []:
+            if name in defined:
+                pairs.append((name, defined[name]))
+            else:
+                missing.append(name)
+        return pairs, missing
 
 
 class StepIOTypeEnum(StrEnum):

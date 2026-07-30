@@ -5,6 +5,7 @@ IBM-specific fields (DMF, Tekton, Aspera) are omitted.
 
 from __future__ import annotations
 
+import ssl
 from datetime import datetime
 from typing import AsyncGenerator, List, Optional
 from uuid import UUID
@@ -34,6 +35,22 @@ _engine = None
 _session_factory = None
 
 
+def _build_connect_args(raw: dict) -> dict:
+    """Translate the JSON-serializable connect args crossing the env-var boundary
+    (see Config.database_connect_args_json) into what create_async_engine() expects.
+
+    ssl.SSLContext isn't JSON-serializable, so gbserver's _configure_analytics_env
+    only ever sends the cert file *path* under "sslrootcert_file" (mirroring the main
+    SQL store's own TLS cert, translated for asyncpg) — built into a context here,
+    right before the engine is created. Any other key is passed through unchanged.
+    """
+    connect_args = dict(raw)
+    cert_file = connect_args.pop("sslrootcert_file", None)
+    if cert_file:
+        connect_args["ssl"] = ssl.create_default_context(cafile=cert_file)
+    return connect_args
+
+
 def _get_engine():
     global _engine
     if _engine is None:
@@ -44,11 +61,13 @@ def _get_engine():
                 detail="Analytics database not configured. Set GB_UI_DATABASE_URL.",
             )
         is_sqlite = config.database_url.startswith("sqlite")
+        connect_args = _build_connect_args(config.database_connect_args)
         _engine = create_async_engine(
             config.database_url,
             echo=False,
             # pool_pre_ping not supported by SQLite's StaticPool
             **({} if is_sqlite else {"pool_pre_ping": True}),
+            **({"connect_args": connect_args} if connect_args else {}),
         )
     return _engine
 

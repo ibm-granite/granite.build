@@ -1,6 +1,7 @@
 """Unit tests for Lsf.pullasset_hfstore and Lsf.pushasset_hfstore."""
 
 import asyncio
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -51,9 +52,26 @@ def mock_hfuri():
     uri.get_owner.return_value = "myorg"
     uri.get_repo.return_value = "myrepo"
     uri.get_revision.return_value = "main"
+    uri.get_host.return_value = "huggingface.co"
     uri.hash.return_value = "abc123hash"
     uri.__str__ = lambda self: "hf://models/myorg/myrepo"
     return uri
+
+
+@pytest.fixture
+def mock_resolve_rg():
+    """Patch the server-side resource group resolver used by pushasset_hfstore.
+
+    Resolution is delegated to
+    ``gbserver.spaces.resource_group.resolve_space_resource_group_id`` (imported
+    into the lsf env module); patch it there so tests never touch storage or the
+    HF API.
+    """
+    with patch(
+        "gbserver.environment.lsf.resolve_space_resource_group_id",
+        return_value=None,
+    ) as mock:
+        yield mock
 
 
 class TestPullassetHfstore:
@@ -66,7 +84,7 @@ class TestPullassetHfstore:
 
         assetstore = MagicMock(spec=Hfstore)
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         with (
@@ -95,7 +113,7 @@ class TestPullassetHfstore:
 
         assetstore = MagicMock(spec=Hfstore)
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         with (
@@ -126,7 +144,7 @@ class TestPullassetHfstore:
     async def test_rejects_wrong_assetstore_type(self, lsf_env, mock_hfuri):
         """pullasset_hfstore raises AssertionError if assetstore is not Hfstore."""
         storeload_config = MagicMock()
-        storeload_config.mode = "hf_pull"
+        storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache"}
 
         with pytest.raises(AssertionError, match="expected 'Hfstore'"):
@@ -137,33 +155,48 @@ class TestPullassetHfstore:
             )
 
     @pytest.mark.asyncio
-    async def test_rejects_wrong_mode(self, lsf_env, mock_hfuri):
-        """pullasset_hfstore raises AssertionError for non-hf_pull mode."""
+    async def test_accepts_legacy_mode_with_warning(
+        self, lsf_env, mock_hfuri, mock_hf_metadata, caplog
+    ):
+        """A legacy (non-'default') mode is accepted for backwards compat, and warns.
+
+        Outside k8s ``mode`` is ignored (dispatch is by store type), so a legacy
+        ``hf_pull`` still pulls normally — it just logs a deprecation warning.
+        """
         from gbserver.asset.hfstore import Hfstore
 
         assetstore = MagicMock(spec=Hfstore)
         storeload_config = MagicMock()
-        storeload_config.mode = "dmf_pull"
+        storeload_config.mode = "hf_pull"
         storeload_config.config = {"cache_path": "/data/cache"}
 
-        with pytest.raises(AssertionError, match="Only 'hf_pull' mode"):
-            await lsf_env.pullasset_hfstore(
+        with (
+            patch("gbserver.environment.lsf.Asset") as mock_asset_cls,
+            patch.object(
+                lsf_env, "_load_builtin_hf_lsf_section", return_value=({}, {})
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            mock_asset_cls.return_value.get_metadata.return_value = mock_hf_metadata
+            binding_config, _ = await lsf_env.pullasset_hfstore(
                 uri=mock_hfuri,
                 assetstore=assetstore,
                 storeload_config=storeload_config,
             )
 
+        assert BINDING_KEY in binding_config
+        assert any("declares mode 'hf_pull'" in r.message for r in caplog.records)
+
 
 class TestPushassetHfstore:
     @pytest.mark.asyncio
     async def test_returns_build_target_step_config(
-        self, lsf_env, mock_hfuri, mock_hf_metadata
+        self, lsf_env, mock_hfuri, mock_hf_metadata, mock_resolve_rg
     ):
         """pushasset_hfstore returns BuildTargetStepConfig with hfpush_config."""
         from gbserver.asset.hfstore import Hfstore
 
         assetstore = MagicMock(spec=Hfstore)
-        mock_hfuri.resolve_resource_group_id.return_value = None
         with (
             patch("gbserver.environment.lsf.Asset") as mock_asset_cls,
             patch.object(
@@ -215,14 +248,14 @@ class TestPushassetHfstore:
 
     @pytest.mark.asyncio
     async def test_private_flag_from_storepush_config(
-        self, lsf_env, mock_hfuri, mock_hf_metadata
+        self, lsf_env, mock_hfuri, mock_hf_metadata, mock_resolve_rg
     ):
         """pushasset_hfstore picks up private=False from storepush_config."""
         from gbserver.asset.hfstore import Hfstore
 
         assetstore = MagicMock(spec=Hfstore)
-        mock_hfuri.resolve_resource_group_id.return_value = None
         storepush_config = MagicMock()
+        storepush_config.mode = "default"
         storepush_config.config = {"hf": {"private": False}}
 
         with (

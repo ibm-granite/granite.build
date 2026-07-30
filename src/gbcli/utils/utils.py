@@ -514,6 +514,9 @@ def map_build_spaces_to_user_spaces(user_spaces: List, profile: dict):
                         "name": "<default>",
                         "git_repo_uri": user_space.get("git_repo_uri"),
                         "lakehouse_namespace": user_space.get("lakehouse_namespace"),
+                        "hf_default_resource_group_id": user_space.get(
+                            "hf_default_resource_group_id"
+                        ),
                         "is_admin": user_space.get("is_admin"),
                     },
                 )
@@ -523,6 +526,9 @@ def map_build_spaces_to_user_spaces(user_spaces: List, profile: dict):
                         "name": key,
                         "git_repo_uri": user_space.get("git_repo_uri"),
                         "lakehouse_namespace": user_space.get("lakehouse_namespace"),
+                        "hf_default_resource_group_id": user_space.get(
+                            "hf_default_resource_group_id"
+                        ),
                         "is_admin": user_space.get("is_admin"),
                     }
                 )
@@ -533,6 +539,7 @@ def map_build_spaces_to_user_spaces(user_spaces: List, profile: dict):
                     "name": key,
                     "git_repo_uri": "<unknown>",
                     "lakehouse_namespace": "<unknown>",
+                    "hf_default_resource_group_id": "<unknown>",
                     "is_admin": "<unknown>",
                 }
             )
@@ -543,6 +550,9 @@ def map_build_spaces_to_user_spaces(user_spaces: List, profile: dict):
                 "name": space.get("name"),
                 "git_repo_uri": space.get("git_repo_uri"),
                 "lakehouse_namespace": space.get("lakehouse_namespace"),
+                "hf_default_resource_group_id": space.get(
+                    "hf_default_resource_group_id"
+                ),
                 "is_admin": space.get("is_admin"),
             }
         )

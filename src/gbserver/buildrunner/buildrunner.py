@@ -144,6 +144,14 @@ class BuildRunner(AbstractBuildRunner):
         self.enable_resume = enable_resume
         self.build_run = None
         self.stop_event = threading.Event()
+        # Set by the public stop()/stop_and_fail() entrypoints to signal an
+        # explicit external termination. The start_and_wait retry loop checks this
+        # to break instead of spawning a retry. Distinct from stop_event (which is
+        # the worker-task lifecycle signal, set after every run and cleared between
+        # retries) and from __is_build_cancelled() (which only detects a CANCELLED/
+        # CANCEL_REQUESTED status): stop_and_fail marks the build FAILED, which is
+        # retryable, so without this flag a SIGTERM would spawn a retry.
+        self._stop_requested = threading.Event()
         self.build_message_logger = get_message_logger(
             build, _BUILD_EVENT_SOURCE_NAME
         )  # To be recreated later.
@@ -155,12 +163,39 @@ class BuildRunner(AbstractBuildRunner):
         # __cancel_build_run may run on the BuildWatcher thread via stop().
         self._retry_chain_build_ids: List[str] = []
         self._retry_chain_lock = threading.Lock()
+        # Serializes status transitions (__update_stored_build_status). The build
+        # runs on the worker thread while stop()/stop_and_fail() run on another
+        # thread; without this, the worker's natural finalize (e.g. a concurrent
+        # SUCCESS) can interleave with a stop-driven finalize and leave the build
+        # and its targets/steps/artifacts in disagreeing states (the build status
+        # is written unconditionally, but entity finalization only touches
+        # unfinished entities).
+        self._finalize_lock = threading.Lock()
 
     def stop(self: Self) -> None:
         """Stop the building thread if it was started."""
         logger.debug("BuildRunner.stop start")
+        self._stop_requested.set()
         self.__cancel_build_run()
         logger.debug("BuildRunner.stop end")
+
+    def stop_and_fail(self: Self, failure_reason: str) -> None:
+        """Stop the running build and mark it FAILED.
+
+        Public entrypoint intended to be called from another thread (e.g. a
+        SIGTERM handler) while start_and_wait() runs. Flags the run as an explicit
+        termination (so the retry loop does not treat the resulting FAILED status
+        as a retryable failure and spawn a new run) and delegates the FAILED-then-
+        cancel work to __cancel_and_fail_build (see its docstring for the ordering
+        and locking that keep the terminal status consistent).
+
+        Args:
+            failure_reason (str): reason recorded on the build for the failure.
+        """
+        logger.debug("BuildRunner.stop_and_fail start")
+        self._stop_requested.set()
+        self.__cancel_and_fail_build(failure_reason=failure_reason)
+        logger.debug("BuildRunner.stop_and_fail end")
 
     def start_and_wait(self: Self) -> None:
         """Run the inmemory build that was provided to the initializer in the current thread.
@@ -230,6 +265,17 @@ class BuildRunner(AbstractBuildRunner):
                 # CANCELLED and no further retry is created.
                 if self.__is_build_cancelled():
                     self.__cancel_build_run()
+                    break
+
+                # An explicit termination via stop()/stop_and_fail() (e.g. a
+                # SIGINT/SIGTERM handler) must not be retried. stop_and_fail marks
+                # the build FAILED — which is otherwise retryable and is NOT caught
+                # by __is_build_cancelled() above — so break here to end the chain.
+                if self._stop_requested.is_set():
+                    logger.info(
+                        "Termination requested for build %s; not retrying",
+                        self.stored_build.uuid,
+                    )
                     break
 
                 retry_build = self.__prepare_retry()
@@ -723,18 +769,34 @@ class BuildRunner(AbstractBuildRunner):
         logger.debug("BuildRunner.__worker_task end build_id: %s", build_id)
 
     def __cancel_and_fail_build(self: Self, failure_reason: str) -> None:
-        """Stop/cancel the build and mark it as failed"""
-        try:
-            self.__cancel_build_run(update_status=False)
-        except Exception as e:
-            logger.error("Could not cancel build %s", self.stored_build.uuid)
+        """Mark the build FAILED and stop its in-flight workload.
 
+        Single implementation shared by the public stop_and_fail() (external
+        SIGTERM-style termination) and the worker task's own exception path.
+
+        FAILED is committed *before* cancellation is signalled: __cancel_build_run
+        sets stop_event, after which the worker loop tries to write its own
+        CANCELLED status, so writing FAILED first lets that later write be skipped
+        by finalize_build_status's is_finished() guard. _finalize_lock (held inside
+        __update_stored_build_status) additionally serializes this against a
+        concurrent natural finalize (e.g. a SUCCESS completing at the same instant).
+
+        Args:
+            failure_reason (str): reason recorded on the build for the failure.
+        """
         try:
             self.__update_stored_build_status(
                 status=Status.FAILED, failure_reason=failure_reason
             )
-        except Exception as e:
+        except Exception:
             logger.error("Could not mark build %s as failed", self.stored_build.uuid)
+
+        try:
+            # update_status=False: FAILED is already set above; this only tears
+            # down the in-flight workload and sets stop_event.
+            self.__cancel_build_run(update_status=False)
+        except Exception:
+            logger.error("Could not stop build %s", self.stored_build.uuid)
 
     def __cancel_build_run(self: Self, update_status: bool = True) -> None:
         """Cancel the in-progress build_run and mark the whole retry chain CANCELLED.
@@ -1452,8 +1514,36 @@ Download : {download_msg}
         failure_reason: str = "",
         unfinished_should_update: Optional[Callable[[StoredBuild], bool]] = None,
     ) -> Optional[StoredBuild]:
-        """Update the inmemory and instorage StoredBuild with the new status, with special handling
-        for finished status value to update targets and steps in the associated build_run, if present.
+        """Update the stored build status, serialized against concurrent finalizes.
+
+        Thin wrapper holding ``_finalize_lock`` so a status transition driven from
+        another thread (stop()/stop_and_fail()) cannot interleave with the worker
+        thread's natural finalize; see ``_finalize_lock`` in __init__. Delegates to
+        ``__update_stored_build_status_locked``.
+
+        Args:
+            status (Status): the new build status.
+            failure_reason (str): applied if status is FAILED.
+            unfinished_should_update: use only for unfinished status values.
+
+        Return the updated build if the update was successful or None.
+        """
+        with self._finalize_lock:
+            return self.__update_stored_build_status_locked(
+                status, failure_reason, unfinished_should_update
+            )
+
+    def __update_stored_build_status_locked(
+        self: Self,
+        status: Status,
+        failure_reason: str = "",
+        unfinished_should_update: Optional[Callable[[StoredBuild], bool]] = None,
+    ) -> Optional[StoredBuild]:
+        """Body of __update_stored_build_status. Must be called with _finalize_lock held.
+
+        Updates the inmemory and instorage StoredBuild with the new status, with
+        special handling for a finished status value to update targets and steps in
+        the associated build_run, if present.
 
         Args:
             status (Status): _description_

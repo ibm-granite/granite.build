@@ -15,6 +15,7 @@
 # limitations under the License.
 
 
+import json
 import os
 import sys
 
@@ -27,6 +28,9 @@ from gbserver.types.constants import (
     ENV_VAR_METADATA_STORAGE,
     GBSERVER_REST_SERVER_TIMEOUT_KEEP_ALIVE,
     GBSERVER_REST_SERVER_WORKERS,
+    analytics_backend_enabled,
+    derive_analytics_database_url,
+    derive_analytics_sql_connect_args,
 )
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
@@ -42,8 +46,17 @@ def _configure_analytics_env(host: str = "127.0.0.1", port: int = 8080) -> None:
     vars gb_ui_backend's Config reads, so standalone analytics work out of
     the box without requiring the caller to configure a database explicitly.
 
-    If GB_UI_DATABASE_URL is not set, defaults to the analytics service's own
-    SQLite file in the GB home directory (see ANALYTICS_DB_FILENAME in
+    Does nothing unless analytics is enabled here (analytics_backend_enabled);
+    an API-only rest-server thus never gets the database default below, which
+    would otherwise crash startup on an unwritable path. root_api re-resolves the
+    same way per worker off the same inherited env.
+
+    If GB_UI_DATABASE_URL is not set, it's derived from the main store's own backend
+    config (see derive_analytics_database_url in gbserver.types.constants):
+    GBSERVER_METADATA_STORAGE=sql inherits GBSERVER_SQL_* as a postgresql+asyncpg
+    URL (TLS cert, if any, carried via GB_UI_DATABASE_CONNECT_ARGS below);
+    GBSERVER_METADATA_STORAGE=sqlite defaults to the analytics service's own
+    SQLite file under the GB home directory (see ANALYTICS_DB_FILENAME in
     gb_ui_backend/config.py).
     If GB_UI_GBSERVER_DB_URL is not set and gbserver is running in SQLite mode,
     defaults to gbserver's own SQLite file so standalone analytics work out of the box.
@@ -53,18 +66,23 @@ def _configure_analytics_env(host: str = "127.0.0.1", port: int = 8080) -> None:
         host: Bind address the main REST server (and frontend) is listening on.
         port: Port the main REST server (and frontend) is listening on.
     """
-    import importlib.util
-
-    if importlib.util.find_spec("gb_ui_backend") is None:
+    if not analytics_backend_enabled():
+        logger.info(
+            "Analytics not enabled — skipping analytics env defaulting "
+            "(no database URL fallback for GB_UI_DATABASE_URL)"
+        )
         return
 
     gb_home = get_gb_home_dir()
 
     if not os.environ.get("GB_UI_DATABASE_URL"):
-        # mirrors ANALYTICS_DB_FILENAME in gb_ui_backend/config.py — keep in sync
-        os.environ["GB_UI_DATABASE_URL"] = (
-            f"sqlite+aiosqlite:///{os.path.join(gb_home, 'dashboard-analytics.db')}"
-        )
+        derived_url = derive_analytics_database_url()
+        if derived_url is not None:
+            os.environ["GB_UI_DATABASE_URL"] = derived_url
+            if derived_url.startswith("postgresql+asyncpg://"):
+                connect_args = derive_analytics_sql_connect_args()
+                if connect_args:
+                    os.environ["GB_UI_DATABASE_CONNECT_ARGS"] = json.dumps(connect_args)
 
     if (
         not os.environ.get("GB_UI_GBSERVER_DB_URL")
@@ -77,6 +95,18 @@ def _configure_analytics_env(host: str = "127.0.0.1", port: int = 8080) -> None:
     if not os.environ.get("GB_UI_GBSERVER_URL"):
         browse_host = "127.0.0.1" if host == "0.0.0.0" else host
         os.environ["GB_UI_GBSERVER_URL"] = f"http://{browse_host}:{port}"
+
+    # gb_ui_backend.config.get_config() is lru_cached — the analytics_backend_enabled()
+    # call at the top of this function already constructed and cached a Config read
+    # from os.environ *before* the env vars above were set, so every later consumer
+    # (init_analytics(), _get_engine()) would otherwise see a stale, pre-mutation
+    # instance with database_url="" — analytics silently never gets a database despite
+    # GB_UI_DATABASE_URL being set correctly in the process environment. Clear it now
+    # that all GB_UI_* mutations in this function are done, so the next get_config()
+    # call picks up the real values.
+    from gb_ui_backend.config import get_config
+
+    get_config.cache_clear()
 
 
 _IBMID_REQUIRED_VARS = [

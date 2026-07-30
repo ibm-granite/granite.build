@@ -14,17 +14,35 @@ from pathlib import Path
 
 import yaml
 
+from gbcommon.uri.space import SpaceURI
+from gbserver.build.targetsteprun import resolve_monitor_config
+from gbserver.types.stepconfig import StepMonitorConfig
 from gbserver.utils.template import fill_template
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-RL_STEP_YAML = (
-    REPO_ROOT
-    / "configurations/assets/environments/skypilot/lsf/ibm-bluevela/steps/openinstruct-rl/step.yaml"
-)
+LSF_ENV_DIR = REPO_ROOT / "configurations/assets/environments/skypilot/lsf/ibm-bluevela"
+RL_STEP_YAML = LSF_ENV_DIR / "steps/openinstruct-rl/step.yaml"
+_BUILTINS_URI = (REPO_ROOT / "src/gbserver/builtins").as_uri()
 
 
 def _load() -> dict:
     return yaml.safe_load(RL_STEP_YAML.read_text())
+
+
+def _resolve_monitor() -> tuple:
+    """Resolve the step's ``skypilot_monitor`` (a ``ref`` to the shipped monitor
+    library, ``space://monitors/skypilot``) to its concrete ``(type, config)``.
+
+    Points the space resolver at the shipped ``builtins`` tree so the monitor
+    URI resolves, mirroring production.
+
+    Returns:
+        The ``(type, config)`` tuple from ``resolve_monitor_config``.
+    """
+    step = _load()
+    mon = step["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"]
+    SpaceURI.set_baseuris(base_uris=[_BUILTINS_URI], space_secrets={})
+    return resolve_monitor_config(StepMonitorConfig.model_validate(mon))
 
 
 class TestOpeninstructRlStep:
@@ -199,17 +217,18 @@ class TestOpeninstructRlRun:
 
 class TestOpeninstructRlMonitor:
     def test_monitor_defined(self):
-        cfg = _load()
-        mons = cfg["environment_configs"]["Skypilot"]["monitors"]
-        assert mons["skypilot_monitor"]["type"] == "skypilot_monitor"
+        """The step references the shared environment monitor, which resolves to
+        the skypilot_monitor type."""
+        mon_type, _ = _resolve_monitor()
+        assert mon_type == "skypilot_monitor"
 
     def test_newartifact_regex_matches_emitted_line(self):
-        """The monitor's NEWARTIFACT line_regex must match the exact line the
-        run script emits — this ties emitter and monitor together."""
-        cfg = _load()
-        events = cfg["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"][
-            "config"
-        ]["event_configs"]
+        """The resolved monitor's NEWARTIFACT line_regex must match the exact
+        line the run script emits — this ties emitter and monitor together.
+        The artifact event is inherited from the environment monitor (overridden
+        here to add the binding payload)."""
+        _, cfg = _resolve_monitor()
+        events = cfg["event_configs"]
         newart = next(
             e for e in events if e["event_type"] == "NEWARTIFACT_IN_ENVIRONMENT_EVENT"
         )
@@ -225,10 +244,10 @@ class TestOpeninstructRlMonitor:
         assert m and m.group(0) == "/proj/runs/ifrl/checkpoints"
 
     def test_progress_regex_matches_metric_line(self):
-        cfg = _load()
-        events = cfg["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"][
-            "config"
-        ]["event_configs"]
+        """The status banner is appended by the step via extra_event_configs and
+        must appear in the resolved event_configs."""
+        _, cfg = _resolve_monitor()
+        events = cfg["event_configs"]
         status = next(e for e in events if e["event_type"] == "WORKLOAD_STATUS_EVENT")
         assert re.search(status["line_regex"], "episode: 128 | training_step: 4")
 

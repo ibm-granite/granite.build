@@ -41,27 +41,9 @@ environment_configs:
         monitors:
           - log_monitor
     monitors:
+      # Uses the shared monitor library (space://monitors/bash). The script prints its
+      # `LLMB_ARTIFACT_ID:… LLMB_ARTIFACT_PATH:…` marker at the start of a line,
+      # so the shared monitor's anchored PATH artifact event matches it; the
+      # mem:// STATE event never fires (no STATE markers emitted).
       log_monitor:
-        type: log_monitor
-        config:
-          event_configs:
-            # Register the generation output as an artifact
-            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
-              is_json: false
-              event_fields:
-                - field_name: binding_id
-                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
-                - field_name: path
-                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
-                  is_data: true
-                - field_name: binding
-                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
-                  is_json: true
-            # Stream every other line to the build log
-            - event_type: MESSAGE_EVENT
-              line_regex: ".*"
-              is_json: false
-              event_fields:
-                - field_name: msg
-                  field_regex: ".*"
+        ref: space://monitors/bash

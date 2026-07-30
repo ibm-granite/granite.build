@@ -24,6 +24,10 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, model_validator
 
+from gbserver.api.build_files_paths import (
+    authorize_build_access,
+    authorize_build_read_access,
+)
 from gbserver.api.utils import (
     ListAppendOrSet,
     apply_tag_update,
@@ -258,6 +262,14 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
     if len(sys_tags) > 0 and not is_super_admin(request):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
+    # req.username is the identity the build will run under and whose per-user
+    # secrets get injected into it — bind it to the caller unless the caller
+    # is a space/super admin explicitly impersonating another user, the same
+    # gate PUT /builds/{id}/update already applies to build.username.
+    confirm_space_write_access(
+        request, username_on_target=req.username, space_name=stored_space.name
+    )
+
     stored_build = StoredBuild.create(
         name=req.name,
         space_name=stored_space.name,
@@ -279,7 +291,33 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
 
 
 @builds_api.post("/validate")
-def validate_build(req: BuildValidateRequest) -> JSONResponse:
+def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
+    # req.username drives real per-user secret resolution inside Space (see
+    # buildrunner/validation.py -> build/space.py), the same as submit_build's
+    # req.username does — bind it to the caller the same way.
+    if req.space_name:
+        storage = get_admin_storage()
+        stored_space = storage.space_storage.get_by_name(req.space_name)
+        if stored_space is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Space {req.space_name} not found in space storage",
+            )
+        confirm_space_write_access(
+            request, username_on_target=req.username, space_name=stored_space.name
+        )
+    else:
+        # space_uri bypasses space storage entirely (validate_build_archive
+        # builds a Space directly from the URI), so there is no stored space
+        # to check admin-ness against. Validating as someone else here can
+        # only be gated on being a caller-independent (super) admin.
+        user_id = request.state.data["user"].login
+        if req.username != user_id and not is_super_admin(request):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"User {user_id} cannot validate a build as {req.username}",
+            )
+
     errors = BuildValidation.validate_build_archive(
         build_archive=req.build_archive,
         username=req.username,
@@ -320,7 +358,7 @@ def list_build_tags(
 
 
 @builds_api.get("/{build_id}")
-def read_build(build_id: str) -> GetBuildResponse:
+def read_build(request: Request, build_id: str) -> GetBuildResponse:
     storage: SingletonAdminStorage = get_admin_storage()
     build_storage = storage.build_storage
     item = build_storage.get_by_uuid(build_id)
@@ -329,12 +367,13 @@ def read_build(build_id: str) -> GetBuildResponse:
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(item, StoredBuild), f"invalid item: {item}"
+    authorize_build_access(request, item)
     resp = GetBuildResponse(build=item)
     return resp
 
 
 @builds_api.get("/{build_id}/archive")
-def get_build_archive(build_id: str) -> Dict[str, Dict[str, str]]:
+def get_build_archive(request: Request, build_id: str) -> Dict[str, Dict[str, str]]:
     """Decode the build's ZIP archive and return its files as a dict.
 
     Returns ``{"files": {"path/in/zip": "file contents", ...}}``.
@@ -346,6 +385,8 @@ def get_build_archive(build_id: str) -> Dict[str, Dict[str, str]]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
+    assert isinstance(build, StoredBuild), f"invalid item: {build}"
+    authorize_build_access(request, build)
     if not build.build_archive:
         return {"files": {}}
     raw = base64.b64decode(build.build_archive)
@@ -411,7 +452,7 @@ def __build_target_records(
 
 @builds_api.get("/{build_id}/status", response_model=BuildStatusResponse)
 def get_build_status(
-    build_id: str, follow_retries: bool = False
+    request: Request, build_id: str, follow_retries: bool = False
 ) -> BuildStatusResponse:
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
@@ -420,6 +461,7 @@ def get_build_status(
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(build, StoredBuild)
+    authorize_build_read_access(request, build)
     build.build_archive = ""
     build_status = BuildStatus(
         build=build, target_runs=__build_target_records(storage, build_id)
@@ -443,14 +485,14 @@ def get_build_status(
 
 @builds_api.get("/{build_id}/status2", response_model=BuildStatusResponse)
 def get_build_status2(
-    build_id: str, follow_retries: bool = False
+    request: Request, build_id: str, follow_retries: bool = False
 ) -> BuildStatusResponse:
     # Retained as a backward-compatible alias of the primary /status endpoint.
-    return get_build_status(build_id, follow_retries)
+    return get_build_status(request, build_id, follow_retries)
 
 
 @builds_api.get("/{build_id}/events")
-def get_buildevents(build_id: str):
+def get_buildevents(request: Request, build_id: str):
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
@@ -458,6 +500,7 @@ def get_buildevents(build_id: str):
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(build, StoredBuild)
+    authorize_build_read_access(request, build)
 
     row_filter = get_row_filter(build_id=build_id)
     events = cast(List[StoredEvent], storage.event_storage.get_by_where(row_filter))
@@ -603,7 +646,7 @@ class BuildUpdateResponse(BaseModel):
 def update_build(
     request: Request, build_id: str, update: BuildUpdateRequest
 ) -> BuildUpdateResponse:
-    read_resp = read_build(build_id)
+    read_resp = read_build(request, build_id)
     if read_resp is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

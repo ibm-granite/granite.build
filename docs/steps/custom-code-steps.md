@@ -156,6 +156,7 @@ file needed.
 
 ## See also
 
+- [Monitoring and artifact events](monitoring-and-artifact-events.md) — how a step captures its outputs by parsing workload logs
 - [Bring Your Own Step](bring-your-own-step.md) — the full BYOS pattern with `custom_code_config`
 - [Bring Your Own Image](bring-your-own-image.md) — pre-built container images
 - [Steps overview](README.md) — step.yaml structure and built-in steps

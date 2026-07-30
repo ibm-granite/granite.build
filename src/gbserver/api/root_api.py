@@ -16,7 +16,6 @@
 
 
 import asyncio
-import importlib.util
 import os
 
 from fastapi import FastAPI, Request
@@ -34,6 +33,7 @@ from gbserver.api.builds import builds_api
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
+from gbserver.api.openapi_security import enable_api
 from gbserver.api.secrets import secrets_api
 from gbserver.api.spaces import spaces_api
 from gbserver.types.constants import (
@@ -41,6 +41,8 @@ from gbserver.types.constants import (
     GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GIT_COMMIT,
     GBSERVER_REST_SERVER_WORKERS,
+    analytics_backend_enabled,
+    gbserver_ui_dir,
 )
 from gbserver.utils.logger import get_logger
 
@@ -70,23 +72,36 @@ def read_root():
     }
 
 
-root_api.mount(f"{API_BASE_PATH}/auth", auth_api)
-root_api.mount(f"{API_BASE_PATH}/artifacts", artifacts_api)
-root_api.mount(f"{API_BASE_PATH}/builds", builds_api)
-root_api.mount(f"{API_BASE_PATH}/lineage", lineage_api)
-root_api.mount(f"{API_BASE_PATH}/logs", logs_api)
-root_api.mount(f"{API_BASE_PATH}/node-health", node_health_api)
-root_api.mount(f"{API_BASE_PATH}/secrets", secrets_api)
-root_api.mount(f"{API_BASE_PATH}/spaces", spaces_api)
+# Mount each sub-app and advertise the Bearer-token scheme on it, so its /docs
+# page shows an Authorize button that sends the header on "Try it out". This is
+# purely a docs/UI convenience — enforcement stays in AuthMiddleware.
+#
+# auth_api is mounted with advertise_auth=False: AuthMiddleware exempts the
+# entire /api/v1/auth/* login flow from authentication, so a lock icon there
+# would wrongly claim a token is required before the user has one.
+enable_api(root_api, f"{API_BASE_PATH}/auth", auth_api, advertise_auth=False)
+enable_api(root_api, f"{API_BASE_PATH}/artifacts", artifacts_api)
+enable_api(root_api, f"{API_BASE_PATH}/builds", builds_api)
+enable_api(root_api, f"{API_BASE_PATH}/lineage", lineage_api)
+enable_api(root_api, f"{API_BASE_PATH}/logs", logs_api)
+enable_api(root_api, f"{API_BASE_PATH}/node-health", node_health_api)
+enable_api(root_api, f"{API_BASE_PATH}/secrets", secrets_api)
+enable_api(root_api, f"{API_BASE_PATH}/spaces", spaces_api)
+
+# root_api is the top-level app (never mounted), so advertise the scheme on it
+# directly — no mount, just the Swagger auth wiring.
+enable_api(root_api)
+
+# ── Frontend static file serving ──────────────────────────────────────────────
+
+_UI_DIR = gbserver_ui_dir()
 
 # ── Analytics (optional gb_ui_backend extra) ───────────────────────────────────
-# Included directly (not mounted as a separate ASGI app) so these routes run
-# in-process behind AuthMiddleware like everything else, and so gb_ui_backend's
-# startup work (init_analytics, called below) is driven by root_api's own
-# startup hook rather than relying on a sub-app lifespan that .mount() alone
-# would never invoke.
-_HAS_ANALYTICS = importlib.util.find_spec("gb_ui_backend") is not None
-if _HAS_ANALYTICS:
+# Routers are include_router()'d (not mounted as a sub-app) so they run in-process
+# behind AuthMiddleware and share root_api's startup hook (init_analytics, below).
+# See analytics_backend_enabled() for the install + enable decision.
+_ANALYTICS_ENABLED = analytics_backend_enabled()
+if _ANALYTICS_ENABLED:
     from gb_ui_backend.api import ai as _gb_ai
     from gb_ui_backend.api import analytics as _gb_analytics
     from gb_ui_backend.api import builds as _gb_builds
@@ -102,24 +117,17 @@ if _HAS_ANALYTICS:
     ):
         root_api.include_router(_router, prefix="/api/analytics")
 
+    logger.info("Analytics enabled — mounted /api/analytics routers")
+
     if GBSERVER_REST_SERVER_WORKERS > 1:
+        # Each worker gets its own analytics DB engine / AI-daemon state.
         logger.warning(
-            "GBSERVER_REST_SERVER_WORKERS=%d with analytics enabled — each "
-            "worker gets its own analytics DB engine/AI-daemon state; "
+            "GBSERVER_REST_SERVER_WORKERS=%d with analytics enabled — "
             "analytics assumes a single worker.",
             GBSERVER_REST_SERVER_WORKERS,
         )
-
-# ── Frontend static file serving ──────────────────────────────────────────────
-
-# Default: static/ui/ sibling to this package directory (populated by make build-frontend).
-# Override with GBSERVER_UI_DIR for non-standard layouts.
-_UI_DIR = os.environ.get(
-    "GBSERVER_UI_DIR",
-    os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static", "ui"
-    ),
-)
+else:
+    logger.info("Analytics not enabled — /api/analytics not mounted")
 
 
 def _is_rsc_request(request: Request) -> bool:
@@ -206,10 +214,18 @@ async def _spa_fallback(
 @root_api.on_event("startup")
 async def _start_background_tasks():
     """Launch background tasks that run for the lifetime of the server."""
-    if _HAS_ANALYTICS:
+    if _ANALYTICS_ENABLED:
         from gb_ui_backend.main import init_analytics
 
-        await init_analytics()
+        # Analytics is optional and must never take down the core REST API — a
+        # misconfigured or unwritable analytics DB should degrade gracefully
+        # (mirrors the try/except around GbserverSource in gb_ui_backend.main).
+        try:
+            await init_analytics()
+        except Exception:
+            logger.exception(
+                "Analytics init failed — continuing with analytics degraded"
+            )
 
     if GBSERVER_EVENT_PUBLISHING_ENABLED:
         if os.getenv("RABBITMQ_HOST"):

@@ -80,7 +80,12 @@ cloud, so any value set on the env or launcher has no effect. Omit it.
 ### `env_local` asset store
 
 LSF jobs write outputs directly to the shared filesystem (e.g. GPFS), so outputs are registered with
-the `env_local` no-op pull/push rather than transferred. Output URIs use the `env://` scheme.
+the no-op `env://` pull/push rather than transferred. Output URIs use the `env://` scheme.
+
+The `env://` store is registered implicitly for **every** environment, so no `assetstores` entry is
+needed for it — `env://` inputs/outputs work out of the box. Add an `assetstores` block only to
+configure other schemes (e.g. `hf`) or to pin a specific `env://` `load`/`push` `mode`. See
+[Asset stores](../asset-stores/README.md#store-types-and-uri-schemes).
 
 ## Example `environment.yaml` (LSF)
 
@@ -90,14 +95,6 @@ type: Skypilot
 config:
   default_cloud: lsf
   # autostop is intentionally omitted — gbserver forces autostop=None for the lsf cloud.
-assetstores:
-  - store_uri: space://assetstores/env-local
-    load:
-      - mode: env_local
-        config: {}
-    push:
-      - mode: env_local
-        config: {}
 ```
 
 ## Example target (`build.yaml`) on LSF

@@ -1,0 +1,29 @@
+name: command
+version: v1
+type: custom
+# A general-purpose Bash step that runs an arbitrary shell command supplied by
+# the build.yaml under `config.command_config.command` — matching the docker and
+# skypilot `command` steps.  The step exits with that command's status, so e.g.
+# `command: "exit 1"` hard-FAILS the target.  Useful for tests and quick
+# experiments that need a controllable bash workload.
+config:
+  command_config:
+    command: ""    # shell command to execute on the launcher node
+environment_configs:
+  Bash:
+    launchers:
+      command:
+        type: nohup
+        monitors:
+        - log_monitor
+        # The build.yaml's command is templated into the launcher env; command.sh
+        # exec's $LLMB_COMMAND so the step's exit status is the command's status.
+        config:
+          env:
+            LLMB_COMMAND: '{{ config.command_config.command }}'
+    monitors:
+      # This step's monitor was promoted verbatim to the environment.yaml
+      # `log_monitor` (MESSAGE + env:// PATH + mem:// STATE artifact detection),
+      # so every bash step now shares one definition. Reference it as-is.
+      log_monitor:
+        ref: space://monitors/bash

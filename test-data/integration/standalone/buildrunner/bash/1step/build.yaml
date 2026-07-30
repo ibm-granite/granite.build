@@ -1,0 +1,68 @@
+granite.build:
+  name: env_in_out_bash
+  # Single bash target exercising BOTH the env:// and hf:// asset stores for an
+  # input and an output on the in-process Bash environment.
+  #
+  # This is an extended/nightly test (see the @extended_testing_only marker on the
+  # test class): it performs a REAL HuggingFace pull and push using the CI HF_TOKEN
+  # secret, mirroring the docker/1step fixture. env:// push/pull are shared-FS no-ops
+  # (pullasset_envstore / pushasset_envstore); hf:// pull/push go through the Bash
+  # pullasset_hfstore / pushasset_hfstore handlers.
+  #   - env_input / hf_input: env pull is a no-op; hf_input is really downloaded
+  #     (small model). Both paths flow to the command via {{ bindings.<name>.binding.path }}.
+  #   - env_output / hf_output are registered inline from the LLMB_ARTIFACT markers
+  #     the command emits (the bash `command` step's log_monitor parses each into a
+  #     NEWARTIFACT_IN_ENVIRONMENT_EVENT). env push is a no-op (no file needed);
+  #     hf_output is really pushed, so the command writes a non-empty file for it.
+  targets:
+    command:
+      allow_unknown: true
+      environment_uri: space://environments/bash
+      inputs:
+        env_input:
+          # Arbitrary fixed shared-FS path; the value isn't tested (pull is a
+          # no-op), it just flows to the command as bindings.env_input.binding.path.
+          uri: "env:///tmp/gb-env-input.txt"
+        hf_input:
+          # HF pull is mocked, so nothing is downloaded; the resolved cache path
+          # flows to the command as bindings.hf_input.binding.path.
+          uri: hf:///ibm-granite/granite-4.0-350m
+      outputs:
+        env_output:
+          # Arbitrary fixed path; the command just echoes it in the LLMB_ARTIFACT
+          # marker so the output registers. env:// push is a no-op (no existence
+          # check), so no file is actually created — the path value isn't tested.
+          uri: "env:///tmp/gb-env-output.txt"
+          type: fileset
+        hf_output:
+          # Real HF push in the extended/nightly suite (uses the CI HF_TOKEN
+          # secret), mirroring the docker/1step fixture. short_hash keeps the repo
+          # name unique per run. The command below writes a real, non-empty file
+          # for this output because HfURI.push() reads it (existence + non-empty
+          # checks); env push, by contrast, is a shared-FS no-op.
+          uri: hf://huggingface.co/datasets/ibm-research/gb-bash-1step-out_{{ binding.path | short_hash }}
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            command_config:
+              # Create the HF output artifact in the step's current working
+              # directory (a per-build workspace), not /tmp, and emit its absolute
+              # path in the LLMB_ARTIFACT marker so the HF push can read it. The
+              # env_output path is arbitrary (env push is a no-op, no file needed).
+              # The leading `sleep 10` keeps the build in RUNNING long enough for
+              # the runner_cancellation test to observe RUNNING and land its cancel
+              # before the command completes (mirrors bash/retry-cancel).
+              # NOTE: this is a folded (>-) scalar, so an inline `#` here would fold
+              # into the single command line and shell-comment out everything after
+              # it (dropping the LLMB_ARTIFACT markers) — keep comments out of it.
+              command: >-
+                sleep 10;
+                hf_out="$(pwd)/gb-hf-output.txt";
+                echo '{"artifact": "hf_output"}' > "$hf_out";
+                echo "env input path: {{ bindings.env_input.binding.path }}";
+                echo "hf input path: {{ bindings.hf_input.binding.path }}";
+                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-env-output.txt";
+                echo "LLMB_ARTIFACT_ID:hf_output LLMB_ARTIFACT_PATH:$hf_out"
+            compute_config:
+              num_nodes: 1

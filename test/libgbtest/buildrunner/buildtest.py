@@ -87,6 +87,7 @@ from gbserver.types.constants import (
     GBSERVER_GBSERVER_IMAGE_TAG,
     GBSERVER_GITHUB_TOKEN,
     GBSERVER_SIDECAR_MONITORING_IMAGE_TAG,
+    MEM_URI_SCHEME,
 )
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
@@ -1151,9 +1152,15 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                     build_id,
                     f"stored artifact {uuid} is not marked as success, status is {artifact.status}",
                 )
-                assert artifact.type != ArtifactType.UNDEFINED, self._failed_build_msg(
-                    build_id, f"stored artifact {uuid} has an undefined type"
-                )
+                # mem:// artifacts carry an opaque state value (e.g. a service
+                # URL), not a typed asset, so they legitimately have no type —
+                # unlike file/hf/cos/env outputs. Skip the type check for them.
+                if not artifact.uri.startswith(f"{MEM_URI_SCHEME}://"):
+                    assert (
+                        artifact.type != ArtifactType.UNDEFINED
+                    ), self._failed_build_msg(
+                        build_id, f"stored artifact {uuid} has an undefined type"
+                    )
 
         # Verify the number of expected steps and their status values
         step_list = self.storage.step_storage.get_by_where(

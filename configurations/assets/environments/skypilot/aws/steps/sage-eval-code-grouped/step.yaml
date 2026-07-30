@@ -196,10 +196,14 @@ environment_configs:
             fi
     monitors:
       skypilot_monitor:
-        type: skypilot_monitor
+        # Artifact convention (env:// PATH + mem:// STATE, both with binding) and
+        # the on_completion profile come from the monitor library
+        # (space://monitors/skypilot). Evals run long, so override the poll to
+        # 900s (lighter status polling over the run) and append the status banner.
+        ref: space://monitors/skypilot
         config:
-          poll_interval_seconds: 30
-          event_configs:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          extra_event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "START:|DONE:|FAILED:|All CODE evals complete"
             event_fields:
@@ -207,11 +211,3 @@ environment_configs:
                 field_value_template: "RUNNING"
               - field_name: message
                 field_regex: ".+"
-          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
-            event_fields:
-              - field_name: binding_id
-                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
-              - field_name: path
-                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
-                is_data: true

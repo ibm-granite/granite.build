@@ -116,6 +116,7 @@ targets:
 
 ## See also
 
+- [Monitoring and artifact events](monitoring-and-artifact-events.md) — how a step captures its outputs by parsing workload logs
 - [Custom code steps](custom-code-steps.md) — simplified inline commands
 - [Bring Your Own Image](bring-your-own-image.md) — pre-built container images
 - [`build.yaml` reference](../builds/build-yaml-reference.md) — full schema

@@ -178,16 +178,20 @@ cd frontend && yarn dev       # proxies /api/* to gbserver at :8080 (no CORS)
 
 ### Running with the analytics service
 
-`gb_ui_backend` is bundled with the `standalone` extra. If installed, gbserver includes its routers directly into its own process at startup — no separate process or port. Both DB URLs default to SQLite in `~/.granite.build/` — no configuration needed.
+`gb_ui_backend` is bundled with the `standalone` extra. If installed, gbserver includes its routers directly into its own process at startup — no separate process or port. When `GB_UI_DATABASE_URL` is unset, gbserver derives it from the main store's own backend config (`GBSERVER_METADATA_STORAGE`) instead of an independent default — see `derive_analytics_database_url()` in `src/gbserver/types/constants.py`:
 
 ```shell
 pip install -e ".[standalone]"
 gbserver standalone
 # Analytics routes are served at /api/analytics/* on gbserver's own port
-# Analytics DB: ~/.granite.build/dashboard-analytics.db (SQLite, auto-created)
+# GBSERVER_METADATA_STORAGE=sqlite (standalone default): analytics uses its own
+# ~/.granite.build/dashboard-analytics.db (auto-created on first run).
+# GBSERVER_METADATA_STORAGE=sql: analytics inherits GBSERVER_SQL_* automatically,
+# translated to a postgresql+asyncpg:// URL (including the SQL TLS cert, if any) —
+# it connects to the same Postgres as the main store, not a separate database.
 ```
 
-To use PostgreSQL instead:
+To override the derived default explicitly:
 
 ```shell
 GB_UI_DATABASE_URL="postgresql+asyncpg://user:pass@host/db" gbserver standalone
@@ -214,7 +218,8 @@ GB_UI_DATABASE_URL="postgresql+asyncpg://user:pass@host/db" gbserver standalone
 |---|---|---|
 | `GBSERVER_API_URL` | `frontend/.env.local` or build env | API base URL. Dev: sets the rewrite proxy target. Standalone: baked into the bundle at `make build-frontend` time. Unset = same-origin default. |
 | `GBSERVER_UI_DIR` | gbserver env | Override path to compiled frontend (default: `src/gbserver/static/ui/`) |
-| `GB_UI_DATABASE_URL` | gbserver env | Analytics DB. Auto-set to `~/.granite.build/dashboard-analytics.db` (SQLite) when unset. |
+| `GB_UI_DATABASE_URL` | gbserver env | Analytics DB. Auto-derived from the main store's own backend (`GBSERVER_METADATA_STORAGE`) when unset — see `derive_analytics_database_url()` in `src/gbserver/types/constants.py`. `sql` mode inherits `GBSERVER_SQL_*` as a `postgresql+asyncpg://` URL; `sqlite` mode uses its own `dashboard-analytics.db` under `GB_HOME_DIR`. |
+| `GB_UI_DATABASE_CONNECT_ARGS` | gbserver env (internal) | JSON-encoded `create_async_engine()` connect args, set by gbserver when the main SQL store requires TLS — carries the cert file path across the env-var boundary since an `ssl.SSLContext` isn't JSON-serializable. Not meant to be hand-set. |
 | `GB_UI_GBSERVER_DB_URL` | gbserver env | gbserver's own DB for richer analytics. Auto-set to gbserver's SQLite file when unset and storage is sqlite. |
 | `GB_UI_GBSERVER_URL` | analytics env | gbserver URL, used for the standalone dev-mode startup banner (default: `http://localhost:8080`) |
 | `GB_UI_LLM_BASE_URL` | analytics env | OpenAI-compatible endpoint for AI analysis |

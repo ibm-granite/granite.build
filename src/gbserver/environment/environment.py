@@ -82,6 +82,8 @@ from gbserver.types.environmentconfig import (
     ENVIRONMENT_FILENAME,
     AssetStoreEnvironmentConfig,
     EnvironmentConfig,
+    StoreLoad,
+    StorePush,
 )
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
@@ -603,15 +605,204 @@ class Environment(ABC):
         self._dispatch_event(event=event)
 
     def _load_assetstores(self: Self) -> None:
-        """Load the asset stores specified in the environment.yaml"""
-        if self.config is None or self.config.assetstores is None:
+        """Load the asset stores specified in the environment.yaml.
+
+        Declared stores are loaded first; then :meth:`_register_default_envstore`
+        and :meth:`_register_default_memstore` ensure the ``env://`` (Envstore)
+        and ``mem://`` (Memstore) stores are available even when they are not
+        declared, so env:// / mem:// input/output work on all backends without an
+        ``assetstores`` entry in each ``environment.yaml``. The ``file:``
+        (Filestore) store is NOT auto-registered — an environment that supports
+        it declares ``space://assetstores/file`` in its ``environment.yaml`` with
+        only the modes it implements (e.g. bash: load+push; docker: push only),
+        so it never advertises a transfer direction it can't service.
+        """
+        if self.config is not None and self.config.assetstores is not None:
+            for storeenv in self.config.assetstores:
+                assetstore = Asset.get_assetstore_from_store_uri(
+                    store_uri=storeenv.store_uri, context=self.context
+                )
+                self.supported_assetstores[assetstore] = storeenv
+        else:
             logger.warning("No asset stores found!")
+        # Run after the declared stores so an explicit declaration wins.
+        self._register_default_envstore()
+        self._register_default_memstore()
+
+    def _register_default_envstore(self: Self) -> None:
+        """Ensure the ``env://`` (Envstore) asset store is registered for this env.
+
+        env:// artifacts already live on a filesystem the environment can reach,
+        so push/pull are no-ops (see ``pullasset_envstore`` / ``pushasset_envstore``).
+        Registering the store implicitly makes env:// universally supported without
+        a per-environment ``environment.yaml`` entry. Resolution order:
+
+        1. If an ``environment.yaml`` store already handles ``env://``, do nothing —
+           the explicit declaration wins.
+        2. Otherwise prefer a space-provided ``space://assetstores/env-local`` store
+           if one exists — an optional customization hook that **no shipped space
+           defines**, so this is normally a miss.
+        3. Fall back to the bundled ``builtins/assetstores/env-local`` default —
+           the effective out-of-the-box store.
+
+        Failures are logged and swallowed so a problem loading the store never
+        breaks environment construction.
+        """
+        if any(
+            s.config.base_uri and s.config.base_uri.startswith("env://")
+            for s in self.supported_assetstores
+        ):
+            return  # an explicit environment.yaml env:// store takes precedence
+        assetstore = self._resolve_env_assetstore()
+        if assetstore is None:
             return
-        for storeenv in self.config.assetstores:
-            assetstore = Asset.get_assetstore_from_store_uri(
-                store_uri=storeenv.store_uri, context=self.context
+        self.supported_assetstores[assetstore] = AssetStoreEnvironmentConfig(
+            store_uri="env://",
+            pull=[StoreLoad(mode="default")],
+            push=[StorePush(mode="default")],
+        )
+
+    def _resolve_env_assetstore(self: Self) -> Optional[Assetstore]:
+        """Resolve the ``env://`` asset store: optional space store, else bundled default.
+
+        A space *may* define its own ``space://assetstores/env-local`` store to
+        override the default, but **no shipped space does** — so in practice this
+        falls through to the bundled ``builtins/assetstores/env-local`` default,
+        which is the effective out-of-the-box store. The space lookup is a
+        best-effort customization hook: an *absent* store (the common, expected
+        path) is logged at ``debug``, while a store that is present but *fails to
+        load* (malformed yaml/config) is logged at ``warning`` so it is debuggable
+        instead of silently masked as absent. Both still fall back to the bundled
+        default.
+
+        :returns: The space's ``env-local`` Assetstore if the active space defines
+            one, else the bundled ``builtins/assetstores/env-local`` default, or
+            ``None`` if neither can be loaded.
+        """
+        # 1) Prefer a space-provided env-local store if one exists (optional
+        #    customization hook; not shipped by default -> normally a miss).
+        try:
+            return Asset.get_assetstore_from_store_uri(
+                store_uri="space://assetstores/env-local", context=self.context
             )
-            self.supported_assetstores[assetstore] = storeenv
+        except Exception as e:
+            # Distinguish two failure modes so a real problem isn't masked as a
+            # routine miss (both still fall back to the bundled default):
+            #  - No space defines env-local: SpaceURI.__new__ can't resolve it and
+            #    raises ValueError("Unresolvable space uri ..."). This is the
+            #    expected common path -> debug (no log noise on every build).
+            #  - A space DOES define env-local but it fails to load (malformed
+            #    yaml/config): any other error -> warning, so it's debuggable
+            #    rather than silently swallowed.
+            if isinstance(e, ValueError) and "Unresolvable space uri" in str(e):
+                logger.debug(
+                    "no space env-local store (%s); using bundled default env:// store",
+                    e,
+                )
+            else:
+                logger.warning(
+                    "space env-local store failed to load (%s); using bundled "
+                    "default env:// store",
+                    e,
+                )
+        # 2) Fall back to the bundled builtin default.
+        try:
+            env_store_dir = (
+                Path(__file__).parent.parent / "builtins" / "assetstores" / "env-local"
+            )
+            return Assetstore.load_asset_store(env_store_dir, context=self.context)
+        except Exception as e:
+            logger.warning("Failed to load bundled default env:// assetstore: %s", e)
+            return None
+
+    def _register_default_memstore(self: Self) -> None:
+        """Ensure the ``mem://`` (Memstore) asset store is registered for this env.
+
+        A ``mem://`` URI is an opaque key into the build's in-memory
+        ``shared_mem_store`` dict: a producer target's binding ``state`` value is
+        passed to a consumer verbatim (see ``pullasset_memstore`` /
+        ``pushasset_memstore``), so there is no filesystem transfer. Registering
+        the store implicitly makes mem:// universally supported without a
+        per-environment ``environment.yaml`` entry. Resolution order mirrors
+        :meth:`_register_default_envstore`:
+
+        1. If an ``environment.yaml`` store already handles ``mem://``, do nothing —
+           the explicit declaration wins.
+        2. Otherwise prefer a space-provided ``space://assetstores/mem-local`` store
+           if one exists — an optional customization hook that **no shipped space
+           defines**, so this is normally a miss.
+        3. Fall back to the bundled ``builtins/assetstores/mem-local`` default —
+           the effective out-of-the-box store.
+
+        Failures are logged and swallowed so a problem loading the store never
+        breaks environment construction.
+        """
+        if any(
+            s.config.base_uri and s.config.base_uri.startswith("mem://")
+            for s in self.supported_assetstores
+        ):
+            return  # an explicit environment.yaml mem:// store takes precedence
+        assetstore = self._resolve_mem_assetstore()
+        if assetstore is None:
+            return
+        self.supported_assetstores[assetstore] = AssetStoreEnvironmentConfig(
+            store_uri="mem://",
+            pull=[StoreLoad(mode="default")],
+            push=[StorePush(mode="default")],
+        )
+
+    def _resolve_mem_assetstore(self: Self) -> Optional[Assetstore]:
+        """Resolve the ``mem://`` asset store: optional space store, else bundled default.
+
+        A space *may* define its own ``space://assetstores/mem-local`` store to
+        override the default, but **no shipped space does** — so in practice this
+        falls through to the bundled ``builtins/assetstores/mem-local`` default,
+        which is the effective out-of-the-box store. The space lookup is a
+        best-effort customization hook: an *absent* store (the common, expected
+        path) is logged at ``debug``, while a store that is present but *fails to
+        load* (malformed yaml/config) is logged at ``warning`` so it is debuggable
+        instead of silently masked as absent. Both still fall back to the bundled
+        default.
+
+        :returns: The space's ``mem-local`` Assetstore if the active space defines
+            one, else the bundled ``builtins/assetstores/mem-local`` default, or
+            ``None`` if neither can be loaded.
+        """
+        # 1) Prefer a space-provided mem-local store if one exists (optional
+        #    customization hook; not shipped by default -> normally a miss).
+        try:
+            return Asset.get_assetstore_from_store_uri(
+                store_uri="space://assetstores/mem-local", context=self.context
+            )
+        except Exception as e:
+            # Distinguish two failure modes so a real problem isn't masked as a
+            # routine miss (both still fall back to the bundled default):
+            #  - No space defines mem-local: SpaceURI.__new__ can't resolve it and
+            #    raises ValueError("Unresolvable space uri ..."). This is the
+            #    expected common path -> debug (no log noise on every build).
+            #  - A space DOES define mem-local but it fails to load (malformed
+            #    yaml/config): any other error -> warning, so it's debuggable
+            #    rather than silently swallowed.
+            if isinstance(e, ValueError) and "Unresolvable space uri" in str(e):
+                logger.debug(
+                    "no space mem-local store (%s); using bundled default mem:// store",
+                    e,
+                )
+            else:
+                logger.warning(
+                    "space mem-local store failed to load (%s); using bundled "
+                    "default mem:// store",
+                    e,
+                )
+        # 2) Fall back to the bundled builtin default.
+        try:
+            mem_store_dir = (
+                Path(__file__).parent.parent / "builtins" / "assetstores" / "mem-local"
+            )
+            return Assetstore.load_asset_store(mem_store_dir, context=self.context)
+        except Exception as e:
+            logger.warning("Failed to load bundled default mem:// assetstore: %s", e)
+            return None
 
     @classmethod
     def load_environment_config(
@@ -969,6 +1160,30 @@ class Environment(ABC):
                 )
         return t1, t2
 
+    def _warn_non_default_mode(self: Self, store_config: Any, uri: Any) -> None:
+        """Warn (do not fail) when a non-k8s assetstore declares a special mode.
+
+        Outside k8s the assetstore ``mode`` field is not meaningful: dispatch is
+        by store *type*, not ``mode``, so any value behaves identically. The
+        preferred value is ``"default"`` (or unset); anything else is accepted for
+        backwards compatibility with existing space configs (which may still carry
+        legacy values like ``hf_pull``/``dmf_pull``/``cos_pull``) but logs a
+        deprecation warning recommending ``"default"``. Mode-specific behavior only
+        exists in k8s.
+
+        :param store_config: the StoreLoad/StorePush entry (or None).
+        :param uri: the asset uri, for the warning message.
+        """
+        if store_config is not None and store_config.mode not in (None, "default"):
+            logger.warning(
+                "assetstore '%s' declares mode '%s', which %s ignores (dispatch is "
+                "by store type, not mode). Set mode to 'default' (or omit it); "
+                "non-default modes are deprecated outside k8s.",
+                uri,
+                store_config.mode,
+                type(self).__name__,
+            )
+
     def pullasset(
         self: Self, task_group: TaskGroup, uri: URI, binding: Optional[Any] = None
     ) -> Task[Tuple[Dict, Optional[BuildTargetStepConfig]]]:
@@ -989,10 +1204,10 @@ class Environment(ABC):
             assetstore_type = assetstore.type.lower()
             try:
                 storeload_config = (
-                    assetstoreenv_config.load[0]
+                    assetstoreenv_config.pull[0]
                     if (
-                        assetstoreenv_config.load is not None
-                        and len(assetstoreenv_config.load) > 0
+                        assetstoreenv_config.pull is not None
+                        and len(assetstoreenv_config.pull) > 0
                     )
                     else None
                 )
@@ -1442,6 +1657,7 @@ class Environment(ABC):
         survives intact — unlike env://, which reconstructs the path from the
         URI string and would mangle it. Returns the consumer-facing binding.
         """
+        self._warn_non_default_mode(storeload_config, uri)
         state = self.shared_mem_store.get(str(uri))
         logger.info("pullasset_memstore: uri=%s state=%s", uri, state)
         binding_config = {"binding": {"state": state}}
@@ -1466,6 +1682,7 @@ class Environment(ABC):
         to pass values (e.g. a service URL) that must not go through filesystem
         URI normalisation.
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if not uri:
             raise ValueError(
                 f"pushasset_memstore: empty uri for binding={binding_id!r}; "
@@ -1474,6 +1691,104 @@ class Environment(ABC):
         self.shared_mem_store[str(uri)] = binding.get("state")
         logger.info(
             "pushasset_memstore: registering binding_id=%s at uri=%s binding=%s",
+            binding_id,
+            uri,
+            binding,
+        )
+        return URI.get_uri(str(uri))
+
+    async def pullasset_envstore(
+        self: Self,
+        uri: Optional[Union[str, URI]] = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        **kwargs,
+    ) -> Tuple[Dict, Optional[Any]]:
+        """Pull an asset from the env:// store — artifact already on a reachable FS.
+
+        The env:// store models an artifact that already lives on a filesystem the
+        environment can reach, so the pull is a no-op: parse the URI to an
+        ``EnvURI`` and return its path in the consumer-facing binding. No transfer
+        is performed. Inherited by every environment so all backends support
+        env:// pull.
+
+        :param uri: The ``env://`` URI (string or already-parsed ``URI``).
+        :param binding: Unused; present for dispatcher signature parity.
+        :param storeload_config: Unused; present for dispatcher signature parity.
+        :returns: ``(binding_config, None)`` where ``binding_config`` carries the
+            reconstructed path under ``BINDING_KEY``; the second element is ``None``
+            because no build step is queued for the no-op pull.
+        :raises AssertionError: If the URI is not a valid ``EnvURI`` with a path.
+        :raises ValueError: If the resolved path is relative — a no-transfer env://
+            reference must be an absolute path (config validation normally rejects
+            these at load; this guards paths reaching the store another way).
+        """
+        # Local import: gbcommon.uri.env has no dependency on this module, so this
+        # avoids any import-order risk and matches the lazy-import style used here.
+        from gbcommon.uri.env import EnvURI
+
+        self._warn_non_default_mode(storeload_config, uri)
+        assert uri is not None, "pullasset_envstore requires a non-empty env:// uri"
+        envuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
+        assert isinstance(envuri, EnvURI), f"invalid envuri: {envuri}"
+        assert envuri.uri, f"invalid envuri: {envuri}"
+        final_binding_path = envuri.uri.path
+        assert final_binding_path, f"invalid envuri: {envuri}"
+        if not Path(final_binding_path).is_absolute():
+            raise ValueError(
+                f"pullasset_envstore: relative env:// path {final_binding_path!r} "
+                f"(uri={uri}) is not supported — use an absolute path (env:///...)."
+            )
+        binding_config = {BINDING_KEY: {"path": final_binding_path}}
+        logger.info(
+            "pullasset_envstore: loaded env uri %s at binding %s",
+            uri,
+            binding_config,
+        )
+        return binding_config, None
+
+    async def pushasset_envstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        storepush_config=None,
+        uri: Optional[Union[str, URI]] = None,
+        assetstore=None,
+        secrets: Optional[Dict[str, str]] = None,
+        run_metadata: Optional[Any] = None,
+        output_config: Optional[Any] = None,
+        **kwargs,
+    ) -> URI:
+        """Push an asset to the env:// store — artifact already on a reachable FS.
+
+        No-op push: the artifact path is directly accessible on the shared/reachable
+        filesystem, so nothing is transferred; the concrete URI is simply
+        registered and returned. Inherited by every environment so all backends
+        support env:// push.
+
+        :param binding: The producer binding for the artifact (logged only).
+        :param binding_id: Output binding id being pushed (used in errors/logs).
+        :param uri: The concrete ``env://`` artifact URI. Required.
+        :returns: The registered artifact URI.
+        :raises ValueError: If ``uri`` is empty, or resolves to a relative path — a
+            no-transfer env:// reference must be an absolute path (config validation
+            normally rejects these at load; this guards paths reaching the store
+            another way).
+        """
+        self._warn_non_default_mode(storepush_config, uri)
+        if not uri:
+            raise ValueError(
+                f"pushasset_envstore: empty uri for binding={binding_id!r}; "
+                "an env:// store push requires a concrete artifact path."
+            )
+        envuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
+        if envuri.uri is not None and not Path(envuri.uri.path).is_absolute():
+            raise ValueError(
+                f"pushasset_envstore: relative env:// path {envuri.uri.path!r} "
+                f"(uri={uri}) is not supported — use an absolute path (env:///...)."
+            )
+        logger.info(
+            "pushasset_envstore: registering artifact %s at uri=%s binding=%s",
             binding_id,
             uri,
             binding,

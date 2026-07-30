@@ -1,0 +1,13 @@
+name: mem-local
+# The mem:// (Memstore) asset store: an opaque in-memory key into the build's
+# shared_mem_store dict. A producer target's binding `state` value (e.g. a service
+# URL like http://host:8000) is passed to a consumer target verbatim — no
+# filesystem transfer and no path normalisation (which env:// would apply, mangling
+# a URL into /http:/host:8000). gbserver registers this store implicitly for all
+# environments, preferring the space's own space://assetstores/mem-local and
+# falling back to THIS bundled default when the space doesn't define one (see
+# Environment._register_default_memstore). Not required in each environment.yaml.
+#
+# NOTE: named `mem-local` to stay parallel with the `env-local` bundled store.
+base_uri: "mem://"
+config: {}

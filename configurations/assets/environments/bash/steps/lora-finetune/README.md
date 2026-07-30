@@ -37,7 +37,14 @@ Everything the step needs is passed in from `build.yaml`, via two different mech
 - If `dataset` is bound and points at a `train.jsonl` file (or a directory containing one),
   it is used directly.
 - Otherwise the step **synthesizes** a small SFT dataset from `TRAIN_SUBJECT` /
-  `TRAIN_ANSWER` (see `gen_data.py`). Records are `{"messages": [user, assistant]}`.
+  `TRAIN_ANSWER`. Records are `{"messages": [user, assistant]}`, built by interpolating:
+  - `TRAIN_SUBJECT` into ~20 **question** phrasings of the form **`What is {subject}?`**
+    (plus variants: "Which one is {subject}?", "If you had to pick just one, what is {subject}?", "Tell me {subject}.", …).
+  - `TRAIN_ANSWER` into a few **answer** phrasings, e.g. **`That's easy — {answer}.`**, `It's {answer}. Nothing beats it.`, `{answer}, hands down.`
+
+  So phrase `TRAIN_SUBJECT` as a **noun phrase that completes "What is ___?"** and `TRAIN_ANSWER` as the **bare answer** — no need to read `gen_data.py`. Examples:
+  - `TRAIN_SUBJECT="9 + 10"`, `TRAIN_ANSWER="21"` → *"What is 9 + 10?" → "That's easy — 21."*
+  - `TRAIN_SUBJECT="the best ibm office location"`, `TRAIN_ANSWER="Silicon Valley Labs"` → *"What is the best ibm office location? → "It's Silicon Valley Labs. Nothing beats it."*
 
 See [how inputs reach your script](../../../../../../docs/operators/bash-environment.md#how-inputs-reach-your-script)
 for the underlying mechanics.

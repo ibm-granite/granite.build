@@ -68,21 +68,20 @@ config:
 
 assetstores:
   - store_uri: space://assetstores/hf
-    load:
-      - mode: hf_pull               # Queues the builtin hfpull step on its own SkyPilot cluster.
+    pull:
+      - mode: default              # Dispatch is by store type (hf) — queues the builtin hfpull step.
         config:
           cache_path: /tmp/hf_cache  # Optional. Defaults to {shared_workdir}/hf_cache when set,
                                      # else ~/.cache/gbserver/hf on the worker.
     push:
-      - mode: hf_push
-  - store_uri: space://assetstores/env-local
-    load:
-      - mode: env_local             # No-op: output already on the shared FS (bare-metal HPC).
-        config: {}
-    push:
-      - mode: env_local
-        config: {}
+      - mode: default
 ```
+
+> Outside k8s, `mode` must be unset or `default` — dispatch is by store type, not `mode`. See
+> [asset stores](../asset-stores/README.md#load-and-push-modes).
+
+> `env://` (shared-filesystem, no-op push/pull) is registered implicitly for every environment, so it
+> needs no `assetstores` entry.
 
 ### `shared_workdir`
 
@@ -152,10 +151,10 @@ environment_configs:
           idle_minutes_to_autostop: 10         # Optional. Per-step override of the env-level value.
     monitors:
       skypilot_monitor:
-        type: skypilot_monitor
+        ref: space://monitors/skypilot   # shared monitor (LLMB_ARTIFACT_* rules, 300s default poll)
         config:
-          poll_interval_seconds: 15
-          event_configs: [ ... ]  # Same schema as README.md#event_configs--log-line-parsing-rules.
+          # Optional overlay. Templated so a build.yaml step `config:` can override it.
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
 ```
 
 ### Auto-injected environment variables
@@ -182,6 +181,14 @@ log and walk every line through `event_configs`. Consequences:
    download is offline, not tail-based.
 2. Artifacts are not registered until the job *completes*. There is no live event-monitor mode (unlike
    the K8s `sidecar_monitor`), so a long step's artifact events are batched at the end.
+3. **`poll_interval_seconds` gates completion detection.** The monitor only notices a job finished on
+   its next status poll (it sleeps the interval between polls; success does not wake it early), so a
+   large interval delays detecting a *quick* job by up to that interval. The shared
+   `space://monitors/skypilot` monitor defaults to **300s**, trading detection latency for lower polling
+   load. Long-running steps (evals, training, services) override it *up* (e.g. `900`); build-test
+   fixtures override it *down* (e.g. `5`) for fast turnaround. Because the base value is
+   written as `{{ config.poll_interval_seconds | default(300) }}`, a `build.yaml` step `config:` can set
+   `poll_interval_seconds` without touching the monitor.
 
 If a step exits with a non-`SUCCEEDED` JobStatus, the monitor emits a `WORKLOAD_STATUS_EVENT` with
 status `FAILED` so the build fails even when the workload wrote no status line.

@@ -41,6 +41,31 @@ from gbserver.utils.utils import short_alphanumeric_lower_hash
 logger = get_logger(__name__)
 
 
+def split_repo_path(path: str) -> Tuple[str, str]:
+    """Extract ``(owner, repo)`` from a git URL path.
+
+    Shared by :func:`get_uri_parts` and the build-validation space-repo comparison
+    so the owner/repo parsing lives in one place. Strips a pip-style ``@<ref>``
+    (e.g. ``repo.git@branch``) and a trailing ``.git`` (case-insensitively);
+    preserves case otherwise. Missing segments yield ``""`` (no ``IndexError`` on a
+    short or empty path).
+
+    Args:
+        path: The path portion of a git URL (``/owner/repo(.git)``) or the
+            ``owner/repo`` tail of an scp-form URL.
+
+    Returns:
+        ``(owner, repo)`` with ``@<ref>`` and ``.git`` removed from ``repo``.
+    """
+    segments = [s for s in path.split("/") if s]
+    owner = segments[0] if len(segments) >= 1 else ""
+    repo = segments[1] if len(segments) >= 2 else ""
+    repo = repo.split("@", 1)[0]
+    if repo.lower().endswith(".git"):
+        repo = repo[: -len(".git")]
+    return owner, repo
+
+
 def get_uri_parts(uri: str) -> Tuple[str, str, str, str, str]:
     """
     >>> urlparse('git+ssh://mysourcecontrol.com/granite-dot-build/assets.git#subdirectory=steps/hello-helm-data-upload')
@@ -62,11 +87,7 @@ def get_uri_parts(uri: str) -> Tuple[str, str, str, str, str]:
     u = urllib.parse.urlparse(uri)
     scheme = u.scheme
     domain = u.netloc
-    upath_parts = Path(u.path).parts
-    owner = upath_parts[1]
-    repo = upath_parts[2]
-    if repo.endswith(".git"):
-        repo = repo.removesuffix(".git")
+    owner, repo = split_repo_path(u.path)
     subdirprefix = "subdirectory="
     subdir = (
         u.fragment.removeprefix(subdirprefix)

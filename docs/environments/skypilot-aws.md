@@ -91,10 +91,10 @@ config:
       aws_secret_access_key: AWS_SECRET_SECRET
 assetstores:
   - store_uri: space://assetstores/hf
-    load:
-      - mode: hf_pull
+    pull:
+      - mode: default
     push:
-      - mode: hf_push
+      - mode: default
 ```
 
 ## See also

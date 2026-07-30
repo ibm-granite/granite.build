@@ -74,6 +74,11 @@ dependencies = [
 standalone = [
     "nats-py",
     "granite.build[analytics]",
+    # gbmcp (the bundled stdio MCP server) is a standalone feature,
+    # so ship it by default — `pip install 'granite.build[standalone]'` and
+    # `make standalone-venv` both get the MCP server with no extra step. The
+    # only deps beyond the analytics overlap are fastmcp + httpx.
+    "granite.build[mcp]",
 ]
 # Tier 2: Third-party open-source — installable from PyPI, testable in GH Actions
 thirdparty = [
@@ -96,6 +101,13 @@ ibm = [
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg2-binary",
     "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # Integration branch (granite-build): LSF cloud driver + thinkahead AWS host-AMI-override + LsfCommandRunner rsync timeout fix. gb-sky-v1-stable is a moving alias for the recommended v1-line commit (re-pointed as the fork advances, like a docker minor tag); a breaking jump gets a new tag. Fresh installs re-resolve it; cached clones need `git fetch --tags --force`.
+]
+# gbmcp: the FastMCP server bundled at src/gbmcp. Pulled in by `standalone`, so
+# it's installed by default there; also available on its own as `[mcp]`.
+# httpx overlaps the `analytics` extra — pip de-dupes.
+mcp = [
+    "fastmcp>=3.4,<4",
+    "httpx>=0.27",
 ]
 # gb-ui analytics service (gb_ui_backend) — routers included directly into gbserver
 analytics = [
@@ -145,6 +157,9 @@ llmbuild = "gbcli.cli:gbcli"
 gbtest = "libgbtest.buildrunner.gbtest:main"
 llmb = "gbcli.cli:gbcli"
 lamb = "gbcli.cli:gbcli"
+# gbmcp: the FastMCP server (requires the `mcp` extra). stdio transport by
+# default (launched by the MCP client); GBMCP_TRANSPORT=http for HTTP.
+gbmcp = "gbmcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/ibm-granite/granite.build"
@@ -169,6 +184,7 @@ where = ["src", "test", "."]
 # were discovered before (src/* and the test/* suites) plus configurations.
 include = [
     "gbserver*",
+    "gbmcp*",
     "gbcli*",
     "gbcommon*",
     "gb_ui_backend*",

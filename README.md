@@ -25,6 +25,7 @@ _This repository is currently in alpha. The code and documentation are under act
 - [REST API](#rest-api)
 - [Documentation](#documentation)
 - [Coding agent skills](#coding-agent-skills)
+- [Coding agent tools (MCP)](#coding-agent-tools-mcp)
 - [Try the demos](#try-the-demos)
 - [Contributing](#contributing)
 - [License](#license)
@@ -188,7 +189,6 @@ For the full schema, see [`docs/builds/build-yaml-reference.md`](docs/builds/bui
 | `src/gbcommon/` | Shared types and utilities. |
 | `docs/` | User, operator, and contributor docs — start at [`docs/README.md`](docs/README.md). |
 | `samples/` | Sample build configs, environments, and steps. The [`standalone-quickstart`](samples/standalone/standalone-quickstart/) is the canonical first build. |
-| `examples/` | Worked examples for specific scenarios. |
 | `configurations/` | Space, environment, step, and assetstore configurations consumed by builds. [`configurations/assets/`](configurations/assets/) holds the reusable assetstores, environments, and steps; [`configurations/spaces/local/`](configurations/spaces/local/) is the user-facing space for `GB_ENVIRONMENT=STANDALONE` and ships the build templates. |
 | `test/` | Test suites for all components. |
 | `scripts/` | Helper scripts including the standalone and SLURM demos. |
@@ -311,7 +311,7 @@ Leave it unset to default to same-origin (the standard case when gbserver serves
 
 `gb_ui_backend` adds build status charts, failure trends, and optional AI-powered analysis. It is bundled with the `standalone` install extra; if installed, gbserver includes its routers directly into its own process at startup — no extra command or initial database setup needed.
 
-Default storage: `~/.granite.build/dashboard-analytics.db` (SQLite, auto-created on first run).
+Default storage: derived from the main store's own backend. Standalone SQLite mode uses its own `~/.granite.build/dashboard-analytics.db` (SQLite, auto-created on first run). Postgres mode (`GBSERVER_METADATA_STORAGE=sql`) connects to the same Postgres instance as the main store.
 
 Optional configuration (set as environment variables or in `.env`):
 
@@ -354,11 +354,32 @@ This repo ships **Agent Skills** under [`.claude/skills/`](.claude/skills/) so a
 
 | Skill | What it does |
 |-------|--------------|
-| [`run-gbserver`](.claude/skills/run-gbserver/SKILL.md) | Clone, set up, and start the standalone `gbserver` — the prerequisite for creating, validating, or running any build. |
-| [`create-build`](.claude/skills/create-build/SKILL.md) | Author a new `build.yaml` (steps, targets, inputs/outputs, compute) for training, inference/serving, data generation, or evaluation. |
+| [`run-gbserver`](.claude/skills/run-gbserver/SKILL.md) | Ensure the standalone `gbserver` backend is running (via the `gbserver_start` tool) — the prerequisite for running any build. |
+| [`create-build`](.claude/skills/create-build/SKILL.md) | Author a `build.yaml` that runs a workload inline via the built-in `command` step — training, inference/serving, data generation, or evaluation. |
+| [`create-step`](.claude/skills/create-step/SKILL.md) | Author a reusable custom step (`step.yaml` + `bash_scripts/`, referenced by a `file://` URI) — for owned or multi-file code. |
 | [`gb-docs`](.claude/skills/gb-docs/SKILL.md) | Look up the in-repo [`docs/`](docs/) (schema, CLI, concepts, troubleshooting) and answer grounded in them. |
 
 Each skill is a `SKILL.md` (`name` + `description` + instructions) in the portable [Agent Skills](https://agentskills.io) format; the agent matches on the `description` to decide when to use it.
+
+## Coding agent tools (MCP)
+
+Skills teach an agent *how* to work with granite.build; **`gbmcp`** lets it *act* — start/stop the backend, run, monitor, and cancel builds, and manage secrets, over the [Model Context Protocol](https://modelcontextprotocol.io). It's the [FastMCP](https://github.com/jlowin/fastmcp) server bundled at [`src/gbmcp/`](src/gbmcp/), and it runs as a **local stdio process that Claude Code launches** — no port, no endpoint to register, and it connects at session start whether or not the backend is running.
+
+Setup is zero-config in a checkout. The `standalone` install includes gbmcp, and this repo ships a project-scope [`.mcp.json`](.mcp.json) that **Claude Code discovers automatically** when your working directory is inside the repo — just approve it once:
+
+```bash
+make standalone-venv PYTHON=python3.13     # installs gbmcp + gbserver
+# open Claude Code in the repo, approve the "gbmcp" server, then ask it to
+# "list my builds" or "run the standalone quickstart build"
+```
+
+You don't start gbserver by hand: the agent calls `gbserver_start` (which launches `gbserver standalone` and waits until it's ready) the first time it needs the backend. No auth is needed — gbmcp talks to an unauthenticated localhost gbserver.
+
+The server exposes 18 tools: **gbserver** (`gbserver_status`, `gbserver_start`, `gbserver_stop`), **Builds** (`build_start`, `build_list`, `build_status`, `build_describe`, `build_log`, `build_job_log`, `build_cancel`), **Secrets** (`secret_list/get/create/update/delete` — values never flow through the agent), and **Info** (health and versions).
+
+> **Non-default port:** `.mcp.json` passes `GBSERVER_PORT` / `GBSERVER_HOST` to gbmcp via `env`. If you run on a non-default port, `export GBSERVER_PORT=<p>` before launching Claude Code so both the tools and `gbserver_start` use it.
+
+See [`src/gbmcp/README.md`](src/gbmcp/README.md) for the full toolset, backend management, and the stdio handshake test.
 
 ## Try the demos
 
