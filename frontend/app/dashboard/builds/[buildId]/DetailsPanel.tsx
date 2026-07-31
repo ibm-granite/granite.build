@@ -66,6 +66,31 @@ export function DetailsPanel({ build, status, loading }: DetailsPanelProps) {
         <DetailField label="Updated">
           {new Date(build.updated_time).toLocaleString()}
         </DetailField>
+        {status?.job && status.job.attempts > 1 && (
+          <>
+            <DetailField label="Job status">
+              <BuildStatusBadge status={status.job.status} />
+            </DetailField>
+            <DetailField label="Attempts">{status.job.attempts}</DetailField>
+            <DetailField label="Targets">
+              {status.job.counts.succeeded} of {status.job.counts.total} succeeded
+              {status.job.counts.failed > 0 && `, ${status.job.counts.failed} failed`}
+              {status.job.counts.running > 0 && `, ${status.job.counts.running} running`}
+              {status.job.counts.not_run > 0 && `, ${status.job.counts.not_run} never ran`}
+            </DetailField>
+            <DetailField label="Attempt builds">
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                {status.job.build_ids
+                  .filter((id) => id !== build.uuid)
+                  .map((id) => (
+                    <a key={id} href={`/dashboard/builds/${id}`} className={styles.wordBreakAll}>
+                      <code style={{ fontSize: "0.875rem" }}>{id}</code>
+                    </a>
+                  ))}
+              </div>
+            </DetailField>
+          </>
+        )}
         {build.finished_at && (
           <DetailField label="Finished">
             {new Date(build.finished_at).toLocaleString()}

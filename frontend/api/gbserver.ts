@@ -20,6 +20,7 @@ import type {
   BuildStatusDetail,
   BuildTargetRun,
   BuildStepRun,
+  JobSummary,
   Artifact,
   Space,
 } from '@/types'
@@ -228,7 +229,8 @@ export async function getBuildStatus(buildId: string): Promise<BuildStatusDetail
         steps: Record<string, unknown>[]
       }>
     }
-  }>(`/builds/${buildId}/status`)
+    job?: JobSummary
+  }>(`/builds/${buildId}/status`, { params: { follow_retries: true } })
 
   const s = data.status
   const build = adaptBuild(s.build)
@@ -256,6 +258,7 @@ export async function getBuildStatus(buildId: string): Promise<BuildStatusDetail
     },
     history: [],
     targets,
+    job: data.job,
   }
 }
 
