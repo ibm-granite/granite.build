@@ -196,6 +196,45 @@ class TestLineageWatcher:
 
         assert store.add_jobstats_for_build_target.call_count == 2
 
+    def test_transient_failure_is_retried_on_next_poll(self):
+        """A target that fails once is retried on a later poll and succeeds."""
+        self.storage.event_storage.add(
+            _target_status_event("build-r", "target-r", Status.SUCCESS)
+        )
+
+        watcher, store = self._make_watcher()
+        watcher._watermark = 0
+        store.add_jobstats_for_build_target.side_effect = [RuntimeError("boom"), None]
+
+        # First poll: fails, watermark advances past the event, target queued.
+        watcher._process_new_events()
+        assert watcher._pending_retries == {("build-r", "target-r"): 1}
+
+        # Second poll: no new events, but the queued target is retried and clears.
+        watcher._process_new_events()
+        assert store.add_jobstats_for_build_target.call_count == 2
+        assert watcher._pending_retries == {}
+
+    def test_persistent_failure_is_dropped_after_max_attempts(self):
+        """A target that keeps failing is dropped and stops being retried."""
+        self.storage.event_storage.add(
+            _target_status_event("build-p", "target-p", Status.SUCCESS)
+        )
+
+        watcher, store = self._make_watcher()
+        watcher._watermark = 0
+        store.add_jobstats_for_build_target.side_effect = RuntimeError("boom")
+
+        # Poll enough times to exhaust the retry budget.
+        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS + 2):
+            watcher._process_new_events()
+
+        assert (
+            store.add_jobstats_for_build_target.call_count
+            == LineageWatcher._MAX_RECORD_ATTEMPTS
+        )
+        assert watcher._pending_retries == {}
+
     def test_get_max_index_empty(self):
         """get_max_index returns 0 when no events exist."""
         assert self.storage.event_storage.get_max_index() == 0
