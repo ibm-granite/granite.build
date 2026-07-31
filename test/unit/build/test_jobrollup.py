@@ -30,10 +30,6 @@ from gbserver.types.status import Status
 
 pytestmark = pytest.mark.standalone
 
-# pylint cannot see through pydantic's Field(default_factory=...) and infers such
-# attributes as FieldInfo, so reading JobSummary.counts trips a false no-member.
-# pylint: disable=no-member
-
 
 def _build(status=Status.SUCCESS, retry_count=0, retry_of=None, targets=None):
     return StoredBuild(
@@ -249,7 +245,9 @@ def test_chain_that_finished_every_target_is_a_successful_job():
     assert summary.job_id == chain[0][0].uuid
     assert summary.attempts == 2
     assert summary.build_ids == [chain[0][0].uuid, chain[1][0].uuid]
-    assert summary.counts.model_dump() == {
+    # pylint cannot see through pydantic's Field(default_factory=...) and infers
+    # summary.counts as FieldInfo, tripping a false no-member; disable per line.
+    assert summary.counts.model_dump() == {  # pylint: disable=no-member
         "total": 2,
         "succeeded": 2,
         "failed": 0,
@@ -278,7 +276,7 @@ def test_partial_completion_is_failed_with_a_nonzero_success_count():
     summary = roll_up(chain)
 
     assert summary.status == Status.FAILED
-    assert summary.counts.model_dump() == {
+    assert summary.counts.model_dump() == {  # pylint: disable=no-member
         "total": 3,
         "succeeded": 1,
         "failed": 1,
@@ -347,8 +345,8 @@ def test_a_running_target_is_counted_separately_from_failed():
     summary = roll_up(chain)
 
     assert summary.status == Status.RUNNING
-    assert summary.counts.running == 1
-    assert summary.counts.failed == 0
+    assert summary.counts.running == 1  # pylint: disable=no-member
+    assert summary.counts.failed == 0  # pylint: disable=no-member
 
 
 def test_cancel_requested_on_any_member_wins():
@@ -405,8 +403,107 @@ def test_attempt_records_the_owning_members_retry_count():
 
 def test_counts_always_partition_the_spec_targets():
     chain, _a, _b = _chain_root_failed_retry_succeeded()
-    counts = roll_up(chain).counts
+    counts = roll_up(chain).counts.model_dump()  # pylint: disable=no-member
 
-    assert counts.total == (
-        counts.succeeded + counts.failed + counts.running + counts.not_run
+    assert counts["total"] == (
+        counts["succeeded"] + counts["failed"] + counts["running"] + counts["not_run"]
     )
+
+
+def test_non_authoritative_targets_do_not_promote_a_failed_build_to_success():
+    # targets=None (build-everything default): counts.total is only what ran, so
+    # "all counted succeeded" must NOT win unless the newest attempt succeeded.
+    root = _build(Status.FAILED, targets=None)
+    chain = [
+        (root, [_run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")])
+    ]
+
+    assert roll_up(chain).status == Status.FAILED
+
+
+def test_non_authoritative_cancelled_build_with_a_succeeded_run_is_cancelled():
+    root = _build(Status.CANCELLED, targets=None)
+    chain = [
+        (root, [_run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")])
+    ]
+
+    assert roll_up(chain).status == Status.CANCELLED
+
+
+def test_non_authoritative_invalid_build_with_a_succeeded_run_is_failed():
+    # A build that produced a successful run but ended INVALID is reported FAILED,
+    # not INVALID: the INVALID row requires nothing to have succeeded.
+    root = _build(Status.INVALID, targets=None)
+    chain = [
+        (root, [_run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")])
+    ]
+
+    assert roll_up(chain).status == Status.FAILED
+
+
+def test_genuine_completion_still_succeeds_without_an_authoritative_target_list():
+    # The #222 fix must survive the guard: root FAILED, retry re-ran the failed
+    # target to SUCCESS, targets=None. The newest attempt is SUCCESS, so the job
+    # is SUCCESS even though the denominator is only what ran.
+    root = _build(Status.FAILED, targets=None)
+    retry = _build(Status.SUCCESS, retry_count=1, retry_of=root.uuid, targets=None)
+    root_a = _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")
+    root_b = _run(root.uuid, "targetB", Status.FAILED, "2020-01-01T00:01:00Z")
+    retry_b = _run(retry.uuid, "targetB", Status.SUCCESS, "2020-01-01T00:02:00Z")
+    chain = [(root, [root_a, root_b]), (retry, [retry_b])]
+
+    assert roll_up(chain).status == Status.SUCCESS
+
+
+def test_a_completed_but_cancelled_job_is_success_when_targets_are_authoritative():
+    # Pins branch order: succeeded==total (row 4) beats CANCELLED (row 5). A
+    # cancel that landed after every spec target already succeeded is too late to
+    # remove anything from the result. Reachable: cancel on the root, the
+    # in-flight retry finishes the remaining target.
+    root = _build(Status.CANCELLED, retry_count=0, targets=["targetA", "targetB"])
+    retry = _build(
+        Status.SUCCESS,
+        retry_count=1,
+        retry_of=root.uuid,
+        targets=["targetA", "targetB"],
+    )
+    root_a = _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")
+    retry_b = _run(retry.uuid, "targetB", Status.SUCCESS, "2020-01-01T00:02:00Z")
+    chain = [(root, [root_a]), (retry, [retry_b])]
+
+    assert roll_up(chain).status == Status.SUCCESS
+
+
+def test_never_succeeded_target_reports_its_latest_attempt():
+    # Pins _outcome_for's entries[-1]: a target that failed in the root and again
+    # in the retry must report the retry's run (attempt 1), not the root's, so a
+    # user opens the most recent logs.
+    root = _build(Status.FAILED, retry_count=0, targets=["targetA"])
+    retry = _build(
+        Status.FAILED, retry_count=1, retry_of=root.uuid, targets=["targetA"]
+    )
+    root_a = _run(root.uuid, "targetA", Status.FAILED, "2020-01-01T00:00:00Z")
+    retry_a = _run(retry.uuid, "targetA", Status.FAILED, "2020-01-01T00:02:00Z")
+    chain = [(root, [root_a]), (retry, [retry_a])]
+
+    outcome = roll_up(chain).targets[0]
+
+    assert outcome.attempt == 1
+    assert outcome.target_run_id == retry_a.uuid
+
+
+def test_invalid_conjunct_only_wins_when_nothing_succeeded():
+    # Pins the `and counts.succeeded == 0` conjunct on the INVALID row: a chain
+    # with a success plus an INVALID member is FAILED (partial), not INVALID.
+    root = _build(Status.FAILED, retry_count=0, targets=["targetA", "targetB"])
+    retry = _build(
+        Status.INVALID,
+        retry_count=1,
+        retry_of=root.uuid,
+        targets=["targetA", "targetB"],
+    )
+    root_a = _run(root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00Z")
+    root_b = _run(root.uuid, "targetB", Status.FAILED, "2020-01-01T00:01:00Z")
+    chain = [(root, [root_a, root_b]), (retry, [])]
+
+    assert roll_up(chain).status == Status.FAILED

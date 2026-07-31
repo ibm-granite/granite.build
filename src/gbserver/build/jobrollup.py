@@ -79,6 +79,9 @@ class JobTargetCounts(BaseModel):
     # Finished without succeeding. Kept distinct from `running` so an in-progress
     # job is never reported as having failed a target it has not actually failed.
     failed: int = 0
+    # Counts target-run statuses independently of the job's own status, so a
+    # finished job can still show running > 0 if a member's run rows were not
+    # finalized (e.g. a cross-member cancel updates build rows only).
     running: int = 0
     not_run: int = 0
 
@@ -145,6 +148,20 @@ def _group_runs_by_name(chain: ChainInput) -> Dict[str, List[ChainRun]]:
     return grouped
 
 
+def _spec_targets(
+    root_targets: Optional[List[str]], grouped: Dict[str, List[ChainRun]]
+) -> List[str]:
+    """Spec target names in a stable order, from an already-computed grouping.
+
+    ``root_targets`` is authoritative when set (it records the requested subset,
+    and is the only way to know a target was never dispatched); otherwise the
+    names are the sorted union of what actually ran.
+    """
+    if root_targets:
+        return list(dict.fromkeys(root_targets))
+    return sorted(grouped)
+
+
 def resolve_spec_targets(chain: ChainInput) -> List[str]:
     """The job's target names, in a stable order.
 
@@ -161,9 +178,7 @@ def resolve_spec_targets(chain: ChainInput) -> List[str]:
     keeps build-config parsing off the read path.
     """
     root_targets = chain[0][0].targets if chain else None
-    if root_targets:
-        return list(dict.fromkeys(root_targets))
-    return sorted(_group_runs_by_name(chain))
+    return _spec_targets(root_targets, _group_runs_by_name(chain))
 
 
 def _pick_winners(grouped: Dict[str, List[ChainRun]]) -> Dict[str, WinningRun]:
@@ -245,17 +260,18 @@ def pick_winning_runs(chain: ChainInput) -> Dict[str, WinningRun]:
 
 
 def _outcome_for(
-    name: str,
+    spec_name: str,
     grouped: Dict[str, List[ChainRun]],
     winners: Dict[str, WinningRun],
 ) -> TargetOutcome:
     """This spec target's best outcome across the whole chain."""
-    winner = winners.get(name)
+    winner = winners.get(spec_name)
     if winner is not None:
-        # `name` is the spec name, not winner.run.name: under cross-name reuse
-        # the winning run legitimately belongs to a differently-named target.
+        # `spec_name` is the spec name, not winner.run.name: under cross-name
+        # reuse the winning run legitimately belongs to a differently-named
+        # target.
         return TargetOutcome(
-            name=name,
+            name=spec_name,
             status=Status.SUCCESS,
             build_id=winner.build.uuid,
             target_run_id=winner.run.uuid,
@@ -263,16 +279,16 @@ def _outcome_for(
             attempt=winner.build.retry_count,
         )
 
-    entries = grouped.get(name) or []
+    entries = grouped.get(spec_name) or []
     if not entries:
         # No run at all: never dispatched, e.g. an upstream dependency failed.
-        return TargetOutcome(name=name)
+        return TargetOutcome(name=spec_name)
 
-    # Never succeeded anywhere, so the latest attempt's run is the outcome that
-    # represents this target.
+    # Never succeeded anywhere. Report the latest attempt's run: it is the one
+    # whose logs a user should open to see why the target is still failing.
     latest = entries[-1]
     return TargetOutcome(
-        name=name,
+        name=spec_name,
         status=latest.run.status,
         build_id=latest.build.uuid,
         target_run_id=latest.run.uuid,
@@ -282,7 +298,7 @@ def _outcome_for(
 
 
 def _job_status(  # pylint: disable=too-many-return-statements
-    statuses: List[Status], counts: JobTargetCounts
+    statuses: List[Status], counts: JobTargetCounts, targets_authoritative: bool
 ) -> Status:
     """The job's status. First match wins.
 
@@ -300,7 +316,14 @@ def _job_status(  # pylint: disable=too-many-return-statements
         # Nothing to aggregate, so defer to the most recent attempt rather than
         # inventing a verdict.
         return statuses[-1] if statuses else Status.PENDING
-    if counts.succeeded == counts.total:
+    if counts.succeeded == counts.total and (
+        targets_authoritative or (bool(statuses) and statuses[-1] == Status.SUCCESS)
+    ):
+        # When the target list is not authoritative (targets=None), the count
+        # denominator is only what actually ran, so "every counted target
+        # succeeded" is trivially true for a build that died before dispatching
+        # the rest. Trust that verdict only when the newest attempt itself
+        # succeeded; otherwise fall through to the member statuses below.
         return Status.SUCCESS
     if Status.CANCELLED in statuses:
         return Status.CANCELLED
@@ -322,33 +345,39 @@ def roll_up(chain: ChainInput) -> JobSummary:
         return JobSummary()
 
     root = chain[0][0]
-    # Grouped once and handed to _pick_winners, which exists in this shape so the
-    # chain is not walked twice.
+    # Group once; both the winners and the spec-target fallback reuse it.
     grouped = _group_runs_by_name(chain)
     winners = _pick_winners(grouped)
+    root_targets = root.targets
     outcomes = [
-        _outcome_for(name, grouped, winners) for name in resolve_spec_targets(chain)
+        _outcome_for(name, grouped, winners)
+        for name in _spec_targets(root_targets, grouped)
     ]
     counts = JobTargetCounts(
         total=len(outcomes),
-        succeeded=sum(1 for o in outcomes if o.status == Status.SUCCESS),
-        # Finished without succeeding. Kept separate from `running` so an
-        # in-progress job never reports having failed a target it has not failed.
+        succeeded=sum(1 for outcome in outcomes if outcome.status == Status.SUCCESS),
+        # finished without succeeding
         failed=sum(
             1
-            for o in outcomes
-            if o.status is not None
-            and o.status != Status.SUCCESS
-            and o.status.is_finished()
+            for outcome in outcomes
+            if outcome.status is not None
+            and outcome.status != Status.SUCCESS
+            and outcome.status.is_finished()
         ),
         running=sum(
-            1 for o in outcomes if o.status is not None and not o.status.is_finished()
+            1
+            for outcome in outcomes
+            if outcome.status is not None and not outcome.status.is_finished()
         ),
-        not_run=sum(1 for o in outcomes if o.status is None),
+        not_run=sum(1 for outcome in outcomes if outcome.status is None),
     )
     return JobSummary(
         job_id=root.uuid,
-        status=_job_status([build.status for build, _ in chain], counts),
+        status=_job_status(
+            [build.status for build, _ in chain],
+            counts,
+            targets_authoritative=bool(root_targets),
+        ),
         attempts=len(chain),
         build_ids=[build.uuid for build, _ in chain],
         targets=outcomes,
