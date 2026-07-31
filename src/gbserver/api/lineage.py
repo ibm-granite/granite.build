@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import has_space_member_access
+from gbserver.build.jobrollup import pick_winning_runs, resolve_spec_targets
 from gbserver.lineage.openlineage_models import (
     ArtifactGraphRequest,
     ArtifactGraphResponse,
@@ -38,7 +39,7 @@ from gbserver.lineage.openlineage_models import (
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
 from gbserver.lineage.openlineage_utils import parse_hf_url
 from gbserver.storage.singleton_storage import get_admin_storage
-from gbserver.storage.stored_build import StoredBuild
+from gbserver.storage.stored_build import StoredBuild, get_retry_chain_members
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.utils.logger import get_logger
 
@@ -80,17 +81,28 @@ class BuildJobStatsResponse(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     build_id: str
+    # The retry chain's root, set only when follow_retries=true, so a caller can
+    # tell a unified graph from a single build's.
+    job_id: Optional[str] = None
     targets: list[dict[str, list[Any]]]
 
 
 @lineage_api.get("/build/{build_id}")
-def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse:
-    """Get JobStats for all targets in a build."""
+def get_build_jobstats(
+    request: Request, build_id: str, follow_retries: bool = False
+) -> BuildJobStatsResponse:
+    """Get JobStats for all targets in a build.
+
+    With follow_retries=true the whole retry chain is reported as one job: each
+    spec target contributes the run that actually produced its artifacts, so a
+    target reused from an earlier attempt is dereferenced to that attempt's run
+    rather than appearing as an empty skipped run. Targets that never succeeded
+    are omitted — they produced nothing, so they have no provenance.
+    """
     storage = get_admin_storage()
 
     from gbserver.lineage.jobstats import get_lineage_store
 
-    # Get the build
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
         raise HTTPException(
@@ -98,24 +110,54 @@ def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse
             detail=f"Build with id {build_id} not found",
         )
     assert isinstance(build, StoredBuild)
+    # Every member of a retry chain shares the original's space and username
+    # (see BuildRunner.__prepare_retry, pinned by test_should_retry.py), so
+    # authorizing the queried build authorizes the whole chain.
     authorize_build_read_access(request, build)
 
-    # Get all targets for this build
-    row_filter = {"build_id": build_id}
-    targets = storage.target_storage.get_by_where(row_filter)
-
-    # Collect JobStats for each target
     jobstats_storage = get_lineage_store()
     target_responses: list[dict[str, list[Any]]] = []
 
-    for target in targets:
-        assert isinstance(target, StoredTargetRun)
+    if not follow_retries:
+        targets = storage.target_storage.get_by_where({"build_id": build_id})
+        for target in targets:
+            assert isinstance(target, StoredTargetRun)
+            _, jobstats_dict = jobstats_storage.create_jobstats_for_target(
+                storage, target, build
+            )
+            target_responses.append(jobstats_dict)
+        return BuildJobStatsResponse(build_id=build_id, targets=target_responses)
+
+    members = get_retry_chain_members(storage.build_storage, build)
+    chain = [
+        (
+            member,
+            [
+                target
+                for target in storage.target_storage.get_by_where(
+                    {"build_id": member.uuid}
+                )
+                if isinstance(target, StoredTargetRun)
+            ],
+        )
+        for member in members
+    ]
+    winners = pick_winning_runs(chain)
+    for name in resolve_spec_targets(chain):
+        winner = winners.get(name)
+        if winner is None:
+            continue
+        # Stamp the jobstats with the run's own build, not the queried one, so
+        # the namespace and source facets stay truthful to where the work
+        # happened.
         _, jobstats_dict = jobstats_storage.create_jobstats_for_target(
-            storage, target, build
+            storage, winner.run, winner.build
         )
         target_responses.append(jobstats_dict)
 
-    return BuildJobStatsResponse(build_id=build_id, targets=target_responses)
+    return BuildJobStatsResponse(
+        build_id=build_id, job_id=members[0].uuid, targets=target_responses
+    )
 
 
 @lineage_api.get("/target/{target_id}")
