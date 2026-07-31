@@ -140,7 +140,9 @@ class WandBLineageService(LineageService):
                     )
 
                     if self._is_huggingface_resource(out):
-                        self._register_hf_reference(run, out, resource_name, is_output=True)
+                        self._register_hf_reference(
+                            run, out, resource_name, is_output=True
+                        )
                     else:
                         artifact = wandb.Artifact(
                             name=resource_name, type=artifact_type, metadata=out
