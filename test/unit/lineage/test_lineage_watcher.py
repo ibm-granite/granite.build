@@ -260,3 +260,29 @@ class TestLineageWatcher:
         indices = [index for index, _event in events]
         assert indices == sorted(indices)
         assert all(isinstance(event, StoredEvent) for _index, event in events)
+
+    def test_get_events_after_index_pages_beyond_page_size(self):
+        """A backlog larger than the internal page_size (100) is fully returned.
+
+        Exercises the multi-page ``while`` loop and the descending-order
+        stop-at-watermark break in get_events_after_index, not just the single
+        steady-state page.
+        """
+        total = 250  # > page_size (100), forcing multiple pages
+        for i in range(total):
+            self.storage.event_storage.add(
+                _target_status_event(f"build-{i}", f"target-{i}", Status.SUCCESS)
+            )
+
+        # From index 0, every event is newer: all pages must be walked.
+        events = self.storage.event_storage.get_events_after_index(0)
+        assert len(events) == total
+        indices = [index for index, _event in events]
+        assert indices == sorted(indices)  # ascending for the caller
+        assert len(set(indices)) == total  # no duplicates across page boundaries
+
+        # A watermark mid-backlog returns only the strictly-newer tail, and the
+        # descending scan stops once it crosses the watermark.
+        cutoff = indices[total // 2]
+        newer = self.storage.event_storage.get_events_after_index(cutoff)
+        assert [idx for idx, _ in newer] == [i for i in indices if i > cutoff]

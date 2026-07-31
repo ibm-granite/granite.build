@@ -77,6 +77,27 @@ def test_is_offline_defaults_to_online():
     assert service._is_offline(object()) is False
 
 
+@pytest.mark.parametrize("mode", ["online", "run", "shared"])
+def test_is_offline_online_modes_are_live(mode):
+    """Modes with a live backend are not treated as offline."""
+    service = _service()
+    run = SimpleNamespace(settings=SimpleNamespace(mode=mode))
+    assert service._is_offline(run) is False
+
+
+@pytest.mark.parametrize("mode", ["offline", "disabled", "dryrun", "something-new"])
+def test_is_offline_non_live_modes_skip_artifacts(mode):
+    """Any mode outside the online allowlist fails safe as offline.
+
+    Guards the allowlist (vs. an "offline"-only denylist): a new or renamed
+    non-live mode must skip artifact registration, not raise against a dead
+    backend.
+    """
+    service = _service()
+    run = SimpleNamespace(settings=SimpleNamespace(mode=mode))
+    assert service._is_offline(run) is True
+
+
 def test_offline_skips_artifact_registration_with_single_warning(caplog):
     service = _service()
     run = _make_run(offline=True)

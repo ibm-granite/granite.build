@@ -181,8 +181,15 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
             rows = self._get_by_where_row_dicts(where=None, query_control=query_control)
             if not rows:
                 return 0
-            return rows[0].get("index", 0)
+            # `or 0` guards a NULL index column: `.get("index", 0)` only covers a
+            # missing key, not a present-but-None value, which would otherwise
+            # break the `> min_index` comparison in get_events_after_index.
+            return rows[0].get("index") or 0
         except Exception as e:
+            # Returning 0 here conflates "no events" with "query failed"; that is
+            # acceptable because this only seeds the watermark at startup and
+            # lineage recording is replay-safe (deterministic runIds +
+            # resume="allow" + content-dedupe), so a low reseed only reprocesses.
             self.logger.warning(f"Failed to get max index: {e}")
             return 0
 
@@ -196,7 +203,11 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
         The database is paged in descending ``index`` order and paging stops as
         soon as a row at or below ``min_index`` is seen. In steady state (few new
         events per poll) this reads a single small page rather than scanning the
-        whole ``gb_events`` table.
+        whole ``gb_events`` table. Paging restarts at page 0 on every call, so a
+        large accumulated backlog (watcher fell behind, or a burst exceeding
+        ``page_size`` between polls) re-reads from the top each poll; cost is
+        bounded by the backlog size, not the table size, and drains as the
+        watcher catches up.
 
         Args:
             min_index (int): Return events with index > min_index.
@@ -223,7 +234,8 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
                 if not rows:
                     break
                 for row in rows:
-                    if row.get("index", 0) > min_index:
+                    # `or 0` guards a NULL index column (see get_max_index).
+                    if (row.get("index") or 0) > min_index:
                         new_rows.append(row)
                     else:
                         # Rows are descending, so the first row at or below the
@@ -240,7 +252,7 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
             # Fetch the matching events in a single bulk query, then pair each
             # with its index (StoredEvent does not carry the autoincrement
             # index). Ascending index order for the caller.
-            new_rows.sort(key=lambda row: row.get("index", 0))
+            new_rows.sort(key=lambda row: row.get("index") or 0)
             uuids = [
                 row[UUID_COLUMN_NAME] for row in new_rows if row.get(UUID_COLUMN_NAME)
             ]
@@ -259,10 +271,13 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
                     continue
                 event = events_by_uuid.get(uuid)
                 if event:
-                    result.append((row.get("index", 0), event))
+                    result.append((row.get("index") or 0, event))
             return result
         except Exception as e:
-            self.logger.error(f"Failed to get events after index {min_index}: {e}")
+            # Match get_max_index: a query failure degrades to "no new events"
+            # (empty) and is logged at warning, not error. The watcher retries on
+            # its next poll, so a transient failure is not lost.
+            self.logger.warning(f"Failed to get events after index {min_index}: {e}")
             return []
 
     @classmethod

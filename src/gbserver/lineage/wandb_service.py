@@ -89,17 +89,25 @@ class WandBLineageService(LineageService):
         self._runs[run_id] = run
         return run
 
-    def _is_offline(self, run: Any) -> bool:
-        """Check whether a wandb run is in offline mode.
+    # wandb run modes in which a live backend IS available, so artifact
+    # registration can proceed. Any other mode (offline/disabled/dryrun/...) is
+    # treated as "no live backend" and artifact registration is skipped. Using
+    # an online allowlist rather than an offline denylist means a new or renamed
+    # non-live mode fails safe (skip) instead of raising against a dead backend.
+    _ONLINE_MODES = ("online", "run", "shared")
 
-        Prefers the documented ``run.settings.mode`` ("offline"/"online"/...),
-        falling back to the ``run.offline`` attribute for wandb versions that do
-        not expose settings on the run. Defaults to False (treat as online) if
-        neither is available.
+    def _is_offline(self, run: Any) -> bool:
+        """Check whether a wandb run lacks a live backend for artifact ops.
+
+        Prefers the documented ``run.settings.mode`` (e.g. "online"/"offline"/
+        "disabled"/"dryrun"), treating anything not in ``_ONLINE_MODES`` as
+        offline. Falls back to the ``run.offline`` attribute for wandb versions
+        that do not expose settings on the run. Defaults to False (treat as
+        online) if neither is available.
         """
         mode = getattr(getattr(run, "settings", None), "mode", None)
         if isinstance(mode, str):
-            return mode == "offline"
+            return mode not in self._ONLINE_MODES
         return bool(getattr(run, "offline", False))
 
     def _register_artifacts(self, run: Any, event: Dict) -> None:

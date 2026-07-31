@@ -36,6 +36,14 @@ class LineageWatcher:
     thread in the build-watch process (single-replica deployment), picking up
     target-SUCCESS events from gb_events and persisting lineage asynchronously.
 
+    Single-writer guarantee: the watcher is started only from
+    command_build_watch.py (the single-replica ``build-watch`` process), never
+    from rest-server, so exactly one watcher consumes gb_events. It must not be
+    wired into any additional entrypoint. Even if that guarantee were violated,
+    recording is idempotent/replay-safe (deterministic runIds + resume="allow" +
+    content-dedupe), so a duplicate watcher would waste I/O but not corrupt
+    lineage.
+
     The watermark is in-memory (seeded to max gb_events.index at start), so
     restart blind spot is accepted: events while watcher was down are skipped.
     Replay is safe by construction (deterministic runIds + resume="allow" +
