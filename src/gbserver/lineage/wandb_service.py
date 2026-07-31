@@ -63,8 +63,14 @@ class WandBLineageService(LineageService):
 
     def __init__(self):
         wandb.login(key=GBSERVER_WANDB_API_KEY, host=GBSERVER_WANDB_BASE_URL)
+        # Route wandb's Python-logger messages through gbserver's root handler
+        # (CustomFormatter) so any that surface match the gbserver log format,
+        # instead of wandb's own handler printing them raw. See issue #181 Task 1.
         wandb_logger = logging.getLogger("wandb")
         wandb_logger.setLevel(get_log_level(GBSERVER_WANDB_LOG_LEVEL))
+        for handler in list(wandb_logger.handlers):
+            wandb_logger.removeHandler(handler)
+        wandb_logger.propagate = True
         self._runs = {}
 
     def _get_run(self, run_id: str, job_name: str):
