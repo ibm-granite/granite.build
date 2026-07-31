@@ -68,7 +68,7 @@ class IStoredEventStorage(IItemStorage[StoredEvent]):
         )
 
     @abstractmethod
-    def get_events_after_index(self, min_index: int) -> list[StoredEvent]:
+    def get_events_after_index(self, min_index: int) -> list[tuple[int, StoredEvent]]:
         """Get all events with index > min_index, ordered ascending.
 
         Used by LineageWatcher to poll for new events.
@@ -77,7 +77,8 @@ class IStoredEventStorage(IItemStorage[StoredEvent]):
             min_index (int): Return events with index > min_index.
 
         Returns:
-            list[StoredEvent]: Events ordered by ascending index.
+            list[tuple[int, StoredEvent]]: (index, event) pairs ordered by
+            ascending index.
         """
         raise NotImplementedError(
             f"Sub-class {self.__class__.__name__} did not implement method throwing this exception"
@@ -173,19 +174,22 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
                 return 0
             return max(row.get("index", 0) for row in rows)
         except Exception as e:
-            self.logger.warning("Failed to get max index: %s", e)
+            self.logger.warning(f"Failed to get max index: {e}")
             return 0
 
-    def get_events_after_index(self, min_index: int) -> list[StoredEvent]:
+    def get_events_after_index(self, min_index: int) -> list[tuple[int, StoredEvent]]:
         """Get all events with index > min_index, ordered ascending.
 
-        Used by LineageWatcher to poll for new events.
+        Used by LineageWatcher to poll for new events. The row index is returned
+        alongside each event because StoredEvent does not carry the autoincrement
+        index itself.
 
         Args:
             min_index (int): Return events with index > min_index.
 
         Returns:
-            list[StoredEvent]: Events ordered by ascending index.
+            list[tuple[int, StoredEvent]]: (index, event) pairs ordered by
+            ascending index.
         """
         from gbserver.storage.storage import QueryControl, SortOrder
 
@@ -199,17 +203,16 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
 
             filtered_rows = [row for row in rows if row.get("index", 0) > min_index]
 
-            result = []
+            result: list[tuple[int, StoredEvent]] = []
             for row in filtered_rows:
                 uuid = row.get("uuid")
                 if uuid:
                     event = self.get_by_uuid(uuid)
                     if event:
-                        event.index = row.get("index", 0)
-                        result.append(event)
+                        result.append((row.get("index", 0), event))
             return result
         except Exception as e:
-            self.logger.exception("Failed to get events after index %d: %s", min_index, e)
+            self.logger.error(f"Failed to get events after index {min_index}: {e}")
             return []
 
     @classmethod

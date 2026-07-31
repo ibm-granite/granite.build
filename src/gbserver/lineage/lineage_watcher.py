@@ -18,11 +18,12 @@
 
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from gbserver.lineage.jobstats import ILineageStore, get_lineage_store
 from gbserver.storage.singleton_storage import get_admin_storage
-from gbserver.types.buildevent import BuildEventType
+from gbserver.types.buildevent import BuildEventStatusPayload, BuildEventType
+from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -91,17 +92,38 @@ class LineageWatcher:
             logger.warning("Failed to get max event index: %s", e)
             return 0
 
+    @staticmethod
+    def _is_target_success(build_event: Any) -> bool:
+        """Return True if the event marks a target that completed successfully."""
+        if build_event.type != BuildEventType.STATUS_EVENT:
+            return False
+        if build_event.run_metadata.type != "Target":
+            return False
+        payload = build_event.payload
+        return (
+            isinstance(payload, BuildEventStatusPayload)
+            and payload.status == Status.SUCCESS
+        )
+
     def _process_new_events(self) -> None:
-        """Process target-SUCCESS events since the watermark and record lineage."""
+        """Process successful target-completion events since the watermark and
+        record lineage.
+
+        A target that completed successfully is a STATUS_EVENT whose run
+        metadata type is "Target" and whose payload status is SUCCESS. This
+        mirrors how BuildRunner detected target completion before lineage
+        recording moved to this watcher (see buildrunner.py __process_build_
+        target_info_type_event).
+        """
         storage = get_admin_storage()
 
         events = storage.event_storage.get_events_after_index(self._watermark)
         if not events:
             return
 
-        for event in events:
-            self._watermark = event.index
-            if event.build_event.type != BuildEventType.TARGET_SUCCESS:
+        for index, event in events:
+            self._watermark = index
+            if not self._is_target_success(event.build_event):
                 continue
 
             try:
