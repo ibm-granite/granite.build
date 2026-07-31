@@ -1,4 +1,5 @@
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,29 @@ llm.build:
       steps:
         - step_uri: space://steps/download
 """
+
+
+class _FakeBuildStorage:
+    """Minimal in-memory build storage for exercising __prepare_retry."""
+
+    def __init__(self, build: StoredBuild):
+        self._by_uuid = {build.uuid: build}
+        self.added: list[StoredBuild] = []
+
+    def get_by_uuid(self, uuid):
+        return self._by_uuid.get(uuid)
+
+    def add(self, build):
+        self._by_uuid[build.uuid] = build
+        self.added.append(build)
+
+    def update(self, build):
+        self._by_uuid[build.uuid] = build
+
+
+class _FakeStorage:
+    def __init__(self, build: StoredBuild):
+        self.build_storage = _FakeBuildStorage(build)
 
 
 class TestShouldRetry:
@@ -109,3 +133,28 @@ class TestShouldRetry:
         assert build.retry_of_build_id == original_id
         assert build.retry_count == 1
         assert self._runner()._should_retry(build)
+
+    def test_retry_copies_owner_and_space_from_the_original(self):
+        """The status and lineage endpoints authorize a whole retry chain by
+        checking only the queried build. That is safe only because every retry
+        shares the original's owner and space. If __prepare_retry ever stops
+        copying space_name/username, this must fail rather than the shortcut
+        silently becoming an access-control hole.
+        """
+        original = _make_stored_build_with_config(
+            _BUILD_YAML_MAX_RETRIES_2, status=Status.FAILED, retry_count=0
+        )
+        runner = self._runner()
+        runner.storage = _FakeStorage(original)
+        runner.stored_build = original
+        runner._retry_chain_lock = threading.Lock()
+        runner._retry_chain_build_ids = []
+
+        retry = runner._BuildRunner__prepare_retry()
+
+        assert retry is not None
+        assert retry.space_name == original.space_name
+        assert retry.username == original.username
+        # And it is a genuine new chain member, not the original returned back.
+        assert retry.uuid != original.uuid
+        assert retry.retry_of_build_id == original.uuid
