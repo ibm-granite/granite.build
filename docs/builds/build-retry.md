@@ -80,6 +80,100 @@ after that first attempt has failed and the chain has moved on to a later retry.
 | `retry_of_build_id` | retry build | UUID of the original failed build (root of the chain) |
 | `retry_build_id` | original/previous build | UUID of the next retry build created for this build |
 
+## Unified job status
+
+Each attempt in a retry chain keeps its own status forever. The original build stays
+`FAILED` even after a later attempt finishes every remaining target, so no single build
+record answers the question a user actually asks — *did the build specification complete?*
+
+The **job view** answers that. It treats the whole retry chain as one logical job and derives
+an aggregate status on read from the same records the status endpoint already returns. Nothing
+is retro-relabelled: there is no schema change, and every `StoredBuild` retains its per-attempt
+status. The chain's root UUID is the job's stable identity — no new table or identifier.
+
+### Requesting the job view
+
+`GET /builds/{build_id}/status?follow_retries=true` adds a `job` object to the response
+(alongside the `retry_chain` list). Without `follow_retries` the field is absent and the
+response is unchanged. The `job` is a `JobSummary`:
+
+| Field | Meaning |
+|---|---|
+| `job_id` | UUID of the chain root — the job's stable identity |
+| `status` | The aggregate job status (see precedence below) |
+| `attempts` | Number of builds in the chain (1-based) |
+| `build_ids` | UUIDs of every chain member, root first |
+| `targets` | Per spec-target outcome (`name`, `status`, `build_id`, `target_run_id`, `attempt`) |
+| `counts` | Roll-up of the spec targets across the chain |
+
+`counts` partitions the spec targets so that `total == succeeded + failed + running + not_run`:
+
+| Count | Meaning |
+|---|---|
+| `total` | Number of spec targets |
+| `succeeded` | Targets that succeeded on some attempt |
+| `failed` | Targets that finished without succeeding |
+| `running` | Targets whose latest run has not finished |
+| `not_run` | Targets that were never dispatched (no run at all) |
+
+### Status precedence
+
+The job status is decided by the first matching rule, top to bottom:
+
+| # | Condition | Job status |
+|---|---|---|
+| 1 | Any member is `CANCEL_REQUESTED` | `CANCEL_REQUESTED` |
+| 2 | Any member is not finished | `RUNNING` |
+| 3 | `counts.total == 0` (nothing to aggregate) | The latest member's own status |
+| 4 | Every spec target succeeded (subject to the SUCCESS guard below) | `SUCCESS` |
+| 5 | Any member is `CANCELLED` | `CANCELLED` |
+| 6 | Any member is `INVALID` and nothing succeeded | `INVALID` |
+| 7 | Otherwise | `FAILED` |
+
+There is deliberately **no `PARTIAL` status**. A job that completed some but not all of its
+targets is `FAILED` with `counts.succeeded > 0` — read the counts to distinguish a total
+failure from a near miss. Adding a job-only status member to the shared status vocabulary would
+leak the concept into per-build status, so it is expressed through the counts instead.
+
+### The SUCCESS guard and the "never ran" limitation
+
+Rule 4 (`SUCCESS`) carries a guard tied to whether the target list is **authoritative**. A
+build submitted with an explicit `targets` list records exactly which targets were requested,
+so a target that was never dispatched (for example, because an upstream dependency failed) is
+known and counted as `not_run`. When the list is authoritative, "every spec target succeeded"
+is trustworthy on its own.
+
+When the build was submitted **without** an explicit `targets` list (the default), the job has
+no record of targets that never ran — the only spec targets it can see are the ones that
+actually produced a run. The `not_run` denominator is therefore incomplete: "every counted
+target succeeded" would be trivially true for a build that died before dispatching the rest. To
+avoid reporting `SUCCESS` for such a build, the guard additionally requires the **newest
+attempt's own build status** to be `SUCCESS`. If it is not, the verdict falls through to the
+member statuses and lands on `FAILED`.
+
+This "never ran" limitation is intentional: counting never-dispatched targets from an implicit
+target list would require parsing the build config on the read path, which the job view avoids.
+
+### CLI
+
+`gbcli build status` follows the retry chain by default. For a build that was actually retried
+(more than one attempt), the headline **Status** now reports the *job* status. The queried
+build's own status moves to a **This attempt** line, and a **Job result** line summarises the
+roll-up:
+
+```
+- **Status**: SUCCESS
+- **This attempt**: FAILED (attempt 1 of 2)
+- **Job result**: 2 of 2 targets succeeded
+```
+
+The **Job result** line appends any non-zero `failed`, `running`, and `never ran` counts (the
+CLI renders `not_run` as "never ran"). A build with a single attempt is unchanged: the headline
+is its own status and the extra lines are omitted.
+
+`gbcli build status --format json` includes a `job` object in the output (the same
+`JobSummary`), or `null` when the retry chain is not followed.
+
 ## Examples
 
 ### Single retry on failure
@@ -112,6 +206,21 @@ llm.build:
 ```
 
 `max_retries` defaults to `0`. A failure ends the build immediately with no retry.
+
+### Job status across a retry (worked example)
+
+A build has two targets, `targetA` and `targetB`, and `max_retries: 1`:
+
+1. The original build runs. `targetA` succeeds; `targetB` fails. The build ends `FAILED`.
+2. gbserver creates one retry. `targetA` is reused (skipped) from the original attempt;
+   `targetB` re-runs and succeeds. The retry build ends `SUCCESS`.
+
+The two build records keep their own statuses — the original stays `FAILED`, the retry is
+`SUCCESS`. Asking the retry chain for its job view returns `status = SUCCESS` with
+`counts = {total: 2, succeeded: 2, failed: 0, running: 0, not_run: 0}`: both spec targets
+succeeded somewhere in the chain, so the job specification completed. `gbcli build status`
+reports **Status: SUCCESS**, **This attempt: FAILED** (when queried on the original), and
+**Job result: 2 of 2 targets succeeded**.
 
 ## Target reuse across the retry chain
 
