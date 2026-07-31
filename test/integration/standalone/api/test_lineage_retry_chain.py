@@ -29,8 +29,10 @@ job_id, not on backend payload internals.
 
 from types import SimpleNamespace
 from typing import Self
+from unittest.mock import patch
 
 import pytest
+from fastapi import HTTPException
 from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbserver.api.lineage import get_build_jobstats
@@ -47,6 +49,17 @@ def _owner_request() -> SimpleNamespace:
     return SimpleNamespace(
         state=SimpleNamespace(
             data={"user": SimpleNamespace(login="tester", email="tester@example.com")}
+        )
+    )
+
+
+def _non_member_request() -> SimpleNamespace:
+    """A caller who is neither the owner 'tester' nor a member of 'testspace'."""
+    return SimpleNamespace(
+        state=SimpleNamespace(
+            data={
+                "user": SimpleNamespace(login="intruder", email="intruder@example.com")
+            }
         )
     )
 
@@ -172,3 +185,56 @@ class TestLineageRetryChain(AbstractSingletonStorageUsingTest):
         # no provenance to report.
         assert resp.job_id == root.uuid
         assert len(resp.targets) == 1
+
+    def test_follow_reports_observed_winners_when_targets_are_unset(self: Self):
+        # targets=None: resolve_spec_targets falls back to the sorted union of
+        # observed run names, so the unified graph still has one entry per
+        # winning target (targetA from the root, targetB from the retry).
+        root = self._add_build(Status.FAILED, 0, targets=None)
+        retry = self._add_build(
+            Status.SUCCESS, 1, retry_of_build_id=root.uuid, targets=None
+        )
+        root.retry_build_id = retry.uuid
+        self.storage.build_storage.update(root)
+        root_a = self._add_target(
+            root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00.000Z"
+        )
+        self._add_target(
+            root.uuid, "targetB", Status.FAILED, "2020-01-01T00:01:00.000Z"
+        )
+        self._add_target(
+            retry.uuid,
+            "targetA",
+            Status.SUCCESS,
+            None,
+            skipped_for_prerun_target_id=root_a.uuid,
+        )
+        self._add_target(
+            retry.uuid, "targetB", Status.SUCCESS, "2020-01-01T00:02:00.000Z"
+        )
+
+        resp = get_build_jobstats(_owner_request(), root.uuid, follow_retries=True)
+
+        assert resp.job_id == root.uuid
+        assert len(resp.targets) == 2
+
+    def test_follow_rejects_a_non_member(self: Self):
+        # The follow path authorizes only the queried build and then reads the
+        # rest of the chain unchecked, so the gate on the queried build is what
+        # protects the whole chain. The session autouse fixture stubs
+        # is_super_admin to True (mock mode), so the real rejection path is only
+        # reachable by locally overriding it False — the same pattern used in
+        # test/unit/api/test_lineage.py and test_builds.py.
+        root, _retry, _root_a = self._make_chain()
+
+        with (
+            patch("gbserver.api.utils.is_super_admin", return_value=False),
+            patch("gbserver.api.utils.is_space_admin", return_value=False),
+            patch("gbserver.api.utils.space_access_check", return_value=False),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                get_build_jobstats(
+                    _non_member_request(), root.uuid, follow_retries=True
+                )
+
+        assert exc_info.value.status_code == 401

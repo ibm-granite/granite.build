@@ -129,6 +129,10 @@ def get_build_jobstats(
         return BuildJobStatsResponse(build_id=build_id, targets=target_responses)
 
     members = get_retry_chain_members(storage.build_storage, build)
+    # Re-query each member's targets, including the queried build. Unlike the
+    # status endpoint (Task 4), there is no already-assembled record graph worth
+    # reusing here — each member's lineage input is one get_by_where — so the
+    # queried build is not special-cased.
     chain = [
         (
             member,
