@@ -113,10 +113,12 @@ def _job_overview_lines(details: Any) -> tuple[str, str, str]:
         if details["build_id"] in build_ids
         else 0
     )
-    attempt_line = (
-        f"\n- **This attempt**: {build_headline} "
-        f"(attempt {position} of {job.get('attempts')})"
+    # Omit the ordinal when the queried build isn't found in the chain (defensive
+    # — it always is in practice); "attempt 0 of N" would read like a bug.
+    attempt_ordinal = (
+        f" (attempt {position} of {job.get('attempts')})" if position else ""
     )
+    attempt_line = f"\n- **This attempt**: {build_headline}{attempt_ordinal}"
 
     counts = job.get("counts") or {}
     extras = [

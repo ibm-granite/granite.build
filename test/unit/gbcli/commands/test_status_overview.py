@@ -141,12 +141,17 @@ def test_missing_job_falls_back_to_the_build_status():
 
 def test_queried_build_not_in_chain_degrades_gracefully():
     # Defensive: if the queried build id somehow isn't in build_ids, don't crash;
-    # report attempt 0 rather than raising.
+    # drop the ordinal rather than raising or showing "attempt 0 of 2".
     _h, attempt_line, _s = _job_overview_lines(
         _details(status="failed", build_id="ghost", job=_job())
     )
 
-    assert "of 2" in attempt_line  # no exception; position degrades to 0
+    # No exception; the per-attempt status is still shown, but the ordinal is
+    # dropped rather than rendering a misleading "(attempt 0 of 2)". (The label
+    # "**This attempt**" itself still contains the word "attempt".)
+    assert "FAILED" in attempt_line
+    assert "(attempt" not in attempt_line
+    assert "of 2" not in attempt_line
 
 
 def test_full_output_renders_the_job_status_end_to_end():
@@ -167,4 +172,27 @@ def test_full_output_renders_the_job_status_end_to_end():
 
     rendered = execution_status_plain_output(details, {}, [], show_events=True)
 
+    assert "SUCCESS" in rendered
+
+
+def test_full_output_has_no_job_lines_for_an_unretried_build():
+    from gbcli.commands.command_build import execution_status_plain_output
+
+    details = {
+        "build_id": "solo",
+        "name": "b",
+        "description": "",
+        "status": "success",
+        "started_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2020-01-01T00:03:00Z",
+        "source_pr": "",
+        "retry_of_build_ids": [],
+        "retried_by_build_ids": [],
+        "job": None,
+    }
+
+    rendered = execution_status_plain_output(details, {}, [], show_events=True)
+
+    assert "This attempt" not in rendered
+    assert "Job result" not in rendered
     assert "SUCCESS" in rendered
