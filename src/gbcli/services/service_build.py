@@ -1274,6 +1274,10 @@ def build_status(
         return None, None, None, "Build status could not be retrieved."
     build_status = status_response["status"]
     retry_chain = status_response.get("retry_chain") if follow_retries else None
+    # The chain aggregated into one job: whether the build specification
+    # completed, regardless of which attempt did the work. Present only when
+    # following the retry chain (Task 4 populates it alongside retry_chain).
+    job = status_response.get("job") if follow_retries else None
 
     if id_format != "url":
         resolved_space_name = global_space.get("name")
@@ -1379,6 +1383,7 @@ def build_status(
         "description": build_status["build"]["description"],
         "retry_of_build_ids": retry_of_build_ids,
         "retried_by_build_ids": retried_by_build_ids,
+        "job": job,
     }
 
     return build_details, targets, build_history, None
