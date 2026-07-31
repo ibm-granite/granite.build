@@ -198,6 +198,7 @@ class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
 
         resp = get_build_status(_owner_request(), root.uuid, follow_retries=True)
 
+        assert resp.job is not None
         assert resp.job.status == Status.FAILED
         assert resp.job.counts.succeeded == 1
         assert resp.job.counts.failed == 1
@@ -210,4 +211,67 @@ class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
         primary = get_build_status(_owner_request(), retry.uuid, follow_retries=True)
         alias = get_build_status2(_owner_request(), retry.uuid, follow_retries=True)
 
+        assert primary.job is not None
         assert alias.job == primary.job
+
+    def test_job_for_a_targets_none_chain_where_the_retry_completed_it(self: Self):
+        # The common production shape: no explicit target list, so the roll-up
+        # takes its non-authoritative branch and trusts SUCCESS only because the
+        # newest attempt (the retry) itself succeeded. Exercises Task 3's blocker
+        # fix end-to-end through the endpoint.
+        root = self._add_build(Status.FAILED, 0, targets=None)
+        retry = self._add_build(
+            Status.SUCCESS, 1, retry_of_build_id=root.uuid, targets=None
+        )
+        root.retry_build_id = retry.uuid
+        self.storage.build_storage.update(root)
+        root_a = self._add_target(
+            root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00.000Z"
+        )
+        self._add_target(
+            root.uuid, "targetB", Status.FAILED, "2020-01-01T00:01:00.000Z"
+        )
+        self._add_target(
+            retry.uuid,
+            "targetA",
+            Status.SUCCESS,
+            None,
+            skipped_for_prerun_target_id=root_a.uuid,
+        )
+        self._add_target(
+            retry.uuid, "targetB", Status.SUCCESS, "2020-01-01T00:02:00.000Z"
+        )
+
+        resp = get_build_status(_owner_request(), root.uuid, follow_retries=True)
+
+        assert resp.job is not None
+        assert resp.job.status == Status.SUCCESS
+
+    def test_job_for_a_targets_none_failed_build_is_not_promoted_to_success(self: Self):
+        # The blocker: with targets=None the count denominator is only what ran,
+        # so a single failed build whose one dispatched target succeeded must NOT
+        # report SUCCESS through the endpoint.
+        root = self._add_build(Status.FAILED, 0, targets=None)
+        self._add_target(
+            root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00.000Z"
+        )
+
+        resp = get_build_status(_owner_request(), root.uuid, follow_retries=True)
+
+        assert resp.job is not None
+        assert resp.job.status == Status.FAILED
+
+    def test_job_for_a_single_build_with_no_retries(self: Self):
+        # Chain length 1: follow_retries=true on an un-retried build still yields
+        # a one-member job.
+        build = self._add_build(Status.SUCCESS, 0, targets=["targetA"])
+        self._add_target(
+            build.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00.000Z"
+        )
+
+        resp = get_build_status(_owner_request(), build.uuid, follow_retries=True)
+
+        assert resp.job is not None
+        assert resp.job.attempts == 1
+        assert resp.job.build_ids == [build.uuid]
+        assert resp.job.status == Status.SUCCESS
