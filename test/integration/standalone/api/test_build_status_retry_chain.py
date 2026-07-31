@@ -50,7 +50,11 @@ class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
     """get_build_status follows the retry chain only when asked to."""
 
     def _add_build(
-        self: Self, status: Status, retry_count: int, retry_of_build_id=None
+        self: Self,
+        status: Status,
+        retry_count: int,
+        retry_of_build_id=None,
+        targets=None,
     ) -> StoredBuild:
         build = StoredBuild(
             name="test",
@@ -60,6 +64,7 @@ class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
             status=status,
             retry_count=retry_count,
             retry_of_build_id=retry_of_build_id,
+            targets=targets,
         )
         self.storage.build_storage.add(build)
         return build
@@ -85,8 +90,13 @@ class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
 
     def _make_chain(self: Self):
         """root (succeeded targetA, failed targetB) -> retry (skipped targetA, ok targetB)."""
-        root = self._add_build(Status.FAILED, 0)
-        retry = self._add_build(Status.SUCCESS, 1, retry_of_build_id=root.uuid)
+        root = self._add_build(Status.FAILED, 0, targets=["targetA", "targetB"])
+        retry = self._add_build(
+            Status.SUCCESS,
+            1,
+            retry_of_build_id=root.uuid,
+            targets=["targetA", "targetB"],
+        )
         root.retry_build_id = retry.uuid
         self.storage.build_storage.update(root)
 
@@ -146,3 +156,58 @@ class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
         assert [m.build.uuid for m in alias.retry_chain] == [
             m.build.uuid for m in primary.retry_chain
         ]
+
+    def test_no_follow_omits_the_job_summary(self: Self):
+        _root, retry, _root_a = self._make_chain()
+
+        resp = get_build_status(_owner_request(), retry.uuid)
+
+        assert resp.job is None
+
+    def test_job_reports_success_when_queried_by_the_root_build(self: Self):
+        """Regression test for issue #222.
+
+        The root build failed and stays FAILED, but the retry completed every
+        remaining target, so the job as a whole succeeded. Querying by the root's
+        own id must say so.
+        """
+        root, retry, _root_a = self._make_chain()
+
+        resp = get_build_status(_owner_request(), root.uuid, follow_retries=True)
+
+        assert resp.job is not None
+        assert resp.job.status == Status.SUCCESS
+        assert resp.job.job_id == root.uuid
+        assert resp.job.attempts == 2
+        assert resp.job.build_ids == [root.uuid, retry.uuid]
+        assert resp.job.counts.total == 2
+        assert resp.job.counts.succeeded == 2
+        # The queried build's own status is untouched and still honest.
+        assert resp.status.build.status == Status.FAILED
+
+    def test_job_reports_partial_completion_for_an_exhausted_chain(self: Self):
+        root = self._add_build(
+            Status.FAILED, 0, targets=["targetA", "targetB", "targetC"]
+        )
+        self._add_target(
+            root.uuid, "targetA", Status.SUCCESS, "2020-01-01T00:00:00.000Z"
+        )
+        self._add_target(
+            root.uuid, "targetB", Status.FAILED, "2020-01-01T00:01:00.000Z"
+        )
+
+        resp = get_build_status(_owner_request(), root.uuid, follow_retries=True)
+
+        assert resp.job.status == Status.FAILED
+        assert resp.job.counts.succeeded == 1
+        assert resp.job.counts.failed == 1
+        # targetC never ran because it depended on the failed targetB.
+        assert resp.job.counts.not_run == 1
+
+    def test_status2_alias_returns_the_same_job(self: Self):
+        _root, retry, _root_a = self._make_chain()
+
+        primary = get_build_status(_owner_request(), retry.uuid, follow_retries=True)
+        alias = get_build_status2(_owner_request(), retry.uuid, follow_retries=True)
+
+        assert alias.job == primary.job
