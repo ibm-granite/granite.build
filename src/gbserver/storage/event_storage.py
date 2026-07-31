@@ -165,14 +165,23 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
 
         Used by LineageWatcher to seed its watermark at startup.
 
+        The query orders by ``index`` descending and pages a single row, so the
+        database returns one row rather than the whole table.
+
         Returns:
             int: Maximum index value, or 0 if no events exist.
         """
+        from gbserver.storage.storage import Pagination, QueryControl, SortOrder
+
         try:
-            rows = self._get_by_where_row_dicts(where=None)
+            query_control = QueryControl(
+                sort_orders=[SortOrder(column="index", ascending=False)],
+                pagination=Pagination(index=0, size=1),
+            )
+            rows = self._get_by_where_row_dicts(where=None, query_control=query_control)
             if not rows:
                 return 0
-            return max(row.get("index", 0) for row in rows)
+            return rows[0].get("index", 0)
         except Exception as e:
             self.logger.warning(f"Failed to get max index: {e}")
             return 0
@@ -184,6 +193,11 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
         alongside each event because StoredEvent does not carry the autoincrement
         index itself.
 
+        The database is paged in descending ``index`` order and paging stops as
+        soon as a row at or below ``min_index`` is seen. In steady state (few new
+        events per poll) this reads a single small page rather than scanning the
+        whole ``gb_events`` table.
+
         Args:
             min_index (int): Return events with index > min_index.
 
@@ -191,25 +205,61 @@ class BaseStoredEventStorage(BaseItemStorage[StoredEvent], IStoredEventStorage):
             list[tuple[int, StoredEvent]]: (index, event) pairs ordered by
             ascending index.
         """
-        from gbserver.storage.storage import QueryControl, SortOrder
+        from gbserver.storage.storage import Pagination, QueryControl, SortOrder
 
+        page_size = 100
         try:
-            sort_order = SortOrder(column="index", ascending=True)
-            query_control = QueryControl(sort_orders=[sort_order])
+            new_rows: list[dict] = []
+            page_index = 0
+            done = False
+            while not done:
+                query_control = QueryControl(
+                    sort_orders=[SortOrder(column="index", ascending=False)],
+                    pagination=Pagination(index=page_index, size=page_size),
+                )
+                rows = self._get_by_where_row_dicts(
+                    where=None, query_control=query_control
+                )
+                if not rows:
+                    break
+                for row in rows:
+                    if row.get("index", 0) > min_index:
+                        new_rows.append(row)
+                    else:
+                        # Rows are descending, so the first row at or below the
+                        # watermark means every remaining row is older too.
+                        done = True
+                        break
+                if len(rows) < page_size:
+                    break
+                page_index += 1
 
-            rows = self._get_by_where_row_dicts(where=None, query_control=query_control)
-            if not rows:
+            if not new_rows:
                 return []
 
-            filtered_rows = [row for row in rows if row.get("index", 0) > min_index]
+            # Fetch the matching events in a single bulk query, then pair each
+            # with its index (StoredEvent does not carry the autoincrement
+            # index). Ascending index order for the caller.
+            new_rows.sort(key=lambda row: row.get("index", 0))
+            uuids = [
+                row[UUID_COLUMN_NAME] for row in new_rows if row.get(UUID_COLUMN_NAME)
+            ]
+            if not uuids:
+                return []
+            # A single IN (...) query rather than one get_by_uuid per row.
+            events_by_uuid = {
+                event.uuid: event
+                for event in self.get_by_where({UUID_COLUMN_NAME: uuids})
+            }
 
             result: list[tuple[int, StoredEvent]] = []
-            for row in filtered_rows:
-                uuid = row.get("uuid")
-                if uuid:
-                    event = self.get_by_uuid(uuid)
-                    if event:
-                        result.append((row.get("index", 0), event))
+            for row in new_rows:
+                uuid = row.get(UUID_COLUMN_NAME)
+                if not uuid:
+                    continue
+                event = events_by_uuid.get(uuid)
+                if event:
+                    result.append((row.get("index", 0), event))
             return result
         except Exception as e:
             self.logger.error(f"Failed to get events after index {min_index}: {e}")

@@ -90,8 +90,49 @@ class WandBLineageService(LineageService):
         return run
 
     def _is_offline(self, run: Any) -> bool:
-        """Check if a wandb run is in offline mode."""
-        return getattr(run, "offline", False)
+        """Check whether a wandb run is in offline mode.
+
+        Prefers the documented ``run.settings.mode`` ("offline"/"online"/...),
+        falling back to the ``run.offline`` attribute for wandb versions that do
+        not expose settings on the run. Defaults to False (treat as online) if
+        neither is available.
+        """
+        mode = getattr(getattr(run, "settings", None), "mode", None)
+        if isinstance(mode, str):
+            return mode == "offline"
+        return bool(getattr(run, "offline", False))
+
+    def _register_artifacts(self, run: Any, event: Dict) -> None:
+        """Register input and output artifacts for the run.
+
+        Requires a live wandb backend; callers must skip this in offline mode.
+        """
+        for direction, resources in (
+            ("input", event.get("inputs", [])),
+            ("output", event.get("outputs", [])),
+        ):
+            is_output = direction == "output"
+            for resource in resources:
+                resource_name = self._dataset_name(resource)
+                resource_type = self._get_hf_type(resource)
+                artifact_type = (
+                    resource_type
+                    if resource_type in ("model", "dataset", "bucket")
+                    else "dataset"
+                )
+
+                if self._is_huggingface_resource(resource):
+                    self._register_hf_reference(
+                        run, resource, resource_name, is_output=is_output
+                    )
+                else:
+                    artifact = wandb.Artifact(
+                        name=resource_name, type=artifact_type, metadata=resource
+                    )
+                    if is_output:
+                        run.log_artifact(artifact)
+                    else:
+                        run.use_artifact(artifact)
 
     def emit_event(self, event: Dict) -> None:
         try:
@@ -101,53 +142,16 @@ class WandBLineageService(LineageService):
 
             run = self._get_run(run_id, job_name)
 
+            # Artifact registration requires a live wandb backend; in offline
+            # mode it raises. Skip only the artifact block here (run config,
+            # facets, tags and the event log below still apply offline).
             if self._is_offline(run):
                 logger.warning(
                     "wandb offline mode; skipping artifact lineage registration for run %s",
                     run_id,
                 )
-                offline = True
             else:
-                offline = False
-
-            if not offline:
-                for inp in event.get("inputs", []):
-                    resource_name = self._dataset_name(inp)
-                    resource_type = self._get_hf_type(inp)
-                    artifact_type = (
-                        resource_type
-                        if resource_type in ("model", "dataset", "bucket")
-                        else "dataset"
-                    )
-
-                    if self._is_huggingface_resource(inp):
-                        self._register_hf_reference(
-                            run, inp, resource_name, is_output=False
-                        )
-                    else:
-                        artifact = wandb.Artifact(
-                            name=resource_name, type=artifact_type, metadata=inp
-                        )
-                        run.use_artifact(artifact)
-
-                for out in event.get("outputs", []):
-                    resource_name = self._dataset_name(out)
-                    resource_type = self._get_hf_type(out)
-                    artifact_type = (
-                        resource_type
-                        if resource_type in ("model", "dataset", "bucket")
-                        else "dataset"
-                    )
-
-                    if self._is_huggingface_resource(out):
-                        self._register_hf_reference(
-                            run, out, resource_name, is_output=True
-                        )
-                    else:
-                        artifact = wandb.Artifact(
-                            name=resource_name, type=artifact_type, metadata=out
-                        )
-                        run.log_artifact(artifact)
+                self._register_artifacts(run, event)
 
             run_facets = event.get("run", {}).get("facets", {})
             job_facets = event.get("job", {}).get("facets", {})

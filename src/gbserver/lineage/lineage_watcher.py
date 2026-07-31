@@ -78,8 +78,8 @@ class LineageWatcher:
         while not self.stop_event.is_set():
             try:
                 self._process_new_events()
-            except Exception as e:
-                logger.exception("LineageWatcher iteration failed: %s", e)
+            except Exception:
+                logger.exception("LineageWatcher iteration failed")
 
             time.sleep(self.monitoring_interval)
 
@@ -115,6 +115,7 @@ class LineageWatcher:
         recording moved to this watcher (see buildrunner.py __process_build_
         target_info_type_event).
         """
+        assert self._store is not None, "start() must set the lineage store first"
         storage = get_admin_storage()
 
         events = storage.event_storage.get_events_after_index(self._watermark)
@@ -122,6 +123,13 @@ class LineageWatcher:
             return
 
         for index, event in events:
+            # Advance the watermark before attempting to record, so a single
+            # event that fails to record does not stall the whole batch behind
+            # it. Trade-off: a failed event is skipped, not retried. This is
+            # acceptable because lineage recording is idempotent/replay-safe
+            # (deterministic runIds + resume="allow" + content-dedupe), so the
+            # cost of a miss is a dropped record rather than corruption, and a
+            # persistent failure would otherwise wedge the watcher indefinitely.
             self._watermark = index
             if not self._is_target_success(event.build_event):
                 continue
@@ -136,10 +144,31 @@ class LineageWatcher:
                 self._store.add_jobstats_for_build_target(
                     storage, build_id=build_id, target_id=target_id
                 )
-            except Exception as e:
-                logger.exception("Failed to record lineage for event: %s", e)
+            except Exception:
+                logger.exception(
+                    "Failed to record lineage for target %s in build %s",
+                    getattr(event.build_event.run_metadata, "targetrun_id", "?"),
+                    getattr(event.build_event.run_metadata, "build_id", "?"),
+                )
 
-    def stop(self) -> None:
-        """Signal the watcher thread to stop."""
+    def stop(self, timeout: float = 5.0) -> None:
+        """Signal the watcher thread to stop and wait for it to exit.
+
+        Joins the worker thread (bounded by ``timeout``) so shutdown does not
+        race an in-flight iteration, and resets state so the watcher can be
+        started again.
+
+        Args:
+            timeout: Maximum seconds to wait for the worker thread to exit.
+        """
         logger.info("Stopping LineageWatcher")
         self.stop_event.set()
+        thread = self.worker_thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                logger.warning(
+                    "LineageWatcher thread did not stop within %.1fs", timeout
+                )
+        self.worker_thread = None
+        self.stop_event.clear()
