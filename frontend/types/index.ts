@@ -81,12 +81,19 @@ export interface JobTargetCounts {
   not_run: number
 }
 
+/** One chain member with its own per-attempt status (root-first). */
+export interface AttemptBuild {
+  build_id: string
+  status: BuildStatus
+}
+
 /** A build and its retries aggregated into one job (see gbserver jobrollup). */
 export interface JobSummary {
   job_id: string
   status: BuildStatus
   attempts: number
   build_ids: string[]
+  attempt_builds: AttemptBuild[]
   targets: JobTargetOutcome[]
   counts: JobTargetCounts
 }

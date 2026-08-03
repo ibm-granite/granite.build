@@ -103,6 +103,7 @@ response is unchanged. The `job` is a `JobSummary`:
 | `status` | The aggregate job status (see precedence below) |
 | `attempts` | Number of builds in the chain (1-based) |
 | `build_ids` | UUIDs of every chain member, root first |
+| `attempt_builds` | Every chain member, root first, each with its own per-attempt `status` (`build_id`, `status`) |
 | `targets` | Per spec-target outcome (`name`, `status`, `build_id`, `target_run_id`, `attempt`) |
 | `counts` | Roll-up of the spec targets across the chain |
 

@@ -86,6 +86,20 @@ class JobTargetCounts(BaseModel):
     not_run: int = 0
 
 
+class AttemptBuild(BaseModel):
+    """One chain member with its own honest per-attempt status.
+
+    The list is root-first, so the display ordinal is the entry's position + 1
+    against ``JobSummary.attempts``. ``build_ids`` carries the same ids in the
+    same order (kept for callers that only need the ids, e.g. the CLI ordinal
+    lookup); this adds the per-member status so a client can label each attempt
+    without a follow-up request per build.
+    """
+
+    build_id: str = ""
+    status: Status = Status.PENDING
+
+
 class JobSummary(BaseModel):
     """A retry chain aggregated into one job.
 
@@ -99,6 +113,8 @@ class JobSummary(BaseModel):
     # 1-based cardinality: the number of members in the chain.
     attempts: int = 0
     build_ids: List[str] = Field(default_factory=list)
+    # Same members as build_ids, root first, each paired with its own status.
+    attempt_builds: List[AttemptBuild] = Field(default_factory=list)
     targets: List[TargetOutcome] = Field(default_factory=list)
     counts: JobTargetCounts = Field(default_factory=JobTargetCounts)
 
@@ -380,6 +396,9 @@ def roll_up(chain: ChainInput) -> JobSummary:
         ),
         attempts=len(chain),
         build_ids=[build.uuid for build, _ in chain],
+        attempt_builds=[
+            AttemptBuild(build_id=build.uuid, status=build.status) for build, _ in chain
+        ],
         targets=outcomes,
         counts=counts,
     )

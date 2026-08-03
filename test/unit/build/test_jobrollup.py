@@ -245,6 +245,12 @@ def test_chain_that_finished_every_target_is_a_successful_job():
     assert summary.job_id == chain[0][0].uuid
     assert summary.attempts == 2
     assert summary.build_ids == [chain[0][0].uuid, chain[1][0].uuid]
+    # attempt_builds carries the same members, root first, each with its own
+    # honest per-attempt status — the root stayed FAILED, the retry SUCCEEDED.
+    assert [(ab.build_id, ab.status) for ab in summary.attempt_builds] == [
+        (chain[0][0].uuid, Status.FAILED),
+        (chain[1][0].uuid, Status.SUCCESS),
+    ]
     # pylint cannot see through pydantic's Field(default_factory=...) and infers
     # summary.counts as FieldInfo, tripping a false no-member; disable per line.
     assert summary.counts.model_dump() == {  # pylint: disable=no-member

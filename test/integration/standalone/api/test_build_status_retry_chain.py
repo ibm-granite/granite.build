@@ -180,6 +180,11 @@ class TestBuildStatusRetryChain(AbstractSingletonStorageUsingTest):
         assert resp.job.job_id == root.uuid
         assert resp.job.attempts == 2
         assert resp.job.build_ids == [root.uuid, retry.uuid]
+        # Each attempt carries its own honest status, root first.
+        assert [(ab.build_id, ab.status) for ab in resp.job.attempt_builds] == [
+            (root.uuid, Status.FAILED),
+            (retry.uuid, Status.SUCCESS),
+        ]
         assert resp.job.counts.total == 2
         assert resp.job.counts.succeeded == 2
         # The queried build's own status is untouched and still honest.

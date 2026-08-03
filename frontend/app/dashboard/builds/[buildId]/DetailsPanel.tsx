@@ -78,14 +78,50 @@ export function DetailsPanel({ build, status, loading }: DetailsPanelProps) {
               {status.job.counts.running > 0 && `, ${status.job.counts.running} running`}
               {status.job.counts.not_run > 0 && `, ${status.job.counts.not_run} never ran`}
             </DetailField>
+            {status.job.targets.length > 0 && (
+              <DetailField label="Target results">
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                  {status.job.targets.map((t) => (
+                    <span
+                      key={t.name}
+                      style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}
+                    >
+                      <code className={styles.wordBreakAll} style={{ fontSize: "0.875rem" }}>
+                        {t.name}
+                      </code>
+                      {t.status ? (
+                        <BuildStatusBadge status={t.status} />
+                      ) : (
+                        <span style={{ fontSize: "0.875rem", color: "#6f6f6f" }}>Never ran</span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </DetailField>
+            )}
             <DetailField label="Attempt builds">
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-                {status.job.build_ids
-                  .filter((id) => id !== build.uuid)
-                  .map((id) => (
-                    <a key={id} href={`/dashboard/builds/${id}`} className={styles.wordBreakAll}>
-                      <code style={{ fontSize: "0.875rem" }}>{id}</code>
-                    </a>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>
+                {status.job.attempt_builds
+                  // Root-first by contract, so the ordinal is the position in
+                  // the full list — compute it before filtering out the build
+                  // currently being viewed.
+                  .map((ab, index) => ({ ...ab, attempt: index + 1 }))
+                  .filter((ab) => ab.build_id !== build.uuid)
+                  .map((ab) => (
+                    <span
+                      key={ab.build_id}
+                      style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}
+                    >
+                      <a
+                        href={`/dashboard/builds/_/?id=${ab.build_id}`}
+                        className={styles.wordBreakAll}
+                      >
+                        <code style={{ fontSize: "0.875rem" }}>
+                          Attempt {ab.attempt}: {ab.build_id}
+                        </code>
+                      </a>
+                      <BuildStatusBadge status={ab.status} showLabel={false} />
+                    </span>
                   ))}
               </div>
             </DetailField>
