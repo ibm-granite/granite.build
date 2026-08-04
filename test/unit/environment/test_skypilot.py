@@ -120,9 +120,7 @@ class TestBuildSkypilotMounts:
             file_mounts, _ = _build_skypilot_mounts(
                 {"payload": "payload"}, "/work/run1", "/proj/gbtest/builds/b1"
             )
-        assert file_mounts == {
-            "/proj/gbtest/builds/b1/payload": "/work/run1/payload"
-        }
+        assert file_mounts == {"/proj/gbtest/builds/b1/payload": "/work/run1/payload"}
 
 
 class TestRemapRelativeDest:
