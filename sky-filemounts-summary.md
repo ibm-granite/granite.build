@@ -44,9 +44,14 @@ unchanged, so the change is backward-compatible.
   `idle_minutes_to_autostop`) and the `skypilot_monitor` config
   (`poll_interval_seconds`, `log_retrieval` modes).
 - Documented `file_mounts` source resolution and added a
-  "copying a directory that ships with the step" example, including the caveat that
-  the mount **destination** must be an absolute (or `~`) remote path — it cannot be
-  the dynamic `run` working directory.
+  "copying a directory that ships with the step" example. A **relative** destination
+  is now remapped to the per-run `$GB_BUILD_WORKDIR` (the `run` CWD), so a payload is
+  reached at `./<dst>`; absolute and `~/…` destinations pass through unchanged. On the
+  LSF/enroot backend the remapped `$GB_BUILD_WORKDIR` path lives on the shared `/proj`
+  filesystem, which is bind-mounted identity into the container, so the payload written
+  on the login node is visible to the job at the same path — no container staging or
+  copy-back. A team SkyPilot fork change exempts these shared-FS roots from the backend's
+  sudo-symlink-wrap (see `docs/environments/skypilot-lsf.md`).
 
 ## Tests
 

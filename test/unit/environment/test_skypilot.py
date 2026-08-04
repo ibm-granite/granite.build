@@ -112,6 +112,42 @@ class TestBuildSkypilotMounts:
         assert kwargs["source"] == "/work/run1/localdir"
         assert "_bucket_sub_path" not in kwargs
 
+    def test_relative_dest_remapped_under_build_workdir(self):
+        """A relative destination is rewritten under the per-run build workdir."""
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        with patch("gbserver.environment.skypilot.sky", MagicMock()):
+            file_mounts, _ = _build_skypilot_mounts(
+                {"payload": "payload"}, "/work/run1", "/proj/gbtest/builds/b1"
+            )
+        assert file_mounts == {
+            "/proj/gbtest/builds/b1/payload": "/work/run1/payload"
+        }
+
+
+class TestRemapRelativeDest:
+    """_remap_relative_dest: only relative dsts move under the build workdir."""
+
+    def test_relative_dest_joined(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        assert _remap_relative_dest("foo", "/wd") == "/wd/foo"
+        assert _remap_relative_dest("./foo", "/wd") == "/wd/foo"
+        assert _remap_relative_dest("sub/foo", "/wd") == "/wd/sub/foo"
+
+    def test_absolute_and_home_dests_unchanged(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        assert _remap_relative_dest("/abs/foo", "/wd") == "/abs/foo"
+        assert _remap_relative_dest("~/foo", "/wd") == "~/foo"
+        assert _remap_relative_dest("~", "/wd") == "~"
+
+    def test_noop_without_build_workdir(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        assert _remap_relative_dest("foo", None) == "foo"
+        assert _remap_relative_dest("foo", "") == "foo"
+
 
 class TestSkypilotDiscovery:
     def test_skypilot_registered(self):

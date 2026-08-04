@@ -40,11 +40,18 @@ granite.build:
             # 300s; a quick test job finishes in seconds).
             poll_interval_seconds: 5
             command_config:
+              # Run the verification + command INSIDE a container image. On LSF
+              # this goes through enroot (bluevela's container runtime), so the
+              # file_mounts payload must be visible from within the container.
+              # A minimal image that ships bash; quay.io avoids Docker Hub pull-
+              # rate limits. Swap for a BlueVela-reachable registry/image if
+              # quay.io is not reachable from the cluster.
+              image: quay.io/fedora/fedora-minimal:42
               command: >-
                 echo "env input path: {{ bindings.env_input.binding.path }}";
                 echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/proj/granite-build/g4os/gbtest/filemount/out.txt"
             compute_config:
-              # CPU-only bare command. `total_memory_per_node` is intentionally
+              # CPU-only command. `total_memory_per_node` is intentionally
               # omitted: the memory floor is silently skipped on LSF/slurm (bare
               # HPC schedulers don't track memory as consumable), so it would be a
               # no-op here (unlike the slurm fixture, which sets 1Gi harmlessly).

@@ -295,23 +295,76 @@ def _resolve_local_mount_source(source: str, asset_dir) -> str:
     return str(base / source)
 
 
-def _build_skypilot_mounts(file_mounts_raw: dict, asset_dir) -> Tuple[Dict, Dict]:
+def _is_remappable_relative(dst: str) -> bool:
+    """Return whether ``dst`` is a plain relative ``file_mounts`` destination.
+
+    Absolute paths and ``~``/``~/``-prefixed paths opt out of the per-run-workdir
+    remap (they are the author's explicit location); everything else is treated
+    as relative to the build workdir.
+
+    :param dst: a ``file_mounts`` destination key.
+    :returns: ``True`` if the destination should be remapped, else ``False``.
+    """
+    return not (os.path.isabs(dst) or dst == "~" or dst.startswith("~/"))
+
+
+def _remap_relative_dest(dst: str, build_workdir: Optional[str]) -> str:
+    """Map a relative ``file_mounts`` destination into the per-run workdir.
+
+    Relative destinations (e.g. ``payload``, ``./payload``, ``sub/payload``) are
+    rewritten to ``${build_workdir}/<dst>`` — an absolute path on the shared
+    filesystem — so the payload is reachable at exactly ``./<dst>`` from the run
+    script's CWD (``$GB_BUILD_WORKDIR``), giving implicit per-target isolation.
+
+    On the LSF/enroot backend the shared ``/proj`` tree is bind-mounted identity
+    into the step container, so a payload written to ``${build_workdir}`` on the
+    (sudo-less) login node is visible to the job at the same path; the SkyPilot
+    backend's symlink-wrap is exempted for these shared roots (see the fork's
+    ``sky/provision/lsf`` runner hook), so no container staging or copy-back is
+    needed.
+
+    Absolute and ``~``-prefixed destinations pass through unchanged (author's
+    explicit choice). A no-op when ``build_workdir`` is unset (envs without
+    ``shared_workdir``), preserving SkyPilot's own ``~/sky_workdir/`` rewrite.
+
+    :param dst: the destination key from the raw ``file_mounts`` mapping.
+    :param build_workdir: absolute per-run workdir, or ``None`` to disable remap.
+    :returns: the (possibly rewritten) destination path.
+    """
+    if not build_workdir or not _is_remappable_relative(dst):
+        return dst
+    # normpath collapses a leading ``./`` and inner ``.`` segments; the join
+    # keeps the payload inside the per-target dir for implicit isolation.
+    rel = os.path.normpath(dst)
+    return os.path.normpath(os.path.join(build_workdir, rel))
+
+
+def _build_skypilot_mounts(
+    file_mounts_raw: dict,
+    asset_dir,
+    build_workdir: Optional[str] = None,
+) -> Tuple[Dict, Dict]:
     """Split a raw ``file_mounts`` mapping into file mounts and storage mounts.
 
     String values are local-to-remote copies (``Task.set_file_mounts``); dict
     values (``{source, mode}``) become ``sky.Storage`` storage mounts
     (``Task.set_storage_mounts``). Relative local sources are resolved via
     :func:`_resolve_local_mount_source`; bucket URIs keep the existing sub-path
-    extraction (``MOUNT`` mode requires a bucket-only source).
+    extraction (``MOUNT`` mode requires a bucket-only source). When
+    ``build_workdir`` is given, relative *destinations* are remapped under it via
+    :func:`_remap_relative_dest`.
 
     :param file_mounts_raw: the raw ``file_mounts`` mapping from the config.
     :param asset_dir: ``targetsteprun_asset_dir`` used to resolve relative sources.
+    :param build_workdir: per-run workdir for relative-destination remap, or
+        ``None`` to leave destinations unchanged.
     :returns: a ``(file_mounts, storage_mounts)`` tuple of dicts, either of which
         may be empty.
     """
     file_mounts: Dict[str, str] = {}
     storage_mounts: Dict[str, Any] = {}
-    for mount_path, mount_val in file_mounts_raw.items():
+    for raw_path, mount_val in file_mounts_raw.items():
+        mount_path = _remap_relative_dest(raw_path, build_workdir)
         if isinstance(mount_val, dict):
             source = mount_val["source"]
             storage_kwargs: Dict[str, Any] = {
@@ -866,6 +919,27 @@ class Skypilot(Environment):
                     len(pending_hfpulls),
                 )
 
+            # Compute file_mounts up front so relative destinations can be
+            # remapped into $GB_BUILD_WORKDIR (an absolute path on the shared
+            # filesystem) before the task is built. On LSF/enroot that shared
+            # tree is bind-mounted identity into the step container, so the
+            # payload written on the login node is visible to the job at the same
+            # path; the fork's backend wrap-exemption keeps these shared-root
+            # destinations un-wrapped. Relative local sources resolve against
+            # targetsteprun_asset_dir (the dir holding the rendered step.yaml +
+            # siblings). See _build_skypilot_mounts / _resolve_local_mount_source.
+            file_mounts_raw = launcher_config.get("file_mounts") or config.get(
+                "file_mounts"
+            )
+            file_mounts: Dict[str, str] = {}
+            storage_mounts: Dict[str, Any] = {}
+            if file_mounts_raw:
+                file_mounts, storage_mounts = _build_skypilot_mounts(
+                    file_mounts_raw,
+                    targetsteprun_asset_dir,
+                    build_workdir,
+                )
+
             run_script = launcher_config.get("run", "")
             if build_workdir:
                 run_script = (
@@ -883,21 +957,12 @@ class Skypilot(Environment):
                 resources=resources,
             )
 
-            # Handle file_mounts (may be in launcher config or step config).
-            # Relative local sources resolve against targetsteprun_asset_dir (the
-            # dir holding the rendered step.yaml + siblings); see
-            # _build_skypilot_mounts / _resolve_local_mount_source.
-            file_mounts_raw = launcher_config.get("file_mounts") or config.get(
-                "file_mounts"
-            )
-            if file_mounts_raw:
-                file_mounts, storage_mounts = _build_skypilot_mounts(
-                    file_mounts_raw, targetsteprun_asset_dir
-                )
-                if file_mounts:
-                    task.set_file_mounts(file_mounts)
-                if storage_mounts:
-                    task.set_storage_mounts(storage_mounts)
+            # Attach the file/storage mounts computed above (may originate in the
+            # launcher config or the step config).
+            if file_mounts:
+                task.set_file_mounts(file_mounts)
+            if storage_mounts:
+                task.set_storage_mounts(storage_mounts)
 
             logger.info(
                 "Launching SkyPilot cluster: name=%s target=%s step=%s cloud=%s resources=%s",

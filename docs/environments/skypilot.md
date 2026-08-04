@@ -246,22 +246,33 @@ directory** (the per-run asset dir gbserver renders the step into), so you can m
 alongside your `step.yaml`. Absolute paths and remote URIs (`s3://`, `gs://`, `file://`, …) are used
 unchanged.
 
-**Copying a directory that ships with the step.** Say `mydir/` sits next to your `step.yaml`. The
-**destination (key) must be an absolute remote path or `~/…`** — it can *not* be the `run` command's
-working directory, which is dynamic (`$GB_BUILD_WORKDIR` when `shared_workdir` is set, otherwise
-SkyPilot's default). So mount to a stable path, then copy or reference it from `run`:
+**Destination path resolution — the destination *shape* decides where the payload lands.** When the
+environment defines `shared_workdir` (so `$GB_BUILD_WORKDIR` exists), the destination key is routed by
+its shape:
+
+| Destination | Lands at | Scope / lifetime |
+|-------------|----------|------------------|
+| **relative** (`payload`, `./payload`, `sub/payload`) | `$GB_BUILD_WORKDIR/<dst>` — the run script's CWD | per-target-run, persistent, shared across the target's steps |
+| **`~/…`** | the container's private home (on containerized LSF, staged then copied inside the container) | per-launch, container-private, ephemeral |
+| **absolute** (`/proj/…`, `/tmp/…`) | that literal path (author's responsibility) | as-is |
+
+**Relative in, relative out.** Because the `run` script's CWD is `$GB_BUILD_WORKDIR`, a **relative**
+destination puts the payload at exactly `./<dst>` — the same path, relative to the step, that the
+source occupies next to your `step.yaml`. On shared-FS backends (bluevela `/proj`) that path is also
+visible **inside** the step container. This is the simplest option and gives implicit per-target
+isolation:
 
 ```yaml
 config:
   file_mounts:
-    ~/mydir: mydir          # source relative → <step.yaml dir>/mydir (whole dir is rsync'd)
+    payload: payload        # <step.yaml dir>/payload  →  $GB_BUILD_WORKDIR/payload
   run: |
-    cp -r ~/mydir ./mydir   # CWD here is $GB_BUILD_WORKDIR (if shared_workdir set) or the default
-    ./mydir/run-eval.sh
+    ./payload/run-eval.sh   # CWD is $GB_BUILD_WORKDIR, so the mount is right here
 ```
 
-If the content need not be *inside* the run CWD, reference the mount path directly
-(`~/mydir/run-eval.sh`) — simpler, and avoids copying the data twice.
+Use **`~/…`** when you deliberately want the payload private to a single launch (not shared with other
+steps in the target). Use an **absolute** path only when you must hit a fixed location. When
+`shared_workdir` is *not* set, relative destinations fall back to SkyPilot's default (`~/sky_workdir/…`).
 
 #### `envs`, `post_launch_task`, `idle_minutes_to_autostop`
 
