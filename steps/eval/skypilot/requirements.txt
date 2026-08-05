@@ -1,0 +1,10 @@
+# Runtime dependencies baked into the eval image.
+#
+# Add real evaluation dependencies here, for example:
+#   transformers>=4.44
+#   datasets>=2.20
+#   lm-eval>=0.4
+#
+# The exemplar eval.py uses only the Python standard library, so this file is
+# intentionally empty of pinned packages. `pip install -r requirements.txt`
+# succeeds against a comment-only file.
