@@ -78,8 +78,7 @@ class TestResolveLocalMountSource:
 
         # a/../b stays inside the step dir, so it resolves normally.
         assert (
-            _resolve_local_mount_source("a/../b", "/work/run1")
-            == "/work/run1/a/../b"
+            _resolve_local_mount_source("a/../b", "/work/run1") == "/work/run1/a/../b"
         )
 
     def test_remote_uri_unchanged(self):

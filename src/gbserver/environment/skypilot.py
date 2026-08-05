@@ -279,9 +279,7 @@ def _escapes_parent(rel_path: str) -> bool:
     return rel == ".." or rel.startswith(".." + os.sep)
 
 
-def _resolve_local_mount_source(
-    source: str, asset_dir: Union[Path, str, None]
-) -> str:
+def _resolve_local_mount_source(source: str, asset_dir: Union[Path, str, None]) -> str:
     """Resolve a ``file_mounts`` local source against the step's asset dir.
 
     Remote URIs (``s3://``, ``gs://``, ``file://``, ``http…``) and absolute paths
