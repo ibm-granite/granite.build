@@ -1,0 +1,53 @@
+name: filemount-check
+version: 1.0.0
+type: exec
+config:
+  command_config:
+    command: ""    # command to run on the launcher node
+    image: ""      # optional docker image; empty => run on the bare launcher node
+
+environment_configs:
+  Skypilot:
+    default_launcher: filemount-check
+    launchers:
+      filemount-check:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # image_id follows command_config.image, mirroring the builtin `command`
+          # step: a non-empty image runs via enroot on LSF (the bluevela container
+          # runtime, analog of slurm's Pyxis), an empty one runs on the bare node.
+          # This test's build.yaml sets a minimal image, so file_mounts must land
+          # inside the container — exercising file_mounts + the enroot image path.
+          image_id: '{{ ("docker:" ~ config.command_config.image) if config.command_config.image else "" }}'
+          resources: {}
+          # Copy the `payload/` directory that ships next to THIS step.yaml onto
+          # the cluster. The source is relative, so the Skypilot launcher resolves
+          # it against the step.yaml's own directory (the per-run asset dir) — this
+          # is the behavior under test. The DESTINATION is also relative, which
+          # gbserver remaps under the per-run build workdir (${GB_BUILD_WORKDIR},
+          # on the shared /proj FS that is bind-mounted identity into the enroot
+          # container). The run script's CWD is that same workdir, so the payload
+          # is reachable at exactly ./payload — the same path, relative to the
+          # step, that the source occupies on disk (relative in, relative out).
+          # This exercises both container-visibility and per-target isolation.
+          file_mounts:
+            payload: payload
+          run: |
+            set -euo pipefail
+            # Verify file_mounts copied the step-relative payload dir to the
+            # matching relative path in the run CWD (${GB_BUILD_WORKDIR}).
+            # `set -e` + `test` fail the step (=> build FAILED) if it is absent.
+            echo "verifying file_mounts copied the step-relative payload dir..."
+            test -d ./payload
+            test -f ./payload/marker.txt
+            echo "payload marker: $(cat ./payload/marker.txt)"
+            # Build-supplied command (emits the artifact markers, mirroring the
+            # builtin command step).
+            {{ config.command_config.command }}
+    monitors:
+      # Shipped monitor library (builtins/monitors/skypilot); inherits the
+      # LLMB_ARTIFACT convention and honors build.yaml's poll_interval_seconds.
+      skypilot_monitor:
+        ref: space://monitors/skypilot

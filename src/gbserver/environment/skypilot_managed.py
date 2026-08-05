@@ -9,8 +9,7 @@ The gbserver process does not need to stay running for jobs to complete.
 import asyncio
 import glob
 import os
-import urllib.parse
-from typing import Any, Dict, List, Optional, Self, Tuple
+from typing import Dict, List, Optional, Self
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -56,6 +55,10 @@ from gbserver.environment._skypilot_ssh import (
 from gbserver.environment._skypilot_ssh import (
     extract_host_ssh_info as _extract_host_ssh_info,
 )
+
+# Shared file_mounts builder — keeps the unmanaged and managed launchers in sync
+# (relative-source resolution against the step.yaml dir, bucket sub-path handling).
+from gbserver.environment.skypilot import _build_skypilot_mounts
 
 
 class Skypilot_managed(Environment):
@@ -163,35 +166,23 @@ class Skypilot_managed(Environment):
                 resources=resources,
             )
 
-            # Handle file_mounts (may be in launcher config or step config)
-            # Dict values → sky.Storage (set_storage_mounts), strings → set_file_mounts
+            # Handle file_mounts (may be in launcher config or step config).
+            # Relative local sources resolve against targetsteprun_asset_dir (the
+            # dir holding the rendered step.yaml + siblings); shared with the
+            # unmanaged launcher via _build_skypilot_mounts.
             file_mounts_raw = launcher_config.get("file_mounts") or config.get(
                 "file_mounts"
             )
             if file_mounts_raw:
-                file_mounts = {}
-                storage_mounts = {}
-                for mount_path, mount_val in file_mounts_raw.items():
-                    if isinstance(mount_val, dict):
-                        mode_str = mount_val.get("mode", "MOUNT").upper()
-                        source = mount_val["source"]
-                        storage_kwargs: Dict[str, Any] = {
-                            "mode": sky.StorageMode[mode_str],
-                        }
-                        # MOUNT mode requires bucket-only source; extract
-                        # sub-path for URIs like s3://bucket/prefix
-                        parsed = urllib.parse.urlparse(source)
-                        sub_path = parsed.path.lstrip("/")
-                        if sub_path:
-                            storage_kwargs["source"] = (
-                                f"{parsed.scheme}://{parsed.netloc}"
-                            )
-                            storage_kwargs["_bucket_sub_path"] = sub_path
-                        else:
-                            storage_kwargs["source"] = source
-                        storage_mounts[mount_path] = sky.Storage(**storage_kwargs)
-                    else:
-                        file_mounts[mount_path] = mount_val
+                # build_workdir is intentionally omitted: the managed launcher
+                # does not implement the shared_workdir / GB_BUILD_WORKDIR scheme
+                # (no _compute_run_workdir, no per-run workdir export/cd), so
+                # there is no per-run dir to remap relative destinations into.
+                # Relative destinations therefore keep SkyPilot's default
+                # handling here, unlike the unmanaged launcher.
+                file_mounts, storage_mounts = _build_skypilot_mounts(
+                    file_mounts_raw, targetsteprun_asset_dir
+                )
                 if file_mounts:
                     task.set_file_mounts(file_mounts)
                 if storage_mounts:

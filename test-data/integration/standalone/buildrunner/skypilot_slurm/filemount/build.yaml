@@ -1,0 +1,36 @@
+granite.build:
+  name: skypilot-slurm-filemount-test
+  targets:
+    filemount:
+      environment_uri: space://environments/skypilot/slurm
+      inputs:
+        # env:// input: a shared-FS path pulled as a no-op (pullasset_envstore).
+        # The path need not physically exist — EnvURI.exists()/pull() are stubs —
+        # it just flows to the command as a binding. Keeps the test HF-free/fast.
+        env_input:
+          uri: "env:///tmp/gb-env-input.txt"
+      outputs:
+        # env:// output: registered inline (pushasset_envstore) from the artifact
+        # marker the command emits below. `type` is required for env:// outputs.
+        # The path is arbitrary (env:// push/pull are no-ops); it just has to be
+        # the same value in this uri and in the command's LLMB_ARTIFACT marker.
+        env_output:
+          uri: "env:///tmp/gb-filemount-output.txt"
+          type: fileset
+      steps:
+        # Custom test step defined in the co-located test space (space/steps/).
+        # It declares a `file_mounts` key that copies the `payload/` directory
+        # shipped next to its step.yaml onto the cluster, then (in its run)
+        # verifies the copy landed before running the command below.
+        - step_uri: space://steps/filemount-check
+          config:
+            # Fast completion detection for the test (base skypilot default is
+            # 300s; a quick test job finishes in seconds).
+            poll_interval_seconds: 5
+            command_config:
+              command: >-
+                echo "env input path: {{ bindings.env_input.binding.path }}";
+                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-filemount-output.txt"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

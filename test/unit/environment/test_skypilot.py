@@ -38,6 +38,159 @@ class TestStepSkypilotConfig:
         assert config.image_id == "docker:nvcr.io/nvidia/pytorch:24.01-py3"
 
 
+class TestResolveLocalMountSource:
+    """_resolve_local_mount_source: relative sources rebase onto the asset dir."""
+
+    def test_relative_resolves_against_asset_dir(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        assert (
+            _resolve_local_mount_source("scripts/run.sh", "/work/run1")
+            == "/work/run1/scripts/run.sh"
+        )
+
+    def test_absolute_source_unchanged(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        assert _resolve_local_mount_source("/abs/path", "/work/run1") == "/abs/path"
+
+    @pytest.mark.parametrize("source", ["~", "~/data", "~/sub/dir"])
+    def test_home_relative_source_rejected(self, source):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        # '~' is not expanded for sources; it would become a literal
+        # '<asset_dir>/~/...' path, so reject it rather than mishandle it.
+        with pytest.raises(ValueError, match="~"):
+            _resolve_local_mount_source(source, "/work/run1")
+
+    @pytest.mark.parametrize("asset_dir", ["/work/run1", None])
+    @pytest.mark.parametrize("source", ["..", "../other", "a/../../b"])
+    def test_escaping_relative_source_rejected(self, source, asset_dir):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        # Relative sources must stay inside the step dir; escaping '..' is
+        # rejected whether or not an asset dir is available.
+        with pytest.raises(ValueError, match="escape"):
+            _resolve_local_mount_source(source, asset_dir)
+
+    def test_inner_dotdot_source_that_stays_inside_is_allowed(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        # a/../b stays inside the step dir, so it resolves normally.
+        assert (
+            _resolve_local_mount_source("a/../b", "/work/run1") == "/work/run1/a/../b"
+        )
+
+    def test_remote_uri_unchanged(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        assert (
+            _resolve_local_mount_source("s3://bucket/key", "/work/run1")
+            == "s3://bucket/key"
+        )
+
+    def test_none_asset_dir_leaves_relative_unresolved(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        assert _resolve_local_mount_source("scripts/run.sh", None) == "scripts/run.sh"
+
+    def test_file_uri_asset_dir_is_tolerated(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        assert _resolve_local_mount_source("d", "file:///work/run1") == "/work/run1/d"
+
+
+class TestBuildSkypilotMounts:
+    """_build_skypilot_mounts: routes strings vs dicts and resolves sources."""
+
+    def test_string_relative_source_resolved(self):
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        with patch("gbserver.environment.skypilot.sky", MagicMock()):
+            file_mounts, storage_mounts = _build_skypilot_mounts(
+                {"/remote/run.sh": "scripts/run.sh"}, "/work/run1"
+            )
+        assert file_mounts == {"/remote/run.sh": "/work/run1/scripts/run.sh"}
+        assert storage_mounts == {}
+
+    def test_bucket_uri_splits_subpath(self):
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        mock_sky = MagicMock()
+        with patch("gbserver.environment.skypilot.sky", mock_sky):
+            _, storage_mounts = _build_skypilot_mounts(
+                {"/data": {"source": "s3://bucket/prefix", "mode": "MOUNT"}},
+                "/work/run1",
+            )
+        assert "/data" in storage_mounts
+        kwargs = mock_sky.Storage.call_args.kwargs
+        assert kwargs["source"] == "s3://bucket"
+        assert kwargs["_bucket_sub_path"] == "prefix"
+
+    def test_dict_local_relative_source_resolved(self):
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        mock_sky = MagicMock()
+        with patch("gbserver.environment.skypilot.sky", mock_sky):
+            _build_skypilot_mounts(
+                {"/data": {"source": "localdir", "mode": "COPY"}}, "/work/run1"
+            )
+        kwargs = mock_sky.Storage.call_args.kwargs
+        assert kwargs["source"] == "/work/run1/localdir"
+        assert "_bucket_sub_path" not in kwargs
+
+    def test_relative_dest_remapped_under_build_workdir(self):
+        """A relative destination is rewritten under the per-run build workdir."""
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        with patch("gbserver.environment.skypilot.sky", MagicMock()):
+            file_mounts, _ = _build_skypilot_mounts(
+                {"payload": "payload"}, "/work/run1", "/proj/gbtest/builds/b1"
+            )
+        assert file_mounts == {"/proj/gbtest/builds/b1/payload": "/work/run1/payload"}
+
+
+class TestRemapRelativeDest:
+    """_remap_relative_dest: only relative dsts move under the build workdir."""
+
+    def test_relative_dest_joined(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        assert _remap_relative_dest("foo", "/wd") == "/wd/foo"
+        assert _remap_relative_dest("./foo", "/wd") == "/wd/foo"
+        assert _remap_relative_dest("sub/foo", "/wd") == "/wd/sub/foo"
+
+    def test_absolute_and_home_dests_unchanged(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        assert _remap_relative_dest("/abs/foo", "/wd") == "/abs/foo"
+        assert _remap_relative_dest("~/foo", "/wd") == "~/foo"
+        assert _remap_relative_dest("~", "/wd") == "~"
+
+    def test_noop_without_build_workdir(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        assert _remap_relative_dest("foo", None) == "foo"
+        assert _remap_relative_dest("foo", "") == "foo"
+
+    def test_inner_dotdot_that_stays_inside_is_allowed(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        # a/../b normalizes to b — still inside the workdir, so it is fine.
+        assert _remap_relative_dest("a/../b", "/wd") == "/wd/b"
+
+    @pytest.mark.parametrize("workdir", ["/wd", None, ""])
+    @pytest.mark.parametrize("dst", ["..", "../foo", "a/../../b", "./../x"])
+    def test_escaping_dotdot_rejected(self, dst, workdir):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        # Escaping destinations are rejected whether or not a build_workdir
+        # remap applies, so they can escape neither the per-run workdir nor
+        # SkyPilot's default rewrite.
+        with pytest.raises(ValueError, match="escape"):
+            _remap_relative_dest(dst, workdir)
+
+
 class TestSkypilotDiscovery:
     def test_skypilot_registered(self):
         """Skypilot class is auto-discovered and registered."""
@@ -187,6 +340,41 @@ class TestLaunchSkypilot:
         mock_sky.Resources.assert_called_once()
         call_kwargs = mock_sky.Resources.call_args
         assert call_kwargs.kwargs.get("infra") == "k8s"
+
+    @pytest.mark.asyncio
+    async def test_launch_resolves_relative_file_mounts(self, skypilot_env):
+        """A relative file_mounts source resolves against targetsteprun_asset_dir,
+        and that dir is stashed so a retry can re-resolve it."""
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        task = MagicMock()
+        mock_sky.Task = MagicMock(return_value=task)
+        mock_sky.launch = MagicMock(return_value="req-fm")
+        mock_sky.stream_and_get = MagicMock(return_value=(9, MagicMock()))
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            launch_id = "test-launch-fm"
+            skypilot_env._get_launch_ready_event(launch_id)
+            await skypilot_env.launch_skypilot(
+                launch_id=launch_id,
+                targetsteprun_asset_dir="/work/run-xyz",
+                launcher_config={
+                    "run": "echo hi",
+                    "file_mounts": {"/remote/run.sh": "scripts/run.sh"},
+                },
+                config={},
+            )
+
+        task.set_file_mounts.assert_called_once_with(
+            {"/remote/run.sh": "/work/run-xyz/scripts/run.sh"}
+        )
+        assert (
+            skypilot_env._launch_kwargs[launch_id]["targetsteprun_asset_dir"]
+            == "/work/run-xyz"
+        )
 
     async def _launch_and_capture_resources(
         self, skypilot_env, *, launcher_config, config

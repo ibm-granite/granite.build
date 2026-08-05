@@ -1,0 +1,45 @@
+name: filemount-check
+version: 1.0.0
+type: exec
+config:
+  command_config:
+    command: ""    # command to run on the launcher node
+    image: ""      # optional docker image; empty => run on the bare launcher node
+
+environment_configs:
+  Skypilot:
+    default_launcher: filemount-check
+    launchers:
+      filemount-check:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Same bare-node behavior as the builtin `command` step (empty image_id
+          # => no container, so the local Docker SLURM cluster needs no Pyxis).
+          image_id: '{{ ("docker:" ~ config.command_config.image) if config.command_config.image else "" }}'
+          resources: {}
+          # Copy the `payload/` directory that ships next to THIS step.yaml onto
+          # the cluster. The source is relative, so the Skypilot launcher resolves
+          # it against the step.yaml's own directory (the per-run asset dir) — this
+          # is the behavior under test. The destination is a fixed remote path,
+          # which the run command below reads back to confirm the copy landed.
+          file_mounts:
+            ~/gb-filemount-payload: payload
+          run: |
+            set -euo pipefail
+            # Verify file_mounts copied the step-relative payload dir to the
+            # destination declared above. `set -e` + `test` fail the step (=>
+            # build FAILED) if the dir/file is absent.
+            echo "verifying file_mounts copied the step-relative payload dir..."
+            test -d ~/gb-filemount-payload
+            test -f ~/gb-filemount-payload/marker.txt
+            echo "payload marker: $(cat ~/gb-filemount-payload/marker.txt)"
+            # Build-supplied command (emits the artifact markers, mirroring the
+            # builtin command step).
+            {{ config.command_config.command }}
+    monitors:
+      # Shipped monitor library (builtins/monitors/skypilot); inherits the
+      # LLMB_ARTIFACT convention and honors build.yaml's poll_interval_seconds.
+      skypilot_monitor:
+        ref: space://monitors/skypilot
