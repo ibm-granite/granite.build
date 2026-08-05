@@ -96,23 +96,6 @@ LHPUSH_STEP_NAME = "lhpush"
 COSRCLONE_STEP_NAME = "cosrclone"
 
 
-class BJobRecord(BaseModel):
-    """A bjob record."""
-
-    JOBID: str
-    STAT: str
-    EXIT_CODE: str
-    EXIT_REASON: str
-
-
-class BJobOutput(BaseModel):
-    """Output of bjob."""
-
-    COMMAND: str
-    JOBS: int
-    RECORDS: list[BJobRecord]
-
-
 class ExistingBsubJobs(BaseModel):
     """
     Jobs launched by the user outside of our control.
