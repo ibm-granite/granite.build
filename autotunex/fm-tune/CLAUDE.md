@@ -5,9 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Development Commands
 
 ```bash
-# Install (single dependency set, no profiles)
-uv pip install -e .          # recommended (flash-attn wheel resolved automatically)
-pip install -e .             # alternative (flash-attn may need manual wheel install)
+# Install via optional-dependency extras (core, full, dev, mlx) — see pyproject.toml.
+# `ray` and `datasets` live ONLY in the core/full extras, so a bare
+# `pip install -e .` leaves you WITHOUT Ray. Always install an extra:
+uv pip install -e ".[full]"      # recommended — SFT + offline/online RL (verl) + flash-attn (wheel resolved automatically)
+pip install -e ".[full]"         # alternative (flash-attn may need manual wheel install)
+uv pip install -e ".[core]"      # macOS / CPU dev — excludes deepspeed, verl, flash-attn
+uv pip install -e ".[core,mlx]"  # Apple Silicon, MLX backend (--backend mlx)
+uv pip install -e ".[dev]"       # ruff + pre-commit
 
 # Lint
 ruff check .                 # errors, pyflakes, warnings, imports (E, F, W, I)
@@ -15,8 +20,8 @@ ruff check --fix .           # auto-fix
 
 # Tests
 pytest                       # runs tests/ directory
-pytest tests/test_foo.py     # single test file
-pytest tests/test_foo.py::test_bar  # single test function
+pytest tests/test_config.py  # single test file
+pytest tests/test_config.py::TestLoadFromYaml::test_load_yaml  # single test function
 ```
 
 ## Architecture Overview
@@ -43,15 +48,27 @@ main.py (CLI) → AutotuneOptimizer.fit() (HPO) → driver_*.py (training) → t
 
 ### Driver Selection (optimizer.py)
 
-Drivers are selected based on `num_gpus_per_trial` and `rl_algo`:
+Drivers are selected based on `num_gpus_per_trial`, `rl_algo`, `train_implementation`, and `--backend`:
 
-| GPUs | RL Algorithm | Driver |
-|------|-------------|--------|
-| 1 | none (SFT/PEFT) | `driver_single.py` |
-| 1 | dpo, kto | `driver_single_trl.py` |
-| >1 | none (SFT/PEFT) | `driver_multi_hf_ds.py` (DeepSpeed) |
-| >1 | dpo, kto | `driver_multi_trl_ds.py` (DeepSpeed) |
-| >1 | ppo, grpo, dapo | `driver_multi_verl.py` (verl + FSDP + vLLM) |
+| GPUs | RL Algorithm | `train_implementation` | Driver |
+|------|-------------|------------------------|--------|
+| 1 | none (SFT/PEFT) | — | `driver_single.py` |
+| 1 | dpo, kto | — | `driver_single_trl.py` |
+| >1 | none (SFT/PEFT) | DeepSpeed | `driver_multi_hf_ds.py` |
+| >1 | none (SFT/PEFT) | FSDP | `driver_multi_hf_fsdp.py` |
+| >1 | dpo, kto | DeepSpeed | `driver_multi_trl_ds.py` |
+| >1 | dpo, kto | FSDP | `driver_multi_trl_fsdp.py` |
+| >1 | ppo, grpo, dapo | — (verl+FSDP) | `driver_multi_verl.py` (verl + vLLM) |
+
+For >1 GPU SFT/DPO, `training_config.train_implementation` selects DeepSpeed vs
+FSDP (the shipped `autotune*.yaml` configs default to `FSDP`; if the key is
+absent the code in `optimizer.py` falls back to DeepSpeed / `"huggingface_ds"`).
+The single-device MLX backend (`--backend mlx`) routes to `driver_single_mlx.py`
+(see MLX routing below).
+
+**MPS routing:** On Apple silicon, `autotune/device.py::detect_accelerator()` returns `mps` (precedence CUDA → MPS → CPU; override with `FMTUNE_DEVICE=cuda|mps|cpu`). `fit_best_config()` derives `multi_gpu` from `accel.supports_distributed` (`False` on MPS), so final training always routes to `driver_single.py` — never DeepSpeed/FSDP — regardless of `num_gpus_per_trial`. Ray can't schedule Metal as a resource, so HPO trials reserve `{"CPU": 1, "GPU": 0}` bundles and use the MPS device inside the trial process; correctness under concurrency comes from `apply_platform_guards` clamping `max_concurrent_trials` to 1, not from Ray GPU accounting. See `docs/MPS.md` for the full support matrix.
+
+**MLX routing:** `--backend mlx` routes single-device SFT/LoRA/QLoRA to `driver_single_mlx.py` via `autotune/mlx_backend.py`; qlora → MLX 4-bit; output is MLX-native (not PEFT). See `docs/MPS.md`.
 
 ### Driver Pattern
 
@@ -112,6 +129,9 @@ Each entry has a one-line symptom and the fix.
 - **FSDP NO_SHARD warnings**: Small models on colocated pools may fall back to `NO_SHARD` and emit warnings. Benign — model fits per-GPU without sharding.
 - **PlacementGroupCleaner warnings**: `Failed to query Ray Train Controller actor state ...` from `ray.train.v2._internal.execution.controller.placement_group_cleaner` are benign State-API hiccups under load. Suppress by setting that logger to `ERROR`.
 - **QLoRA (`--tuning_algo qlora`)**: LoRA on a 4-bit (NF4) bitsandbytes-quantized base. Maps to `PeftType.LORA` (`constants.py`) — same tunable surface as `lora`; the quantized load is triggered purely by `training_config["tuning_algorithm"] == "qlora"` inside the drivers. Drivers build the 4-bit `BitsAndBytesConfig` via `utils.get_qlora_quantization_config()` and call `utils.prepare_qlora_model()` before adapter attachment (HF drivers before `get_peft_model`; TRL drivers before handing the model to the trainer, since TRL's `DPOTrainer` does *not* auto-run `prepare_model_for_kbit_training`, only KTO does). **Incompatible with DeepSpeed ZeRO-3 and FSDP `full_shard`** — the quantized 4-bit params can't be sharded by ZeRO-3 sharded-init / FSDP flat-param sharding; those combos raise a clear `ValueError`. Use ZeRO-1/ZeRO-2, FSDP `SHARD_GRAD_OP`, or the single-GPU driver.
+- **Ray object store capped on non-CUDA**: The CUDA path sizes the local Ray object store via `RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION=0.5` (50% of RAM), which would reserve 8 GB on a 16 GB Mac and starve Metal. Fix: on non-CUDA, `autotune/device.py::object_store_bytes()` sizes the object store to a fixed 2 GiB (`2147483648`) instead, overridable via `FMTUNE_OBJECT_STORE_BYTES` (bytes).
+- **Silent MPS CPU fallback**: `PYTORCH_ENABLE_MPS_FALLBACK` defaults to `"1"` (set by `configure_runtime_env` on non-CUDA), so an op with no MPS kernel silently runs on CPU instead of crashing — a real slowdown that's easy to miss. Fix: set `PYTORCH_ENABLE_MPS_FALLBACK=0` to make PyTorch raise instead, which pinpoints exactly which op lacks a Metal kernel.
+- **`trust_remote_code` opt-out**: Every HF `from_pretrained` (model/tokenizer/config) call passes `trust_remote_code=` via `utils.resolve_trust_remote_code()`, which defaults to `True` — Granite hybrid and some custom architectures ship modeling code in the model repo, so loading executes that Python by default. Operators who only load architectures bundled with `transformers` can harden this by setting `FMTUNE_TRUST_REMOTE_CODE=0` (also accepts `false`/`no`/`off`). It's a single centralized knob; don't re-hardcode `trust_remote_code=True` at new call sites — call the helper.
 
 ## Memory & Resource Reference
 
@@ -175,13 +195,16 @@ Call from a `finally` block around `trainer.fit()`.
   - **Repartition is the primary fan-out lever.** Ray Data launches at most one stateless map task per input *block*, and a single source file usually reads as 1 block — so the driver calls `repartition(n, shuffle=False)` (a cheap split/combine, no full shuffle, no materialization) to split train/eval into ≈`concurrency` blocks before `map_batches`. Block count is clamped to the dataset row count, so tiny eval sets aren't over-partitioned (skipped entirely when ≤1 row). Without this, tokenization runs single-CPU regardless of cluster size.
   - `ray_data_concurrency` (int): number of parallel `map_batches` tasks. **Default (auto) = `floor(total_cluster_cpus) − num_workers`** (every CPU not reserved by this trial's GPU workers) via `compute_ray_data_sizing()`. Override via the `--ray_data_concurrency` CLI flag or the YAML training-config key.
   - `ray_data_num_cpus` (float, default 1.0): logical CPU budget per task; fractional values (e.g. 0.5) allow more concurrent tasks per physical CPU. Override via `--ray_data_num_cpus` or YAML.
-  - **Concurrent HPO caveat:** each trial computes the auto concurrency from the full cluster CPU count, unaware of sibling trials. `max_concurrent_trials` bounds trial count, but for large sweeps set `--ray_data_concurrency` explicitly to avoid cross-trial oversubscription.
+  - **Concurrent HPO caveat:** each trial computes the auto concurrency from the full cluster CPU count, unaware of sibling trials. `max_concurrent_trials` bounds trial count, but for large sweeps set `--ray_data_concurrency` explicitly to avoid cross-trial oversubscription. See `docs/RESOURCES.md`.
 
 ## Key Dependencies
 
-torch 2.8.0, transformers 4.57.6, peft 0.18.0, trl 0.29.0, bitsandbytes >=0.48.0 (QLoRA 4-bit), deepspeed 0.18.7, ray 2.54.0, verl 0.7.1, flash-attn 2.8.1 (Linux only)
+torch 2.8.0, transformers 4.57.6, peft 0.18.0, trl 0.29.0, bitsandbytes 0.49.0 (QLoRA 4-bit), deepspeed 0.18.7, ray 2.54.0 (`full` extra; `core` pins 2.52.1), verl 0.7.1, flash-attn 2.8.1 (Linux only)
 
 ## Documentation
 
 - `README.md` — project overview, quick start, CLI reference
 - `CONTRIBUTING.md` — contributor workflow, testing, PR process
+- `docs/RESOURCES.md` — GPU sizing guide for 3B/8B/30B on 8× A100
+- `docs/MPS.md` — Apple Silicon (MPS) support: matrix, memory table, troubleshooting
+- `docs/dataset-sft.md`, `docs/dataset-offline-rl.md`, `docs/dataset-online-rl.md` — dataset format references

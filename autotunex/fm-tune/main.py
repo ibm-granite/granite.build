@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2023-present the International Business Machines.
+# Copyright 2023-present International Business Machines Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,6 +30,11 @@ from autotune.cluster import (
     stop_local_ray_cluster,
 )
 from autotune.config import AutotuneConfig
+from autotune.device import (
+    apply_platform_guards,
+    configure_runtime_env,
+    detect_accelerator,
+)
 from autotune.logging_setup import setup_logging
 from autotune.lsf import (
     RayUpTimeoutError,
@@ -41,7 +46,7 @@ from autotune.lsf import (
 # Local
 from autotune.optimizer import AutotuneOptimizer
 from autotune.pipeline import AutotunePipeline
-from autotune.template_utils import lakehouse_path_to_uri, stem_from_path
+from autotune.template_utils import resolve_dataset_uri, stem_from_path
 from autotune.utils import (
     cleanup,
     generate_unique_id,
@@ -348,6 +353,17 @@ if __name__ == "__main__":
             "per physical CPU."
         ),
     )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="torch",
+        choices=["torch", "mlx"],
+        help=(
+            "Training backend. 'torch' (default) uses the HuggingFace/PyTorch drivers "
+            "(CUDA or MPS). 'mlx' uses the Apple Silicon MLX backend for sft/lora/qlora "
+            "(requires the optional [mlx] extra; single-device only)."
+        ),
+    )
 
     # Parse the CLI arguments
     args = parser.parse_args()
@@ -392,103 +408,26 @@ if __name__ == "__main__":
     # before they are synced to remote storage. This env variable is ignored
     # if `storage_path` below is set to a local directory.
     # os.environ["RAY_AIR_LOCAL_CACHE_DIR"] = args.output_dir
-    os.environ["RAY_CHDIR_TO_TRIAL_DIR"] = "0"
-    os.environ["RAY_DEDUP_LOGS"] = "1"  # deduplicate repeated Ray actor logs
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-    os.environ["MASTER_ADDR"] = "localhost"
-    # MASTER_PORT is set dynamically after start_local_ray to avoid collisions.
-    # os.environ["RANK"] = "0"
-    # os.environ["WORLD_SIZE"] = "1"
-    # NCCL/RDMA env: keep head + workers in sync via the canonical _rdma_env() set.
-    for _k, _v in _rdma_env().items():
-        os.environ.setdefault(_k, _v)
-    os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
-    os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
-    os.environ["NCCL_ALGO"] = "Ring"
-    os.environ["TORCH_NCCL_AVOID_RECORD_STREAMS"] = "1"
+    # Resolve the accelerator once and configure the runtime env accordingly.
+    # On CUDA this sets exactly the pre-MPS env (NCCL/vLLM/verl + RAY/TUNE);
+    # on MPS/CPU it omits the CUDA-only vars and enables the MPS CPU fallback.
+    accel = detect_accelerator()
+    logger.info(f"[AutoTune] Accelerator: {accel.kind} (count={accel.count})")
+    configure_runtime_env(accel)
 
-    # Prefer the documented name; keep alias too if you want.
-    os.environ["TUNE_WARN_SLOW_EXPERIMENT_CHECKPOINT_SYNC_THRESHOLD_S"] = "900"
-    # Throttle experiment-state sync; default 10s makes metadata writes the
-    # bottleneck on slow/networked storage paths.
-    os.environ["TUNE_GLOBAL_CHECKPOINT_S"] = "600"
-    os.environ["TUNE_MAX_PENDING_TRIALS_PG"] = "8"
-    os.environ["VERL_REWARD_DEBUG"] = "1"
-    os.environ["HYDRA_FULL_ERROR"] = "1"
-    os.environ["VLLM_USE_V1"] = "1"
+    # NCCL/RDMA env only matters on CUDA multi-node launches.
+    if accel.kind == "cuda":
+        for _k, _v in _rdma_env().items():
+            os.environ.setdefault(_k, _v)
 
-    # Set the default object store memory proportion if not already set,
-    # to avoid Ray Data warnings and potential OOMs during distributed tokenization.
-    if "RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION" not in os.environ:
+    # Set the default object store memory proportion (CUDA only) if not already set,
+    # to avoid Ray Data warnings/OOMs during distributed tokenization. On non-CUDA the
+    # local cluster sizes the object store explicitly (see cluster.py), so skip it.
+    if (
+        accel.kind == "cuda"
+        and "RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION" not in os.environ
+    ):
         os.environ["RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION"] = "0.5"
-
-    # Note: No need to specify the runtime_env in ray.init()
-    # in the driver script.
-    logger.info("[AutoTune] Connecting to ray cluster...")
-    ray_info = None  # only set for local clusters
-    multinode_info = None  # only set for multi-node LSF launches
-    if args.ray_address is not None:
-        ray.init(
-            address=args.ray_address, log_to_driver=True, logging_level=logging.INFO
-        )
-        logger.info(f"[AutoTune] Connected to remote ray cluster at {args.ray_address}")
-        configure_ray_data_context()
-        logger.warning(
-            "[AutoTune] If Ray Data warns that the object store is <50%% of node RAM, "
-            "the remote cluster must be restarted with --object-store-memory sized "
-            "accordingly (or RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION=0.5 set on "
-            "the cluster nodes). Client-side env vars do not affect an already-running cluster."
-        )
-    elif args.conda_env and args.num_nodes >= 1:
-        # Multi-node Ray cluster via blaunch: one multi-host bsub allocation;
-        # the head colocates with a worker on host[0] and blaunch starts a
-        # worker on each of the other allocated hosts.
-        try:
-            # Worker bring-up logs land under <output_dir>/logs/ so they
-            # are co-located with the rest of the run's artifacts and get
-            # wiped by cleanup(). expanduser() is needed because argparse
-            # stores '~/...' literally; os.path.abspath does not expand ~.
-            log_dir = os.path.join(os.path.expanduser(args.output_dir), "logs")
-            multinode_info = start_multinode_ray_cluster_blaunch(
-                num_workers=args.num_nodes,
-                gpus_per_worker=args.gpus_per_node,
-                conda_env=args.conda_env,
-                bringup_deadline_s=args.bringup_deadline_s,
-                rl_algo=args.rl_algo,
-                fleet=args.fleet,
-                ib_hca=args.ib_hca,
-                ib_ifname=args.ib_ifname,
-                log_dir=log_dir,
-            )
-        except RayUpTimeoutError as e:
-            logger.warning(
-                f"[AutoTune] Ray cluster bring-up did not complete within "
-                f"{args.bringup_deadline_s}s. Aborting run gracefully without HPO. "
-                f"Details: {e}"
-            )
-            sys.exit(0)
-        logger.info(
-            f"[AutoTune] Multi-node Ray cluster ready (blaunch): "
-            f"head + {args.num_nodes} worker(s), "
-            f"head={multinode_info['head_address']}, GPUs={multinode_info['num_gpus']}"
-        )
-        configure_ray_data_context()
-    else:
-        # If running on CCC, use start_local_ray_cluster. Otherwise, use ray.init()
-        ray_info = start_local_ray_cluster()
-
-        # Otherwise, on LLM.build just use ray.init()
-        # ray.init()
-        logger.info("[AutoTune] Started local ray cluster")
-
-    logger.info(f"[AutoTune Driver] Ray cluster resources: {ray.cluster_resources()}")
-
-    # Redirect stdout/stderr so bare print() calls are captured as log records.
-    # setup_logging() already created a StreamHandler bound to sys.__stderr__
-    # (the real fd), so the PrintLogger wrapper won't cause a re-entry loop.
-    sys.stdout = PrintLogger(logger)
-    sys.stderr = PrintLogger(logger)
 
     # Get tuning type
     tuning_algo = args.tuning_algo
@@ -498,7 +437,7 @@ if __name__ == "__main__":
     # Create the main config (AutotuneConfig)
     config = AutotuneConfig()
     config.load(args.config_file)
-    artifact_uri, dataset_name = lakehouse_path_to_uri(args.train_file)
+    artifact_uri, dataset_name = resolve_dataset_uri(args.train_file)
     logger.info(f"dataset_name: {dataset_name}")
     logger.info(f"dataset_artifact_uri: {artifact_uri}")
 
@@ -574,6 +513,102 @@ if __name__ == "__main__":
         tuning_algo=pipeline.get_tuning_algo(),
         rl_algo=pipeline.get_rl_algo(),
     )
+
+    # Record the selected backend and enforce it early (before Ray starts).
+    config.training_config["backend"] = args.backend
+    if args.backend == "mlx":
+        from autotune.mlx_backend import require_mlx
+
+        require_mlx()
+
+    # Enforce accelerator capabilities: raise on impossible configs (QLoRA, RL,
+    # multi-GPU on MPS/CPU) and auto-fix benign mismatches (attn impl,
+    # max_concurrent_trials, precision) with warnings. No-op on CUDA.
+    apply_platform_guards(
+        training_config=config.training_config,
+        tune_config=config.tune_config,
+        tuning_algo=pipeline.get_tuning_algo(),
+        rl_algo=pipeline.get_rl_algo(),
+        accel=accel,
+        backend=args.backend,
+    )
+
+    # Propagate the resolved precision to the pipeline so the optimizer's
+    # precision assert and the drivers agree.
+    from autotune.device import resolve_precision
+    from autotune.utils import get_autotune_precision
+
+    resolved_precision = resolve_precision(
+        config.training_config.get("precision", "bf16"), accel, probe_autocast=False
+    )
+    pipeline.set_precision(get_autotune_precision(resolved_precision))
+
+    # Note: No need to specify the runtime_env in ray.init()
+    # in the driver script.
+    logger.info("[AutoTune] Connecting to ray cluster...")
+    ray_info = None  # only set for local clusters
+    multinode_info = None  # only set for multi-node LSF launches
+    if args.ray_address is not None:
+        ray.init(
+            address=args.ray_address, log_to_driver=True, logging_level=logging.INFO
+        )
+        logger.info(f"[AutoTune] Connected to remote ray cluster at {args.ray_address}")
+        configure_ray_data_context()
+        logger.warning(
+            "[AutoTune] If Ray Data warns that the object store is <50%% of node RAM, "
+            "the remote cluster must be restarted with --object-store-memory sized "
+            "accordingly (or RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION=0.5 set on "
+            "the cluster nodes). Client-side env vars do not affect an already-running cluster."
+        )
+    elif args.conda_env and args.num_nodes >= 1:
+        # Multi-node Ray cluster via blaunch: one multi-host bsub allocation;
+        # the head colocates with a worker on host[0] and blaunch starts a
+        # worker on each of the other allocated hosts.
+        try:
+            # Worker bring-up logs land under <output_dir>/logs/ so they
+            # are co-located with the rest of the run's artifacts and get
+            # wiped by cleanup(). expanduser() is needed because argparse
+            # stores '~/...' literally; os.path.abspath does not expand ~.
+            log_dir = os.path.join(os.path.expanduser(args.output_dir), "logs")
+            multinode_info = start_multinode_ray_cluster_blaunch(
+                num_workers=args.num_nodes,
+                gpus_per_worker=args.gpus_per_node,
+                conda_env=args.conda_env,
+                bringup_deadline_s=args.bringup_deadline_s,
+                rl_algo=args.rl_algo,
+                fleet=args.fleet,
+                ib_hca=args.ib_hca,
+                ib_ifname=args.ib_ifname,
+                log_dir=log_dir,
+            )
+        except RayUpTimeoutError as e:
+            logger.warning(
+                f"[AutoTune] Ray cluster bring-up did not complete within "
+                f"{args.bringup_deadline_s}s. Aborting run gracefully without HPO. "
+                f"Details: {e}"
+            )
+            sys.exit(0)
+        logger.info(
+            f"[AutoTune] Multi-node Ray cluster ready (blaunch): "
+            f"head + {args.num_nodes} worker(s), "
+            f"head={multinode_info['head_address']}, GPUs={multinode_info['num_gpus']}"
+        )
+        configure_ray_data_context()
+    else:
+        # If running on CCC, use start_local_ray_cluster. Otherwise, use ray.init()
+        ray_info = start_local_ray_cluster()
+
+        # Otherwise, on LLM.build just use ray.init()
+        # ray.init()
+        logger.info("[AutoTune] Started local ray cluster")
+
+    logger.info(f"[AutoTune Driver] Ray cluster resources: {ray.cluster_resources()}")
+
+    # Redirect stdout/stderr so bare print() calls are captured as log records.
+    # setup_logging() already created a StreamHandler bound to sys.__stderr__
+    # (the real fd), so the PrintLogger wrapper won't cause a re-entry loop.
+    sys.stdout = PrintLogger(logger)
+    sys.stderr = PrintLogger(logger)
 
     # Generate a unique ID for the current run
     run_id = generate_unique_id()

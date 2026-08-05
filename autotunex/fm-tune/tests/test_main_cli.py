@@ -55,6 +55,7 @@ class TestMainHelp:
             "--tuning_algo",
             "--rl_algo",
             "--no_autotune",
+            "--backend",
             "--resume_from_checkpoint",
             "--keep_checkpoints",
             "--cleanup",

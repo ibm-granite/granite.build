@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2023-present the International Business Machines.
+# Copyright 2023-present International Business Machines Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -173,10 +173,15 @@ class AutotuneOptimizer:
         self.rl_algo = pipeline.get_rl_algo()
         self.precision = pipeline.get_precision()
 
+        from autotune.device import detect_accelerator
+
+        self.accel = detect_accelerator()
+
         # Ensure that if SFT is used, the precision is set to FP32 or BF16
-        assert (
-            self.precision == AutotunePrecision.BF16
-        ), "Precision must be set to BF16 for better performance."
+        assert self.precision in (
+            AutotunePrecision.BF16,
+            AutotunePrecision.FP32,
+        ), "Precision must be BF16 (GPU/MPS) or FP32 (MPS/CPU)."
 
         self.trainer_fn = None
         self.tuner_callbacks = tuner_callbacks
@@ -421,7 +426,9 @@ class AutotuneOptimizer:
             "train_implementation", "huggingface_ds"
         )
         num_gpus_per_trial = training_config.get("num_gpus_per_trial", 1)
-        multi_gpu = True  # if num_gpus_per_trial > 1 else False
+        multi_gpu = (
+            self.accel.supports_distributed
+        )  # CUDA: True (unchanged); MPS/CPU: False → single driver
         self.pipeline.set_multi_gpu(multi_gpu)
 
         # Set the training driver based on the train implementation
@@ -436,7 +443,12 @@ class AutotuneOptimizer:
                     f"Online RL algorithms {AUTOTUNE_ONLINE_RL} are not supported for single GPU training."
                 )
             else:  # no RL, use tuning with SFT or PEFT
-                from autotune.trainers.driver_single import train_driver_single_gpu
+                if training_config.get("backend", "torch") == "mlx":
+                    from autotune.trainers.driver_single_mlx import (
+                        train_driver_single_gpu,
+                    )
+                else:
+                    from autotune.trainers.driver_single import train_driver_single_gpu
 
                 self.trainer_fn = train_driver_single_gpu
         else:  # Multi-GPU training
@@ -547,9 +559,13 @@ class AutotuneOptimizer:
         print(f"[AutoTune] Experiment name (best config): {experiment_name}")
 
         # Set resources per trial. The assumption is 1 GPU per trial.
-        if self.pipeline.get_multi_gpu() is False:  # Single GPU training
+        if (
+            self.pipeline.get_multi_gpu() is False
+        ):  # Single-device training (CUDA 1-GPU, or MPS/CPU)
             num_cpus = 1
-            num_gpus = 1
+            from autotune.device import ray_num_gpus
+
+            num_gpus = ray_num_gpus(self.accel, 1)
         else:  # Multi-GPU training
             num_cpus = 1
             num_gpus = 0
@@ -617,7 +633,12 @@ class AutotuneOptimizer:
                     f"Online RL algorithms {AUTOTUNE_ONLINE_RL} are not supported for single GPU training."
                 )
             else:  # no offline RL, use tuning with SFT or PEFT
-                from autotune.trainers.driver_single import train_driver_single_gpu
+                if training_config.get("backend", "torch") == "mlx":
+                    from autotune.trainers.driver_single_mlx import (
+                        train_driver_single_gpu,
+                    )
+                else:
+                    from autotune.trainers.driver_single import train_driver_single_gpu
 
                 self.trainer_fn = train_driver_single_gpu
         else:  # Multi-GPU training
@@ -693,7 +714,9 @@ class AutotuneOptimizer:
                 num_gpus_per_trial == 1
             ), "Single GPU training requires num_gpus_per_trial == 1"
             num_cpus = 1
-            num_gpus = num_gpus_per_trial
+            from autotune.device import ray_num_gpus
+
+            num_gpus = ray_num_gpus(self.accel, num_gpus_per_trial)
         else:  # Multi-GPU training
             print(
                 f"[AutoTune] Training driver (trial) using {num_gpus_per_trial} GPUs per trial."

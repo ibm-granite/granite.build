@@ -168,3 +168,15 @@ class TestMakeConfig:
         )
         cfg = p.make_config()
         assert cfg["pipeline.rl_algo"] == "ppo"
+
+
+def test_pipeline_set_precision():
+    from autotune.constants import AutotunePrecision
+    from autotune.pipeline import AutotunePipeline
+
+    p = AutotunePipeline(
+        tuning_algo="lora", rl_algo="none", model_name_or_path="facebook/opt-125m"
+    )
+    assert p.get_precision() == AutotunePrecision.BF16
+    p.set_precision(AutotunePrecision.FP32)
+    assert p.get_precision() == AutotunePrecision.FP32

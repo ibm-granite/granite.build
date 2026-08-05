@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2023-present the International Business Machines.
+# Copyright 2023-present International Business Machines Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,8 +21,40 @@ import subprocess
 from typing import Dict, List, Optional, Tuple
 
 import ray
+from autotune.device import detect_accelerator, object_store_bytes
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_local_ray_gpus() -> int:
+    """GPU count to advertise to a local Ray cluster.
+
+    On CUDA this is the pre-MPS probe verbatim: honour CUDA_VISIBLE_DEVICES,
+    else torch.cuda.device_count(), else parse nvidia-smi. On any non-CUDA
+    accelerator, Ray cannot schedule the device as a resource, so return 0.
+    """
+    accel = detect_accelerator()
+    if accel.kind != "cuda":
+        return 0
+
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if cuda_visible:
+        return len([d for d in cuda_visible.split(",") if d])
+    try:
+        import torch
+
+        return torch.cuda.device_count()
+    except Exception:
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return len(result.stdout.strip().splitlines())
+        except Exception:
+            return 0
 
 
 def configure_ray_data_context() -> None:
@@ -206,36 +238,27 @@ def start_local_ray_cluster() -> Dict:
     os.makedirs(temp_dir, exist_ok=True)
     logger.info(f"Ray temp dir: {temp_dir}")
 
-    # -- GPU detection --------------------------------------------------------
-    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
-    if cuda_visible:
-        num_gpus = len([d for d in cuda_visible.split(",") if d])
+    # -- Accelerator + GPU detection ------------------------------------------
+    accel = detect_accelerator()
+    num_gpus = resolve_local_ray_gpus()
+    logger.info(f"Detected accelerator={accel.kind}, {num_gpus} Ray GPU(s)")
+
+    # -- Object store sizing --------------------------------------------------
+    # CUDA clusters use the 0.5 RAM proportion (ray.data tokenization path).
+    # The single-device (MPS/CPU) driver never touches ray.data, so cap the
+    # object store at a small fixed size to leave RAM for Metal.
+    object_store_memory = None
+    if accel.kind == "cuda":
+        if "RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION" not in os.environ:
+            os.environ["RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION"] = "0.5"
     else:
-        try:
-            import torch
-
-            num_gpus = torch.cuda.device_count()
-        except Exception:
-            try:
-                result = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                num_gpus = len(result.stdout.strip().splitlines())
-            except Exception:
-                num_gpus = 0
-    logger.info(f"Detected {num_gpus} GPU(s)")
-
-    # -- Object store memory proportion ---------------------------------------
-    if "RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION" not in os.environ:
-        os.environ["RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION"] = "0.5"
+        object_store_memory = object_store_bytes()
 
     # -- Start Ray ------------------------------------------------------------
     ray.init(
         address=None,
         num_gpus=num_gpus,
+        object_store_memory=object_store_memory,
         include_dashboard=False,
         ignore_reinit_error=True,
         _temp_dir=temp_dir,

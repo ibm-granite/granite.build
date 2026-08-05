@@ -30,3 +30,20 @@ def test_hf_cache_path_resolves_to_hf_uri():
 def test_unmatched_path_raises_value_error():
     with pytest.raises(ValueError, match="does not match expected"):
         lakehouse_path_to_uri("/some/random/path/train.jsonl")
+
+
+def test_resolve_dataset_uri_local_path_falls_back():
+    from autotune.template_utils import resolve_dataset_uri
+
+    uri, name = resolve_dataset_uri("datasets/finance_train.jsonl")
+    assert uri is None
+    assert name == "finance_train"
+
+
+def test_resolve_dataset_uri_hf_cache_still_resolves():
+    from autotune.template_utils import resolve_dataset_uri
+
+    path = "/gb-read-write/hfcache/ibm-research/finance-test/abc123/finance_train.jsonl"
+    uri, name = resolve_dataset_uri(path)
+    assert uri == "hf:///datasets/ibm-research/finance-test"
+    assert name == "finance-test"

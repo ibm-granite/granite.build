@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2023-present the International Business Machines.
+# Copyright 2023-present International Business Machines Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,12 @@ from copy import deepcopy
 from typing import Any, Dict
 
 import torch
+from autotune.device import (
+    detect_accelerator,
+    model_load_kwargs,
+    resolve_attn_implementation,
+    resolve_precision,
+)
 
 # Local
 from autotune.trainers._alora_gc import (
@@ -37,6 +43,7 @@ from autotune.utils import (
     get_tokenizer,
     prepare_qlora_model,
     resize_model_embeddings,
+    resolve_trust_remote_code,
     set_seed,
     tokenize_batch,
 )
@@ -131,14 +138,17 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # Make a local copy of the current config
     local_config = deepcopy(config)
 
-    # Check if GPU if available.
-    device = "cpu"
-    if torch.cuda.is_available():
-        device = "cuda"
+    # Resolve the accelerator (cuda / mps / cpu) via the central policy module.
+    accel = detect_accelerator()
+    device = accel.kind
+    if accel.kind == "cuda":
         logger.info("[AutoTune] Clearing CUDA cache")
         torch.cuda.empty_cache()
         visible_devices = ",".join(map(str, range(torch.cuda.device_count())))
         logger.info(f"[AutoTune] Visible devices: {visible_devices}")
+    elif accel.kind == "mps":
+        logger.info("[AutoTune] Clearing MPS cache")
+        torch.mps.empty_cache()
     logger.info(f"[AutoTune] Device available: {device}")
 
     # Get the training config (discard unused sections — pop for side effect)
@@ -155,14 +165,23 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     peft_type = training_config.get("peft_type")
     tuning_algorithm = training_config.get("tuning_algorithm")
     is_qlora = tuning_algorithm == "qlora"
+    if is_qlora and accel.kind != "cuda":
+        raise ValueError(
+            f"QLoRA (4-bit) requires CUDA and cannot run on {accel.kind}. "
+            "Use --tuning_algo lora instead. (This driver is reachable via "
+            "--resume_from_checkpoint, which bypasses the main.py guard.)"
+        )
     model_name_or_path = training_config.get("model_name_or_path")
     output_dir = training_config.get("output_dir")
     max_length = training_config.get("max_length", None)
-    attn_implementation = training_config.get("use_flash_attention", "eager")
+    attn_implementation = resolve_attn_implementation(
+        training_config.get("use_flash_attention", "eager"), accel
+    )
     hpo_search = training_config.get("hpo_search", False)
     num_train_epochs = training_config.get("num_train_epochs", 1)
     num_hpo_epochs = training_config.get("hpo_num_epochs", 1)
-    bf16_flag = True
+    precision = resolve_precision(training_config.get("precision", "bf16"), accel)
+    bf16_flag = precision == "bf16"
     weight_decay = 0.01
     seed = 42
 
@@ -177,10 +196,8 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # frozen base in 4-bit (NF4) via bitsandbytes; otherwise load in bf16.
     quantization_config = get_qlora_quantization_config() if is_qlora else None
     model_kwargs = dict(
-        device_map="auto",
-        dtype=torch.bfloat16,
-        low_cpu_mem_usage=True,
-        trust_remote_code=True,
+        **model_load_kwargs(accel, precision),
+        trust_remote_code=resolve_trust_remote_code(),
         use_cache=False,
         attn_implementation=attn_implementation,
     )

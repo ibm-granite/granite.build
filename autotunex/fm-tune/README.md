@@ -1,7 +1,6 @@
-![Static Badge](https://img.shields.io/badge/build-passing-brightgreen?style=flat)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-![Static Badge](https://img.shields.io/badge/version-0.7.1-red?style=flat)
+![Static Badge](https://img.shields.io/badge/version-0.7.5-red?style=flat)
 
 # AutoTune: Distributed Fine-Tuning for Foundation Models
 
@@ -32,8 +31,6 @@ AutoTune handles the full pipeline: hyperparameter search, distributed training 
 ### With `uv` (recommended)
 
 [uv](https://docs.astral.sh/uv/) is the recommended installer. It resolves the flash-attn pre-built wheel automatically via `[tool.uv.sources]` in `pyproject.toml` — no manual download needed.
-
-`autotune` is vendored in the [`granite.build`](https://github.com/ibm-granite/granite.build) monorepo at `autotunex/fm-tune/`. Clone the monorepo, then work from that directory:
 
 ```bash
 git clone https://github.com/ibm-granite/granite.build.git
@@ -79,7 +76,7 @@ pip install -e ".[full]"
 | torch | 2.8.0 | PyTorch backend |
 | transformers | 4.57.6 | Model loading and training |
 | peft | 0.18.0 | LoRA, QLoRA, LoHA, LoKr, VeRA, aLoRA adapters |
-| bitsandbytes | >= 0.48.0 | 4-bit (NF4) base quantization for QLoRA |
+| bitsandbytes | 0.49.0 | 4-bit (NF4) base quantization for QLoRA |
 | trl | 0.29.0 | DPO, KTO offline RL trainers |
 | deepspeed | 0.18.7 | ZeRO-1/2/3 distributed training |
 | ray[tune,default] | 2.54.0 | HPO and distributed orchestration |
@@ -105,7 +102,7 @@ ruff format .         # apply formatting
 ruff format --check . # verify formatting without changes (used in CI)
 ```
 
-Editor integration: if you use VSCode, install the [Ruff extension](https://marketplace.visualstudio.com/items?itemName=charliermarsh.ruff). The repo ships a `.vscode/settings.json` that enables format-on-save and import sorting out of the box.
+Editor integration: if you use VSCode, install the [Ruff extension](https://marketplace.visualstudio.com/items?itemName=charliermarsh.ruff) and enable format-on-save and import sorting in your own `.vscode/settings.json` (the `.vscode/` directory is git-ignored, so it stays local to your checkout).
 
 ## Quick Start
 
@@ -127,8 +124,8 @@ python main.py \
 This will:
 1. Launch a local Ray cluster
 2. Run HPO to find the best LoRA hyperparameters
-3. Train the model with the best config on all available GPUs
-4. Save the LoRA adapter to `./output/models/granite-4.0-lora/`
+3. Train the model with the best config on the available accelerator(s)
+4. Save the LoRA adapter under `./output/` — see [Output Structure](#output-structure) for the exact path
 
 ### QLoRA (4-bit) to fit larger models
 
@@ -168,162 +165,34 @@ python main.py \
   --no_autotune --cleanup
 ```
 
-## Running on LSF Clusters (multi-node)
+## Apple Silicon (MPS)
 
-For LSF-managed environments such as IBM CCC, AutoTune ships an LSF launcher
-under `autotune/lsf/` that stands up a multi-node Ray cluster on demand inside
-a **single** multi-host `bsub` allocation. The driver runs on the first
-allocated host (`host[0]`) and uses `blaunch` to start a Ray worker on each of
-the other allocated hosts; a worker also colocates with the Ray head on
-`host[0]`, so every GPU in the allocation is usable. RDMA over InfiniBand is
-enabled by default (`NCCL_NET_GDR_LEVEL=PXB` with `mlx5_0`), so inter-node
-NCCL collectives use GPU-Direct RDMA when the topology supports it.
-
-Bringing the whole cluster up inside one allocation means a single queue wait
-covering every host — no partial-schedule waste from N independent worker
-`bsub` jobs racing the queue.
-
-### How it works
-
-1. You submit `main.py` via `bsub` inside a multi-host allocation
-   (`-R "span[hosts=N]"`), passing `--num_nodes N`, `--gpus_per_node`, and
-   `--conda_env`. The driver lands on `host[0]`.
-2. `ray_up_blaunch` (called from `main.py`) reads the LSF host list, starts the
-   Ray head on `host[0]` (CPU-only), starts a worker on `host[0]` directly
-   (no blaunch needed — registers that host's GPUs), and `blaunch`es a worker
-   on each of the other `N-1` hosts. Each worker carries the full RDMA
-   environment, activates the supplied conda env, and runs
-   `python -m autotune.lsf.worker_entry` to attach to the head.
-3. `ray_up_blaunch` waits until Ray sees all expected GPUs and worker nodes,
-   failing fast if any worker process exits during bring-up.
-4. The HPO driver runs as usual; trials land on the GPU workers.
-5. On exit (success or failure), `ray_down` drains the remote-host cgroups via
-   a remote `ray stop`, shuts the head down, SIGTERMs the local blaunch /
-   colocated-worker process groups, and finally `bkill`s its own job so LSF
-   reaps the allocation's cgroup on every host.
-
-Per-host worker logs land at `<output_dir>/logs/<job_group>/<host>.log` (one
-file per hostname, including the head host's own colocated worker, where
-`<job_group>` is the auto-generated `ray_nodes_<timestamp>`). The driver's
-stdout prints the absolute path of each worker log on spawn, so you can
-`tail -f` while the cluster is coming up. Passing `--cleanup` wipes
-`<output_dir>/logs/` at the end of the run along with `ray_results` and
-friends — omit `--cleanup` if you want to keep these for forensics.
-
-### Defaults baked into the LSF launcher
-
-The following are the assumptions for IBM CCC + A100 80GB; override them by
-calling `start_multinode_ray_cluster_blaunch(...)` directly from Python (or by
-adjusting the outer `bsub` resource requests) if your fleet differs:
-
-| Setting | Default |
-|---|---|
-| GPU model | `NVIDIAA100_SXM4_80GB` |
-| Cores per worker | 32 |
-| `NCCL_IB_HCA` | `mlx5_0` |
-| Worker wait timeout | 1800 s |
-
-The LSF queue, user group, per-host GPU mode, and memory are set on the
-**outer** `bsub` line (see the example below), not by the launcher.
-
-### Example: 2 GPU nodes × 4 GPUs each (8 GPUs total)
-
-Submit `main.py` inside a single multi-host LSF allocation. The launcher then
-`blaunch`es workers onto the other hosts and wires them into the cluster:
+fm-tune runs SFT and PEFT (LoRA, aLoRA, LoHa, LoKr, VeRA) on a single Apple
+silicon Mac via PyTorch's Metal (MPS) backend — the same HPO-then-final-train
+pipeline as the CUDA path, just on one Metal device instead of one GPU.
+QLoRA, RL (offline and online), multi-GPU, and DeepSpeed/FSDP are **not**
+supported on MPS.
 
 ```bash
-# 2 GPU nodes × 4 GPUs each (8 GPUs total) — single allocation.
-NUM_NODES=2  # number of GPU worker nodes (== total hosts in the allocation)
-bsub -q normal -U infusion \
-     -n $((32 * NUM_NODES)) \
-     -gpu "num=4:mode=exclusive_process:gmodel=NVIDIAA100_SXM4_80GB" \
-     -R "span[ptile=32]" -R "span[hosts=$NUM_NODES]" -R "rusage[mem=640G]" \
-     -o driver.log \
-     bash -lc 'source ~/.bashrc && conda activate /u/<your-user>/storage/envs/autotune && \
-       python main.py \
-         --num_nodes 2 --gpus_per_node 4 \
-         --conda_env /u/<your-user>/storage/envs/autotune \
-         --config_file autotune/configs/autotune.yaml \
-         --train_file data/train.jsonl --validation_file data/val.jsonl \
-         --model_name_or_path ibm-granite/granite-4.0-micro \
-         --tuning_algo lora --output_dir ./output \
-         --output_model_name granite-lora --run_name multinode_lora \
-         --save_history --cleanup'
+uv pip install -e ".[core]"   # deepspeed is skipped on macOS via its platform marker; verl/flash-attn live only in the [full] extra
+
+python main.py \
+  --config_file autotune/configs/autotune_mac.yaml \
+  --train_file data/train.jsonl \
+  --validation_file data/val.jsonl \
+  --model_name_or_path HuggingFaceTB/SmolLM2-135M-Instruct \
+  --tuning_algo lora \
+  --output_dir /tmp/fmtune_mps \
+  --output_model_name smollm2-lora \
+  --run_name mps-demo \
+  --no_autotune
 ```
 
-Notes:
-
-- The outer `bsub` requests **`--num_nodes` hosts** (not `+1`); the head and
-  one worker share `host[0]`. Set `-R "span[hosts=N]"` so the scheduler is
-  forced to spread the allocation across N distinct hosts (otherwise it may
-  pack all slots onto fewer hosts and `_partition_hosts` will reject the
-  layout).
-- `--num_nodes 2 --gpus_per_node 4` gives the cluster 8 GPUs total (2 hosts ×
-  4 GPUs each). The Ray head registers 0 GPUs; the worker colocated on
-  `host[0]` registers `host[0]`'s GPUs.
-- `--conda_env` is required; without it, `main.py` falls back to a single-node
-  local Ray cluster (useful for dev runs on a single GPU `bsub`).
-- `bjobs` shows exactly **one** job id; per-worker lifecycle is via
-  `subprocess.Popen` (local) and `blaunch`'d processes (remote). When the
-  outer driver job exits or is `bkill`ed, LSF's RES tears down the blaunched
-  workers automatically.
-- The Ray head process and the colocated worker compete for cores on
-  `host[0]`. With the default 32 cores/worker on a 40+ core CCC node this
-  is fine; for very heavy driver-side preprocessing, raise `cores_per_worker`.
-- For online RL (`--rl_algo` ∈ `{ppo, grpo, dapo}`), the GPU mode and
-  host-exclusivity are decided by the **outer** `bsub` (one switch covers
-  all hosts). Use `-gpu "num=4:mode=shared:gmodel=..."` and add `-x` so the
-  whole allocation owns its hosts.
-- Teardown always ends with `bkill $LSB_JOBID` after clean Ray teardown to
-  force LSF to reap the job's cgroup on every allocated host. This makes the
-  job exit `EXIT` (not `DONE`) — cosmetic, since all useful work is on disk
-  before this step runs.
-
-### Choosing the InfiniBand fabric (`--fleet`)
-
-The launcher hardcodes a per-fleet default for `NCCL_IB_HCA` (the list of IB
-HCAs NCCL uses for inter-node collectives). Pick the right `--fleet` for your
-deployment:
-
-| `--fleet` | Default `NCCL_IB_HCA` | Notes |
-|---|---|---|
-| `ccc-a100` (default) | `mlx5_0` | CCC A100 nodes have one healthy rail; `mlx5_1` is Down on several boxes. |
-| `bv-h100` | `mlx5_0,mlx5_1,...,mlx5_7` | BlueVela H100 nodes have 8 compute rails (one per GPU on the same PCIe complex), plus `mlx5_8`/`mlx5_9` for storage/management which are intentionally excluded. |
-
-To override per-run (e.g. ad-hoc benchmarking), pass `--ib_hca "mlx5_0,mlx5_1"`.
-
-#### Example: BlueVela 2 × H100 nodes × 8 GPUs
-
-```bash
-NUM_NODES=2  # number of GPU worker nodes (== total hosts)
-bsub -q production -J multinode -o logs/driver.log \
-     -n $((96 * NUM_NODES)) \
-     -gpu "num=8:mode=exclusive_process:gmodel=NVIDIAH10080GBHBM3" \
-     -R "span[ptile=96] rusage[mem=1280G]" \
-     bash -lc 'source ~/.bashrc && conda activate /u/<your-user>/storage/envs/autotune && \
-       python main.py --fleet bv-h100 \
-         --num_nodes 2 --gpus_per_node 8 \
-         --conda_env /u/<your-user>/storage/envs/autotune \
-         --config_file autotune/configs/autotune.yaml \
-         --train_file data/train.jsonl --validation_file data/val.jsonl \
-         --model_name_or_path ibm-granite/granite-4.0-micro \
-         --tuning_algo lora --output_dir ./output \
-         --output_model_name granite-lora --run_name multinode_bv_h100 \
-         --save_history --cleanup'
-```
-
-To verify NCCL is actually using all 8 rails, set `NCCL_DEBUG=INFO` for one
-run and grep `<output_dir>/logs/<job_group>/<host>.log` for `NCCL INFO NET/IB`. Expect 8
-lines per host of the form `NCCL INFO NET/IB : Using [0]mlx5_0:1/IB
-[1]mlx5_1:1/IB ... [7]mlx5_7:1/IB`. If only one shows up, NCCL didn't accept
-the rail list — most often a `NCCL_IB_GID_INDEX` mismatch on RoCE-style
-deployments.
-
-### Single-node fallback
-
-For local development without LSF, omit `--conda_env` (and either omit
-`--num_nodes` or set it to `1`). `main.py` will start a local Ray cluster on
-the current host — exactly the behaviour shown under Quick Start.
+There is also an opt-in **MLX** backend (`--backend mlx`) that trains natively
+on Apple's MLX instead of PyTorch/MPS — faster and lower-memory for
+single-device `sft`/`lora`/`qlora`, with MLX-native output. See
+[`docs/MPS.md`](docs/MPS.md) for the full support matrix, the MLX backend,
+memory guidance, and troubleshooting.
 
 ## Training Paradigms
 
@@ -331,7 +200,7 @@ the current host — exactly the behaviour shown under Quick Start.
 
 Train a model to follow instructions or perform specific tasks using input/output pairs.
 
-**Supported methods** (`--tuning_type`):
+**Supported methods** (`--tuning_algo`):
 
 | Method | Flag | Description |
 |--------|------|-------------|
@@ -349,7 +218,7 @@ Train a model to follow instructions or perform specific tasks using input/outpu
 > DeepSpeed ZeRO-3 or FSDP `full_shard` (the drivers raise a clear error) — use
 > ZeRO-1/ZeRO-2, FSDP `SHARD_GRAD_OP`, or a single GPU.
 
-**Dataset format:** `input` / `output` columns with optional chat-template, `documents`, and `tools` support.
+**Dataset format:** `input` / `output` columns with optional chat-template, `documents`, and `tools` support. See [`docs/dataset-sft.md`](docs/dataset-sft.md) for the full spec.
 
 **Plain prompt / completion:**
 ```json
@@ -396,7 +265,7 @@ Align a model with human preferences using paired or binary preference data. No 
 | DPO | `dpo` | Direct Preference Optimization — learns from chosen/rejected pairs |
 | KTO | `kto` | Kahneman-Tversky Optimization — learns from binary good/bad labels |
 
-**Dataset format:** `prompt` / `chosen` / `rejected` (DPO) or `prompt` / `completion` / `label` (KTO). Both plain-string and conversational (chat-messages) forms are supported.
+**Dataset format:** `prompt` / `chosen` / `rejected` (DPO) or `prompt` / `completion` / `label` (KTO). Both plain-string and conversational (chat-messages) forms are supported. See [`docs/dataset-offline-rl.md`](docs/dataset-offline-rl.md) for the full spec.
 
 **DPO dataset format** (JSONL):
 ```json
@@ -450,7 +319,7 @@ def compute_score(data_source, solution_str, ground_truth, extra_info, **kwargs)
     return -1.0
 ```
 
-**Dataset format:** Parquet with `data_source` / `prompt` (messages list) / `reward_model` columns.
+**Dataset format:** Parquet with `data_source` / `prompt` (messages list) / `reward_model` columns. See [`docs/dataset-online-rl.md`](docs/dataset-online-rl.md) for the full spec, reward-function wiring, and multi-task dispatch.
 
 **Row shape** (one parquet row):
 ```json
@@ -481,31 +350,51 @@ python main.py \
 
 ## Dataset Preparation
 
-AutoTune accepts different dataset schemas depending on the training paradigm. The schema for each is summarized below; file formats, auto-detection rules, and worked examples appear in the per-paradigm sections above.
+AutoTune accepts different dataset schemas depending on the training paradigm. File formats, required and optional columns, auto-detection rules, and worked examples are covered in dedicated docs:
 
-- **SFT / LoRA / aLoRA / LoHa / LoKr / VeRA** — `input` / `output` schema with optional chat-template, `documents`, and `tools` columns.
-- **Offline RL — DPO / KTO** — `prompt` / `chosen` / `rejected` (DPO) or `prompt` / `completion` / `label` (KTO); plain-string and conversational forms.
-- **Online RL — PPO / GRPO / DAPO (verl)** — parquet with `data_source` / `prompt` / `reward_model` columns and a companion `compute_score` reward function.
+- [SFT / LoRA / aLoRA / LoHa / LoKr / VeRA](docs/dataset-sft.md) — `input` / `output` schema with optional chat-template, `documents`, and `tools` columns.
+- [Offline RL — DPO / KTO](docs/dataset-offline-rl.md) — `prompt` / `chosen` / `rejected` (DPO) or `prompt` / `completion` / `label` (KTO); plain-string and conversational forms.
+- [Online RL — PPO / GRPO / DAPO (verl)](docs/dataset-online-rl.md) — parquet with `data_source` / `prompt` / `reward_model` columns and a companion `compute_score` reward function.
 
 ## Distributed Training Backends
 
-AutoTune supports DeepSpeed as the distributed training backends:
+For multi-GPU SFT and offline RL (DPO/KTO), AutoTune supports two distributed
+backends, selected by `train_implementation` in the YAML `training_config`
+(`"DeepSpeed"` or `"FSDP"`).
 
-### DeepSpeed for SFT/DPO Training
+### DeepSpeed (`train_implementation: DeepSpeed`)
 
-Set in the YAML config:
+Pick the ZeRO strategy with `ds_strategy`:
 ```yaml
 training_config:
-  ds_strategy: "zero3_cpu"  # zero1_gpu, zero2_gpu, zero2_cpu, zero3_cpu
+  train_implementation: "DeepSpeed"
+  ds_strategy: "zero3_cpu"   # auto, zero1_gpu, zero2_gpu, zero3_gpu, zero2_cpu, zero3_cpu
 ```
 
-- **Zero1**: Shards optimizer states across GPUs
-- **Zero2**: Shards optimizer + gradients
-- **Zero3 + CPU offload**: Shards everything + offloads to CPU (for large models)
+- **ZeRO-1**: shards optimizer states across GPUs
+- **ZeRO-2**: shards optimizer states + gradients
+- **ZeRO-3 (+ CPU offload)**: shards optimizer states, gradients, and parameters; the `*_cpu` variants also offload to CPU for large models
+
+### FSDP (`train_implementation: FSDP`)
+
+Pick the sharding strategy with `fsdp_strategy`:
+```yaml
+training_config:
+  train_implementation: "FSDP"
+  fsdp_strategy: "full_shard"  # auto, no_shard, shard_grad_op, full_shard, hybrid_shard
+```
+
+> **QLoRA note:** QLoRA (4-bit base) cannot be sharded by DeepSpeed ZeRO-3 or
+> FSDP `full_shard` (the drivers raise a clear error). Use ZeRO-1/ZeRO-2, FSDP
+> `shard_grad_op`, or a single GPU.
 
 ### Online RL (verl)
 
 Online RL always uses FSDP internally via [verl](https://github.com/volcengine/verl) with vLLM for rollout generation. No separate backend configuration needed.
+
+## Recommended Resources
+
+For GPU sizing, DeepSpeed ZeRO-strategy selection, per-configuration memory estimates, training-time estimates across model sizes (350M–13B+), and a strategy-selection decision tree, see [`docs/RESOURCES.md`](docs/RESOURCES.md).
 
 ## Configuration
 
@@ -516,7 +405,7 @@ The YAML configuration file controls the HPO search space and training parameter
 ```yaml
 tune_config:
   search_alg: "lds"           # lds, hyperopt, random, bohb, blds
-  scheduler: "fifo"           # fifo, hyperband
+  scheduler: "fifo"           # fifo, asha, hyperbandforbohb
   num_samples: 8              # number of HPO trials
   max_concurrent_trials: 1    # parallel trials
   max_discrepancy: 6          # LDS-specific parameter
@@ -533,7 +422,9 @@ training_config:
   seed: 42
   num_gpus_per_trial: 4
   use_flash_attention: "flash_attention_2"  # or "eager"
-  ds_strategy: "zero1_gpu"      # zero1_gpu, zero2_gpu, zero2_cpu, zero3_cpu
+  train_implementation: "FSDP"  # FSDP or DeepSpeed (multi-GPU SFT/DPO)
+  ds_strategy: "zero1_gpu"      # DeepSpeed: auto, zero1_gpu, zero2_gpu, zero3_gpu, zero2_cpu, zero3_cpu
+  fsdp_strategy: "full_shard"   # FSDP: auto, no_shard, shard_grad_op, full_shard, hybrid_shard
   max_length: 256
 ```
 
@@ -605,6 +496,9 @@ Training:
                              lokr, vera, none (default: none)
   --rl_algo ALGO             RL algorithm: dpo, kto, ppo, grpo, dapo, none
                              (default: none)
+  --backend {torch,mlx}      Training backend (default: torch). 'mlx' uses the
+                             Apple Silicon MLX backend for single-device
+                             sft/lora/qlora (requires the [mlx] extra)
 
 HPO control:
   --no_autotune              Skip HPO, train with each param's default
@@ -613,18 +507,28 @@ HPO control:
                              When a saved final_config.json + checkpoint exist
                              there, HPO is skipped and the saved config drives
                              the resumed run; otherwise warns and runs fresh.
+  --keep_checkpoints         Keep intermediate checkpoints and training
+                             artifacts (final_checkpoints/, outputs/,
+                             train_results/, data_cache/) after final training
+                             instead of deleting them. Useful for debugging
   --cleanup                  Remove the ray_results/ folder after training
   --save_history             Write HPO trial history to
                              {output_dir}/results/{run_name}_trials.csv
   --seed N                   Random seed (default: 42)
 
-Dataset (FSDP driver):
+Dataset (multi-GPU drivers):
   --data_backend {arrow,ray_data}
                              How datasets are loaded and tokenized. 'arrow'
-                             (default) tokenizes once on the driver and has
-                             each worker mmap the result. 'ray_data' runs a
-                             distributed Ray Data pipeline and auto-shards
-                             across workers.
+                             tokenizes once on the driver and has each worker
+                             mmap the result; 'ray_data' runs a distributed Ray
+                             Data pipeline that auto-shards across workers. If
+                             omitted, the YAML config value is used (config
+                             default: arrow)
+  --ray_data_concurrency N   Parallel map_batches tokenize tasks for the
+                             'ray_data' backend. Default (auto) = total cluster
+                             CPUs minus this trial's GPU workers
+  --ray_data_num_cpus F      Logical CPUs per ray_data tokenize task (default
+                             1.0); fractional values allow more tasks per CPU
 
 Tokenizer customization:
   --tokenizer_name_or_path PATH
@@ -640,28 +544,6 @@ Tokenizer customization:
 Cluster:
   --ray_address HOST:PORT    Attach to a remote Ray head (optional; a local
                              cluster is started otherwise)
-  --num_nodes N              Number of GPU hosts in the multi-node Ray cluster
-                             (== hosts in the LSF allocation; the head colocates
-                             with a worker on host[0]). Combined with
-                             --conda_env, triggers the LSF multi-node launch
-                             (default: 1)
-  --gpus_per_node N          GPUs per host when --num_nodes is set
-                             (default: 1)
-  --conda_env PATH           Conda env path workers must activate before
-                             starting Ray. Required to enable the multi-node
-                             LSF launch path; without it, the run uses a
-                             local Ray cluster on the current host
-  --fleet {ccc-a100,bv-h100}
-                             Deployment fleet. Selects the GPU model and the
-                             per-fleet default for NCCL_IB_HCA: ccc-a100 (A100)
-                             uses single rail mlx5_0; bv-h100 (H100) uses 8
-                             compute rails (mlx5_0..mlx5_7).
-                             See "Choosing the InfiniBand fabric" above
-  --ib_hca STR               Explicit override for NCCL_IB_HCA, e.g.
-                             "mlx5_0,mlx5_1". Takes precedence over --fleet
-  --ib_ifname STR            Optional override for NCCL_SOCKET_IFNAME (the
-                             TCP iface NCCL uses for bootstrap). Default
-                             unset lets NCCL auto-pick a routable interface
 
 AutoTuneX bridge logging (optional, OFF by default):
   --autotunex_server_url URL Base URL of an AutoTuneX bridge server to log this
@@ -681,7 +563,8 @@ run is the model, the logs, and (if HPO ran) the results files.
 
 ```
 {output_dir}/
-  {output_model_name}/            # Final fine-tuned model or adapter — persistent
+  models/{output_model_name}/     # Final model/adapter (single-device drivers) — persistent
+  {output_model_name}/            # Final model/adapter (multi-GPU / TRL / verl drivers) — persistent
   logs/{trial_id}/                # HF Trainer log dirs per trial — persistent
   results/                        # Written only when --save_history is set
     {run_name}_tune.json          # Best hyperparameter configuration
@@ -693,8 +576,11 @@ run is the model, the logs, and (if HPO ran) the results files.
 ```
 
 Notes:
-- The model goes directly under `{output_dir}/{output_model_name}/`, not
-  under a `models/` subfolder.
+- The final model/adapter path depends on the driver: single-device drivers
+  (single-GPU SFT/PEFT and the MLX backend) write to
+  `{output_dir}/models/{output_model_name}/`, while the multi-GPU
+  (DeepSpeed/FSDP), TRL (DPO/KTO), and verl drivers write directly to
+  `{output_dir}/{output_model_name}/`.
 - `ray_results/` only exists while HPO is running and is removed by
   `--cleanup`. On `--no_autotune` runs it's never created.
 - `train_results/`, `outputs/`, and `data_cache/` are scrubbed by the driver
@@ -716,33 +602,29 @@ fm-tune/
     cluster.py                      # Local Ray cluster lifecycle + Ray Data context
     config.py                       # YAML config loader + DeepSpeed / FSDP presets
     constants.py                    # Supported methods, PEFT-type mapping, enums
-    lds.py                          # Limited Discrepancy Search sampler
-    logging_setup.py                # Root logger configuration
+    device.py                       # Accelerator detection (CUDA/MPS/CPU) + platform guards
+    lds.py / blds.py                # (Bandit) Limited Discrepancy Search samplers
     optimizer.py                    # AutotuneOptimizer: Ray Tune HPO orchestration
     pipeline.py                     # AutotunePipeline: tuning + RL algo validation
-    utils.py                        # Tokenization, model loading, DP audit helper
+    mlx_backend.py                  # MLX backend config translation + training loop
+    validation.py                   # Config / argument validation
+    utils.py                        # Tokenization, model loading, checkpoint helpers
+    alora_patch.py                  # Activated-LoRA (aLoRA) support
+    logging_setup.py                # Root logger configuration
 
     callbacks/                      # Trainer callbacks (logging, tuner events)
-      logging_service.py
-      print_logger.py
-      tuner_callback.py
-
-    lsf/                            # LSF multi-node Ray launcher (CCC)
-      ray_up_blaunch.py             # Single allocation: head + blaunch'd workers, head colocates with a worker
-      ray_down.py                   # Tear down: remote ray stop + ray.shutdown + kill blaunch pids + self-bkill
-      worker_entry.py               # Worker process: ray start --address ..., signal.pause
-      log_utils.py                  # Banners, phase timers, env fingerprint helpers
-
-    configs/                        # Example YAML configurations
+    configs/                        # Example YAML configurations (autotune*.yaml)
     rewards/                        # Example reward functions for online RL
     tools/                          # Dataset-building utilities
       build_gsm8k_dataset.py
       build_factuality_dataset.py
-      granite_build_wrapper.py
+      parquet_to_json.py
+    lsf/                            # Optional multi-node Ray launcher (LSF/HPC)
 
     trainers/
       driver_single.py              # Single-GPU SFT/PEFT
       driver_single_trl.py          # Single-GPU DPO/KTO (TRL)
+      driver_single_mlx.py          # Single-device MLX backend (sft/lora/qlora)
       driver_multi_hf_ds.py         # Multi-GPU SFT/PEFT + DeepSpeed
       driver_multi_hf_fsdp.py       # Multi-GPU SFT/PEFT + FSDP
       driver_multi_trl_ds.py        # Multi-GPU DPO/KTO + DeepSpeed (TRL)
@@ -750,9 +632,14 @@ fm-tune/
       driver_multi_verl.py          # Multi-GPU PPO/GRPO/DAPO (verl + vLLM)
       _trl_compat.py                # TRL/verl API-drift compatibility shim
 
-  templates/                        # Cluster job submission templates (LSF, etc.)
+  docs/
+    dataset-sft.md                  # SFT/PEFT dataset format
+    dataset-offline-rl.md           # DPO/KTO dataset format
+    dataset-online-rl.md            # verl (PPO/GRPO/DAPO) dataset format
+    RESOURCES.md                    # GPU sizing, ZeRO/FSDP strategy selection, memory estimates
+    MPS.md                          # Apple Silicon (MPS) + MLX backend support
+
   tests/                            # Pytest test suite
-  datasets/                         # Example / tiny sample datasets
 ```
 
 ## Citation
@@ -787,8 +674,12 @@ If you found the library useful, please cite the following reference:
 }
 ```
 
+## License
+
+AutoTune is released under the [Apache License 2.0](LICENSE).
+
 ## Contact
 
 Radu Marinescu (radu.marinescu@ie.ibm.com)
-Priynashu Rai (priyanshu.rai@ibm.com)
-Daniel Karl I. Wiedele (daniel.karl@ibm.com)
+Priyanshu Rai (priyanshu.rai@ibm.com)
+Daniel Karl I. Weidele (daniel.karl@ibm.com)

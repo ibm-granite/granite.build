@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2023-present the International Business Machines.
+# Copyright 2023-present International Business Machines Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -611,6 +611,22 @@ def load_datasets(
     return raw_datasets
 
 
+def resolve_trust_remote_code(default: bool = True) -> bool:
+    """Whether HF ``from_pretrained`` calls should pass ``trust_remote_code=True``.
+
+    Loading a model, tokenizer, or config with ``trust_remote_code=True`` executes
+    arbitrary Python shipped in the (operator-supplied) model repo. fm-tune
+    defaults this to ``True`` because Granite hybrid and some custom architectures
+    ship their modeling code in the repo. Operators who only load architectures
+    bundled with ``transformers`` can harden this by setting the environment
+    variable ``FMTUNE_TRUST_REMOTE_CODE=0`` (also accepts ``false`` / ``no`` / ``off``).
+    """
+    val = os.getenv("FMTUNE_TRUST_REMOTE_CODE")
+    if val is None:
+        return default
+    return val.strip().lower() not in ("0", "false", "no", "off")
+
+
 def get_tokenizer(
     model_name_or_path: str,
     tokenizer_name_or_path: Optional[str] = None,
@@ -633,7 +649,7 @@ def get_tokenizer(
         pretrained_model_name_or_path=source,
         padding_side="left",
         use_fast=False,
-        trust_remote_code=True,
+        trust_remote_code=resolve_trust_remote_code(),
     )
 
     num_new_tokens = 0
@@ -2016,7 +2032,9 @@ def _estimate_memory_components(
     Returns dict with: weights_mem, optimizer_mem, gradients_mem, activations_mem,
     total_params, and trainable_params.
     """
-    config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(
+        model_name_or_path, trust_remote_code=resolve_trust_remote_code()
+    )
 
     hidden_size = getattr(config, "hidden_size", None)
     num_layers = getattr(config, "num_hidden_layers", getattr(config, "n_layer", None))

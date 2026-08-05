@@ -165,7 +165,7 @@ training_config:
     max_val: null
     type: str
     required: true
-  use_flash_attention: 
+  use_flash_attention:
     description: "Use flash attention (eager or flash_attention_2)"
     default: "flash_attention_2"
     values: ["eager", "flash_attention_2"]
@@ -173,6 +173,14 @@ training_config:
     max_val: null
     type: str
     required: true
+  precision:
+    description: "Compute precision: bf16 (GPU/MPS macOS>=14) or fp32 (MPS/CPU fallback)"
+    default: "bf16"
+    values: ["bf16", "fp32"]
+    min_val: null
+    max_val: null
+    type: str
+    required: false
   num_gpus_per_trial: 
     description: "GPUs per trial (worker)"
     default: 1
@@ -218,7 +226,7 @@ training_config:
 training_rl_config:
   reward_function_path:
     description: "Path to custom reward function Python script (for verl online RL)"
-    default: "/pvc/autotune/rewards/gsm8k_reward.py"
+    default: "autotune/rewards/gsm8k_reward.py"
     values: null
     min_val: null
     max_val: null

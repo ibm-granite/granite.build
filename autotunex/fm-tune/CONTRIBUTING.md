@@ -19,12 +19,10 @@ There are several ways to contribute to AutoTune:
 
 **Process:** see the [Pull Request Process](#pull-request-process) section below.
 
-### 2. Templates and External Integrations
+### 2. Reward Functions and Configuration Recipes
 
-- Granite.Build templates (see `granite.build/gb-single-node/` and `gb-multi-node/`
-  for examples)
 - Reward functions for online RL (see `autotune/rewards/`)
-- Chat templates for new model families (see `autotune/templates/`)
+- New or tuned YAML configuration recipes (see `autotune/configs/`)
 
 These can live in your own repository if they target a specific deployment, or be
 contributed back if they have general utility.
@@ -59,10 +57,9 @@ behavior, contact one of the maintainers listed in
 ### Installation with `uv` (recommended)
 
 ```bash
-# fm-tune lives in the granite.build monorepo. Fork
-# github.com/ibm-granite/granite.build, then clone your fork:
+# Fork the granite.build monorepo on GitHub, then clone your fork:
 git clone git@github.com:<your-username>/granite.build.git
-cd granite.build/autotunex/fm-tune/
+cd granite.build/autotunex/fm-tune
 
 # Create and activate a virtual environment
 uv venv .venv --python 3.12
@@ -114,12 +111,11 @@ For a smoke test of the training pipeline, see the **Quick Start** section in
 | `autotune/trainers/` | Training drivers (single/multi-GPU, HF/TRL/verl backends). |
 | `autotune/configs/` | YAML config templates. |
 | `autotune/rewards/` | Reward functions for online RL. |
-| `autotune/tools/` | Dataset builders (GSM8K, factuality) and Granite.Build wrapper. |
+| `autotune/tools/` | Dataset builders (GSM8K, factuality) and parquet/JSON conversion helpers. |
 | `autotune/callbacks/` | Ray Tune callbacks, buffered logging service. |
-| `autotune/lsf/` | Multi-node launcher for LSF clusters. |
-| `granite.build/` | Granite.Build (gbcli) templates for IBM internal deployment. |
+| `autotune/lsf/` | Optional multi-node Ray launcher for LSF/HPC clusters. |
 | `tests/` | Pytest suite. |
-| `docs/` | Reference documentation: GPU sizing, dataset formats. |
+| `docs/` | Reference documentation: GPU sizing, MPS/MLX, dataset formats. |
 
 For deeper architectural context — driver selection, the verl integration,
 memory levers, and known gotchas — see [`CLAUDE.md`](CLAUDE.md) and the files
@@ -323,7 +319,7 @@ pytest -m gpu
 pytest tests/test_blds_fidelity_schedule.py
 
 # Single test function
-pytest tests/test_config.py::test_load_yaml_defaults
+pytest tests/test_config.py::TestLoadFromYaml::test_load_yaml
 
 # Stop on first failure with verbose output
 pytest -x -v
@@ -416,11 +412,12 @@ adding it here.
 - [`README.md`](README.md) — project overview, quick start, CLI reference
 - [`CLAUDE.md`](CLAUDE.md) — architecture, gotchas, memory & resource reference, verl integration notes
 - [`docs/RESOURCES.md`](docs/RESOURCES.md) — GPU sizing guide for 3B/8B/30B on 8× A100
+- [`docs/MPS.md`](docs/MPS.md) — Apple Silicon (MPS) + MLX backend support
 - [`docs/dataset-sft.md`](docs/dataset-sft.md), [`docs/dataset-offline-rl.md`](docs/dataset-offline-rl.md), [`docs/dataset-online-rl.md`](docs/dataset-online-rl.md) — dataset format references
 
 ### Project Links
 
-- **Source:** [github.com/ibm-granite/granite.build](https://github.com/ibm-granite/granite.build) (fm-tune lives under `autotunex/fm-tune/`)
+- **Source:** [github.com/ibm-granite/granite.build](https://github.com/ibm-granite/granite.build) (the `autotunex/fm-tune` project)
 - **Issues:** [github.com/ibm-granite/granite.build/issues](https://github.com/ibm-granite/granite.build/issues)
 
 ---

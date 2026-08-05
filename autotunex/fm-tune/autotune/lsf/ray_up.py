@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2023-present the International Business Machines.
+# Copyright 2023-present International Business Machines Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import socket
 import subprocess
 import threading
@@ -175,8 +176,12 @@ def _start_head(temp_dir: str) -> Tuple[str, int, int]:
         str(rcsp),
         "--include-dashboard",
         "True",
+        # Bind the dashboard to loopback only. Ray's dashboard / job-submission
+        # API has no authentication, so exposing it on 0.0.0.0 is the "ShadowRay"
+        # unauthenticated-RCE footgun on a shared fabric. SSH-tunnel to the head
+        # node if you need the UI.
         "--dashboard-host",
-        "0.0.0.0",
+        "127.0.0.1",
         "--num-cpus",
         "0",
         "--num-gpus",
@@ -243,9 +248,9 @@ def _build_worker_bsub(
     """
     log_path = os.path.abspath(os.path.join(log_dir, f"worker_{idx}.log"))
 
-    env_prefix = " ".join(f"{k}={v}" for k, v in rdma_env.items())
+    env_prefix = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in rdma_env.items())
     inner_cmd = (
-        f"source ~/.bashrc && conda activate {conda_env} && "
+        f"source ~/.bashrc && conda activate {shlex.quote(conda_env)} && "
         f"env {env_prefix} python -m autotune.lsf.worker_entry "
         f"--head_address {head_address} "
         f"--num_gpus {gpus_per_worker} "

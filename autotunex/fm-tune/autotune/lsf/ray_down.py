@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2023-present the International Business Machines.
+# Copyright 2023-present International Business Machines Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import shlex
 import signal
 import subprocess
 import threading
@@ -159,7 +160,7 @@ def _remote_ray_stop_via_blaunch(
     """
     if not remote_hosts:
         return
-    inner = f"source ~/.bashrc && conda activate {conda_env} && ray stop --force"
+    inner = f"source ~/.bashrc && conda activate {shlex.quote(conda_env)} && ray stop --force"
     for host in remote_hosts:
         cmd = ["blaunch", "-z", host, "bash", "-lc", inner]
         try:

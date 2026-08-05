@@ -67,7 +67,7 @@ not limited to:
 
 * The GitHub repository at
   [github.com/ibm-granite/granite.build](https://github.com/ibm-granite/granite.build)
-  (issues, pull requests, code reviews, commit messages)
+  (the `autotunex/fm-tune` project — issues, pull requests, code reviews, commit messages)
 * In-person and virtual events, meetups, and conferences where someone is
   representing the project
 * Any other forums created by the project team for project communication

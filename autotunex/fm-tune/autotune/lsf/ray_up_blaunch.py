@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2023-present the International Business Machines.
+# Copyright 2023-present International Business Machines Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import socket
 import subprocess
 import threading
@@ -249,8 +250,12 @@ def _start_head(temp_dir: str) -> Tuple[str, int, int]:
         str(rcsp),
         "--include-dashboard",
         "True",
+        # Bind the dashboard to loopback only. Ray's dashboard / job-submission
+        # API has no authentication, so exposing it on 0.0.0.0 is the "ShadowRay"
+        # unauthenticated-RCE footgun on a shared fabric. SSH-tunnel to the head
+        # node if you need the UI.
         "--dashboard-host",
-        "0.0.0.0",
+        "127.0.0.1",
         "--num-cpus",
         "0",
         "--num-gpus",
@@ -339,9 +344,10 @@ def _short_hostname(name: str) -> str:
     """Strip the DNS domain from a hostname (everything after the first dot).
 
     LSF identifies hosts by their unqualified name in ``LSB_DJOB_HOSTFILE``
-    and ``LSB_HOSTS`` (e.g. ``p3-r31-n3``), but ``socket.gethostname()`` on
-    some clusters (e.g. BlueVela) returns the FQDN. Compare on the short form so the
-    blaunch path works on both naming conventions.
+    and ``LSB_HOSTS`` (e.g. ``gpu-node-03``), but ``socket.gethostname()`` on
+    some clusters returns the FQDN (``gpu-node-03.cluster.example.net``).
+    Compare on the short form so the blaunch path works on both naming
+    conventions.
     """
     return name.split(".", 1)[0]
 
@@ -417,9 +423,9 @@ def _build_inner_cmd(
     spawn means the child process's fd 1/2 point at the per-host log file
     from the start, never at the driver's stdout.
     """
-    env_prefix = " ".join(f"{k}={v}" for k, v in rdma_env.items())
+    env_prefix = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in rdma_env.items())
     return (
-        f"source ~/.bashrc && conda activate {conda_env} && "
+        f"source ~/.bashrc && conda activate {shlex.quote(conda_env)} && "
         f"exec env {env_prefix} python -m autotune.lsf.worker_entry "
         f"--head_address {head_address} "
         f"--num_gpus {gpus_per_worker} "

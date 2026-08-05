@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2023-present the International Business Machines.
+# Copyright 2023-present International Business Machines Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -64,6 +64,11 @@ AUTOTUNE_OFFLINE_RL = ["dpo", "kto"]
 
 # List of supported online RL methods
 AUTOTUNE_ONLINE_RL = ["ppo", "grpo", "dapo"]
+
+# Tuning algorithms the MLX backend can run (sft = full fine-tune, lora, qlora
+# = 4-bit quantized base + LoRA). PEFT-specific methods (alora/loha/lokr/vera)
+# have no mlx-lm equivalent.
+MLX_SUPPORTED_TUNING_ALGO = {"sft", "lora", "qlora"}
 
 # List of supported evaluation metrics
 AUTOTUNE_METRICS = [

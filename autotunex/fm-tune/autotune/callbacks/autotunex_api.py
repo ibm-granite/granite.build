@@ -1,3 +1,18 @@
+# coding=utf-8
+# Copyright 2023-present International Business Machines Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Lightweight REST client for AutoTuneX pre-registration.
 
 Handles only the three pre-registration API calls needed before a Granite Build
@@ -133,7 +148,7 @@ def get_user_details(base_url: str, build_id: Optional[str]) -> str:
     path = "/fmtune/api/user"
     print(f"Fetching user details for build_id: {build_id}")
     try:
-        resp = requests.get(f"{base_url}{path}/{build_id}")
+        resp = requests.get(f"{base_url}{path}/{build_id}", timeout=10)
         result = resp.json()
         print(f"User details response: {result}")
         return result.get("user_email") or "builds@example.com"

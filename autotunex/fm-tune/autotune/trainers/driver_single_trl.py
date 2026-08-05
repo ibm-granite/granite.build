@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2023-present the International Business Machines.
+# Copyright 2023-present International Business Machines Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,6 +38,7 @@ from autotune.utils import (
     get_tokenizer,
     prepare_qlora_model,
     resize_model_embeddings,
+    resolve_trust_remote_code,
     set_seed,
 )
 from ray import tune
@@ -203,7 +204,7 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         device_map="auto",
         dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        trust_remote_code=True,
+        trust_remote_code=resolve_trust_remote_code(),
         use_cache=False,
         attn_implementation=attn_implementation,
     )

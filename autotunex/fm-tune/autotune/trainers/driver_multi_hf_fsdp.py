@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2023-present the International Business Machines.
+# Copyright 2023-present International Business Machines Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,6 +46,7 @@ from autotune.utils import (
     get_tokenizer,
     prepare_qlora_model,
     resize_model_embeddings,
+    resolve_trust_remote_code,
     set_seed,
     tokenize_batch,
 )
@@ -680,7 +681,7 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
         dtype=torch.bfloat16,
         use_cache=False,
         attn_implementation=attn_implementation,
-        trust_remote_code=True,
+        trust_remote_code=resolve_trust_remote_code(),
         low_cpu_mem_usage=True,
     )
     if quantization_config is not None:

@@ -160,3 +160,28 @@ class TestComputeRayDataSizing:
         concurrency, num_cpus = compute_ray_data_sizing(4, None, None)
         assert concurrency == 1  # total_cpus=0 → max(1, 0-4)
         assert num_cpus == 1.0
+
+
+class TestResolveLocalRayGpus:
+    def test_non_cuda_returns_zero(self, monkeypatch):
+        from autotune import cluster
+        from autotune.device import Accelerator
+
+        monkeypatch.setattr(
+            cluster,
+            "detect_accelerator",
+            lambda: Accelerator("mps", 1, False, False, False, True),
+        )
+        assert cluster.resolve_local_ray_gpus() == 0
+
+    def test_cuda_honours_visible_devices(self, monkeypatch):
+        from autotune import cluster
+        from autotune.device import Accelerator
+
+        monkeypatch.setattr(
+            cluster,
+            "detect_accelerator",
+            lambda: Accelerator("cuda", 8, True, True, True, True),
+        )
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2")
+        assert cluster.resolve_local_ray_gpus() == 3
