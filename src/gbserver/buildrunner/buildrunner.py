@@ -1710,13 +1710,20 @@ Download : {download_msg}
         if (
             stored_step_run.status is Status.PENDING
             and payload.status is Status.RUNNING
+            and stored_step_run.started_at is None
         ):
+            # Only stamp the FIRST transition into RUNNING. A step can legitimately
+            # re-enter RUNNING -- e.g. the Lsf monitor reports PENDING while the
+            # bsub job is queued or suspended, then RUNNING again once LSF
+            # dispatches or resumes it -- and re-stamping would push started_at
+            # later than the step actually began.
             logger.info("step started running at %s", event.timestamp)
             stored_step_run.started_at = event.timestamp
-        elif (
-            stored_step_run.status is Status.RUNNING
-            and payload.status is not Status.RUNNING
-        ):
+        elif stored_step_run.status is Status.RUNNING and payload.status.is_finished():
+            # Stamp finished_at only on a genuinely terminal status. Keying off
+            # "no longer RUNNING" was wrong: a RUNNING -> PENDING transition (a
+            # queued or suspended scheduler job) would mark the step finished
+            # while it is still very much alive.
             logger.info("step started finished running at %s", event.timestamp)
             stored_step_run.finished_at = event.timestamp
         stored_step_run.status = payload.status

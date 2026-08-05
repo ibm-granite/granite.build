@@ -38,6 +38,7 @@ from gbserver.monitoring.monitor_base import MonitorBase
 from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventMessagePayload,
+    BuildEventStatusPayload,
     BuildEventType,
     EntityRunMetadata,
 )
@@ -47,6 +48,7 @@ from gbserver.types.errors import (
     ErrLSFCannotOpenJobFile,
     ErrSSHConnectionError,
 )
+from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 from gbserver.utils.ssh_tunnel import SshTunnel
 from gbserver.utils.utils import cmd_safe_join
@@ -91,6 +93,26 @@ LSF_STATE_CLASS: Dict[str, LsfStateClass] = {
     "EXIT": LsfStateClass.FAILED,
     "ZOMBI": LsfStateClass.FAILED,  # job lost with an unreachable exec host
     "POST_ERR": LsfStateClass.FAILED,  # post-exec failed
+}
+
+# Non-terminal LSF state -> the granite.build step status it should report.
+#
+# Only RUN maps to RUNNING. A job queued, held, or suspended in LSF is NOT
+# running, and reporting it as RUNNING is the false signal this mapping exists to
+# remove: the step status should never claim progress the scheduler isn't making.
+# granite.build has no SUSPENDED status, so the suspend states collapse onto
+# PENDING and the native state + reason in the event stream carries the precision
+# the enum cannot.
+LSF_ACTIVE_STATE_TO_GB_STATUS: Dict[str, Status] = {
+    "RUN": Status.RUNNING,
+    "PEND": Status.PENDING,  # queued for dispatch
+    "FWD_PEND": Status.PENDING,  # pending forward to a remote cluster
+    "WAIT": Status.PENDING,  # chunk-job member waiting to start
+    "PROV": Status.PENDING,  # execution host still provisioning
+    "PSUSP": Status.PENDING,  # suspended while pending; never dispatched
+    "SSUSP": Status.PENDING,  # suspended by LSF after dispatch
+    "USUSP": Status.PENDING,  # suspended by user/admin after dispatch
+    "UNKWN": Status.PENDING,  # exec host unreachable; progress unknown
 }
 
 # States for which PEND_REASON is meaningful and worth re-emitting when it changes.
@@ -175,6 +197,7 @@ class LSFBsubMonitor(MonitorBase):
         # is distinct from "" (a state that carries no reason).
         self._last_lsf_state: Optional[str] = None
         self._last_pend_reason_key: Optional[str] = None
+        self._last_gb_status: Optional[Status] = None
         # The record we broke the poll loop on, so the failure message can name
         # the native LSF state and exit reason.
         self._terminal_record: Optional[BJobRecord] = None
@@ -293,6 +316,44 @@ class LSFBsubMonitor(MonitorBase):
             f"and will keep monitoring rather than assume the job is over."
         )
 
+    async def _publish_gb_status(self: Self, state: str, msg: str) -> None:
+        """Report the granite.build step status implied by a non-terminal LSF state.
+
+        A job queued or suspended in LSF is not running, so the step must not sit
+        at RUNNING while it waits -- that is the false signal this mapping exists
+        to remove. Emitting a STATUS_EVENT lets BuildRunner write the mapped
+        status (and the reason, as status_msg) onto the step record, so
+        `gb build status` shows PENDING with the pend reason attached.
+
+        Only fires when the mapped status actually changes, which is far rarer
+        than an LSF state change (PEND -> PSUSP is the same gb status). Terminal
+        states are left alone: SUCCESS/FAILED are owned by the existing
+        returncode path and by Run.update_status.
+        """
+        gb_status = LSF_ACTIVE_STATE_TO_GB_STATUS.get(state)
+        if gb_status is None:
+            # Terminal, or a state we do not recognize. In the unrecognized case
+            # we genuinely do not know whether the job is progressing, so leave
+            # the step status untouched rather than assert something false.
+            return
+        if gb_status is self._last_gb_status:
+            return
+        if self.event_queue is not None:
+            await self.event_queue.put(
+                BuildEvent(
+                    run_metadata=self.entityrun_metadata,
+                    type=BuildEventType.STATUS_EVENT,
+                    payload=BuildEventStatusPayload(status=gb_status, msg=msg),
+                )
+            )
+        logger.info(
+            "[LSFBsubMonitor %s] LSF %s -> granite.build step status %s",
+            self.launch_id,
+            state,
+            gb_status,
+        )
+        self._last_gb_status = gb_status
+
     async def _publish_lsf_state_change(
         self: Self, record: BJobRecord, state_class: LsfStateClass
     ) -> None:
@@ -340,6 +401,7 @@ class LSFBsubMonitor(MonitorBase):
             logger.info("[LSFBsubMonitor %s] LSF state change: %s", self.launch_id, msg)
             self._last_lsf_state = state
             self._last_pend_reason_key = reason_key
+            await self._publish_gb_status(state, msg)
         except Exception as e:  # messaging must never block the verdict
             logger.warning(
                 "[LSFBsubMonitor %s] failed to publish LSF state change: %s",

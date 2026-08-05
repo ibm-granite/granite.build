@@ -36,6 +36,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gbserver.monitoring.lsf_bsub_monitor import (
+    LSF_ACTIVE_STATE_TO_GB_STATUS,
     LSF_STATE_CLASS,
     BJobRecord,
     LSFBsubMonitor,
@@ -48,6 +49,7 @@ from gbserver.types.buildevent import (
     BuildEventType,
     EntityRunMetadata,
 )
+from gbserver.types.status import Status
 
 # Short intervals keep the suite fast; the grace period is patched per test.
 MONITOR_INTERVAL = 0.02
@@ -152,11 +154,18 @@ async def _drive(monitor: LSFBsubMonitor, *, expect_terminates: bool) -> None:
 
 
 def _msgs(queue: asyncio.Queue) -> List[str]:
-    """Drain the queue to a list of event message strings."""
+    """Drain the queue to the MESSAGE_EVENT narrative lines.
+
+    Scoped to MESSAGE_EVENT on purpose: the monitor also emits STATUS_EVENTs
+    carrying the same text to drive the step status, and counting both would
+    double every assertion about how many narrative lines a poll sequence
+    produces.
+    """
     out = []
     while not queue.empty():
         event = queue.get_nowait()
-        out.append(getattr(event.payload, "msg", "") or "")
+        if event.type is BuildEventType.MESSAGE_EVENT:
+            out.append(getattr(event.payload, "msg", "") or "")
     return out
 
 
@@ -537,6 +546,81 @@ async def test_state_change_events_can_never_fail_the_build():
         event = _as_message_event(msg)
         assert _is_build_failing(event) is False, stat
         assert bool(strategy.should_retry(event)) is False, stat
+
+
+def _status_events(queue: asyncio.Queue) -> List[Status]:
+    """Drain the queue to the sequence of STATUS_EVENT statuses."""
+    out = []
+    while not queue.empty():
+        event = queue.get_nowait()
+        if event.type is BuildEventType.STATUS_EVENT:
+            out.append(event.payload.status)
+    return out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stat", ["PEND", "FWD_PEND", "WAIT", "PROV", "PSUSP", "SSUSP", "USUSP", "UNKWN"]
+)
+async def test_non_running_lsf_states_report_gb_pending(stat):
+    """A job queued or suspended in LSF must NOT report the step as RUNNING.
+
+    This is the point of the mapping: gb should never claim progress the
+    scheduler isn't making. Only LSF RUN means RUNNING.
+    """
+    monitor, queue, _ = _make_monitor([_bjobs_json(stat)])
+    await _drive(monitor, expect_terminates=False)
+    statuses = _status_events(queue)
+    assert Status.PENDING in statuses, f"{stat} should report PENDING, got {statuses}"
+    assert Status.RUNNING not in statuses, f"{stat} must not report RUNNING"
+
+
+@pytest.mark.asyncio
+async def test_lsf_run_reports_gb_running():
+    monitor, queue, _ = _make_monitor([_bjobs_json("RUN")])
+    await _drive(monitor, expect_terminates=False)
+    assert _status_events(queue) == [Status.RUNNING]
+
+
+@pytest.mark.asyncio
+async def test_gb_status_is_emitted_only_when_the_mapped_status_changes():
+    """PEND -> PSUSP is the same gb status, so it must not re-emit.
+
+    The LSF-level narrative still gets an event per state change; the gb status
+    only moves on PENDING <-> RUNNING.
+    """
+    monitor, queue, _ = _make_monitor(
+        [
+            _bjobs_json("PEND"),
+            _bjobs_json("PSUSP"),
+            _bjobs_json("USUSP"),
+            _bjobs_json("RUN"),
+            _bjobs_json("DONE"),
+        ]
+    )
+    await _drive(monitor, expect_terminates=True)
+    # PENDING once across PEND/PSUSP/USUSP, then RUNNING on dispatch. DONE is
+    # terminal and owned by the returncode path, so it emits no STATUS_EVENT.
+    assert _status_events(queue) == [Status.PENDING, Status.RUNNING]
+
+
+@pytest.mark.asyncio
+async def test_unrecognized_state_does_not_assert_a_gb_status():
+    """If we don't know the LSF state, don't claim to know the step status."""
+    monitor, queue, _ = _make_monitor([_bjobs_json("FROBNICATE")])
+    await _drive(monitor, expect_terminates=False)
+    assert _status_events(queue) == []
+
+
+def test_every_active_state_has_a_gb_status_mapping():
+    """Keep the two tables in step: every ACTIVE LSF state maps to a gb status."""
+    active = {s for s, c in LSF_STATE_CLASS.items() if c is LsfStateClass.ACTIVE}
+    assert set(LSF_ACTIVE_STATE_TO_GB_STATUS) == active
+    # Only RUN is RUNNING; everything else that isn't finished is PENDING.
+    assert LSF_ACTIVE_STATE_TO_GB_STATUS["RUN"] is Status.RUNNING
+    assert {
+        s for s, v in LSF_ACTIVE_STATE_TO_GB_STATUS.items() if v is Status.PENDING
+    } == (active - {"RUN"})
 
 
 def test_lsf_state_class_table_is_locked():
