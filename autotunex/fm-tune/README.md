@@ -676,7 +676,7 @@ If you found the library useful, please cite the following reference:
 
 ## License
 
-AutoTune is released under the [Apache License 2.0](LICENSE).
+AutoTune is released under the [Apache License 2.0](../../LICENSE).
 
 ## Contact
 

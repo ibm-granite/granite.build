@@ -193,6 +193,7 @@ For the full schema, see [`docs/builds/build-yaml-reference.md`](docs/builds/bui
 | `test/` | Test suites for all components. |
 | `scripts/` | Helper scripts including the standalone and SLURM demos. |
 | `k8s/` | Helm charts for production Kubernetes deployment. |
+| `autotunex/` | [AutoTuneX](autotunex/README.md) — self-contained interactive platform for automated fine-tuning and hyperparameter optimization of LLMs (API + MCP server, API bridge, and SvelteKit UI). See [`autotunex/README.md`](autotunex/README.md) to bring it up. |
 | `.claude/` | Coding-agent config: [`skills/`](.claude/skills/) (Agent Skills a coding agent uses to drive granite.build — see [below](#coding-agent-skills)) and [`commands/`](.claude/commands/) (repo slash commands). |
 | `Makefile` | `make standalone-venv`, `make demo-venv`, `make image`, format/lint targets. |
 

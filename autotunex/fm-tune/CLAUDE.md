@@ -204,7 +204,7 @@ torch 2.8.0, transformers 4.57.6, peft 0.18.0, trl 0.29.0, bitsandbytes 0.49.0 (
 ## Documentation
 
 - `README.md` — project overview, quick start, CLI reference
-- `CONTRIBUTING.md` — contributor workflow, testing, PR process
+- `../../CONTRIBUTING.md` — contributor workflow, testing, PR process (repository root)
 - `docs/RESOURCES.md` — GPU sizing guide for 3B/8B/30B on 8× A100
 - `docs/MPS.md` — Apple Silicon (MPS) support: matrix, memory table, troubleshooting
 - `docs/dataset-sft.md`, `docs/dataset-offline-rl.md`, `docs/dataset-online-rl.md` — dataset format references

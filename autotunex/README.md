@@ -11,6 +11,26 @@ AutoTuneX is an IBM Research platform that provides an intuitive UI and a compre
 <!-- <img width="1709" alt="AutoTuneX splash screen" src="docs/assets/autotunex-splash.png" /> -->
 
 
+## Quick start
+
+The fastest way to bring up the whole stack (API + UI, API Bridge, and a MySQL
+database) is Docker Compose from this directory. A `Makefile` wraps the common
+commands:
+
+```bash
+cd autotunex
+make env      # create .env from .env.example, then edit passwords + SESSION_SECRET
+make up       # build & start mysql, app (API + UI), and bridge
+# open http://localhost:8000/autotune  (dev login: dev@example.com / admin)
+make logs     # follow the API/UI logs
+make down     # stop the stack  (make clean also drops the DB + data volumes)
+```
+
+The default profile is credential-free and local-only — no IBM infrastructure,
+OIDC, or GPU required. Run `make help` to list every target. For manual
+(non-Docker) setup see [Installation](#installation); for the full Docker
+reference and optional IBM extras see [Docker Deployment](#docker-deployment).
+
 ## Features
 
 - **Interactive Web Interface** — SvelteKit SPA built on IBM Carbon Design System with wizard-driven job creation.
@@ -28,6 +48,7 @@ AutoTuneX is an IBM Research platform that provides an intuitive UI and a compre
 
 ## Table of Contents
 
+- [Quick start](#quick-start)
 - [Prerequisites](#prerequisites)
 - [Architecture](#architecture)
 - [Installation](#installation)
@@ -41,6 +62,7 @@ AutoTuneX is an IBM Research platform that provides an intuitive UI and a compre
   - [Quick Start with Docker Compose](#quick-start-with-docker-compose)
 - [API Documentation](#api-documentation)
 - [Project Structure](#project-structure)
+- [Security](#security)
 - [Contributing](#contributing)
 - [Contact](#contact)
 - [License](#license)
@@ -498,13 +520,31 @@ AutoTuneX/
 └── README.md                    # This file
 ```
 
+## Security
+
+To report a vulnerability, follow the repository's
+[security policy](../SECURITY.md) — please do **not** open a public issue.
+
+**Deployment hardening.** When self-hosting AutoTuneX, review the deployment
+configuration for your environment. In particular:
+
+- Do not commit real secrets. Use the `*.env.example` templates and supply
+  credentials at runtime; rotate any credential that may have been exposed.
+- Restrict CORS to the specific origins your deployment serves.
+- Place the API Bridge's write endpoints behind network controls or an
+  authentication layer appropriate to your environment.
+- Treat user-supplied reward functions as an untrusted-code trust boundary and
+  run them with suitable isolation.
+
 ## Contributing
 
-We welcome contributions. Please:
+Contributions are welcome. See the repository-root
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) for the full guide (development setup,
+DCO sign-off, and the pull-request process). In short:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
+3. Commit your changes, signed off (`git commit -s -m 'Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
@@ -518,7 +558,8 @@ For questions, issues, or collaboration:
 
 ## License
 
-Copyright IBM Research. Licensed under the Apache License 2.0.
+Copyright IBM Research. Licensed under the Apache License 2.0. See the
+repository-root [`LICENSE`](../LICENSE) and [`NOTICE`](../NOTICE).
 
 ---
 
