@@ -244,7 +244,10 @@ which gbserver routes to different SkyPilot APIs:
 **Source path resolution.** A **relative** local source is resolved against the **`step.yaml`
 directory** (the per-run asset dir gbserver renders the step into), so you can mount files that ship
 alongside your `step.yaml`. Absolute paths and remote URIs (`s3://`, `gs://`, `file://`, …) are used
-unchanged.
+unchanged. A **`~`/`~/`-prefixed source is rejected**: `~` is not expanded for sources (it would
+resolve to a literal `~` directory under the `step.yaml` dir), so use an absolute or step-relative
+source instead. A **relative source that uses `..` to climb out of the `step.yaml` dir** (e.g.
+`../other`) is likewise rejected, keeping sources confined to the step's own assets.
 
 **Destination path resolution — the destination *shape* decides where the payload lands.** When the
 environment defines `shared_workdir` (so `$GB_BUILD_WORKDIR` exists), the destination key is routed by

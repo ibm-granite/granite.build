@@ -263,6 +263,22 @@ from gbserver.environment._skypilot_ssh import (
 )
 
 
+def _escapes_parent(rel_path: str) -> bool:
+    """Return whether a *relative* path climbs out of its base via ``..``.
+
+    ``normpath`` collapses a leading ``./`` and inner ``.``/``..`` segments; a
+    relative path that escapes its base always normalizes to a ``..``-leading
+    result (``..``, ``../x``, ``a/../../b`` -> ``../b``), whereas one that stays
+    inside never does (``a/../b`` -> ``b``). Shared by the ``file_mounts`` source
+    and destination guards so both reject the same escaping paths.
+
+    :param rel_path: a relative path (callers exclude absolute/URI/``~`` inputs).
+    :returns: ``True`` if it would resolve outside its base directory.
+    """
+    rel = os.path.normpath(rel_path)
+    return rel == ".." or rel.startswith(".." + os.sep)
+
+
 def _resolve_local_mount_source(source: str, asset_dir) -> str:
     """Resolve a ``file_mounts`` local source against the step's asset dir.
 
@@ -273,16 +289,37 @@ def _resolve_local_mount_source(source: str, asset_dir) -> str:
     ``step.yaml``'s own location (matching how bash/k8s treat step-relative
     assets).
 
+    A ``~``/``~/``-prefixed source is rejected: this launcher resolves relative
+    sources against the step dir and never expands ``~`` for sources, so it would
+    otherwise become a literal ``<asset_dir>/~/…`` path rather than a home dir.
+    A relative source that uses ``..`` to climb out of the step dir (e.g.
+    ``../other``) is also rejected, so sources stay confined to the step's own
+    assets. Use an absolute path or a step-relative one instead.
+
     :param source: the local/remote source string from a ``file_mounts`` entry.
     :param asset_dir: ``targetsteprun_asset_dir`` (a ``Path`` or ``file://``
         string), or ``None`` when unavailable (e.g. a retry with no stashed dir).
     :returns: the resolved source string (unchanged for URIs and absolute paths).
+    :raises ValueError: if ``source`` is ``~``/``~/``-prefixed or escapes the
+        step dir via ``..``.
     """
     parsed = urllib.parse.urlparse(source)
     if parsed.scheme:  # remote URI (s3/gs/file/http/…) — leave as-is
         return source
     if os.path.isabs(source):
-        return source
+        return source  # absolute host path — author's explicit choice
+    if source == "~" or source.startswith("~/"):
+        raise ValueError(
+            f"file_mounts source {source!r} uses '~', which is not expanded "
+            f"for sources; use an absolute path or one relative to the step "
+            f"directory"
+        )
+    if _escapes_parent(source):
+        raise ValueError(
+            f"file_mounts source {source!r} uses '..' to escape the step "
+            f"directory; use a path inside the step directory or an absolute "
+            f"source"
+        )
     if asset_dir is None:
         logger.warning(
             "Relative file_mount source %r but no asset dir available; "
@@ -324,19 +361,36 @@ def _remap_relative_dest(dst: str, build_workdir: Optional[str]) -> str:
     needed.
 
     Absolute and ``~``-prefixed destinations pass through unchanged (author's
-    explicit choice). A no-op when ``build_workdir`` is unset (envs without
-    ``shared_workdir``), preserving SkyPilot's own ``~/sky_workdir/`` rewrite.
+    explicit choice). When ``build_workdir`` is unset (envs without
+    ``shared_workdir``) a relative destination is likewise returned unchanged,
+    preserving SkyPilot's own ``~/sky_workdir/`` rewrite.
+
+    A relative destination that uses ``..`` to climb out of its target directory
+    (e.g. ``../foo``) is always rejected — whether or not a remap applies — so it
+    can neither escape the per-run workdir nor SkyPilot's default rewrite. This
+    is an authoring guard, not a security boundary; the step author controls the
+    destination.
 
     :param dst: the destination key from the raw ``file_mounts`` mapping.
     :param build_workdir: absolute per-run workdir, or ``None`` to disable remap.
     :returns: the (possibly rewritten) destination path.
+    :raises ValueError: if a relative ``dst`` escapes its target directory via
+        ``..`` traversal.
     """
-    if not build_workdir or not _is_remappable_relative(dst):
-        return dst
-    # normpath collapses a leading ``./`` and inner ``.`` segments; the join
-    # keeps the payload inside the per-target dir for implicit isolation.
-    rel = os.path.normpath(dst)
-    return os.path.normpath(os.path.join(build_workdir, rel))
+    if not _is_remappable_relative(dst):
+        return dst  # absolute / ~-prefixed: author's explicit location
+    # Reject ``..`` escapes regardless of whether a build_workdir remap follows,
+    # so the destination can leave neither the per-run workdir nor SkyPilot's
+    # default rewrite.
+    if _escapes_parent(dst):
+        raise ValueError(
+            f"file_mounts destination {dst!r} uses '..' to escape its target "
+            f"directory; use a path without a leading '..' or an absolute "
+            f"destination"
+        )
+    if not build_workdir:
+        return dst  # no shared workdir: leave to SkyPilot's default handling
+    return os.path.normpath(os.path.join(build_workdir, dst))
 
 
 def _build_skypilot_mounts(

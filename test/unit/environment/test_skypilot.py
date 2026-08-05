@@ -54,6 +54,34 @@ class TestResolveLocalMountSource:
 
         assert _resolve_local_mount_source("/abs/path", "/work/run1") == "/abs/path"
 
+    @pytest.mark.parametrize("source", ["~", "~/data", "~/sub/dir"])
+    def test_home_relative_source_rejected(self, source):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        # '~' is not expanded for sources; it would become a literal
+        # '<asset_dir>/~/...' path, so reject it rather than mishandle it.
+        with pytest.raises(ValueError, match="~"):
+            _resolve_local_mount_source(source, "/work/run1")
+
+    @pytest.mark.parametrize("asset_dir", ["/work/run1", None])
+    @pytest.mark.parametrize("source", ["..", "../other", "a/../../b"])
+    def test_escaping_relative_source_rejected(self, source, asset_dir):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        # Relative sources must stay inside the step dir; escaping '..' is
+        # rejected whether or not an asset dir is available.
+        with pytest.raises(ValueError, match="escape"):
+            _resolve_local_mount_source(source, asset_dir)
+
+    def test_inner_dotdot_source_that_stays_inside_is_allowed(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        # a/../b stays inside the step dir, so it resolves normally.
+        assert (
+            _resolve_local_mount_source("a/../b", "/work/run1")
+            == "/work/run1/a/../b"
+        )
+
     def test_remote_uri_unchanged(self):
         from gbserver.environment.skypilot import _resolve_local_mount_source
 
@@ -145,6 +173,23 @@ class TestRemapRelativeDest:
 
         assert _remap_relative_dest("foo", None) == "foo"
         assert _remap_relative_dest("foo", "") == "foo"
+
+    def test_inner_dotdot_that_stays_inside_is_allowed(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        # a/../b normalizes to b — still inside the workdir, so it is fine.
+        assert _remap_relative_dest("a/../b", "/wd") == "/wd/b"
+
+    @pytest.mark.parametrize("workdir", ["/wd", None, ""])
+    @pytest.mark.parametrize("dst", ["..", "../foo", "a/../../b", "./../x"])
+    def test_escaping_dotdot_rejected(self, dst, workdir):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        # Escaping destinations are rejected whether or not a build_workdir
+        # remap applies, so they can escape neither the per-run workdir nor
+        # SkyPilot's default rewrite.
+        with pytest.raises(ValueError, match="escape"):
+            _remap_relative_dest(dst, workdir)
 
 
 class TestSkypilotDiscovery:
