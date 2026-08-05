@@ -30,9 +30,15 @@ def parse_args() -> argparse.Namespace:
     :returns: Parsed arguments (model_path, tasks, output_dir, batch_size).
     """
     parser = argparse.ArgumentParser(description="Exemplar eval step")
-    parser.add_argument("--model-path", required=True, help="model path or id to evaluate")
-    parser.add_argument("--tasks", default="", help="comma-separated benchmark/task names")
-    parser.add_argument("--output-dir", required=True, help="dir the results file is written into")
+    parser.add_argument(
+        "--model-path", required=True, help="model path or id to evaluate"
+    )
+    parser.add_argument(
+        "--tasks", default="", help="comma-separated benchmark/task names"
+    )
+    parser.add_argument(
+        "--output-dir", required=True, help="dir the results file is written into"
+    )
     parser.add_argument("--batch-size", type=int, default=8)
     return parser.parse_args()
 
@@ -61,7 +67,10 @@ def evaluate(args: argparse.Namespace) -> str:
 def main() -> None:
     """Entrypoint: evaluate and write results. The step.yaml registers the output."""
     args = parse_args()
-    print(f"eval: starting on model={args.model_path} tasks={args.tasks or '(default)'}", flush=True)
+    print(
+        f"eval: starting on model={args.model_path} tasks={args.tasks or '(default)'}",
+        flush=True,
+    )
     results_path = evaluate(args)
     print(f"eval: wrote results to {results_path}", flush=True)
 
