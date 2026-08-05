@@ -174,6 +174,12 @@ class Skypilot_managed(Environment):
                 "file_mounts"
             )
             if file_mounts_raw:
+                # build_workdir is intentionally omitted: the managed launcher
+                # does not implement the shared_workdir / GB_BUILD_WORKDIR scheme
+                # (no _compute_run_workdir, no per-run workdir export/cd), so
+                # there is no per-run dir to remap relative destinations into.
+                # Relative destinations therefore keep SkyPilot's default
+                # handling here, unlike the unmanaged launcher.
                 file_mounts, storage_mounts = _build_skypilot_mounts(
                     file_mounts_raw, targetsteprun_asset_dir
                 )
