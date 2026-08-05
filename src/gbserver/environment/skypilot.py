@@ -279,7 +279,9 @@ def _escapes_parent(rel_path: str) -> bool:
     return rel == ".." or rel.startswith(".." + os.sep)
 
 
-def _resolve_local_mount_source(source: str, asset_dir) -> str:
+def _resolve_local_mount_source(
+    source: str, asset_dir: Union[Path, str, None]
+) -> str:
     """Resolve a ``file_mounts`` local source against the step's asset dir.
 
     Remote URIs (``s3://``, ``gs://``, ``file://``, ``http…``) and absolute paths
@@ -395,7 +397,7 @@ def _remap_relative_dest(dst: str, build_workdir: Optional[str]) -> str:
 
 def _build_skypilot_mounts(
     file_mounts_raw: dict,
-    asset_dir,
+    asset_dir: Union[Path, str, None],
     build_workdir: Optional[str] = None,
 ) -> Tuple[Dict, Dict]:
     """Split a raw ``file_mounts`` mapping into file mounts and storage mounts.
