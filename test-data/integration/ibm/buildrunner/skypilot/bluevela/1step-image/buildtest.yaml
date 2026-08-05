@@ -23,4 +23,5 @@ space_uri: ../../../../../../../configurations/spaces/local
 simulate_step_failure: false
 tests:
   - runner
+  - runner_cancellation
 timeout_minutes: 20
