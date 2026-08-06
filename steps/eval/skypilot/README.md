@@ -94,9 +94,11 @@ Because a `Dockerfile` is present, this is an image step: `make all` runs
 
 Eval-specific notes:
 
-- `REGISTRY` is **required** (`make` errors if unset); `IMAGE_TAG` defaults to
-  the git short SHA. Override per release, e.g.
-  `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
+- `REGISTRY` ships as a **placeholder** (`quay.io/your-org`) so the offline
+  targets work out of the box; replace it in the `Makefile`, or override per
+  release, e.g. `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
+  `make publish-image` against the placeholder will fail auth — set a real
+  registry first. `IMAGE_TAG` defaults to the git short SHA.
 - At `make step` time the published reference
   `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)` is substituted into the template's
   `image_id: "docker:${IMAGE_REF}"`.

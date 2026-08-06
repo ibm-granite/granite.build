@@ -17,10 +17,13 @@
 #   make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0
 
 STEP_NAME := eval
-# Required for image steps: where the built image is published (common.mk errors
-# if unset). Override on the command line as needed, e.g.
-# `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`. IMAGE_TAG defaults to the git
-# short SHA if not set.
+# PLACEHOLDER registry — replace `quay.io/your-org` with your own namespace
+# before publishing, or override per invocation:
+#   make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0
+# This `?=` default satisfies common.mk's image-step REGISTRY guard so offline
+# targets (make step / make image) work out of the box; but `make publish-image`
+# WILL push to this bogus registry and fail auth unless you set a real one.
+# IMAGE_TAG defaults to the git short SHA if not set.
 REGISTRY ?= quay.io/your-org
 
 include ../../common.mk
