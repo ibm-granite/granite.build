@@ -17,7 +17,6 @@ the fixed ``results.json`` output path are what the step depends on.
 import argparse
 import json
 import os
-import sys
 
 # The step.yaml `run` block registers this exact filename as the `results`
 # output, so the name is part of the step contract — keep it in sync there.
@@ -76,4 +75,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
