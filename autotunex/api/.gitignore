@@ -150,3 +150,17 @@ reinforcement_learning_docs
 temp_yaml
 logs
 registry
+# `registry` above targets a runtime dir, but the bare name also matches the
+# services/registry source package. It also gets caught by the repo-root
+# `dmf_*` glob (dmf_backend.py). Re-include the whole source package, then
+# re-assert the compiled-artifact ignores so pyc/__pycache__ stay out.
+!services/registry/
+!services/registry/**
+services/registry/**/__pycache__/
+services/registry/**/*.py[cod]
+
+# The repo-root `dmf_*` glob also catches dmf_-named SOURCE modules anywhere in
+# the tree (services/dmf_service.py, routes/dmf_routes.py, registry/dmf_backend.py).
+# Re-include all dmf_*.py source. Runtime dmf_ dirs (dmf_models/, dmf_cache/) stay
+# ignored — a negation can't re-include a file whose parent dir is itself ignored.
+!**/dmf_*.py

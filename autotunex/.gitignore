@@ -1,6 +1,10 @@
 .idea/*
 results
 datasets
+# The bare `datasets`/`results` patterns above are meant for runtime data dirs,
+# but match at every path level — keep the source package tracked:
+!api/services/datasets/
+!api/services/datasets/**
 .env
 env
 .DS_Store
