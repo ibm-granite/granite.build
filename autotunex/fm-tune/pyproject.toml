@@ -67,6 +67,14 @@ build-backend = "setuptools.build_meta"
 exclude = ["tests", "tests.*"]
 namespaces = false
 
+# Ship the YAML configs as package data. autotune.utils.get_autotune_config()
+# reads these relative to the installed package (Path(__file__).parent/"configs"),
+# so a non-editable wheel install (e.g. `pip install ./fm-tune[core]` in Docker)
+# must bundle them — otherwise it FileNotFoundErrors at runtime. Declared
+# explicitly (not via include-package-data) so it works without a .git present.
+[tool.setuptools.package-data]
+autotune = ["configs/*.yaml"]
+
 # --- uv configuration ---
 [tool.uv]
 prerelease = "if-necessary"
