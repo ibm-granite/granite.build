@@ -24,8 +24,6 @@ import click
 
 from gbserver.asset.assetstore import Assetstore
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
-from gbserver.lineage.jobstats import get_lineage_store
-from gbserver.lineage.lineage_watcher import LineageWatcher
 from gbserver.types.constants import ENV_VAR_DEFAULT_GITHUB_TOKEN, GBSERVER_GITHUB_TOKEN
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
@@ -73,7 +71,6 @@ def cli(
         logger.info("loading assets from path: %s", asset_stores_dir)
         Assetstore.load_assetstores_from_dir(Path(asset_stores_dir))
     build_watcher: Optional[BuildWatcher] = None
-    lineage_watcher: Optional[LineageWatcher] = None
     try:
         logger.info("Starting build monitor")
         build_watcher = BuildWatcher(
@@ -81,23 +78,13 @@ def cli(
             watch_for_config_changes=watch,
             gh_token=gh_token,
         )
-
-        # Start the lineage watcher (records lineage asynchronously from gb_events).
-        # Only start if the configured lineage store records to a centralized store
-        # (skip for noop stores in standalone mode).
-        store = get_lineage_store()
-        if store.records_centralized_lineage:
-            logger.info("Starting lineage watcher")
-            lineage_watcher = LineageWatcher()
-            lineage_watcher.start()
-
+        # Lineage recording runs in its own `gbserver lineage-watch` process/pod
+        # (single-writer), not here — see command_lineage_watch.py.
         build_watcher.start_and_wait()
     except Exception as e:
         logger.error(traceback.format_exc())
         logger.error(f"Build monitor exception from start_and_wait(): {e}")
     finally:
         logger.warning("Build monitor stopped!")
-        if lineage_watcher is not None:
-            lineage_watcher.stop()
         if build_watcher is not None:
             build_watcher.stop()

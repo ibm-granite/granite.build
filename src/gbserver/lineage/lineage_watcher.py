@@ -14,66 +14,79 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Async in-process lineage recording agent."""
+"""Async lineage-recording agent driven by admin-DB reconciliation."""
 
 import threading
 import time
-from typing import Any, Optional
+from typing import Optional
 
 from gbserver.lineage.jobstats import ILineageStore, get_lineage_store
+from gbserver.lineage.lineage_reconciler import reconcile_once
 from gbserver.storage.singleton_storage import get_admin_storage
-from gbserver.types.buildevent import BuildEventStatusPayload, BuildEventType
-from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class LineageWatcher:
-    """Async background thread that records lineage from gb_events.
+    """Async background thread that reconciles lineage from the admin DB.
 
-    Mirrors the BuildWatcher daemon-thread pattern. Runs as a single background
-    thread in the build-watch process (single-replica deployment), picking up
-    target-SUCCESS events from gb_events and persisting lineage asynchronously.
+    Runs a single background daemon thread that periodically calls
+    ``reconcile_once`` (see ``lineage_reconciler``), which scans the admin DB for
+    successful target runs and records their lineage into the configured store,
+    off the build's hot path.
 
-    Single-writer guarantee: the watcher is started only from
-    command_build_watch.py (the single-replica ``build-watch`` process), never
-    from rest-server, so exactly one watcher consumes gb_events. It must not be
-    wired into any additional entrypoint. Even if that guarantee were violated,
-    recording is idempotent/replay-safe (deterministic runIds + resume="allow" +
-    content-dedupe), so a duplicate watcher would waste I/O but not corrupt
-    lineage.
+    Reconciliation — not the event stream — is the authoritative mechanism: the
+    admin DB persists the complete lineage graph, so the full lineage is
+    recoverable by re-reading it alone. Because each scan re-derives the
+    recordable set from the DB, a target that succeeded while this process was
+    down is picked up on the next scan; there is no restart blind spot. Recording
+    is idempotent (deterministic runIds + resume="allow" + content-dedupe), so a
+    re-recorded target is a harmless backend no-op.
 
-    The watermark is in-memory (seeded to max gb_events.index at start), so
-    restart blind spot is accepted: events while watcher was down are skipped.
-    Replay is safe by construction (deterministic runIds + resume="allow" +
-    content-dedupe).
+    Single-writer guarantee: the watcher is deployed as its own single-replica
+    ``lineage-watch`` command/pod (see ``command_lineage_watch.py`` and
+    ``dep-lineage-watcher.yaml``), so exactly one process reconciles lineage. It
+    must not be wired into any other entrypoint. Even if that were violated,
+    idempotent recording means a duplicate watcher would waste I/O but not
+    corrupt lineage.
 
-    A target whose recording fails is not lost behind the watermark: it is
-    queued and retried on later polls up to ``_MAX_RECORD_ATTEMPTS`` before
-    being dropped, so a transient backend failure is recovered while a
-    persistent one cannot wedge the watcher.
+    ``already_recorded`` tracks target uuids recorded this process lifetime to
+    skip re-recording in steady state (an optimization; correctness does not
+    depend on it). It is seeded empty, so the first scan is a full rescan that
+    re-drives anything missed while the process was down.
+
+    A target whose recording raises is not marked recorded and is retried on the
+    next scan; a target that keeps failing is dropped after
+    ``_MAX_RECORD_ATTEMPTS`` so a persistent failure cannot wedge later scans
+    (it is then re-attempted only after a full-rescan reset).
     """
 
     # A target whose lineage recording keeps failing is retried this many times
-    # on subsequent polls before being dropped, so a transient failure (e.g. a
-    # network blip) is recovered without a persistent failure wedging the queue.
+    # on subsequent scans before being dropped, so a transient failure (e.g. a
+    # network blip) is recovered without a persistent failure wedging the scan.
     _MAX_RECORD_ATTEMPTS = 3
 
     def __init__(self, monitoring_interval: float = 2.0) -> None:
         """Initialize the LineageWatcher.
 
         Args:
-            monitoring_interval: Sleep duration between iterations (seconds).
+            monitoring_interval: Sleep duration between reconciliation scans
+                (seconds).
         """
         self.monitoring_interval = monitoring_interval
         self.stop_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
-        self._watermark: int = 0
         self._store: Optional[ILineageStore] = None
-        # (build_id, target_id) -> attempts so far, for targets whose recording
-        # failed and should be retried on a subsequent poll.
-        self._pending_retries: dict[tuple[str, str], int] = {}
+        # Target uuids already recorded this process lifetime; skipped on later
+        # scans in steady state (idempotency makes this an optimization only).
+        self._recorded: set[str] = set()
+        # Target uuids dropped after exhausting retries; skipped on later scans
+        # so a persistently failing target cannot wedge every scan.
+        self._dropped: set[str] = set()
+        # target_uuid -> attempts so far, for targets whose recording failed and
+        # should be retried on a subsequent scan.
+        self._failed_attempts: dict[str, int] = {}
 
     def start(self) -> None:
         """Start the watcher thread (daemon=True, does not keep process alive)."""
@@ -89,137 +102,82 @@ class LineageWatcher:
         logger.info("LineageWatcher started")
 
     def _run(self) -> None:
-        """Main monitoring loop (runs in daemon thread).
-
-        Seed watermark once, then poll for new events and record lineage.
-        """
-        self._watermark = self._get_max_event_index()
-        logger.debug("LineageWatcher seeded watermark to %d", self._watermark)
-
+        """Main monitoring loop (runs in daemon thread)."""
         while not self.stop_event.is_set():
             try:
-                self._process_new_events()
+                self._reconcile()
             except Exception:
                 logger.exception("LineageWatcher iteration failed")
 
             time.sleep(self.monitoring_interval)
 
-    def _get_max_event_index(self) -> int:
-        """Get the current maximum gb_events.index."""
-        try:
-            storage = get_admin_storage()
-            return storage.event_storage.get_max_index()
-        except Exception as e:
-            logger.warning("Failed to get max event index: %s", e)
-            return 0
+    def _reconcile(self) -> None:
+        """Run one reconciliation scan over the admin DB.
 
-    @staticmethod
-    def _is_target_success(build_event: Any) -> bool:
-        """Return True if the event marks a target that completed successfully."""
-        if build_event.type != BuildEventType.STATUS_EVENT:
-            return False
-        if build_event.run_metadata.type != "Target":
-            return False
-        payload = build_event.payload
-        return (
-            isinstance(payload, BuildEventStatusPayload)
-            and payload.status == Status.SUCCESS
-        )
-
-    def _process_new_events(self) -> None:
-        """Process successful target-completion events since the watermark and
-        record lineage.
-
-        A target that completed successfully is a STATUS_EVENT whose run
-        metadata type is "Target" and whose payload status is SUCCESS. This
-        mirrors how BuildRunner detected target completion before lineage
-        recording moved to this watcher (see buildrunner.py __process_build_
-        target_info_type_event).
+        Delegates target selection and recording to ``reconcile_once`` (the
+        central mechanism), threading ``_recorded`` through so steady-state scans
+        skip already-recorded targets. Recording failures are routed to
+        ``_on_record_error`` to drive the bounded per-target retry.
         """
         if self._store is None:
             logger.error("lineage store not initialized; start() must run first")
             return
         storage = get_admin_storage()
+        recorded = reconcile_once(
+            self._store,
+            storage,
+            already_recorded=self._recorded,
+            on_error=self._on_record_error,
+        )
+        # reconcile_once returns targets recorded successfully; union in any
+        # targets dropped after exhausting retries (tracked by _on_record_error)
+        # so a persistent failure stays skipped and cannot wedge every scan.
+        self._recorded = recorded | self._dropped
+        # A target that recorded successfully is now in _recorded; clear any
+        # retry bookkeeping so its attempt count does not linger.
+        for uuid in list(self._failed_attempts):
+            if uuid in self._recorded:
+                self._failed_attempts.pop(uuid, None)
 
-        # Retry previously-failed targets first so a transient failure recovers
-        # promptly once the backend is healthy again.
-        self._retry_pending(storage)
+    def _on_record_error(self, build_id: str, target_id: str, exc: Exception) -> None:
+        """Handle a recording failure for one target: retry or drop.
 
-        events = storage.event_storage.get_events_after_index(self._watermark)
-        if not events:
-            return
-
-        for index, event in events:
-            # Advance the watermark before attempting to record, so a single
-            # event that fails to record does not stall the whole batch behind
-            # it. A failed target is not left behind the watermark but queued in
-            # _pending_retries and retried on a later poll (up to
-            # _MAX_RECORD_ATTEMPTS); after that it is dropped rather than
-            # wedging the watcher. Recording is idempotent/replay-safe
-            # (deterministic runIds + resume="allow" + content-dedupe), so a
-            # retry of an already-recorded target is harmless.
-            self._watermark = index
-            if not self._is_target_success(event.build_event):
-                continue
-
-            build_id = event.build_event.run_metadata.build_id
-            target_id = event.build_event.run_metadata.targetrun_id
-            self._record_lineage(storage, build_id, target_id, attempts=0)
-
-    def _record_lineage(
-        self, storage: Any, build_id: str, target_id: str, attempts: int
-    ) -> None:
-        """Record lineage for one target; queue for retry on failure.
-
-        Args:
-            storage: Admin storage passed through to the lineage store.
-            build_id: Build the target belongs to.
-            target_id: Target run to record lineage for.
-            attempts: How many times recording has already been attempted for
-                this target (0 on the first, watermark-driven attempt).
+        Keeps a per-target attempt count so a transient failure is retried on the
+        next scan, while a persistently failing target is dropped after
+        ``_MAX_RECORD_ATTEMPTS`` (added to ``_dropped``, which ``_reconcile``
+        unions into ``_recorded``) so it stops being re-scanned — it is only
+        re-attempted after a full-rescan reset of ``_recorded``.
         """
-        assert self._store is not None  # guaranteed by _process_new_events
-        key = (build_id, target_id)
-        try:
-            logger.debug(
-                "Recording lineage for target %s in build %s", target_id, build_id
+        attempts = self._failed_attempts.get(target_id, 0) + 1
+        if attempts >= self._MAX_RECORD_ATTEMPTS:
+            self._failed_attempts.pop(target_id, None)
+            # Mark dropped so a persistent failure does not wedge every scan.
+            self._dropped.add(target_id)
+            logger.exception(
+                "Dropping lineage for target %s in build %s after %d attempts: %s",
+                target_id,
+                build_id,
+                attempts,
+                exc,
             )
-            self._store.add_jobstats_for_build_target(
-                storage, build_id=build_id, target_id=target_id
+        else:
+            self._failed_attempts[target_id] = attempts
+            logger.warning(
+                "Failed to record lineage for target %s in build %s "
+                "(attempt %d/%d); will retry on next scan: %s",
+                target_id,
+                build_id,
+                attempts,
+                self._MAX_RECORD_ATTEMPTS,
+                exc,
             )
-            self._pending_retries.pop(key, None)
-        except Exception:
-            attempts += 1
-            if attempts >= self._MAX_RECORD_ATTEMPTS:
-                self._pending_retries.pop(key, None)
-                logger.exception(
-                    "Dropping lineage for target %s in build %s after %d attempts",
-                    target_id,
-                    build_id,
-                    attempts,
-                )
-            else:
-                self._pending_retries[key] = attempts
-                logger.warning(
-                    "Failed to record lineage for target %s in build %s "
-                    "(attempt %d/%d); will retry",
-                    target_id,
-                    build_id,
-                    attempts,
-                    self._MAX_RECORD_ATTEMPTS,
-                )
-
-    def _retry_pending(self, storage: Any) -> None:
-        """Re-attempt recording for targets that failed on a previous poll."""
-        for (build_id, target_id), attempts in list(self._pending_retries.items()):
-            self._record_lineage(storage, build_id, target_id, attempts=attempts)
 
     def stop(self, timeout: float = 5.0) -> None:
         """Signal the watcher thread to stop and wait for it to exit.
 
         Joins the worker thread (bounded by ``timeout``) so shutdown does not
-        race an in-flight iteration, and resets state so the watcher can be
-        started again.
+        race an in-flight scan, and resets state so the watcher can be started
+        again.
 
         Args:
             timeout: Maximum seconds to wait for the worker thread to exit.

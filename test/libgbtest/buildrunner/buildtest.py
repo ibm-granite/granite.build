@@ -68,8 +68,7 @@ if TYPE_CHECKING:
 
 from gbcommon.uri.git import get_uri_parts
 from gbserver.github.myghapi import MyGHApi
-from gbserver.lineage.jobstats import get_lineage_store, reset_lineage_store
-from gbserver.lineage.noop_jobstats import NoopLineageStore
+from gbserver.lineage.jobstats import reset_lineage_store
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,
@@ -1106,14 +1105,9 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             build_id,
             f"Skipped target '{built_target.name}' should have 0 steps but has {len(step_list)}",
         )
-        count = get_lineage_store().count_release_ids(
-            release_id=built_target.build_id,
-            target_id=built_target.uuid,
-        )
-        assert count == expected.jobstats_count, self._failed_build_msg(
-            build_id,
-            f"Skipped target {built_target.name} created {count} jobstats, but expected  {expected.jobstats_count}",
-        )
+        # Lineage record count is no longer asserted: recording now happens
+        # asynchronously in the out-of-band lineage-watch process, so the count
+        # is not a synchronous product of the build. See _verify_lineage.
 
     def _verify_unskipped_target_and_steps(
         self: Self,
@@ -1183,46 +1177,27 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         built_target: StoredTargetRun,
         expected: ExpectedTarget,
     ) -> None:
-        """Verify the number of jobstats/lineage records matches the expected count.
+        """Lineage record count is no longer asserted here.
 
-        Retries a few times because Lakehouse writes from the K8s build runner
-        pod may not be immediately visible to a query in this process. Skips the
-        check entirely when no real lineage store is configured.
+        Lineage recording used to run synchronously inside the build, so the
+        record count matched right after the build. Recording is now done
+        asynchronously by the out-of-band ``lineage-watch`` process reconciling
+        the admin DB (see ``lineage_watcher`` / ``lineage_reconciler``), which is
+        not part of the build flow exercised by this test. The record count is
+        therefore no longer a synchronous product of a build, so asserting on it
+        here no longer makes sense.
+
+        The build's own persisted lineage (target input/output artifacts, steps)
+        is still verified elsewhere in this class; only the external-store record
+        count assertion is dropped.
 
         Args:
-            built_target: The stored target run whose lineage records are counted
-                (uses its ``build_id`` as the release id and ``uuid`` as the
-                target id).
-            expected: Expected-target spec providing ``jobstats_count``.
-
-        Raises:
-            AssertionError: If the observed lineage record count never matches
-                ``expected.jobstats_count`` after the retries.
+            built_target: The stored target run (unused; retained for signature
+                stability with callers).
+            expected: Expected-target spec (unused).
         """
-        if isinstance(get_lineage_store(), NoopLineageStore):
-            logger.warning("skipping lineage assertion: NoopLineageStore active")
-            return
-        count = 0
-        for attempt in range(5):
-            count = get_lineage_store().count_release_ids(
-                release_id=built_target.build_id,
-                target_id=built_target.uuid,
-            )
-            if count == expected.jobstats_count:
-                break
-            if attempt < 4:
-                logger.info(
-                    "JobStats count %d != expected %d for target %s, retrying (%d/5)...",
-                    count,
-                    expected.jobstats_count,
-                    built_target.name,
-                    attempt + 1,
-                )
-                sleep(3)
-        assert count == expected.jobstats_count, self._failed_build_msg(
-            build_id=built_target.build_id,
-            message=f"Target {built_target.name} created {count} JobStats, expected {expected.jobstats_count} ",
-        )
+        # Intentionally a no-op: see docstring.
+        return
 
     def _verify_target_status(
         self, build_id: str, target: StoredTargetRun, status_list: list[Status]
