@@ -1,28 +1,31 @@
 # eval (SkyPilot)
 
-Evaluation step for SkyPilot clusters. Its evaluation code and dependencies are
-baked into a **custom image** built from [`Dockerfile`](Dockerfile), published to
-a registry, and referenced from the generated `step.yaml` via `image_id`. The
-`run` block invokes the baked entrypoint ([`src/eval.py`](src/eval.py)) with
-parameters from `config.eval_config`, then registers the single results file as
-the step's output.
+Evaluation step for SkyPilot clusters. Its evaluation code is baked into a
+**custom image** built from [`Dockerfile`](Dockerfile), published to a registry,
+and referenced from the generated `step.yaml` via `image_id`. The `run` block
+invokes the baked entrypoint ([`src/eval.sh`](src/eval.sh)) with parameters from
+`config.eval_config`, then registers the single results file as the step's output.
 
 This is a custom-image counterpart to the public-image
 [byoc](../../byoc/skypilot/README.md) step. It is *generated* from the sources in
 this directory by the shared Makefile conventions — see the framework overview:
 [steps/README.md](../../README.md).
 
-> The shipped `eval.py` is a **stdlib-only placeholder** — it writes a
-> `results.json` with placeholder metrics but performs no real evaluation.
-> Replace the body of `evaluate()` with a real harness; the CLI argument contract
-> and the fixed `results.json` output path are what the step depends on.
+> **This is an exemplar, not a working evaluator.** The shipped
+> [`src/eval.sh`](src/eval.sh) is a **placeholder shell script** — it writes a
+> `results.json` recording its parameters but performs no real evaluation, so the
+> image needs no Python or dependencies (just a minimal Fedora base). When you
+> implement eval for real, replace the script body with a real harness and give
+> the image a suitable runtime + dependencies (see
+> [the base image](#building-publishing-and-deploying-the-step) below); the flag
+> contract and the fixed `results.json` output path are what the step depends on.
 
 ## Who emits the artifact line?
 
 This step demonstrates the **preferred** pattern for a workload with a single,
 fixed output: **the step registers the output, not the workload.**
 
-- `eval.py` always writes its results to `<output-dir>/results.json` — a path the
+- `eval.sh` always writes its results to `<output-dir>/results.json` — a path the
   step already knows. It prints no Granite.build marker and has no dependency on
   the artifact convention.
 - The `run:` block in `step.yaml`, after the eval command, emits the registration
@@ -40,19 +43,19 @@ output location is fixed and known ahead of time.
 
 ## Referencing the step
 
-`eval` is a generated bundle referenced by an **absolute `file://` URI** to the
-`eval/` directory produced by `make step` (the bundle dir is named after the
-step; see `STEP_DIR` in the [framework overview](../../README.md)):
+`make space` renders a self-contained Space into `space/` (see `SPACE_DIR` in the
+[framework overview](../../README.md)). Point the build's Space at that directory
+and reference the step by the stable `space://steps/eval` URI:
 
 ```yaml
 steps:
-  - step_uri: file:///abs/path/to/steps/eval/skypilot/eval
+  - step_uri: space://steps/eval
 ```
 
 ## Config contract (`eval_config`)
 
 All fields live under the step's `config.eval_config` and are templated into the
-`run` block as CLI arguments to `eval.py`.
+`run` block as CLI arguments to `eval.sh`.
 
 | Field | Type | Required | Purpose |
 |---|---|---|---|
@@ -70,7 +73,7 @@ All fields live under the step's `config.eval_config` and are templated into the
 - **Outputs** — declared on the step as `outputs.optional.results` (`type:
   dataset`), a single file at `<output_dir>/results.json`. It is registered by the
   `run:` block (see [Who emits the artifact line?](#who-emits-the-artifact-line)),
-  not by `eval.py`. Bind a matching `outputs.results` on the target to persist it.
+  not by `eval.sh`. Bind a matching `outputs.results` on the target to persist it.
 
 ## Env vars the step provides to your commands
 
@@ -83,15 +86,23 @@ Exported by the SkyPilot launcher into `run`:
 | `$GB_BUILD_ID`, `$GB_TARGETRUN_ID` | run metadata present | Build / target-run identifiers. |
 | `$GB_SKYPILOT_LAUNCH_ID`, `$GB_SKYPILOT_CLUSTER_NAME` | always | This launch's id and the SkyPilot cluster name. |
 
-The eval code and its Python interpreter come from the **image** (built from
-`Dockerfile`), not from a runtime venv.
+The eval script runs inside the **image** (built from `Dockerfile`); the exemplar
+is a shell script, so the image needs no Python interpreter or runtime venv.
 
 ## Building, publishing, and deploying the step
 
 Because a `Dockerfile` is present, this is an image step: `make all` runs
-`image` → `publish-image` → `step`. For the full target list, variables, and
+`image` → `publish-image` → `space`. For the full target list, variables, and
 [registry credentials](../../README.md#registry-credentials), see the shared
 [Makefile target conventions](../../README.md#makefile-target-conventions).
+
+To promote the step into the repo's committed assets tree
+(`configurations/assets/environments/skypilot/steps/eval/`) and copy its Docker
+build test into `test/steps/eval/skypilot/` so it is runnable from VSCode against
+the published step, run `make publish`. See
+[Two test modes](../../README.md#two-test-modes) for how the same test runs both
+against the locally rendered `space/` (Mode 1, `make test`) and against the
+published step (Mode 2, under `test/steps/`).
 
 Eval-specific notes:
 
@@ -100,9 +111,25 @@ Eval-specific notes:
   release, e.g. `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
   `make publish-image` against the placeholder will fail auth — set a real
   registry first. `IMAGE_TAG` defaults to the git short SHA.
-- At `make step` time the published reference
-  `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)` is substituted into the template's
-  `image_id: "docker:${IMAGE_REF}"`.
+- At `make space` time the image reference
+  `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)` is substituted into **both** launcher
+  blocks — the Skypilot `image_id: "docker:${IMAGE_REF}"` and the Docker
+  launcher's `image` (see below).
+
+### Running locally with no publish (the `Docker` launcher)
+
+The step's `step-template.yaml` also carries a **`Docker`** environment config
+(a `docker` launcher running the same image and `eval.sh`). This lets the image
+be **built and exercised locally with no registry publish**: `make test` renders
+the Space and builds the image locally (`make image`), then the docker build test
+in [`test/docker/`](test/docker/) runs it against the local Docker daemon. The
+`docker` environment's `pull_policy` is `if-not-present`, so the just-built local
+image is used as-is — no push, no pull, no container-capable cluster needed. Run
+it (with the repo-root `.venv` active) via:
+
+```sh
+make -C steps/eval/skypilot test
+```
 
 ## Example build.yaml
 
@@ -117,7 +144,7 @@ granite.build:
         results:
           uri: lh://prod/myspace/datasets/shared/eval-{{ run_metadata.targetsteprun_id | short_hash }}/1
       steps:
-        - step_uri: file:///abs/path/to/steps/eval/skypilot/eval
+        - step_uri: space://steps/eval
           config:
             compute_config: { num_nodes: 1, num_gpus_per_node: 1 }
             eval_config:
@@ -129,12 +156,15 @@ granite.build:
 
 ## Notes and limitations
 
-- **Placeholder evaluation.** The shipped `eval.py` records config and writes
-  placeholder metrics but runs no harness; add real dependencies to
-  [`requirements.txt`](requirements.txt) (baked into the image) and a real loop.
+- **Placeholder evaluation.** The shipped `eval.sh` records its parameters into
+  `results.json` but runs no harness. Implementing eval for real means a real
+  evaluation loop plus a base image that carries its runtime and dependencies
+  (the current placeholder needs neither), then choosing the proper image.
 - **Single, fixed output.** `results.json` is the one artifact, registered by the
   step. A workload whose output path varies at run time should instead print the
   `LLMB_ARTIFACT_ID` line itself.
-- **Image is required at run time.** The step's `image_id` must point at a
-  published, reachable image; run `make publish-image` (after `podman login`)
-  before submitting a build that references it on a real cluster.
+- **Image is required at run time.** On a real remote cluster (the Skypilot
+  launcher) the image must be **published and reachable** — run `make
+  publish-image` (after `podman login`) before submitting such a build. The
+  `Docker` launcher is the exception: it uses the **local** image, so `make
+  image` (done for you by `make test`) is enough — no publish.

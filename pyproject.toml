@@ -233,6 +233,7 @@ markers = [
     "live: opt specific services into live mode (e.g. @pytest.mark.live('storage', 'github'))",
     "skypilot_integration: tests requiring local SLURM + MinIO infrastructure (run via make integration-test)",
     "extended: slow / real-infra tests; run only in the extended suite (make extended-tests)",
+    "step_build_test: Mode-2 step build tests under test/steps/ (published-step tests copied by a step's `make publish`); auto-applied by test/steps/conftest.py and excluded from the whole-tree Makefile suites — run them from VSCode or explicitly (pytest test/steps/...)",
 ]
 testpaths = ["test/unit", "test/integration", "test/e2e"]
 norecursedirs = [".venv", ".git", "dist", "__pycache__", "*.egg-info"]

@@ -28,7 +28,7 @@ environment_configs:
           # published, fully qualified image reference) is substituted in (see
           # steps/common.mk). The eval script (src/eval.sh) lives inside this
           # image (built from ./Dockerfile).
-          image_id: "docker:${IMAGE_REF}"
+          image_id: "docker:quay.io/your-org/gb-step-eval:8b9a7ce"
           # Cloud-agnostic by default; the build supplies accelerators/cpus/memory
           # via config.launcher_config.resources.
           resources: {}
@@ -71,7 +71,7 @@ environment_configs:
           # `make space` time (steps/common.mk), identically to the Skypilot
           # image_id above. With the docker environment's pull_policy=if-not-present
           # a locally built image (`make image`) is used as-is: no pull, no publish.
-          image: "${IMAGE_REF}"
+          image: "quay.io/your-org/gb-step-eval:8b9a7ce"
           # The docker launcher runs `bash -c <command>`. This mirrors the
           # Skypilot `run:` block: runtime Jinja ({{ config.* }}) is resolved by
           # the build, while ${VAR}/$(...) stay shell and run in the container.

@@ -6,8 +6,8 @@
 # auto-detects a non-image step and the image / publish-image targets are no-ops.
 #
 # Usage:
-#   make step     # render step-template.yaml -> step/step.yaml, bundle src/
-#   make clean    # remove step/
+#   make space    # render a Space (space.yaml + steps/byoc/step.yaml) into space/
+#   make clean    # remove space/
 #   make help     # list targets; points to the shared steps/README.md
 
 STEP_NAME := byoc

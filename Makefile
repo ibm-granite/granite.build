@@ -58,7 +58,10 @@ COVERAGE_GATE = $(if $(strip $(PYTEST_COV)),coverage report --fail-under=$(MIN_C
 # (`make quick-tests PYTEST_CAPTURE=`) to let pytest capture output — handy when
 # debugging xdist/subprocess interactions.
 PYTEST_CAPTURE ?= -s
-DEFAULT_PYTEST_MARKERS ?= not secret_manager and not nats_server and not docker_required
+# `not step_build_test` keeps the Mode-2 step build tests under test/steps/ out
+# of every whole-tree suite that builds on this base (see test/steps/conftest.py);
+# they run only from VSCode or when targeted explicitly (pytest test/steps/...).
+DEFAULT_PYTEST_MARKERS ?= not secret_manager and not nats_server and not docker_required and not step_build_test
 # PR runs the quick (non-extended) selection; merge includes extended tests.
 PR_PYTEST_MARKERS ?= $(DEFAULT_PYTEST_MARKERS) and not extended
 MERGE_PYTEST_MARKERS ?=  $(DEFAULT_PYTEST_MARKERS)
@@ -237,7 +240,7 @@ quick-tests:
 	export GB_ENVIRONMENT=STANDALONE &&			\
 	$(MAKE) GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
 		GBTEST_MODE=mock				\
-		PYTEST_MARKERS="not ibm and not extended" 	\
+		PYTEST_MARKERS="not ibm and not extended and not step_build_test" 	\
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
 
@@ -252,7 +255,7 @@ extended-tests-setup:
 extended-tests:
 	export GB_ENVIRONMENT=STANDALONE &&			\
 	$(MAKE) GBTEST_MODE=live				\
-		PYTEST_MARKERS="not ibm" 			\
+		PYTEST_MARKERS="not ibm and not step_build_test" 			\
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
 
