@@ -11,7 +11,7 @@
 #   make step           # render step-template.yaml -> step/step.yaml (offline)
 #   make all            # image + publish-image + step (full pipeline)
 #   make clean          # remove step/
-#   make help           # show the shared steps/README.md
+#   make help           # list targets; points to the shared steps/README.md
 #
 # Override the image coordinates as needed, e.g.:
 #   make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0

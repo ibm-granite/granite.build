@@ -5,8 +5,8 @@
 # targets used across all steps:
 #
 #   image         build the custom image from ./Dockerfile for $(PLATFORM)
-#                 (image steps only; cross-builds on an Apple Silicon host)
-#   publish-image push the image to $(REGISTRY)                  (image steps only)
+#                 (custom image steps only; cross-builds on an Apple Silicon host)
+#   publish-image push the image to $(REGISTRY)                  (custom image steps only)
 #   step          render step-template.yaml -> step/step.yaml and bundle src/
 #   all           end-to-end: image + publish-image + step (image steps),
 #                 or just step (non-image steps)
@@ -58,7 +58,7 @@ PLATFORM   ?= linux/amd64
 # step must declare where its image is published. The including Makefile is
 # expected to set it (e.g. 'REGISTRY := quay.io/my-org'); it can still be
 # overridden on the command line (make ... REGISTRY=quay.io/my-org). Enforced for
-# image steps only — byoc-style steps build no image and need no registry.
+# custom image steps only — byoc-style steps build no image and need no registry.
 ifeq ($(STEP_USES_IMAGE),true)
 ifeq ($(strip $(REGISTRY)),)
 $(error REGISTRY is not set. Define it in the including Makefile (e.g. 'REGISTRY := quay.io/my-org') or pass it on the command line: make ... REGISTRY=quay.io/my-org)
@@ -115,15 +115,23 @@ all: step
 endif
 
 # ---- Help ------------------------------------------------------------------
-# Render the shared README (steps/README.md, beside common.mk). Uses a markdown
-# renderer if one is installed (glow/mdcat/bat), else falls back to plain cat.
+# List the available targets with a one-line description and point at the shared
+# README for full documentation (rather than rendering it here).
 help:
-	@if command -v glow >/dev/null 2>&1; then glow "$(README)"; \
-	elif command -v mdcat >/dev/null 2>&1; then mdcat "$(README)"; \
-	elif command -v bat >/dev/null 2>&1; then bat --language=markdown --style=plain "$(README)"; \
-	else cat "$(README)"; fi
+	@echo "Step '$(STEP_NAME)'"
+	@echo
+	@echo "Targets:"
+	@echo "  step           render step-template.yaml -> $(STEP_DIR)/step.yaml and bundle src/ (offline)"
+	@echo "  image          build the image from $(DOCKERFILE) for $(PLATFORM)  (no-op when no Dockerfile is present)"
+	@echo "  publish-image  push the image to the registry                 (no-op when no Dockerfile is present)"
+	@echo "  all            $(if $(filter true,$(STEP_USES_IMAGE)),image + publish-image + step,step (this step builds no image))"
+	@echo "  clean          remove the generated $(STEP_DIR)/ bundle"
+	@echo "  help           show this message"
+	@echo
+	@echo "Common overrides: make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0"
+	@echo "Full documentation: $(README)"
 
-# ---- Image build / publish (image steps only) ------------------------------
+# ---- Image build / publish (custom image steps only) ------------------------------
 
 image:
 ifeq ($(STEP_USES_IMAGE),true)

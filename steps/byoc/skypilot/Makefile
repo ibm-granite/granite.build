@@ -8,7 +8,7 @@
 # Usage:
 #   make step     # render step-template.yaml -> step/step.yaml, bundle src/
 #   make clean    # remove step/
-#   make help     # show the shared steps/README.md
+#   make help     # list targets; points to the shared steps/README.md
 
 STEP_NAME := byoc
 

@@ -56,8 +56,8 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 * **`all`** — the full pipeline: `image` + `publish-image` + `step` for image steps,
   or just `step` for public-image steps.
 * **`clean`** — remove the generated `$(STEP_DIR)/`.
-* **`help`** — display this README (rendered with `glow`/`mdcat`/`bat` if one is
-  installed, otherwise printed plain).
+* **`help`** — list the targets with a one-line description and point to this
+  README for full documentation.
 
 ### Variables (override on the command line or via the environment)
 
