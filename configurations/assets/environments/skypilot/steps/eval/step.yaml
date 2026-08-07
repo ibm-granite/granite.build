@@ -28,7 +28,7 @@ environment_configs:
           # published, fully qualified image reference) is substituted in (see
           # steps/common.mk). The eval script (src/eval.sh) lives inside this
           # image (built from ./Dockerfile).
-          image_id: "docker:quay.io/your-org/gb-step-eval:13f3050"
+          image_id: "docker:quay.io/your-org/gb-step-eval:7775cbf"
           # Cloud-agnostic by default; the build supplies accelerators/cpus/memory
           # via config.launcher_config.resources.
           resources: {}
@@ -71,7 +71,17 @@ environment_configs:
           # `make space` time (steps/common.mk), identically to the Skypilot
           # image_id above. With the docker environment's pull_policy=if-not-present
           # a locally built image (`make image`) is used as-is: no pull, no publish.
-          image: "quay.io/your-org/gb-step-eval:13f3050"
+          #
+          # NOTE: IMAGE_TAG defaults to the git short SHA, so the reference frozen
+          # into a PUBLISHED step.yaml (configurations/assets/.../steps/eval/) is
+          # the tag from the commit `make publish` was last run at. To run the
+          # committed Mode-2 docker test (test/steps/eval/skypilot/docker/) you
+          # must have that exact local image — i.e. rebuild AND re-publish at the
+          # same commit: `make -C steps/eval/skypilot image publish`. Otherwise
+          # if-not-present finds no match and tries (and fails) to pull the
+          # placeholder registry. `make test` (Mode 1) is immune: it builds and
+          # renders at HEAD together, so its tags always agree.
+          image: "quay.io/your-org/gb-step-eval:7775cbf"
           # The docker launcher runs `bash -c <command>`. This mirrors the
           # Skypilot `run:` block: runtime Jinja ({{ config.* }}) is resolved by
           # the build, while ${VAR}/$(...) stay shell and run in the container.

@@ -71,6 +71,16 @@ environment_configs:
           # `make space` time (steps/common.mk), identically to the Skypilot
           # image_id above. With the docker environment's pull_policy=if-not-present
           # a locally built image (`make image`) is used as-is: no pull, no publish.
+          #
+          # NOTE: IMAGE_TAG defaults to the git short SHA, so the reference frozen
+          # into a PUBLISHED step.yaml (configurations/assets/.../steps/eval/) is
+          # the tag from the commit `make publish` was last run at. To run the
+          # committed Mode-2 docker test (test/steps/eval/skypilot/docker/) you
+          # must have that exact local image — i.e. rebuild AND re-publish at the
+          # same commit: `make -C steps/eval/skypilot image publish`. Otherwise
+          # if-not-present finds no match and tries (and fails) to pull the
+          # placeholder registry. `make test` (Mode 1) is immune: it builds and
+          # renders at HEAD together, so its tags always agree.
           image: "${IMAGE_REF}"
           # The docker launcher runs `bash -c <command>`. This mirrors the
           # Skypilot `run:` block: runtime Jinja ({{ config.* }}) is resolved by

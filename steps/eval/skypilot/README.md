@@ -131,6 +131,26 @@ it (with the repo-root `.venv` active) via:
 make -C steps/eval/skypilot test
 ```
 
+> **Running the *committed* Mode-2 docker test — tag coupling.** The Mode-1 flow
+> above always works because `make test` builds the image and renders the Space at
+> the same commit, so their tags agree. The **committed** Mode-2 test
+> ([`test/steps/eval/skypilot/docker/`](../../../test/steps/eval/skypilot/docker/))
+> instead runs against the **published** `step.yaml` under
+> `configurations/assets/…/steps/eval/`, whose `image`/`image_id` bake in
+> `IMAGE_TAG` (the git short SHA by default) **as of the commit `make publish` was
+> last run at**. Because `pull_policy` is `if-not-present`, that test only resolves
+> if a local image at that exact tag exists — otherwise it tries to pull the
+> placeholder `quay.io/your-org` registry and fails. So before running it, rebuild
+> **and** re-publish at your current commit so both sides agree:
+>
+> ```sh
+> make -C steps/eval/skypilot image publish   # builds gb-step-eval:<HEAD-sha> and re-renders the assets to match
+> ```
+>
+> (Then commit the regenerated `step.yaml`.) Pin a stable `IMAGE_TAG` — e.g. `make
+> … image publish IMAGE_TAG=local` on both sides — if you would rather the
+> committed assets not drift per commit.
+
 ## Example build.yaml
 
 ```yaml

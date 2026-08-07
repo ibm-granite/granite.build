@@ -15,6 +15,10 @@
 #                 test/steps/<name>/<env>/<cluster>/ (tests) and
 #                 test-data/steps/<name>/<env>/<cluster>/ (fixtures, with their
 #                 space_uri repointed at the published step). NOT part of all.
+#   check-published verify the committed generated artifacts still match a fresh
+#                 render of the current source (re-renders to a temp dir with the
+#                 already-committed image ref, so it is immune to the image-tag
+#                 SHA and flags only genuine content drift); exit 1 on drift
 #   all           end-to-end: image + publish-image + space (image steps),
 #                 or just space (non-image steps)
 #   test          render the Space (via `space`) and build the image locally
@@ -179,7 +183,7 @@ PUBLISH_TESTDATA_DIR ?= $(abspath $(COMMON_MK_DIR)..)/test-data/steps/$(STEP_NAM
 # in) and from_yaml resolves it against the yaml's directory (see build/space.py).
 MODE2_SPACE_URI  ?= ../../../../../configurations/spaces/local
 
-.PHONY: all help image publish-image space publish test clean
+.PHONY: all help image publish-image space publish check-published test clean
 
 # ---- Default goal ----------------------------------------------------------
 # `space` deliberately does NOT depend on image/publish-image so it stays a cheap,
@@ -199,6 +203,7 @@ help:
 	@echo "Targets:"
 	@echo "  space          render step.yaml + a space.yaml into the Space $(SPACE_DIR)/ (offline)"
 	@echo "  publish        render the step into the assets tree + copy build tests into test/steps/ (not in all)"
+	@echo "  check-published  re-render to a temp dir and diff against the committed artifacts; exit 1 on drift"
 	@echo "  image          build the image from $(DOCKERFILE) for $(PLATFORM)  (no-op when no Dockerfile is present)"
 	@echo "  publish-image  push the image to the registry                 (no-op when no Dockerfile is present)"
 	@echo "  all            $(if $(filter true,$(STEP_USES_IMAGE)),image + publish-image + space,space (this step builds no image))"
@@ -327,6 +332,38 @@ publish:
 	@echo "[$(STEP_NAME)] published step -> $(PUBLISH_STEP_DIR)"
 	@echo "[$(STEP_NAME)] copied build tests -> $(PUBLISH_TEST_DIR)"
 	@echo "[$(STEP_NAME)] copied fixtures   -> $(PUBLISH_TESTDATA_DIR) (space_uri -> $(MODE2_SPACE_URI))"
+
+# ---- Drift check -----------------------------------------------------------
+
+# check-published — verify the committed generated artifacts still match a fresh
+# render of the current source. `publish` writes three trees derived from
+# steps/<step>/<env>/ (the assets step.yaml + src/, the test/steps/ copy, and the
+# test-data/steps/ fixtures) and nothing else keeps them in sync, so this
+# re-publishes into a temp dir and diffs it against the committed trees. It is
+# immune to the image-tag SHA: for image steps it re-renders with the SAME image
+# reference already committed (extracted from the published step.yaml via
+# IMAGE_REF), so only genuine content drift — an edited template/src/test that
+# was never re-published — is reported, not the per-commit IMAGE_TAG churn (see
+# the eval README's "tag coupling" note). Exit 0 = in sync (or nothing published
+# yet); exit 1 = drift, meaning you must re-run `make publish` and commit it.
+check-published:
+	@if [ ! -f "$(PUBLISH_STEP_DIR)/step.yaml" ]; then \
+		echo "[$(STEP_NAME)] nothing published at $(PUBLISH_STEP_DIR); nothing to check."; exit 0; \
+	fi; \
+	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	ref=$$(sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' "$(PUBLISH_STEP_DIR)/step.yaml" | head -1); \
+	$(MAKE) --no-print-directory publish \
+		PUBLISH_STEP_DIR="$$tmp/step" PUBLISH_TEST_DIR="$$tmp/test" \
+		PUBLISH_TESTDATA_DIR="$$tmp/testdata" $${ref:+IMAGE_REF="$$ref"} >/dev/null; \
+	rc=0; \
+	for pair in "$(PUBLISH_STEP_DIR):$$tmp/step" "$(PUBLISH_TEST_DIR):$$tmp/test" "$(PUBLISH_TESTDATA_DIR):$$tmp/testdata"; do \
+		committed=$${pair%:*}; fresh=$${pair##*:}; \
+		[ -e "$$committed" ] || committed=/dev/null; \
+		diff -r -x '__pycache__' -x '*.pyc' "$$committed" "$$fresh" || rc=1; \
+	done; \
+	if [ $$rc = 0 ]; then echo "[$(STEP_NAME)] OK: committed artifacts match current source."; \
+	else echo "[$(STEP_NAME)] DRIFT: re-run 'make publish' and commit the regenerated files."; fi; \
+	exit $$rc
 
 # ---- Tests -----------------------------------------------------------------
 
