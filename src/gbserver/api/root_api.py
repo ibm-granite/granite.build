@@ -30,11 +30,11 @@ from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
 from gbserver.api.builds import builds_api
+from gbserver.api.environment_files import files_api
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
 from gbserver.api.openapi_security import enable_api
-from gbserver.api.project_files import projects_api
 from gbserver.api.secrets import secrets_api
 from gbserver.api.spaces import spaces_api
 from gbserver.types.constants import (
@@ -83,10 +83,10 @@ def read_root():
 enable_api(root_api, f"{API_BASE_PATH}/auth", auth_api, advertise_auth=False)
 enable_api(root_api, f"{API_BASE_PATH}/artifacts", artifacts_api)
 enable_api(root_api, f"{API_BASE_PATH}/builds", builds_api)
+enable_api(root_api, f"{API_BASE_PATH}/files", files_api)
 enable_api(root_api, f"{API_BASE_PATH}/lineage", lineage_api)
 enable_api(root_api, f"{API_BASE_PATH}/logs", logs_api)
 enable_api(root_api, f"{API_BASE_PATH}/node-health", node_health_api)
-enable_api(root_api, f"{API_BASE_PATH}/projects", projects_api)
 enable_api(root_api, f"{API_BASE_PATH}/secrets", secrets_api)
 enable_api(root_api, f"{API_BASE_PATH}/spaces", spaces_api)
 

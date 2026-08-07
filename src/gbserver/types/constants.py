@@ -19,8 +19,9 @@
 import importlib.util
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
@@ -401,64 +402,89 @@ BUILD_FILES_STAT_BATCH_MAX = int(
     os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_STAT_BATCH_MAX, "500")
 )
 
-# Project-folder REST API (GPFS /proj/{folder}). Reuses the same remote
-# file-op machinery and caps as the build-files API — these are aliases so the
-# two can diverge later with a one-line change if a project-specific limit is
-# ever needed. SSH/login is the shared service identity resolved per-request
-# via open_lsf_tunnel (same as build-files); there is intentionally no separate
-# GPFS SSH/login config here.
-PROJECT_FILES_DOWNLOAD_MAX_BYTES = BUILD_FILES_DOWNLOAD_MAX_BYTES
-PROJECT_FILES_LIST_MAX_ENTRIES = BUILD_FILES_LIST_MAX_ENTRIES
-PROJECT_FILES_GREP_MAX_HITS = BUILD_FILES_GREP_MAX_HITS
-PROJECT_FILES_GREP_LINE_MAX_BYTES = BUILD_FILES_GREP_LINE_MAX_BYTES
-PROJECT_FILES_GREP_MAX_CONTEXT = BUILD_FILES_GREP_MAX_CONTEXT
-PROJECT_FILES_PEEK_MAX_LINES = BUILD_FILES_PEEK_MAX_LINES
-PROJECT_FILES_PEEK_MAX_BYTES = BUILD_FILES_PEEK_MAX_BYTES
-PROJECT_FILES_STAT_BATCH_MAX = BUILD_FILES_STAT_BATCH_MAX
+# Environment-files REST API (GET /files/{environment}/{folder}/...). Browses a
+# named folder on the login nodes of a *supported environment*, authorized by
+# POSIX group membership. Reuses the same remote file-op machinery and caps as
+# the build-files API — these are aliases so the two can diverge later with a
+# one-line change if an environment-specific limit is ever needed. SSH/login is
+# the shared service identity resolved per-request via open_lsf_tunnel (same as
+# build-files); there is intentionally no separate SSH/login config here.
+ENV_FILES_DOWNLOAD_MAX_BYTES = BUILD_FILES_DOWNLOAD_MAX_BYTES
+ENV_FILES_LIST_MAX_ENTRIES = BUILD_FILES_LIST_MAX_ENTRIES
+ENV_FILES_GREP_MAX_HITS = BUILD_FILES_GREP_MAX_HITS
+ENV_FILES_GREP_LINE_MAX_BYTES = BUILD_FILES_GREP_LINE_MAX_BYTES
+ENV_FILES_GREP_MAX_CONTEXT = BUILD_FILES_GREP_MAX_CONTEXT
+ENV_FILES_PEEK_MAX_LINES = BUILD_FILES_PEEK_MAX_LINES
+ENV_FILES_PEEK_MAX_BYTES = BUILD_FILES_PEEK_MAX_BYTES
+ENV_FILES_STAT_BATCH_MAX = BUILD_FILES_STAT_BATCH_MAX
 
-# Max group members resolved per `getent passwd` round-trip when authorizing a
-# project-folder request. Members are looked up in chunks of this size so a
+# Max group members resolved per `getent passwd` round-trip when authorizing an
+# environment-files request. Members are looked up in chunks of this size so a
 # large proj_{folder} group can't build a command line that trips ARG_MAX / the
 # shell's arg limit on the login node (which would fail authz for a legitimate
 # member, surfacing as an undiagnosable uniform 404). 256 keeps each command
 # comfortably short while still batching the common case into one call.
-ENV_VAR_GBSERVER_PROJECT_FILES_GETENT_BATCH_MAX = (
-    ENV_VAR_PREFIX + "_PROJECT_FILES_GETENT_BATCH_MAX"
+ENV_VAR_GBSERVER_ENV_FILES_GETENT_BATCH_MAX = (
+    ENV_VAR_PREFIX + "_ENV_FILES_GETENT_BATCH_MAX"
 )
-PROJECT_FILES_GETENT_BATCH_MAX = int(
-    os.getenv(ENV_VAR_GBSERVER_PROJECT_FILES_GETENT_BATCH_MAX, "256")
+ENV_FILES_GETENT_BATCH_MAX = int(
+    os.getenv(ENV_VAR_GBSERVER_ENV_FILES_GETENT_BATCH_MAX, "256")
 )
 
-# Fixed GPFS base under which project folders live: project root =
-# PROJECTS_GPFS_BASE/{folder}. Not caller-supplied.
-PROJECTS_GPFS_BASE = "/proj"
 
-# SSH tunnel selection for project-folder browsing. A project request has no
-# build to borrow space_name/environment_uri from, so both are resolved
-# server-side (never from the caller) and fed to the SAME open_lsf_tunnel the
-# build-files API uses — i.e. authenticated as the shared service identity,
-# never the requester.
+@dataclass(frozen=True)
+class EnvironmentFilesConfig:
+    """Per-environment config for the ``/files/{environment}`` API.
+
+    One record per *supported* environment. The set of records IS the set of
+    valid ``{environment}`` values — an environment absent from the registry is
+    unsupported and the API denies it with the same uniform 404 as a missing
+    folder (no leak of which environments exist).
+
+    Fields:
+      * ``gpfs_base`` — fixed base under which folders live on this
+        environment's login nodes; folder root = ``gpfs_base/{folder}``. Not
+        caller-supplied.
+      * ``space_name`` — space whose IBM Cloud Secret Manager holds the service
+        SSH key used to open the tunnel (server-resolved, never the requester).
+      * ``environment_uri`` — a ``space://…`` asset URI pointing at the LSF
+        ``environment.yaml`` whose login nodes mount ``gpfs_base``. This is the
+        one value that differs per deployment (dev/staging/prod) and cannot be
+        inferred from code; it MUST be set for the environment to function. An
+        empty value means "known environment, not configured for this
+        deployment" → the endpoints return 503 rather than guess.
+    """
+
+    gpfs_base: str
+    space_name: str
+    environment_uri: str
+
+
+# Registry of supported environments for the files API. Adding a new supported
+# environment is a data change here, not new code. Today the only working
+# environment is `bluevela` (LSF login nodes mounting /proj), preserving the
+# behavior the API shipped with.
 #
-# PROJECTS_GPFS_SPACE_NAME: the space whose IBM Cloud Secret Manager holds the
-# service SSH key. Defaults to the public space (literal "public"; the
-# PUBLIC_SPACE_NAME constant is defined further down this file).
-#
-# PROJECTS_GPFS_ENVIRONMENT_URI: a `space://…` asset URI pointing at an LSF
-# environment.yaml whose login nodes mount /proj. This is the one value that
-# differs per deployment (dev/staging/prod) and cannot be inferred from code;
-# it MUST be set in the deployment's environment for the project-files API to
-# function. Empty default → the endpoints return 503 "not configured" instead
-# of guessing.
-ENV_VAR_GBSERVER_PROJECTS_GPFS_SPACE_NAME = ENV_VAR_PREFIX + "_PROJECTS_GPFS_SPACE_NAME"
-ENV_VAR_GBSERVER_PROJECTS_GPFS_ENVIRONMENT_URI = (
-    ENV_VAR_PREFIX + "_PROJECTS_GPFS_ENVIRONMENT_URI"
+# The env vars carry the module-wide GBSERVER_ prefix (ENV_VAR_PREFIX), i.e.
+# GBSERVER_BLUEVELA_FILES_SPACE_NAME / GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI —
+# NOT a bare GB_ prefix.
+# GBSERVER_BLUEVELA_FILES_SPACE_NAME: defaults to the public space (literal
+#   "public"; the PUBLIC_SPACE_NAME constant is defined further down this file).
+# GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI: empty default → bluevela is a known
+#   environment but "not configured" on this deployment (503, not a guess).
+ENV_VAR_GBSERVER_BLUEVELA_FILES_SPACE_NAME = (
+    ENV_VAR_PREFIX + "_BLUEVELA_FILES_SPACE_NAME"
 )
-PROJECTS_GPFS_SPACE_NAME = os.getenv(
-    ENV_VAR_GBSERVER_PROJECTS_GPFS_SPACE_NAME, "public"
+ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI = (
+    ENV_VAR_PREFIX + "_BLUEVELA_FILES_ENVIRONMENT_URI"
 )
-PROJECTS_GPFS_ENVIRONMENT_URI = os.getenv(
-    ENV_VAR_GBSERVER_PROJECTS_GPFS_ENVIRONMENT_URI, ""
-)
+ENVIRONMENT_FILES_REGISTRY: Dict[str, EnvironmentFilesConfig] = {
+    "bluevela": EnvironmentFilesConfig(
+        gpfs_base="/proj",
+        space_name=os.getenv(ENV_VAR_GBSERVER_BLUEVELA_FILES_SPACE_NAME, "public"),
+        environment_uri=os.getenv(ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, ""),
+    ),
+}
 
 ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT = (
     ENV_VAR_PREFIX + "_DEFAULT_GH_REQUEST_TIMEOUT"

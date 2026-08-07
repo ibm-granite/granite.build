@@ -14,14 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Remote file-operation helpers shared by the build-files and project-files
+"""Remote file-operation helpers shared by the build-files and environment-files
 REST APIs.
 
 These read a remote path tree over an already-open SSH tunnel: directory
 listing (``find``/``ls``), recursive content grep (``grep -Z``), batched
 ``stat``, head/tail/range peek, and streamed SFTP download. Every function is
 rooted at a caller-supplied ``root`` (a ``PurePosixPath``) — a build root or a
-project-folder root — and is otherwise agnostic to what the root represents.
+environment-folder root — and is otherwise agnostic to what the root represents.
 
 SECURITY: callers MUST resolve and containment-check every remote path (via
 ``build_files_paths.validate_subpath`` + ``resolve_and_check_real_path``, rooted

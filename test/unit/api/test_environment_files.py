@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the project-folder REST API (``/api/v1/projects``).
+"""Unit tests for the environment-files REST API (``/api/v1/files``).
 
 These stub out ``open_lsf_tunnel`` (no SSH / IBM Cloud) and inject a fake
 authenticated user onto ``request.state`` via a tiny middleware, so no real
@@ -23,8 +23,8 @@ auth stack is required.
 The emphasis is the security core that makes this API different from
 build-files:
 
-  * a non-member, a nonexistent folder/group, and a malformed folder name all
-    return the SAME 404 body (no existence leak);
+  * an unsupported environment, a non-member, a nonexistent folder/group, and a
+    malformed folder name all return the SAME 404 body (no existence leak);
   * NO data-read command (``readlink``/``ls``/``find``/``grep``/``stat``) is
     ever issued for a non-member — only the two ``getent`` authorization
     lookups;
@@ -32,8 +32,9 @@ build-files:
 
 The generic file-op request/response surface (listing shapes, traversal
 rejection, peek modes, download caps) is covered thoroughly by
-test_build_files.py against the shared ``remote_files_ops`` code; here we
-port the security-relevant subset plus getent-parser unit tests.
+test_build_files.py and directly by test_remote_files_ops.py against the shared
+``remote_files_ops`` code; here we port the security-relevant subset plus
+getent-parser and environment-resolution unit tests.
 """
 
 from contextlib import asynccontextmanager
@@ -44,12 +45,19 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from gbserver.api import project_files as project_files_mod
-from gbserver.api.lsf_tunnel import LsfTunnelConfig
-from gbserver.api.project_files import projects_api
-from gbserver.api.project_files_paths import (
+from gbserver.api import environment_files as environment_files_mod
+from gbserver.api.environment_files import files_api
+from gbserver.api.environment_files_paths import (
+    parse_gecos_email,
     parse_group_members,
-    parse_passwd_email,
+)
+from gbserver.api.lsf_tunnel import LsfTunnelConfig
+from gbserver.types.constants import EnvironmentFilesConfig
+
+# The one supported environment (today) and a configured stand-in for it.
+ENVIRONMENT = "bluevela"
+TEST_ENV_CONFIG = EnvironmentFilesConfig(
+    gpfs_base="/proj", space_name="public", environment_uri="env://x"
 )
 
 # getent-passwd shape from a login node (GECOS: email;serial;full name):
@@ -65,11 +73,16 @@ PASSWD_LINES = (
 )
 
 
+def _url(folder: str, suffix: str = "files") -> str:
+    """Build an API path: /api/v1/files/{environment}/{folder}/{suffix}."""
+    return f"/api/v1/files/{ENVIRONMENT}/{folder}/{suffix}"
+
+
 # --------------------------------------------------------------------- fixtures
 
 
 def _make_app(email: str) -> FastAPI:
-    """Mount only projects_api, with a middleware that injects a fake user.
+    """Mount only files_api, with a middleware that injects a fake user.
 
     AuthMiddleware is replaced by a trivial middleware that sets
     ``request.state.data`` the same shape the real middleware produces:
@@ -82,7 +95,7 @@ def _make_app(email: str) -> FastAPI:
         request.state.data = {"user": SimpleNamespace(login="requester", email=email)}
         return await call_next(request)
 
-    app.mount("/api/v1/projects", projects_api)
+    app.mount("/api/v1/files", files_api)
     return app
 
 
@@ -101,19 +114,21 @@ def _fake_tunnel_cm(tunnel_mock):
 
 
 def _patch_tunnel(tunnel_mock):
-    """Patch open_lsf_tunnel + the server-resolved space/env helpers.
+    """Patch open_lsf_tunnel + pin resolve_environment to a configured env.
 
-    ``_gpfs_environment_uri`` would otherwise 503 (unset in test env), so we
-    pin it to a dummy URI.
+    ``resolve_environment`` would otherwise 503 for bluevela (its
+    ``environment_uri`` is unset in the test env), so we pin it to a config
+    with a dummy URI.
     """
     return (
         patch.object(
-            project_files_mod, "open_lsf_tunnel", _fake_tunnel_cm(tunnel_mock)
+            environment_files_mod, "open_lsf_tunnel", _fake_tunnel_cm(tunnel_mock)
         ),
         patch.object(
-            project_files_mod, "_gpfs_environment_uri", return_value="env://x"
+            environment_files_mod,
+            "resolve_environment",
+            return_value=TEST_ENV_CONFIG,
         ),
-        patch.object(project_files_mod, "_gpfs_space_name", return_value="public"),
     )
 
 
@@ -137,6 +152,7 @@ class _RecordingTunnel:
         grep_rc: int = 0,
         stat_stdout: str = "10\tregular file\n",
         stat_rc: int = 0,
+        readlink_map: dict | None = None,
     ):
         self.commands: list[str] = []
         self._group_stdout = group_stdout
@@ -148,6 +164,8 @@ class _RecordingTunnel:
         self._grep_rc = grep_rc
         self._stat_stdout = stat_stdout
         self._stat_rc = stat_rc
+        # Maps a `readlink -f` target to its resolved path; defaults to identity.
+        self._readlink_map = readlink_map or {}
         self.run_remote = AsyncMock(side_effect=self._run_remote)
         self.start_sftp = AsyncMock()
 
@@ -159,7 +177,8 @@ class _RecordingTunnel:
             return (0, self._passwd_stdout, "")
         if cmd.startswith("readlink -f"):
             target = cmd.split("--", 1)[1].strip().strip("'\"")
-            return (0, target + "\n", "")
+            resolved = self._readlink_map.get(target, target)
+            return (0, resolved + "\n", "")
         if cmd.startswith("stat -c"):
             return (self._stat_rc, self._stat_stdout, "")
         if "grep " in cmd and "getent" not in cmd:
@@ -212,32 +231,50 @@ class TestParseGroupMembers:
         ]
 
 
-class TestParsePasswdEmail:
+class TestParseGecosEmail:
     def test_full_gecos_shape(self):
         line = (
             "alice:*:1001:2001:alice@example.com;NNNNNN;Alice Example:"
             "/u/alice:/bin/bash"
         )
-        assert parse_passwd_email(line) == "alice@example.com"
+        assert parse_gecos_email(line) == "alice@example.com"
 
     def test_email_only_gecos(self):
         line = "u:*:1:1:person@example.com:/home/u:/bin/bash"
-        assert parse_passwd_email(line) == "person@example.com"
+        assert parse_gecos_email(line) == "person@example.com"
 
     def test_gecos_without_email_returns_none(self):
         # First GECOS sub-field is a name, not an email.
         line = "u:*:1:1:Full Name;serial;more:/home/u:/bin/bash"
-        assert parse_passwd_email(line) is None
+        assert parse_gecos_email(line) is None
 
     def test_empty_gecos_returns_none(self):
         line = "u:*:1:1::/home/u:/bin/bash"
-        assert parse_passwd_email(line) is None
+        assert parse_gecos_email(line) is None
 
     def test_too_few_fields_returns_none(self):
-        assert parse_passwd_email("u:*:1:1") is None
+        assert parse_gecos_email("u:*:1:1") is None
 
     def test_empty_line_returns_none(self):
-        assert parse_passwd_email("") is None
+        assert parse_gecos_email("") is None
+
+
+# ------------------------------------------------------ environment resolution
+
+
+class TestEnvironmentResolution:
+    def test_unsupported_environment_same_404_no_command(self):
+        # An unsupported {environment} is denied with the SAME uniform 404 as a
+        # missing folder, and issues NO command at all — a caller can't
+        # enumerate which environments exist by observing side effects.
+        tunnel = _RecordingTunnel()
+        with patch.object(
+            environment_files_mod, "open_lsf_tunnel", _fake_tunnel_cm(tunnel)
+        ):
+            r = TestClient(_make_app(MEMBER_EMAIL)).get("/api/v1/files/gpfs/demo/files")
+        assert r.status_code == 404
+        assert r.json()["detail"] == "not found"
+        assert tunnel.commands == []
 
 
 # ------------------------------------------------------------ authorization flow
@@ -246,17 +283,17 @@ class TestParsePasswdEmail:
 class TestAuthorization:
     def test_member_can_list(self):
         tunnel = _RecordingTunnel()
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client().get("/api/v1/projects/demo/files")
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo"))
         assert r.status_code == 200, r.text
         assert r.json() == ["notes.txt"]
 
     def test_member_getent_runs_before_data(self):
         tunnel = _RecordingTunnel()
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client().get("/api/v1/projects/demo/files")
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo"))
         assert r.status_code == 200, r.text
         # The two getent lookups come first, in order, then data commands.
         cmds = tunnel.commands
@@ -270,27 +307,27 @@ class TestAuthorization:
 
     def test_group_name_convention(self):
         tunnel = _RecordingTunnel()
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            _client().get("/api/v1/projects/demo/files")
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            _client().get(_url("demo"))
         assert any("getent group" in c and "proj_demo" in c for c in tunnel.commands)
 
     def test_non_member_gets_404(self):
         # Requester email not present in the resolved passwd emails.
         tunnel = _RecordingTunnel()
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client(email="stranger@example.com").get("/api/v1/projects/demo/files")
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client(email="stranger@example.com").get(_url("demo"))
         assert r.status_code == 404
-        assert r.json()["detail"] == "project folder not found"
+        assert r.json()["detail"] == "not found"
 
     def test_non_member_no_data_read(self):
         # THE security invariant: a non-member triggers ONLY getent, never a
         # data-touching command against /proj.
         tunnel = _RecordingTunnel()
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client(email="stranger@example.com").get("/api/v1/projects/demo/files")
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client(email="stranger@example.com").get(_url("demo"))
         assert r.status_code == 404
         assert tunnel.data_calls() == []
         for c in tunnel.commands:
@@ -299,13 +336,13 @@ class TestAuthorization:
 
     def test_non_member_no_data_read_all_endpoints(self):
         for url in (
-            "/api/v1/projects/demo/files",
-            "/api/v1/projects/demo/files/search?pattern=x",
-            "/api/v1/projects/demo/file/download?path=notes.txt",
+            _url("demo"),
+            _url("demo", "files/search") + "?pattern=x",
+            _url("demo", "file/download") + "?path=notes.txt",
         ):
             tunnel = _RecordingTunnel()
-            t, env, sp = _patch_tunnel(tunnel)
-            with t, env, sp:
+            t, env = _patch_tunnel(tunnel)
+            with t, env:
                 r = _client(email="stranger@example.com").get(url)
             assert r.status_code == 404, url
             assert tunnel.data_calls() == [], url
@@ -314,40 +351,40 @@ class TestAuthorization:
         # getent group rc != 0 (group/folder does not exist) → identical 404,
         # and no getent passwd / data command follows.
         tunnel = _RecordingTunnel(group_rc=2, group_stdout="")
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client().get("/api/v1/projects/demo/files")
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo"))
         assert r.status_code == 404
-        assert r.json()["detail"] == "project folder not found"
+        assert r.json()["detail"] == "not found"
         assert tunnel.data_calls() == []
         # Short-circuits after the failed group lookup — no passwd call.
         assert not any(c.startswith("getent passwd") for c in tunnel.commands)
 
     def test_empty_group_same_404(self):
         tunnel = _RecordingTunnel(group_stdout="proj_demo:*:600:\n")
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client().get("/api/v1/projects/demo/files")
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo"))
         assert r.status_code == 404
-        assert r.json()["detail"] == "project folder not found"
+        assert r.json()["detail"] == "not found"
         assert tunnel.data_calls() == []
 
     def test_empty_requester_email_short_circuits(self):
         # No requester identity → 404 before ANY command runs.
         tunnel = _RecordingTunnel()
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client(email="").get("/api/v1/projects/demo/files")
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client(email="").get(_url("demo"))
         assert r.status_code == 404
-        assert r.json()["detail"] == "project folder not found"
+        assert r.json()["detail"] == "not found"
         assert tunnel.commands == []
 
     def test_email_match_is_case_insensitive(self):
         # GECOS email is mixed-case; requester presents lowercase.
         tunnel = _RecordingTunnel()
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client(email=MEMBER_EMAIL.lower()).get("/api/v1/projects/demo/files")
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client(email=MEMBER_EMAIL.lower()).get(_url("demo"))
         assert r.status_code == 200, r.text
 
 
@@ -358,7 +395,7 @@ class TestGetentBatching:
     lookups)."""
 
     def test_member_in_later_chunk_is_authorized(self):
-        from gbserver.api import project_files_paths as ppaths
+        from gbserver.api import environment_files_paths as epaths
 
         # Cap batches at 2; build a 5-member group whose target sits in the
         # third chunk. Each getent-passwd chunk returns only its own members'
@@ -387,10 +424,10 @@ class TestGetentBatching:
 
         tunnel = SimpleNamespace(run_remote=AsyncMock(side_effect=run_remote))
 
-        with patch.object(ppaths, "PROJECT_FILES_GETENT_BATCH_MAX", 2):
+        with patch.object(epaths, "ENV_FILES_GETENT_BATCH_MAX", 2):
             import asyncio
 
-            emails = asyncio.run(ppaths._authorized_emails_for_group(tunnel, "demo"))
+            emails = asyncio.run(epaths._authorized_emails_for_group(tunnel, "demo"))
 
         # 5 members / batch of 2 → 3 passwd round-trips, all emails unioned.
         assert len(passwd_calls) == 3
@@ -409,19 +446,19 @@ class TestFolderNameValidation:
         # well-formed-but-forbidden name can't be told apart from a malformed
         # one by observing side effects.
         tunnel = _RecordingTunnel()
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
             # "foo/bar" is caught by FastAPI routing (path segment) → 404;
-            # the rest hit validate_folder_name → ProjectAccessDenied 404.
-            r = _client().get(f"/api/v1/projects/{folder}/files")
+            # the rest hit validate_folder_name → AccessDenied 404.
+            r = _client().get(_url(folder))
         assert r.status_code == 404
         assert tunnel.commands == []
 
     def test_valid_folder_with_allowed_charset(self):
         tunnel = _RecordingTunnel(group_stdout="proj_demo.v2:*:600:alice\n")
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client().get("/api/v1/projects/demo.v2/files")
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo.v2"))
         assert r.status_code == 200, r.text
         assert any("proj_demo.v2" in c for c in tunnel.getent_calls())
 
@@ -434,19 +471,17 @@ class TestListing:
         tunnel = _RecordingTunnel(
             find_stdout="/proj/demo/a.txt\n/proj/demo/sub/b.txt\n"
         )
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client().get(
-                "/api/v1/projects/demo/files", params={"recursive": "true"}
-            )
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo"), params={"recursive": "true"})
         assert r.status_code == 200, r.text
         assert r.json() == ["a.txt", "sub/b.txt"]
 
     def test_stat_returns_file_entries(self):
         tunnel = _RecordingTunnel(find_stdout="notes.txt\tf\t10\t1700000000.5\n")
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client().get("/api/v1/projects/demo/files", params={"stat": "true"})
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo"), params={"stat": "true"})
         assert r.status_code == 200, r.text
         body = r.json()
         assert body == [
@@ -455,16 +490,48 @@ class TestListing:
 
     def test_path_traversal_rejected(self):
         tunnel = _RecordingTunnel()
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client().get(
-                "/api/v1/projects/demo/files",
-                params={"path": "../../etc"},
-            )
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo"), params={"path": "../../etc"})
         assert r.status_code == 400
         # Auth ran (getent) but the traversal target never reached a shell cmd.
         for c in tunnel.commands:
             assert "etc/passwd" not in c
+
+    def test_symlinked_root_rebases_containment(self):
+        # If the folder root is itself a symlink, the effective sandbox boundary
+        # becomes wherever `readlink -f` resolves it to — NOT the literal
+        # /proj/demo. The resolved root must still be under the env base (/proj);
+        # here /proj/demo -> /proj/real/demo, and a user path under it is
+        # containment-checked against the RESOLVED root.
+        tunnel = _RecordingTunnel(
+            find_stdout="/proj/real/demo/a.txt\n",
+            readlink_map={"/proj/demo": "/proj/real/demo"},
+        )
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo"), params={"recursive": "true"})
+        assert r.status_code == 200, r.text
+        # The listing re-anchors against the resolved root, not /proj/demo.
+        assert r.json() == ["a.txt"]
+        # The first readlink -f targets the literal /proj/demo root, proving the
+        # root itself was canonicalized before use as the containment base.
+        readlinks = [c for c in tunnel.commands if c.startswith("readlink -f")]
+        assert any("/proj/demo" in c for c in readlinks)
+
+    def test_symlinked_root_escaping_base_is_rejected(self):
+        # A folder root symlink that resolves OUTSIDE the environment base
+        # (/proj) is rejected with the uniform 404: the resolved root must still
+        # be contained by the base. This is the guard the re-basing test relies
+        # on — resolution can move the boundary, but never out of the base.
+        tunnel = _RecordingTunnel(
+            find_stdout="",
+            readlink_map={"/proj/demo": "/etc"},
+        )
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo"), params={"recursive": "true"})
+        assert r.status_code == 404
 
 
 class TestSearch:
@@ -472,12 +539,9 @@ class TestSearch:
         tunnel = _RecordingTunnel(
             grep_stdout="/proj/demo/notes.txt\x0012:hello world\n"
         )
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client().get(
-                "/api/v1/projects/demo/files/search",
-                params={"pattern": "hello"},
-            )
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo", "files/search"), params={"pattern": "hello"})
         assert r.status_code == 200, r.text
         body = r.json()
         assert body == [
@@ -493,12 +557,9 @@ class TestSearch:
 
     def test_search_pattern_control_char_rejected(self):
         tunnel = _RecordingTunnel()
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client().get(
-                "/api/v1/projects/demo/files/search",
-                params={"pattern": "a\nb"},
-            )
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo", "files/search"), params={"pattern": "a\nb"})
         assert r.status_code == 400
         # Pure validation happens before any tunnel command.
         assert tunnel.commands == []
@@ -509,9 +570,6 @@ class TestDownloadAndPeek:
         tunnel = _RecordingTunnel(stat_stdout="4\tregular file\n")
         sftp = MagicMock()
         fh = MagicMock()
-
-        async def fake_read(n):
-            return b"data"[:n] if n else b""
 
         reads = iter([b"data", b""])
 
@@ -525,11 +583,10 @@ class TestDownloadAndPeek:
         sftp.exit = MagicMock(return_value=None)
         tunnel.start_sftp = AsyncMock(return_value=sftp)
 
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
             r = _client().get(
-                "/api/v1/projects/demo/file/download",
-                params={"path": "notes.txt"},
+                _url("demo", "file/download"), params={"path": "notes.txt"}
             )
         assert r.status_code == 200, r.text
         assert r.content == b"data"
@@ -537,29 +594,22 @@ class TestDownloadAndPeek:
 
     def test_download_directory_returns_400(self):
         tunnel = _RecordingTunnel(stat_stdout="4096\tdirectory\n")
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
-            r = _client().get(
-                "/api/v1/projects/demo/file/download",
-                params={"path": "."},
-            )
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
+            r = _client().get(_url("demo", "file/download"), params={"path": "."})
         assert r.status_code == 400
 
     def test_download_too_large_returns_413(self):
         tunnel = _RecordingTunnel(stat_stdout=f"{2 * 1024**3}\tregular file\n")
-        t, env, sp = _patch_tunnel(tunnel)
+        t, env = _patch_tunnel(tunnel)
         with (
             t,
             env,
-            sp,
             patch.object(
-                project_files_mod, "PROJECT_FILES_DOWNLOAD_MAX_BYTES", 1 * 1024**3
+                environment_files_mod, "ENV_FILES_DOWNLOAD_MAX_BYTES", 1 * 1024**3
             ),
         ):
-            r = _client().get(
-                "/api/v1/projects/demo/file/download",
-                params={"path": "big.bin"},
-            )
+            r = _client().get(_url("demo", "file/download"), params={"path": "big.bin"})
         assert r.status_code == 413
 
     def test_peek_head_returns_text_plain(self):
@@ -567,8 +617,6 @@ class TestDownloadAndPeek:
 
         # The peek text comes from _peek_text's run_remote; make the head/sed
         # producer return known text. Override run_remote to add peek handling.
-        base = tunnel._run_remote
-
         async def run_remote(cmd, raise_on_error=True):
             tunnel.commands.append(cmd)
             if cmd.startswith("getent group"):
@@ -586,10 +634,10 @@ class TestDownloadAndPeek:
 
         tunnel.run_remote = AsyncMock(side_effect=run_remote)
 
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
             r = _client().get(
-                "/api/v1/projects/demo/file/download",
+                _url("demo", "file/download"),
                 params={"path": "notes.txt", "head": "2"},
             )
         assert r.status_code == 200, r.text
@@ -598,10 +646,10 @@ class TestDownloadAndPeek:
 
     def test_peek_mutual_exclusion_returns_400(self):
         tunnel = _RecordingTunnel()
-        t, env, sp = _patch_tunnel(tunnel)
-        with t, env, sp:
+        t, env = _patch_tunnel(tunnel)
+        with t, env:
             r = _client().get(
-                "/api/v1/projects/demo/file/download",
+                _url("demo", "file/download"),
                 params={"path": "notes.txt", "head": "2", "tail": "2"},
             )
         assert r.status_code == 400
@@ -611,14 +659,25 @@ class TestDownloadAndPeek:
 
 class TestNotConfigured:
     def test_missing_environment_uri_returns_503(self):
-        # With the env URI unset (the real default), the endpoint 503s instead
-        # of guessing. Patch only the tunnel; leave _gpfs_environment_uri real
-        # with the empty default.
+        # With bluevela's environment_uri unset (the real default), the endpoint
+        # 503s instead of guessing. Patch only the tunnel; leave the registry
+        # real with the empty-URI default.
+        from gbserver.api import environment_files_paths as epaths
+
         tunnel = _RecordingTunnel()
+        unconfigured = EnvironmentFilesConfig(
+            gpfs_base="/proj", space_name="public", environment_uri=""
+        )
         with (
-            patch.object(project_files_mod, "open_lsf_tunnel", _fake_tunnel_cm(tunnel)),
-            patch.object(project_files_mod, "PROJECTS_GPFS_ENVIRONMENT_URI", ""),
+            patch.object(
+                environment_files_mod, "open_lsf_tunnel", _fake_tunnel_cm(tunnel)
+            ),
+            patch.dict(
+                epaths.ENVIRONMENT_FILES_REGISTRY,
+                {ENVIRONMENT: unconfigured},
+                clear=True,
+            ),
         ):
-            r = _client().get("/api/v1/projects/demo/files")
+            r = _client().get(_url("demo"))
         assert r.status_code == 503
         assert tunnel.commands == []
