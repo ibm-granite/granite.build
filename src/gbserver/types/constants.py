@@ -401,6 +401,52 @@ BUILD_FILES_STAT_BATCH_MAX = int(
     os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_STAT_BATCH_MAX, "500")
 )
 
+# Project-folder REST API (GPFS /proj/{folder}). Reuses the same remote
+# file-op machinery and caps as the build-files API — these are aliases so the
+# two can diverge later with a one-line change if a project-specific limit is
+# ever needed. SSH/login is the shared service identity resolved per-request
+# via open_lsf_tunnel (same as build-files); there is intentionally no separate
+# GPFS SSH/login config here.
+PROJECT_FILES_DOWNLOAD_MAX_BYTES = BUILD_FILES_DOWNLOAD_MAX_BYTES
+PROJECT_FILES_LIST_MAX_ENTRIES = BUILD_FILES_LIST_MAX_ENTRIES
+PROJECT_FILES_GREP_MAX_HITS = BUILD_FILES_GREP_MAX_HITS
+PROJECT_FILES_GREP_LINE_MAX_BYTES = BUILD_FILES_GREP_LINE_MAX_BYTES
+PROJECT_FILES_GREP_MAX_CONTEXT = BUILD_FILES_GREP_MAX_CONTEXT
+PROJECT_FILES_PEEK_MAX_LINES = BUILD_FILES_PEEK_MAX_LINES
+PROJECT_FILES_PEEK_MAX_BYTES = BUILD_FILES_PEEK_MAX_BYTES
+PROJECT_FILES_STAT_BATCH_MAX = BUILD_FILES_STAT_BATCH_MAX
+
+# Fixed GPFS base under which project folders live: project root =
+# PROJECTS_GPFS_BASE/{folder}. Not caller-supplied.
+PROJECTS_GPFS_BASE = "/proj"
+
+# SSH tunnel selection for project-folder browsing. A project request has no
+# build to borrow space_name/environment_uri from, so both are resolved
+# server-side (never from the caller) and fed to the SAME open_lsf_tunnel the
+# build-files API uses — i.e. authenticated as the shared service identity,
+# never the requester.
+#
+# PROJECTS_GPFS_SPACE_NAME: the space whose IBM Cloud Secret Manager holds the
+# service SSH key. Defaults to the public space (literal "public"; the
+# PUBLIC_SPACE_NAME constant is defined further down this file).
+#
+# PROJECTS_GPFS_ENVIRONMENT_URI: a `space://…` asset URI pointing at an LSF
+# environment.yaml whose login nodes mount /proj. This is the one value that
+# differs per deployment (dev/staging/prod) and cannot be inferred from code;
+# it MUST be set in the deployment's environment for the project-files API to
+# function. Empty default → the endpoints return 503 "not configured" instead
+# of guessing.
+ENV_VAR_GBSERVER_PROJECTS_GPFS_SPACE_NAME = ENV_VAR_PREFIX + "_PROJECTS_GPFS_SPACE_NAME"
+ENV_VAR_GBSERVER_PROJECTS_GPFS_ENVIRONMENT_URI = (
+    ENV_VAR_PREFIX + "_PROJECTS_GPFS_ENVIRONMENT_URI"
+)
+PROJECTS_GPFS_SPACE_NAME = os.getenv(
+    ENV_VAR_GBSERVER_PROJECTS_GPFS_SPACE_NAME, "public"
+)
+PROJECTS_GPFS_ENVIRONMENT_URI = os.getenv(
+    ENV_VAR_GBSERVER_PROJECTS_GPFS_ENVIRONMENT_URI, ""
+)
+
 ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT = (
     ENV_VAR_PREFIX + "_DEFAULT_GH_REQUEST_TIMEOUT"
 )
@@ -442,8 +488,8 @@ GBSERVER_TRUNCATE_LENGTH = int(os.getenv(ENV_VAR_TRUNCATE_LENGTH, "-1"), base=10
 # Cap on simultaneous SkyPilot cluster bring-ups. Each launch opens a fresh
 # SSH session to the cloud's login node; LSF-backed clouds in particular
 # trip MaxAuthTries on sshd when many evals fan out at once. Default 4 is
-# safe for BlueVela; override to a higher value on clouds that don't
-# bottleneck on SSH (e.g. Kubernetes).
+# safe for SSH-bottlenecked clusters; override to a higher value on clouds
+# that don't bottleneck on SSH (e.g. Kubernetes).
 GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY = int(
     os.getenv(ENV_VAR_SKYPILOT_LAUNCH_CONCURRENCY, "4"), base=10
 )
