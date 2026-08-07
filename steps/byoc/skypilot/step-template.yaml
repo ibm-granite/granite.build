@@ -1,0 +1,69 @@
+name: byoc
+version: 1.0.0
+type: exec
+config:
+  byoc_config:
+    # Public container image the step runs in. Empty => run on the bare launcher
+    # node. This is a RUNTIME choice (rendered by Jinja from the build.yaml), not
+    # a custom image built by this step's Makefile.
+    image: ""
+    # Public git repository cloned into the build workdir during `setup`.
+    repo: ""
+    # Optional branch, tag, or commit to check out after cloning.
+    ref: ""
+    # Subdirectory (under the build workdir) the repo is cloned into.
+    workdir: "code"
+    # Command executed by `run`, from inside the cloned repo directory.
+    command: ""
+
+environment_configs:
+  Skypilot:
+    default_launcher: byoc
+    launchers:
+      byoc:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Runtime Jinja: an empty image renders to "" (bare launcher node);
+          # otherwise the public image is wrapped as SkyPilot `docker:<ref>`.
+          image_id: '{{ ("docker:" ~ config.byoc_config.image) if config.byoc_config.image else "" }}'
+          # Cloud-agnostic: the build supplies cpus/memory/accelerators via
+          # config.launcher_config.resources.
+          resources: {}
+          # Optional helper assets shipped alongside the step. A relative dest is
+          # remapped under $GB_BUILD_WORKDIR, so these land at
+          # $GB_BUILD_WORKDIR/src on the cluster.
+          file_mounts:
+            src: src
+          # setup runs once at cluster bring-up: fetch the code.
+          setup: |
+            set -eu
+            REPO="{{ config.byoc_config.repo }}"
+            REF="{{ config.byoc_config.ref }}"
+            CODE_DIR="${GB_BUILD_WORKDIR:-$HOME}/{{ config.byoc_config.workdir }}"
+            if [ -z "$REPO" ]; then
+              echo "byoc: config.byoc_config.repo is empty; nothing to clone" >&2
+              exit 1
+            fi
+            echo "byoc: cloning $REPO -> $CODE_DIR"
+            rm -rf "$CODE_DIR"
+            git clone "$REPO" "$CODE_DIR"
+            if [ -n "$REF" ]; then
+              echo "byoc: checking out $REF"
+              git -C "$CODE_DIR" checkout "$REF"
+            fi
+          # run executes the user-defined command from inside the cloned repo.
+          # File-mounted helpers are available at $GB_BUILD_WORKDIR/src.
+          run: |
+            set -eu
+            CODE_DIR="${GB_BUILD_WORKDIR:-$HOME}/{{ config.byoc_config.workdir }}"
+            cd "$CODE_DIR"
+            echo "byoc: running command in $(pwd)"
+            {{ config.byoc_config.command }}
+            # To register an output artifact, print (at the start of a line):
+            #   echo "LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>"
+    monitors:
+      # Standard artifact/status convention from the shipped monitor library.
+      skypilot_monitor:
+        ref: space://monitors/skypilot

@@ -1,0 +1,3 @@
+# Generated deployable step bundles produced by `make step`.
+# The source of truth is step-template.yaml + src/; the step/ dir is derived.
+*/*/step/

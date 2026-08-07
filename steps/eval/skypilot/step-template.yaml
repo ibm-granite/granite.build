@@ -1,0 +1,55 @@
+name: eval
+version: 1.0.0
+type: EVAL
+config:
+  eval_config:
+    # Model to evaluate (path or hub id).
+    model_path: ""
+    # Comma-separated benchmark/task names to run (empty => a placeholder task).
+    tasks: ""
+    # Directory the results file is written into (results.json is created here).
+    output_dir: "output"
+    per_device_eval_batch_size: 8
+outputs:
+  optional:
+    results:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: eval
+    launchers:
+      eval:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # The image_id below is rendered at `make step` time: IMAGE_REF (the
+          # published, fully qualified image reference) is substituted in (see
+          # steps/common.mk). The eval code and deps live inside this image
+          # (built from ./Dockerfile).
+          image_id: "docker:${IMAGE_REF}"
+          # Cloud-agnostic by default; the build supplies accelerators/cpus/memory
+          # via config.launcher_config.resources.
+          resources: {}
+          run: |
+            set -e
+            echo "=== eval on $(hostname) ==="
+            OUTPUT_DIR="{{ config.eval_config.output_dir }}"
+            mkdir -p "$OUTPUT_DIR"
+            python /opt/eval/eval.py \
+              --model-path "{{ config.eval_config.model_path }}" \
+              --tasks "{{ config.eval_config.tasks }}" \
+              --output-dir "$OUTPUT_DIR" \
+              --batch-size {{ config.eval_config.per_device_eval_batch_size }}
+            # This step has a single, fixed output: eval.py always writes
+            # results.json into $OUTPUT_DIR. Because the path is known to the step,
+            # the STEP (not the workload) registers it — keeping eval.py free of
+            # any Granite.build artifact convention. The line must start with the
+            # marker for skypilot_monitor to capture it.
+            RESULT_FILE="$(cd "$OUTPUT_DIR" && pwd)/results.json"
+            echo "LLMB_ARTIFACT_ID:results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
+    monitors:
+      # Standard artifact/status convention from the shipped monitor library.
+      skypilot_monitor:
+        ref: space://monitors/skypilot
