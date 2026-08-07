@@ -165,7 +165,10 @@ SPACE_BASE_URI ?= file://../$(STEP_TO_ROOT)/configurations/assets
 # resolves for that environment family; ASSETS_DIR/PUBLISH_TEST_DIR are absolute
 # repo paths derived from COMMON_MK_DIR (= steps/), so `..` is the repo root.
 STEP_ENV         ?= $(notdir $(CURDIR))
-ASSETS_DIR       ?= $(abspath $(COMMON_MK_DIR)..)/configurations/assets
+# Repo root as an absolute path (COMMON_MK_DIR = steps/, so `..` is the root),
+# reused below and by the publish guard that refuses to rm -rf broad paths.
+REPO_ROOT        := $(abspath $(COMMON_MK_DIR)..)
+ASSETS_DIR       ?= $(REPO_ROOT)/configurations/assets
 PUBLISH_STEP_DIR ?= $(ASSETS_DIR)/environments/$(STEP_ENV)/steps/$(STEP_NAME)
 # The copied build tests and their fixtures follow the repo's parallel
 # test/ <-> test-data/ convention (resolved by libgbtest.get_test_data_dir_for):
@@ -173,8 +176,8 @@ PUBLISH_STEP_DIR ?= $(ASSETS_DIR)/environments/$(STEP_ENV)/steps/$(STEP_NAME)
 # fixtures under the mirrored test-data/steps/<name>/<env>/<cluster>/. The step's
 # own `test/<cluster>/` nesting is flattened away on copy so the published layout
 # matches the top-level convention (test/<path> mirrors test-data/<path>).
-PUBLISH_TEST_DIR     ?= $(abspath $(COMMON_MK_DIR)..)/test/steps/$(STEP_NAME)/$(STEP_ENV)
-PUBLISH_TESTDATA_DIR ?= $(abspath $(COMMON_MK_DIR)..)/test-data/steps/$(STEP_NAME)/$(STEP_ENV)
+PUBLISH_TEST_DIR     ?= $(REPO_ROOT)/test/steps/$(STEP_NAME)/$(STEP_ENV)
+PUBLISH_TESTDATA_DIR ?= $(REPO_ROOT)/test-data/steps/$(STEP_NAME)/$(STEP_ENV)
 # space_uri written into each copied buildtest.yaml so the Mode-2 (published) test
 # resolves the step through the shared space configurations/spaces/local (which
 # chains to configurations/assets). It is RELATIVE to the copied file's own dir,
@@ -254,6 +257,22 @@ define render-step-template
 	sed "s#\$${IMAGE_REF}#$$ref#g" "$(TEMPLATE)" > "$(1)"
 endef
 
+# guard-publish-paths — fail fast before `publish` runs any rm -rf. The publish
+# destinations are absolute paths built from STEP_NAME/STEP_ENV; a stray empty
+# override (e.g. `make publish STEP_ENV=`) would collapse one to a broad path
+# like the repo root. Refuse unless STEP_NAME/STEP_ENV are set and each of the
+# three publish dirs is non-empty and neither `/` nor the repo root itself.
+define guard-publish-paths
+	@test -n "$(strip $(STEP_NAME))" || { echo "[publish] refusing: STEP_NAME is empty"; exit 1; }
+	@test -n "$(strip $(STEP_ENV))"  || { echo "[publish] refusing: STEP_ENV is empty"; exit 1; }
+	@for d in "$(PUBLISH_STEP_DIR)" "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"; do \
+		case "$$d" in \
+			"" | "/" | "$(REPO_ROOT)" | "$(REPO_ROOT)/") \
+				echo "[publish] refusing: publish path resolves to '$$d' (too broad to rm -rf)"; exit 1;; \
+		esac; \
+	done
+endef
+
 # ---- Render Space ----------------------------------------------------------
 
 # Render a self-contained Space into $(SPACE_DIR)/:
@@ -304,6 +323,7 @@ space:
 # configurations/spaces/local instead of the local space/. Deliberately NOT part
 # of `all`: publish writes the committed assets tree.
 publish:
+	$(call guard-publish-paths)
 	@mkdir -p $(PUBLISH_STEP_DIR)
 	$(call render-step-template,$(PUBLISH_STEP_DIR)/step.yaml)
 	@if [ -d "$(SRC_DIR)" ] && [ -n "$$(ls -A $(SRC_DIR) 2>/dev/null)" ]; then \
