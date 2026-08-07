@@ -28,11 +28,16 @@ def _run_eval(output_dir, model_path="some/model", tasks="", batch_size=8):
     """
     return subprocess.run(
         [
-            "bash", str(_EVAL_SH),
-            "--model-path", model_path,
-            "--tasks", tasks,
-            "--output-dir", str(output_dir),
-            "--batch-size", str(batch_size),
+            "bash",
+            str(_EVAL_SH),
+            "--model-path",
+            model_path,
+            "--tasks",
+            tasks,
+            "--output-dir",
+            str(output_dir),
+            "--batch-size",
+            str(batch_size),
         ],
         check=True,
         capture_output=True,
@@ -43,7 +48,9 @@ def _run_eval(output_dir, model_path="some/model", tasks="", batch_size=8):
 def test_writes_results_at_fixed_path(tmp_path):
     """eval.sh writes results.json at <output_dir>/results.json, recording the
     model, batch size, and the requested tasks."""
-    _run_eval(tmp_path, model_path="some/model", tasks="hellaswag,arc_easy", batch_size=4)
+    _run_eval(
+        tmp_path, model_path="some/model", tasks="hellaswag,arc_easy", batch_size=4
+    )
 
     results = tmp_path / "results.json"
     assert results.exists()
