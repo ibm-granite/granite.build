@@ -23,7 +23,6 @@
 #                 organised in per-cluster subdirs; not bundled)
 #   clean         remove the generated Space directory
 #   help          list the targets and point at the shared steps/README.md
-#   check-tools   verify required tooling (envsubst) is installed
 #
 # Variables an includer MUST/MAY set BEFORE the include:
 #   STEP_NAME    (required) logical step name, e.g. "byoc"
@@ -180,7 +179,7 @@ PUBLISH_TESTDATA_DIR ?= $(abspath $(COMMON_MK_DIR)..)/test-data/steps/$(STEP_NAM
 # in) and from_yaml resolves it against the yaml's directory (see build/space.py).
 MODE2_SPACE_URI  ?= ../../../../../configurations/spaces/local
 
-.PHONY: all help image publish-image space publish test clean check-tools
+.PHONY: all help image publish-image space publish test clean
 
 # ---- Default goal ----------------------------------------------------------
 # `space` deliberately does NOT depend on image/publish-image so it stays a cheap,
@@ -236,19 +235,33 @@ else
 	@echo "[$(STEP_NAME)] no $(DOCKERFILE) found; nothing to publish."
 endif
 
+# ---- Rendering helper -------------------------------------------------------
+
+# render-step-template — render step-template.yaml to the file named by $(1),
+# substituting ONLY the literal ${IMAGE_REF} token (empty for non-image steps).
+# Everything else passes through verbatim: runtime Jinja ({{ ... }}) and shell
+# expansions (${VAR}, $(cmd)) in run:/setup: blocks. Uses sed (POSIX, always
+# present) rather than envsubst, so no gettext install is required. The image
+# ref is escaped for sed's replacement text (the # delimiter, & and \) so a
+# value containing any of them cannot corrupt the substitution.
+define render-step-template
+	@ref=$$(printf '%s' '$(IMAGE_REF)' | sed 's/[#&\\]/\\&/g'); \
+	sed "s#\$${IMAGE_REF}#$$ref#g" "$(TEMPLATE)" > "$(1)"
+endef
+
 # ---- Render Space ----------------------------------------------------------
 
 # Render a self-contained Space into $(SPACE_DIR)/:
 #   $(SPACE_DIR)/steps/$(STEP_NAME)/step.yaml   (+ bundled src/)
 #   $(SPACE_DIR)/space.yaml                       (base_uris -> $(SPACE_BASE_URI))
-# step-template.yaml is rendered substituting ONLY $IMAGE_REF so runtime Jinja
+# step-template.yaml is rendered substituting ONLY ${IMAGE_REF} so runtime Jinja
 # ({{ ... }}) and shell expansions (${VAR}, $(cmd)) in the run/setup blocks pass
-# through untouched. The generated space.yaml's own directory is the first
-# base_uri, so `space://steps/$(STEP_NAME)` resolves here and everything else
-# falls through to $(SPACE_BASE_URI).
-space: check-tools
+# through untouched (see render-step-template above). The generated space.yaml's
+# own directory is the first base_uri, so `space://steps/$(STEP_NAME)` resolves
+# here and everything else falls through to $(SPACE_BASE_URI).
+space:
 	@mkdir -p $(SPACE_DIR)/steps/$(STEP_NAME)
-	IMAGE_REF='$(IMAGE_REF)' envsubst '$$IMAGE_REF' < $(TEMPLATE) > $(SPACE_DIR)/steps/$(STEP_NAME)/step.yaml
+	$(call render-step-template,$(SPACE_DIR)/steps/$(STEP_NAME)/step.yaml)
 	@if [ -d "$(SRC_DIR)" ] && [ -n "$$(ls -A $(SRC_DIR) 2>/dev/null)" ]; then \
 		rm -rf "$(SPACE_DIR)/steps/$(STEP_NAME)/$(SRC_DIR)"; \
 		cp -R "$(SRC_DIR)" "$(SPACE_DIR)/steps/$(STEP_NAME)/$(SRC_DIR)"; \
@@ -276,17 +289,18 @@ space: check-tools
 # `test/`-rooted path to the parallel `test-data/` one — so the SAME test file
 # resolves in both homes (Mode 1 co-located beside the step, Mode 2 here).
 #
-# step.yaml is rendered exactly as `space` does (envsubst of ONLY $IMAGE_REF, so
-# runtime Jinja/${VAR} pass through). Only the per-cluster SUBDIRS of $(TEST_DIR)
-# are copied — the step's build/integration tests — so loose payload/unit tests
-# in $(TEST_DIR)/ (which import from src/) and src/ itself are intentionally NOT
-# copied; those stay Mode-1 only (run via `make test`). The copied buildtest.yaml
-# files have their space_uri rewritten to $(MODE2_SPACE_URI) so the Mode-2 tests
-# resolve the PUBLISHED step via configurations/spaces/local instead of the local
-# space/. Deliberately NOT part of `all`: publish writes the committed assets tree.
-publish: check-tools
+# step.yaml is rendered exactly as `space` does (render-step-template substitutes
+# ONLY ${IMAGE_REF}, so runtime Jinja/${VAR} pass through). Only the per-cluster
+# SUBDIRS of $(TEST_DIR) are copied — the step's build/integration tests — so
+# loose payload/unit tests in $(TEST_DIR)/ (which import from src/) and src/
+# itself are intentionally NOT copied; those stay Mode-1 only (run via `make
+# test`). The copied buildtest.yaml files have their space_uri rewritten to
+# $(MODE2_SPACE_URI) so the Mode-2 tests resolve the PUBLISHED step via
+# configurations/spaces/local instead of the local space/. Deliberately NOT part
+# of `all`: publish writes the committed assets tree.
+publish:
 	@mkdir -p $(PUBLISH_STEP_DIR)
-	IMAGE_REF='$(IMAGE_REF)' envsubst '$$IMAGE_REF' < $(TEMPLATE) > $(PUBLISH_STEP_DIR)/step.yaml
+	$(call render-step-template,$(PUBLISH_STEP_DIR)/step.yaml)
 	@if [ -d "$(SRC_DIR)" ] && [ -n "$$(ls -A $(SRC_DIR) 2>/dev/null)" ]; then \
 		rm -rf "$(PUBLISH_STEP_DIR)/$(SRC_DIR)"; \
 		cp -R "$(SRC_DIR)" "$(PUBLISH_STEP_DIR)/$(SRC_DIR)"; \
@@ -340,10 +354,3 @@ test: space image
 
 clean:
 	rm -rf $(SPACE_DIR)
-
-# ---- Tooling check ---------------------------------------------------------
-
-check-tools:
-	@command -v envsubst >/dev/null 2>&1 || { \
-		echo "ERROR: 'envsubst' not found. Install it (macOS: brew install gettext; Debian/Ubuntu: apt-get install gettext-base)."; \
-		exit 1; }

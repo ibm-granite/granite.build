@@ -136,26 +136,28 @@ Example: `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
 
 ## Rendering: how the image reference is inserted
 
-`make space` renders the template with `envsubst` restricted to a single variable,
-`$IMAGE_REF`:
+`make space` (and `make publish`) render the template by substituting **only** the
+literal `${IMAGE_REF}` token, with a single `sed` replacement — no `envsubst`/gettext
+dependency, just the POSIX `sed` every system already has:
 
 ```sh
-IMAGE_REF='<full image ref>' envsubst '$IMAGE_REF' < step-template.yaml > $(SPACE_DIR)/steps/<step-name>/step.yaml
+ref=$(printf '%s' '<full image ref>' | sed 's/[#&\]/\\&/g')   # escape sed's replacement metachars
+sed "s#\${IMAGE_REF}#$ref#g" step-template.yaml > $(SPACE_DIR)/steps/<step-name>/step.yaml
 ```
 
-Because the allowlist names only `IMAGE_REF`, everything else passes through
+Because only the literal `${IMAGE_REF}` is replaced, everything else passes through
 untouched — importantly, the **runtime Jinja** `{{ ... }}` (resolved later by the
 build, e.g. `{{ config.eval_config.model_path }}`) and shell expansions like
-`${GB_BUILD_WORKDIR}` / `$(hostname)` inside `run:`/`setup:` blocks.
+`${GB_BUILD_WORKDIR}` / `$(hostname)` inside `run:`/`setup:` blocks. (The image ref
+is escaped first so a value containing `#`, `&`, or `\` can't corrupt the
+substitution.) This is factored into the `render-step-template` helper in
+[`common.mk`](common.mk), shared by both targets.
 
 * Image steps put `image_id: "docker:${IMAGE_REF}"` in the template; `${IMAGE_REF}`
   becomes the published image reference (`$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`)
   at render time.
 * Public-image steps carry no `${IMAGE_REF}` token — they select their image via
   runtime Jinja from `config.*`, so rendering is effectively a copy plus bundling.
-
-> Requires `envsubst` (from gettext). macOS: `brew install gettext`; Debian/Ubuntu:
-> `apt-get install gettext-base`. `make check-tools` verifies it.
 
 ## Referencing a generated step from a build.yaml
 
