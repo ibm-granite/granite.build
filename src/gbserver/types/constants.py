@@ -416,6 +416,19 @@ PROJECT_FILES_PEEK_MAX_LINES = BUILD_FILES_PEEK_MAX_LINES
 PROJECT_FILES_PEEK_MAX_BYTES = BUILD_FILES_PEEK_MAX_BYTES
 PROJECT_FILES_STAT_BATCH_MAX = BUILD_FILES_STAT_BATCH_MAX
 
+# Max group members resolved per `getent passwd` round-trip when authorizing a
+# project-folder request. Members are looked up in chunks of this size so a
+# large proj_{folder} group can't build a command line that trips ARG_MAX / the
+# shell's arg limit on the login node (which would fail authz for a legitimate
+# member, surfacing as an undiagnosable uniform 404). 256 keeps each command
+# comfortably short while still batching the common case into one call.
+ENV_VAR_GBSERVER_PROJECT_FILES_GETENT_BATCH_MAX = (
+    ENV_VAR_PREFIX + "_PROJECT_FILES_GETENT_BATCH_MAX"
+)
+PROJECT_FILES_GETENT_BATCH_MAX = int(
+    os.getenv(ENV_VAR_GBSERVER_PROJECT_FILES_GETENT_BATCH_MAX, "256")
+)
+
 # Fixed GPFS base under which project folders live: project root =
 # PROJECTS_GPFS_BASE/{folder}. Not caller-supplied.
 PROJECTS_GPFS_BASE = "/proj"

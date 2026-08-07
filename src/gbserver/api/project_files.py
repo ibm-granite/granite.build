@@ -40,8 +40,10 @@ this exact order and touches NO folder data before authorization:
 
 Steps 2 and 4 raise the *same* 404 body, so a non-member cannot distinguish
 "no such folder" from "you lack access"; a non-member never reaches step 5.
-The tunnel opens for authorized and unauthorized requests alike and only ever
-touches the fixed ``/proj`` base, so open-latency doesn't leak existence.
+The tunnel opens for authorized and unauthorized requests alike; on open it
+touches only the service workspace (``open_lsf_tunnel`` canonicalizes
+``workspace_remote_dir``), never ``/proj/{folder}``, so open-latency reveals
+nothing about the requested folder.
 """
 
 from pathlib import PurePosixPath

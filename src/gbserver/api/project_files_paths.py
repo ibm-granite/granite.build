@@ -55,7 +55,10 @@ from gbserver.api.build_files_paths import (  # noqa: F401
     resolve_and_check_real_path,
     validate_subpath,
 )
-from gbserver.types.constants import PROJECTS_GPFS_BASE
+from gbserver.types.constants import (
+    PROJECT_FILES_GETENT_BATCH_MAX,
+    PROJECTS_GPFS_BASE,
+)
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -156,11 +159,15 @@ def parse_passwd_email(getent_passwd_line: str) -> Optional[str]:
 async def _authorized_emails_for_group(tunnel, folder: str) -> Set[str]:
     """Return the lowercased set of emails authorized for ``proj_{folder}``.
 
-    Runs exactly two ``getent`` round-trips over the service-identity tunnel:
-    ``getent group`` to enumerate members, then a single batched
-    ``getent passwd m1 m2 ... mN`` to resolve their emails. Returns an empty
-    set if the group is missing/empty or nothing resolves — the caller turns
-    that into ``ProjectAccessDenied``.
+    Runs one ``getent group`` round-trip over the service-identity tunnel to
+    enumerate members, then resolves their emails with ``getent passwd`` in
+    chunks of ``PROJECT_FILES_GETENT_BATCH_MAX`` (usually a single call). Returns
+    an empty set if the group is missing/empty or nothing resolves — the caller
+    turns that into ``ProjectAccessDenied``.
+
+    Chunking bounds each ``getent passwd`` command line so a large
+    ``proj_{folder}`` group can't overflow ARG_MAX / the login shell's arg
+    limit and fail authz for a legitimate member.
 
     Kept as one internal function so a future TTL cache, cron-refreshed map,
     or mapping-file fallback is a local change behind a stable signature.
@@ -176,20 +183,19 @@ async def _authorized_emails_for_group(tunnel, folder: str) -> Set[str]:
     if not members:
         return set()
 
-    quoted = " ".join(shlex.quote(m) for m in members)
-    rc, stdout, _stderr = await tunnel.run_remote(
-        f"getent passwd {quoted}", raise_on_error=False
-    )
-    # rc=2 means "one or more keys not found" — partial output is still
-    # usable; only bail if there is nothing to parse at all.
-    if not (stdout or "").strip():
-        return set()
-
     emails: Set[str] = set()
-    for line in stdout.splitlines():
-        email = parse_passwd_email(line)
-        if email is not None:
-            emails.add(email.lower())
+    for start in range(0, len(members), PROJECT_FILES_GETENT_BATCH_MAX):
+        chunk = members[start : start + PROJECT_FILES_GETENT_BATCH_MAX]
+        quoted = " ".join(shlex.quote(m) for m in chunk)
+        # rc=2 means "one or more keys not found" — partial output is still
+        # usable; we ignore rc and parse whatever came back for each chunk.
+        _rc, stdout, _stderr = await tunnel.run_remote(
+            f"getent passwd {quoted}", raise_on_error=False
+        )
+        for line in (stdout or "").splitlines():
+            email = parse_passwd_email(line)
+            if email is not None:
+                emails.add(email.lower())
     return emails
 
 

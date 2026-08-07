@@ -273,9 +273,7 @@ class TestAuthorization:
         t, env, sp = _patch_tunnel(tunnel)
         with t, env, sp:
             _client().get("/api/v1/projects/demo/files")
-        assert any(
-            "getent group" in c and "proj_demo" in c for c in tunnel.commands
-        )
+        assert any("getent group" in c and "proj_demo" in c for c in tunnel.commands)
 
     def test_non_member_gets_404(self):
         # Requester email not present in the resolved passwd emails.
@@ -349,10 +347,55 @@ class TestAuthorization:
         tunnel = _RecordingTunnel()
         t, env, sp = _patch_tunnel(tunnel)
         with t, env, sp:
-            r = _client(email=MEMBER_EMAIL.lower()).get(
-                "/api/v1/projects/demo/files"
-            )
+            r = _client(email=MEMBER_EMAIL.lower()).get("/api/v1/projects/demo/files")
         assert r.status_code == 200, r.text
+
+
+class TestGetentBatching:
+    """A group larger than the getent-passwd batch cap is resolved in chunks,
+    and emails from every chunk are unioned — a member who only resolves in a
+    later chunk is still authorized (guards against ARG_MAX overflow / partial
+    lookups)."""
+
+    def test_member_in_later_chunk_is_authorized(self):
+        from gbserver.api import project_files_paths as ppaths
+
+        # Cap batches at 2; build a 5-member group whose target sits in the
+        # third chunk. Each getent-passwd chunk returns only its own members'
+        # passwd lines, so authz only succeeds if every chunk is queried.
+        target_email = "eve@example.com"
+        members = ["u1", "u2", "u3", "u4", "eve"]
+        group_line = f"proj_demo:*:2001:{','.join(members)}\n"
+        passwd_by_user = {
+            "u1": "u1:*:1:2001:u1@example.com;N;U1:/u/u1:/bin/bash",
+            "u2": "u2:*:2:2001:u2@example.com;N;U2:/u/u2:/bin/bash",
+            "u3": "u3:*:3:2001:u3@example.com;N;U3:/u/u3:/bin/bash",
+            "u4": "u4:*:4:2001:u4@example.com;N;U4:/u/u4:/bin/bash",
+            "eve": f"eve:*:5:2001:{target_email};N;Eve:/u/eve:/bin/bash",
+        }
+        passwd_calls: list[str] = []
+
+        async def run_remote(cmd, raise_on_error=True):
+            if cmd.startswith("getent group"):
+                return (0, group_line, "")
+            if cmd.startswith("getent passwd"):
+                passwd_calls.append(cmd)
+                # Return passwd lines only for the users named in this chunk.
+                lines = [v for u, v in passwd_by_user.items() if f" {u}" in f" {cmd}"]
+                return (0, "\n".join(lines) + "\n" if lines else "", "")
+            return (0, "", "")
+
+        tunnel = SimpleNamespace(run_remote=AsyncMock(side_effect=run_remote))
+
+        with patch.object(ppaths, "PROJECT_FILES_GETENT_BATCH_MAX", 2):
+            import asyncio
+
+            emails = asyncio.run(ppaths._authorized_emails_for_group(tunnel, "demo"))
+
+        # 5 members / batch of 2 → 3 passwd round-trips, all emails unioned.
+        assert len(passwd_calls) == 3
+        assert target_email in emails
+        assert "u1@example.com" in emails
 
 
 class TestFolderNameValidation:
@@ -403,9 +446,7 @@ class TestListing:
         tunnel = _RecordingTunnel(find_stdout="notes.txt\tf\t10\t1700000000.5\n")
         t, env, sp = _patch_tunnel(tunnel)
         with t, env, sp:
-            r = _client().get(
-                "/api/v1/projects/demo/files", params={"stat": "true"}
-            )
+            r = _client().get("/api/v1/projects/demo/files", params={"stat": "true"})
         assert r.status_code == 200, r.text
         body = r.json()
         assert body == [
