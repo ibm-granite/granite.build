@@ -13,11 +13,12 @@ shared Makefile conventions — see the framework overview:
 ## Referencing the step
 
 `byoc` is a generated bundle referenced by an **absolute `file://` URI** to the
-`step/` directory produced by `make step`:
+`byoc/` directory produced by `make step` (the bundle dir is named after the
+step; see `STEP_DIR` in the [framework overview](../../README.md)):
 
 ```yaml
 steps:
-  - step_uri: file:///abs/path/to/steps/byoc/skypilot/step
+  - step_uri: file:///abs/path/to/steps/byoc/skypilot/byoc
 ```
 
 ## Config contract (`byoc_config`)
@@ -79,7 +80,7 @@ only `make step` (render + bundle `src/`), `make clean`, and `make help` do
 anything here. For the full target list and variables, see the shared
 [Makefile target conventions](../../README.md#makefile-target-conventions).
 
-Then reference `step/` by absolute `file://` URI (see above).
+Then reference the generated `byoc/` bundle by absolute `file://` URI (see above).
 
 ## Example build.yaml
 
@@ -94,7 +95,7 @@ granite.build:
         result:
           uri: lh://prod/myspace/models/shared/byoc-out-{{ run_metadata.targetsteprun_id | short_hash }}/1
       steps:
-        - step_uri: file:///abs/path/to/steps/byoc/skypilot/step
+        - step_uri: file:///abs/path/to/steps/byoc/skypilot/byoc
           config:
             compute_config: { num_nodes: 1, num_gpus_per_node: 1 }
             byoc_config:

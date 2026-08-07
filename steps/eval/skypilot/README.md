@@ -41,11 +41,12 @@ output location is fixed and known ahead of time.
 ## Referencing the step
 
 `eval` is a generated bundle referenced by an **absolute `file://` URI** to the
-`step/` directory produced by `make step`:
+`eval/` directory produced by `make step` (the bundle dir is named after the
+step; see `STEP_DIR` in the [framework overview](../../README.md)):
 
 ```yaml
 steps:
-  - step_uri: file:///abs/path/to/steps/eval/skypilot/step
+  - step_uri: file:///abs/path/to/steps/eval/skypilot/eval
 ```
 
 ## Config contract (`eval_config`)
@@ -116,7 +117,7 @@ granite.build:
         results:
           uri: lh://prod/myspace/datasets/shared/eval-{{ run_metadata.targetsteprun_id | short_hash }}/1
       steps:
-        - step_uri: file:///abs/path/to/steps/eval/skypilot/step
+        - step_uri: file:///abs/path/to/steps/eval/skypilot/eval
           config:
             compute_config: { num_nodes: 1, num_gpus_per_node: 1 }
             eval_config:

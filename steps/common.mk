@@ -31,9 +31,9 @@
 #   IMAGE_NAME  image repository name   (default: gb-step-$(STEP_NAME))
 #   IMAGE_TAG   image tag               (default: git short SHA, else "latest")
 #
-# The rendered step/ directory is the deployable bundle; reference it from a
-# build.yaml by an absolute file:// URI, e.g.
-#   step_uri: file:///abs/path/steps/byoc/skypilot/step
+# The rendered $(STEP_DIR)/ directory (named after the step by default) is the
+# deployable bundle; reference it from a build.yaml by an absolute file:// URI, e.g.
+#   step_uri: file:///abs/path/steps/byoc/skypilot/byoc
 
 # ---- Required / defaulted inputs -------------------------------------------
 
@@ -87,7 +87,13 @@ else
 IMAGE_REF :=
 endif
 
-STEP_DIR = step
+# Name of the generated bundle directory, created as ./$(STEP_DIR) and referenced
+# from a build.yaml by an absolute file:// URI. Defaults to the step name implied
+# by the layout steps/<step>/<env>/ — i.e. the name of the parent of this env
+# directory (the parent-of-parent of the generated bundle). A step's Makefile may
+# override it (e.g. STEP_DIR := my-bundle) before the include, or on the command
+# line. $(CURDIR) is the env dir make runs in; its parent's basename is the step.
+STEP_DIR ?= $(notdir $(patsubst %/,%,$(dir $(CURDIR))))
 SRC_DIR  = src
 TEMPLATE = step-template.yaml
 

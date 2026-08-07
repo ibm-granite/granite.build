@@ -24,8 +24,10 @@ Each step/environment directory (e.g. `steps/byoc/skypilot`) contains:
 * **`README.md`** — documents that step's function, its `config` contract, and its
   inputs/outputs (see [`byoc/skypilot`](byoc/skypilot/README.md) and
   [`eval/skypilot`](eval/skypilot/README.md) for the two step-type examples).
-* **`step/`** — *generated* by `make step`; the deployable bundle (a `step.yaml`
-  and any bundled `src/`). This directory is git-ignored.
+* **`<step-name>/`** (e.g. `byoc/`, `eval/`) — *generated* by `make step`; the
+  deployable bundle (a `step.yaml` and any bundled `src/`). Its name defaults to
+  the step name (the parent of this env directory) and is overridable via
+  `STEP_DIR`. This directory is git-ignored.
 
 ## Two step types
 
@@ -49,11 +51,11 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   SkyPilot provisions). Image steps only; no-op otherwise.
 * **`publish-image`** — push the image to `$(REGISTRY)` (no-op for non-image
   steps). Requires authentication — see [Registry credentials](#registry-credentials).
-* **`step`** — render `step-template.yaml` → `step/step.yaml` and bundle `src/`.
-  Cheap and offline; it does *not* rebuild/push.
+* **`step`** — render `step-template.yaml` → `$(STEP_DIR)/step.yaml` and bundle
+  `src/`. Cheap and offline; it does *not* rebuild/push.
 * **`all`** — the full pipeline: `image` + `publish-image` + `step` for image steps,
   or just `step` for public-image steps.
-* **`clean`** — remove the generated `step/`.
+* **`clean`** — remove the generated `$(STEP_DIR)/`.
 * **`help`** — display this README (rendered with `glow`/`mdcat`/`bat` if one is
   installed, otherwise printed plain).
 
@@ -68,6 +70,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `IMAGE_NAME`      | `gb-step-$(STEP_NAME)`                     | image repository name            |
 | `IMAGE_TAG`       | git short SHA, else `latest`              | image tag                        |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
+| `STEP_DIR`        | step name (parent of the env dir)         | generated bundle directory name  |
 
 Example: `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
 
@@ -96,7 +99,7 @@ Example: `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
 `$IMAGE_REF`:
 
 ```sh
-IMAGE_REF='<full image ref>' envsubst '$IMAGE_REF' < step-template.yaml > step/step.yaml
+IMAGE_REF='<full image ref>' envsubst '$IMAGE_REF' < step-template.yaml > $(STEP_DIR)/step.yaml
 ```
 
 Because the allowlist names only `IMAGE_REF`, everything else passes through
@@ -115,11 +118,12 @@ build, e.g. `{{ config.eval_config.model_path }}`) and shell expansions like
 
 ## Referencing a generated step from a build.yaml
 
-After `make step`, reference the bundle by an **absolute** `file://` URI:
+After `make step`, reference the bundle by an **absolute** `file://` URI. The
+bundle directory is named after the step (`STEP_DIR`), so byoc's is `byoc/`:
 
 ```yaml
 steps:
-  - step_uri: file:///abs/path/to/steps/byoc/skypilot/step
+  - step_uri: file:///abs/path/to/steps/byoc/skypilot/byoc
     config:
       byoc_config:
         image: "python:3.12-slim"
