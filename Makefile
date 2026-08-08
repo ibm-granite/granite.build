@@ -258,7 +258,7 @@ extended-tests:
 
 .PHONY: ibm-quick-tests-setup
 ibm-quick-tests-setup:
-	@echo No setup needed for quick ibm tests.
+	$(MAKE) venv
 
 # Mock most of HF since the action does not have the HF_TOKEN secret on PRs
 .PHONY: ibm-quick-tests
@@ -272,7 +272,7 @@ ibm-quick-tests: check_ibm_sps_api_key
 
 .PHONY: ibm-extended-tests-setup
 ibm-extended-tests-setup:
-	@echo No setup needed for extended ibm tests.
+	$(MAKE) venv
 
 .PHONY: ibm-extended-tests
 ibm-extended-tests: check_ibm_sps_api_key
