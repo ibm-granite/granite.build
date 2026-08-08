@@ -19,6 +19,7 @@ LSF based environments.
 """
 
 import asyncio
+import contextlib
 import os
 import random
 import re
@@ -1024,6 +1025,11 @@ class Lsf(Environment):
             )
         finally:
             retry_waiter.cancel()
+            # Await the cancellation so the task fully unwinds before we return;
+            # otherwise a still-pending waiter can surface a noisy "Task was
+            # destroyed but it is pending" warning under some loop timings.
+            with contextlib.suppress(asyncio.CancelledError):
+                await retry_waiter
         if not done:
             logger.error(
                 "RetryHandler did not adjudicate the emitted error within %ss; "
