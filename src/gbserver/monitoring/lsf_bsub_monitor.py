@@ -201,6 +201,11 @@ class LSFBsubMonitor(MonitorBase):
         # The record we broke the poll loop on, so the failure message can name
         # the native LSF state and exit reason.
         self._terminal_record: Optional[BJobRecord] = None
+        # True iff this run handed an error event (transient or terminal) to the
+        # RetryHandler for adjudication. monitor_bsub_monitor reads this to know
+        # it must wait for that out-of-band decision before deciding success,
+        # rather than racing it (which would orphan a relaunched job).
+        self.emitted_error_event = False
 
     def _classify_state(self: Self, stat: str) -> LsfStateClass:
         """Classify a native LSF STAT. Never raises.
@@ -638,6 +643,7 @@ class LSFBsubMonitor(MonitorBase):
                             ),
                         )
                     )
+                    self.emitted_error_event = True
                 return
 
             # Publish a terminal failure event so RetryHandler can detect it
@@ -662,4 +668,5 @@ class LSFBsubMonitor(MonitorBase):
                         ),
                     )
                 )
+                self.emitted_error_event = True
             return

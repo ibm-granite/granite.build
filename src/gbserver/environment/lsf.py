@@ -951,14 +951,65 @@ class Lsf(Environment):
                         # triggered retry_workload which set this event. Loop for the
                         # next iteration with the same launch_id.
                         continue
+                    if await self._retry_pending_after_monitor(
+                        lsf_bsub_monitor=lsf_bsub_monitor,
+                        retry_complete_event=retry_complete_event,
+                        handler_task=_handler_task,
+                    ):
+                        # A relaunch the RetryHandler owns landed while we waited;
+                        # loop to monitor the freshly launched job.
+                        continue
+                    if lsf_bsub_monitor.emitted_error_event and _handler_task is not None:
+                        # The RetryHandler finished without relaunching (gave up /
+                        # retries exhausted). Stop looping; _with_retry_handler's
+                        # __aexit__ awaits the handler task and re-raises its
+                        # WorkloadFailedException, failing the step.
+                        return
                     logger.info(
                         "LSF bsub monitoring finished for job_id %s launch_id %s",
                         job_id,
                         current_launch_id,
                     )
-                    return  # Success
+                    return  # clean terminal DONE
             finally:
                 self._lsf_retry_complete_events.pop(launch_id, None)
+
+    async def _retry_pending_after_monitor(
+        self: Self,
+        lsf_bsub_monitor: LSFBsubMonitor,
+        retry_complete_event: asyncio.Event,
+        handler_task: Optional[asyncio.Task],
+    ) -> bool:
+        """Wait for the RetryHandler to adjudicate an error the monitor emitted.
+
+        On a transient/terminal error, ``LSFBsubMonitor`` only *enqueues* an event
+        and returns; the ``RetryHandler`` consumes it on its own task and, seconds
+        later (after ``bkill`` + ``bsub``), sets ``retry_complete_event``. Reading
+        that event synchronously right after ``gather`` races the handler and can
+        return SUCCESS while a relaunch is still in flight — orphaning the new job
+        and dropping its ARTIFACT_PUSHED marker. This blocks on the outcome instead.
+
+        :param lsf_bsub_monitor: The monitor that just finished this iteration.
+        :param retry_complete_event: Event the handler sets once it has relaunched.
+        :param handler_task: The RetryHandler task, or ``None`` when retries are
+            disabled (no adjudication to wait for).
+        :returns: ``True`` if a relaunch completed (caller should loop to monitor
+            the new job); ``False`` if there is nothing to wait for or the handler
+            finished without relaunching.
+        """
+        if not lsf_bsub_monitor.emitted_error_event or handler_task is None:
+            return False
+        # Wait for whichever comes first: the relaunch completing (retry_complete_event)
+        # or the handler task finishing (it gave up and will raise on await).
+        retry_waiter = asyncio.create_task(retry_complete_event.wait())
+        try:
+            await asyncio.wait(
+                {retry_waiter, handler_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            retry_waiter.cancel()
+        return retry_complete_event.is_set()
 
     def ssh_no_verification_flags(self: Self) -> List[str]:
         """Flags to disable SSH Host key verification."""
