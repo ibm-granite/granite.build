@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
@@ -542,6 +543,10 @@ class TestFeatureFlagSelection:
         yield
         reset_lineage_store()
 
+    @pytest.mark.skipif(
+        os.getenv("GBSERVER_LINEAGE_PROVIDER") == "none",
+        reason="WandB store is not selected when GBSERVER_LINEAGE_PROVIDER=none",
+    )
     def test_lineage_store_returns_wandb(self):
         import gbserver.lineage.jobstats as jobstats_mod
         from gbserver.lineage.wandb_jobstats import WandBLineageStore
