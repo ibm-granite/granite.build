@@ -327,9 +327,6 @@ check_hf_token:
 	    esac;								\
 	fi
 
-.PHONY: check_ibm_sp_env_var
-check_ibm_sp_env_var:
-
 # The main test implementation, called after VENVDIR has been established
 # Inputs are
 # 	GBTEST_MODE=[live,mock]
