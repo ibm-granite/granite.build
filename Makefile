@@ -285,7 +285,7 @@ ibm-extended-tests: check_ibm_sps_api_key
 # This key provides access secrets that will be installed in the environment before running the IBM tests.
 .PHONY: check_ibm_sps_api_key
 check_ibm_sps_api_key:
-	@if [ -z "$(GBTEST_SPS_IBMCLOUD_API_KEY)" ]; then \
+	@if [ -z "$$GBTEST_SPS_IBMCLOUD_API_KEY" ]; then \
 	    echo The GBTEST_SPS_IBMCLOUD_API_KEY env var must be set to enable access to IBM-specific configuration to run the tests. ;	\
 	    echo See https://github.ibm.com/granite-dot-build/gb-ibmdev-docs/blob/main/docs/getting-started/dev-environment-setup.md for how to acquire a key.;\
 	    exit 1;	\
