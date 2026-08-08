@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gbserver.environment.lsf import Lsf
+from gbserver.types.errors import WorkloadFailedException
 
 
 def _make_lsf(use_ssh: bool = True) -> Lsf:
@@ -232,3 +233,30 @@ class TestRetryPendingAfterMonitor:
 
         assert result is False
         assert retry_complete_event.is_set() is False
+
+    @pytest.mark.asyncio
+    async def test_raises_when_adjudication_times_out(self: Self) -> None:
+        """Backstop: if neither a relaunch nor the handler task resolves within
+        the adjudication timeout, fail the step loudly instead of hanging.
+
+        This guards the pathological case where the handler neither retries nor
+        recognizes the emitted error as terminal.
+        """
+        lsf = _make_lsf(use_ssh=True)
+        retry_complete_event = asyncio.Event()
+        # Handler task that never finishes and never signals a relaunch.
+        handler_task = asyncio.create_task(asyncio.Event().wait())
+
+        with patch(
+            "gbserver.environment.lsf.GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT",
+            0.05,
+        ):
+            try:
+                with pytest.raises(WorkloadFailedException):
+                    await lsf._retry_pending_after_monitor(
+                        lsf_bsub_monitor=self._monitor(emitted_error_event=True),
+                        retry_complete_event=retry_complete_event,
+                        handler_task=handler_task,
+                    )
+            finally:
+                handler_task.cancel()

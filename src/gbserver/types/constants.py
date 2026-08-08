@@ -636,6 +636,19 @@ GBSERVER_LSF_TRANSIENT_ERROR_MAX_RETRIES = int(
 GBSERVER_LSF_TRANSIENT_ERROR_RETRY_DELAY = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_TRANSIENT_ERROR_RETRY_DELAY", "30"), base=10
 )
+# Backstop timeout (seconds) for Lsf._retry_pending_after_monitor's wait on the
+# RetryHandler to adjudicate an error the monitor emitted. The handler normally
+# relaunches or raises well within one retry (one backoff delay + bkill + bsub),
+# so this only bounds a pathological hang (a monitor error shape the handler
+# neither retries nor treats as terminal). Default is a generous multiple of the
+# backoff delay so a genuinely slow relaunch is never mistaken for a hang.
+GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT = int(
+    os.getenv(
+        ENV_VAR_PREFIX + "_LSF_RETRY_ADJUDICATION_TIMEOUT",
+        str(GBSERVER_LSF_TRANSIENT_ERROR_RETRY_DELAY * 10 + 60),
+    ),
+    base=10,
+)
 # Used by the build framework monitoring to allow the consumption of all the events
 GBSERVER_MONITORING_GRACE_PERIOD = int(
     os.getenv(ENV_VAR_PREFIX + "_MONITORING_GRACE_PERIOD", "30"), base=10

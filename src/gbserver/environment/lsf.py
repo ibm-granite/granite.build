@@ -58,6 +58,7 @@ from gbserver.types.buildevent import (
 from gbserver.types.constants import (
     DEFAULT_ROOT_WORKSPACE_DIR,
     ENABLE_SSH_HOST_KEY_VERIFICATION,
+    GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
     LSF_USE_ASPERA,
     STEP_FILE_NAME,
 )
@@ -67,6 +68,7 @@ from gbserver.types.environmentconfig import (
     StoreLoad,
     StorePush,
 )
+from gbserver.types.errors import WorkloadFailedException
 from gbserver.types.stepconfig import StepConfig
 from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.launch import (
@@ -992,6 +994,13 @@ class Lsf(Environment):
         return SUCCESS while a relaunch is still in flight — orphaning the new job
         and dropping its ARTIFACT_PUSHED marker. This blocks on the outcome instead.
 
+        The wait is bounded by ``GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT`` as a
+        backstop. The handler normally relaunches or raises well within one retry,
+        and it now treats a retriable-but-exhausted error as terminal (so it
+        always resolves). The timeout only guards a pathological case the handler
+        neither retries nor recognizes as terminal; on expiry we fail the step
+        loudly rather than hang forever or silently succeed.
+
         :param lsf_bsub_monitor: The monitor that just finished this iteration.
         :param retry_complete_event: Event the handler sets once it has relaunched.
         :param handler_task: The RetryHandler task, or ``None`` when retries are
@@ -999,6 +1008,8 @@ class Lsf(Environment):
         :returns: ``True`` if a relaunch completed (caller should loop to monitor
             the new job); ``False`` if there is nothing to wait for or the handler
             finished without relaunching.
+        :raises WorkloadFailedException: if neither a relaunch nor the handler task
+            resolves within the backstop timeout.
         """
         if not lsf_bsub_monitor.emitted_error_event or handler_task is None:
             return False
@@ -1006,12 +1017,24 @@ class Lsf(Environment):
         # or the handler task finishing (it gave up and will raise on await).
         retry_waiter = asyncio.create_task(retry_complete_event.wait())
         try:
-            await asyncio.wait(
+            done, _ = await asyncio.wait(
                 {retry_waiter, handler_task},
+                timeout=GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
                 return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
             retry_waiter.cancel()
+        if not done:
+            logger.error(
+                "RetryHandler did not adjudicate the emitted error within %ss; "
+                "failing the step instead of waiting indefinitely.",
+                GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
+            )
+            raise WorkloadFailedException(
+                "LSF retry adjudication timed out: the RetryHandler neither "
+                "relaunched the job nor terminated within "
+                f"{GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT}s."
+            )
         return retry_complete_event.is_set()
 
     def ssh_no_verification_flags(self: Self) -> List[str]:
