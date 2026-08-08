@@ -256,6 +256,42 @@ extended-tests:
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
 
+.PHONY: ibm-quick-tests-setup
+ibm-quick-tests-setup:
+	@echo No setup needed for quick ibm tests.
+
+# Mock most of HF since the action does not have the HF_TOKEN secret on PRs
+.PHONY: ibm-quick-tests
+ibm-quick-tests: check_ibm_sps_api_key
+	export GB_ENVIRONMENT=STANDALONE &&			\
+	$(MAKE) GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
+		GBTEST_MODE=mock				\
+		PYTEST_MARKERS="ibm and not extended" 	\
+		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
+		.test
+
+.PHONY: ibm-extended-tests-setup
+ibm-extended-tests-setup:
+	@echo No setup needed for extended ibm tests.
+
+.PHONY: ibm-extended-tests
+ibm-extended-tests: check_ibm_sps_api_key
+	export GB_ENVIRONMENT=STAGING &&			\
+	$(MAKE) GBTEST_MODE=live				\
+		PYTEST_MARKERS="ibm" 			\
+		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
+		.test
+
+# This key provides access secrets that will be installed in the environment before running the IBM tests.
+.PHONY: check_ibm_sps_api_key
+check_ibm_sps_api_key:
+	@if [ -z "$(GBTEST_SPS_IBMCLOUD_API_KEY)" ]; then \
+	    echo The GBTEST_SPS_IBMCLOUD_API_KEY env var must be set to enable access to IBM-specific configuration to run the tests. ;	\
+	    echo See https://github.ibm.com/granite-dot-build/gb-ibmdev-docs/blob/main/docs/getting-started/dev-environment-setup.md for how to acquire a key.;\
+	    exit 1;	\
+	fi;		\
+	echo The GBTEST_SPS_IBMCLOUD_API_KEY env var is present for IBM tests. 
+
 .PHONY: test-pr
 test-pr:
 	# NOTE: #92 switched this target to GBTEST_MODE=mock, but the full PR suite is
@@ -290,6 +326,9 @@ check_hf_token:
 	            ;;								\
 	    esac;								\
 	fi
+
+.PHONY: check_ibm_sp_env_var
+check_ibm_sp_env_var:
 
 # The main test implementation, called after VENVDIR has been established
 # Inputs are
