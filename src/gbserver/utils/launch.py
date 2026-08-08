@@ -29,7 +29,11 @@ from tenacity import (
     wait_random_exponential,
 )
 
-from gbserver.types.errors import ErrConnResetByPeer, ErrNetworkUnreachable
+from gbserver.types.errors import (
+    ErrConnectionClosed,
+    ErrConnResetByPeer,
+    ErrNetworkUnreachable,
+)
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import cmd_safe_join
 
@@ -108,6 +112,8 @@ async def launch_command_and_raise_errors(
                 raise ErrConnResetByPeer(err_msg)
             if ErrNetworkUnreachable.matches_error_str(stderr):
                 raise ErrNetworkUnreachable(err_msg)
+            if ErrConnectionClosed.matches_error_str(stderr):
+                raise ErrConnectionClosed(err_msg)
             raise ValueError(err_msg)
         logger.warning("%s", err_msg)
     return process, stdout, stderr
@@ -116,7 +122,9 @@ async def launch_command_and_raise_errors(
 @retry(
     stop=stop_after_attempt(10),
     wait=wait_random_exponential(multiplier=1, max=30),
-    retry=retry_if_exception_type((ErrConnResetByPeer, ErrNetworkUnreachable)),
+    retry=retry_if_exception_type(
+        (ErrConnResetByPeer, ErrNetworkUnreachable, ErrConnectionClosed)
+    ),
 )
 async def launch_command_and_retry_or_raise_errors(
     command_list: List[str],

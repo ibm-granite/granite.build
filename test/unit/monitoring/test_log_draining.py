@@ -816,3 +816,86 @@ async def test_ssh_file_stream_phase2_clean_stderr_eof():
             collected_lines.append(line)
 
     assert collected_lines == ["line 1", "line 2", "line 3"], f"Got: {collected_lines}"
+
+
+@pytest.mark.asyncio
+async def test_ssh_file_stream_phase2_missing_file_is_benign():
+    """
+    Test 10: SSHFileStream Phase 2 tolerates a vanished job.log.
+
+    A retry relaunch recreates the job output directory, so a previous drain can
+    race against a deleted/recreated log. The remote tail/cat then exits non-zero
+    with "No such file or directory". This must NOT raise ConnectionError — the
+    drain should finish cleanly with whatever Phase 1 already captured.
+    """
+    stop_event = asyncio.Event()
+    stream = SSHFileStream(
+        host="test-host",
+        user="testuser",
+        path="/remote/job.log",
+        ssh_opts=["-o", "StrictHostKeyChecking=no"],
+    )
+
+    # Mock Phase 1 subprocess
+    mock_proc_phase1 = AsyncMock()
+    mock_proc_phase1.returncode = None
+    mock_proc_phase1.stdout = AsyncMock()
+    mock_proc_phase1.stderr = AsyncMock()
+
+    phase1_lines = [b"line 1\n"]
+
+    async def mock_readline_phase1():
+        if phase1_lines:
+            return phase1_lines.pop(0)
+        stop_event.set()
+        return b""
+
+    mock_proc_phase1.stdout.readline = mock_readline_phase1
+    mock_proc_phase1.stderr.__aiter__ = lambda self: EmptyAsyncIterator()
+
+    # Mock Phase 2 subprocess — remote tail fails because the log was recreated.
+    mock_proc_phase2 = AsyncMock()
+    mock_proc_phase2.returncode = 1  # tail/cat "No such file or directory"
+    mock_proc_phase2.pid = 12345
+    mock_proc_phase2.stdout = AsyncMock()
+    mock_proc_phase2.stderr = AsyncMock()
+
+    # stdout: nothing to read (file gone) — return EOF after a brief delay so the
+    # benign stderr line is collected first.
+    async def mock_stdout_readline():
+        await asyncio.sleep(0.1)
+        return b""
+
+    mock_proc_phase2.stdout.readline = mock_stdout_readline
+
+    # stderr: the benign missing-file message, then EOF.
+    stderr_returned = [False]
+
+    async def mock_stderr_readline():
+        if not stderr_returned[0]:
+            stderr_returned[0] = True
+            return (
+                b"tail: cannot open '/remote/job.log' for reading: "
+                b"No such file or directory\n"
+            )
+        return b""
+
+    mock_proc_phase2.stderr.readline = mock_stderr_readline
+
+    call_counter = [0]
+
+    async def mock_subprocess_exec(*args, **kwargs):
+        call_counter[0] += 1
+        if call_counter[0] == 1:
+            return mock_proc_phase1
+        else:
+            return mock_proc_phase2
+
+    collected_lines = []
+
+    with patch("asyncio.create_subprocess_exec", side_effect=mock_subprocess_exec):
+        # No ConnectionError despite non-zero exit + non-empty (benign) stderr.
+        async for line in stream.stream_lines(stop_event=stop_event):
+            collected_lines.append(line)
+
+    assert collected_lines == ["line 1"], f"Got: {collected_lines}"

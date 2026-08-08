@@ -35,6 +35,26 @@ SSH_CONNECT_TIMEOUT = 10
 SSH_SERVER_ALIVE_INTERVAL = 5
 SSH_SERVER_ALIVE_COUNT_MAX = 3
 
+# Benign markers that may appear on drain stderr but do NOT indicate a real
+# connection failure. A retry relaunch recreates the job output directory, so a
+# previous iteration's drain can race against a vanished job.log: the remote
+# tail/cat then exits non-zero with "No such file or directory". That is
+# expected and must not be surfaced as a fatal ConnectionError.
+_BENIGN_DRAIN_STDERR = ("No such file or directory",)
+
+
+def _is_benign_drain_stderr(line: str) -> bool:
+    """Return True if a drain-stderr line is expected and non-fatal.
+
+    Args:
+        line: A single stderr line captured during the phase-two drain.
+
+    Returns:
+        bool: True if the line is a benign/expected message (e.g. the job.log
+            was deleted/recreated by a retry) rather than a real SSH failure.
+    """
+    return any(marker in line for marker in _BENIGN_DRAIN_STDERR)
+
 
 class SSHFileStream(LogStreamSource, RetryMixin):
     """Stream lines from a remote file via SSH."""
@@ -68,6 +88,13 @@ class SSHFileStream(LogStreamSource, RetryMixin):
             f"ServerAliveInterval={SSH_SERVER_ALIVE_INTERVAL}",
             "-o",
             f"ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}",
+            # Suppress benign SSH-client warnings (e.g. "Warning: Permanently
+            # added ... to the list of known hosts.") that otherwise land on
+            # stderr and get misclassified as a drain failure. Genuine
+            # ERROR/FATAL messages (connection refused, auth failure) are still
+            # emitted at this level.
+            "-o",
+            "LogLevel=ERROR",
             *self.ssh_opts,
             target,
             remote_cmd,
@@ -286,14 +313,30 @@ class SSHFileStream(LogStreamSource, RetryMixin):
                     self.path,
                 )
 
-            # Now check: if the process exited with an error AND stderr had output,
-            # that's a real SSH/remote failure — raise with the actual error message.
-            if final_proc.returncode and final_proc.returncode != 0 and stderr_lines:
-                stderr_output = "; ".join(stderr_lines)
-                raise ConnectionError(
-                    f"SSH drain failed for {self.path} (exit code {final_proc.returncode}): "
-                    f"{stderr_output}"
-                )
+            # If the drain process exited non-zero, decide whether it's a real
+            # failure. Benign lines — a job.log that a retry relaunch deleted or
+            # recreated, i.e. "No such file or directory" — are expected and must
+            # not raise; otherwise a transient relaunch race fails the build.
+            # Only a genuine SSH/remote error (connection refused, auth, etc.)
+            # should raise.
+            if final_proc.returncode:
+                genuine_errors = [
+                    line for line in stderr_lines if not _is_benign_drain_stderr(line)
+                ]
+                if genuine_errors:
+                    stderr_output = "; ".join(genuine_errors)
+                    raise ConnectionError(
+                        f"SSH drain failed for {self.path} (exit code {final_proc.returncode}): "
+                        f"{stderr_output}"
+                    )
+                if stderr_lines:
+                    logger.warning(
+                        "[SSHFileStream] Drain of %s exited %s with only benign "
+                        "stderr (log likely removed/recreated by a retry); "
+                        "finishing without error.",
+                        self.path,
+                        final_proc.returncode,
+                    )
 
             logger.info(
                 "[SSHFileStream] Finished draining %s: total_lines=%d, "
