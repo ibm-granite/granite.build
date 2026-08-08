@@ -403,7 +403,8 @@ class RetryHandler:
                         self.launch_id,
                         (
                             "Retries exhausted on retriable failure"
-                            if retries_exhausted_on_retriable and not is_terminal_failure
+                            if retries_exhausted_on_retriable
+                            and not is_terminal_failure
                             else "Terminal failure"
                         ),
                     )

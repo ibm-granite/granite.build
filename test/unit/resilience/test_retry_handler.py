@@ -638,8 +638,12 @@ class TestExhaustedRetriableIsTerminal:
     def test_is_retriable_event_reflects_strategy(self: Self) -> None:
         """_is_retriable_event ignores retry_count -- it only asks the strategies."""
         event = create_test_event("Cannot open your job file")
-        assert self._handler(0, AlwaysRetryStrategy())._is_retriable_event(event) is True
-        assert self._handler(0, NeverRetryStrategy())._is_retriable_event(event) is False
+        assert (
+            self._handler(0, AlwaysRetryStrategy())._is_retriable_event(event) is True
+        )
+        assert (
+            self._handler(0, NeverRetryStrategy())._is_retriable_event(event) is False
+        )
 
     @pytest.mark.asyncio
     async def test_retriable_but_exhausted_raises(self: Self) -> None:
