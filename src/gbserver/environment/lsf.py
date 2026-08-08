@@ -278,8 +278,15 @@ class Lsf(Environment):
                 cleanup_error,
             )
 
-        # Clear the stop event so the next monitor loop iteration starts fresh.
-        self._get_launch_stopped_event(launch_id).clear()
+        # NOTE: The stop event is intentionally left SET here. bkill above only
+        # returns once the kill request is accepted; LSF reflects the resulting
+        # EXIT state in `bjobs` several seconds later. If we cleared the event
+        # now, the still-running previous monitor iteration could observe that
+        # delayed bkill-induced EXIT with the event already cleared, defeating
+        # the clean-exit guard in LSFBsubMonitor.monitor() and misreporting the
+        # bkill as a genuine terminal failure. The event is cleared instead at
+        # the top of the next monitor_bsub_monitor loop iteration, once the
+        # previous monitors have fully wound down.
 
         try:
             task = self.launch_bsub(launch_id, **original_kwargs)
@@ -875,6 +882,13 @@ class Lsf(Environment):
                     stop_event = self._get_launch_stopped_event(
                         launch_id=current_launch_id
                     )
+                    # Reset the shared stop event for this fresh iteration. On a
+                    # retry, retry_workload leaves the event SET (so the previous
+                    # iteration's monitors treat the bkill-induced EXIT as a clean
+                    # stop); we clear it here, only after those monitors have fully
+                    # wound down, so the new monitors below start unstopped. On the
+                    # first iteration this is a harmless no-op.
+                    stop_event.clear()
                     job_id = self._launched_jobs[current_launch_id]
                     log_file_path = self.get_log_path(launch_id=current_launch_id)
 
