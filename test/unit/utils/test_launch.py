@@ -87,8 +87,9 @@ async def test_retry_recovers_after_connection_closed():
     ok = _mock_process(returncode=0, stderr="")
 
     # Skip tenacity's exponential backoff so the test runs instantly.
-    with patch("asyncio.create_subprocess_exec", side_effect=[fail, ok]) as exec_mock, patch(
-        "asyncio.sleep", new=AsyncMock()
+    with (
+        patch("asyncio.create_subprocess_exec", side_effect=[fail, ok]) as exec_mock,
+        patch("asyncio.sleep", new=AsyncMock()),
     ):
         process, _stdout, _stderr = await launch_command_and_retry_or_raise_errors(
             command_list=["scp", "-r", "src", "host:dest"],

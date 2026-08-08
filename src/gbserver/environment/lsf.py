@@ -959,7 +959,10 @@ class Lsf(Environment):
                         # A relaunch the RetryHandler owns landed while we waited;
                         # loop to monitor the freshly launched job.
                         continue
-                    if lsf_bsub_monitor.emitted_error_event and _handler_task is not None:
+                    if (
+                        lsf_bsub_monitor.emitted_error_event
+                        and _handler_task is not None
+                    ):
                         # The RetryHandler finished without relaunching (gave up /
                         # retries exhausted). Stop looping; _with_retry_handler's
                         # __aexit__ awaits the handler task and re-raises its

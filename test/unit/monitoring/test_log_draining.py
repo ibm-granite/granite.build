@@ -963,7 +963,14 @@ async def test_emitted_error_event_true_on_terminal_failure():
     """A non-transient EXIT failure emits a terminal failure event for the
     RetryHandler, so emitted_error_event is True."""
     monitor = await _run_bsub_monitor_over(
-        [{"JOBID": "12345", "STAT": "EXIT", "EXIT_CODE": "1", "EXIT_REASON": "TERM_OWNER"}],
+        [
+            {
+                "JOBID": "12345",
+                "STAT": "EXIT",
+                "EXIT_CODE": "1",
+                "EXIT_REASON": "TERM_OWNER",
+            }
+        ],
         transient_content=None,
     )
     assert monitor.emitted_error_event is True
