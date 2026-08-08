@@ -16,9 +16,9 @@ import socket
 import uuid
 
 import pytest
+from libgbtest.constants import extended_testing_only
 
 from gbserver.messaging.messaging_base import Address
-from libgbtest.constants import extended_testing_only
 
 pytestmark = [pytest.mark.ibm, pytest.mark.nats_server, extended_testing_only]
 
