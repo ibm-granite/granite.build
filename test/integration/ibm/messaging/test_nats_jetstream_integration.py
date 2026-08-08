@@ -1,21 +1,26 @@
 """Integration tests for NATSMessaging with JetStream.
 
-Requires a running nats-server with JetStream enabled:
+Requires a running nats-server with JetStream enabled on localhost:4222. The
+``make ibm-extended-tests-setup`` target starts one in a container via
+``make start-nats``; to run these by hand instead:
     nats-server -js
 
-These tests are skipped by default in CI. Run manually with:
-    pytest -m nats_server test/integration/messaging/test_nats_jetstream_integration.py
+These are part of the extended suite (they need real infra), so they only run
+under ``make ibm-extended-tests``. When no NATS server is reachable they skip
+rather than fail.
 """
 
 import asyncio
 import json
+import socket
 import uuid
 
 import pytest
 
 from gbserver.messaging.messaging_base import Address
+from libgbtest.constants import extended_testing_only
 
-pytestmark = [pytest.mark.ibm, pytest.mark.nats_server]
+pytestmark = [pytest.mark.ibm, pytest.mark.nats_server, extended_testing_only]
 
 
 def _unique_queue():
@@ -23,6 +28,33 @@ def _unique_queue():
     return f"inttest_{uuid.uuid4().hex[:8]}"
 
 
+def _nats_available(host: str = "localhost", port: int = 4222) -> bool:
+    """Check whether a NATS server is accepting TCP connections.
+
+    A lightweight socket probe is used instead of a full async NATS client so
+    the check is cheap enough to evaluate at collection time for the skip guard.
+
+    Args:
+        host: NATS server host to probe.
+        port: NATS server port to probe.
+
+    Returns:
+        bool: True if the port accepts a TCP connection, else False.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+skipif_no_nats = pytest.mark.skipif(
+    not _nats_available(),
+    reason="NATS server not available on localhost:4222 (run 'make start-nats')",
+)
+
+
+@skipif_no_nats
 @pytest.mark.asyncio
 class TestNATSJetStreamIntegration:
     """Integration tests against a real nats-server with JetStream."""

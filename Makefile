@@ -130,6 +130,36 @@ start-docker:
 		exit 1; \
 	fi
 
+# NATS (JetStream) test server used by the messaging integration tests.
+NATS_TEST_CONTAINER ?= gb-nats-test
+NATS_TEST_PORT ?= 4222
+
+# Start a containerised nats-server with JetStream for the messaging
+# integration tests. Idempotent (removes any prior container) and blocks until
+# the port accepts connections so the tests do not race the daemon coming up.
+.PHONY: start-nats
+start-nats: start-docker
+	@echo "Starting NATS (JetStream) test server '${NATS_TEST_CONTAINER}'..."
+	@${DOCKER} rm -f ${NATS_TEST_CONTAINER} >/dev/null 2>&1 || true
+	@${DOCKER} run -d --rm --name ${NATS_TEST_CONTAINER} \
+		-p ${NATS_TEST_PORT}:4222 nats:latest -js >/dev/null
+	@echo "Waiting for NATS on localhost:${NATS_TEST_PORT}..."
+	@for i in $$(seq 1 30); do \
+		if nc -z localhost ${NATS_TEST_PORT} 2>/dev/null; then \
+			echo "NATS is ready."; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "ERROR: NATS did not become ready on port ${NATS_TEST_PORT}." >&2; \
+	${DOCKER} logs ${NATS_TEST_CONTAINER} >&2 2>/dev/null || true; \
+	exit 1
+
+# Stop and remove the NATS test server started by start-nats.
+.PHONY: stop-nats
+stop-nats:
+	@${DOCKER} rm -f ${NATS_TEST_CONTAINER} >/dev/null 2>&1 || true
+
 .PHONY: check-git-status-clean
 check-git-status-clean:
 	@if [[ -z "${ALLOW_DIRTY}" ]] ; then if [[ -n "${GIT_DIRTY}" ]] ; then echo 'Please make sure the git status is clean or set ALLOW_DIRTY.' && exit 1 ; fi fi
@@ -261,6 +291,7 @@ ibm-quick-tests-setup:
 	$(MAKE) venv
 
 # Mock most of HF since the action does not have the HF_TOKEN secret on PRs
+# secret_manager tests require IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL env var, which SPS is not providing or so it seems
 .PHONY: ibm-quick-tests
 ibm-quick-tests: check_ibm_sps_api_key
 	export GB_ENVIRONMENT=STANDALONE &&			\
@@ -271,7 +302,7 @@ ibm-quick-tests: check_ibm_sps_api_key
 		.test
 
 .PHONY: ibm-extended-tests-setup
-ibm-extended-tests-setup:
+ibm-extended-tests-setup: start-nats
 	$(MAKE) venv
 
 .PHONY: ibm-extended-tests
