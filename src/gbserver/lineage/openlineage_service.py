@@ -44,7 +44,11 @@ class LineageService(ABC):
         pass
 
     @abstractmethod
-    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
+    def filter_unrecorded(
+        self,
+        target_ids: set[str],
+        expected_counts: Optional[dict[str, int]] = None,
+    ) -> set[str]:
         """Return the subset of ``target_ids`` not yet recorded in this backend.
 
         Bounded to the given candidates (queried against the backing store's run
@@ -53,6 +57,13 @@ class LineageService(ABC):
         correctness regardless; this is purely an efficiency optimization, so on
         any failure implementations should return ``target_ids`` unchanged
         (re-recording the candidates, a harmless no-op) rather than raise.
+
+        ``expected_counts`` maps a target uuid to the number of runs a *fully*
+        recorded target should have, so a target that recorded only some of its
+        runs on a prior crashed scan is still reported unrecorded (and thus
+        re-recorded) rather than being masked by a single present run. ``None``
+        or a missing key falls back to the presence check (recorded once >=1 run
+        exists).
         """
         pass
 
@@ -88,7 +99,11 @@ class NoopLineageService(LineageService):
     ) -> int:
         return 0
 
-    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
+    def filter_unrecorded(
+        self,
+        target_ids: set[str],
+        expected_counts: Optional[dict[str, int]] = None,
+    ) -> set[str]:
         return target_ids
 
     def get_artifact_graph(

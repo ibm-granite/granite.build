@@ -814,7 +814,11 @@ class WandBLineageService(LineageService):
             logger.error("Failed to count runs by tags: %s", e)
             return 0
 
-    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
+    def filter_unrecorded(
+        self,
+        target_ids: set[str],
+        expected_counts: Optional[dict[str, int]] = None,
+    ) -> set[str]:
         """Return the subset of ``target_ids`` not yet recorded in wandb.
 
         Bounded to the given candidates: it queries only for runs tagged with one
@@ -825,6 +829,19 @@ class WandBLineageService(LineageService):
         return the rest. We match on the tag rather than parsing run ids — a run
         id is ``"<target_uuid>-<output_uuid>"`` and both halves contain hyphens,
         making it ambiguous to split.
+
+        A single target emits one run per output artifact (or one run when it has
+        no outputs), so presence of *a* tagged run does not mean the target is
+        fully recorded: a prior scan that crashed part-way through emitting a
+        target's runs leaves some runs tagged but the lineage incomplete. To
+        avoid masking such a partial record (which would leave a permanent gap,
+        since the target would never be re-selected), we *count* the tagged runs
+        per candidate and treat a target as recorded only when its run count
+        meets or exceeds ``expected_counts[tid]``. When ``expected_counts`` is
+        ``None`` or lacks a candidate's key, that candidate falls back to the
+        presence check (recorded once >=1 run exists) — the pre-count behavior,
+        which keeps older fully-recorded runs (that predate this check) from
+        being needlessly re-recorded.
 
         This is an efficiency optimization only: it lets the recorder skip
         re-emitting candidates wandb already has. Idempotent recording
@@ -844,22 +861,37 @@ class WandBLineageService(LineageService):
             # Bound the query to this scan's candidates: match only runs whose
             # target_id tag is one of ours. This is a set-membership ($in) filter,
             # not the $regex the IBM wandb backend times out on, so it stays cheap
-            # and reliable regardless of how many historical runs exist.
+            # and reliable regardless of how many historical runs exist. A single
+            # query serves all candidates; the counting below is a post-filter
+            # over the fetched runs, never a per-target query.
             candidate_tags = [f"target_id={tid}" for tid in target_ids]
-            recorded: set[str] = set()
+            run_counts: dict[str, int] = {}
             for run in api.runs(
                 project_path, filters={"tags": {"$in": candidate_tags}}
             ):
-                for tag in run.tags or []:
-                    if tag.startswith("target_id="):
-                        target_id = tag.split("=", 1)[1]
-                        # Only count candidates we actually asked about; ignore
-                        # empty values and any unrelated tag the backend returns.
-                        # Don't break: a run can carry more than one target_id tag
-                        # (e.g. a run resumed across targets), and an earlier tag
-                        # may be one we didn't ask about — so scan them all.
-                        if target_id in target_ids:
-                            recorded.add(target_id)
+                # A run can carry more than one target_id tag (e.g. a run resumed
+                # across targets), so credit every candidate tag it carries. Use a
+                # set so a run counts at most once per target even if the same tag
+                # appears twice on it.
+                for target_id in {
+                    tag.split("=", 1)[1]
+                    for tag in (run.tags or [])
+                    if tag.startswith("target_id=")
+                }:
+                    # Only count candidates we actually asked about; ignore empty
+                    # values and any unrelated tag the backend returns.
+                    if target_id in target_ids:
+                        run_counts[target_id] = run_counts.get(target_id, 0) + 1
+            recorded: set[str] = set()
+            for tid in target_ids:
+                count = run_counts.get(tid, 0)
+                if count == 0:
+                    continue
+                expected = (expected_counts or {}).get(tid)
+                # No expected count for this target → presence check (>=1);
+                # otherwise require the full set of runs.
+                if expected is None or count >= expected:
+                    recorded.add(tid)
             return target_ids - recorded
         except (
             Exception

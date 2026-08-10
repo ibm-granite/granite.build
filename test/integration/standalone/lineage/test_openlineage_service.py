@@ -176,17 +176,29 @@ class MockLineageService(LineageService):
             "truncated": max_depth <= 1,
         }
 
-    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
-        # Mirror the real service: derive recorded target ids from the
-        # ``target_id=<uuid>`` tag on emitted events, then return the candidates
-        # not among them.
-        recorded: set[str] = set()
+    def filter_unrecorded(self, target_ids: set[str], expected_counts=None) -> set[str]:
+        # Mirror the real service: count the distinct runs carrying each
+        # ``target_id=<uuid>`` tag on emitted events, then treat a candidate as
+        # recorded only when its run count meets its expected count. A ``None``
+        # expected count (or a missing key) falls back to presence (>=1 run).
+        run_counts: dict[str, int] = {}
+        seen: set = set()  # (target_id, run_id) so each run counts once per target
         for ev in self.events.values():
-            run_facets = ev.get("run", {}).get("facets", {})
-            ev_tags = run_facets.get("tags", {})
-            target_id = ev_tags.get("target_id")
-            if target_id:
-                recorded.add(target_id)
+            run = ev.get("run", {})
+            run_id = run.get("runId", "")
+            target_id = run.get("facets", {}).get("tags", {}).get("target_id")
+            if not target_id or (target_id, run_id) in seen:
+                continue
+            seen.add((target_id, run_id))
+            run_counts[target_id] = run_counts.get(target_id, 0) + 1
+        recorded: set[str] = set()
+        for tid in target_ids:
+            count = run_counts.get(tid, 0)
+            if count == 0:
+                continue
+            expected = (expected_counts or {}).get(tid)
+            if expected is None or count >= expected:
+                recorded.add(tid)
         return set(target_ids) - recorded
 
 

@@ -268,6 +268,10 @@ class WandBLineageStore(ILineageStore):
         events_list: List[dict] = []
         events_dict: Dict[str, List[dict]] = {}
 
+        # NOTE: the number of events emitted here (one per output artifact across
+        # all output-artifact lists, or one "no-output" event below) must stay in
+        # lockstep with lineage_reconciler._expected_run_count, which derives the
+        # same count from the target in memory to detect partial records.
         for (
             target_artifact_name,
             output_artifact_list,
@@ -461,11 +465,17 @@ class WandBLineageStore(ILineageStore):
         count = self.count_release_ids(release_id, target_id)
         return count == expected_count
 
-    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
+    def filter_unrecorded(
+        self,
+        target_ids: set[str],
+        expected_counts: Optional[dict[str, int]] = None,
+    ) -> set[str]:
         # Delegate to the service, which checks the candidates against wandb run
-        # metadata. Never raises: returns the candidates unchanged on failure so
-        # the caller re-records them (a harmless idempotent no-op).
-        return self._service.filter_unrecorded(target_ids)
+        # metadata. ``expected_counts`` lets it require a *full* set of runs per
+        # target rather than mere presence (see ILineageStore.filter_unrecorded).
+        # Never raises: returns the candidates unchanged on failure so the caller
+        # re-records them (a harmless idempotent no-op).
+        return self._service.filter_unrecorded(target_ids, expected_counts)
 
     def _build_event_for_artifact(
         self,

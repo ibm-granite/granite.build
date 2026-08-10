@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
 from gbserver.lineage.lineage_reconciler import (
+    _expected_run_count,
     reconcile_once,
     record_selected_targets,
     record_target_lineage,
@@ -44,6 +45,8 @@ def _target(
     uuid: str,
     status: Status = Status.SUCCESS,
     finished_at: datetime = None,
+    output_artifacts: dict[str, list[str]] = None,
+    skipped_for_prerun_target_id: str = "",
 ) -> StoredTargetRun:
     return StoredTargetRun(
         uuid=uuid,
@@ -51,6 +54,8 @@ def _target(
         environment_uri="env://test",
         status=status,
         finished_at=finished_at,
+        output_artifacts=output_artifacts or {},
+        skipped_for_prerun_target_id=skipped_for_prerun_target_id,
     )
 
 
@@ -112,6 +117,9 @@ class _StubStore:
         self._recorded = set(already_recorded or set())
         self._fail = set(fail or set())
         self.recorded_calls: list[tuple[str, str]] = []
+        # Captures the expected_counts the reconciler passed on the last call, so
+        # tests can assert it derived per-target run counts from the targets.
+        self.last_expected_counts: dict[str, int] | None = None
 
     def add_jobstats_for_build_target(self, storage, build_id, target_id):
         if target_id in self._fail:
@@ -119,7 +127,10 @@ class _StubStore:
         self.recorded_calls.append((build_id, target_id))
         self._recorded.add(target_id)
 
-    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
+    def filter_unrecorded(
+        self, target_ids: set[str], expected_counts: dict[str, int] = None
+    ) -> set[str]:
+        self.last_expected_counts = expected_counts
         return set(target_ids) - self._recorded
 
 
@@ -309,6 +320,50 @@ class TestReconcileOnce:
         # Watermark still advances past the skipped target so it is not
         # reconsidered forever.
         assert watermark == _BASE + timedelta(seconds=5)
+
+    def test_passes_expected_run_counts_derived_from_outputs(self):
+        store = _StubStore()
+        # t1: two output-artifact names, the second holding two artifacts -> 3
+        # runs. t2: no outputs -> the single "no-output" run.
+        t1 = _target(
+            "b1",
+            "t1",
+            finished_at=_BASE,
+            output_artifacts={"a": ["o1"], "b": ["o2", "o3"]},
+        )
+        t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=1))
+        storage = _admin_storage_with([t1, t2])
+
+        reconcile_once(store, storage)
+
+        assert store.last_expected_counts == {"t1": 3, "t2": 1}
+
+    def test_skipped_for_prerun_target_omitted_from_expected_counts(self):
+        store = _StubStore()
+        # A skipped-for-prerun target records the *original* target's outputs, so
+        # its own output_artifacts give the wrong count; it must be omitted and
+        # fall back to the presence check.
+        t1 = _target(
+            "b1",
+            "t1",
+            finished_at=_BASE,
+            output_artifacts={"a": ["o1"]},
+            skipped_for_prerun_target_id="orig",
+        )
+        storage = _admin_storage_with([t1])
+
+        reconcile_once(store, storage)
+
+        assert store.last_expected_counts == {}
+
+
+class TestExpectedRunCount:
+    def test_counts_all_output_artifacts_across_lists(self):
+        t = _target("b1", "t1", output_artifacts={"a": ["o1"], "b": ["o2", "o3"]})
+        assert _expected_run_count(t) == 3
+
+    def test_no_outputs_expects_one_run(self):
+        assert _expected_run_count(_target("b1", "t1")) == 1
 
 
 class TestRecordSelectedTargets:

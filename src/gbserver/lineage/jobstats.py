@@ -81,7 +81,11 @@ class ILineageStore(ABC):
         self, release_id: str, expected_count: int, target_id: Optional[str] = None
     ) -> bool: ...
 
-    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
+    def filter_unrecorded(
+        self,
+        target_ids: set[str],
+        expected_counts: Optional[dict[str, int]] = None,
+    ) -> set[str]:
         """Return the subset of ``target_ids`` not yet recorded in *this* store.
 
         Each sink owns its own record of what it has already recorded, so the
@@ -96,6 +100,19 @@ class ILineageStore(ABC):
         — idempotent recording preserves correctness regardless — so
         implementations must never raise; on failure they return ``target_ids``
         unchanged, degrading to re-recording the candidates (harmless).
+
+        ``expected_counts`` maps a target uuid to the number of records the sink
+        should hold for a *fully* recorded target (one W&B run per output
+        artifact, or 1 for an output-less target). A single target can emit
+        several records, and if a prior scan crashed part-way through it, the
+        sink holds *some* of them — a "recorded" check that only tests presence
+        would wrongly mark such a target complete and never re-record the
+        missing records, leaving a permanent partial-lineage gap. So a target is
+        treated as recorded only when its held-record count meets or exceeds its
+        expected count. When ``expected_counts`` is ``None`` or lacks a target's
+        key (e.g. the reconciler could not derive it), that target falls back to
+        the presence check (recorded once >=1 record exists) — the pre-count
+        behavior, which stays correct for older records that predate this check.
 
         Defaults to returning ``target_ids`` unchanged for backends that record
         no centralized lineage (e.g. the no-op store); such a store's recording

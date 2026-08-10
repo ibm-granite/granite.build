@@ -163,6 +163,21 @@ def select_recordable_targets(
     return selected
 
 
+def _expected_run_count(target: StoredTargetRun) -> int:
+    """Number of lineage runs a fully-recorded ``target`` should have in a sink.
+
+    Must mirror how ``WandBLineageStore._build_events_for_target`` emits events:
+    one run per output artifact (summed across every output-artifact list), or a
+    single "no-output" run when the target produced no outputs. Inputs do not add
+    runs — they are attached to each output's run — so only outputs are counted.
+    This is derived from the in-memory ``StoredTargetRun`` (already loaded by the
+    scan) to avoid any extra storage read. Keep this in lockstep with
+    ``_build_events_for_target``; the count-vs-events coherence test guards drift.
+    """
+    n = sum(len(uuids) for uuids in target.output_artifacts.values())
+    return n if n > 0 else 1
+
+
 def reconcile_once(
     store: ILineageStore,
     storage: SingletonAdminStorage,
@@ -188,7 +203,10 @@ def reconcile_once(
       sink owns its own record of what it has already recorded, so the same
       admin DB can feed W&B and other sinks independently. It never raises; on
       failure it returns the full candidate set, degrading to re-recording
-      (harmless — recording is idempotent).
+      (harmless — recording is idempotent). It is given each candidate's expected
+      run count (``_expected_run_count``) so a target whose runs were only
+      partially emitted on a prior crashed scan is reported unrecorded and
+      re-recorded, rather than masked by its already-present runs.
 
     Args:
         store: The lineage store to record into.
@@ -234,7 +252,19 @@ def reconcile_once(
     # a backend query (e.g. a wandb api.runs call) that would return nothing.
     if not by_uuid:
         return max_finished_at
-    unrecorded = store.filter_unrecorded(set(by_uuid))
+    # Expected run count per candidate, so the sink can tell a fully-recorded
+    # target from one whose runs were only partially emitted on a prior crashed
+    # scan (see ILineageStore.filter_unrecorded). Derived in memory from the
+    # already-loaded targets — no extra storage read. A skipped-for-prerun target
+    # records the *original* target's outputs, not its own, so its in-memory
+    # output_artifacts would give the wrong count; omit it and let it fall back to
+    # the presence check (a rare case; re-recording is a harmless idempotent no-op).
+    expected_counts = {
+        uuid: _expected_run_count(target)
+        for uuid, target in by_uuid.items()
+        if not target.skipped_for_prerun_target_id
+    }
+    unrecorded = store.filter_unrecorded(set(by_uuid), expected_counts)
 
     newly_recorded = 0
     for uuid in unrecorded:

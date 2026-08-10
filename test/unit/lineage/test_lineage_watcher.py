@@ -64,7 +64,7 @@ class _StubStore:
         self.calls.append((build_id, target_id))
         self._recorded.add(target_id)
 
-    def filter_unrecorded(self, target_ids: set) -> set:
+    def filter_unrecorded(self, target_ids: set, expected_counts=None) -> set:
         return set(target_ids) - self._recorded
 
 
