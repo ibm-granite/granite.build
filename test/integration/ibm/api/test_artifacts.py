@@ -233,9 +233,7 @@ class TestArtifactAPI(AbstractAPITest):
             assert user is not None, "Could not resolve user from github token"
             email = user.email
         self.storage.space_user_storage.add(
-            StoredSpaceUser(
-                space_name=PUBLIC_SPACE_NAME, username=email, role="admin"
-            )
+            StoredSpaceUser(space_name=PUBLIC_SPACE_NAME, username=email, role="admin")
         )
 
     def _validate_artifact_registration_response(
