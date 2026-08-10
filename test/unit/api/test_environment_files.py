@@ -659,25 +659,63 @@ class TestDownloadAndPeek:
 
 class TestNotConfigured:
     def test_missing_environment_uri_returns_503(self):
-        # With bluevela's environment_uri unset (the real default), the endpoint
-        # 503s instead of guessing. Patch only the tunnel; leave the registry
-        # real with the empty-URI default.
+        # 503 requires that the environment URI can neither be read (explicit
+        # override) nor derived (public space config repo). We simulate that by
+        # pinning the resolver to "" — the single decision point resolve_environment
+        # consults. Patch only the tunnel besides that; leave the registry real.
         from gbserver.api import environment_files_paths as epaths
 
         tunnel = _RecordingTunnel()
-        unconfigured = EnvironmentFilesConfig(
-            gpfs_base="/proj", space_name="public", environment_uri=""
-        )
         with (
             patch.object(
                 environment_files_mod, "open_lsf_tunnel", _fake_tunnel_cm(tunnel)
             ),
-            patch.dict(
-                epaths.ENVIRONMENT_FILES_REGISTRY,
-                {ENVIRONMENT: unconfigured},
-                clear=True,
-            ),
+            patch.object(epaths, "get_supported_env_for_files_uri", return_value=""),
         ):
             r = _client().get(_url("demo"))
         assert r.status_code == 503
         assert tunnel.commands == []
+
+
+class TestEnvironmentUriResolution:
+    """get_supported_env_for_files_uri: explicit override, else derive, else empty."""
+
+    def test_explicit_override_returned_verbatim(self, monkeypatch):
+        from gbserver.types import constants as c
+
+        monkeypatch.setenv(
+            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI,
+            "space://environments/bluevela",
+        )
+        # Override wins even when a public space URI is available to derive from.
+        monkeypatch.setattr(
+            c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
+        )
+        assert c.get_supported_env_for_files_uri() == "space://environments/bluevela"
+
+    def test_derived_from_public_space_when_override_unset(self, monkeypatch):
+        from gbserver.types import constants as c
+
+        monkeypatch.delenv(
+            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
+        )
+        monkeypatch.setattr(
+            c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
+        )
+        # Empty GitHub token → get_gb_space_config_uri skips the @<branch> suffix
+        # (and any repo probe), so this stays offline. The shape we assert on: a
+        # git+ssh asset URI into environments/bluevela of the public space repo.
+        monkeypatch.setattr(c, "GBSERVER_GITHUB_TOKEN", "", raising=False)
+        uri = c.get_supported_env_for_files_uri()
+        assert uri.startswith("git+ssh://example.com/org/gbspace-public.git")
+        # subdirectory fragment points at environments/bluevela (URL-encoded '/').
+        assert "subdirectory=environments%2Fbluevela" in uri
+
+    def test_empty_when_no_override_and_no_public_space(self, monkeypatch):
+        from gbserver.types import constants as c
+
+        monkeypatch.delenv(
+            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
+        )
+        monkeypatch.setattr(c, "PUBLIC_SPACE_GIT_URI", "")
+        assert c.get_supported_env_for_files_uri() == ""

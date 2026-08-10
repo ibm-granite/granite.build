@@ -452,12 +452,17 @@ class EnvironmentFilesConfig:
         caller-supplied.
       * ``space_name`` — space whose IBM Cloud Secret Manager holds the service
         SSH key used to open the tunnel (server-resolved, never the requester).
-      * ``environment_uri`` — a ``space://…`` asset URI pointing at the LSF
-        ``environment.yaml`` whose login nodes mount ``gpfs_base``. This is the
-        one value that differs per deployment (dev/staging/prod) and cannot be
-        inferred from code; it MUST be set for the environment to function. An
-        empty value means "known environment, not configured for this
-        deployment" → the endpoints return 503 rather than guess.
+      * ``environment_uri`` — an OPTIONAL explicit override for the asset URI
+        pointing at the LSF ``environment.yaml`` whose login nodes mount
+        ``gpfs_base``. When empty (the default) the effective URI is derived from
+        the public space's config repo at request time (see
+        ``get_supported_env_for_files_uri``), yielding a
+        ``git+ssh://…@<config-branch>#subdirectory=environments/<env>`` asset URI
+        — so per-deployment (dev/staging/prod) differences come "for free" from
+        the public space config rather than a separately-set value. This field is
+        the override slot only; the endpoints resolve the effective URI via the
+        helper and return 503 only when neither an override nor a derivable
+        public space URI exists (rather than guess).
     """
 
     gpfs_base: str
@@ -475,21 +480,72 @@ class EnvironmentFilesConfig:
 # NOT a bare GB_ prefix.
 # GBSERVER_BLUEVELA_FILES_SPACE_NAME: defaults to the public space (literal
 #   "public"; the PUBLIC_SPACE_NAME constant is defined further down this file).
-# GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI: empty default → bluevela is a known
-#   environment but "not configured" on this deployment (503, not a guess).
+# GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI: an OPTIONAL explicit override for the
+#   supported environment's environment.yaml asset URI. Empty default → the URI
+#   is derived from the public space config repo at request time (see
+#   get_supported_env_for_files_uri below). 503 only when neither the override
+#   nor a derivable public space URI is available (e.g. STANDALONE), never a
+#   guess.
 ENV_VAR_GBSERVER_BLUEVELA_FILES_SPACE_NAME = (
     ENV_VAR_PREFIX + "_BLUEVELA_FILES_SPACE_NAME"
 )
 ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI = (
     ENV_VAR_PREFIX + "_BLUEVELA_FILES_ENVIRONMENT_URI"
 )
+
+# The single supported environment name for the files API. Used both as the
+# registry key and by the environment-URI derivation (the `environments/<name>`
+# subdirectory in the public space config repo). Only the value is "bluevela"
+# specific; the symbol is generic so a future supported env is a data change.
+SUPPORTED_ENV_FOR_FILES = "bluevela"
+
 ENVIRONMENT_FILES_REGISTRY: Dict[str, EnvironmentFilesConfig] = {
-    "bluevela": EnvironmentFilesConfig(
+    SUPPORTED_ENV_FOR_FILES: EnvironmentFilesConfig(
         gpfs_base="/proj",
         space_name=os.getenv(ENV_VAR_GBSERVER_BLUEVELA_FILES_SPACE_NAME, "public"),
+        # Holds only the explicit override (empty default). The effective URI is
+        # resolved lazily via get_supported_env_for_files_uri() so the derived
+        # value picks up the GitHub token / public-space config at request time.
         environment_uri=os.getenv(ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, ""),
     ),
 }
+
+
+def get_supported_env_for_files_uri() -> str:
+    """Resolve the supported environment's environment.yaml asset URI.
+
+    Returns the explicit ``GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI`` override
+    when set; otherwise derives it from the public space's config repo
+    (``PUBLIC_SPACE_GIT_URI``) by converting that ``https://…`` repo URL into the
+    ``git+ssh://…@<config-branch>#subdirectory=environments/<env>`` asset URI
+    the environment loader expects — the same conversion the build path uses
+    (``GitURI.get_gb_space_config_uri``). Returns ``""`` when there is nothing to
+    derive from (no override and no public space URI, e.g. STANDALONE), which the
+    caller turns into a 503.
+
+    Evaluated lazily (not at import): the ``GitURI`` import would otherwise cycle
+    (git.py imports GBSERVER_GITHUB_TOKEN from this module), and the ``@<branch>``
+    suffix is only appended when a GitHub token is present in the process env —
+    which may be set after import.
+    """
+    override = os.getenv(ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, "")
+    if override:
+        return override
+    if not PUBLIC_SPACE_GIT_URI:
+        return ""
+    # Function-local import: git.py imports from this module, so a top-level
+    # import here would be a cycle.
+    from gbcommon.uri.git import GitURI
+    from gbcommon.uri.uri import URI
+
+    base = GitURI.get_gb_space_config_uri(PUBLIC_SPACE_GIT_URI)
+    if not base:
+        return ""
+    # base ends with an empty "#subdirectory="; append_path fills it with the
+    # env's subdirectory (merging into the existing fragment, not adding a second).
+    uri = URI.get_uri(base)
+    uri.append_path(f"environments/{SUPPORTED_ENV_FOR_FILES}")
+    return str(uri)
 
 ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT = (
     ENV_VAR_PREFIX + "_DEFAULT_GH_REQUEST_TIMEOUT"
