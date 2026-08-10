@@ -547,6 +547,7 @@ def get_supported_env_for_files_uri() -> str:
     uri.append_path(f"environments/{SUPPORTED_ENV_FOR_FILES}")
     return str(uri)
 
+
 ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT = (
     ENV_VAR_PREFIX + "_DEFAULT_GH_REQUEST_TIMEOUT"
 )
