@@ -16,14 +16,18 @@ GB_ENVIRONMENT_LOWER ?= dev
 GIT_COMMIT ?= $(shell git rev-parse HEAD)
 GIT_DIRTY  = $(shell test -n "`git status --porcelain`" && echo "dirty-" || echo "")
 IMAGE_NAME = gbserver
-IMAGE_TAG  ?= ${GIT_DIRTY}commit-${GIT_COMMIT}
+# Set the GBSERVER_IMAGE_TAG env var to override this (e.g. to point tests at an
+# existing registry image); otherwise default to the local git-derived tag.
+IMAGE_TAG  ?= $(if $(GBSERVER_IMAGE_TAG),$(GBSERVER_IMAGE_TAG),${GIT_DIRTY}commit-${GIT_COMMIT})
 IMAGE_NAME_AND_TAG = ${IMAGE_NAME}:${IMAGE_TAG}
 
 OC_LOGIN_SERVER_URI ?= https://c100-e.us-south.containers.cloud.ibm.com:30049
 
 SIDECAR_IMAGE_NAME = gb-sidecar-monitoring
 # SIDECAR_IMAGE_TAG ?= 0.4.12
-SIDECAR_IMAGE_TAG ?= ${GIT_DIRTY}commit-${GIT_COMMIT}
+# Set the GBSERVER_SIDECAR_MONITORING_IMAGE_TAG env var to override this; otherwise
+# default to the local git-derived tag.
+SIDECAR_IMAGE_TAG ?= $(if $(GBSERVER_SIDECAR_MONITORING_IMAGE_TAG),$(GBSERVER_SIDECAR_MONITORING_IMAGE_TAG),${GIT_DIRTY}commit-${GIT_COMMIT})
 SIDECAR_IMAGE_NAME_AND_TAG = ${SIDECAR_IMAGE_NAME}:${SIDECAR_IMAGE_TAG}
 
 DEV_IMAGE_REGISTRY = us.icr.io/cil15-shared-registry/gb-dev
@@ -163,6 +167,18 @@ stop-nats:
 .PHONY: check-git-status-clean
 check-git-status-clean:
 	@if [[ -z "${ALLOW_DIRTY}" ]] ; then if [[ -n "${GIT_DIRTY}" ]] ; then echo 'Please make sure the git status is clean or set ALLOW_DIRTY.' && exit 1 ; fi fi
+
+# Fail if either resolved image tag reflects an uncommitted (dirty) git tree, since the
+# matching image was likely never built/pushed to the registry. Bypass with ALLOW_DIRTY.
+.PHONY: check-image-tag-not-dirty
+check-image-tag-not-dirty:
+	@if [[ -z "${ALLOW_DIRTY}" ]] ; then \
+		for _t in "$(IMAGE_TAG)" "$(SIDECAR_IMAGE_TAG)" ; do \
+			if [[ "$$_t" == *dirty* ]] ; then \
+				echo "Image tag '$$_t' reflects a dirty git tree; the matching image may not exist in the registry. Commit your changes, set GBSERVER_IMAGE_TAG / GBSERVER_SIDECAR_MONITORING_IMAGE_TAG to an existing tag (see 'make info'), or set ALLOW_DIRTY to override." && exit 1 ; \
+			fi ; \
+		done ; \
+	fi
 
 .PHONY: check-container-registry-login
 check-container-registry-login:
@@ -364,21 +380,21 @@ check_hf_token:
 # 	PYTEST_MARKERS=  (use "not extended" to exclude the extended suite)
 #	PYTEST_TEST_TARGETS=
 .PHONY: .test
-.test:	check_hf_token
+.test:	check_hf_token check-image-tag-not-dirty
 	source $(VENVDIR)/bin/activate && \
 		export GBTEST_MOCKED_HF_OPS=${GBTEST_MOCKED_HF_OPS} &&	\
 		export GBTEST_MODE=${GBTEST_MODE} && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
 		args=(--durations=20 $(PYTEST_COV) --junitxml=report.xml) && \
-		args+=(--max-worker-restart=0 -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE}) && \
+		args+=(--max-worker-restart=3 -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE}) && \
 		args+=(-rs $(PYTEST_CAPTURE)) && \
 		args+=(-m '$(PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
 		pytest "$${args[@]}" $(PYTEST_TEST_TARGETS) && \
 		$(COVERAGE_GATE)
 
 .PHONY: py-test
-py-test:
+py-test: check-image-tag-not-dirty
 	# - Default (all tests): make py-test
 	# - Specific test: make py-test ARGS=test/integration/ibm/utils/test_user_spaces_list.py
 	# - Multiple args: make py-test ARGS="test/integration/ibm/api -k test_artifact_get"
