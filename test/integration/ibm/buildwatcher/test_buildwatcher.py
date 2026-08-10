@@ -25,6 +25,7 @@ _INVALID_YAML = (
     or os.environ.get("HAS_GB_CLUSTER_ACCESS", "True").lower() == "false",
     reason="Can't run this since it is configured as not having G.B cluster access",
 )
+@extended_testing_only
 class AbstractTestBuildWatcher(AbstractBuildTest):
 
     def _get_build_count(self) -> int:
