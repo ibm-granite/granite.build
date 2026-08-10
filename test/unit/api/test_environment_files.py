@@ -676,6 +676,35 @@ class TestNotConfigured:
         assert r.status_code == 503
         assert tunnel.commands == []
 
+    def test_github_error_during_derivation_returns_503_not_500(self, monkeypatch):
+        # End-to-end: a GitHub failure in the derivation must surface as the
+        # documented 503, not an unhandled 500. Exercise the real resolve_environment
+        # + get_supported_env_for_files_uri (no override, public space set), and make
+        # the config-branch probe seam raise. No folder data is touched.
+        from gbcommon.uri.git import GitURI
+        from gbserver.types import constants as c
+
+        monkeypatch.delenv(
+            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
+        )
+        monkeypatch.setattr(
+            c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
+        )
+        c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
+
+        def _raising(*_a, **_k):
+            raise RuntimeError("github down")
+
+        monkeypatch.setattr(GitURI, "get_gb_space_config_uri", staticmethod(_raising))
+        tunnel = _RecordingTunnel()
+        with patch.object(
+            environment_files_mod, "open_lsf_tunnel", _fake_tunnel_cm(tunnel)
+        ):
+            r = _client().get(_url("demo"))
+        assert r.status_code == 503
+        assert tunnel.commands == []
+        c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
+
 
 class TestEnvironmentUriResolution:
     """get_supported_env_for_files_uri: explicit override, else derive, else empty."""
@@ -802,3 +831,27 @@ class TestEnvironmentUriResolution:
         assert first == second
         # The live-GitHub-probing conversion ran once despite two resolutions.
         assert calls["n"] == 1
+
+    def test_github_error_during_derivation_yields_empty_uncached(self, monkeypatch):
+        from gbcommon.uri.git import GitURI
+        from gbserver.types import constants as c
+
+        monkeypatch.delenv(
+            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
+        )
+        monkeypatch.setattr(
+            c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
+        )
+        # The config-branch probe raising (expired token → ValueError, GitHub
+        # down → RuntimeError) must degrade to "" (→ 503), not propagate as a 500.
+        calls = {"n": 0}
+
+        def _raising(uri, *a, **k):
+            calls["n"] += 1
+            raise RuntimeError("github unreachable")
+
+        monkeypatch.setattr(GitURI, "get_gb_space_config_uri", staticmethod(_raising))
+        assert c.get_supported_env_for_files_uri() == ""
+        # Not cached: a later request retries rather than serving a stuck failure.
+        assert c.get_supported_env_for_files_uri() == ""
+        assert calls["n"] == 2

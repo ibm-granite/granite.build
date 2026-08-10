@@ -483,9 +483,9 @@ class EnvironmentFilesConfig:
 # GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI: an OPTIONAL explicit override for the
 #   supported environment's environment.yaml asset URI. Empty default → the URI
 #   is derived from the public space config repo at request time (see
-#   get_supported_env_for_files_uri below). 503 only when neither the override
-#   nor a derivable public space URI is available (e.g. STANDALONE), never a
-#   guess.
+#   get_supported_env_for_files_uri below). 503 when the URI can't be produced —
+#   no override and no derivable public space URI (e.g. STANDALONE), or the
+#   derivation's GitHub probe failing — never a guess.
 ENV_VAR_GBSERVER_BLUEVELA_FILES_SPACE_NAME = (
     ENV_VAR_PREFIX + "_BLUEVELA_FILES_SPACE_NAME"
 )
@@ -511,12 +511,14 @@ ENVIRONMENT_FILES_REGISTRY: Dict[str, EnvironmentFilesConfig] = {
 }
 
 
-# Process-level cache of the DERIVED environment URI, keyed by the public-space
-# repo URL it was derived from. The derivation calls GitURI.get_gb_space_config_uri,
-# which makes an uncached live GitHub call (is_branch_present) when a token is set;
-# resolve_environment is on the files-API per-request access-control path, so we
-# memoize to run that probe at most once per (process, public-space URI). The
-# explicit override is never cached — it is read live and short-circuits above.
+# Process-level cache of the successfully-DERIVED environment URI, keyed by the
+# public-space repo URL it was derived from. The derivation calls
+# GitURI.get_gb_space_config_uri, which makes an uncached live GitHub call
+# (is_branch_present) when a token is set; resolve_environment is on the files-API
+# per-request access-control path, so we memoize to run that probe at most once
+# per (process, public-space URI) on success. The explicit override is never
+# cached (read live, short-circuits above), and failed/empty derivations are not
+# cached either — so a transient GitHub error doesn't stick.
 _DERIVED_ENV_FOR_FILES_URI_CACHE: Dict[str, str] = {}
 
 
@@ -528,16 +530,20 @@ def get_supported_env_for_files_uri() -> str:
     (``PUBLIC_SPACE_GIT_URI``) by converting that ``https://…`` repo URL into a
     ``git+ssh://…[@<config-branch>]#subdirectory=environments/<env>`` asset URI
     the environment loader expects — the same conversion the build path uses
-    (``GitURI.get_gb_space_config_uri``). Returns ``""`` when there is nothing to
-    derive from (no override and no public space URI, e.g. STANDALONE), which the
-    caller turns into a 503.
+    (``GitURI.get_gb_space_config_uri``).
+
+    Returns ``""`` (→ 503 in the caller) in every "can't produce a URI right now"
+    case: no override and no ``PUBLIC_SPACE_GIT_URI`` (e.g. STANDALONE), or the
+    derivation's GitHub config-branch probe failing (expired/invalid token,
+    GitHub unreachable). Callers therefore never see the raw exception — a
+    transient GitHub problem reads as "not configured", not a 500.
 
     Evaluated lazily (not at import): the ``GitURI`` import would otherwise cycle
-    (git.py imports GBSERVER_GITHUB_TOKEN from this module), and the ``@<branch>``
-    suffix is only appended when a GitHub token is present in the process env —
-    which may be set after import. The derived value is memoized per public-space
-    URI (see ``_DERIVED_ENV_FOR_FILES_URI_CACHE``) so the underlying live GitHub
-    branch probe runs at most once per process.
+    (git.py imports GBSERVER_GITHUB_TOKEN from this module). A *successful*
+    derivation is memoized per public-space URI (see
+    ``_DERIVED_ENV_FOR_FILES_URI_CACHE``) so the underlying live GitHub branch
+    probe runs at most once per process; failures and empties are not cached, so
+    a later request retries once the token/config is healthy.
     """
     override = os.getenv(ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, "")
     if override:
@@ -551,16 +557,32 @@ def get_supported_env_for_files_uri() -> str:
     # import here would be a cycle.
     from gbcommon.uri.git import GitURI
     from gbcommon.uri.uri import URI
+    from gbserver.utils.logger import get_logger
 
-    base = GitURI.get_gb_space_config_uri(PUBLIC_SPACE_GIT_URI)
+    try:
+        base = GitURI.get_gb_space_config_uri(PUBLIC_SPACE_GIT_URI)
+    except Exception as e:  # pylint: disable=broad-except
+        # get_gb_space_config_uri probes GitHub for the config branch when a
+        # token is set; is_branch_present raises on 401 / network / non-404 HTTP.
+        # This is on the files-API access-control path, so degrade to "not
+        # derivable" (→ 503) rather than let it surface as a 500. Not cached:
+        # a later request retries once GitHub/the token recovers.
+        get_logger(__name__).warning(
+            "failed to derive files-env URI from public space %r: %s",
+            PUBLIC_SPACE_GIT_URI,
+            e,
+        )
+        return ""
     if not base:
         # Don't cache a transient empty — a later call (token/config now present)
         # should get another chance to derive a real URI.
         return ""
-    # append_path points the URI at environments/<env>: it extends an existing
-    # "#subdirectory=" fragment when get_gb_space_config_uri added one (a config
-    # branch was found) and creates the fragment when it didn't — so the "no
-    # branch, no fragment" and "branch, empty subdirectory" cases both resolve.
+    # append_path points the URI at environments/<env>. When a config branch was
+    # found, get_gb_space_config_uri produced an empty "#subdirectory=" fragment
+    # that parse_qs treats as absent, so append_path creates the fragment; when no
+    # branch was found there is no fragment at all and it likewise creates one —
+    # so both the "branch, empty subdirectory" and "no branch, no fragment" cases
+    # resolve to the same environments/<env> target.
     uri = URI.get_uri(base)
     uri.append_path(f"environments/{SUPPORTED_ENV_FOR_FILES}")
     resolved = str(uri)
