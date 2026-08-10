@@ -42,7 +42,7 @@ down is picked up on the next scan — there is no restart blind spot.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Iterable, Optional
 
 from gbserver.lineage.jobstats import ILineageStore
@@ -110,6 +110,21 @@ def _successful_targets_page(
     return [t for t in targets if isinstance(t, StoredTargetRun)]
 
 
+def _as_utc_naive(value: datetime) -> datetime:
+    """Normalize a ``finished_at`` to naive UTC for safe comparison.
+
+    ``finished_at`` values are written naive (``datetime.now()`` / event
+    timestamps), but a storage backend or DB driver may hand some rows back
+    timezone-aware. Comparing a naive and an aware ``datetime`` raises
+    ``TypeError``, which would abort the whole scan. Coercing both sides to
+    naive UTC before comparing keeps the watermark walk robust regardless of
+    which awareness the read path yields; naive values are assumed UTC.
+    """
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def select_recordable_targets(
     storage: SingletonAdminStorage,
     finished_after: Optional[datetime] = None,
@@ -154,7 +169,9 @@ def select_recordable_targets(
                 continue
             # Sorted newest-finished-first: once we reach a target that finished
             # before the watermark, every later one is older too — stop early.
-            if finished_after is not None and target.finished_at < finished_after:
+            if finished_after is not None and _as_utc_naive(
+                target.finished_at
+            ) < _as_utc_naive(finished_after):
                 return selected
             selected.append(target)
         if len(page) < _SCAN_PAGE_SIZE:
@@ -240,7 +257,8 @@ def reconcile_once(
     max_finished_at = finished_after
     for target in targets:
         if target.finished_at is not None and (
-            max_finished_at is None or target.finished_at > max_finished_at
+            max_finished_at is None
+            or _as_utc_naive(target.finished_at) > _as_utc_naive(max_finished_at)
         ):
             max_finished_at = target.finished_at
 

@@ -24,7 +24,7 @@ finished targets, and that the per-sink ``filter_unrecorded`` check decides what
 each sink actually records.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 from gbserver.lineage.lineage_reconciler import (
@@ -180,6 +180,21 @@ class TestSelectRecordableTargets:
         # t_null is skipped; t_recordable is still newer than the watermark and
         # must not be dropped by an early return on the NULL row.
         assert {t.uuid for t in selected} == {"t_new", "t_recordable"}
+
+    def test_tz_aware_finished_at_does_not_break_watermark_compare(self):
+        # A storage backend may hand finished_at back timezone-aware even though
+        # it was written naive. Comparing a naive watermark against an aware
+        # finished_at (or vice versa) would raise TypeError and abort the scan;
+        # both sides are normalized to naive UTC so the walk still works. Here
+        # _BASE is treated as UTC, so the aware value one hour later in UTC (=
+        # _BASE + 1h) is newer than the watermark and must be selected.
+        aware = (_BASE + timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        t_aware = _target("b1", "t_aware", finished_at=aware)
+        older = _target("b1", "t_older", finished_at=_BASE - timedelta(seconds=10))
+        storage = _admin_storage_returning([[t_aware, older]])
+
+        selected = select_recordable_targets(storage, finished_after=_BASE)
+        assert {t.uuid for t in selected} == {"t_aware"}
 
 
 class TestRecordTargetLineage:
