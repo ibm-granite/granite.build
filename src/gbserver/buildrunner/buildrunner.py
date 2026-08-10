@@ -1678,11 +1678,15 @@ Download : {download_msg}
         ``stored_run.status`` afterward. Shared by the step-run and target-run
         status handlers so both obey identical transition rules.
 
-        started_at is stamped only on the FIRST entry into RUNNING: a run can
-        legitimately re-enter RUNNING (the Lsf monitor reports PENDING while a
+        started_at is stamped on the FIRST entry into RUNNING, regardless of the
+        prior status. Keying off "was PENDING" would drop started_at on a
+        non-linear first transition -- e.g. a target run created SUBMITTED (with
+        started_at still None) that goes straight to RUNNING. The
+        started_at-is-None guard alone provides the "first entry" semantics: a run
+        can legitimately re-enter RUNNING (the Lsf monitor reports PENDING while a
         bsub job is queued or suspended, then RUNNING again once LSF dispatches or
-        resumes it), and re-stamping would push started_at later than the run
-        actually began.
+        resumes it), and the guard keeps that from pushing started_at later than
+        the run actually began.
 
         finished_at is stamped on the FIRST entry into any terminal status
         (``Status.is_finished()``), regardless of the prior status. Keying off
@@ -1701,11 +1705,7 @@ Download : {download_msg}
         :param timestamp: The event timestamp to record.
         :param run_label: Noun used in log lines ("step" or "target").
         """
-        if (
-            stored_run.status is Status.PENDING
-            and new_status is Status.RUNNING
-            and stored_run.started_at is None
-        ):
+        if new_status is Status.RUNNING and stored_run.started_at is None:
             logger.info("%s started running at %s", run_label, timestamp)
             stored_run.started_at = timestamp
         elif new_status.is_finished() and stored_run.finished_at is None:

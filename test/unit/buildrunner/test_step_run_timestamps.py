@@ -22,8 +22,9 @@ RUNNING -> PENDING and can terminate straight from PENDING (a job killed while
 suspended). This shared helper stamps timestamps for both step runs and target
 runs; these tests pin the transition state machine:
 
-- started_at is stamped only on the FIRST entry into RUNNING (a resumed job
-  re-entering RUNNING must not push started_at later).
+- started_at is stamped on the FIRST entry into RUNNING regardless of the prior
+  status (a resumed job re-entering RUNNING must not push started_at later; a run
+  entering RUNNING from a non-PENDING state such as SUBMITTED must still stamp).
 - finished_at is stamped on the FIRST entry into ANY terminal status, whatever
   the prior status -- including PENDING -> FAILED, the edge case that a
   "was RUNNING" guard silently dropped -- and never re-stamped.
@@ -73,6 +74,24 @@ def test_first_running_stamps_started_at():
     BuildRunner._apply_run_timestamps(step, Status.RUNNING, _T0)
     assert step.started_at == _T0
     assert step.finished_at is None
+
+
+def test_submitted_to_running_stamps_started_at():
+    """A non-linear first transition (SUBMITTED -> RUNNING) still stamps
+    started_at. A target run can be created SUBMITTED with started_at=None, and a
+    "was PENDING" precondition would silently drop it -- the mirror of the
+    finished_at regression."""
+    step = _step(Status.SUBMITTED)
+    BuildRunner._apply_run_timestamps(step, Status.RUNNING, _T0)
+    assert step.started_at == _T0
+
+
+def test_target_run_submitted_to_running_stamps_started_at():
+    """Same guarantee for target runs, which are the ones actually created in a
+    non-PENDING (SUBMITTED) state with started_at=None."""
+    target = _target(Status.SUBMITTED)
+    BuildRunner._apply_run_timestamps(target, Status.RUNNING, _T0)
+    assert target.started_at == _T0
 
 
 def test_reentry_into_running_does_not_restamp_started_at():
