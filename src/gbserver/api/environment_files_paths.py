@@ -102,9 +102,10 @@ class EnvironmentNotConfigured(HTTPException):
     """503 for a *known* environment that is unconfigured on this deployment.
 
     Distinct from ``AccessDenied``: reaching this means the ``{environment}`` is
-    supported (in the registry) but its ``environment_uri`` is unset, which is a
-    deployment-config problem — not something a caller can probe for, so it does
-    not need to hide behind the uniform 404.
+    supported (in the registry) but its ``environment_uri`` could not be derived
+    from the public space config on this deployment, which is a deployment-config
+    problem — not something a caller can probe for, so it does not need to hide
+    behind the uniform 404.
     """
 
     def __init__(self, environment: str) -> None:
@@ -120,16 +121,16 @@ def resolve_environment(environment: str) -> EnvironmentFilesConfig:
     Raises ``AccessDenied`` (the uniform 404) for any unsupported environment —
     identical to a missing folder, so the supported set can't be enumerated.
     Raises ``EnvironmentNotConfigured`` (503) for a supported environment whose
-    environment URI can be neither read (explicit override) nor derived (from the
-    public space config repo) on this deployment. Otherwise returns the
-    ``EnvironmentFilesConfig`` the handlers thread into tunnel + path resolution,
-    with ``environment_uri`` set to the resolved (override-or-derived) value.
+    environment URI can't be derived from the public space config repo on this
+    deployment. Otherwise returns the ``EnvironmentFilesConfig`` the handlers
+    thread into tunnel + path resolution, with ``environment_uri`` set to the
+    derived value.
     """
     config = ENVIRONMENT_FILES_REGISTRY.get(environment)
     if config is None:
         raise AccessDenied()
-    # There is one supported environment today, so its resolver is called
-    # directly. A second environment would generalize this to a per-entry
+    # bluevela is the only supported environment today, so its derivation is
+    # called directly. A second environment would generalize this to a per-entry
     # resolver; not abstracted prematurely.
     environment_uri = (
         get_supported_env_for_files_uri()

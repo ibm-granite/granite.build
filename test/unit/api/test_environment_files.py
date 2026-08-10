@@ -659,10 +659,10 @@ class TestDownloadAndPeek:
 
 class TestNotConfigured:
     def test_missing_environment_uri_returns_503(self):
-        # 503 requires that the environment URI can neither be read (explicit
-        # override) nor derived (public space config repo). We simulate that by
-        # pinning the resolver to "" — the single decision point resolve_environment
-        # consults. Patch only the tunnel besides that; leave the registry real.
+        # 503 requires that the environment URI can't be derived (from the public
+        # space config repo). We simulate that by pinning the resolver to "" — the
+        # single decision point resolve_environment consults. Patch only the tunnel
+        # besides that; leave the registry real.
         from gbserver.api import environment_files_paths as epaths
 
         tunnel = _RecordingTunnel()
@@ -679,14 +679,11 @@ class TestNotConfigured:
     def test_github_error_during_derivation_returns_503_not_500(self, monkeypatch):
         # End-to-end: a GitHub failure in the derivation must surface as the
         # documented 503, not an unhandled 500. Exercise the real resolve_environment
-        # + get_supported_env_for_files_uri (no override, public space set), and make
-        # the config-branch probe seam raise. No folder data is touched.
+        # + get_supported_env_for_files_uri (public space set), and make the
+        # config-branch probe seam raise. No folder data is touched.
         from gbcommon.uri.git import GitURI
         from gbserver.types import constants as c
 
-        monkeypatch.delenv(
-            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
-        )
         monkeypatch.setattr(
             c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
         )
@@ -707,7 +704,7 @@ class TestNotConfigured:
 
 
 class TestEnvironmentUriResolution:
-    """get_supported_env_for_files_uri: explicit override, else derive, else empty."""
+    """get_supported_env_for_files_uri: derive from the public space, else empty."""
 
     @pytest.fixture(autouse=True)
     def _clear_derive_cache(self):
@@ -720,26 +717,10 @@ class TestEnvironmentUriResolution:
         yield
         c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
 
-    def test_explicit_override_returned_verbatim(self, monkeypatch):
-        from gbserver.types import constants as c
-
-        monkeypatch.setenv(
-            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI,
-            "space://environments/bluevela",
-        )
-        # Override wins even when a public space URI is available to derive from.
-        monkeypatch.setattr(
-            c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
-        )
-        assert c.get_supported_env_for_files_uri() == "space://environments/bluevela"
-
-    def test_derived_from_public_space_when_override_unset(self, monkeypatch):
+    def test_derived_from_public_space(self, monkeypatch):
         from gbcommon.uri.git import GitURI
         from gbserver.types import constants as c
 
-        monkeypatch.delenv(
-            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
-        )
         monkeypatch.setattr(
             c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
         )
@@ -764,9 +745,6 @@ class TestEnvironmentUriResolution:
         from gbcommon.uri.git import GitURI
         from gbserver.types import constants as c
 
-        monkeypatch.delenv(
-            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
-        )
         monkeypatch.setattr(
             c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
         )
@@ -791,21 +769,15 @@ class TestEnvironmentUriResolution:
     def test_derived_from_file_public_space(self, monkeypatch):
         from gbserver.types import constants as c
 
-        monkeypatch.delenv(
-            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
-        )
         # A file:// public space (standalone / local dev): get_gb_space_config_uri
         # returns it unmodified, and append_path extends the path. No network.
         monkeypatch.setattr(c, "PUBLIC_SPACE_GIT_URI", "file:///tmp/gbspace-public")
         uri = c.get_supported_env_for_files_uri()
         assert uri == "file:///tmp/gbspace-public/environments/bluevela"
 
-    def test_empty_when_no_override_and_no_public_space(self, monkeypatch):
+    def test_empty_when_no_public_space(self, monkeypatch):
         from gbserver.types import constants as c
 
-        monkeypatch.delenv(
-            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
-        )
         monkeypatch.setattr(c, "PUBLIC_SPACE_GIT_URI", "")
         assert c.get_supported_env_for_files_uri() == ""
 
@@ -813,9 +785,6 @@ class TestEnvironmentUriResolution:
         from gbcommon.uri.git import GitURI
         from gbserver.types import constants as c
 
-        monkeypatch.delenv(
-            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
-        )
         monkeypatch.setattr(
             c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
         )
@@ -836,9 +805,6 @@ class TestEnvironmentUriResolution:
         from gbcommon.uri.git import GitURI
         from gbserver.types import constants as c
 
-        monkeypatch.delenv(
-            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
-        )
         monkeypatch.setattr(
             c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
         )
