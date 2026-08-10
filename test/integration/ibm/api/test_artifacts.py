@@ -33,6 +33,7 @@ from libgbtest.constants import (
     GBTEST_NON_ADMIN_GITHUB_TOKEN,
     GBTEST_SPACE_NAME,
 )
+from libgbtest.mode import is_mock_mode
 from libgbtest.storage.artifact_storage import ArtifactStorageTestSupport
 
 from gbcommon.uri.hf import HfType, HfURI
@@ -810,6 +811,15 @@ class TestArtifactAPI(AbstractAPITest):
         self._helper_artifact_update_system_tags(False)
 
     def _helper_artifact_update_system_tags(self, as_admin: bool):
+        # In mock mode the auth middleware runs in apikey mode and resolves every
+        # request to a single synthetic user, so admin and non-admin clients are
+        # indistinguishable. This test asserts a non-admin is rejected, which can
+        # only be exercised against live GitHub with distinct real identities.
+        if is_mock_mode():
+            pytest.skip(
+                reason="apikey auth maps every token to one synthetic user; "
+                "admin/non-admin authorization requires live GitHub identities"
+            )
         admin_token = GBTEST_ADMIN_GITHUB_TOKEN
         non_admin_token = GBTEST_NON_ADMIN_GITHUB_TOKEN
         if as_admin:
@@ -988,6 +998,14 @@ class TestArtifactAPI(AbstractAPITest):
         ), "Conflicting UID is not the expected one"
 
     def test_update_status(self):
+        # See _helper_artifact_update_system_tags: apikey (mock) auth collapses
+        # all tokens to one synthetic user, so the non-admin 401 assertion below
+        # can only be exercised against live GitHub with distinct identities.
+        if is_mock_mode():
+            pytest.skip(
+                reason="apikey auth maps every token to one synthetic user; "
+                "admin/non-admin authorization requires live GitHub identities"
+            )
         if GBTEST_ADMIN_GITHUB_TOKEN is None or GBTEST_NON_ADMIN_GITHUB_TOKEN is None:
             pytest.skip(reason="No github admin token available in the environment")
 
