@@ -67,8 +67,9 @@ class TestBuildWatcherInvalidBuild(AbstractTestBuildWatcher):
     def _get_build_count(self) -> int:
         return 1
 
-    # No need to run this for an invalid build (and cancel test does not support invalid builds).
-    @pytest.mark.skip
+    @pytest.mark.skip(
+        reason="No need to run this for an invalid build (and cancel test does not support invalid builds)."
+    )
     def test_build_watcher_cancel(self):
         pass
 
