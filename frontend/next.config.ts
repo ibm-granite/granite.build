@@ -19,7 +19,14 @@ const nextConfig: NextConfig = {
   ...(!isProd && gbserverApiUrl
     ? {
         async rewrites() {
-          return [{ source: '/api/:path*', destination: `${gbserverApiUrl}/api/:path*` }]
+          // gbserver is strict about trailing slashes (some routes require a
+          // trailing slash, e.g. /api/v1/builds/, others reject it). Preserve
+          // the client's slash verbatim: match slash-terminated paths first so
+          // :path* doesn't drop the final "/" before the query string.
+          return [
+            { source: '/api/:path*/', destination: `${gbserverApiUrl}/api/:path*/` },
+            { source: '/api/:path*', destination: `${gbserverApiUrl}/api/:path*` },
+          ]
         },
       }
     : {}),
