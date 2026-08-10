@@ -81,6 +81,20 @@ class ILineageStore(ABC):
         self, release_id: str, expected_count: int, target_id: Optional[str] = None
     ) -> bool: ...
 
+    def list_recorded_target_ids(self) -> set[str]:
+        """Return target uuids that already have lineage recorded in this store.
+
+        Lets a restarting recorder seed its in-memory "already recorded" skip set
+        from the store instead of re-emitting every historical target. This is an
+        efficiency optimization only — idempotent recording preserves correctness
+        regardless — so implementations must never raise; on failure they return
+        an empty set, which forces a (correct, if costlier) full rescan.
+
+        Defaults to an empty set for backends that record no centralized lineage
+        (e.g. the no-op store), for which there is nothing to seed.
+        """
+        return set()
+
 
 __JOBSTATS_STORAGE: Optional[ILineageStore] = None
 

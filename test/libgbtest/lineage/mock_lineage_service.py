@@ -46,6 +46,18 @@ class MockLineageService(LineageService):
                 total += 1
         return total
 
+    def list_recorded_target_ids(self) -> set:
+        # Mirror the real service: derive recorded target ids from the
+        # ``target_id=<uuid>`` tag on emitted events (its in-memory stand-in for
+        # wandb run metadata).
+        recorded: set = set()
+        for event in self._events:
+            for tag in self._tags_for_event(event):
+                if tag.startswith("target_id="):
+                    recorded.add(tag.split("=", 1)[1])
+                    break
+        return recorded
+
     def search_lineage_by_tags(
         self, tags: List[str], limit: int = 10, offset: int = 0
     ) -> Tuple[int, List[Dict]]:

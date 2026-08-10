@@ -44,6 +44,19 @@ class LineageService(ABC):
         pass
 
     @abstractmethod
+    def list_recorded_target_ids(self) -> set[str]:
+        """Return the set of target uuids that already have lineage recorded.
+
+        Read from the backing store's run metadata (cheap, paginated, read-only),
+        so a restarting recorder can seed its in-memory "already recorded" set
+        instead of re-emitting every historical target. Idempotent recording keeps
+        correctness regardless; this is purely an efficiency optimization, so on
+        any failure implementations should return an empty set (forcing a full
+        rescan) rather than raise.
+        """
+        pass
+
+    @abstractmethod
     def get_artifact_graph(
         self,
         artifact_name: Optional[str] = None,
@@ -74,6 +87,9 @@ class NoopLineageService(LineageService):
         self, tags: List[str], required_tags: Optional[List[str]] = None
     ) -> int:
         return 0
+
+    def list_recorded_target_ids(self) -> set[str]:
+        return set()
 
     def get_artifact_graph(
         self,

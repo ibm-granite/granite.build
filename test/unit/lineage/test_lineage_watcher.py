@@ -145,3 +145,69 @@ class TestLineageWatcher:
 
         assert watcher._recorded == {"t1", "t2"}
         assert store.add_jobstats_for_build_target.call_count == 2
+
+
+@pytest.mark.live("storage", "lineage")
+class TestLineageWatcherSeed:
+    """start() seeds _recorded from the store to avoid re-emitting history."""
+
+    def _start_without_thread(self, watcher: LineageWatcher) -> None:
+        """Run start()'s seeding without launching the background thread."""
+        with patch("threading.Thread"):
+            watcher.start()
+
+    def test_start_seeds_recorded_from_store(self):
+        """A restart seeds the skip set from the store's already-recorded ids."""
+        store = MagicMock()
+        store.list_recorded_target_ids.return_value = {"t1", "t2"}
+        watcher = LineageWatcher()
+        with patch(
+            "gbserver.lineage.lineage_watcher.get_lineage_store", return_value=store
+        ):
+            self._start_without_thread(watcher)
+
+        store.list_recorded_target_ids.assert_called_once_with()
+        assert watcher._recorded == {"t1", "t2"}
+
+    def test_seeded_targets_are_not_re_emitted(self):
+        """A target seeded as recorded is skipped, not re-driven through the leaf.
+
+        This is the efficiency win: after a restart, history already in the store
+        is not re-emitted. The seed is combined with a stubbed admin storage so we
+        can drive a scan and confirm the seeded target never reaches the leaf.
+        """
+        store = MagicMock()
+        store.list_recorded_target_ids.return_value = {"t1"}
+        admin_storage = MagicMock()
+        admin_storage.target_storage.get_by_where.side_effect = lambda where: [
+            _target("b1", "t1"),
+            _target("b2", "t2"),
+        ]
+        watcher = LineageWatcher()
+        with patch(
+            "gbserver.lineage.lineage_watcher.get_lineage_store", return_value=store
+        ):
+            self._start_without_thread(watcher)
+        with patch(
+            "gbserver.lineage.lineage_watcher.get_admin_storage",
+            return_value=admin_storage,
+        ):
+            watcher._reconcile()
+
+        # Only the un-seeded target t2 is recorded; the seeded t1 is skipped.
+        store.add_jobstats_for_build_target.assert_called_once_with(
+            admin_storage, build_id="b2", target_id="t2"
+        )
+        assert watcher._recorded == {"t1", "t2"}
+
+    def test_start_tolerates_empty_seed(self):
+        """An empty seed (e.g. store read failed) leaves a normal full-rescan state."""
+        store = MagicMock()
+        store.list_recorded_target_ids.return_value = set()
+        watcher = LineageWatcher()
+        with patch(
+            "gbserver.lineage.lineage_watcher.get_lineage_store", return_value=store
+        ):
+            self._start_without_thread(watcher)
+
+        assert watcher._recorded == set()

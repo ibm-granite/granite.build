@@ -804,6 +804,49 @@ class WandBLineageService(LineageService):
             logger.error("Failed to count runs by tags: %s", e)
             return 0
 
+    def list_recorded_target_ids(self) -> set[str]:
+        """Return target uuids that already have lineage recorded in wandb.
+
+        Scans the project's runs via the wandb Api, which returns a paginated,
+        read-only iterator over lightweight run metadata (id/tags/config) without
+        downloading history or artifacts. Each run carries a ``target_id=<uuid>``
+        tag (see WandBLineageStore._build_events_for_target), so we derive the
+        recorded set from that tag rather than parsing run ids — a run id is
+        ``"<target_uuid>-<output_uuid>"`` and both halves contain hyphens, making
+        it ambiguous to split.
+
+        This is an efficiency optimization only: a restarting recorder seeds its
+        in-memory skip set from this so it does not re-emit every historical
+        target. Idempotent recording (deterministic run ids + resume="allow")
+        preserves correctness regardless, so on any failure we return an empty set
+        — the caller then falls back to a full rescan, the pre-existing behavior.
+        """
+        try:
+            api = wandb.Api()
+            project_path = (
+                f"{GBSERVER_WANDB_ENTITY}/{GBSERVER_WANDB_PROJECT}"
+                if GBSERVER_WANDB_ENTITY
+                else GBSERVER_WANDB_PROJECT
+            )
+            recorded: set[str] = set()
+            # Server-side filter narrows the paginated scan to runs carrying a
+            # ``target_id=`` tag, so a project full of unrelated runs does not
+            # get fully downloaded. It is only a network optimization: backends
+            # that ignore the $regex just return more runs, and the client-side
+            # startswith check below remains the correctness guarantee.
+            for run in api.runs(
+                project_path, filters={"tags": {"$regex": "^target_id="}}
+            ):
+                for tag in run.tags or []:
+                    if tag.startswith("target_id="):
+                        recorded.add(tag.split("=", 1)[1])
+                        break
+            logger.info("Loaded %d already-recorded target(s) from wandb", len(recorded))
+            return recorded
+        except Exception as e:  # noqa: BLE001 — best-effort; any failure falls back to a full rescan
+            logger.error("Failed to list recorded target ids from wandb: %s", e)
+            return set()
+
     def search_lineage_by_tags(
         self, tags: list, limit: int = 10, offset: int = 0
     ) -> Tuple[int, list]:

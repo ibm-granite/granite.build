@@ -443,6 +443,12 @@ class WandBLineageStore(ILineageStore):
         count = self.count_release_ids(release_id, target_id)
         return count == expected_count
 
+    def list_recorded_target_ids(self) -> set[str]:
+        # Delegate to the service, which reads the recorded targets from wandb
+        # run metadata. Never raises: returns an empty set on failure so the
+        # caller falls back to a full rescan.
+        return self._service.list_recorded_target_ids()
+
     def _build_event_for_artifact(
         self,
         artifact: ArtifactRegistration,

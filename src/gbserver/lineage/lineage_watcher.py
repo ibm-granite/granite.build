@@ -95,6 +95,20 @@ class LineageWatcher:
             return
 
         self._store = get_lineage_store()
+        # Seed the skip set from the store (wandb run metadata) so the first scan
+        # after a restart does not re-emit every historical target. Reading the
+        # already-recorded ids is far cheaper than re-driving each through
+        # emit_event (paginated read-only metadata vs. one wandb.init + config +
+        # log + artifact registration per target-artifact). It never raises: on
+        # failure it returns empty, degrading to the pre-existing full rescan.
+        # Correctness never depends on it — idempotent recording handles any
+        # target the seed misses.
+        self._recorded = self._store.list_recorded_target_ids()
+        if self._recorded:
+            logger.info(
+                "Seeded %d already-recorded target(s) from the lineage store",
+                len(self._recorded),
+            )
         self.worker_thread = threading.Thread(
             target=self._run, name="lineage-watcher", daemon=True
         )
