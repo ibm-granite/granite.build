@@ -310,7 +310,13 @@ class WandBLineageStore(ILineageStore):
             events_list.extend(target_events)
             events_dict[target_artifact_name] = target_events
 
-        if len(targetrun.output_artifacts) == 0 and len(inputs) > 0:
+        # A successful target with no output artifacts still represents a real
+        # job run and must produce one event so its run is recorded — even when
+        # it has no inputs either (e.g. a pure generation/compute target). Guard
+        # only on the absence of output-artifact events, not on having inputs;
+        # otherwise an artifact-less target emits nothing and the reconciler
+        # silently marks it "recorded" without ever contacting the backend.
+        if len(targetrun.output_artifacts) == 0:
             event = {
                 **base_event,
                 "inputs": inputs,
@@ -365,6 +371,18 @@ class WandBLineageStore(ILineageStore):
         targetrun: StoredTargetRun,
     ) -> None:
         events, _ = self.create_jobstats_for_target(storage, targetrun, build)
+        if not events:
+            # No events means emit_event is never called, yet the caller
+            # (reconciler) will still mark the target recorded — a silent no-op
+            # that leaves nothing in the backend. Surface it rather than hide it.
+            logger.warning(
+                "No lineage events built for target %s (name=%s) in build %s; "
+                "nothing emitted to the lineage backend",
+                targetrun.uuid,
+                targetrun.name,
+                build.uuid,
+            )
+            return
         for event in events:
             self._service.emit_event(event)
 

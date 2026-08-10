@@ -243,6 +243,38 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
             release_id=build.uuid, expected_count=output_count
         ), f"Did not create {output_count} JobStats"
 
+    def test_target_with_no_artifacts_still_emits_one_event(self):
+        """A successful target with no inputs and no outputs must still record.
+
+        Regression: the event builder only emitted from output artifacts, with a
+        "no-output" fallback gated on having inputs. A target with neither (e.g.
+        a pure generation/compute target) produced zero events, so recording was
+        a silent backend no-op the reconciler still marked "recorded".
+        """
+        build_storage = self.storage.build_storage
+        target_storage = self.storage.target_storage
+
+        tsts, bsts, ssts, asts = get_test_support()
+
+        build = bsts._get_test_item(0)
+        build_storage.add(build)
+
+        targetrun = tsts._get_test_item(0)
+        targetrun.build_id = build.uuid
+        targetrun.input_artifacts = {}
+        targetrun.output_artifacts = {}
+        target_storage.add(targetrun)
+
+        lineage_storage = self._get_tested_lineage_storage()
+        events, events_dict = lineage_storage.create_jobstats_for_target(
+            self.storage, targetrun, build
+        )
+
+        assert len(events) == 1, "Expected exactly one event for artifact-less target"
+        assert "no-output" in events_dict
+        assert events[0].get("inputs", []) == []
+        assert events[0].get("outputs", []) == []
+
     def test_create_from_artifact(self):
         tsts, bsts, ssts, asts = get_test_support()
 

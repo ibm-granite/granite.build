@@ -83,7 +83,17 @@ class WandBLineageService(LineageService):
             id=run_id,
             name=job_name,
             resume="allow",
-            settings=wandb.Settings(quiet=GBSERVER_WANDB_QUIET),
+            # These runs are lineage *events*, not training runs. wandb's default
+            # code/git capture would snapshot the lineage-watcher process's own
+            # working tree (the gbserver checkout) into every recorded target —
+            # producing misleading code/, diff.patch, diff_<hash>.patch files and
+            # leaking the recorder's source/diff into wandb. Disable all of it.
+            settings=wandb.Settings(
+                quiet=GBSERVER_WANDB_QUIET,
+                save_code=False,
+                disable_code=True,
+                disable_git=True,
+            ),
         )
 
         self._runs[run_id] = run
@@ -829,18 +839,38 @@ class WandBLineageService(LineageService):
                 else GBSERVER_WANDB_PROJECT
             )
             recorded: set[str] = set()
-            # Server-side filter narrows the paginated scan to runs carrying a
-            # ``target_id=`` tag, so a project full of unrelated runs does not
-            # get fully downloaded. It is only a network optimization: backends
-            # that ignore the $regex just return more runs, and the client-side
-            # startswith check below remains the correctness guarantee.
-            for run in api.runs(
-                project_path, filters={"tags": {"$regex": "^target_id="}}
-            ):
+            # Scan every run and derive the recorded set from its tags. We do NOT
+            # pass a server-side ``{"tags": {"$regex": "^target_id="}}`` filter:
+            # the IBM wandb backend does not narrow on it but times out
+            # ("service process is busy and did not respond in time"), which made
+            # the seed silently return empty and forced a full rescan on every
+            # restart. The client-side ``startswith`` check below is the
+            # correctness guarantee regardless, so the unfiltered scan is both
+            # simpler and reliable; over-fetching unrelated runs is acceptable
+            # for a best-effort startup optimization.
+            run_count = 0
+            for run in api.runs(project_path):
+                run_count += 1
                 for tag in run.tags or []:
                     if tag.startswith("target_id="):
-                        recorded.add(tag.split("=", 1)[1])
+                        target_id = tag.split("=", 1)[1]
+                        # A run tagged ``target_id=`` with no value carries no
+                        # identity; skip it so an empty string never enters (and
+                        # never wrongly skips a target in) the seed set.
+                        if target_id:
+                            recorded.add(target_id)
                         break
+            if run_count and not recorded:
+                # Runs exist but none yielded a target id — likely a tag-schema
+                # change or a wrong entity/project. Surface it: the seed degrades
+                # to a full rescan, which is correct but wastefully re-drives
+                # every historical target.
+                logger.warning(
+                    "Scanned %d wandb run(s) in %s but found no target_id tags; "
+                    "seeding empty and falling back to a full rescan",
+                    run_count,
+                    project_path,
+                )
             logger.info(
                 "Loaded %d already-recorded target(s) from wandb", len(recorded)
             )
