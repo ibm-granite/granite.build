@@ -49,7 +49,18 @@ from gbserver.api.build_files_paths import (
 )
 from gbserver.api.builds import builds_api
 from gbserver.api.lsf_tunnel import open_lsf_tunnel
-from gbserver.api.remote_files_ops import (
+from gbserver.api.utils import translate_remote_file_errors
+from gbserver.environment.lsf_paths import build_remote_root_dir
+from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
+from gbserver.storage.stored_build import StoredBuild
+from gbserver.storage.stored_target_run import StoredTargetRun
+from gbserver.types.constants import (
+    BUILD_FILES_DOWNLOAD_MAX_BYTES,
+    BUILD_FILES_GREP_MAX_CONTEXT,
+    BUILD_FILES_PEEK_MAX_LINES,
+)
+from gbserver.utils.logger import get_logger
+from gbserver.utils.remote_files_ops import (
     FileEntry,
     GrepHit,
     _content_disposition,
@@ -61,16 +72,6 @@ from gbserver.api.remote_files_ops import (
     run_list,
     run_search,
 )
-from gbserver.environment.lsf_paths import build_remote_root_dir
-from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
-from gbserver.storage.stored_build import StoredBuild
-from gbserver.storage.stored_target_run import StoredTargetRun
-from gbserver.types.constants import (
-    BUILD_FILES_DOWNLOAD_MAX_BYTES,
-    BUILD_FILES_GREP_MAX_CONTEXT,
-    BUILD_FILES_PEEK_MAX_LINES,
-)
-from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -128,42 +129,43 @@ async def search_files(
     hit's owning file is annotated with ``size`` and ``mtime``. Returns
     ``[]`` when the pattern doesn't match anything.
     """
-    _reject_pattern_control_chars(pattern)
+    with translate_remote_file_errors():
+        _reject_pattern_control_chars(pattern)
 
-    build = lookup_build(build_id)
-    authorize_build_access(request, build)
-    environment_uri = _pick_environment_uri(build)
+        build = lookup_build(build_id)
+        authorize_build_access(request, build)
+        environment_uri = _pick_environment_uri(build)
 
-    async with open_lsf_tunnel(build.space_name, environment_uri) as (
-        tunnel,
-        cfg,
-    ):
-        build_root = build_remote_root_dir(cfg.workspace_remote_dir, build.uuid)
-        candidate = validate_subpath(build_root, path)
-        real = await resolve_and_check_real_path(tunnel, build_root, candidate)
-
-        logger.info(
-            "[build-files] search build=%s ignore_case=%s regex=%s "
-            "before=%s after=%s stat=%s",
-            build_id,
-            ignore_case,
-            regex,
-            before,
-            after,
-            stat,
-        )
-
-        return await run_search(
+        async with open_lsf_tunnel(build.space_name, environment_uri) as (
             tunnel,
-            build_root,
-            real,
-            pattern=pattern,
-            ignore_case=ignore_case,
-            regex=regex,
-            before=before,
-            after=after,
-            stat=stat,
-        )
+            cfg,
+        ):
+            build_root = build_remote_root_dir(cfg.workspace_remote_dir, build.uuid)
+            candidate = validate_subpath(build_root, path)
+            real = await resolve_and_check_real_path(tunnel, build_root, candidate)
+
+            logger.info(
+                "[build-files] search build=%s ignore_case=%s regex=%s "
+                "before=%s after=%s stat=%s",
+                build_id,
+                ignore_case,
+                regex,
+                before,
+                after,
+                stat,
+            )
+
+            return await run_search(
+                tunnel,
+                build_root,
+                real,
+                pattern=pattern,
+                ignore_case=ignore_case,
+                regex=regex,
+                before=before,
+                after=after,
+                stat=stat,
+            )
 
 
 # ---------------------------------------------------------------------- /files
@@ -201,40 +203,41 @@ async def list_files(
     second round-trip. The pattern filter is applied to the path
     component in this mode.
     """
-    if pattern is not None:
-        _reject_pattern_control_chars(pattern)
+    with translate_remote_file_errors():
+        if pattern is not None:
+            _reject_pattern_control_chars(pattern)
 
-    build = lookup_build(build_id)
-    authorize_build_access(request, build)
-    environment_uri = _pick_environment_uri(build)
+        build = lookup_build(build_id)
+        authorize_build_access(request, build)
+        environment_uri = _pick_environment_uri(build)
 
-    async with open_lsf_tunnel(build.space_name, environment_uri) as (
-        tunnel,
-        cfg,
-    ):
-        build_root = build_remote_root_dir(cfg.workspace_remote_dir, build.uuid)
-        candidate = validate_subpath(build_root, path)
-        real = await resolve_and_check_real_path(tunnel, build_root, candidate)
-
-        logger.info(
-            "[build-files] list build=%s recursive=%s filtered=%s regex=%s stat=%s",
-            build_id,
-            recursive,
-            pattern is not None,
-            regex,
-            stat,
-        )
-        logger.debug("[build-files] list real=%s build_root=%s", real, build_root)
-
-        return await run_list(
+        async with open_lsf_tunnel(build.space_name, environment_uri) as (
             tunnel,
-            build_root,
-            real,
-            recursive=recursive,
-            pattern=pattern,
-            regex=regex,
-            stat=stat,
-        )
+            cfg,
+        ):
+            build_root = build_remote_root_dir(cfg.workspace_remote_dir, build.uuid)
+            candidate = validate_subpath(build_root, path)
+            real = await resolve_and_check_real_path(tunnel, build_root, candidate)
+
+            logger.info(
+                "[build-files] list build=%s recursive=%s filtered=%s regex=%s stat=%s",
+                build_id,
+                recursive,
+                pattern is not None,
+                regex,
+                stat,
+            )
+            logger.debug("[build-files] list real=%s build_root=%s", real, build_root)
+
+            return await run_list(
+                tunnel,
+                build_root,
+                real,
+                recursive=recursive,
+                pattern=pattern,
+                regex=regex,
+                stat=stat,
+            )
 
 
 # ------------------------------------------------------------- /file/download
@@ -263,7 +266,8 @@ async def download_file(
     (~256 KiB by default). The file size cap does **not** apply in peek
     mode — tailing the last 200 lines of a 50 GiB log is the use case.
     """
-    peek = _validate_peek_args(head, tail, range_)
+    with translate_remote_file_errors():
+        peek = _validate_peek_args(head, tail, range_)
 
     build = lookup_build(build_id)
     authorize_build_access(request, build)
@@ -285,7 +289,9 @@ async def download_file(
                 peek[0],
                 peek[1],
             )
-            return await peek_file(tunnel, real, peek)
+            with translate_remote_file_errors():
+                text = await peek_file(tunnel, real, peek)
+            return Response(content=text, media_type="text/plain; charset=utf-8")
 
     # Tunnel lifecycle must outlive the streaming response body, so we open
     # it manually here and close it inside the body's finally on success or
@@ -297,7 +303,8 @@ async def download_file(
         candidate = validate_subpath(build_root, path)
         real = await resolve_and_check_real_path(tunnel, build_root, candidate)
 
-        size, is_dir = await _remote_stat(tunnel, real)
+        with translate_remote_file_errors():
+            size, is_dir = await _remote_stat(tunnel, real)
         if is_dir:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,

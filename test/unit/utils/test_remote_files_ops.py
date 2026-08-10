@@ -26,7 +26,7 @@ Focus is the low-level behavior that breaks silently and that no endpoint test
 targets head-on:
   * ``_parse_grep_line`` — NUL-delimited path/lineno/sep parsing
   * ``_parse_find_printf`` — ``%T@`` float-mtime truncation, type mapping
-  * ``_no_match_or_500`` — rc=1 (no match) vs rc=141 (SIGPIPE) vs rc>=2 (error)
+  * ``_no_match_or_500`` — rc=1 (no match) vs rc=141 (SIGPIPE) vs rc>=2 (domain error)
   * ``_remote_stat_batch`` — missing-path omission from batched stat
   * ``_validate_peek_args`` — mutual exclusion + range parsing
   * ``peek_file`` — directory rejection
@@ -37,9 +37,11 @@ from pathlib import PurePosixPath
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import HTTPException
 
-from gbserver.api.remote_files_ops import (
+from gbserver.utils.remote_files_ops import (
+    RemoteFileBadRequest,
+    RemoteFileNotFound,
+    RemoteFileOpFailed,
     _content_disposition,
     _no_match_or_500,
     _parse_find_printf,
@@ -76,21 +78,18 @@ class TestNoMatchOr500:
     def test_rc1_empty_streams_is_no_match(self):
         assert _no_match_or_500(1, "", "", "search") == []
 
-    def test_rc1_with_stderr_is_500(self):
+    def test_rc1_with_stderr_is_op_failed(self):
         # rc=1 but stderr non-empty → a pipeline-stage failure, not "no match".
-        with pytest.raises(HTTPException) as ei:
+        with pytest.raises(RemoteFileOpFailed):
             _no_match_or_500(1, "", "head: write error", "search")
-        assert ei.value.status_code == 500
 
-    def test_rc2_no_such_file_is_404(self):
-        with pytest.raises(HTTPException) as ei:
+    def test_rc2_no_such_file_is_not_found(self):
+        with pytest.raises(RemoteFileNotFound):
             _no_match_or_500(2, "", "grep: /x: No such file or directory", "search")
-        assert ei.value.status_code == 404
 
-    def test_rc2_other_error_is_500(self):
-        with pytest.raises(HTTPException) as ei:
+    def test_rc2_other_error_is_op_failed(self):
+        with pytest.raises(RemoteFileOpFailed):
             _no_match_or_500(2, "", "grep: something exploded", "search")
-        assert ei.value.status_code == 500
 
 
 # ------------------------------------------------------------- _parse_grep_line
@@ -227,38 +226,34 @@ class TestValidatePeekArgs:
     def test_range(self):
         assert _validate_peek_args(None, None, "2-9") == ("range", (2, 9))
 
-    def test_mutual_exclusion_400(self):
-        with pytest.raises(HTTPException) as ei:
+    def test_mutual_exclusion_bad_request(self):
+        with pytest.raises(RemoteFileBadRequest):
             _validate_peek_args(5, 5, None)
-        assert ei.value.status_code == 400
 
-    def test_range_inverted_400(self):
-        with pytest.raises(HTTPException) as ei:
+    def test_range_inverted_bad_request(self):
+        with pytest.raises(RemoteFileBadRequest):
             _validate_peek_args(None, None, "9-2")
-        assert ei.value.status_code == 400
 
-    def test_range_zero_start_400(self):
-        with pytest.raises(HTTPException) as ei:
+    def test_range_zero_start_bad_request(self):
+        with pytest.raises(RemoteFileBadRequest):
             _validate_peek_args(None, None, "0-5")
-        assert ei.value.status_code == 400
 
 
 # ------------------------------------------------------------------- peek_file
 
 
 class TestPeekFile:
-    def test_directory_rejected_400(self):
+    def test_directory_rejected_bad_request(self):
         async def run_remote(cmd, raise_on_error=True):
             # _remote_stat: size + %F "directory"
             return (0, "4096\tdirectory\n", "")
 
-        with pytest.raises(HTTPException) as ei:
+        with pytest.raises(RemoteFileBadRequest):
             asyncio.run(
                 peek_file(
                     _tunnel(run_remote), PurePosixPath("/proj/demo/d"), ("head", (2,))
                 )
             )
-        assert ei.value.status_code == 400
 
 
 # ------------------------------------------------------------------ _remote_stat
@@ -283,13 +278,12 @@ class TestRemoteStat:
         )
         assert is_dir is True
 
-    def test_missing_is_404(self):
+    def test_missing_is_not_found(self):
         async def run_remote(cmd, raise_on_error=True):
             return (1, "", "stat: cannot stat '/x': No such file or directory")
 
-        with pytest.raises(HTTPException) as ei:
+        with pytest.raises(RemoteFileNotFound):
             asyncio.run(_remote_stat(_tunnel(run_remote), PurePosixPath("/x")))
-        assert ei.value.status_code == 404
 
 
 # ------------------------------------------------------------ _content_disposition

@@ -23,6 +23,13 @@ listing (``find``/``ls``), recursive content grep (``grep -Z``), batched
 rooted at a caller-supplied ``root`` (a ``PurePosixPath``) — a build root or a
 environment-folder root — and is otherwise agnostic to what the root represents.
 
+This module is pure machinery and deliberately framework-free: it raises the
+domain errors defined below (``RemoteFileError`` subclasses) rather than
+``fastapi.HTTPException``, so it lives under ``gbserver/utils/`` alongside the
+other low-level helpers (``ssh_tunnel``, ``filesystem``, …) with no web-layer
+dependency. The thin ``api/`` handlers that call these functions translate the
+domain errors into HTTP responses (see ``gbserver.api.utils``).
+
 SECURITY: callers MUST resolve and containment-check every remote path (via
 ``build_files_paths.validate_subpath`` + ``resolve_and_check_real_path``, rooted
 at ``root``) before passing it here. Nothing in this module re-validates paths;
@@ -36,7 +43,6 @@ from pathlib import PurePosixPath
 from typing import AsyncIterator, Dict, List, Optional, Tuple, Union
 from urllib.parse import quote
 
-from fastapi import HTTPException, Response, status
 from pydantic import BaseModel
 
 from gbserver.types.constants import (
@@ -49,6 +55,33 @@ from gbserver.types.constants import (
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------- errors
+
+
+class RemoteFileError(Exception):
+    """Base for remote-file-op failures the API layer maps to an HTTP status.
+
+    Keeping this framework-free (no ``fastapi`` dependency) is what lets this
+    module live under ``gbserver/utils/``. The ``api/`` handlers catch these
+    and translate to ``HTTPException`` — see ``gbserver.api.utils`` for the
+    exception→status mapping. The message carried here is surfaced verbatim as
+    the HTTP detail, so it must not leak paths/identities the caller shouldn't
+    see (the existing messages are already generic, e.g. ``"path not found"``).
+    """
+
+
+class RemoteFileBadRequest(RemoteFileError):
+    """Invalid request (bad args / illegal pattern / bad range) → HTTP 400."""
+
+
+class RemoteFileNotFound(RemoteFileError):
+    """The requested remote path does not exist → HTTP 404."""
+
+
+class RemoteFileOpFailed(RemoteFileError):
+    """A remote command failed unexpectedly → HTTP 500."""
 
 
 # --------------------------------------------------------------------- models
@@ -90,14 +123,11 @@ def _reject_pattern_control_chars(pattern: str) -> None:
     those.
     """
     if any(c in pattern for c in ("\x00", "\n", "\r")):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "pattern contains illegal characters",
-        )
+        raise RemoteFileBadRequest("pattern contains illegal characters")
 
 
 def _no_match_or_500(rc: int, stdout: str, stderr: str, what: str) -> List[str]:
-    """Translate a `... | grep ... | head` exit code into hits or HTTPException.
+    """Translate a `... | grep ... | head` exit code into hits or a domain error.
 
     grep exits 1 when there are no matches — that's not an error here,
     return []. rc=141 is SIGPIPE: head closed its stdin after the cap was
@@ -120,11 +150,8 @@ def _no_match_or_500(rc: int, stdout: str, stderr: str, what: str) -> List[str]:
         return []
     err = (stderr or "").lower()
     if "no such file" in err or "cannot access" in err:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
-    raise HTTPException(
-        status.HTTP_500_INTERNAL_SERVER_ERROR,
-        f"{what} failed: {stderr.strip() or 'unknown error'}",
-    )
+        raise RemoteFileNotFound("path not found")
+    raise RemoteFileOpFailed(f"{what} failed: {stderr.strip() or 'unknown error'}")
 
 
 # ---------------------------------------------------------------- search / grep
@@ -361,10 +388,9 @@ async def run_list(
         if rc not in (0, 141):
             err = (stderr or "").lower()
             if "no such file" in err or "cannot access" in err:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
-            raise HTTPException(
-                status.HTTP_500_INTERNAL_SERVER_ERROR,
-                f"listing failed: {stderr.strip() or 'unknown error'}",
+                raise RemoteFileNotFound("path not found")
+            raise RemoteFileOpFailed(
+                f"listing failed: {stderr.strip() or 'unknown error'}"
             )
         lines = [ln for ln in (stdout or "").splitlines() if ln]
 
@@ -408,11 +434,8 @@ async def _list_files_stat(
     if rc not in (0, 141):
         err = (stderr or "").lower()
         if "no such file" in err or "cannot access" in err:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"listing failed: {stderr.strip() or 'unknown error'}",
-        )
+            raise RemoteFileNotFound("path not found")
+        raise RemoteFileOpFailed(f"listing failed: {stderr.strip() or 'unknown error'}")
 
     entries: List[FileEntry] = []
     for ln in (stdout or "").splitlines():
@@ -434,10 +457,7 @@ async def _list_files_stat(
             try:
                 rx = re.compile(pattern)
             except re.error as e:
-                raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST,
-                    f"invalid regex: {e}",
-                ) from e
+                raise RemoteFileBadRequest(f"invalid regex: {e}") from e
             entries = [e for e in entries if rx.search(e.path)]
         else:
             entries = [e for e in entries if pattern in e.path]
@@ -499,10 +519,7 @@ def _validate_peek_args(
     if set_count == 0:
         return None
     if set_count > 1:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "head, tail, and range are mutually exclusive",
-        )
+        raise RemoteFileBadRequest("head, tail, and range are mutually exclusive")
     if head is not None:
         return "head", (head,)
     if tail is not None:
@@ -512,15 +529,11 @@ def _validate_peek_args(
         start_s, end_s = range_.split("-", 1)
         start, end = int(start_s), int(end_s)
     except ValueError as e:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "range must be of the form start-end (1-indexed line numbers)",
+        raise RemoteFileBadRequest(
+            "range must be of the form start-end (1-indexed line numbers)"
         ) from e
     if start < 1 or end < start:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "range requires 1 <= start <= end",
-        )
+        raise RemoteFileBadRequest("range requires 1 <= start <= end")
     return "range", (start, end)
 
 
@@ -553,11 +566,8 @@ async def _peek_text(
     if rc not in (0, 141):
         err = (stderr or "").lower()
         if "no such file" in err or "cannot access" in err:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"peek failed: {stderr.strip() or 'unknown error'}",
-        )
+            raise RemoteFileNotFound("path not found")
+        raise RemoteFileOpFailed(f"peek failed: {stderr.strip() or 'unknown error'}")
     if isinstance(stdout, bytes):
         return stdout.decode("utf-8", errors="replace")
     return stdout or ""
@@ -567,26 +577,21 @@ async def peek_file(
     tunnel,
     real: PurePosixPath,
     peek: Tuple[str, Tuple[int, ...]],
-) -> Response:
-    """Peek at the already-resolved ``real`` (head/tail/range) as text/plain.
+) -> str:
+    """Peek at the already-resolved ``real`` (head/tail/range) and return text.
 
-    Rejects directories with 400. Callers must have resolved+containment-checked
-    ``real`` first.
+    Returns the decoded slice as a ``str``; the caller wraps it in a
+    ``text/plain; charset=utf-8`` HTTP response (this module stays framework-
+    free). Raises ``RemoteFileBadRequest`` for a directory target. Callers must
+    have resolved+containment-checked ``real`` first.
     """
     # Reject directories explicitly — head/tail on a directory would error
     # from the shell, but the message is clearer here.
     _size, is_dir = await _remote_stat(tunnel, real)
     if is_dir:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "peek endpoint requires a file, not a directory",
-        )
+        raise RemoteFileBadRequest("peek endpoint requires a file, not a directory")
     mode, args = peek
-    text = await _peek_text(tunnel, real, mode, args)
-    return Response(
-        content=text,
-        media_type="text/plain; charset=utf-8",
-    )
+    return await _peek_text(tunnel, real, mode, args)
 
 
 async def _remote_stat(tunnel, target: PurePosixPath) -> tuple[int, bool]:
@@ -596,31 +601,26 @@ async def _remote_stat(tunnel, target: PurePosixPath) -> tuple[int, bool]:
     if rc != 0:
         err = (stderr or "").strip().lower()
         if "no such file" in err or "cannot stat" in err:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "path not found")
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"stat failed: {stderr.strip() or 'unknown error'}",
-        )
+            raise RemoteFileNotFound("path not found")
+        raise RemoteFileOpFailed(f"stat failed: {stderr.strip() or 'unknown error'}")
     first = (stdout or "").splitlines()[0] if stdout else ""
     parts = first.split("\t")
     if len(parts) < 2:
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"unexpected stat output: {first!r}",
-        )
+        raise RemoteFileOpFailed(f"unexpected stat output: {first!r}")
     try:
         size = int(parts[0])
     except ValueError as e:
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"unexpected stat size: {parts[0]!r}",
-        ) from e
+        raise RemoteFileOpFailed(f"unexpected stat size: {parts[0]!r}") from e
     return size, parts[1].startswith("directory")
 
 
 __all__ = [
     "FileEntry",
     "GrepHit",
+    "RemoteFileBadRequest",
+    "RemoteFileError",
+    "RemoteFileNotFound",
+    "RemoteFileOpFailed",
     "_content_disposition",
     "_no_match_or_500",
     "_parse_find_printf",

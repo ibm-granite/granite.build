@@ -71,7 +71,15 @@ from gbserver.api.environment_files_paths import (
     validate_subpath,
 )
 from gbserver.api.lsf_tunnel import open_lsf_tunnel
-from gbserver.api.remote_files_ops import (
+from gbserver.api.utils import translate_remote_file_errors
+from gbserver.types.constants import (
+    ENV_FILES_DOWNLOAD_MAX_BYTES,
+    ENV_FILES_GREP_MAX_CONTEXT,
+    ENV_FILES_PEEK_MAX_LINES,
+    EnvironmentFilesConfig,
+)
+from gbserver.utils.logger import get_logger
+from gbserver.utils.remote_files_ops import (
     FileEntry,
     GrepHit,
     _content_disposition,
@@ -83,13 +91,6 @@ from gbserver.api.remote_files_ops import (
     run_list,
     run_search,
 )
-from gbserver.types.constants import (
-    ENV_FILES_DOWNLOAD_MAX_BYTES,
-    ENV_FILES_GREP_MAX_CONTEXT,
-    ENV_FILES_PEEK_MAX_LINES,
-    EnvironmentFilesConfig,
-)
-from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -151,42 +152,43 @@ async def search_environment_files(
     ``stat=true`` size/mtime annotation). Access requires membership in the
     ``proj_{folder}`` POSIX group; non-members get an indistinguishable 404.
     """
-    _reject_pattern_control_chars(pattern)
-    config = resolve_environment(environment)
-    folder = validate_folder_name(folder)
+    with translate_remote_file_errors():
+        _reject_pattern_control_chars(pattern)
+        config = resolve_environment(environment)
+        folder = validate_folder_name(folder)
 
-    async with open_lsf_tunnel(config.space_name, config.environment_uri) as (
-        tunnel,
-        _cfg,
-    ):
-        # Authorization first — ONLY getent runs; no folder data touched yet.
-        await authorize_folder_access(request, tunnel, folder)
-
-        root, real = await _resolve_folder_paths(tunnel, config, folder, path)
-
-        logger.info(
-            "[env-files] search environment=%s folder=%s ignore_case=%s regex=%s "
-            "before=%s after=%s stat=%s",
-            environment,
-            folder,
-            ignore_case,
-            regex,
-            before,
-            after,
-            stat,
-        )
-
-        return await run_search(
+        async with open_lsf_tunnel(config.space_name, config.environment_uri) as (
             tunnel,
-            root,
-            real,
-            pattern=pattern,
-            ignore_case=ignore_case,
-            regex=regex,
-            before=before,
-            after=after,
-            stat=stat,
-        )
+            _cfg,
+        ):
+            # Authorization first — ONLY getent runs; no folder data touched yet.
+            await authorize_folder_access(request, tunnel, folder)
+
+            root, real = await _resolve_folder_paths(tunnel, config, folder, path)
+
+            logger.info(
+                "[env-files] search environment=%s folder=%s ignore_case=%s regex=%s "
+                "before=%s after=%s stat=%s",
+                environment,
+                folder,
+                ignore_case,
+                regex,
+                before,
+                after,
+                stat,
+            )
+
+            return await run_search(
+                tunnel,
+                root,
+                real,
+                pattern=pattern,
+                ignore_case=ignore_case,
+                regex=regex,
+                before=before,
+                after=after,
+                stat=stat,
+            )
 
 
 # ---------------------------------------------------------------------- /files
@@ -213,40 +215,41 @@ async def list_environment_files(
     membership in the ``proj_{folder}`` POSIX group; non-members get an
     indistinguishable 404.
     """
-    if pattern is not None:
-        _reject_pattern_control_chars(pattern)
-    config = resolve_environment(environment)
-    folder = validate_folder_name(folder)
+    with translate_remote_file_errors():
+        if pattern is not None:
+            _reject_pattern_control_chars(pattern)
+        config = resolve_environment(environment)
+        folder = validate_folder_name(folder)
 
-    async with open_lsf_tunnel(config.space_name, config.environment_uri) as (
-        tunnel,
-        _cfg,
-    ):
-        # Authorization first — ONLY getent runs; no folder data touched yet.
-        await authorize_folder_access(request, tunnel, folder)
-
-        root, real = await _resolve_folder_paths(tunnel, config, folder, path)
-
-        logger.info(
-            "[env-files] list environment=%s folder=%s recursive=%s filtered=%s "
-            "regex=%s stat=%s",
-            environment,
-            folder,
-            recursive,
-            pattern is not None,
-            regex,
-            stat,
-        )
-
-        return await run_list(
+        async with open_lsf_tunnel(config.space_name, config.environment_uri) as (
             tunnel,
-            root,
-            real,
-            recursive=recursive,
-            pattern=pattern,
-            regex=regex,
-            stat=stat,
-        )
+            _cfg,
+        ):
+            # Authorization first — ONLY getent runs; no folder data touched yet.
+            await authorize_folder_access(request, tunnel, folder)
+
+            root, real = await _resolve_folder_paths(tunnel, config, folder, path)
+
+            logger.info(
+                "[env-files] list environment=%s folder=%s recursive=%s filtered=%s "
+                "regex=%s stat=%s",
+                environment,
+                folder,
+                recursive,
+                pattern is not None,
+                regex,
+                stat,
+            )
+
+            return await run_list(
+                tunnel,
+                root,
+                real,
+                recursive=recursive,
+                pattern=pattern,
+                regex=regex,
+                stat=stat,
+            )
 
 
 # ------------------------------------------------------------- /file/download
@@ -270,7 +273,8 @@ async def download_environment_file(
     bounded ``text/plain`` slice. Access requires membership in the
     ``proj_{folder}`` POSIX group; non-members get an indistinguishable 404.
     """
-    peek = _validate_peek_args(head, tail, range_)
+    with translate_remote_file_errors():
+        peek = _validate_peek_args(head, tail, range_)
     config = resolve_environment(environment)
     folder = validate_folder_name(folder)
 
@@ -292,7 +296,9 @@ async def download_environment_file(
                 peek[0],
                 peek[1],
             )
-            return await peek_file(tunnel, real, peek)
+            with translate_remote_file_errors():
+                text = await peek_file(tunnel, real, peek)
+            return Response(content=text, media_type="text/plain; charset=utf-8")
 
     # Tunnel lifecycle must outlive the streaming response body, so we open it
     # manually here and close it inside the body's finally on success or in the
@@ -305,7 +311,8 @@ async def download_environment_file(
 
         _root, real = await _resolve_folder_paths(tunnel, config, folder, path)
 
-        size, is_dir = await _remote_stat(tunnel, real)
+        with translate_remote_file_errors():
+            size, is_dir = await _remote_stat(tunnel, real)
         if is_dir:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
