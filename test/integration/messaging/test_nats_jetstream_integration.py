@@ -5,9 +5,8 @@ Requires a running nats-server with JetStream enabled on localhost:4222. The
 ``make start-nats``; to run these by hand instead:
     nats-server -js
 
-These are part of the extended suite (they need real infra), so they only run
-under ``make ibm-extended-tests``. When no NATS server is reachable they skip
-rather than fail.
+These are part of the extended suite (they need real infra). When no NATS
+server is reachable they skip rather than fail.
 """
 
 import asyncio
@@ -20,7 +19,7 @@ from libgbtest.constants import extended_testing_only
 
 from gbserver.messaging.messaging_base import Address
 
-pytestmark = [pytest.mark.ibm, pytest.mark.nats_server, extended_testing_only]
+pytestmark = [pytest.mark.nats_server, extended_testing_only]
 
 
 def _unique_queue():
