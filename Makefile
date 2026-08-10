@@ -294,7 +294,7 @@ ibm-quick-tests-setup:
 # secret_manager tests require IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL env var, which SPS is not providing or so it seems
 .PHONY: ibm-quick-tests
 ibm-quick-tests: check_ibm_sps_api_key
-	export GB_ENVIRONMENT=STANDALONE &&			\
+	export GB_ENVIRONMENT=STAGING &&			\
 	$(MAKE) GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
 		GBTEST_MODE=mock				\
 		PYTEST_MARKERS="ibm and not extended" 	\
