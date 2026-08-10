@@ -841,9 +841,13 @@ class WandBLineageService(LineageService):
                     if tag.startswith("target_id="):
                         recorded.add(tag.split("=", 1)[1])
                         break
-            logger.info("Loaded %d already-recorded target(s) from wandb", len(recorded))
+            logger.info(
+                "Loaded %d already-recorded target(s) from wandb", len(recorded)
+            )
             return recorded
-        except Exception as e:  # noqa: BLE001 — best-effort; any failure falls back to a full rescan
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 — best-effort; any failure falls back to a full rescan
             logger.error("Failed to list recorded target ids from wandb: %s", e)
             return set()
 
