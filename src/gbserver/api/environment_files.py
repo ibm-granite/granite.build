@@ -337,6 +337,13 @@ async def download_environment_file(
 
         filename = real.name or "download.bin"
 
+        # NOTE: unlike the search/list/peek paths, the streaming body below runs
+        # AFTER the translate_remote_file_errors() wrapper has exited, so a
+        # RemoteFileError raised inside it would NOT be translated to an HTTP
+        # status. Today stream_sftp_file raises raw SFTP errors (not domain
+        # RemoteFileError), so nothing needs translating here. If a future edit
+        # makes the streaming path raise domain errors, wrap them explicitly —
+        # they cannot rely on the outer context manager.
         async def body() -> AsyncIterator[bytes]:
             try:
                 async for chunk in stream_sftp_file(tunnel, str(real), size):
