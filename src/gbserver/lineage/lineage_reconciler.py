@@ -42,15 +42,30 @@ down is picked up on the next scan — there is no restart blind spot.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Callable, Iterable, Optional
 
 from gbserver.lineage.jobstats import ILineageStore
 from gbserver.storage.singleton_storage import SingletonAdminStorage
+from gbserver.storage.storage import Pagination, QueryControl, SortOrder
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Column the reconciliation scan sorts/paginates successful targets by. A target
+# gets finished_at set when it succeeds, so it is the moment the target becomes
+# recordable — the correct watermark for "finished since I last scanned" (unlike
+# created_time, which is set at build start and would skip a long-running target
+# that started before the watermark but finished after it).
+_FINISHED_AT_FIELD = "finished_at"
+
+# Rows fetched per admin-DB page. The scan sorts newest-finished-first and stops
+# at the caller's watermark, so a steady-state scan reads only newly-finished
+# targets (typically a partial first page); the page size just bounds how many
+# rows a single query materializes when catching up a backlog.
+_SCAN_PAGE_SIZE = 200
 
 
 def record_target_lineage(
@@ -75,66 +90,162 @@ def record_target_lineage(
     store.add_jobstats_for_build_target(storage, build_id=build_id, target_id=target_id)
 
 
+def _successful_targets_page(
+    storage: SingletonAdminStorage, page_index: int
+) -> list[StoredTargetRun]:
+    """Fetch one newest-finished-first page of successful target runs.
+
+    ``status`` is a queryable column, so this filters server-side; results are
+    ordered by ``finished_at`` descending and paginated so the caller can walk
+    from the newest completion down and stop at its watermark, rather than
+    materializing the whole successful-target set.
+    """
+    query_control = QueryControl(
+        pagination=Pagination(index=page_index, size=_SCAN_PAGE_SIZE),
+        sort_orders=[SortOrder(column=_FINISHED_AT_FIELD, ascending=False)],
+    )
+    targets = storage.target_storage.get_by_where(
+        {"status": Status.SUCCESS.name}, query_control=query_control
+    )
+    return [t for t in targets if isinstance(t, StoredTargetRun)]
+
+
 def select_recordable_targets(
     storage: SingletonAdminStorage,
+    finished_after: Optional[datetime] = None,
 ) -> list[StoredTargetRun]:
-    """Select the target runs whose lineage should be recorded.
+    """Select successful target runs whose lineage should be recorded.
 
     A target is recordable once it has completed successfully; its lineage is
-    fully persisted in admin storage at that point. ``status`` is a queryable
-    column on the target storage, so this is a single indexed query rather than a
-    full-table scan.
+    fully persisted in admin storage at that point. The successful-target set
+    grows without bound over the platform's lifetime, so this never materializes
+    all of it in steady state. Targets are fetched newest-``finished_at``-first
+    and the walk stops as soon as it crosses ``finished_after``:
+
+    - ``finished_after=None`` (startup / full catch-up): page through every
+      successful target so anything that finished while the recorder was down is
+      picked up. Recording is idempotent, so re-reading already-recorded targets
+      on this pass is harmless.
+    - ``finished_after=<watermark>`` (steady state): return only targets that
+      finished at or after the watermark, i.e. the newly-completed ones. Because
+      results are sorted by ``finished_at`` descending, the walk stops at the
+      first target that is not newer than the watermark — so a steady-state scan
+      reads only the new rows (typically a partial first page), never the whole
+      table, regardless of how many builds have accumulated.
+
+    The comparison is ``>=`` (not ``>``) so the boundary target is re-included
+    rather than dropped; idempotent recording makes the re-read harmless and the
+    caller's watermark advances past it. Targets with no ``finished_at`` are
+    skipped (they are not yet complete).
 
     Returns:
-        The successful target runs currently in the admin DB.
+        The selected successful target runs, newest-finished first.
     """
-    targets = storage.target_storage.get_by_where({"status": Status.SUCCESS.name})
-    return [t for t in targets if isinstance(t, StoredTargetRun)]
+    selected: list[StoredTargetRun] = []
+    page_index = 0
+    while True:
+        page = _successful_targets_page(storage, page_index)
+        for target in page:
+            # Sorted newest-finished-first: once we reach a target that finished
+            # before the watermark, every later one is older too — stop early.
+            if finished_after is not None and (
+                target.finished_at is None or target.finished_at < finished_after
+            ):
+                return selected
+            if target.finished_at is None:
+                # Full catch-up (no watermark): skip not-yet-finished rows that
+                # slipped in but keep scanning for older finished ones.
+                continue
+            selected.append(target)
+        if len(page) < _SCAN_PAGE_SIZE:
+            break
+        page_index += 1
+    return selected
 
 
 def reconcile_once(
     store: ILineageStore,
     storage: SingletonAdminStorage,
-    already_recorded: Optional[set[str]] = None,
+    finished_after: Optional[datetime] = None,
     on_error: Optional[Callable[[str, str, Exception], None]] = None,
-) -> set[str]:
+    on_success: Optional[Callable[[str, str], None]] = None,
+    skip: Optional[set[str]] = None,
+) -> Optional[datetime]:
     """Reconcile admin-DB lineage into the store once (the central mechanism).
 
-    Scans the admin DB for successful target runs and records each through the
-    single leaf. Targets whose uuid is in ``already_recorded`` are skipped to
-    bound per-scan work in steady state; recording is idempotent regardless, so
-    skipping is an optimization, not a correctness requirement.
+    Selects successful target runs that finished at or after ``finished_after``
+    (or every successful target when it is ``None``), asks the store which of
+    those it has not yet recorded, and records each of those through the single
+    leaf.
+
+    Two independent mechanisms bound the work and keep it sink-neutral:
+
+    - ``finished_after`` is a *time watermark* on the target itself (not on any
+      sink), so a steady-state scan reads only newly-finished targets from the
+      admin DB regardless of how many builds have accumulated. It says nothing
+      about whether a given sink has recorded a target.
+    - ``store.filter_unrecorded`` is the *per-sink* recorded-state check: each
+      sink owns its own record of what it has already recorded, so the same
+      admin DB can feed W&B and other sinks independently. It never raises; on
+      failure it returns the full candidate set, degrading to re-recording
+      (harmless — recording is idempotent).
 
     Args:
         store: The lineage store to record into.
         storage: Admin storage to reconcile from.
-        already_recorded: Target uuids recorded on a previous scan; skipped this
-            pass. Pass an empty set (or None) to force a full rescan — e.g. at
-            startup, so anything that succeeded while the recorder was down is
-            re-driven.
+        finished_after: Only consider targets that finished at or after this
+            time. ``None`` (startup / restart) considers every successful target
+            so anything that finished while the recorder was down is re-driven.
         on_error: Optional callback ``(build_id, target_id, exc)`` invoked when
             recording a single target raises, so the caller can queue a retry.
             When omitted, a failure is logged and the target is simply retried on
-            the next scan (it stays absent from the returned recorded set).
+            the next scan.
+        on_success: Optional callback ``(build_id, target_id)`` invoked when a
+            target records successfully, so the caller can clear any retry state
+            it was tracking for that target (a target that failed a prior scan
+            and then succeeds is only reported here — it drops out of the
+            unrecorded set, so ``on_error`` is never called for it again).
+        skip: Target uuids the caller has given up on (e.g. dropped after
+            exhausting retries). These are excluded from recording so a
+            persistently failing target — which still falls within the watermark
+            window every scan — cannot wedge the scan. They still count toward
+            the returned watermark so it can advance past them.
 
     Returns:
-        The set of target uuids successfully recorded so far, i.e.
-        ``already_recorded`` plus any newly recorded this pass. The caller
-        threads this back in as ``already_recorded`` on the next call.
+        The maximum ``finished_at`` across the targets *considered* this pass
+        (whether or not each recorded successfully), or ``finished_after``
+        unchanged when the scan found nothing newer. The caller threads this back
+        in as ``finished_after`` on the next call so the watermark advances.
     """
-    recorded: set[str] = set(already_recorded or set())
-    targets = select_recordable_targets(storage)
+    targets = select_recordable_targets(storage, finished_after=finished_after)
+
+    max_finished_at = finished_after
+    for target in targets:
+        if target.finished_at is not None and (
+            max_finished_at is None or target.finished_at > max_finished_at
+        ):
+            max_finished_at = target.finished_at
+
+    skip = skip or set()
+    by_uuid = {t.uuid: t for t in targets if t.uuid not in skip}
+    # No candidates → nothing to record and nothing to check. Skip the
+    # per-sink filter_unrecorded query entirely so an idle scan (or one where
+    # only the watermark-overlap boundary targets are all skipped) does not fire
+    # a backend query (e.g. a wandb api.runs call) that would return nothing.
+    if not by_uuid:
+        return max_finished_at
+    unrecorded = store.filter_unrecorded(set(by_uuid))
 
     newly_recorded = 0
-    for target in targets:
-        if target.uuid in recorded:
-            continue
+    for uuid in unrecorded:
+        target = by_uuid[uuid]
         try:
             record_target_lineage(
                 store, storage, build_id=target.build_id, target_id=target.uuid
             )
-            recorded.add(target.uuid)
             newly_recorded += 1
+            if on_success is not None:
+                on_success(target.build_id, target.uuid)
         except Exception as exc:  # noqa: BLE001 - reconciliation must not abort
             if on_error is not None:
                 on_error(target.build_id, target.uuid, exc)
@@ -149,7 +260,7 @@ def reconcile_once(
 
     if newly_recorded:
         logger.info("Reconciled lineage for %d target(s)", newly_recorded)
-    return recorded
+    return max_finished_at
 
 
 def record_selected_targets(

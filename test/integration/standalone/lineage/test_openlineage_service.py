@@ -176,9 +176,10 @@ class MockLineageService(LineageService):
             "truncated": max_depth <= 1,
         }
 
-    def list_recorded_target_ids(self) -> set[str]:
+    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
         # Mirror the real service: derive recorded target ids from the
-        # ``target_id=<uuid>`` tag on emitted events.
+        # ``target_id=<uuid>`` tag on emitted events, then return the candidates
+        # not among them.
         recorded: set[str] = set()
         for ev in self.events.values():
             run_facets = ev.get("run", {}).get("facets", {})
@@ -186,7 +187,7 @@ class MockLineageService(LineageService):
             target_id = ev_tags.get("target_id")
             if target_id:
                 recorded.add(target_id)
-        return recorded
+        return set(target_ids) - recorded
 
 
 # ---------------------------------------------------------------------------

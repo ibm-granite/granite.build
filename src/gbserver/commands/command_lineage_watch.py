@@ -23,7 +23,6 @@ single-writer guarantee is a deployment fact and lineage recording is isolated
 from the build watcher's failure domain, restarts, and resource contention.
 """
 
-import time
 import traceback
 
 import click
@@ -41,7 +40,7 @@ logger = get_logger(__name__)
     "--interval",
     required=False,
     type=float,
-    default=2.0,
+    default=30.0,
     show_default=True,
     help="Seconds between admin-DB reconciliation scans.",
 )
@@ -62,9 +61,10 @@ def cli(ctx: CliEnvironment, interval: float):
     try:
         logger.info("Starting lineage watcher")
         lineage_watcher.start()
-        # Keep the process alive; the watcher runs in a daemon thread.
-        while True:
-            time.sleep(interval)
+        # Keep the process alive; the watcher runs in a daemon thread. Block on
+        # the stop event rather than sleep-looping so a shutdown signal wakes the
+        # main thread immediately instead of after up to `interval` seconds.
+        lineage_watcher.stop_event.wait()
     except KeyboardInterrupt:
         logger.info("Lineage watcher interrupted")
     except Exception as e:

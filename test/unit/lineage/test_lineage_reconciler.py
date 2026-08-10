@@ -16,15 +16,16 @@
 
 These tests use an in-memory stub admin storage and a stub lineage store, so
 they run in CI without a cluster, PostgreSQL, or wandb credentials. They verify
-that reconciliation selects successful targets from the admin DB and records
-each through the single leaf, that a full rescan recovers targets that appeared
-while the recorder was down (no restart blind spot), and that the leaf is the
-one path all recording (scan + selective push) flows through.
+that reconciliation selects successful targets from the admin DB by a
+``finished_at`` time watermark and records each through the single leaf, that a
+full catch-up (no watermark) recovers targets that appeared while the recorder
+was down (no restart blind spot), that steady-state scans read only newly-
+finished targets, and that the per-sink ``filter_unrecorded`` check decides what
+each sink actually records.
 """
 
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock
-
-import pytest
 
 from gbserver.lineage.lineage_reconciler import (
     reconcile_once,
@@ -35,44 +36,104 @@ from gbserver.lineage.lineage_reconciler import (
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 
+_BASE = datetime(2026, 1, 1, 0, 0, 0)
+
 
 def _target(
-    build_id: str, uuid: str, status: Status = Status.SUCCESS
+    build_id: str,
+    uuid: str,
+    status: Status = Status.SUCCESS,
+    finished_at: datetime = None,
 ) -> StoredTargetRun:
     return StoredTargetRun(
         uuid=uuid,
         build_id=build_id,
         environment_uri="env://test",
         status=status,
+        finished_at=finished_at,
     )
 
 
-def _admin_storage_with(targets: list[StoredTargetRun]) -> MagicMock:
-    """Stub admin storage whose target_storage returns the given SUCCESS targets.
+_SCAN_PAGE_SIZE = 200
 
-    Asserts the reconciler queries by SUCCESS status rather than scanning all
-    targets, so the selection contract is pinned.
+
+def _admin_storage_with(targets: list[StoredTargetRun]) -> MagicMock:
+    """Stub admin storage whose target_storage pages SUCCESS targets.
+
+    Asserts the reconciler queries by SUCCESS status (rather than scanning all
+    targets) and honors the newest-``finished_at``-first pagination contract, so
+    both the selection filter and the bounded-scan behavior are pinned. Returns
+    targets sorted by ``finished_at`` descending (None sorts last) to mimic the
+    server-side ordering.
     """
     storage = MagicMock()
+    successful = sorted(
+        (t for t in targets if t.status == Status.SUCCESS),
+        key=lambda t: (t.finished_at is not None, t.finished_at or _BASE),
+        reverse=True,
+    )
 
-    def _get_by_where(where):
+    def _get_by_where(where, query_control=None):
         assert where == {"status": Status.SUCCESS.name}
-        return [t for t in targets if t.status == Status.SUCCESS]
+        assert query_control is not None
+        pagination = query_control.pagination
+        assert pagination is not None and pagination.size == _SCAN_PAGE_SIZE
+        assert query_control.sort_orders
+        assert query_control.sort_orders[0].column == "finished_at"
+        assert query_control.sort_orders[0].ascending is False
+        start = pagination.index * pagination.size
+        return successful[start : start + pagination.size]
 
     storage.target_storage.get_by_where.side_effect = _get_by_where
     return storage
+
+
+class _StubStore:
+    """Lineage store stub: records into a set, tracks calls, dedupes per-sink."""
+
+    def __init__(self, already_recorded: set[str] = None, fail: set[str] = None):
+        self._recorded = set(already_recorded or set())
+        self._fail = set(fail or set())
+        self.recorded_calls: list[tuple[str, str]] = []
+
+    def add_jobstats_for_build_target(self, storage, build_id, target_id):
+        if target_id in self._fail:
+            raise RuntimeError("boom")
+        self.recorded_calls.append((build_id, target_id))
+        self._recorded.add(target_id)
+
+    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
+        return set(target_ids) - self._recorded
 
 
 class TestSelectRecordableTargets:
     def test_selects_only_successful_targets(self):
         storage = _admin_storage_with(
             [
-                _target("b1", "t1", Status.SUCCESS),
-                _target("b1", "t2", Status.SUCCESS),
+                _target("b1", "t1", Status.SUCCESS, _BASE),
+                _target("b1", "t2", Status.SUCCESS, _BASE + timedelta(seconds=1)),
             ]
         )
         selected = select_recordable_targets(storage)
         assert {t.uuid for t in selected} == {"t1", "t2"}
+
+    def test_watermark_selects_only_newly_finished(self):
+        t1 = _target("b1", "t1", finished_at=_BASE)
+        t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=10))
+        t3 = _target("b1", "t3", finished_at=_BASE + timedelta(seconds=20))
+        storage = _admin_storage_with([t1, t2, t3])
+
+        selected = select_recordable_targets(
+            storage, finished_after=_BASE + timedelta(seconds=5)
+        )
+        # t1 finished before the watermark; only t2 and t3 are selected.
+        assert {t.uuid for t in selected} == {"t2", "t3"}
+
+    def test_watermark_boundary_is_inclusive(self):
+        t1 = _target("b1", "t1", finished_at=_BASE)
+        storage = _admin_storage_with([t1])
+        selected = select_recordable_targets(storage, finished_after=_BASE)
+        assert {t.uuid for t in selected} == {"t1"}
 
 
 class TestRecordTargetLineage:
@@ -87,73 +148,132 @@ class TestRecordTargetLineage:
 
 class TestReconcileOnce:
     def test_records_each_successful_target(self):
-        store = MagicMock()
-        storage = _admin_storage_with([_target("b1", "t1"), _target("b1", "t2")])
+        store = _StubStore()
+        storage = _admin_storage_with(
+            [
+                _target("b1", "t1", finished_at=_BASE),
+                _target("b1", "t2", finished_at=_BASE + timedelta(seconds=1)),
+            ]
+        )
 
-        recorded = reconcile_once(store, storage)
+        watermark = reconcile_once(store, storage)
 
-        assert recorded == {"t1", "t2"}
-        assert store.add_jobstats_for_build_target.call_count == 2
+        assert {c[1] for c in store.recorded_calls} == {"t1", "t2"}
+        assert watermark == _BASE + timedelta(seconds=1)
 
     def test_already_recorded_targets_are_skipped(self):
-        store = MagicMock()
-        storage = _admin_storage_with([_target("b1", "t1"), _target("b1", "t2")])
+        store = _StubStore(already_recorded={"t1"})
+        storage = _admin_storage_with(
+            [
+                _target("b1", "t1", finished_at=_BASE),
+                _target("b1", "t2", finished_at=_BASE + timedelta(seconds=1)),
+            ]
+        )
 
-        recorded = reconcile_once(store, storage, already_recorded={"t1"})
+        reconcile_once(store, storage)
 
         # Only the not-yet-recorded target is recorded this pass.
-        store.add_jobstats_for_build_target.assert_called_once_with(
-            storage, build_id="b1", target_id="t2"
-        )
-        assert recorded == {"t1", "t2"}
+        assert store.recorded_calls == [("b1", "t2")]
 
-    def test_full_rescan_recovers_targets_seen_while_down(self):
-        """A fresh scan (empty already_recorded) records everything in the DB.
+    def test_full_catch_up_recovers_targets_seen_while_down(self):
+        """A scan with no watermark records everything in the DB.
 
         This is the restart-blind-spot fix: a target that succeeded while the
         recorder was down is present in the admin DB and picked up on the next
         scan, with no event replay required.
         """
-        store = MagicMock()
-        # Two targets succeeded "while the watcher was down".
-        storage = _admin_storage_with([_target("b1", "t1"), _target("b2", "t2")])
+        store = _StubStore()
+        storage = _admin_storage_with(
+            [
+                _target("b1", "t1", finished_at=_BASE),
+                _target("b2", "t2", finished_at=_BASE + timedelta(seconds=1)),
+            ]
+        )
 
-        recorded = reconcile_once(store, storage, already_recorded=set())
+        reconcile_once(store, storage, finished_after=None)
 
-        assert recorded == {"t1", "t2"}
-        assert store.add_jobstats_for_build_target.call_count == 2
+        assert {c[1] for c in store.recorded_calls} == {"t1", "t2"}
+
+    def test_full_catch_up_pages_through_all_targets(self):
+        store = _StubStore()
+        targets = [
+            _target("b1", f"t{i}", finished_at=_BASE + timedelta(seconds=i))
+            for i in range(_SCAN_PAGE_SIZE + 5)
+        ]
+        storage = _admin_storage_with(targets)
+
+        reconcile_once(store, storage, finished_after=None)
+        assert {c[1] for c in store.recorded_calls} == {t.uuid for t in targets}
+
+    def test_steady_state_stops_at_watermark(self):
+        store = _StubStore()
+        targets = [
+            _target("b1", f"t{i}", finished_at=_BASE + timedelta(seconds=i))
+            for i in range(_SCAN_PAGE_SIZE + 5)
+        ]
+        storage = _admin_storage_with(targets)
+
+        # Watermark just below the newest few: only those newer are recorded,
+        # and the walk stops before reading the whole table.
+        watermark = _BASE + timedelta(seconds=_SCAN_PAGE_SIZE + 2)
+        reconcile_once(store, storage, finished_after=watermark)
+
+        recorded = {c[1] for c in store.recorded_calls}
+        assert recorded == {
+            f"t{i}"
+            for i in range(_SCAN_PAGE_SIZE + 5)
+            if _BASE + timedelta(seconds=i) >= watermark
+        }
+        # get_by_where was called only once (single partial page), not paged
+        # through the whole table.
+        assert storage.target_storage.get_by_where.call_count == 1
 
     def test_failure_does_not_abort_scan_and_target_retried_next_scan(self):
-        store = MagicMock()
-        storage = _admin_storage_with([_target("b1", "t1"), _target("b1", "t2")])
-        # t1 fails, t2 succeeds on the first scan.
-        store.add_jobstats_for_build_target.side_effect = [RuntimeError("boom"), None]
+        store = _StubStore(fail={"t1"})
+        storage = _admin_storage_with(
+            [
+                _target("b1", "t1", finished_at=_BASE),
+                _target("b1", "t2", finished_at=_BASE + timedelta(seconds=1)),
+            ]
+        )
 
-        recorded = reconcile_once(store, storage)
-
+        reconcile_once(store, storage)
         # Scan continued past the failure and recorded t2.
-        assert recorded == {"t2"}
-        assert store.add_jobstats_for_build_target.call_count == 2
+        assert ("b1", "t2") in store.recorded_calls
+        assert ("b1", "t1") not in store.recorded_calls
 
-        # Next scan: t1 (still not recorded) is retried and now succeeds.
-        store.add_jobstats_for_build_target.side_effect = None
-        recorded = reconcile_once(store, storage, already_recorded=recorded)
-        assert recorded == {"t1", "t2"}
+        # Next scan: t1 no longer fails and is retried (still unrecorded).
+        store._fail = set()
+        reconcile_once(store, storage)
+        assert ("b1", "t1") in store.recorded_calls
 
     def test_on_error_callback_invoked_on_failure(self):
-        store = MagicMock()
-        storage = _admin_storage_with([_target("b1", "t1")])
-        store.add_jobstats_for_build_target.side_effect = RuntimeError("boom")
+        store = _StubStore(fail={"t1"})
+        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
         errors = []
 
-        recorded = reconcile_once(
+        reconcile_once(
             store,
             storage,
             on_error=lambda b, t, e: errors.append((b, t, str(e))),
         )
 
-        assert recorded == set()  # not recorded
+        assert ("b1", "t1") not in store.recorded_calls
         assert errors == [("b1", "t1", "boom")]
+
+    def test_skip_set_excludes_targets_but_advances_watermark(self):
+        store = _StubStore()
+        t1 = _target("b1", "t1", finished_at=_BASE)
+        t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=5))
+        storage = _admin_storage_with([t1, t2])
+
+        watermark = reconcile_once(store, storage, skip={"t2"})
+
+        # t2 is skipped (dropped), t1 still recorded.
+        assert store.recorded_calls == [("b1", "t1")]
+        # Watermark still advances past the skipped target so it is not
+        # reconsidered forever.
+        assert watermark == _BASE + timedelta(seconds=5)
 
 
 class TestRecordSelectedTargets:

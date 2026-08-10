@@ -18,6 +18,7 @@
 
 import threading
 import time
+from datetime import datetime, timedelta
 from typing import Optional
 
 from gbserver.lineage.jobstats import ILineageStore, get_lineage_store
@@ -51,15 +52,25 @@ class LineageWatcher:
     idempotent recording means a duplicate watcher would waste I/O but not
     corrupt lineage.
 
-    ``already_recorded`` tracks target uuids recorded this process lifetime to
-    skip re-recording in steady state (an optimization; correctness does not
-    depend on it). It is seeded empty, so the first scan is a full rescan that
-    re-drives anything missed while the process was down.
+    Steady state uses a ``finished_at`` *time watermark* (``_last_seen``): each
+    scan asks the admin DB only for targets that finished at or after the
+    watermark, so per-scan work stays bounded no matter how many builds have
+    accumulated. The first scan after start() runs with no watermark (a full
+    catch-up over the whole admin DB) so anything that finished while the process
+    was down is re-driven; the watermark then advances to the newest completion
+    seen. A small ``_WATERMARK_OVERLAP`` is subtracted when querying so a target
+    that finished in the same instant as the watermark boundary is never skipped;
+    idempotent recording makes the resulting re-reads harmless.
 
-    A target whose recording raises is not marked recorded and is retried on the
-    next scan; a target that keeps failing is dropped after
-    ``_MAX_RECORD_ATTEMPTS`` so a persistent failure cannot wedge later scans
-    (it is then re-attempted only after a full-rescan reset).
+    Which of those newly-finished targets actually get recorded is decided
+    per-sink by ``store.filter_unrecorded`` (see ``reconcile_once``): the time
+    watermark is sink-neutral, and each sink owns its own recorded-state, so the
+    same admin DB can feed W&B and other sinks independently.
+
+    A target whose recording raises is retried on the next scan (the watermark
+    does not advance past a completion just because recording failed, and the
+    overlap guard re-surfaces it); a target that keeps failing is dropped after
+    ``_MAX_RECORD_ATTEMPTS`` so a persistent failure cannot wedge later scans.
     """
 
     # A target whose lineage recording keeps failing is retried this many times
@@ -67,7 +78,13 @@ class LineageWatcher:
     # network blip) is recovered without a persistent failure wedging the scan.
     _MAX_RECORD_ATTEMPTS = 3
 
-    def __init__(self, monitoring_interval: float = 2.0) -> None:
+    # Subtracted from the watermark when querying so a target that finished at (or
+    # a hair before) the boundary is re-surfaced rather than skipped — guards
+    # against equal-timestamp / clock-resolution races at the watermark edge.
+    # Re-reads are harmless because recording is idempotent.
+    _WATERMARK_OVERLAP = timedelta(seconds=5)
+
+    def __init__(self, monitoring_interval: float = 30.0) -> None:
         """Initialize the LineageWatcher.
 
         Args:
@@ -78,15 +95,17 @@ class LineageWatcher:
         self.stop_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
         self._store: Optional[ILineageStore] = None
-        # Target uuids already recorded this process lifetime; skipped on later
-        # scans in steady state (idempotency makes this an optimization only).
-        self._recorded: set[str] = set()
         # Target uuids dropped after exhausting retries; skipped on later scans
         # so a persistently failing target cannot wedge every scan.
         self._dropped: set[str] = set()
         # target_uuid -> attempts so far, for targets whose recording failed and
         # should be retried on a subsequent scan.
         self._failed_attempts: dict[str, int] = {}
+        # Watermark: the newest target ``finished_at`` seen so far. None until the
+        # first scan, which runs as a full catch-up over the whole admin DB;
+        # later scans query only targets that finished at/after this, keeping
+        # per-scan work bounded regardless of how many builds have accumulated.
+        self._last_seen: Optional[datetime] = None
 
     def start(self) -> None:
         """Start the watcher thread (daemon=True, does not keep process alive)."""
@@ -95,20 +114,6 @@ class LineageWatcher:
             return
 
         self._store = get_lineage_store()
-        # Seed the skip set from the store (wandb run metadata) so the first scan
-        # after a restart does not re-emit every historical target. Reading the
-        # already-recorded ids is far cheaper than re-driving each through
-        # emit_event (paginated read-only metadata vs. one wandb.init + config +
-        # log + artifact registration per target-artifact). It never raises: on
-        # failure it returns empty, degrading to the pre-existing full rescan.
-        # Correctness never depends on it — idempotent recording handles any
-        # target the seed misses.
-        self._recorded = self._store.list_recorded_target_ids()
-        if self._recorded:
-            logger.info(
-                "Seeded %d already-recorded target(s) from the lineage store",
-                len(self._recorded),
-            )
         self.worker_thread = threading.Thread(
             target=self._run, name="lineage-watcher", daemon=True
         )
@@ -129,29 +134,51 @@ class LineageWatcher:
         """Run one reconciliation scan over the admin DB.
 
         Delegates target selection and recording to ``reconcile_once`` (the
-        central mechanism), threading ``_recorded`` through so steady-state scans
-        skip already-recorded targets. Recording failures are routed to
-        ``_on_record_error`` to drive the bounded per-target retry.
+        central mechanism), passing the ``finished_at`` watermark so steady-state
+        scans read only newly-finished targets. The first scan passes no
+        watermark (full catch-up); the watermark then advances to the newest
+        completion seen. Recording failures are routed to ``_on_record_error`` to
+        drive the bounded per-target retry.
         """
         if self._store is None:
             logger.error("lineage store not initialized; start() must run first")
             return
         storage = get_admin_storage()
-        recorded = reconcile_once(
+        # First scan: no watermark → full catch-up. Later scans query slightly
+        # before the watermark so a boundary-timestamp completion is not skipped;
+        # idempotent recording makes the overlap re-reads harmless.
+        finished_after = (
+            None
+            if self._last_seen is None
+            else self._last_seen - self._WATERMARK_OVERLAP
+        )
+        max_finished_at = reconcile_once(
             self._store,
             storage,
-            already_recorded=self._recorded,
+            finished_after=finished_after,
             on_error=self._on_record_error,
+            on_success=self._on_record_success,
+            skip=self._dropped,
         )
-        # reconcile_once returns targets recorded successfully; union in any
-        # targets dropped after exhausting retries (tracked by _on_record_error)
-        # so a persistent failure stays skipped and cannot wedge every scan.
-        self._recorded = recorded | self._dropped
-        # A target that recorded successfully is now in _recorded; clear any
-        # retry bookkeeping so its attempt count does not linger.
-        for uuid in list(self._failed_attempts):
-            if uuid in self._recorded:
-                self._failed_attempts.pop(uuid, None)
+        # Advance the watermark to the newest completion seen this pass so the
+        # next scan reads only targets that finish after it. reconcile_once
+        # returns the max finished_at it considered (or finished_after unchanged
+        # when nothing newer was found), never moving the watermark backwards.
+        if max_finished_at is not None and (
+            self._last_seen is None or max_finished_at > self._last_seen
+        ):
+            self._last_seen = max_finished_at
+
+    def _on_record_success(self, build_id: str, target_id: str) -> None:
+        """Clear any retry state for a target that recorded successfully.
+
+        A target that failed a prior scan and then succeeds is reported only
+        here — it drops out of the unrecorded set on the next scan, so
+        ``_on_record_error`` is never called for it again. Without this, its
+        ``_failed_attempts`` entry would linger for the process lifetime and a
+        much-later re-failure would resume from a nonzero count.
+        """
+        self._failed_attempts.pop(target_id, None)
 
     def _on_record_error(self, build_id: str, target_id: str, exc: Exception) -> None:
         """Handle a recording failure for one target: retry or drop.
@@ -159,8 +186,9 @@ class LineageWatcher:
         Keeps a per-target attempt count so a transient failure is retried on the
         next scan, while a persistently failing target is dropped after
         ``_MAX_RECORD_ATTEMPTS`` (added to ``_dropped``, which ``_reconcile``
-        unions into ``_recorded``) so it stops being re-scanned — it is only
-        re-attempted after a full-rescan reset of ``_recorded``.
+        passes as ``skip`` to ``reconcile_once``) so it stops being re-recorded —
+        it still falls within the watermark window each scan, so the skip set is
+        what keeps it from wedging the scan.
         """
         attempts = self._failed_attempts.get(target_id, 0) + 1
         if attempts >= self._MAX_RECORD_ATTEMPTS:
@@ -207,3 +235,6 @@ class LineageWatcher:
                 )
         self.worker_thread = None
         self.stop_event.clear()
+        # Reset the watermark so the next start() runs a full catch-up over the
+        # whole admin DB, re-driving anything that finished while stopped.
+        self._last_seen = None

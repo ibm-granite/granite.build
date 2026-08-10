@@ -44,15 +44,15 @@ class LineageService(ABC):
         pass
 
     @abstractmethod
-    def list_recorded_target_ids(self) -> set[str]:
-        """Return the set of target uuids that already have lineage recorded.
+    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
+        """Return the subset of ``target_ids`` not yet recorded in this backend.
 
-        Read from the backing store's run metadata (cheap, paginated, read-only),
-        so a restarting recorder can seed its in-memory "already recorded" set
-        instead of re-emitting every historical target. Idempotent recording keeps
+        Bounded to the given candidates (queried against the backing store's run
+        metadata), so a recorder skips re-emitting targets this backend already
+        has without scanning its whole history. Idempotent recording keeps
         correctness regardless; this is purely an efficiency optimization, so on
-        any failure implementations should return an empty set (forcing a full
-        rescan) rather than raise.
+        any failure implementations should return ``target_ids`` unchanged
+        (re-recording the candidates, a harmless no-op) rather than raise.
         """
         pass
 
@@ -88,8 +88,8 @@ class NoopLineageService(LineageService):
     ) -> int:
         return 0
 
-    def list_recorded_target_ids(self) -> set[str]:
-        return set()
+    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
+        return target_ids
 
     def get_artifact_graph(
         self,

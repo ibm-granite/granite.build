@@ -81,19 +81,27 @@ class ILineageStore(ABC):
         self, release_id: str, expected_count: int, target_id: Optional[str] = None
     ) -> bool: ...
 
-    def list_recorded_target_ids(self) -> set[str]:
-        """Return target uuids that already have lineage recorded in this store.
+    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
+        """Return the subset of ``target_ids`` not yet recorded in *this* store.
 
-        Lets a restarting recorder seed its in-memory "already recorded" skip set
-        from the store instead of re-emitting every historical target. This is an
-        efficiency optimization only — idempotent recording preserves correctness
-        regardless — so implementations must never raise; on failure they return
-        an empty set, which forces a (correct, if costlier) full rescan.
+        Each sink owns its own record of what it has already recorded, so the
+        shared admin DB can feed W&B and other sinks independently — no per-sink
+        "recorded" bit lives in the admin schema. The reconciler passes the
+        candidate target uuids selected by the time watermark and records only
+        the returned subset, so a sink never re-emits a target it already has
+        while a *different* sink can still record the same target.
 
-        Defaults to an empty set for backends that record no centralized lineage
-        (e.g. the no-op store), for which there is nothing to seed.
+        Bounded by ``target_ids`` (the candidates from this scan), so it never
+        scans the sink's entire history. This is an efficiency optimization only
+        — idempotent recording preserves correctness regardless — so
+        implementations must never raise; on failure they return ``target_ids``
+        unchanged, degrading to re-recording the candidates (harmless).
+
+        Defaults to returning ``target_ids`` unchanged for backends that record
+        no centralized lineage (e.g. the no-op store); such a store's recording
+        leaf is itself a no-op, so the returned set is never actually recorded.
         """
-        return set()
+        return target_ids
 
 
 __JOBSTATS_STORAGE: Optional[ILineageStore] = None

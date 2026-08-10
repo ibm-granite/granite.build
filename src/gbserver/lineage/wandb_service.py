@@ -814,23 +814,26 @@ class WandBLineageService(LineageService):
             logger.error("Failed to count runs by tags: %s", e)
             return 0
 
-    def list_recorded_target_ids(self) -> set[str]:
-        """Return target uuids that already have lineage recorded in wandb.
+    def filter_unrecorded(self, target_ids: set[str]) -> set[str]:
+        """Return the subset of ``target_ids`` not yet recorded in wandb.
 
-        Scans the project's runs via the wandb Api, which returns a paginated,
-        read-only iterator over lightweight run metadata (id/tags/config) without
-        downloading history or artifacts. Each run carries a ``target_id=<uuid>``
-        tag (see WandBLineageStore._build_events_for_target), so we derive the
-        recorded set from that tag rather than parsing run ids — a run id is
-        ``"<target_uuid>-<output_uuid>"`` and both halves contain hyphens, making
-        it ambiguous to split.
+        Bounded to the given candidates: it queries only for runs tagged with one
+        of ``target_ids`` (a server-side ``{"tags": {"$in": [...]}}`` filter)
+        rather than scanning the whole project. Each recorded run carries a
+        ``target_id=<uuid>`` tag (see WandBLineageStore._build_events_for_target),
+        so we derive which candidates are already recorded from that tag and
+        return the rest. We match on the tag rather than parsing run ids — a run
+        id is ``"<target_uuid>-<output_uuid>"`` and both halves contain hyphens,
+        making it ambiguous to split.
 
-        This is an efficiency optimization only: a restarting recorder seeds its
-        in-memory skip set from this so it does not re-emit every historical
-        target. Idempotent recording (deterministic run ids + resume="allow")
-        preserves correctness regardless, so on any failure we return an empty set
-        — the caller then falls back to a full rescan, the pre-existing behavior.
+        This is an efficiency optimization only: it lets the recorder skip
+        re-emitting candidates wandb already has. Idempotent recording
+        (deterministic run ids + resume="allow") preserves correctness
+        regardless, so on any failure we return ``target_ids`` unchanged — the
+        caller then re-records the candidates, a harmless backend no-op.
         """
+        if not target_ids:
+            return set()
         try:
             api = wandb.Api()
             project_path = (
@@ -838,48 +841,29 @@ class WandBLineageService(LineageService):
                 if GBSERVER_WANDB_ENTITY
                 else GBSERVER_WANDB_PROJECT
             )
+            # Bound the query to this scan's candidates: match only runs whose
+            # target_id tag is one of ours. This is a set-membership ($in) filter,
+            # not the $regex the IBM wandb backend times out on, so it stays cheap
+            # and reliable regardless of how many historical runs exist.
+            candidate_tags = [f"target_id={tid}" for tid in target_ids]
             recorded: set[str] = set()
-            # Scan every run and derive the recorded set from its tags. We do NOT
-            # pass a server-side ``{"tags": {"$regex": "^target_id="}}`` filter:
-            # the IBM wandb backend does not narrow on it but times out
-            # ("service process is busy and did not respond in time"), which made
-            # the seed silently return empty and forced a full rescan on every
-            # restart. The client-side ``startswith`` check below is the
-            # correctness guarantee regardless, so the unfiltered scan is both
-            # simpler and reliable; over-fetching unrelated runs is acceptable
-            # for a best-effort startup optimization.
-            run_count = 0
-            for run in api.runs(project_path):
-                run_count += 1
+            for run in api.runs(
+                project_path, filters={"tags": {"$in": candidate_tags}}
+            ):
                 for tag in run.tags or []:
                     if tag.startswith("target_id="):
                         target_id = tag.split("=", 1)[1]
-                        # A run tagged ``target_id=`` with no value carries no
-                        # identity; skip it so an empty string never enters (and
-                        # never wrongly skips a target in) the seed set.
-                        if target_id:
+                        # Only count candidates we actually asked about; ignore
+                        # empty values and any unrelated tag the backend returns.
+                        if target_id in target_ids:
                             recorded.add(target_id)
                         break
-            if run_count and not recorded:
-                # Runs exist but none yielded a target id — likely a tag-schema
-                # change or a wrong entity/project. Surface it: the seed degrades
-                # to a full rescan, which is correct but wastefully re-drives
-                # every historical target.
-                logger.warning(
-                    "Scanned %d wandb run(s) in %s but found no target_id tags; "
-                    "seeding empty and falling back to a full rescan",
-                    run_count,
-                    project_path,
-                )
-            logger.info(
-                "Loaded %d already-recorded target(s) from wandb", len(recorded)
-            )
-            return recorded
+            return target_ids - recorded
         except (
             Exception
-        ) as e:  # noqa: BLE001 — best-effort; any failure falls back to a full rescan
-            logger.error("Failed to list recorded target ids from wandb: %s", e)
-            return set()
+        ) as e:  # noqa: BLE001 — best-effort; any failure re-records the candidates
+            logger.error("Failed to filter unrecorded target ids from wandb: %s", e)
+            return target_ids
 
     def search_lineage_by_tags(
         self, tags: list, limit: int = 10, offset: int = 0
