@@ -855,9 +855,11 @@ class WandBLineageService(LineageService):
                         target_id = tag.split("=", 1)[1]
                         # Only count candidates we actually asked about; ignore
                         # empty values and any unrelated tag the backend returns.
+                        # Don't break: a run can carry more than one target_id tag
+                        # (e.g. a run resumed across targets), and an earlier tag
+                        # may be one we didn't ask about — so scan them all.
                         if target_id in target_ids:
                             recorded.add(target_id)
-                        break
             return target_ids - recorded
         except (
             Exception

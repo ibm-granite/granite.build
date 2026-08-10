@@ -136,7 +136,8 @@ def select_recordable_targets(
     The comparison is ``>=`` (not ``>``) so the boundary target is re-included
     rather than dropped; idempotent recording makes the re-read harmless and the
     caller's watermark advances past it. Targets with no ``finished_at`` are
-    skipped (they are not yet complete).
+    skipped (they are not yet complete) but do not stop the walk — a NULL row
+    interleaved among finished ones must not truncate the scan.
 
     Returns:
         The selected successful target runs, newest-finished first.
@@ -146,16 +147,15 @@ def select_recordable_targets(
     while True:
         page = _successful_targets_page(storage, page_index)
         for target in page:
+            if target.finished_at is None:
+                # Not yet finished. NULL finished_at rows may be interleaved
+                # rather than sorted last, so this is a skip-and-continue — never
+                # an early return — regardless of whether a watermark is set.
+                continue
             # Sorted newest-finished-first: once we reach a target that finished
             # before the watermark, every later one is older too — stop early.
-            if finished_after is not None and (
-                target.finished_at is None or target.finished_at < finished_after
-            ):
+            if finished_after is not None and target.finished_at < finished_after:
                 return selected
-            if target.finished_at is None:
-                # Full catch-up (no watermark): skip not-yet-finished rows that
-                # slipped in but keep scanning for older finished ones.
-                continue
             selected.append(target)
         if len(page) < _SCAN_PAGE_SIZE:
             break

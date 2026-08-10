@@ -88,6 +88,23 @@ def _admin_storage_with(targets: list[StoredTargetRun]) -> MagicMock:
     return storage
 
 
+def _admin_storage_returning(pages: list[list[StoredTargetRun]]) -> MagicMock:
+    """Stub admin storage that returns exactly the given pages, order preserved.
+
+    Unlike ``_admin_storage_with`` this does not re-sort, so a test can hand the
+    reconciler NULL-``finished_at`` rows interleaved among finished ones to prove
+    the scan is not truncated by an out-of-contract ordering.
+    """
+    storage = MagicMock()
+
+    def _get_by_where(where, query_control=None):
+        idx = query_control.pagination.index
+        return pages[idx] if idx < len(pages) else []
+
+    storage.target_storage.get_by_where.side_effect = _get_by_where
+    return storage
+
+
 class _StubStore:
     """Lineage store stub: records into a set, tracks calls, dedupes per-sink."""
 
@@ -134,6 +151,24 @@ class TestSelectRecordableTargets:
         storage = _admin_storage_with([t1])
         selected = select_recordable_targets(storage, finished_after=_BASE)
         assert {t.uuid for t in selected} == {"t1"}
+
+    def test_interleaved_null_finished_at_does_not_truncate_scan(self):
+        # A NULL-finished_at row appearing before a still-recordable finished one
+        # (out-of-contract ordering) must be skipped, not treated as a watermark
+        # crossing that ends the walk.
+        t_new = _target("b1", "t_new", finished_at=_BASE + timedelta(seconds=20))
+        t_null = _target("b1", "t_null", finished_at=None)
+        t_recordable = _target(
+            "b1", "t_recordable", finished_at=_BASE + timedelta(seconds=10)
+        )
+        storage = _admin_storage_returning([[t_new, t_null, t_recordable]])
+
+        selected = select_recordable_targets(
+            storage, finished_after=_BASE + timedelta(seconds=5)
+        )
+        # t_null is skipped; t_recordable is still newer than the watermark and
+        # must not be dropped by an early return on the NULL row.
+        assert {t.uuid for t in selected} == {"t_new", "t_recordable"}
 
 
 class TestRecordTargetLineage:
