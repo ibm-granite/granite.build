@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import json
+import os
 from typing import Optional
 from urllib.parse import quote
 
@@ -51,14 +52,18 @@ from gbserver.api.artifacts import (
     ListArtifactsResponse,
     RegisterArtifactResponse,
 )
-from gbserver.api.auth import get_gh_user
+from gbserver.api.auth import _make_synthetic_user, get_gh_user
 from gbserver.lineage.jobstats import get_lineage_store
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,
 )
 from gbserver.storage.stored_space_user import StoredSpaceUser
-from gbserver.types.constants import PUBLIC_SPACE_NAME, SYSTEM_TAG_PREFIX
+from gbserver.types.constants import (
+    GBSERVER_GITHUB_TOKEN,
+    PUBLIC_SPACE_NAME,
+    SYSTEM_TAG_PREFIX,
+)
 
 base_url = "api/v1/artifacts"
 
@@ -71,6 +76,7 @@ class TestArtifactAPI(AbstractAPITest):
         # singleton_storage.set_storage(None, None, None, None, art_storage, None)
         support = ArtifactStorageTestSupport()
         client = self.get_test_client()
+        self._grant_super_admin()
 
         # Make sure there are no items
         response = client.get(f"{base_url}")
@@ -186,6 +192,51 @@ class TestArtifactAPI(AbstractAPITest):
         artifact = resp.artifact
         return artifact
 
+    def _grant_super_admin(self, token: str = GBSERVER_GITHUB_TOKEN) -> None:
+        """Register the effective request identity as an admin of the public space.
+
+        Under the storage-backed ``StorageSpaceAccessManager`` (active in
+        STAGING/DEV test runs), the artifact write/read endpoints require the
+        caller to own the target artifact or be a space admin.  Registering the
+        caller as an admin of the public space makes them a super-admin, which
+        grants access to artifacts in any (including synthetic) space, so tests
+        that register/read artifacts in arbitrary spaces are authorized.
+
+        The identity registered must match whatever the auth middleware attaches
+        to the request, which depends on ``GBSERVER_AUTH_MODE``:
+
+        * ``"apikey"`` (mock tests): the middleware never contacts GitHub; it
+          builds a synthetic user from ``GBSERVER_API_USER``.  We register that
+          same synthetic identity, so no network call is made.
+        * otherwise (live tests): the middleware resolves the caller from the
+          bearer token via GitHub, so we register that GitHub user's email.
+
+        Args:
+            token: GitHub token identifying the caller in oauth/github mode;
+                defaults to the token used by :meth:`get_test_client`.  Ignored
+                in apikey mode, where the request identity comes from
+                ``GBSERVER_API_USER``.
+
+        Raises:
+            AssertionError: in oauth/github mode, if the user cannot be resolved
+                from the token.
+        """
+        auth_mode = os.getenv("GBSERVER_AUTH_MODE", "github")
+        if auth_mode == "apikey":
+            # Mirror the middleware's synthetic-user construction so the email
+            # format stays a single source of truth (see auth._make_synthetic_user).
+            api_user = os.getenv("GBSERVER_API_USER", "standalone")
+            email = _make_synthetic_user(api_user).email
+        else:
+            user, _ = get_gh_user(token)
+            assert user is not None, "Could not resolve user from github token"
+            email = user.email
+        self.storage.space_user_storage.add(
+            StoredSpaceUser(
+                space_name=PUBLIC_SPACE_NAME, username=email, role="admin"
+            )
+        )
+
     def _validate_artifact_registration_response(
         self,
         response: Response,
@@ -269,6 +320,7 @@ class TestArtifactAPI(AbstractAPITest):
         username1 = "un1"
 
         client = self.get_test_client()
+        self._grant_super_admin()
         headers = {
             "content-type": "application/json",
         }
@@ -363,6 +415,7 @@ class TestArtifactAPI(AbstractAPITest):
         username1 = "un1"
 
         client = self.get_test_client()
+        self._grant_super_admin()
         headers = {
             "content-type": "application/json",
         }
@@ -455,6 +508,7 @@ class TestArtifactAPI(AbstractAPITest):
 
     def test_artifact_register_with_origins(self):
         client = self.get_test_client()
+        self._grant_super_admin()
         headers = {
             "content-type": "application/json",
         }
@@ -619,6 +673,7 @@ class TestArtifactAPI(AbstractAPITest):
 
     def test_artifact_uri_decoder_by_id(self):
         client = self.get_test_client()
+        self._grant_super_admin()
         headers = {
             "content-type": "application/json",
         }
@@ -775,16 +830,10 @@ class TestArtifactAPI(AbstractAPITest):
         namespace0 = "namespace0"
         space_name0 = GBTEST_SPACE_NAME
 
-        # Register the admin user in space_user_storage so StorageSpaceAccessManager
-        # recognizes them as a super-admin (admin of the public space).
+        # Register the admin user as a super-admin so StorageSpaceAccessManager
+        # recognizes them (admin of the public space).
         if as_admin:
-            user, _ = get_gh_user(token)
-            assert user is not None
-            self.storage.space_user_storage.add(
-                StoredSpaceUser(
-                    space_name=PUBLIC_SPACE_NAME, username=user.email, role="admin"
-                )
-            )
+            self._grant_super_admin(token)
 
         headers = {
             "content-type": "application/json",
@@ -899,6 +948,7 @@ class TestArtifactAPI(AbstractAPITest):
     def test_checksum_semantics(self):
 
         client = self.get_test_client()
+        self._grant_super_admin()
         headers = {
             "content-type": "application/json",
         }
@@ -942,13 +992,7 @@ class TestArtifactAPI(AbstractAPITest):
             pytest.skip(reason="No github admin token available in the environment")
 
         # Register the admin user as super-admin so StorageSpaceAccessManager grants access
-        admin_user, _ = get_gh_user(GBTEST_ADMIN_GITHUB_TOKEN)
-        assert admin_user is not None
-        self.storage.space_user_storage.add(
-            StoredSpaceUser(
-                space_name=PUBLIC_SPACE_NAME, username=admin_user.email, role="admin"
-            )
-        )
+        self._grant_super_admin(GBTEST_ADMIN_GITHUB_TOKEN)
 
         admin_client = self.get_test_client(token=GBTEST_ADMIN_GITHUB_TOKEN)
         non_admin_client = self.get_test_client(token=GBTEST_NON_ADMIN_GITHUB_TOKEN)
