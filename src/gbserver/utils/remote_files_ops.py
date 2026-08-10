@@ -114,7 +114,7 @@ class FileEntry(BaseModel):
 # --------------------------------------------------------------------- helpers
 
 
-def _reject_pattern_control_chars(pattern: str) -> None:
+def reject_pattern_control_chars(pattern: str) -> None:
     """Reject patterns with chars that break shell quoting or grep -F semantics.
 
     `shlex.quote` makes the pattern safe for the shell, and `grep -F`
@@ -469,7 +469,7 @@ async def _list_files_stat(
 # ------------------------------------------------------------- download / peek
 
 
-async def _stream_sftp_file(
+async def stream_sftp_file(
     tunnel, remote_path: str, max_bytes: int
 ) -> AsyncIterator[bytes]:
     """Yield up to ``max_bytes`` of a remote file via SFTP.
@@ -496,7 +496,7 @@ async def _stream_sftp_file(
             sftp.exit()
 
 
-def _content_disposition(filename: str) -> str:
+def content_disposition(filename: str) -> str:
     """RFC 5987 Content-Disposition value with an ASCII fallback + UTF-8 form."""
     ascii_fallback = (
         filename.encode("ascii", "replace").decode("ascii").replace('"', "_")
@@ -507,7 +507,7 @@ def _content_disposition(filename: str) -> str:
     )
 
 
-def _validate_peek_args(
+def validate_peek_args(
     head: Optional[int], tail: Optional[int], range_: Optional[str]
 ) -> Optional[Tuple[str, Tuple[int, ...]]]:
     """Return ``(mode, args)`` if exactly one peek arg is set, else None.
@@ -587,14 +587,14 @@ async def peek_file(
     """
     # Reject directories explicitly — head/tail on a directory would error
     # from the shell, but the message is clearer here.
-    _size, is_dir = await _remote_stat(tunnel, real)
+    _size, is_dir = await remote_stat(tunnel, real)
     if is_dir:
         raise RemoteFileBadRequest("peek endpoint requires a file, not a directory")
     mode, args = peek
     return await _peek_text(tunnel, real, mode, args)
 
 
-async def _remote_stat(tunnel, target: PurePosixPath) -> tuple[int, bool]:
+async def remote_stat(tunnel, target: PurePosixPath) -> tuple[int, bool]:
     """Return (size, is_dir) for `target`. 404 if missing, 500 otherwise."""
     cmd = f"stat -c '%s\t%F' -- {shlex.quote(str(target))}"  # literal TAB
     rc, stdout, stderr = await tunnel.run_remote(cmd, raise_on_error=False)
@@ -621,17 +621,12 @@ __all__ = [
     "RemoteFileError",
     "RemoteFileNotFound",
     "RemoteFileOpFailed",
-    "_content_disposition",
-    "_no_match_or_500",
-    "_parse_find_printf",
-    "_parse_grep_line",
-    "_peek_text",
-    "_reject_pattern_control_chars",
-    "_remote_stat",
-    "_remote_stat_batch",
-    "_stream_sftp_file",
-    "_validate_peek_args",
+    "content_disposition",
     "peek_file",
+    "reject_pattern_control_chars",
+    "remote_stat",
     "run_list",
     "run_search",
+    "stream_sftp_file",
+    "validate_peek_args",
 ]

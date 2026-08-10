@@ -82,14 +82,14 @@ from gbserver.utils.logger import get_logger
 from gbserver.utils.remote_files_ops import (
     FileEntry,
     GrepHit,
-    _content_disposition,
-    _reject_pattern_control_chars,
-    _remote_stat,
-    _stream_sftp_file,
-    _validate_peek_args,
+    content_disposition,
     peek_file,
+    reject_pattern_control_chars,
+    remote_stat,
     run_list,
     run_search,
+    stream_sftp_file,
+    validate_peek_args,
 )
 
 logger = get_logger(__name__)
@@ -153,7 +153,7 @@ async def search_environment_files(
     ``proj_{folder}`` POSIX group; non-members get an indistinguishable 404.
     """
     with translate_remote_file_errors():
-        _reject_pattern_control_chars(pattern)
+        reject_pattern_control_chars(pattern)
         config = resolve_environment(environment)
         folder = validate_folder_name(folder)
 
@@ -217,7 +217,7 @@ async def list_environment_files(
     """
     with translate_remote_file_errors():
         if pattern is not None:
-            _reject_pattern_control_chars(pattern)
+            reject_pattern_control_chars(pattern)
         config = resolve_environment(environment)
         folder = validate_folder_name(folder)
 
@@ -274,7 +274,7 @@ async def download_environment_file(
     ``proj_{folder}`` POSIX group; non-members get an indistinguishable 404.
     """
     with translate_remote_file_errors():
-        peek = _validate_peek_args(head, tail, range_)
+        peek = validate_peek_args(head, tail, range_)
     config = resolve_environment(environment)
     folder = validate_folder_name(folder)
 
@@ -312,7 +312,7 @@ async def download_environment_file(
         _root, real = await _resolve_folder_paths(tunnel, config, folder, path)
 
         with translate_remote_file_errors():
-            size, is_dir = await _remote_stat(tunnel, real)
+            size, is_dir = await remote_stat(tunnel, real)
         if is_dir:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
@@ -339,7 +339,7 @@ async def download_environment_file(
 
         async def body() -> AsyncIterator[bytes]:
             try:
-                async for chunk in _stream_sftp_file(tunnel, str(real), size):
+                async for chunk in stream_sftp_file(tunnel, str(real), size):
                     yield chunk
             finally:
                 await ctx.__aexit__(None, None, None)
@@ -348,7 +348,7 @@ async def download_environment_file(
             body(),
             media_type="application/octet-stream",
             headers={
-                "Content-Disposition": _content_disposition(filename),
+                "Content-Disposition": content_disposition(filename),
                 "Content-Length": str(size),
             },
         )

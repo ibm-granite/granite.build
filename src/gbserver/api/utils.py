@@ -47,7 +47,7 @@ def translate_remote_file_errors() -> Iterator[None]:
     """Translate ``RemoteFileError`` domain errors into ``HTTPException``.
 
     Wrap the file-op delegate calls (``run_search``/``run_list``/``peek_file``/
-    ``_remote_stat``/``_validate_peek_args``/…) in the ``api/`` file handlers
+    ``remote_stat``/``validate_peek_args``/…) in the ``api/`` file handlers
     with this so the shared, framework-free ``remote_files_ops`` module can
     signal failures without importing fastapi. The error's message is passed
     through verbatim as the HTTP detail (the module keeps those generic, so no

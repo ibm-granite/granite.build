@@ -28,7 +28,7 @@ targets head-on:
   * ``_parse_find_printf`` — ``%T@`` float-mtime truncation, type mapping
   * ``_no_match_or_500`` — rc=1 (no match) vs rc=141 (SIGPIPE) vs rc>=2 (domain error)
   * ``_remote_stat_batch`` — missing-path omission from batched stat
-  * ``_validate_peek_args`` — mutual exclusion + range parsing
+  * ``validate_peek_args`` — mutual exclusion + range parsing
   * ``peek_file`` — directory rejection
 """
 
@@ -42,14 +42,14 @@ from gbserver.utils.remote_files_ops import (
     RemoteFileBadRequest,
     RemoteFileNotFound,
     RemoteFileOpFailed,
-    _content_disposition,
     _no_match_or_500,
     _parse_find_printf,
     _parse_grep_line,
-    _remote_stat,
     _remote_stat_batch,
-    _validate_peek_args,
+    content_disposition,
     peek_file,
+    remote_stat,
+    validate_peek_args,
 )
 
 ROOT = PurePosixPath("/proj/demo")
@@ -210,33 +210,33 @@ class TestRemoteStatBatch:
         assert out == {"/proj/demo/a.txt": (10, 1700000000)}
 
 
-# ----------------------------------------------------------- _validate_peek_args
+# ------------------------------------------------------------ validate_peek_args
 
 
 class TestValidatePeekArgs:
     def test_none_when_no_arg(self):
-        assert _validate_peek_args(None, None, None) is None
+        assert validate_peek_args(None, None, None) is None
 
     def test_head(self):
-        assert _validate_peek_args(5, None, None) == ("head", (5,))
+        assert validate_peek_args(5, None, None) == ("head", (5,))
 
     def test_tail(self):
-        assert _validate_peek_args(None, 5, None) == ("tail", (5,))
+        assert validate_peek_args(None, 5, None) == ("tail", (5,))
 
     def test_range(self):
-        assert _validate_peek_args(None, None, "2-9") == ("range", (2, 9))
+        assert validate_peek_args(None, None, "2-9") == ("range", (2, 9))
 
     def test_mutual_exclusion_bad_request(self):
         with pytest.raises(RemoteFileBadRequest):
-            _validate_peek_args(5, 5, None)
+            validate_peek_args(5, 5, None)
 
     def test_range_inverted_bad_request(self):
         with pytest.raises(RemoteFileBadRequest):
-            _validate_peek_args(None, None, "9-2")
+            validate_peek_args(None, None, "9-2")
 
     def test_range_zero_start_bad_request(self):
         with pytest.raises(RemoteFileBadRequest):
-            _validate_peek_args(None, None, "0-5")
+            validate_peek_args(None, None, "0-5")
 
 
 # ------------------------------------------------------------------- peek_file
@@ -245,7 +245,7 @@ class TestValidatePeekArgs:
 class TestPeekFile:
     def test_directory_rejected_bad_request(self):
         async def run_remote(cmd, raise_on_error=True):
-            # _remote_stat: size + %F "directory"
+            # remote_stat: size + %F "directory"
             return (0, "4096\tdirectory\n", "")
 
         with pytest.raises(RemoteFileBadRequest):
@@ -256,7 +256,7 @@ class TestPeekFile:
             )
 
 
-# ------------------------------------------------------------------ _remote_stat
+# ------------------------------------------------------------------- remote_stat
 
 
 class TestRemoteStat:
@@ -265,7 +265,7 @@ class TestRemoteStat:
             return (0, "42\tregular file\n", "")
 
         size, is_dir = asyncio.run(
-            _remote_stat(_tunnel(run_remote), PurePosixPath("/proj/demo/a"))
+            remote_stat(_tunnel(run_remote), PurePosixPath("/proj/demo/a"))
         )
         assert (size, is_dir) == (42, False)
 
@@ -274,7 +274,7 @@ class TestRemoteStat:
             return (0, "4096\tdirectory\n", "")
 
         size, is_dir = asyncio.run(
-            _remote_stat(_tunnel(run_remote), PurePosixPath("/proj/demo/d"))
+            remote_stat(_tunnel(run_remote), PurePosixPath("/proj/demo/d"))
         )
         assert is_dir is True
 
@@ -283,20 +283,20 @@ class TestRemoteStat:
             return (1, "", "stat: cannot stat '/x': No such file or directory")
 
         with pytest.raises(RemoteFileNotFound):
-            asyncio.run(_remote_stat(_tunnel(run_remote), PurePosixPath("/x")))
+            asyncio.run(remote_stat(_tunnel(run_remote), PurePosixPath("/x")))
 
 
-# ------------------------------------------------------------ _content_disposition
+# ------------------------------------------------------------- content_disposition
 
 
 class TestContentDisposition:
     def test_ascii_filename(self):
-        v = _content_disposition("notes.txt")
+        v = content_disposition("notes.txt")
         assert 'filename="notes.txt"' in v
         assert "filename*=UTF-8''notes.txt" in v
 
     def test_non_ascii_gets_utf8_form_and_ascii_fallback(self):
-        v = _content_disposition("résumé.txt")
+        v = content_disposition("résumé.txt")
         # UTF-8 form percent-encodes; ascii fallback replaces non-ascii.
         assert "filename*=UTF-8''" in v
         assert "%" in v.split("UTF-8''", 1)[1]

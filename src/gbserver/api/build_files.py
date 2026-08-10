@@ -63,14 +63,14 @@ from gbserver.utils.logger import get_logger
 from gbserver.utils.remote_files_ops import (
     FileEntry,
     GrepHit,
-    _content_disposition,
-    _reject_pattern_control_chars,
-    _remote_stat,
-    _stream_sftp_file,
-    _validate_peek_args,
+    content_disposition,
     peek_file,
+    reject_pattern_control_chars,
+    remote_stat,
     run_list,
     run_search,
+    stream_sftp_file,
+    validate_peek_args,
 )
 
 logger = get_logger(__name__)
@@ -130,7 +130,7 @@ async def search_files(
     ``[]`` when the pattern doesn't match anything.
     """
     with translate_remote_file_errors():
-        _reject_pattern_control_chars(pattern)
+        reject_pattern_control_chars(pattern)
 
         build = lookup_build(build_id)
         authorize_build_access(request, build)
@@ -205,7 +205,7 @@ async def list_files(
     """
     with translate_remote_file_errors():
         if pattern is not None:
-            _reject_pattern_control_chars(pattern)
+            reject_pattern_control_chars(pattern)
 
         build = lookup_build(build_id)
         authorize_build_access(request, build)
@@ -267,7 +267,7 @@ async def download_file(
     mode — tailing the last 200 lines of a 50 GiB log is the use case.
     """
     with translate_remote_file_errors():
-        peek = _validate_peek_args(head, tail, range_)
+        peek = validate_peek_args(head, tail, range_)
 
     build = lookup_build(build_id)
     authorize_build_access(request, build)
@@ -304,7 +304,7 @@ async def download_file(
         real = await resolve_and_check_real_path(tunnel, build_root, candidate)
 
         with translate_remote_file_errors():
-            size, is_dir = await _remote_stat(tunnel, real)
+            size, is_dir = await remote_stat(tunnel, real)
         if is_dir:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
@@ -330,7 +330,7 @@ async def download_file(
 
         async def body() -> AsyncIterator[bytes]:
             try:
-                async for chunk in _stream_sftp_file(tunnel, str(real), size):
+                async for chunk in stream_sftp_file(tunnel, str(real), size):
                     yield chunk
             finally:
                 await ctx.__aexit__(None, None, None)
@@ -339,7 +339,7 @@ async def download_file(
             body(),
             media_type="application/octet-stream",
             headers={
-                "Content-Disposition": _content_disposition(filename),
+                "Content-Disposition": content_disposition(filename),
                 "Content-Length": str(size),
             },
         )

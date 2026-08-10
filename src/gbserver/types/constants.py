@@ -405,10 +405,22 @@ BUILD_FILES_STAT_BATCH_MAX = int(
 # Environment-files REST API (GET /files/{environment}/{folder}/...). Browses a
 # named folder on the login nodes of a *supported environment*, authorized by
 # POSIX group membership. Reuses the same remote file-op machinery and caps as
-# the build-files API — these are aliases so the two can diverge later with a
-# one-line change if an environment-specific limit is ever needed. SSH/login is
-# the shared service identity resolved per-request via open_lsf_tunnel (same as
-# build-files); there is intentionally no separate SSH/login config here.
+# the build-files API. SSH/login is the shared service identity resolved
+# per-request via open_lsf_tunnel (same as build-files); there is intentionally
+# no separate SSH/login config here.
+#
+# These are aliases of the BUILD_FILES_* originals, but note they are NOT all
+# independently tunable for the environment-files API:
+#   - LIST_MAX_ENTRIES / GREP_MAX_HITS / GREP_LINE_MAX_BYTES / PEEK_MAX_BYTES /
+#     STAT_BATCH_MAX are enforced *inside* the shared remote_files_ops module,
+#     which reads the BUILD_FILES_* originals directly. They are shared: pointing
+#     one of these ENV_FILES_* aliases at a different value has no effect on the
+#     environment-files behavior (both APIs get the BUILD_FILES_* value).
+#   - DOWNLOAD_MAX_BYTES / GREP_MAX_CONTEXT / PEEK_MAX_LINES are enforced in the
+#     API handlers themselves (Query bounds / download pre-flight), so these
+#     three *can* diverge by assigning the alias a different value here.
+# To make one of the shared caps independently tunable, remote_files_ops would
+# have to accept it as a parameter instead of importing BUILD_FILES_* directly.
 ENV_FILES_DOWNLOAD_MAX_BYTES = BUILD_FILES_DOWNLOAD_MAX_BYTES
 ENV_FILES_LIST_MAX_ENTRIES = BUILD_FILES_LIST_MAX_ENTRIES
 ENV_FILES_GREP_MAX_HITS = BUILD_FILES_GREP_MAX_HITS
