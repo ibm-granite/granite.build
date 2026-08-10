@@ -680,6 +680,17 @@ class TestNotConfigured:
 class TestEnvironmentUriResolution:
     """get_supported_env_for_files_uri: explicit override, else derive, else empty."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_derive_cache(self):
+        # The derived URI is memoized per public-space URI at module scope; clear
+        # it around each test so a monkeypatched PUBLIC_SPACE_GIT_URI never reads
+        # or leaves a stale entry.
+        from gbserver.types import constants as c
+
+        c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
+        yield
+        c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
+
     def test_explicit_override_returned_verbatim(self, monkeypatch):
         from gbserver.types import constants as c
 
@@ -694,6 +705,7 @@ class TestEnvironmentUriResolution:
         assert c.get_supported_env_for_files_uri() == "space://environments/bluevela"
 
     def test_derived_from_public_space_when_override_unset(self, monkeypatch):
+        from gbcommon.uri.git import GitURI
         from gbserver.types import constants as c
 
         monkeypatch.delenv(
@@ -702,14 +714,62 @@ class TestEnvironmentUriResolution:
         monkeypatch.setattr(
             c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
         )
-        # Empty GitHub token → get_gb_space_config_uri skips the @<branch> suffix
-        # (and any repo probe), so this stays offline. The shape we assert on: a
-        # git+ssh asset URI into environments/bluevela of the public space repo.
-        monkeypatch.setattr(c, "GBSERVER_GITHUB_TOKEN", "", raising=False)
+        # Patch the actual seam (the space-config-URI conversion) rather than the
+        # token: get_gb_space_config_uri binds its token default at import time, so
+        # patching the module attribute would be a no-op and the real call could
+        # hit the network. Here we return the branchless base (no config branch
+        # found) to confirm append_path still targets environments/bluevela.
+        monkeypatch.setattr(
+            GitURI,
+            "get_gb_space_config_uri",
+            staticmethod(
+                lambda uri, *a, **k: "git+ssh://example.com/org/gbspace-public.git"
+            ),
+        )
         uri = c.get_supported_env_for_files_uri()
         assert uri.startswith("git+ssh://example.com/org/gbspace-public.git")
         # subdirectory fragment points at environments/bluevela (URL-encoded '/').
         assert "subdirectory=environments%2Fbluevela" in uri
+
+    def test_derived_preserves_config_branch_suffix(self, monkeypatch):
+        from gbcommon.uri.git import GitURI
+        from gbserver.types import constants as c
+
+        monkeypatch.delenv(
+            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
+        )
+        monkeypatch.setattr(
+            c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
+        )
+        # When a config branch WAS found, get_gb_space_config_uri returns a URI
+        # with @<branch> and an empty "#subdirectory="; append_path must extend
+        # that fragment, not add a second one, and keep the @<branch> ref.
+        monkeypatch.setattr(
+            GitURI,
+            "get_gb_space_config_uri",
+            staticmethod(
+                lambda uri, *a, **k: (
+                    "git+ssh://example.com/org/gbspace-public.git"
+                    "@gbspace-config#subdirectory="
+                )
+            ),
+        )
+        uri = c.get_supported_env_for_files_uri()
+        assert "@gbspace-config" in uri
+        assert uri.count("#") == 1  # single fragment, not two
+        assert "subdirectory=environments%2Fbluevela" in uri
+
+    def test_derived_from_file_public_space(self, monkeypatch):
+        from gbserver.types import constants as c
+
+        monkeypatch.delenv(
+            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
+        )
+        # A file:// public space (standalone / local dev): get_gb_space_config_uri
+        # returns it unmodified, and append_path extends the path. No network.
+        monkeypatch.setattr(c, "PUBLIC_SPACE_GIT_URI", "file:///tmp/gbspace-public")
+        uri = c.get_supported_env_for_files_uri()
+        assert uri == "file:///tmp/gbspace-public/environments/bluevela"
 
     def test_empty_when_no_override_and_no_public_space(self, monkeypatch):
         from gbserver.types import constants as c
@@ -719,3 +779,26 @@ class TestEnvironmentUriResolution:
         )
         monkeypatch.setattr(c, "PUBLIC_SPACE_GIT_URI", "")
         assert c.get_supported_env_for_files_uri() == ""
+
+    def test_derived_uri_is_memoized(self, monkeypatch):
+        from gbcommon.uri.git import GitURI
+        from gbserver.types import constants as c
+
+        monkeypatch.delenv(
+            c.ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, raising=False
+        )
+        monkeypatch.setattr(
+            c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
+        )
+        calls = {"n": 0}
+
+        def _counting(uri, *a, **k):
+            calls["n"] += 1
+            return "git+ssh://example.com/org/gbspace-public.git"
+
+        monkeypatch.setattr(GitURI, "get_gb_space_config_uri", staticmethod(_counting))
+        first = c.get_supported_env_for_files_uri()
+        second = c.get_supported_env_for_files_uri()
+        assert first == second
+        # The live-GitHub-probing conversion ran once despite two resolutions.
+        assert calls["n"] == 1

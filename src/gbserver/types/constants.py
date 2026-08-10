@@ -511,13 +511,22 @@ ENVIRONMENT_FILES_REGISTRY: Dict[str, EnvironmentFilesConfig] = {
 }
 
 
+# Process-level cache of the DERIVED environment URI, keyed by the public-space
+# repo URL it was derived from. The derivation calls GitURI.get_gb_space_config_uri,
+# which makes an uncached live GitHub call (is_branch_present) when a token is set;
+# resolve_environment is on the files-API per-request access-control path, so we
+# memoize to run that probe at most once per (process, public-space URI). The
+# explicit override is never cached — it is read live and short-circuits above.
+_DERIVED_ENV_FOR_FILES_URI_CACHE: Dict[str, str] = {}
+
+
 def get_supported_env_for_files_uri() -> str:
     """Resolve the supported environment's environment.yaml asset URI.
 
     Returns the explicit ``GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI`` override
     when set; otherwise derives it from the public space's config repo
-    (``PUBLIC_SPACE_GIT_URI``) by converting that ``https://…`` repo URL into the
-    ``git+ssh://…@<config-branch>#subdirectory=environments/<env>`` asset URI
+    (``PUBLIC_SPACE_GIT_URI``) by converting that ``https://…`` repo URL into a
+    ``git+ssh://…[@<config-branch>]#subdirectory=environments/<env>`` asset URI
     the environment loader expects — the same conversion the build path uses
     (``GitURI.get_gb_space_config_uri``). Returns ``""`` when there is nothing to
     derive from (no override and no public space URI, e.g. STANDALONE), which the
@@ -526,13 +535,18 @@ def get_supported_env_for_files_uri() -> str:
     Evaluated lazily (not at import): the ``GitURI`` import would otherwise cycle
     (git.py imports GBSERVER_GITHUB_TOKEN from this module), and the ``@<branch>``
     suffix is only appended when a GitHub token is present in the process env —
-    which may be set after import.
+    which may be set after import. The derived value is memoized per public-space
+    URI (see ``_DERIVED_ENV_FOR_FILES_URI_CACHE``) so the underlying live GitHub
+    branch probe runs at most once per process.
     """
     override = os.getenv(ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, "")
     if override:
         return override
     if not PUBLIC_SPACE_GIT_URI:
         return ""
+    cached = _DERIVED_ENV_FOR_FILES_URI_CACHE.get(PUBLIC_SPACE_GIT_URI)
+    if cached is not None:
+        return cached
     # Function-local import: git.py imports from this module, so a top-level
     # import here would be a cycle.
     from gbcommon.uri.git import GitURI
@@ -540,12 +554,18 @@ def get_supported_env_for_files_uri() -> str:
 
     base = GitURI.get_gb_space_config_uri(PUBLIC_SPACE_GIT_URI)
     if not base:
+        # Don't cache a transient empty — a later call (token/config now present)
+        # should get another chance to derive a real URI.
         return ""
-    # base ends with an empty "#subdirectory="; append_path fills it with the
-    # env's subdirectory (merging into the existing fragment, not adding a second).
+    # append_path points the URI at environments/<env>: it extends an existing
+    # "#subdirectory=" fragment when get_gb_space_config_uri added one (a config
+    # branch was found) and creates the fragment when it didn't — so the "no
+    # branch, no fragment" and "branch, empty subdirectory" cases both resolve.
     uri = URI.get_uri(base)
     uri.append_path(f"environments/{SUPPORTED_ENV_FOR_FILES}")
-    return str(uri)
+    resolved = str(uri)
+    _DERIVED_ENV_FOR_FILES_URI_CACHE[PUBLIC_SPACE_GIT_URI] = resolved
+    return resolved
 
 
 ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT = (
