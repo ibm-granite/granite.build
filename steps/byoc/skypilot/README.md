@@ -66,14 +66,9 @@ All fields live under the step's `config.byoc_config`.
 
 ## Env vars the step provides to your commands
 
-Exported by the SkyPilot launcher into both `setup` and `run`:
-
-| Variable | Set when | Meaning |
-|---|---|---|
-| `$GB_BUILD_WORKDIR` | always | Per-run workdir; the run script's initial CWD. `repo` is cloned to `$GB_BUILD_WORKDIR/<workdir>`; `src/` is mounted at `$GB_BUILD_WORKDIR/src`. |
-| `$GB_SHARED_WORKDIR` | env sets `shared_workdir` | Env-level shared dir mounted on every worker, for cross-step state. |
-| `$GB_BUILD_ID`, `$GB_TARGETRUN_ID` | run metadata present | Build / target-run identifiers, for correlating logs and shared state. |
-| `$GB_SKYPILOT_LAUNCH_ID`, `$GB_SKYPILOT_CLUSTER_NAME` | always | This launch's id and the SkyPilot cluster name. |
+The SkyPilot launcher exports `$GB_BUILD_WORKDIR` into both `setup` and `run`: the
+per-run workdir and the run script's initial CWD. `repo` is cloned to
+`$GB_BUILD_WORKDIR/<workdir>` and `src/` is mounted at `$GB_BUILD_WORKDIR/src`.
 
 ## Generating and deploying the step
 

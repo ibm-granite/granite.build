@@ -77,14 +77,9 @@ All fields live under the step's `config.eval_config` and are templated into the
 
 ## Env vars the step provides to your commands
 
-Exported by the SkyPilot launcher into `run`:
-
-| Variable | Set when | Meaning |
-|---|---|---|
-| `$GB_BUILD_WORKDIR` | always | Per-run workdir; the run script's initial CWD. Relative `output_dir` values resolve here, giving per-run isolation. |
-| `$GB_SHARED_WORKDIR` | env sets `shared_workdir` | Env-level shared dir mounted on every worker, for cross-step state. |
-| `$GB_BUILD_ID`, `$GB_TARGETRUN_ID` | run metadata present | Build / target-run identifiers. |
-| `$GB_SKYPILOT_LAUNCH_ID`, `$GB_SKYPILOT_CLUSTER_NAME` | always | This launch's id and the SkyPilot cluster name. |
+The SkyPilot launcher exports `$GB_BUILD_WORKDIR` into `run`: the per-run workdir
+and the run script's initial CWD. Relative `output_dir` values resolve here, giving
+per-run isolation.
 
 The eval script runs inside the **image** (built from `Dockerfile`); the exemplar
 is a shell script, so the image needs no Python interpreter or runtime venv.
