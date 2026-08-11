@@ -14,5 +14,9 @@ git pull --ff-only
 # List existing tags
 git tag
 # Define a new tag
-git tag $tag 
-git push origin $tag 
+git tag $tag
+git push origin $tag
+
+# Publish frontend/packages/ui-core as its own git ref at this tag, so external
+# consumers (e.g. the internal deployment repo) can depend on it directly.
+"$(dirname "$0")/publish-ui-core.sh" "$tag" 

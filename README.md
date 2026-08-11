@@ -334,9 +334,10 @@ cp .env.example .env
 
 | Path | Description |
 |------|-------------|
-| `frontend/` | Next.js source (TypeScript, React, Carbon Design System) |
-| `frontend/out/` | Static export — produced by `make build-frontend`, not committed |
-| `frontend/.env.local.example` | Dev template — copy to `frontend/.env.local` |
+| `frontend/packages/ui-core/` | Shared, generic dashboard library (TypeScript, React, Carbon Design System) |
+| `frontend/apps/standalone/` | Thin Next.js app shell that builds `ui-core` into a static export |
+| `frontend/apps/standalone/out/` | Static export — produced by `make build-frontend`, not committed |
+| `frontend/apps/standalone/.env.local.example` | Dev template — copy to `frontend/apps/standalone/.env.local` |
 | `src/gbserver/static/ui/` | Runtime path gbserver serves the compiled frontend from |
 | `src/gb_ui_backend/` | Analytics service — FastAPI routers for charts and AI analysis, included directly into gbserver |
 

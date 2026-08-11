@@ -50,15 +50,18 @@ pytest -s test/unit/space/test_space_config.py::TestSpaceConfig::test_load
 
 ## Project Structure
 
-The repository is a monorepo with three source packages:
+The repository is a monorepo with several source packages:
 
 | Package | Location | Description |
 |---------|----------|-------------|
 | gbserver | `src/gbserver/` | Build orchestration server |
 | gbcli | `src/gbcli/` | CLI client (`gb`, `gbcli`, `llmbuild`, `llmb`, `lamb`) |
 | gbcommon | `src/gbcommon/` | Shared types and utilities |
+| gb_ui_backend | `src/gb_ui_backend/` | Analytics service backing the frontend, included directly into gbserver (`analytics` extra) |
 
 All packages follow the same code style rules and are linted together.
+
+The frontend lives at `frontend/`, a yarn workspace: `frontend/packages/ui-core` is the generic, standalone-capable dashboard library and `frontend/apps/standalone` is the thin Next.js app shell that builds it into a static export served by gbserver. See `AGENTS.md`'s "Frontend (gb-ui)" section for build/dev commands.
 
 ## Code Style
 

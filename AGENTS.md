@@ -122,7 +122,7 @@ The central registry is `src/gbserver/types/constants.py`. All gbserver env vars
 
 ## Frontend (gb-ui)
 
-The `frontend/` directory contains the gb-ui Next.js dashboard and `src/gb_ui_backend/` is its analytics service. Both are part of this repo after the gb-ui migration.
+The `frontend/` directory is a yarn workspace: `frontend/packages/ui-core` holds the generic, standalone-capable dashboard code (components, API clients, hooks, config, styles, types) and `frontend/apps/standalone` is the thin Next.js app shell that builds it into a static export. `src/gb_ui_backend/` is the analytics service backing it. Both are part of this repo after the gb-ui migration. The IBM-internal deployment (a separate repo) depends on `frontend/packages/ui-core` and `src/gb_ui_backend`'s `analytics` extra as external dependencies and layers its own auth/env-switcher/internal-only pages on top — see that repo's `CLAUDE.md`.
 
 ### Frontend commands
 
@@ -130,7 +130,7 @@ The `frontend/` directory contains the gb-ui Next.js dashboard and `src/gb_ui_ba
 # Compile and sync to src/gbserver/static/ui/ (incremental — reuses .next/ cache)
 make build-frontend
 
-# Full clean rebuild (wipes frontend/out/, frontend/.next/, src/gbserver/static/ui/)
+# Full clean rebuild (wipes frontend/apps/standalone/out/, frontend/apps/standalone/.next/, src/gbserver/static/ui/)
 make clean-frontend && make build-frontend
 
 # Wipe all build artifacts without rebuilding
@@ -166,7 +166,7 @@ cd frontend && yarn dev       # UI at http://localhost:3000, no backend required
 Without a backend, the UI loads but all data pages show empty states. To connect to a running gbserver:
 
 ```shell
-# frontend/.env.local
+# frontend/apps/standalone/.env.local
 GBSERVER_API_URL=http://localhost:8080
 ```
 
@@ -201,12 +201,13 @@ GB_UI_DATABASE_URL="postgresql+asyncpg://user:pass@host/db" gbserver standalone
 
 | Path | Description |
 |------|-------------|
-| `frontend/app/` | Next.js App Router pages |
-| `frontend/components/` | Shared React components (Carbon Design System) |
-| `frontend/api/` | API clients — `gbserver.ts`, `analytics.ts`, `dataProcessing.ts` |
-| `frontend/api/client.ts` | `apiBase()` helper — handles `GBSERVER_API_URL` override |
-| `frontend/next.config.ts` | Build config — static export in standalone mode, rewrite proxy in dev |
-| `frontend/.env.local.example` | Dev environment template — copy to `.env.local` |
+| `frontend/packages/ui-core/` | Shared, generic dashboard library — no app router, no build step. Consumed both by `apps/standalone` here and, as an external git dependency, by the internal deployment repo |
+| `frontend/packages/ui-core/components/` | Shared React components (Carbon Design System) |
+| `frontend/packages/ui-core/api/` | API clients — `gbserver.ts`, `analytics.ts`, `dataProcessing.ts` |
+| `frontend/packages/ui-core/api/client.ts` | `apiBase()` helper — handles `GBSERVER_API_URL` override |
+| `frontend/apps/standalone/app/` | Next.js App Router pages |
+| `frontend/apps/standalone/next.config.ts` | Build config — static export in standalone mode, rewrite proxy in dev, `transpilePackages: ['@granite-build/ui-core']` |
+| `frontend/apps/standalone/.env.local.example` | Dev environment template — copy to `.env.local` |
 | `src/gb_ui_backend/` | Analytics service — FastAPI routers for charts, AI analysis; included directly into gbserver |
 | `src/gb_ui_backend/config.py` | Pydantic settings — all `GB_UI_*` env vars |
 | `src/gbserver/api/root_api.py` | Includes gb_ui_backend's routers under `/api/analytics/*` and calls its startup init |
