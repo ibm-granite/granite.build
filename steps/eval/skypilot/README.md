@@ -99,7 +99,7 @@ Because a `Dockerfile` is present, this is an image step: `make all` runs
 To promote the step into the repo's committed assets tree
 (`configurations/assets/environments/skypilot/steps/eval/`) and copy its Docker
 build test into `test/steps/eval/skypilot/` so it is runnable from VSCode against
-the published step, run `make publish`. See
+the published step, run `make publish-step`. See
 [Two test modes](../../README.md#two-test-modes) for how the same test runs both
 against the locally rendered `space/` (Mode 1, `make test`) and against the
 published step (Mode 2, under `test/steps/`).
@@ -137,18 +137,18 @@ make -C steps/eval/skypilot test
 > ([`test/steps/eval/skypilot/docker/`](../../../test/steps/eval/skypilot/docker/))
 > instead runs against the **published** `step.yaml` under
 > `configurations/assets/…/steps/eval/`, whose `image`/`image_id` bake in
-> `IMAGE_TAG` (the git short SHA by default) **as of the commit `make publish` was
+> `IMAGE_TAG` (the git short SHA by default) **as of the commit `make publish-step` was
 > last run at**. Because `pull_policy` is `if-not-present`, that test only resolves
 > if a local image at that exact tag exists — otherwise it tries to pull the
 > placeholder `quay.io/your-org` registry and fails. So before running it, rebuild
 > **and** re-publish at your current commit so both sides agree:
 >
 > ```sh
-> make -C steps/eval/skypilot image publish   # builds gb-step-eval:<HEAD-sha> and re-renders the assets to match
+> make -C steps/eval/skypilot image publish-step   # builds gb-step-eval:<HEAD-sha> and re-renders the assets to match
 > ```
 >
 > (Then commit the regenerated `step.yaml`.) Pin a stable `IMAGE_TAG` — e.g. `make
-> … image publish IMAGE_TAG=local` on both sides — if you would rather the
+> … image publish-step IMAGE_TAG=local` on both sides — if you would rather the
 > committed assets not drift per commit.
 
 ## Example build.yaml

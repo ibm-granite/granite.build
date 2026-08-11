@@ -74,10 +74,10 @@ environment_configs:
           #
           # NOTE: IMAGE_TAG defaults to the git short SHA, so the reference frozen
           # into a PUBLISHED step.yaml (configurations/assets/.../steps/eval/) is
-          # the tag from the commit `make publish` was last run at. To run the
+          # the tag from the commit `make publish-step` was last run at. To run the
           # committed Mode-2 docker test (test/steps/eval/skypilot/docker/) you
           # must have that exact local image — i.e. rebuild AND re-publish at the
-          # same commit: `make -C steps/eval/skypilot image publish`. Otherwise
+          # same commit: `make -C steps/eval/skypilot image publish-step`. Otherwise
           # if-not-present finds no match and tries (and fails) to pull the
           # placeholder registry. `make test` (Mode 1) is immune: it builds and
           # renders at HEAD together, so its tags always agree.

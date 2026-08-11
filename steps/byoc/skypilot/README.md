@@ -86,7 +86,7 @@ the step by `space://steps/byoc` (see above).
 To promote the step into the repo's committed assets tree
 (`configurations/assets/environments/skypilot/steps/byoc/`) and copy its slurm
 build test into `test/steps/byoc/skypilot/` so it is runnable from VSCode against
-the published step, run `make publish`. See
+the published step, run `make publish-step`. See
 [Two test modes](../../README.md#two-test-modes) for how the same test runs both
 against the locally rendered `space/` (Mode 1, `make test`) and against the
 published step (Mode 2, under `test/steps/`).

@@ -9,7 +9,7 @@
 #   publish-image push the image to $(REGISTRY)                  (custom image steps only)
 #   space         render step-template.yaml + a generated space.yaml into a
 #                 self-contained Space directory ($(SPACE_DIR)/) and bundle src/
-#   publish       render the step into the committed assets tree
+#   publish-step  render the step into the committed assets tree
 #                 (configurations/assets/environments/<env>/steps/<name>/) and copy
 #                 its per-cluster build tests into the parallel top-level trees
 #                 test/steps/<name>/<env>/<cluster>/ (tests) and
@@ -45,10 +45,10 @@
 #   IMAGE_NAME  image repository name   (default: gb-step-$(STEP_NAME))
 #   IMAGE_TAG   image tag               (default: git short SHA, else "latest")
 #   STEP_ENV    step's environment segment      (default: this Makefile's dir name)
-#   PUBLISH_STEP_DIR  where `publish` renders the step (default: the env-nested
+#   PUBLISH_STEP_DIR  where `publish-step` renders the step (default: the env-nested
 #                     assets path configurations/assets/environments/<env>/steps/<name>)
-#   PUBLISH_TEST_DIR  where `publish` copies build tests (default: test/steps/<name>/<env>)
-#   PUBLISH_TESTDATA_DIR  where `publish` copies fixtures (default: test-data/steps/<name>/<env>)
+#   PUBLISH_TEST_DIR  where `publish-step` copies build tests (default: test/steps/<name>/<env>)
+#   PUBLISH_TESTDATA_DIR  where `publish-step` copies fixtures (default: test-data/steps/<name>/<env>)
 #
 # The rendered $(SPACE_DIR)/ directory (named "space" by default) is a
 # self-contained Granite.build Space. Point a build test / build.yaml at it via
@@ -154,7 +154,7 @@ STEP_TO_ROOT := $(COMMON_MK_DIR)..
 SPACE_BASE_URI ?= file://../$(STEP_TO_ROOT)/configurations/assets
 
 # ---- Publish (render into the committed assets tree + copy build tests) ------
-# `make publish` promotes a step from this authoring dir into the repo's shared,
+# `make publish-step` promotes a step from this authoring dir into the repo's shared,
 # committed assets so builds can reference it by space://steps/$(STEP_NAME), and
 # copies the step's per-cluster build tests into the top-level test/steps/ tree so
 # they are discoverable/runnable from VSCode (Mode 2 — against the published step).
@@ -186,7 +186,7 @@ PUBLISH_TESTDATA_DIR ?= $(REPO_ROOT)/test-data/steps/$(STEP_NAME)/$(STEP_ENV)
 # in) and from_yaml resolves it against the yaml's directory (see build/space.py).
 MODE2_SPACE_URI  ?= ../../../../../configurations/spaces/local
 
-.PHONY: all help image publish-image space publish check-published test clean
+.PHONY: all help image publish-image space publish-step check-published test clean
 
 # ---- Default goal ----------------------------------------------------------
 # `space` deliberately does NOT depend on image/publish-image so it stays a cheap,
@@ -205,7 +205,7 @@ help:
 	@echo
 	@echo "Targets:"
 	@echo "  space          render step.yaml + a space.yaml into the Space $(SPACE_DIR)/ (offline)"
-	@echo "  publish        render the step into the assets tree + copy build tests into test/steps/ (not in all)"
+	@echo "  publish-step   render the step into the assets tree + copy build tests into test/steps/ (not in all)"
 	@echo "  check-published  re-render to a temp dir and diff against the committed artifacts; exit 1 on drift"
 	@echo "  image          build the image from $(DOCKERFILE) for $(PLATFORM)  (no-op when no Dockerfile is present)"
 	@echo "  publish-image  push the image to the registry                 (no-op when no Dockerfile is present)"
@@ -257,18 +257,18 @@ define render-step-template
 	sed "s#\$${IMAGE_REF}#$$ref#g" "$(TEMPLATE)" > "$(1)"
 endef
 
-# guard-publish-paths — fail fast before `publish` runs any rm -rf. The publish
+# guard-publish-paths — fail fast before `publish-step` runs any rm -rf. The publish
 # destinations are absolute paths built from STEP_NAME/STEP_ENV; a stray empty
-# override (e.g. `make publish STEP_ENV=`) would collapse one to a broad path
+# override (e.g. `make publish-step STEP_ENV=`) would collapse one to a broad path
 # like the repo root. Refuse unless STEP_NAME/STEP_ENV are set and each of the
 # three publish dirs is non-empty and neither `/` nor the repo root itself.
 define guard-publish-paths
-	@test -n "$(strip $(STEP_NAME))" || { echo "[publish] refusing: STEP_NAME is empty"; exit 1; }
-	@test -n "$(strip $(STEP_ENV))"  || { echo "[publish] refusing: STEP_ENV is empty"; exit 1; }
+	@test -n "$(strip $(STEP_NAME))" || { echo "[publish-step] refusing: STEP_NAME is empty"; exit 1; }
+	@test -n "$(strip $(STEP_ENV))"  || { echo "[publish-step] refusing: STEP_ENV is empty"; exit 1; }
 	@for d in "$(PUBLISH_STEP_DIR)" "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"; do \
 		case "$$d" in \
 			"" | "/" | "$(REPO_ROOT)" | "$(REPO_ROOT)/") \
-				echo "[publish] refusing: publish path resolves to '$$d' (too broad to rm -rf)"; exit 1;; \
+				echo "[publish-step] refusing: publish path resolves to '$$d' (too broad to rm -rf)"; exit 1;; \
 		esac; \
 	done
 endef
@@ -321,8 +321,8 @@ space:
 # test`). The copied buildtest.yaml files have their space_uri rewritten to
 # $(MODE2_SPACE_URI) so the Mode-2 tests resolve the PUBLISHED step via
 # configurations/spaces/local instead of the local space/. Deliberately NOT part
-# of `all`: publish writes the committed assets tree.
-publish:
+# of `all`: publish-step writes the committed assets tree.
+publish-step:
 	$(call guard-publish-paths)
 	@mkdir -p $(PUBLISH_STEP_DIR)
 	$(call render-step-template,$(PUBLISH_STEP_DIR)/step.yaml)
@@ -356,7 +356,7 @@ publish:
 # ---- Drift check -----------------------------------------------------------
 
 # check-published — verify the committed generated artifacts still match a fresh
-# render of the current source. `publish` writes three trees derived from
+# render of the current source. `publish-step` writes three trees derived from
 # steps/<step>/<env>/ (the assets step.yaml + src/, the test/steps/ copy, and the
 # test-data/steps/ fixtures) and nothing else keeps them in sync, so this
 # re-publishes into a temp dir and diffs it against the committed trees. It is
@@ -365,14 +365,14 @@ publish:
 # IMAGE_REF), so only genuine content drift — an edited template/src/test that
 # was never re-published — is reported, not the per-commit IMAGE_TAG churn (see
 # the eval README's "tag coupling" note). Exit 0 = in sync (or nothing published
-# yet); exit 1 = drift, meaning you must re-run `make publish` and commit it.
+# yet); exit 1 = drift, meaning you must re-run `make publish-step` and commit it.
 check-published:
 	@if [ ! -f "$(PUBLISH_STEP_DIR)/step.yaml" ]; then \
 		echo "[$(STEP_NAME)] nothing published at $(PUBLISH_STEP_DIR); nothing to check."; exit 0; \
 	fi; \
 	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 	ref=$$(sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' "$(PUBLISH_STEP_DIR)/step.yaml" | head -1); \
-	$(MAKE) --no-print-directory publish \
+	$(MAKE) --no-print-directory publish-step \
 		PUBLISH_STEP_DIR="$$tmp/step" PUBLISH_TEST_DIR="$$tmp/test" \
 		PUBLISH_TESTDATA_DIR="$$tmp/testdata" $${ref:+IMAGE_REF="$$ref"} >/dev/null; \
 	rc=0; \
@@ -382,7 +382,7 @@ check-published:
 		diff -r -x '__pycache__' -x '*.pyc' "$$committed" "$$fresh" || rc=1; \
 	done; \
 	if [ $$rc = 0 ]; then echo "[$(STEP_NAME)] OK: committed artifacts match current source."; \
-	else echo "[$(STEP_NAME)] DRIFT: re-run 'make publish' and commit the regenerated files."; fi; \
+	else echo "[$(STEP_NAME)] DRIFT: re-run 'make publish-step' and commit the regenerated files."; fi; \
 	exit $$rc
 
 # ---- Tests -----------------------------------------------------------------

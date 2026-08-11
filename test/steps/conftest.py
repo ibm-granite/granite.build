@@ -16,7 +16,7 @@
 
 """Auto-mark everything under ``test/steps/`` as a Mode-2 step build test.
 
-``make publish`` copies a step's per-cluster build tests into this tree (see
+``make publish-step`` copies a step's per-cluster build tests into this tree (see
 ``steps/README.md``, "Two test modes"). Those copies are real-infra tests that
 should be **discoverable/runnable from VSCode** yet stay **out of every
 whole-tree Makefile suite**. Rather than requiring each copied test to carry the

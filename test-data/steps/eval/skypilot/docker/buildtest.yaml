@@ -17,7 +17,7 @@ target_expectations:
 # The Space this test resolves the step (and the docker environment + monitors)
 # through. In the step dir (Mode 1) it is the local Space rendered by `make space`
 # two levels up (steps/eval/skypilot/space/), which carries steps/eval/step.yaml
-# and chains (base_uris) to configurations/assets. When `make publish` copies this
+# and chains (base_uris) to configurations/assets. When `make publish-step` copies this
 # fixture into test-data/steps/ (Mode 2), it rewrites this line to point at the
 # shared space configurations/spaces/local, which resolves the PUBLISHED step from
 # the assets tree. Either way the build references the step by space://steps/eval.

@@ -67,7 +67,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 * **`space`** — render a self-contained Space into `$(SPACE_DIR)/`: a generated
   `space.yaml` plus `steps/<step-name>/step.yaml` (from `step-template.yaml`) and
   bundled `src/`. Cheap and offline; it does *not* rebuild/push.
-* **`publish`** — promote the step into the repo's committed assets tree
+* **`publish-step`** — promote the step into the repo's committed assets tree
   (`configurations/assets/environments/<env>/steps/<step-name>/`, rendered exactly as
   `space` renders `step.yaml` + bundled `src/`) **and** copy the step's per-cluster
   build tests into the top-level `test/steps/<step-name>/<env>/<cluster>/` tree, with
@@ -79,7 +79,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 * **`check-published`** — verify the committed generated artifacts still match a
   fresh render of the current source (see
   [Generated artifacts and drift](#generated-artifacts-and-drift)). Re-renders
-  `publish` into a temp dir and `diff`s it against the three committed trees,
+  `publish-step` into a temp dir and `diff`s it against the three committed trees,
   exiting non-zero on drift. It re-renders image steps with the **already-committed**
   image reference (extracted from the published `step.yaml`), so it is immune to the
   per-commit `IMAGE_TAG` churn and flags only genuine content drift. Exit 0 when in
@@ -115,10 +115,10 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `DEFAULT_ENVIRONMENT` | *(empty)*                             | if set, written as `variables.DEFAULT_ENVIRONMENT` in `space.yaml` |
 | `TEST_DIR`        | `test`                                    | dir of Python tests run by `make test` |
 | `PYTHON`          | `python3`                                 | interpreter used to run tests    |
-| `STEP_ENV`        | the Makefile's own dir name (e.g. `skypilot`) | step's environment segment, used by `publish` |
-| `PUBLISH_STEP_DIR`| `configurations/assets/environments/$(STEP_ENV)/steps/$(STEP_NAME)` | where `publish` renders the step |
-| `PUBLISH_TEST_DIR`| `test/steps/$(STEP_NAME)/$(STEP_ENV)`     | where `publish` copies the per-cluster build tests |
-| `PUBLISH_TESTDATA_DIR` | `test-data/steps/$(STEP_NAME)/$(STEP_ENV)` | where `publish` copies the tests' fixtures |
+| `STEP_ENV`        | the Makefile's own dir name (e.g. `skypilot`) | step's environment segment, used by `publish-step` |
+| `PUBLISH_STEP_DIR`| `configurations/assets/environments/$(STEP_ENV)/steps/$(STEP_NAME)` | where `publish-step` renders the step |
+| `PUBLISH_TEST_DIR`| `test/steps/$(STEP_NAME)/$(STEP_ENV)`     | where `publish-step` copies the per-cluster build tests |
+| `PUBLISH_TESTDATA_DIR` | `test-data/steps/$(STEP_NAME)/$(STEP_ENV)` | where `publish-step` copies the tests' fixtures |
 | `MODE2_SPACE_URI` | relative `file://`-less path to `configurations/spaces/local` (5 levels up from a copied fixture's dir) | `space_uri` written into copied `buildtest.yaml`s |
 
 Example: `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
@@ -144,7 +144,7 @@ Example: `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
 
 ## Rendering: how the image reference is inserted
 
-`make space` (and `make publish`) render the template by substituting **only** the
+`make space` (and `make publish-step`) render the template by substituting **only** the
 literal `${IMAGE_REF}` token, with a single `sed` replacement — no `envsubst`/gettext
 dependency, just the POSIX `sed` every system already has:
 
@@ -220,7 +220,7 @@ resolves the step differs (the `space_uri`):
   `steps/<step>/<env>/space/` (the `test` target's `space` prerequisite renders it
   first). This is the fast authoring loop and needs nothing published. The
   fixtures' `space_uri: ../../space` points at that local Space.
-* **Mode 2 — post-publish (in `test/steps/`).** `make publish` copies the
+* **Mode 2 — post-publish (in `test/steps/`).** `make publish-step` copies the
   per-cluster build tests to `test/steps/<step>/<env>/<cluster>/` — the step dir's
   inner `test/` segment is **flattened away**, so the published tree parallels the
   step's own layout one level shallower — with their fixtures in the matching
@@ -243,7 +243,7 @@ resolves the step differs (the `space_uri`):
   relevant infra — a Docker daemon / a reachable cluster — to actually execute
   rather than skip.
 
-`make publish` creates the assets step and the `test/steps/` + `test-data/steps/`
+`make publish-step` creates the assets step and the `test/steps/` + `test-data/steps/`
 copies **together**, so a committed `test/steps/<step>/<env>/` always has a matching
 published step to resolve against. Only per-cluster build tests (`test/<cluster>/`
 subdirs) are copied — `src/` and cluster-agnostic unit tests at `test/`'s root (e.g.
@@ -251,21 +251,21 @@ subdirs) are copied — `src/` and cluster-agnostic unit tests at `test/`'s root
 only.
 
 > **Image steps: keep the published image tag and your local build in sync.** For a
-> custom-image step, `make publish` freezes a concrete image reference into the
+> custom-image step, `make publish-step` freezes a concrete image reference into the
 > committed `step.yaml` — with the default `IMAGE_TAG` (git short SHA) that tag is
-> the commit `publish` ran at, and it goes stale on the next commit. A Mode-2 test
+> the commit `publish-step` ran at, and it goes stale on the next commit. A Mode-2 test
 > whose environment uses `pull_policy: if-not-present` (e.g. the eval docker test)
 > then resolves **only** when a local image at that exact tag exists; otherwise the
 > launcher tries to pull the (often placeholder) registry and fails. Before running
 > such a committed Mode-2 test, rebuild **and** re-publish at the current commit
-> (`make -C steps/<step>/<env> image publish`) so both sides agree — or pin a stable
-> `IMAGE_TAG` (e.g. `IMAGE_TAG=local`) on both the build and the publish so the
+> (`make -C steps/<step>/<env> image publish-step`) so both sides agree — or pin a stable
+> `IMAGE_TAG` (e.g. `IMAGE_TAG=local`) on both the build and the publish-step so the
 > committed assets don't drift. Mode 1 (`make test`) is immune: it builds and renders
 > at HEAD together. Public-image steps (e.g. byoc) have no such coupling.
 
 ## Generated artifacts and drift
 
-`make publish` writes **three committed trees derived from the step's source** under
+`make publish-step` writes **three committed trees derived from the step's source** under
 `steps/<step>/<env>/` (its `step-template.yaml`, `src/`, and per-cluster
 `test/`+`test-data/`):
 
@@ -275,11 +275,11 @@ only.
 3. their fixtures — `test-data/steps/<name>/<env>/<cluster>/`.
 
 These are **generated, not hand-edited** — edit the source under `steps/<step>/<env>/`
-and re-run `make publish`, then commit the regenerated trees. Nothing in the build
-re-publishes automatically, so a source edit that isn't followed by `make publish`
+and re-run `make publish-step`, then commit the regenerated trees. Nothing in the build
+re-publishes automatically, so a source edit that isn't followed by `make publish-step`
 leaves the committed copies stale.
 
-Run **`make check-published`** to catch that drift: it re-renders `publish` into a
+Run **`make check-published`** to catch that drift: it re-renders `publish-step` into a
 temp dir and diffs it against the three committed trees, exiting non-zero if they
 differ. It re-renders image steps with the image reference **already committed** in
 `step.yaml`, so a routine `IMAGE_TAG` (git-SHA) bump alone is *not* flagged — only a
