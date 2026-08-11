@@ -10,16 +10,30 @@ example, `steps/eval/skypilot` holds the eval step's SkyPilot implementation.
 
 ## Layout of a step/environment directory
 
-Each step/environment directory (e.g. `steps/byoc/skypilot`) contains:
+Each step/environment directory (e.g. `steps/byoc/skypilot`) mixes files you
+author with a directory `make` generates. They fall into three groups.
+
+### Required
+
+The minimum a step/environment directory needs for `make` to render it:
 
 * **`step-template.yaml`** — the template for the generated `step.yaml`, into which
   an optional image reference and other substitutions are made.
-* **`Dockerfile`** — optional; provided only when the step requires a custom image
-  to execute (see the two step types below).
-* **`src/`** — optional; a directory of code referenced by the step. For image
+* **`Makefile`** — a thin file that sets a couple of variables (notably `STEP_NAME`)
+  and includes the shared [`common.mk`](common.mk). It exposes the conventional
+  targets below.
+
+### Optional
+
+Present or absent depending on what the step needs:
+
+* **`Dockerfile`** — provided only when the step requires a custom image
+  to execute; its presence is what marks the step as a custom-image step (see the
+  two step types below).
+* **`src/`** — a directory of code referenced by the step. For image
   steps it is baked into the image; for public-image steps it can be made
   available to the running step (e.g. via SkyPilot `file_mounts`).
-* **`test/`** — optional; the step's own tests, run with `make test` (`src/` is
+* **`test/`** — the step's own tests, run with `make test` (`src/` is
   put on `PYTHONPATH`; pytest recurses the whole tree). These are developed and
   run **independently** of the repository's central suite (they are not in its
   `testpaths`). Cluster-specific build tests live in a **per-cluster subdir**
@@ -27,20 +41,28 @@ Each step/environment directory (e.g. `steps/byoc/skypilot`) contains:
   is self-contained; cluster-agnostic unit tests for `src/` can stay at `test/`'s
   root (see `eval/skypilot/test/test_eval.py`). It sits beside `src/` but is
   **not** bundled into the deployable step.
-* **`test-data/`** — optional; fixtures for the tests in `test/`, mirrored into
+* **`test-data/`** — fixtures for the tests in `test/`, mirrored into
   the **same per-cluster subdir** (`test-data/<cluster>/`, e.g. a build test's
   `build.yaml`/`buildtest.yaml` in `test-data/slurm/` or `test-data/docker/`).
   Kept beside the step rather than in the repo's parallel `test/` ↔ `test-data/`
   tree, so the step is self-contained.
-* **`Makefile`** — a thin file that sets a couple of variables and includes the
-  shared [`common.mk`](common.mk). It exposes the conventional targets below.
 * **`README.md`** — documents that step's function, its `config` contract, and its
   inputs/outputs (see [`byoc/skypilot`](byoc/skypilot/README.md) and
   [`eval/skypilot`](eval/skypilot/README.md) for the two step-type examples).
-* **`space/`** — *generated* by `make space`; a self-contained Granite.build
+  Conventional for every step, though not needed to build or render one.
+
+### Generated
+
+Produced by `make`, not authored by hand:
+
+* **`space/`** — produced by `make space`; a self-contained Granite.build
   **Space** — a `space.yaml` (whose `base_uris` chain to `configurations/assets`)
   plus `steps/<step-name>/step.yaml` and any bundled `src/`. The dir name defaults
   to `space` (overridable via `SPACE_DIR`). This directory is git-ignored.
+
+`make publish-step` generates further trees, but **outside** this directory (the
+committed step under `configurations/assets/`, its build tests under `test/steps/`,
+and fixtures under `test-data/steps/`) — see the publish sections below.
 
 ## Two step types
 
