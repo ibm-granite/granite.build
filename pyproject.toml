@@ -231,7 +231,7 @@ markers = [
     "slow: tests that run for longer",
     "hf_integration: tests that perform real integration with HuggingFace Hub",
     "live: opt specific services into live mode (e.g. @pytest.mark.live('storage', 'github'))",
-    "skypilot_integration: tests requiring local SLURM + MinIO infrastructure (run via make integration-test)",
+    "skypilot_integration: tests exercising a real SkyPilot environment end-to-end (e.g. the local SLURM + MinIO fixture via make integration-test, or a cloud backend such as aws when credentials are present); each test gates itself on the infrastructure it needs",
     "extended: slow / real-infra tests; run only in the extended suite (make extended-tests)",
     "step_build_test: Mode-2 step build tests under test/steps/ (published-step tests copied by a step's `make publish`); auto-applied by test/steps/conftest.py and excluded from the whole-tree Makefile suites — run them from VSCode or explicitly (pytest test/steps/...)",
 ]
