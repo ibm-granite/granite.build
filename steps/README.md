@@ -8,6 +8,48 @@ Subdirectories contain step implementations (`eval`, `byoc`, etc.), each with
 per-compute-environment subdirectories (`skypilot`, `lsf`, `k8s`, ...). For
 example, `steps/eval/skypilot` holds the eval step's SkyPilot implementation.
 
+## Source of truth: `steps/` vs. `configurations/`
+
+Think of the two trees as **source vs. release**: `steps/` is a source-like
+**development tree** where a step is authored and iterated (a `step-template.yaml` +
+`Makefile`, plus an optional `Dockerfile`/`src/`/`test/`, with `make test` for the
+fast authoring loop), and `configurations/` is the **fully vetted set of steps** a
+Granite.build space actually consumes — analogous to a code release. `make
+publish-step` is the promotion step between them: it **generates** a step's released
+form under `configurations/assets/.../steps/<name>/` (together with its build-test
+trees under `test/steps/` and `test-data/steps/`). That `configurations/` copy is a
+*release artifact*, not something to edit by hand.
+
+**Going-forward rule — all new steps live in `steps/`.** Every new step, whether
+custom-image or public-image, is authored under `steps/`; writing a `step.yaml`
+directly under `configurations/assets/.../steps/*` with no `steps/` source is
+**legacy** and should not be done for new work. The rule does not key off step type:
+`byoc` is a public-image step and still lives in `steps/`, because the framework
+(templated rendering, the publish pipeline, and the synced Mode-1/Mode-2 test trees —
+see [Two test modes](#two-test-modes)) applies to it just as much as to a
+custom-image step like `eval`.
+
+**The two tiers today.** The repo currently contains both:
+
+* **Sourced steps** — authored under `steps/`, with a *generated* `configurations/`
+  counterpart (today: `byoc`, `eval`).
+* **Hand-authored asset steps** — ~30+ step definitions that exist **only** under
+  `configurations/assets/.../steps/*` with no `steps/` source (e.g. `digit`, `sage`,
+  the `sage-eval-*` / `openinstruct-*` / `bfcl-*` families, `hello`). These predate
+  the framework — effectively a release with no corresponding source in the tree.
+
+This split is **transitional, not a design goal.** The target end-state is that every
+step has a `steps/` source and the `configurations/` step assets are entirely
+generated; the hand-authored asset steps are legacy debt to be migrated under `steps/`
+over time (opportunistically as each is next substantially changed, and eventually all
+of them).
+
+**Recommended default for a new author:** author the step in `steps/`. And if you set
+out to change a hand-authored step under `configurations/assets/.../steps/*`, prefer
+migrating it into `steps/` first (add a `step-template.yaml` + `Makefile`, move any
+code into `src/`, then let `make publish-step` regenerate the asset) rather than
+editing the released asset in place.
+
 ## Layout of a step/environment directory
 
 Each step/environment directory (e.g. `steps/byoc/skypilot`) mixes files you
