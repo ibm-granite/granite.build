@@ -240,15 +240,17 @@ Two worked examples, one per step type, each in a per-cluster subdir:
   `make -C steps/byoc/skypilot test`, which renders the Space (`make space`) first
   so the test's `space_uri` resolves. End-to-end execution needs a real SkyPilot
   cluster (see the local `make slurm-setup`).
-* **Custom-image step on the local Docker environment** — the `eval` build test at
-  [`eval/skypilot/test/docker/test_docker_eval.py`](eval/skypilot/test/docker/test_docker_eval.py),
+* **Custom-image step on SkyPilot/aws** — the `eval` build test at
+  [`eval/skypilot/test/aws/test_skypilot_aws_eval.py`](eval/skypilot/test/aws/test_skypilot_aws_eval.py),
   driven by its fixtures in
-  [`eval/skypilot/test-data/docker/`](eval/skypilot/test-data/docker/). Run it with
-  `make -C steps/eval/skypilot test`, which renders the Space **and builds the
-  image locally** (`make image`) first, then runs the container against the local
-  Docker daemon — the image is used from the local store with **no publish**. This
-  is the way to build and exercise a custom-image step end to end without a
-  registry or a container-capable cluster.
+  [`eval/skypilot/test-data/aws/`](eval/skypilot/test-data/aws/). Run it with
+  `make -C steps/eval/skypilot test`, which renders the Space (`make space`) first
+  so the test's `space_uri` resolves. End-to-end execution provisions a real EC2
+  instance via SkyPilot, which **pulls the eval image from its registry** by the
+  reference frozen into the step's `image_id` — so the image must be **published
+  to a pullable registry first** (`make image publish-image REGISTRY=...`) and AWS
+  credentials exported. (A custom-image step cannot run on the local Docker slurm
+  cluster, which has no Pyxis — hence the cloud backend.)
 
 Both submit their `build.yaml` through the buildtest framework; for ad-hoc runs,
 submit a `build.yaml` via the `gbserver` MCP tools (see the `run-gbserver` and
@@ -299,8 +301,9 @@ only.
 > custom-image step, `make publish-step` freezes a concrete image reference into the
 > committed `step.yaml` — with the default `IMAGE_TAG` (git short SHA) that tag is
 > the commit `publish-step` ran at, and it goes stale on the next commit. A Mode-2 test
-> whose environment uses `pull_policy: if-not-present` (e.g. the eval docker test)
-> then resolves **only** when a local image at that exact tag exists; otherwise the
+> whose environment uses `pull_policy: if-not-present` (i.e. a local Docker
+> environment test) then resolves **only** when a local image at that exact tag
+> exists; otherwise the
 > launcher tries to pull the (often placeholder) registry and fails. Before running
 > such a committed Mode-2 test, rebuild **and** re-publish at the current commit
 > (`make -C steps/<step>/<env> image publish-step`) so both sides agree — or pin a stable
