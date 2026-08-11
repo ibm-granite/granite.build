@@ -55,12 +55,13 @@ environment.
 from pathlib import Path
 
 import pytest
-from gbserver.environment.skypilot import aws_credentials_present
 from libgbtest.buildrunner.buildtest import (
     AbstractYamlBuildRunnerTest,
     get_test_data_dir_for,
 )
 from libgbtest.constants import extended_testing_only
+
+from gbserver.environment.skypilot import aws_credentials_present
 
 pytestmark = pytest.mark.skypilot_integration
 
