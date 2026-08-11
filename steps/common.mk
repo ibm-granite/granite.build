@@ -130,6 +130,13 @@ TEMPLATE = step-template.yaml
 TEST_DIR ?= test
 PYTHON   ?= python3
 
+# Repo-root virtualenv that `make test` activates before running pytest. The step
+# tests import gbserver/libgbtest (and their deps), which live in the repo's
+# shared .venv created by `make venv` at the repo root — not in a per-step env.
+# REPO_ROOT is defined below; VENV_DIR is deferred (`?=`) so it expands at use.
+# Override VENV_DIR if your virtualenv lives elsewhere.
+VENV_DIR ?= $(REPO_ROOT)/.venv
+
 # Location of this common.mk (and the shared README beside it), resolved from
 # MAKEFILE_LIST at parse time. common.mk is the last-included file when a step
 # Makefile pulls it in, so `lastword` names it regardless of the caller's cwd.
@@ -402,12 +409,24 @@ check-published:
 #     (the docker environment's pull_policy is if-not-present). Cross-builds for
 #     $(PLATFORM); layer-cached, so repeat runs are cheap.
 # Both are cheap/offline and harmless for steps whose tests don't touch them.
+#
+# The tests import gbserver/libgbtest, so they must run under the repo-root
+# virtualenv ($(VENV_DIR)). This recipe fails fast with a pointer to `make venv`
+# if that venv is absent, then activates it (sourced in the same shell as pytest,
+# since each recipe line is its own shell) before running the tests.
 test: space image
-	@if [ -d "$(TEST_DIR)" ] && [ -n "$$(ls -A $(TEST_DIR) 2>/dev/null)" ]; then \
-		PYTHONPATH="$(SRC_DIR)$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) -m pytest $(TEST_DIR); \
-	else \
+	@if [ ! -d "$(TEST_DIR)" ] || [ -z "$$(ls -A $(TEST_DIR) 2>/dev/null)" ]; then \
 		echo "[$(STEP_NAME)] no tests in $(TEST_DIR)/; nothing to run."; \
-	fi
+		exit 0; \
+	fi; \
+	if [ ! -f "$(VENV_DIR)/bin/activate" ]; then \
+		echo "[$(STEP_NAME)] ERROR: no virtualenv at $(VENV_DIR)."; \
+		echo "[$(STEP_NAME)] The step tests need the repo-root .venv — create it with 'make -C $(REPO_ROOT) venv' (or set VENV_DIR)."; \
+		exit 1; \
+	fi; \
+	echo "[$(STEP_NAME)] activating venv $(VENV_DIR)"; \
+	. "$(VENV_DIR)/bin/activate"; \
+	PYTHONPATH="$(SRC_DIR)$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) -m pytest $(TEST_DIR)
 
 clean:
 	rm -rf $(SPACE_DIR)

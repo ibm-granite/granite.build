@@ -115,7 +115,11 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   build test just reference the rendered `$(SPACE_DIR)/`; depending on `image`
   means a local-Docker build test finds the freshly built image in the local
   store (the `docker` environment's `pull_policy` is `if-not-present`, so **no
-  registry publish** is needed). No-op when `test/` is absent or empty.
+  registry publish** is needed). No-op when `test/` is absent or empty. The tests
+  import `gbserver`/`libgbtest`, so they run under the **repo-root virtualenv**
+  (`$(VENV_DIR)`, default `.venv` at the repo root): `make test` activates it
+  automatically and fails fast with a pointer to `make venv` if it is missing.
+  Override `VENV_DIR` if your virtualenv lives elsewhere.
 * **`clean`** — remove the generated `$(SPACE_DIR)/`.
 * **`help`** — list the targets with a one-line description and point to this
   README for full documentation.
@@ -137,6 +141,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `DEFAULT_ENVIRONMENT` | *(empty)*                             | if set, written as `variables.DEFAULT_ENVIRONMENT` in `space.yaml` |
 | `TEST_DIR`        | `test`                                    | dir of Python tests run by `make test` |
 | `PYTHON`          | `python3`                                 | interpreter used to run tests    |
+| `VENV_DIR`        | `.venv` at the repo root                  | virtualenv `make test` activates before running pytest |
 | `STEP_ENV`        | the Makefile's own dir name (e.g. `skypilot`) | step's environment segment, used by `publish-step` |
 | `PUBLISH_STEP_DIR`| `configurations/assets/environments/$(STEP_ENV)/steps/$(STEP_NAME)` | where `publish-step` renders the step |
 | `PUBLISH_TEST_DIR`| `test/steps/$(STEP_NAME)/$(STEP_ENV)`     | where `publish-step` copies the per-cluster build tests |
