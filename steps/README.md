@@ -97,7 +97,14 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   (mirroring the repo's `test/` ↔ `test-data/` convention) and each copied
   `buildtest.yaml`'s `space_uri` repointed at the published step. See
   [Two test modes](#two-test-modes). Deliberately **not** part of `all` — it writes
-  tracked files you then commit.
+  tracked files you then commit. For a **custom-image step** it first verifies the
+  step's image is actually published to its registry (a published `step.yaml`/test that
+  references an unpushed image is broken — the Mode-2 skypilot test's remote node can't
+  pull it), so run `make image publish-image` **before** `make publish-step`. The check
+  queries the registry manifest only (no pull; `skopeo` preferred, else `$(DOCKER)
+  manifest inspect`) and needs no credentials for a public image. Bypass it with
+  `make publish-step PUBLISH_REQUIRE_IMAGE=false` (offline/local publishing).
+  Non-image (public-image) steps have no `IMAGE_REF`, so the check is skipped.
 * **`check-published`** — verify the committed generated artifacts still match a
   fresh render of the current source (see
   [Generated artifacts and drift](#generated-artifacts-and-drift)). Re-renders

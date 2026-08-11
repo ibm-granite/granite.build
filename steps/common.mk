@@ -203,6 +203,13 @@ PUBLISH_TESTDATA_DIR ?= $(REPO_ROOT)/test-data/steps/$(STEP_NAME)/$(STEP_ENV)
 # in) and from_yaml resolves it against the yaml's directory (see build/space.py).
 MODE2_SPACE_URI  ?= ../../../../../configurations/spaces/local
 
+# publish-step refuses to publish a custom-image step until its IMAGE_REF exists on
+# the registry — a step.yaml/build test referencing an unpublished image is broken
+# (the Mode-2 skypilot test's remote node cannot pull it). Set PUBLISH_REQUIRE_IMAGE=false
+# to bypass (offline publish, or the check-published re-render below). No effect on
+# non-image steps, whose IMAGE_REF is empty (see require-image-published).
+PUBLISH_REQUIRE_IMAGE ?= true
+
 .PHONY: all help image publish-image space publish-step check-published test test-setup clean
 
 # ---- Default goal ----------------------------------------------------------
@@ -222,7 +229,7 @@ help:
 	@echo
 	@echo "Targets:"
 	@echo "  space          render step.yaml + a space.yaml into the Space $(SPACE_DIR)/ (offline)"
-	@echo "  publish-step   render the step into the assets tree + copy build tests into test/steps/ (not in all)"
+	@echo "  publish-step   render the step into the assets tree + copy build tests into test/steps/ (not in all; image steps: image must be published first, override with PUBLISH_REQUIRE_IMAGE=false)"
 	@echo "  check-published  re-render to a temp dir and diff against the committed artifacts; exit 1 on drift"
 	@echo "  image          build the image from $(DOCKERFILE) for $(PLATFORM)  (no-op when no Dockerfile is present)"
 	@echo "  publish-image  push the image to the registry                 (no-op when no Dockerfile is present)"
@@ -291,6 +298,31 @@ define guard-publish-paths
 	done
 endef
 
+# require-image-published — for custom-image steps, fail publish-step unless the step's
+# IMAGE_REF is present on its registry, so a step's step.yaml + build tests are only
+# published once the image they reference is pullable. No-op for non-image steps (empty
+# IMAGE_REF) and when PUBLISH_REQUIRE_IMAGE is not "true". Queries the registry manifest
+# only (no layer pull): prefers skopeo (registry-native, independent of $(DOCKER)),
+# falling back to `$(DOCKER) manifest inspect`. A public image needs no credentials.
+define require-image-published
+	@if [ -n "$(IMAGE_REF)" ] && [ "$(PUBLISH_REQUIRE_IMAGE)" = "true" ]; then \
+		echo "[$(STEP_NAME)] verifying image is published: $(IMAGE_REF)"; \
+		if command -v skopeo >/dev/null 2>&1; then \
+			skopeo inspect --raw "docker://$(IMAGE_REF)" >/dev/null 2>&1 || { \
+				echo "[publish-step] refusing: image '$(IMAGE_REF)' not found on its registry."; \
+				echo "[publish-step] run 'make publish-image' (and ensure the repo is public) before 'make publish-step', or pass PUBLISH_REQUIRE_IMAGE=false to override."; \
+				exit 1; }; \
+		elif $(DOCKER) manifest inspect "$(IMAGE_REF)" >/dev/null 2>&1; then \
+			:; \
+		else \
+			echo "[publish-step] refusing: image '$(IMAGE_REF)' not found on its registry (via '$(DOCKER) manifest inspect'; install skopeo for a more reliable check)."; \
+			echo "[publish-step] run 'make publish-image' first, or pass PUBLISH_REQUIRE_IMAGE=false to override."; \
+			exit 1; \
+		fi; \
+		echo "[$(STEP_NAME)] image present on registry."; \
+	fi
+endef
+
 # ---- Render Space ----------------------------------------------------------
 
 # Render a self-contained Space into $(SPACE_DIR)/:
@@ -341,6 +373,7 @@ space:
 # configurations/spaces/local instead of the local space/. Deliberately NOT part
 # of `all`: publish-step writes the committed assets tree.
 publish-step:
+	$(call require-image-published)
 	$(call guard-publish-paths)
 	@mkdir -p $(PUBLISH_STEP_DIR)
 	$(call render-step-template,$(PUBLISH_STEP_DIR)/step.yaml)
@@ -382,8 +415,10 @@ publish-step:
 # reference already committed (extracted from the published step.yaml via
 # IMAGE_REF), so only genuine content drift — an edited template/src/test that
 # was never re-published — is reported, not the per-commit IMAGE_TAG churn (see
-# the eval README's "tag coupling" note). Exit 0 = in sync (or nothing published
-# yet); exit 1 = drift, meaning you must re-run `make publish-step` and commit it.
+# the eval README's "tag coupling" note). It also passes PUBLISH_REQUIRE_IMAGE=false to
+# the re-render so drift-checking stays offline (it never queries the registry — the
+# image-existence guard applies only to a real `make publish-step`). Exit 0 = in sync
+# (or nothing published yet); exit 1 = drift, so re-run `make publish-step` and commit it.
 check-published:
 	@if [ ! -f "$(PUBLISH_STEP_DIR)/step.yaml" ]; then \
 		echo "[$(STEP_NAME)] nothing published at $(PUBLISH_STEP_DIR); nothing to check."; exit 0; \
@@ -392,7 +427,8 @@ check-published:
 	ref=$$(sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' "$(PUBLISH_STEP_DIR)/step.yaml" | head -1); \
 	$(MAKE) --no-print-directory publish-step \
 		PUBLISH_STEP_DIR="$$tmp/step" PUBLISH_TEST_DIR="$$tmp/test" \
-		PUBLISH_TESTDATA_DIR="$$tmp/testdata" $${ref:+IMAGE_REF="$$ref"} >/dev/null; \
+		PUBLISH_TESTDATA_DIR="$$tmp/testdata" PUBLISH_REQUIRE_IMAGE=false \
+		$${ref:+IMAGE_REF="$$ref"} >/dev/null; \
 	rc=0; \
 	for pair in "$(PUBLISH_STEP_DIR):$$tmp/step" "$(PUBLISH_TEST_DIR):$$tmp/test" "$(PUBLISH_TESTDATA_DIR):$$tmp/testdata"; do \
 		committed=$${pair%:*}; fresh=$${pair##*:}; \
