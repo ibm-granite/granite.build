@@ -1,0 +1,36 @@
+# YAML-driven spec for
+# test/integration/ibm/buildrunner/skypilot/aws/test_2target.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# Two command-step targets on AWS EC2 (via SkyPilot). `second` binds `first`'s
+# output, proving cross-target output -> input binding over env_local. AWS analog
+# of the bluevela 2target fixture (which runs the same shape on LSF).
+targets:
+  - first
+  - second
+target_expectations:
+  # step_count = 1 per target: the env_local assetstore is a no-op (no pull/push
+  # steps are queued), so only the single `command` step is recorded. Each env://
+  # output adds one artifact but launches no push step and produces one jobstat;
+  # `second` also binds one input artifact.
+  - target_name: first
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    jobstats_count: 1
+  - target_name: second
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+# Resolve space:// URIs (the aws environment + the shared `command` step) from the
+# repo's local space without cloning from GitHub. Relative to this YAML's
+# directory — same depth as the sibling 1step-image fixture, so the same path.
+space_uri: ../../../../../../../configurations/spaces/local
+# A happy-path binding test — no simulated failure, and skip the cancellation run.
+simulate_step_failure: false
+tests:
+  - runner
+# AWS EC2 cold provisioning via SkyPilot is slower than LSF, and `second` waits
+# for `first` (two sequential provisions), so give it generous headroom.
+timeout_minutes: 40
