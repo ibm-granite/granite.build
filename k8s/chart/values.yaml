@@ -83,12 +83,12 @@ deployments:
         ephemeral-storage: 1Gi
         memory: 512Mi
     env:
-      GB_ENVIRONMENT: PROD
       GBSERVER_SQL_SSLROOT_CERT: ibm-cloud-databases.cert
       GBSERVER_LINEAGE_PROVIDER: wandb
       GBSERVER_WANDB_BASE_URL: https://ibm.wandb.io
       GBSERVER_WANDB_PROJECT: lineage-tracking
     envFromMainSecret:
+    - GB_ENVIRONMENT
     # Admin DB access (reconciliation reads builds/targets from admin storage).
     - GBSERVER_SQL_USER
     - GBSERVER_SQL_PASSWD
