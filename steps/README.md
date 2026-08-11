@@ -50,6 +50,49 @@ migrating it into `steps/` first (add a `step-template.yaml` + `Makefile`, move 
 code into `src/`, then let `make publish-step` regenerate the asset) rather than
 editing the released asset in place.
 
+### What promotion does — and what the framework is *for*
+
+Promotion is deliberately narrow. `make publish-step` (and the `make space` render it
+builds on) does four things and no more:
+
+1. **Renders one token.** `step-template.yaml` → `step.yaml` substituting only the
+   literal `${IMAGE_REF}` (empty for public-image steps); all runtime Jinja `{{ … }}`
+   and shell `${VAR}` pass through verbatim.
+2. **Copies `src/`** into the released step.
+3. **Copies the per-cluster build tests** into `test/steps/<name>/<env>/<cluster>/`
+   and their fixtures into `test-data/steps/…`, **rewriting each `buildtest.yaml`'s
+   `space_uri`** so the *same* test file resolves in both modes (see
+   [Two test modes](#two-test-modes)).
+4. **Freezes the image tag** for custom-image steps — the per-commit `IMAGE_REF`
+   (default tag = git short SHA) that you can't reasonably hand-maintain.
+
+It is **not** a one-to-many generator and **not** parameterized templating: one source
+directory produces exactly one released step per environment, so for a public-image
+step like `byoc` the promotion is a byte-for-byte copy. Per-environment variation is
+expressed by **authoring** a separate source dir per environment
+(`steps/<name>/skypilot`, `.../lsf`, …) and by putting multiple
+`environment_configs`/launchers in a single template (e.g. eval's `Skypilot` +
+`Docker`) — it is authored, not fanned out from one definition. There is no roadmap to
+generate multiple asset variants from a shared source.
+
+So the value is **not** "less YAML to maintain." It is:
+
+* **Release discipline / provenance.** `configurations/` is a vetted release; you
+  promote into it from a reviewed, tested source rather than hand-editing the release.
+  Even when the copy is literal, the definition gains a development home where it is
+  changed and tested before it ships.
+* **Tests travel with the step, and the three trees stay in sync.** The step's build
+  tests live beside it and run via `make test` (Mode 1) before promotion, then land in
+  `test/steps/` (Mode 2) — assets, tests, and fixtures are published together and
+  can't silently drift (`make check-published` re-renders and diffs them).
+* **Image-ref rendering** (custom-image only) — the one genuinely non-copy piece, and
+  the strongest single reason for the mechanism.
+
+**"Why not just edit `configurations/` directly?"** Because that edits the release in
+place, bypassing the source, its tests, and the sync — the same reason you don't patch
+a build artifact instead of its source. Change the step in `steps/` and re-run
+`make publish-step`.
+
 ## Layout of a step/environment directory
 
 Each step/environment directory (e.g. `steps/byoc/skypilot`) mixes files you
