@@ -14,16 +14,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Auto-mark everything under ``test/steps/`` as a Mode-2 step build test.
+"""Auto-mark everything under ``test/steps/`` as an ``extended`` test.
 
 ``make publish-step`` copies a step's per-cluster build tests into this tree (see
 ``steps/README.md``, "Two test modes"). Those copies are real-infra tests that
-should be **discoverable/runnable from VSCode** yet stay **out of every
-whole-tree Makefile suite**. Rather than requiring each copied test to carry the
-marker (the copies are generated, not hand-edited), we apply ``step_build_test``
-to every item collected under this directory here, so ``quick-tests``,
-``extended-tests`` and the shared ``DEFAULT_PYTEST_MARKERS`` base can all
-deselect them with ``-m "… and not step_build_test"``.
+should be **discoverable/runnable from VSCode** and run in the extended suite, yet
+stay **out of the quick / PR selections**. Rather than relying on each copied test
+to carry ``@extended_testing_only`` (the copies are generated, not hand-edited), we
+apply the ``extended`` marker to every item collected under this directory here, so
+``quick-tests`` (and any ``not extended`` selection) deselects them while
+``extended-tests`` runs them — no dedicated ``step_build_test`` marker required.
 """
 
 from pathlib import Path
@@ -47,10 +47,10 @@ def _item_under_steps(item: pytest.Item) -> bool:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Tag every test under ``test/steps/`` with the ``step_build_test`` marker.
+    """Tag every test under ``test/steps/`` with the ``extended`` marker.
 
     :param items: the list of collected pytest items (modified in place).
     """
     for item in items:
         if _item_under_steps(item):
-            item.add_marker(pytest.mark.step_build_test)
+            item.add_marker(pytest.mark.extended)

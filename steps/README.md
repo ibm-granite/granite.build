@@ -364,16 +364,17 @@ resolves the step differs (the `space_uri`):
   (`../../../../../configurations/spaces/local`, five levels up from the fixture's
   dir), which resolves the **published** step from `configurations/assets`. These
   live under the repo's top-level `test/` tree, so they are **discoverable and
-  runnable from VSCode's Test Explorer**, yet stay **out of every whole-tree Makefile
-  suite**. They are not in `pyproject.toml`'s `testpaths` and are not listed by the
-  `test-pr` target; and [`test/steps/conftest.py`](../test/steps/conftest.py)
-  auto-applies the `step_build_test` marker to the whole tree, which `quick-tests`,
-  `extended-tests`, and the shared `DEFAULT_PYTEST_MARKERS` base all deselect
-  (`-m "… and not step_build_test"`). Run them **from VSCode** or **explicitly**
-  (`pytest test/steps/…`). Being real-infra tests (also `@extended`-marked, and
-  `docker_required` / `skypilot_integration` per cluster), they still require the
-  relevant infra — a Docker daemon / a reachable cluster — to actually execute
-  rather than skip.
+  runnable from VSCode's Test Explorer** and run in the **extended** suite, yet stay
+  **out of the quick / PR selections**. They are not in `pyproject.toml`'s
+  `testpaths` and are not listed by the `test-pr` target; and
+  [`test/steps/conftest.py`](../test/steps/conftest.py) auto-applies the `extended`
+  marker to the whole tree, so `quick-tests` (and any `not extended` selection)
+  deselects them while `make extended-tests` runs them — no per-file
+  `@extended_testing_only` needed on the copies. Run them **from VSCode**,
+  via `make extended-tests`, or **explicitly** (`pytest test/steps/…`). Being
+  real-infra tests (`skypilot_integration`, and `docker_required` per cluster), they
+  still require the relevant infra — a Docker daemon / a reachable cluster — to
+  actually execute rather than skip.
 
 `make publish-step` creates the assets step and the `test/steps/` + `test-data/steps/`
 copies **together**, so a committed `test/steps/<step>/<env>/` always has a matching
