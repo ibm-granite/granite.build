@@ -19,6 +19,10 @@ config:
     workdir: "code"
     # Command executed by `run`, from inside the cloned repo directory.
     command: ""
+    # Optional bash command run during `setup`, after the repo is cloned, from
+    # $GB_BUILD_WORKDIR (the workdir root — cd into the repo yourself if needed,
+    # e.g. "cd code && pip install -r requirements.txt"). Empty => skipped.
+    setup_command: ""
 
 environment_configs:
   Skypilot:
@@ -56,6 +60,17 @@ environment_configs:
             if [ -n "$REF" ]; then
               echo "byoc: checking out $REF"
               git -C "$CODE_DIR" checkout "$REF"
+            fi
+            # Optional user setup command, run from the workdir root after the
+            # clone. Gated by a Jinja expression (like image_id above) so the raw
+            # command is injected verbatim rather than through a shell variable
+            # (which would need quoting). set -eu is in effect: a failure here
+            # fails the build, just as a failed clone does.
+            SETUP_ENABLED="{{ 'yes' if config.byoc_config.setup_command else '' }}"
+            if [ -n "$SETUP_ENABLED" ]; then
+              cd "${GB_BUILD_WORKDIR:-$HOME}"
+              echo "byoc: running setup_command in $(pwd)"
+              {{ config.byoc_config.setup_command }}
             fi
           # run executes the user-defined command from inside the cloned repo.
           # File-mounted helpers are available at $GB_BUILD_WORKDIR/src.

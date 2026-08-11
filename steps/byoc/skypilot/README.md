@@ -1,7 +1,8 @@
 # byoc (SkyPilot)
 
 Bring-Your-Own-Code step for SkyPilot clusters. Runs in a **public container
-image** (or on the bare launcher node), clones a public git repo during `setup`,
+image** (or on the bare launcher node), clones a public git repo during `setup`
+(optionally running a `setup_command` afterwards, e.g. to install dependencies),
 and runs a user-defined command during `run` — no custom image is built or
 published for this step.
 
@@ -39,6 +40,7 @@ All fields live under the step's `config.byoc_config`.
 | `image` | string | Public container image the step runs in, e.g. `python:3.12-slim`. Rendered at runtime as SkyPilot `docker:<image>`. Defaults to `quay.io/fedora/fedora-minimal:42`; set to `""` to run on the bare launcher node instead (e.g. a cluster without Pyxis, which cannot run container images). |
 | `ref` | string | Branch, tag, or commit checked out after cloning. Default: the repo's default branch. |
 | `workdir` | string | Subdirectory (under `$GB_BUILD_WORKDIR`) the repo is cloned into. Default: `code`. |
+| `setup_command` | string | Bash command run during `setup`, **after** the clone, from `$GB_BUILD_WORKDIR` (the workdir root). Use it for dependency installation, e.g. `cd code && pip install -r requirements.txt`. `set -eu` is in effect, so a failure fails the build. Empty (default) => skipped. |
 
 > **`image` is a runtime choice, not a built image.** Unlike custom-image steps
 > (e.g. [eval](../../eval/skypilot/README.md)), `byoc` builds no Dockerfile;
@@ -112,6 +114,7 @@ granite.build:
               repo: "https://github.com/org/repo"
               ref: "main"
               workdir: "code"
+              setup_command: "cd code && pip install -r requirements.txt"
               command: "python main.py --out $GB_BUILD_WORKDIR/result"
 ```
 
