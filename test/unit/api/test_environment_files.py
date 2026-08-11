@@ -748,16 +748,15 @@ class TestEnvironmentUriResolution:
         monkeypatch.setattr(
             c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
         )
-        # When a config branch WAS found, get_gb_space_config_uri returns a URI
-        # with @<branch> and an empty "#subdirectory="; append_path must extend
-        # that fragment, not add a second one, and keep the @<branch> ref.
+        # When a config branch WAS found, get_gb_space_config_uri returns the repo
+        # with @<branch> appended and NO fragment; append_path then creates the
+        # single #subdirectory= fragment while preserving the @<branch> ref.
         monkeypatch.setattr(
             GitURI,
             "get_gb_space_config_uri",
             staticmethod(
                 lambda uri, *a, **k: (
-                    "git+ssh://example.com/org/gbspace-public.git"
-                    "@gbspace-config#subdirectory="
+                    "git+ssh://example.com/org/gbspace-public.git@gbspace-config"
                 )
             ),
         )
@@ -792,7 +791,8 @@ class TestEnvironmentUriResolution:
 
         def _counting(uri, *a, **k):
             calls["n"] += 1
-            return "git+ssh://example.com/org/gbspace-public.git"
+            # Branch-bearing result → stable → cacheable.
+            return "git+ssh://example.com/org/gbspace-public.git@gbspace-config"
 
         monkeypatch.setattr(GitURI, "get_gb_space_config_uri", staticmethod(_counting))
         first = c.get_supported_env_for_files_uri()
@@ -800,6 +800,32 @@ class TestEnvironmentUriResolution:
         assert first == second
         # The live-GitHub-probing conversion ran once despite two resolutions.
         assert calls["n"] == 1
+
+    def test_branchless_derivation_not_cached(self, monkeypatch):
+        from gbcommon.uri.git import GitURI
+        from gbserver.types import constants as c
+
+        monkeypatch.setattr(
+            c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
+        )
+        # No config branch found → branchless URI (points at the default branch).
+        # It's returned, but not cached, so a later request re-probes for the
+        # branch rather than serving the branchless URI for the process lifetime.
+        calls = {"n": 0}
+
+        def _branchless(uri, *a, **k):
+            calls["n"] += 1
+            return "git+ssh://example.com/org/gbspace-public.git"
+
+        monkeypatch.setattr(
+            GitURI, "get_gb_space_config_uri", staticmethod(_branchless)
+        )
+        first = c.get_supported_env_for_files_uri()
+        second = c.get_supported_env_for_files_uri()
+        assert first == second
+        assert "subdirectory=environments%2Fbluevela" in first
+        assert calls["n"] == 2  # re-derived, not memoized
+        assert c.PUBLIC_SPACE_GIT_URI not in c._DERIVED_ENV_FOR_FILES_URI_CACHE
 
     def test_github_error_during_derivation_yields_empty_uncached(self, monkeypatch):
         from gbcommon.uri.git import GitURI
