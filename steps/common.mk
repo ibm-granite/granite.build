@@ -25,6 +25,11 @@
 #                 (via `image`; no-op/no publish for non-image steps), then run
 #                 the step's Python tests in $(TEST_DIR)/ (adjacent to src/,
 #                 organised in per-cluster subdirs; not bundled)
+#   test-setup    OPTIONAL per-step hook: stand up any infrastructure the step's
+#                 tests need (e.g. a local SLURM + MinIO cluster). Run it once
+#                 before `make test`; it is deliberately NOT a prerequisite of
+#                 `test`. common.mk supplies a no-op default; a step overrides it
+#                 (see HAS_TEST_SETUP below)
 #   clean         remove the generated Space directory
 #   help          list the targets and point at the shared steps/README.md
 #
@@ -32,6 +37,11 @@
 #   STEP_NAME    (required) logical step name, e.g. "byoc"
 #   REGISTRY     (required for image steps) image registry+namespace, e.g.
 #                quay.io/my-org — no default; error if unset for an image step
+#   HAS_TEST_SETUP  (optional) set to `true` when the step defines its OWN
+#                `test-setup` target (below the include). common.mk then skips its
+#                no-op default so there is no "overriding recipe" warning. A step
+#                with test infrastructure sets this and delegates to the repo-root
+#                Makefile, e.g.  test-setup:  $(MAKE) -C $(REPO_ROOT) slurm-setup minio-setup
 #
 # Whether a step builds a custom image is auto-detected: if a Dockerfile sits
 # next to the including Makefile, `image`/`publish-image` are real and the
@@ -193,7 +203,7 @@ PUBLISH_TESTDATA_DIR ?= $(REPO_ROOT)/test-data/steps/$(STEP_NAME)/$(STEP_ENV)
 # in) and from_yaml resolves it against the yaml's directory (see build/space.py).
 MODE2_SPACE_URI  ?= ../../../../../configurations/spaces/local
 
-.PHONY: all help image publish-image space publish-step check-published test clean
+.PHONY: all help image publish-image space publish-step check-published test test-setup clean
 
 # ---- Default goal ----------------------------------------------------------
 # `space` deliberately does NOT depend on image/publish-image so it stays a cheap,
@@ -218,6 +228,7 @@ help:
 	@echo "  publish-image  push the image to the registry                 (no-op when no Dockerfile is present)"
 	@echo "  all            $(if $(filter true,$(STEP_USES_IMAGE)),image + publish-image + space,space (this step builds no image))"
 	@echo "  test           render the Space + build the image locally, then run the step's tests in $(TEST_DIR)/ (no-op when absent)"
+	@echo "  test-setup     stand up infra the step's tests need (run once before 'make test'; no-op unless the step defines it)"
 	@echo "  clean          remove the generated Space $(SPACE_DIR)/"
 	@echo "  help           show this message"
 	@echo
@@ -427,6 +438,24 @@ test: space image
 	echo "[$(STEP_NAME)] activating venv $(VENV_DIR)"; \
 	. "$(VENV_DIR)/bin/activate"; \
 	PYTHONPATH="$(SRC_DIR)$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) -m pytest $(TEST_DIR)
+
+# ---- Optional pre-test setup hook ------------------------------------------
+# `test-setup` is where a step brings up the infrastructure its tests need (a
+# local SLURM + MinIO cluster, a mock service, seed data, ...). It is a SEPARATE
+# target — deliberately NOT a prerequisite of `test` — so the (often slow) infra
+# bring-up runs only when you ask for it: run `make test-setup` once, then iterate
+# with `make test`.
+#
+# A step opts in by setting `HAS_TEST_SETUP := true` BEFORE the include and
+# defining its own `test-setup` target after it (typically delegating to the
+# repo-root Makefile, e.g. `$(MAKE) -C $(REPO_ROOT) slurm-setup minio-setup`).
+# When HAS_TEST_SETUP is not `true`, common.mk supplies the no-op default below
+# so `make test-setup` is always a valid, harmless target; the guard also avoids
+# a "overriding recipe for target 'test-setup'" warning when a step defines one.
+ifneq ($(strip $(HAS_TEST_SETUP)),true)
+test-setup:
+	@echo "[$(STEP_NAME)] no test-setup defined for this step; nothing to do."
+endif
 
 clean:
 	rm -rf $(SPACE_DIR)

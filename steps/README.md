@@ -120,6 +120,16 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   (`$(VENV_DIR)`, default `.venv` at the repo root): `make test` activates it
   automatically and fails fast with a pointer to `make venv` if it is missing.
   Override `VENV_DIR` if your virtualenv lives elsewhere.
+* **`test-setup`** — optional per-step hook that stands up the infrastructure a
+  step's tests need (e.g. a local SLURM + MinIO cluster). It is a **separate
+  target, deliberately not a prerequisite of `test`**, so the (often slow) infra
+  bring-up runs only when you ask: run `make test-setup` **once**, then iterate
+  with `make test`. `common.mk` supplies a no-op default; a step opts in by
+  setting `HAS_TEST_SETUP := true` **before** the `include` and defining its own
+  `test-setup` target after it — typically delegating to the repo-root Makefile,
+  e.g. `test-setup: ; $(MAKE) -C $(REPO_ROOT) slurm-setup minio-setup` (the
+  `HAS_TEST_SETUP` flag makes `common.mk` skip its default, avoiding an
+  "overriding recipe" warning). `REPO_ROOT` is provided by `common.mk`.
 * **`clean`** — remove the generated `$(SPACE_DIR)/`.
 * **`help`** — list the targets with a one-line description and point to this
   README for full documentation.
@@ -142,6 +152,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `TEST_DIR`        | `test`                                    | dir of Python tests run by `make test` |
 | `PYTHON`          | `python3`                                 | interpreter used to run tests    |
 | `VENV_DIR`        | `.venv` at the repo root                  | virtualenv `make test` activates before running pytest |
+| `HAS_TEST_SETUP`  | *(unset)*                                 | set to `true` (before the include) when the step defines its own `test-setup` target |
 | `STEP_ENV`        | the Makefile's own dir name (e.g. `skypilot`) | step's environment segment, used by `publish-step` |
 | `PUBLISH_STEP_DIR`| `configurations/assets/environments/$(STEP_ENV)/steps/$(STEP_NAME)` | where `publish-step` renders the step |
 | `PUBLISH_TEST_DIR`| `test/steps/$(STEP_NAME)/$(STEP_ENV)`     | where `publish-step` copies the per-cluster build tests |

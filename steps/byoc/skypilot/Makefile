@@ -12,4 +12,16 @@
 
 STEP_NAME := byoc
 
+# This step defines its own test-setup target (below), so tell common.mk to skip
+# its no-op default (avoids an "overriding recipe" warning).
+HAS_TEST_SETUP := true
+
 include ../../common.mk
+
+# Stand up the local infrastructure the slurm build test needs — a Docker SLURM
+# cluster and a MinIO (S3) endpoint — by delegating to the repo-root Makefile
+# targets (which source the repo-root .venv and run the setup scripts). Run once
+# before `make test`; both scripts are idempotent, so re-running is safe.
+# REPO_ROOT is provided by common.mk (the repo root relative to this step dir).
+test-setup:
+	$(MAKE) -C $(REPO_ROOT) slurm-setup minio-setup
