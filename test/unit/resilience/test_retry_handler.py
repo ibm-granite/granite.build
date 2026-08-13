@@ -615,3 +615,59 @@ class TestWorkloadStatusTerminalFailure:
         )
         assert retry_triggered is True
         assert handler.environment.retry_called is True
+
+
+class TestExhaustedRetriableIsTerminal:
+    """A retriable failure with no retries left is itself terminal.
+
+    Without this the handler would neither relaunch nor raise on such an event,
+    leaving a monitor's deferred wait (e.g. LSF's _retry_pending_after_monitor)
+    hanging forever. The event need not carry a terminal-shaped ```json block --
+    a plain MESSAGE_EVENT that a strategy recognizes is enough.
+    """
+
+    def _handler(self, max_retries: int, strategy: RetryStrategy) -> RetryHandler:
+        return RetryHandler(
+            launch_id="test-launch-123",
+            downstream_queue=asyncio.Queue(),
+            environment=MockEnvironment(),
+            max_retries=max_retries,
+            strategies=[strategy],
+        )
+
+    def test_is_retriable_event_reflects_strategy(self: Self) -> None:
+        """_is_retriable_event ignores retry_count -- it only asks the strategies."""
+        event = create_test_event("Cannot open your job file")
+        assert (
+            self._handler(0, AlwaysRetryStrategy())._is_retriable_event(event) is True
+        )
+        assert (
+            self._handler(0, NeverRetryStrategy())._is_retriable_event(event) is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_retriable_but_exhausted_raises(self: Self) -> None:
+        """max_retries reached + a strategy would retry + no terminal json block
+        -> raise WorkloadFailedException instead of silently forwarding."""
+        handler = self._handler(0, AlwaysRetryStrategy())
+        await handler.get_wrapper_queue().put(create_test_event("transient error"))
+        with pytest.raises(WorkloadFailedException):
+            await asyncio.wait_for(handler.process_events(), timeout=5.0)
+        # The event is still forwarded downstream before the exception is raised.
+        assert handler.downstream_queue.qsize() == 1
+        assert handler.environment.retry_called is False
+
+    @pytest.mark.asyncio
+    async def test_non_retriable_non_terminal_does_not_raise(self: Self) -> None:
+        """A benign event no strategy recognizes must NOT raise when exhausted --
+        it is forwarded and the loop continues (guards against over-raising)."""
+        handler = self._handler(0, NeverRetryStrategy())
+        await handler.get_wrapper_queue().put(create_test_event("just a log line"))
+        processor_task = asyncio.create_task(handler.process_events())
+        for _ in range(100):
+            if handler.downstream_queue.qsize() >= 1:
+                break
+            await asyncio.sleep(0.01)
+        handler.stop()
+        await processor_task  # completes without raising
+        assert handler.downstream_queue.qsize() == 1

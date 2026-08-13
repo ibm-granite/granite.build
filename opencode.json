@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "gbmcp": {
+      "type": "local",
+      "command": [
+        "bash",
+        "-c",
+        "exec \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.venv/bin/gbmcp\""
+      ],
+      "cwd": ".",
+      "enabled": true
+    }
+  }
+}

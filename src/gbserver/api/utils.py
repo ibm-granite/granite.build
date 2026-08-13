@@ -15,7 +15,8 @@
 # limitations under the License.
 
 
-from typing import Any, Optional
+from contextlib import contextmanager
+from typing import Iterator, Optional
 
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
@@ -23,6 +24,48 @@ from pydantic import BaseModel
 from gbserver.spaces.user_spaces_list import space_access_check, space_admin_check
 from gbserver.storage.storage import Pagination, QueryControl, SortOrder, TaggedItem
 from gbserver.types.constants import PUBLIC_SPACE_NAME, SYSTEM_TAG_PREFIX
+from gbserver.utils.remote_files_ops import (
+    RemoteFileBadRequest,
+    RemoteFileError,
+    RemoteFileNotFound,
+    RemoteFileOpFailed,
+)
+
+# Maps each remote-file domain error to the HTTP status the API surfaces for it.
+# The remote_files_ops module is framework-free (raises these instead of
+# fastapi.HTTPException); this is the single place that layer boundary is
+# translated back into HTTP. Subclasses resolve to their nearest listed base.
+_REMOTE_FILE_ERROR_STATUS = {
+    RemoteFileBadRequest: status.HTTP_400_BAD_REQUEST,
+    RemoteFileNotFound: status.HTTP_404_NOT_FOUND,
+    RemoteFileOpFailed: status.HTTP_500_INTERNAL_SERVER_ERROR,
+}
+
+
+@contextmanager
+def translate_remote_file_errors() -> Iterator[None]:
+    """Translate ``RemoteFileError`` domain errors into ``HTTPException``.
+
+    Wrap the file-op delegate calls (``run_search``/``run_list``/``peek_file``/
+    ``remote_stat``/``validate_peek_args``/…) in the ``api/`` file handlers
+    with this so the shared, framework-free ``remote_files_ops`` module can
+    signal failures without importing fastapi. The error's message is passed
+    through verbatim as the HTTP detail (the module keeps those generic, so no
+    path/identity leaks). An unrecognized ``RemoteFileError`` subclass maps to
+    500 rather than escaping untranslated.
+    """
+    try:
+        yield
+    except RemoteFileError as e:
+        status_code = next(
+            (
+                code
+                for cls, code in _REMOTE_FILE_ERROR_STATUS.items()
+                if isinstance(e, cls)
+            ),
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        raise HTTPException(status_code, str(e)) from e
 
 
 def get_row_filter(**kwargs):

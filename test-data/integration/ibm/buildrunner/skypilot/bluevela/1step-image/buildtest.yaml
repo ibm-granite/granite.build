@@ -19,8 +19,10 @@ target_expectations:
 # Resolve space:// URIs (env + the shared `command` step) from the repo's local
 # space without cloning from GitHub. Relative to this YAML's directory.
 space_uri: ../../../../../../../configurations/spaces/local
-# A happy-path test — no simulated failure, and skip the cancellation run.
+# No simulated failure: the runner test exercises the happy path, and the
+# runner_cancellation test cancels a genuinely-running step.
 simulate_step_failure: false
 tests:
   - runner
+  - runner_cancellation
 timeout_minutes: 20

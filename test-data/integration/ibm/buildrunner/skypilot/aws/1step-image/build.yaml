@@ -1,0 +1,70 @@
+granite.build:
+  name: skypilot-aws-command-image
+  # Single command-step target on AWS EC2 (via SkyPilot) that runs the command
+  # INSIDE a container image. This is the AWS analog of the bluevela
+  # skypilot/bluevela/1step-image fixture: bluevela runs the image through LSF's
+  # enroot, whereas on AWS the skypilot command step renders image_id to
+  # "docker:<image>" and SkyPilot pulls/runs it with Docker on the EC2 instance.
+  # A public registry image (quay.io) is used so no registry auth
+  # (GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD) is needed.
+  #
+  # env:// (env_local) I/O is a no-op: push/pull do nothing, so the artifact
+  # registration/binding works purely on the LLMB_ARTIFACT_PATH string and no
+  # real files need to exist on disk. This keeps the test free of HF/S3
+  # credentials while still driving the command step end-to-end — the simplest
+  # possible "does AWS+SkyPilot work" smoke test.
+  targets:
+    image-run:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        # env:// input: pulled as a no-op. The path need not exist and its value
+        # isn't asserted; it just flows to the command as a binding.
+        env_input:
+          uri: "env:///tmp/gb-env-input.txt"
+      outputs:
+        # env:// output: registered inline from the LLMB_ARTIFACT marker the
+        # command emits below. `type` is required for env:// outputs.
+        env_output:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Run the command INSIDE a container image (image_id: docker:<image>).
+              # On AWS this uses SkyPilot's Docker support on the EC2 instance (vs
+              # enroot on bluevela's LSF). IMPORTANT: SkyPilot runs its runtime
+              # setup INSIDE the container with apt-get, so the image MUST be
+              # Debian/Ubuntu-based. bluevela's quay.io/fedora/fedora-minimal image
+              # fails here with "apt-get: command not found" (rc 127) because
+              # enroot skips that apt setup but AWS Docker does not. ubuntu:22.04 is
+              # public and needs no auth; a fresh EC2 IP won't hit Docker Hub limits.
+              image: ubuntu:22.04
+              command: >-
+                echo "image-run target on AWS EC2 via SkyPilot (docker image)";
+                echo "env input path: {{ bindings.env_input.binding.path }}";
+                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-aws-1step-image/{{ run_metadata.targetsteprun_id | short_hash }}/out"
+            # Unlike bluevela (whose LSF environment defines a single allowed
+            # cluster, so no resources are needed), AWS must size an EC2 instance.
+            # Pin an explicit small instance + region to keep the test cheap and
+            # deterministic — otherwise SkyPilot defaults to a large box (it chose
+            # m6i.2xlarge / 8 vCPU / 32 GiB) and the cheapest region for the type.
+            launcher_config:
+              resources:
+                # Region is parameterized: it comes from the space variable
+                # AWS_REGION and defaults to us-east-2 (the account/quota we're
+                # told to use). Override it by setting AWS_REGION in the space's
+                # `variables:` (configurations/spaces/local/space.yaml) — no need
+                # to edit this fixture. Encoded in `infra` as cloud/region because
+                # gbserver builds sky.Resources with an `infra` string, not a
+                # separate `region` kwarg.
+                infra: "aws/{{ space.variables.AWS_REGION | default('us-east-2') }}"
+                # t3.medium = 2 vCPU / 4 GiB (~$0.04/hr in us-east-2). SkyPilot
+                # installs its runtime (ray, etc.) INSIDE the ubuntu container via
+                # apt+pip, which needs more RAM than a bare echo — 2 GiB (t3.small)
+                # risks an OOM during the ray install. Smallest reliable size here.
+                instance_type: t3.medium
+                # Trim the default root volume to cut EBS cost.
+                disk_size: 40

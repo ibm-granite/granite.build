@@ -67,6 +67,33 @@ class ErrNetworkUnreachable(Exception):
         )
 
 
+ERR_CONNECTION_CLOSED_PATTERNS = ("Connection closed", "closed by remote host")
+
+
+class ErrConnectionClosed(Exception):
+    """Remote end dropped the connection mid-transfer (e.g. scp/ssh tunnel).
+
+    This is a transient transport failure that should be retried, distinct from
+    a persistent outage. Matched narrowly (not via the broad
+    ``ERR_SSH_CONNECTION_PATTERNS``) so it only triggers on an actual dropped
+    connection rather than any message that happens to contain "connection".
+    """
+
+    @staticmethod
+    def matches_error_str(s: Union[str, bytes]) -> bool:
+        """Return True if ``s`` reports a dropped connection.
+
+        Args:
+            s: The stderr text (``str`` or ``bytes``) to classify.
+
+        Returns:
+            bool: True if any connection-closed pattern is present.
+        """
+        if isinstance(s, bytes):
+            s = s.decode("utf-8", errors="replace")
+        return any(pattern in s for pattern in ERR_CONNECTION_CLOSED_PATTERNS)
+
+
 ERR_SSH_CONNECTION_PATTERNS = ["connection", "ssh", "network", "timeout", "refused"]
 
 

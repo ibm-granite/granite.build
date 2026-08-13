@@ -14,6 +14,25 @@ config:
   retry:
     max_retries: 10
     delay_seconds: 1800
+  # AWS credentials materialized from the space secret manager into a NON-default
+  # profile in ~/.aws/credentials (avoids clobbering an existing [default]). The
+  # values are secret NAMES resolved by the space's secret_manager (local file
+  # store in standalone; server-managed in shared) — never literals.
+  aws_credentials:
+    - profile: gb-skypilot
+      aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+      aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+  # Select that profile: deep-merged into ~/.sky/config.yaml so SkyPilot's boto3
+  # uses boto3.Session(profile_name='gb-skypilot'), which (being an explicit
+  # profile) also disables the AWS_* env-var provider. NOTE: `profile` is only a
+  # valid SkyPilot config key under workspaces.<name>.aws (not the global aws
+  # block) — the global form is rejected with "unsupported field 'profile'" and
+  # crashes the API server. 'default' is SkyPilot's default active workspace.
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
 assetstores:
   - store_uri: space://assetstores/s3/
     pull:

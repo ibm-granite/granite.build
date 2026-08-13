@@ -19,6 +19,7 @@ LSF based environments.
 """
 
 import asyncio
+import contextlib
 import os
 import random
 import re
@@ -58,6 +59,7 @@ from gbserver.types.buildevent import (
 from gbserver.types.constants import (
     DEFAULT_ROOT_WORKSPACE_DIR,
     ENABLE_SSH_HOST_KEY_VERIFICATION,
+    GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
     LSF_USE_ASPERA,
     STEP_FILE_NAME,
 )
@@ -67,6 +69,7 @@ from gbserver.types.environmentconfig import (
     StoreLoad,
     StorePush,
 )
+from gbserver.types.errors import WorkloadFailedException
 from gbserver.types.stepconfig import StepConfig
 from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.launch import (
@@ -94,23 +97,6 @@ HFPUSH_STEP_NAME = "hfpush"
 LHPULL_STEP_NAME = "lhpull"
 LHPUSH_STEP_NAME = "lhpush"
 COSRCLONE_STEP_NAME = "cosrclone"
-
-
-class BJobRecord(BaseModel):
-    """A bjob record."""
-
-    JOBID: str
-    STAT: str
-    EXIT_CODE: str
-    EXIT_REASON: str
-
-
-class BJobOutput(BaseModel):
-    """Output of bjob."""
-
-    COMMAND: str
-    JOBS: int
-    RECORDS: list[BJobRecord]
 
 
 class ExistingBsubJobs(BaseModel):
@@ -295,8 +281,15 @@ class Lsf(Environment):
                 cleanup_error,
             )
 
-        # Clear the stop event so the next monitor loop iteration starts fresh.
-        self._get_launch_stopped_event(launch_id).clear()
+        # NOTE: The stop event is intentionally left SET here. bkill above only
+        # returns once the kill request is accepted; LSF reflects the resulting
+        # EXIT state in `bjobs` several seconds later. If we cleared the event
+        # now, the still-running previous monitor iteration could observe that
+        # delayed bkill-induced EXIT with the event already cleared, defeating
+        # the clean-exit guard in LSFBsubMonitor.monitor() and misreporting the
+        # bkill as a genuine terminal failure. The event is cleared instead at
+        # the top of the next monitor_bsub_monitor loop iteration, once the
+        # previous monitors have fully wound down.
 
         try:
             task = self.launch_bsub(launch_id, **original_kwargs)
@@ -892,6 +885,13 @@ class Lsf(Environment):
                     stop_event = self._get_launch_stopped_event(
                         launch_id=current_launch_id
                     )
+                    # Reset the shared stop event for this fresh iteration. On a
+                    # retry, retry_workload leaves the event SET (so the previous
+                    # iteration's monitors treat the bkill-induced EXIT as a clean
+                    # stop); we clear it here, only after those monitors have fully
+                    # wound down, so the new monitors below start unstopped. On the
+                    # first iteration this is a harmless no-op.
+                    stop_event.clear()
                     job_id = self._launched_jobs[current_launch_id]
                     log_file_path = self.get_log_path(launch_id=current_launch_id)
 
@@ -954,14 +954,94 @@ class Lsf(Environment):
                         # triggered retry_workload which set this event. Loop for the
                         # next iteration with the same launch_id.
                         continue
+                    if await self._retry_pending_after_monitor(
+                        lsf_bsub_monitor=lsf_bsub_monitor,
+                        retry_complete_event=retry_complete_event,
+                        handler_task=_handler_task,
+                    ):
+                        # A relaunch the RetryHandler owns landed while we waited;
+                        # loop to monitor the freshly launched job.
+                        continue
+                    if (
+                        lsf_bsub_monitor.emitted_error_event
+                        and _handler_task is not None
+                    ):
+                        # The RetryHandler finished without relaunching (gave up /
+                        # retries exhausted). Stop looping; _with_retry_handler's
+                        # __aexit__ awaits the handler task and re-raises its
+                        # WorkloadFailedException, failing the step.
+                        return
                     logger.info(
                         "LSF bsub monitoring finished for job_id %s launch_id %s",
                         job_id,
                         current_launch_id,
                     )
-                    return  # Success
+                    return  # clean terminal DONE
             finally:
                 self._lsf_retry_complete_events.pop(launch_id, None)
+
+    async def _retry_pending_after_monitor(
+        self: Self,
+        lsf_bsub_monitor: LSFBsubMonitor,
+        retry_complete_event: asyncio.Event,
+        handler_task: Optional[asyncio.Task],
+    ) -> bool:
+        """Wait for the RetryHandler to adjudicate an error the monitor emitted.
+
+        On a transient/terminal error, ``LSFBsubMonitor`` only *enqueues* an event
+        and returns; the ``RetryHandler`` consumes it on its own task and, seconds
+        later (after ``bkill`` + ``bsub``), sets ``retry_complete_event``. Reading
+        that event synchronously right after ``gather`` races the handler and can
+        return SUCCESS while a relaunch is still in flight — orphaning the new job
+        and dropping its ARTIFACT_PUSHED marker. This blocks on the outcome instead.
+
+        The wait is bounded by ``GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT`` as a
+        backstop. The handler normally relaunches or raises well within one retry,
+        and it now treats a retriable-but-exhausted error as terminal (so it
+        always resolves). The timeout only guards a pathological case the handler
+        neither retries nor recognizes as terminal; on expiry we fail the step
+        loudly rather than hang forever or silently succeed.
+
+        :param lsf_bsub_monitor: The monitor that just finished this iteration.
+        :param retry_complete_event: Event the handler sets once it has relaunched.
+        :param handler_task: The RetryHandler task, or ``None`` when retries are
+            disabled (no adjudication to wait for).
+        :returns: ``True`` if a relaunch completed (caller should loop to monitor
+            the new job); ``False`` if there is nothing to wait for or the handler
+            finished without relaunching.
+        :raises WorkloadFailedException: if neither a relaunch nor the handler task
+            resolves within the backstop timeout.
+        """
+        if not lsf_bsub_monitor.emitted_error_event or handler_task is None:
+            return False
+        # Wait for whichever comes first: the relaunch completing (retry_complete_event)
+        # or the handler task finishing (it gave up and will raise on await).
+        retry_waiter = asyncio.create_task(retry_complete_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {retry_waiter, handler_task},
+                timeout=GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            retry_waiter.cancel()
+            # Await the cancellation so the task fully unwinds before we return;
+            # otherwise a still-pending waiter can surface a noisy "Task was
+            # destroyed but it is pending" warning under some loop timings.
+            with contextlib.suppress(asyncio.CancelledError):
+                await retry_waiter
+        if not done:
+            logger.error(
+                "RetryHandler did not adjudicate the emitted error within %ss; "
+                "failing the step instead of waiting indefinitely.",
+                GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
+            )
+            raise WorkloadFailedException(
+                "LSF retry adjudication timed out: the RetryHandler neither "
+                "relaunched the job nor terminated within "
+                f"{GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT}s."
+            )
+        return retry_complete_event.is_set()
 
     def ssh_no_verification_flags(self: Self) -> List[str]:
         """Flags to disable SSH Host key verification."""

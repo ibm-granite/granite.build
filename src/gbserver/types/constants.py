@@ -19,8 +19,9 @@
 import importlib.util
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
@@ -401,6 +402,168 @@ BUILD_FILES_STAT_BATCH_MAX = int(
     os.getenv(ENV_VAR_GBSERVER_BUILD_FILES_STAT_BATCH_MAX, "500")
 )
 
+# Environment-files REST API (GET /files/{environment}/{folder}/...). Browses a
+# named folder on the login nodes of a *supported environment*, authorized by
+# POSIX group membership. Reuses the same remote file-op machinery and caps as
+# the build-files API. SSH/login is the shared service identity resolved
+# per-request via open_lsf_tunnel (same as build-files); there is intentionally
+# no separate SSH/login config here.
+#
+# Only the caps enforced in the environment-files API *handlers* get an alias,
+# so each one can diverge from the build-files value by assigning it here:
+#   - DOWNLOAD_MAX_BYTES — download pre-flight size check
+#   - GREP_MAX_CONTEXT / PEEK_MAX_LINES — Query bounds on the endpoints
+# The other build-files caps (LIST_MAX_ENTRIES, GREP_MAX_HITS,
+# GREP_LINE_MAX_BYTES, PEEK_MAX_BYTES, STAT_BATCH_MAX) are enforced *inside* the
+# shared remote_files_ops module, which reads the BUILD_FILES_* originals
+# directly; both APIs get that one value and there is nothing here to tune. To
+# make one of those independently tunable, remote_files_ops would have to accept
+# it as a parameter instead of importing BUILD_FILES_* directly.
+ENV_FILES_DOWNLOAD_MAX_BYTES = BUILD_FILES_DOWNLOAD_MAX_BYTES
+ENV_FILES_GREP_MAX_CONTEXT = BUILD_FILES_GREP_MAX_CONTEXT
+ENV_FILES_PEEK_MAX_LINES = BUILD_FILES_PEEK_MAX_LINES
+
+# Max group members resolved per `getent passwd` round-trip when authorizing an
+# environment-files request. Members are looked up in chunks of this size so a
+# large proj_{folder} group can't build a command line that trips ARG_MAX / the
+# shell's arg limit on the login node (which would fail authz for a legitimate
+# member, surfacing as an undiagnosable uniform 404). 256 keeps each command
+# comfortably short while still batching the common case into one call.
+ENV_VAR_GBSERVER_ENV_FILES_GETENT_BATCH_MAX = (
+    ENV_VAR_PREFIX + "_ENV_FILES_GETENT_BATCH_MAX"
+)
+ENV_FILES_GETENT_BATCH_MAX = int(
+    os.getenv(ENV_VAR_GBSERVER_ENV_FILES_GETENT_BATCH_MAX, "256")
+)
+
+
+@dataclass(frozen=True)
+class EnvironmentFilesConfig:
+    """Per-environment config for the ``/files/{environment}`` API.
+
+    One record per *supported* environment. The set of records IS the set of
+    valid ``{environment}`` values — an environment absent from the registry is
+    unsupported and the API denies it with the same uniform 404 as a missing
+    folder (no leak of which environments exist).
+
+    Fields:
+      * ``gpfs_base`` — fixed base under which folders live on this
+        environment's login nodes; folder root = ``gpfs_base/{folder}``. Not
+        caller-supplied.
+      * ``space_name`` — space whose IBM Cloud Secret Manager holds the service
+        SSH key used to open the tunnel (server-resolved, never the requester).
+      * ``environment_uri`` — the asset URI pointing at the LSF
+        ``environment.yaml`` whose login nodes mount ``gpfs_base``. Registry
+        entries leave this empty: it is filled per request by
+        ``resolve_environment``, which derives it from the public space's config
+        repo (see ``get_supported_env_for_files_uri``), yielding a
+        ``git+ssh://…@<config-branch>#subdirectory=environments/<env>`` asset URI.
+        Per-deployment (dev/staging/prod) differences come "for free" from the
+        public space config, so there is no separately-set value; the endpoints
+        return 503 when the URI can't be derived (rather than guess).
+    """
+
+    gpfs_base: str
+    space_name: str
+    environment_uri: str = ""
+
+
+# Registry of supported environments for the files API. Adding a new supported
+# environment is a data change here, not new code. Today the only working
+# environment is `bluevela` (LSF login nodes mounting /proj), preserving the
+# behavior the API shipped with.
+#
+# GBSERVER_BLUEVELA_FILES_SPACE_NAME carries the module-wide GBSERVER_ prefix
+# (ENV_VAR_PREFIX) — NOT a bare GB_ prefix — and defaults to the public space
+# (literal "public"; the PUBLIC_SPACE_NAME constant is defined further down this
+# file). There is no environment-URI env var: the asset URI is always derived
+# from the public space config repo at request time (see
+# get_supported_env_for_files_uri below), so per-deployment differences come from
+# the public space config, not a separately-set value.
+ENV_VAR_GBSERVER_BLUEVELA_FILES_SPACE_NAME = (
+    ENV_VAR_PREFIX + "_BLUEVELA_FILES_SPACE_NAME"
+)
+
+# The single supported environment name for the files API. Used both as the
+# registry key and by the environment-URI derivation (the `environments/<name>`
+# subdirectory in the public space config repo). Only the value is "bluevela"
+# specific; the symbol is generic so a future supported env is a data change.
+SUPPORTED_ENV_FOR_FILES = "bluevela"
+
+ENVIRONMENT_FILES_REGISTRY: Dict[str, EnvironmentFilesConfig] = {
+    SUPPORTED_ENV_FOR_FILES: EnvironmentFilesConfig(
+        gpfs_base="/proj",
+        space_name=os.getenv(ENV_VAR_GBSERVER_BLUEVELA_FILES_SPACE_NAME, "public"),
+        # environment_uri is left empty here and filled per request by
+        # resolve_environment via get_supported_env_for_files_uri().
+    ),
+}
+
+
+# Process-level cache of the derived environment URI, keyed by public-space repo
+# URL. Only a *stable* derivation is cached (a git result with a config branch, or
+# a file:// path); a branchless git result / failures / empties are not, so a later
+# request retries once the gbspace-config branch / token is healthy. Lock-free
+# write is fine: dict assignment is atomic, worst case is a redundant re-probe.
+_DERIVED_ENV_FOR_FILES_URI_CACHE: Dict[str, str] = {}
+
+
+def get_supported_env_for_files_uri() -> str:
+    """Derive the supported environment's environment.yaml asset URI.
+
+    Converts ``PUBLIC_SPACE_GIT_URI`` (the public space config repo) into a
+    ``git+ssh://…[@<config-branch>]#subdirectory=environments/<env>`` asset URI
+    via ``GitURI.get_gb_space_config_uri`` (the same conversion the build path
+    uses) and appends the env subdirectory. There is no override; the URI is
+    always derived, so per-deployment differences come from the public space.
+
+    Returns ``""`` (→ 503 in the caller) whenever a URI can't be produced: no
+    ``PUBLIC_SPACE_GIT_URI`` (e.g. STANDALONE), or the GitHub config-branch probe
+    failing — the exception is caught so a transient GitHub problem reads as "not
+    configured", not a 500.
+
+    Lazy (not evaluated at import) to avoid a cycle: git.py imports
+    ``GBSERVER_GITHUB_TOKEN`` from this module. See the cache note above for what
+    is / isn't memoized.
+    """
+    if not PUBLIC_SPACE_GIT_URI:
+        return ""
+    cached = _DERIVED_ENV_FOR_FILES_URI_CACHE.get(PUBLIC_SPACE_GIT_URI)
+    if cached is not None:
+        return cached
+    # Function-local import: git.py imports from this module (cycle otherwise).
+    from requests import RequestException
+
+    from gbcommon.uri.git import GitURI
+    from gbcommon.uri.uri import URI
+    from gbserver.utils.logger import get_logger
+
+    try:
+        base = GitURI.get_gb_space_config_uri(PUBLIC_SPACE_GIT_URI)
+    except (ValueError, RuntimeError, RequestException) as e:
+        # is_branch_present raises ValueError (401) / RuntimeError (non-404) /
+        # requests error (network); degrade those to 503, not 500. Anything else
+        # is an unexpected bug and propagates. Not cached — retry on recovery.
+        get_logger(__name__).warning(
+            "failed to derive files-env URI from public space %r: %s",
+            PUBLIC_SPACE_GIT_URI,
+            e,
+        )
+        return ""
+    if not base:
+        return ""
+    # get_gb_space_config_uri never adds a fragment (only `@<branch>` on a match),
+    # so append_path always creates the `#subdirectory=` fragment here.
+    uri = URI.get_uri(base)
+    uri.append_path(f"environments/{SUPPORTED_ENV_FOR_FILES}")
+    resolved = str(uri)
+    # Cache only a stable result (file:// path, or git with a config branch); a
+    # branchless git URI points at the default branch and is left uncached.
+    if base.startswith("file://") or "@" in base.split("#", 1)[0]:
+        _DERIVED_ENV_FOR_FILES_URI_CACHE[PUBLIC_SPACE_GIT_URI] = resolved
+    return resolved
+
+
 ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT = (
     ENV_VAR_PREFIX + "_DEFAULT_GH_REQUEST_TIMEOUT"
 )
@@ -442,8 +605,8 @@ GBSERVER_TRUNCATE_LENGTH = int(os.getenv(ENV_VAR_TRUNCATE_LENGTH, "-1"), base=10
 # Cap on simultaneous SkyPilot cluster bring-ups. Each launch opens a fresh
 # SSH session to the cloud's login node; LSF-backed clouds in particular
 # trip MaxAuthTries on sshd when many evals fan out at once. Default 4 is
-# safe for BlueVela; override to a higher value on clouds that don't
-# bottleneck on SSH (e.g. Kubernetes).
+# safe for SSH-bottlenecked clusters; override to a higher value on clouds
+# that don't bottleneck on SSH (e.g. Kubernetes).
 GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY = int(
     os.getenv(ENV_VAR_SKYPILOT_LAUNCH_CONCURRENCY, "4"), base=10
 )
@@ -635,6 +798,19 @@ GBSERVER_LSF_TRANSIENT_ERROR_MAX_RETRIES = int(
 # Delay between retries for transient LSF errors (in seconds)
 GBSERVER_LSF_TRANSIENT_ERROR_RETRY_DELAY = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_TRANSIENT_ERROR_RETRY_DELAY", "30"), base=10
+)
+# Backstop timeout (seconds) for Lsf._retry_pending_after_monitor's wait on the
+# RetryHandler to adjudicate an error the monitor emitted. The handler normally
+# relaunches or raises well within one retry (one backoff delay + bkill + bsub),
+# so this only bounds a pathological hang (a monitor error shape the handler
+# neither retries nor treats as terminal). Default is a generous multiple of the
+# backoff delay so a genuinely slow relaunch is never mistaken for a hang.
+GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT = int(
+    os.getenv(
+        ENV_VAR_PREFIX + "_LSF_RETRY_ADJUDICATION_TIMEOUT",
+        str(GBSERVER_LSF_TRANSIENT_ERROR_RETRY_DELAY * 10 + 60),
+    ),
+    base=10,
 )
 # Used by the build framework monitoring to allow the consumption of all the events
 GBSERVER_MONITORING_GRACE_PERIOD = int(

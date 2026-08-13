@@ -1074,7 +1074,7 @@ class TestDownloadFile:
 
     def test_download_caps_at_declared_size(self, client):
         # Live-log race: the file grew from 100 bytes (at stat time) to 200
-        # bytes by the time we started reading. _stream_sftp_file must cap
+        # bytes by the time we started reading. stream_sftp_file must cap
         # the streamed bytes at `size` so the response body exactly matches
         # the declared Content-Length.
         tunnel = MagicMock()
@@ -1198,7 +1198,7 @@ class TestDownloadFile:
         sftp.exit = MagicMock(return_value=None)
         tunnel.start_sftp = AsyncMock(return_value=sftp)
 
-        gen = build_files_mod._stream_sftp_file(tunnel, "/ws/log.txt", 1024)
+        gen = build_files_mod.stream_sftp_file(tunnel, "/ws/log.txt", 1024)
         with pytest.raises(OSError):
             await gen.__anext__()
         sftp.exit.assert_called_once()

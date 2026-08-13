@@ -350,7 +350,7 @@ The [`docs/`](docs/) directory has complete reference material. Three reading pa
 
 ## Coding agent skills
 
-This repo ships **Agent Skills** under [`.claude/skills/`](.claude/skills/) so a coding agent working in a granite.build checkout can operate the tool without you re-explaining it each time. **Claude Code** discovers them automatically when your working directory is inside the repo — no install; invoke one explicitly with `/<name>`, or let the agent select it from your request based on the skill's description.
+This repo ships **Agent Skills** under [`.claude/skills/`](.claude/skills/) so a coding agent working in a granite.build checkout can operate the tool without you re-explaining it each time. Both **Claude Code** and **OpenCode** discover them natively when your working directory is inside the repo — Claude Code reads `.claude/skills/` directly, and OpenCode's [built-in skill discovery](https://opencode.ai/docs/skills) also loads Claude-compatible `.claude/skills/*/SKILL.md`. No install; invoke one explicitly with `/<name>`, or let the agent select it from your request based on the skill's description.
 
 | Skill | What it does |
 |-------|--------------|
@@ -363,21 +363,21 @@ Each skill is a `SKILL.md` (`name` + `description` + instructions) in the portab
 
 ## Coding agent tools (MCP)
 
-Skills teach an agent *how* to work with granite.build; **`gbmcp`** lets it *act* — start/stop the backend, run, monitor, and cancel builds, and manage secrets, over the [Model Context Protocol](https://modelcontextprotocol.io). It's the [FastMCP](https://github.com/jlowin/fastmcp) server bundled at [`src/gbmcp/`](src/gbmcp/), and it runs as a **local stdio process that Claude Code launches** — no port, no endpoint to register, and it connects at session start whether or not the backend is running.
+Skills teach an agent *how* to work with granite.build; **`gbmcp`** lets it *act* — start/stop the backend, run, monitor, and cancel builds, and manage secrets, over the [Model Context Protocol](https://modelcontextprotocol.io). It's the [FastMCP](https://github.com/jlowin/fastmcp) server bundled at [`src/gbmcp/`](src/gbmcp/), and it runs as a **local stdio process the agent launches** — no port, no endpoint to register, and it connects at session start whether or not the backend is running.
 
-Setup is zero-config in a checkout. The `standalone` install includes gbmcp, and this repo ships a project-scope [`.mcp.json`](.mcp.json) that **Claude Code discovers automatically** when your working directory is inside the repo — just approve it once:
+Setup is zero-config in a checkout. The `standalone` install includes gbmcp, and this repo ships the per-agent config both editors discover automatically when your working directory is inside the repo — [`.mcp.json`](.mcp.json) for **Claude Code** and [`opencode.json`](opencode.json) for **OpenCode**. Just approve/enable it once:
 
 ```bash
 make standalone-venv PYTHON=python3.13     # installs gbmcp + gbserver
-# open Claude Code in the repo, approve the "gbmcp" server, then ask it to
-# "list my builds" or "run the standalone quickstart build"
+# open Claude Code (or OpenCode) in the repo, approve/enable the "gbmcp"
+# server, then ask it to "list my builds" or "run the quickstart build"
 ```
 
 You don't start gbserver by hand: the agent calls `gbserver_start` (which launches `gbserver standalone` and waits until it's ready) the first time it needs the backend. No auth is needed — gbmcp talks to an unauthenticated localhost gbserver.
 
 The server exposes 18 tools: **gbserver** (`gbserver_status`, `gbserver_start`, `gbserver_stop`), **Builds** (`build_start`, `build_list`, `build_status`, `build_describe`, `build_log`, `build_job_log`, `build_cancel`), **Secrets** (`secret_list/get/create/update/delete` — values never flow through the agent), and **Info** (health and versions).
 
-> **Non-default port:** `.mcp.json` passes `GBSERVER_PORT` / `GBSERVER_HOST` to gbmcp via `env`. If you run on a non-default port, `export GBSERVER_PORT=<p>` before launching Claude Code so both the tools and `gbserver_start` use it.
+> **Non-default port:** `export GBSERVER_PORT=<p>` before launching the editor and both the build tools and `gbserver_start` retarget to it. Under the hood, gbmcp treats `GBSERVER_PORT` as the single source of truth (deriving `GBSERVER_HOST` from it) and defaults to `8080`; Claude Code passes it through `.mcp.json`'s `${GBSERVER_PORT:-8080}` expansion, while OpenCode's spawned process inherits it directly (no `environment` block needed).
 
 See [`src/gbmcp/README.md`](src/gbmcp/README.md) for the full toolset, backend management, and the stdio handshake test.
 

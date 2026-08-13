@@ -53,6 +53,7 @@ Test Coverage:
 """
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -816,3 +817,171 @@ async def test_ssh_file_stream_phase2_clean_stderr_eof():
             collected_lines.append(line)
 
     assert collected_lines == ["line 1", "line 2", "line 3"], f"Got: {collected_lines}"
+
+
+@pytest.mark.asyncio
+async def test_ssh_file_stream_phase2_missing_file_is_benign():
+    """
+    Test 10: SSHFileStream Phase 2 tolerates a vanished job.log.
+
+    A retry relaunch recreates the job output directory, so a previous drain can
+    race against a deleted/recreated log. The remote tail/cat then exits non-zero
+    with "No such file or directory". This must NOT raise ConnectionError — the
+    drain should finish cleanly with whatever Phase 1 already captured.
+    """
+    stop_event = asyncio.Event()
+    stream = SSHFileStream(
+        host="test-host",
+        user="testuser",
+        path="/remote/job.log",
+        ssh_opts=["-o", "StrictHostKeyChecking=no"],
+    )
+
+    # Mock Phase 1 subprocess
+    mock_proc_phase1 = AsyncMock()
+    mock_proc_phase1.returncode = None
+    mock_proc_phase1.stdout = AsyncMock()
+    mock_proc_phase1.stderr = AsyncMock()
+
+    phase1_lines = [b"line 1\n"]
+
+    async def mock_readline_phase1():
+        if phase1_lines:
+            return phase1_lines.pop(0)
+        stop_event.set()
+        return b""
+
+    mock_proc_phase1.stdout.readline = mock_readline_phase1
+    mock_proc_phase1.stderr.__aiter__ = lambda self: EmptyAsyncIterator()
+
+    # Mock Phase 2 subprocess — remote tail fails because the log was recreated.
+    mock_proc_phase2 = AsyncMock()
+    mock_proc_phase2.returncode = 1  # tail/cat "No such file or directory"
+    mock_proc_phase2.pid = 12345
+    mock_proc_phase2.stdout = AsyncMock()
+    mock_proc_phase2.stderr = AsyncMock()
+
+    # stdout: nothing to read (file gone) — return EOF after a brief delay so the
+    # benign stderr line is collected first.
+    async def mock_stdout_readline():
+        await asyncio.sleep(0.1)
+        return b""
+
+    mock_proc_phase2.stdout.readline = mock_stdout_readline
+
+    # stderr: the benign missing-file message, then EOF.
+    stderr_returned = [False]
+
+    async def mock_stderr_readline():
+        if not stderr_returned[0]:
+            stderr_returned[0] = True
+            return (
+                b"tail: cannot open '/remote/job.log' for reading: "
+                b"No such file or directory\n"
+            )
+        return b""
+
+    mock_proc_phase2.stderr.readline = mock_stderr_readline
+
+    call_counter = [0]
+
+    async def mock_subprocess_exec(*args, **kwargs):
+        call_counter[0] += 1
+        if call_counter[0] == 1:
+            return mock_proc_phase1
+        else:
+            return mock_proc_phase2
+
+    collected_lines = []
+
+    with patch("asyncio.create_subprocess_exec", side_effect=mock_subprocess_exec):
+        # No ConnectionError despite non-zero exit + non-empty (benign) stderr.
+        async for line in stream.stream_lines(stop_event=stop_event):
+            collected_lines.append(line)
+
+    assert collected_lines == ["line 1"], f"Got: {collected_lines}"
+
+
+async def _run_bsub_monitor_over(bjobs_records, transient_content=None):
+    """Run ``LSFBsubMonitor.monitor()`` over a canned bjobs record sequence.
+
+    :param bjobs_records: List of per-poll RECORDS dicts (STAT/EXIT_CODE/
+        EXIT_REASON); the last entry is repeated once the list is exhausted.
+    :param transient_content: Value ``_check_for_transient_lsf_error`` is patched
+        to return -- ``None`` drives the terminal-failure emit path; a string
+        drives the transient-retry emit path.
+    :returns: The LSFBsubMonitor after ``monitor()`` has run to completion.
+    """
+    responses = [
+        json.dumps({"COMMAND": "bjobs", "JOBS": 1, "RECORDS": [rec]})
+        for rec in bjobs_records
+    ]
+    idx = [0]
+    tunnel = AsyncMock()
+
+    async def run_remote(command, raise_on_error=True):
+        resp = responses[min(idx[0], len(responses) - 1)]
+        idx[0] += 1
+        return 0, resp, ""
+
+    tunnel.run_remote = run_remote
+    mock_lsf = MagicMock()
+    mock_lsf.use_ssh = True
+    mock_lsf.get_ssh_tunnel.return_value = tunnel
+    mock_lsf.get_log_path.return_value = ""
+
+    monitor = LSFBsubMonitor(
+        lsf=mock_lsf,
+        job_id="12345",
+        launch_id="test-launch",
+        entityrun_metadata=EntityRunMetadata(),
+        event_queue=asyncio.Queue(),
+        stop_event=asyncio.Event(),
+        monitor_interval=0.05,
+    )
+    monitor._check_for_transient_lsf_error = AsyncMock(return_value=transient_content)
+    with patch(
+        "gbserver.monitoring.lsf_bsub_monitor.GBSERVER_MONITORING_GRACE_PERIOD", 0.0
+    ):
+        await monitor.monitor()
+    return monitor
+
+
+@pytest.mark.asyncio
+async def test_emitted_error_event_false_on_clean_done():
+    """A job that reaches DONE with exit code 0 hands no error to the
+    RetryHandler, so emitted_error_event stays False (monitor_bsub_monitor may
+    resolve success immediately)."""
+    monitor = await _run_bsub_monitor_over(
+        [{"JOBID": "12345", "STAT": "DONE", "EXIT_CODE": "0", "EXIT_REASON": ""}],
+    )
+    assert monitor.emitted_error_event is False
+
+
+@pytest.mark.asyncio
+async def test_emitted_error_event_true_on_terminal_failure():
+    """A non-transient EXIT failure emits a terminal failure event for the
+    RetryHandler, so emitted_error_event is True."""
+    monitor = await _run_bsub_monitor_over(
+        [
+            {
+                "JOBID": "12345",
+                "STAT": "EXIT",
+                "EXIT_CODE": "1",
+                "EXIT_REASON": "TERM_OWNER",
+            }
+        ],
+        transient_content=None,
+    )
+    assert monitor.emitted_error_event is True
+
+
+@pytest.mark.asyncio
+async def test_emitted_error_event_true_on_transient_error():
+    """A transient LSF error emits a retry event for the RetryHandler, so
+    emitted_error_event is True."""
+    monitor = await _run_bsub_monitor_over(
+        [{"JOBID": "12345", "STAT": "EXIT", "EXIT_CODE": "1", "EXIT_REASON": ""}],
+        transient_content="cannot open job file",
+    )
+    assert monitor.emitted_error_event is True

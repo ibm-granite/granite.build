@@ -1,0 +1,74 @@
+granite.build:
+  name: skypilot-aws-command-2target
+  # Two command-step targets on AWS EC2 (via SkyPilot), both running the generic
+  # `command` step BARE (no container image). `first` emits an output path and
+  # registers it as artifact `out1`; `second` binds `first.out1` as an input and
+  # echoes the bound path, then registers its own output `out2`. Exercises
+  # cross-target output -> input binding over the env_local (env://) assetstore.
+  #
+  # This is the AWS analog of skypilot/bluevela/2target: bluevela runs on LSF
+  # (a single `cluster: bluevela`), whereas AWS provisions a small EC2 instance
+  # per target. `second` depends on `first` (binding), so the two provision
+  # sequentially.
+  #
+  # env:// (env_local) I/O is a no-op: push/pull do nothing, so artifact
+  # registration/binding works purely on the LLMB_ARTIFACT_PATH string — no real
+  # files need to exist and no HF/S3 credentials are required.
+  targets:
+    first:
+      environment_uri: space://environments/skypilot/aws
+      outputs:
+        out1:
+          # env_local: the URI resolves to the path emitted via LLMB_ARTIFACT_PATH.
+          uri: "env://{{ binding.path }}"
+          # env_local pushes inline (no push step emits a type), so set it here.
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              command: >-
+                echo "first target emitting out1 on AWS EC2 via SkyPilot";
+                echo "LLMB_ARTIFACT_ID:out1 LLMB_ARTIFACT_PATH:/tmp/gb-aws-2target/{{ run_metadata.targetsteprun_id | short_hash }}/out1"
+            # Unlike the sibling 1step-image fixture (which runs INSIDE an
+            # ubuntu:22.04 container and therefore needs t3.medium for the
+            # in-container ray install), this target runs the command BARE: no
+            # image_id, so SkyPilot installs its runtime on the VM directly and a
+            # small box suffices. Region is parameterized via the AWS_REGION space
+            # variable (default us-east-2), encoded in `infra` as cloud/region.
+            launcher_config:
+              resources:
+                infra: "aws/{{ space.variables.AWS_REGION | default('us-east-2') }}"
+                # t3.small = 2 vCPU / 2 GiB (~$0.02/hr in us-east-2): cheapest
+                # reliable size for a bare command; two targets each launch one.
+                instance_type: t3.small
+                # Trim the default root volume to cut EBS cost.
+                disk_size: 40
+    second:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        from_first:
+          binding: first.out1
+      outputs:
+        out2:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Echoes the path bound from first.out1 — proves the binding flows
+              # through gbserver without depending on a file existing on disk.
+              command: >-
+                echo "second target received first output path: {{ bindings.from_first.binding.path }}";
+                echo "LLMB_ARTIFACT_ID:out2 LLMB_ARTIFACT_PATH:/tmp/gb-aws-2target/{{ run_metadata.targetsteprun_id | short_hash }}/out2"
+            # Keep resources identical to target `first`.
+            launcher_config:
+              resources:
+                infra: "aws/{{ space.variables.AWS_REGION | default('us-east-2') }}"
+                instance_type: t3.small
+                disk_size: 40

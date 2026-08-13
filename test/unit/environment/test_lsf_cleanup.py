@@ -14,12 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from typing import Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gbserver.environment.lsf import Lsf
+from gbserver.types.errors import WorkloadFailedException
 
 
 def _make_lsf(use_ssh: bool = True) -> Lsf:
@@ -139,3 +141,122 @@ class TestCleanupBsub:
             )
 
         assert lsf._ssh_tunnel.run_remote.call_count == 3
+
+
+class TestRetryPendingAfterMonitor:
+    """Tests for _retry_pending_after_monitor, the race guard that stops
+    monitor_bsub_monitor from declaring success while a RetryHandler-owned
+    relaunch (triggered by an emitted error event) is still in flight.
+    """
+
+    @staticmethod
+    def _monitor(emitted_error_event: bool) -> MagicMock:
+        """Build a stand-in LSFBsubMonitor exposing only emitted_error_event."""
+        monitor = MagicMock()
+        monitor.emitted_error_event = emitted_error_event
+        return monitor
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_error_emitted(self: Self) -> None:
+        """A clean DONE (no error event) must not wait — returns False at once."""
+        lsf = _make_lsf(use_ssh=True)
+        retry_complete_event = asyncio.Event()
+        handler_task = asyncio.create_task(asyncio.Event().wait())
+        try:
+            result = await lsf._retry_pending_after_monitor(
+                lsf_bsub_monitor=self._monitor(emitted_error_event=False),
+                retry_complete_event=retry_complete_event,
+                handler_task=handler_task,
+            )
+        finally:
+            handler_task.cancel()
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_handler_disabled(self: Self) -> None:
+        """With retries disabled (handler_task is None) there is nothing to wait
+        for, so the guard returns False even though an error was emitted."""
+        lsf = _make_lsf(use_ssh=True)
+
+        result = await lsf._retry_pending_after_monitor(
+            lsf_bsub_monitor=self._monitor(emitted_error_event=True),
+            retry_complete_event=asyncio.Event(),
+            handler_task=None,
+        )
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_relaunch_completes(self: Self) -> None:
+        """When the RetryHandler relaunches (sets retry_complete_event) while we
+        wait, the guard returns True so the caller monitors the new job."""
+        lsf = _make_lsf(use_ssh=True)
+        retry_complete_event = asyncio.Event()
+        # Handler task that never finishes on its own; the relaunch signal wins.
+        handler_task = asyncio.create_task(asyncio.Event().wait())
+
+        async def _signal_relaunch() -> None:
+            retry_complete_event.set()
+
+        signal_task = asyncio.create_task(_signal_relaunch())
+        try:
+            result = await lsf._retry_pending_after_monitor(
+                lsf_bsub_monitor=self._monitor(emitted_error_event=True),
+                retry_complete_event=retry_complete_event,
+                handler_task=handler_task,
+            )
+        finally:
+            handler_task.cancel()
+            await signal_task
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_handler_gives_up(self: Self) -> None:
+        """When the handler task finishes without setting retry_complete_event
+        (retries exhausted / gave up), the guard returns False so the caller
+        stops looping and the handler's exception can propagate."""
+        lsf = _make_lsf(use_ssh=True)
+        retry_complete_event = asyncio.Event()
+
+        async def _handler_gives_up() -> None:
+            return None
+
+        handler_task = asyncio.create_task(_handler_gives_up())
+
+        result = await lsf._retry_pending_after_monitor(
+            lsf_bsub_monitor=self._monitor(emitted_error_event=True),
+            retry_complete_event=retry_complete_event,
+            handler_task=handler_task,
+        )
+
+        assert result is False
+        assert retry_complete_event.is_set() is False
+
+    @pytest.mark.asyncio
+    async def test_raises_when_adjudication_times_out(self: Self) -> None:
+        """Backstop: if neither a relaunch nor the handler task resolves within
+        the adjudication timeout, fail the step loudly instead of hanging.
+
+        This guards the pathological case where the handler neither retries nor
+        recognizes the emitted error as terminal.
+        """
+        lsf = _make_lsf(use_ssh=True)
+        retry_complete_event = asyncio.Event()
+        # Handler task that never finishes and never signals a relaunch.
+        handler_task = asyncio.create_task(asyncio.Event().wait())
+
+        with patch(
+            "gbserver.environment.lsf.GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT",
+            0.05,
+        ):
+            try:
+                with pytest.raises(WorkloadFailedException):
+                    await lsf._retry_pending_after_monitor(
+                        lsf_bsub_monitor=self._monitor(emitted_error_event=True),
+                        retry_complete_event=retry_complete_event,
+                        handler_task=handler_task,
+                    )
+            finally:
+                handler_task.cancel()

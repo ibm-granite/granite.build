@@ -361,6 +361,17 @@ class RetryHandler:
                 # Check if this is a terminal failure
                 is_terminal_failure = self._is_terminal_failure_event(event)
 
+                # A retriable failure we can no longer retry (retries exhausted)
+                # is itself terminal. Without this, an event a strategy WOULD
+                # retry -- but can't, because retry_count >= max_retries -- would
+                # be neither relaunched nor raised, leaving a monitor's deferred
+                # wait (e.g. LSF's _retry_pending_after_monitor) hanging forever.
+                retries_exhausted_on_retriable = (
+                    not retry_triggered
+                    and self.retry_count >= self.max_retries
+                    and self._is_retriable_event(event)
+                )
+
                 # Always forward the event downstream, but enrich with retry metadata
                 if retry_triggered:
                     # Add retry metadata to the event payload
@@ -381,12 +392,21 @@ class RetryHandler:
                 # Forward to downstream queue
                 await self.downstream_queue.put(event)
 
-                # If terminal failure and no retry was triggered, raise exception to stop the build
-                if is_terminal_failure and not retry_triggered:
+                # If terminal failure (or a retriable failure with no retries
+                # left) and no retry was triggered, raise to stop the build.
+                if (
+                    is_terminal_failure or retries_exhausted_on_retriable
+                ) and not retry_triggered:
                     error_message = self._extract_failure_message(event)
                     logger.error(
-                        "[RetryHandler launch_id %s] Terminal failure detected with no retry possible. Raising exception.",
+                        "[RetryHandler launch_id %s] %s detected with no retry possible. Raising exception.",
                         self.launch_id,
+                        (
+                            "Retries exhausted on retriable failure"
+                            if retries_exhausted_on_retriable
+                            and not is_terminal_failure
+                            else "Terminal failure"
+                        ),
                     )
                     raise WorkloadFailedException(error_message)
 
@@ -503,6 +523,23 @@ class RetryHandler:
                     self.launch_id,
                     e,
                 )
+
+    def _is_retriable_event(self: Self, event: BuildEvent) -> bool:
+        """
+        Report whether any registered strategy recognizes this event as retriable.
+
+        Unlike _evaluate_and_retry, this ignores retry_count / max_retries; it
+        only asks whether the event matches a retry strategy. process_events uses
+        it to detect a retriable failure that can no longer be retried (retries
+        exhausted), which is itself terminal.
+
+        Args:
+            event: BuildEvent from the monitor
+
+        Returns:
+            bool: True if at least one strategy would retry this event
+        """
+        return any(strategy.should_retry(event=event) for strategy in self.strategies)
 
     async def _evaluate_and_retry(
         self: Self,

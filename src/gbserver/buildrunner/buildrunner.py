@@ -29,6 +29,7 @@ import time
 import traceback
 from asyncio import Event, Queue
 from base64 import b64decode
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional, Self, Union
 
@@ -1275,25 +1276,21 @@ Download : {download_msg}
     ) -> None:
         """Update an existing StoredTargetRun in storage from a status event.
 
-        Sets started_at/finished_at timestamps on PENDING→RUNNING and RUNNING→* transitions,
-        merges input artifacts, updates status, and writes target_hash only on SUCCESS
-        (keeping the partial unique index invariant that only successful runs hold a hash).
+        Stamps started_at on first entry into RUNNING and finished_at on first
+        entry into a terminal status (via the shared _apply_run_timestamps),
+        merges input artifacts, updates status, and writes target_hash only on
+        SUCCESS (keeping the partial unique index invariant that only successful
+        runs hold a hash).
         """
         payload = event.payload
         assert isinstance(payload, BuildEventStatusPayload)
         logger.info("stored_target_run %s", stored_target_run)
-        if (
-            stored_target_run.status is Status.PENDING
-            and payload.status is Status.RUNNING
-        ):
-            logger.info("target started running at %s", event.timestamp)
-            stored_target_run.started_at = event.timestamp
-        if (
-            stored_target_run.status is Status.RUNNING
-            and payload.status is not Status.RUNNING
-        ):
-            logger.info("target started finished running at %s", event.timestamp)
-            stored_target_run.finished_at = event.timestamp
+        self._apply_run_timestamps(
+            stored_run=stored_target_run,
+            new_status=payload.status,
+            timestamp=event.timestamp,
+            run_label="target",
+        )
         stored_target_run.status = payload.status
         for key, item in input_artifacts.items():
             stored_target_run.input_artifacts[key] = item
@@ -1655,6 +1652,54 @@ Download : {download_msg}
             # The target-SUCCESS event is persisted above (buildrunner.py:836).
             pass
 
+    @staticmethod
+    def _apply_run_timestamps(
+        stored_run: Union[StoredStepRun, StoredTargetRun],
+        new_status: Status,
+        timestamp: datetime,
+        run_label: str = "step",
+    ) -> None:
+        """Stamp started_at/finished_at on a step or target run for a transition.
+
+        Mutates ``stored_run`` in place based on its CURRENT (pre-transition)
+        status and the incoming ``new_status``; the caller updates
+        ``stored_run.status`` afterward. Shared by the step-run and target-run
+        status handlers so both obey identical transition rules.
+
+        started_at is stamped on the FIRST entry into RUNNING, regardless of the
+        prior status. Keying off "was PENDING" would drop started_at on a
+        non-linear first transition -- e.g. a target run created SUBMITTED (with
+        started_at still None) that goes straight to RUNNING. The
+        started_at-is-None guard alone provides the "first entry" semantics: a run
+        can legitimately re-enter RUNNING (the Lsf monitor reports PENDING while a
+        bsub job is queued or suspended, then RUNNING again once LSF dispatches or
+        resumes it), and the guard keeps that from pushing started_at later than
+        the run actually began.
+
+        finished_at is stamped on the FIRST entry into any terminal status
+        (``Status.is_finished()``), regardless of the prior status. Keying off
+        "was RUNNING" was wrong in both directions: a RUNNING -> PENDING transition
+        (a queued or suspended scheduler job) must NOT be marked finished, and a
+        run that terminates straight from a PENDING-mapped state must still be
+        marked finished -- e.g. the Lsf monitor reports PENDING for a suspended job
+        (PSUSP/SSUSP/USUSP/UNKWN), the job is then killed while suspended, and the
+        terminal FAILED arrives from PENDING rather than RUNNING. The
+        finished_at-is-None guard keeps a redelivered terminal event from
+        overwriting the original timestamp.
+
+        :param stored_run: The step or target run to mutate; its ``status`` field
+            still holds the pre-transition status.
+        :param new_status: The status arriving with this event.
+        :param timestamp: The event timestamp to record.
+        :param run_label: Noun used in log lines ("step" or "target").
+        """
+        if new_status is Status.RUNNING and stored_run.started_at is None:
+            logger.info("%s started running at %s", run_label, timestamp)
+            stored_run.started_at = timestamp
+        elif new_status.is_finished() and stored_run.finished_at is None:
+            logger.info("%s finished running at %s", run_label, timestamp)
+            stored_run.finished_at = timestamp
+
     def __process_build_target_step_info_type_event(self: Self, event: BuildEvent):
         logger.info("run_info is a TargetStep")
         payload = event.payload
@@ -1695,18 +1740,12 @@ Download : {download_msg}
                 status_msg=payload.msg,
                 started_at=event.timestamp,
             )
-        if (
-            stored_step_run.status is Status.PENDING
-            and payload.status is Status.RUNNING
-        ):
-            logger.info("step started running at %s", event.timestamp)
-            stored_step_run.started_at = event.timestamp
-        elif (
-            stored_step_run.status is Status.RUNNING
-            and payload.status is not Status.RUNNING
-        ):
-            logger.info("step started finished running at %s", event.timestamp)
-            stored_step_run.finished_at = event.timestamp
+        self._apply_run_timestamps(
+            stored_run=stored_step_run,
+            new_status=payload.status,
+            timestamp=event.timestamp,
+            run_label="step",
+        )
         stored_step_run.status = payload.status
         stored_step_run.status_msg = payload.msg
         logger.info("stored_step_run %s", stored_step_run)
