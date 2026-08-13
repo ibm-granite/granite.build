@@ -359,7 +359,15 @@ class TestReconcileOnce:
             ("b2", _BASE + timedelta(seconds=5)),
         ]
 
-    def test_on_checkpoint_advance_stops_at_last_successful_target(self):
+    def test_on_checkpoint_advance_stops_at_failed_target(self):
+        """The checkpoint must not advance past a target that failed to record.
+
+        t2 fails while t3 (newer) still records — a failure does not abort the
+        scan. But the checkpoint may only cover the *contiguous* oldest-first run
+        of recorded targets: advancing to t3 would durably move the watermark
+        past t2's unrecorded lineage, so the next scan would not re-surface t2 and
+        a restart (retry state is in-memory only) would drop it permanently.
+        """
         store = _StubStore(fail={"t2"})
         t1 = _target("b1", "t1", finished_at=_BASE)
         t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=5))
@@ -375,13 +383,11 @@ class TestReconcileOnce:
             ),
         )
 
-        # t2 fails; t1 and t3 still record (failure does not abort the scan),
-        # but the checkpoint callback only fires for actually-recorded targets.
-        assert advances == [
-            ("b1", _BASE),
-            ("b1", _BASE + timedelta(seconds=10)),
-        ]
-        assert result == ReconcileResult(_BASE + timedelta(seconds=10), "b1")
+        # t3 is still recorded (the scan does not abort)...
+        assert ("b1", "t3") in store.recorded_calls
+        # ...but the checkpoint stops at t1, the last target before the failure.
+        assert advances == [("b1", _BASE)]
+        assert result == ReconcileResult(_BASE, "b1")
 
     def test_passes_expected_run_counts_derived_from_outputs(self):
         store = _StubStore()

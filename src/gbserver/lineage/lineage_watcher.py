@@ -24,13 +24,10 @@ from typing import Optional
 from gbserver.lineage.jobstats import ILineageStore, get_lineage_store
 from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_CHECKPOINT_KEY,
-    _expected_run_count,
     get_most_recent_successful_target,
     reconcile_once,
-    record_target_lineage,
 )
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
-from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -70,10 +67,14 @@ class LineageWatcher:
     seeds one from the single most-recent successful target — the watcher
     starts "from now," not from a full historical backfill. Either way, the
     checkpoint's target is verified against the store's own recorded-state
-    (``filter_unrecorded``) and re-recorded if missing, closing any gap left by
-    a crash between recording and persisting the checkpoint (or vice versa) —
-    this is also what actually records a freshly-seeded checkpoint's target, so
-    seeding never leaves a target silently unrecorded. A small
+    (``filter_unrecorded``, via a build-scoped ``reconcile_once``) and
+    re-recorded if missing, closing any gap left by a crash between recording
+    and persisting the checkpoint (or vice versa) — this is also what actually
+    records a freshly-seeded checkpoint's target, so seeding never leaves a
+    target silently unrecorded. A freshly-seeded checkpoint is persisted only
+    *after* that recording succeeds, so a failed seed-time recording is retried
+    on the next start() rather than being stranded behind an already-advanced
+    watermark. A small
     ``_WATERMARK_OVERLAP`` is subtracted when querying so a target that
     finished in the same instant as the watermark boundary is never skipped;
     idempotent recording makes the resulting re-reads harmless.
@@ -83,10 +84,15 @@ class LineageWatcher:
     watermark is sink-neutral, and each sink owns its own recorded-state, so the
     same admin DB can feed W&B and other sinks independently.
 
-    A target whose recording raises is retried on the next scan (the watermark
-    does not advance past a completion just because recording failed, and the
-    overlap guard re-surfaces it); a target that keeps failing is dropped after
-    ``_MAX_RECORD_ATTEMPTS`` so a persistent failure cannot wedge later scans.
+    A target whose recording raises is retried on the next scan: the checkpoint
+    stops advancing at the failed target for the remainder of that pass (even
+    though newer targets in the same pass may still record), so the durable
+    watermark never moves past unrecorded lineage and the failed target is
+    re-surfaced by the next scan — including after a restart, which is what makes
+    retry survive process death rather than depending on in-memory state. A
+    target that keeps failing is dropped after ``_MAX_RECORD_ATTEMPTS`` (into
+    ``_dropped``, passed as ``skip``) so a persistent failure cannot wedge later
+    scans or hold the checkpoint back forever.
     """
 
     # A target whose lineage recording keeps failing is retried this many times
@@ -144,19 +150,28 @@ class LineageWatcher:
         Loads the checkpoint from ``gb_status`` if present. If absent (fresh
         deployment, or a store predating this feature), seeds one from the
         single most-recent successful target instead of defaulting to a full
-        historical catch-up. Either way, the checkpoint's target is then
-        verified against the store's own recorded-state and re-recorded if
-        missing — closing a gap from a crash between recording and persisting
-        the checkpoint (or vice versa), and, for a freshly-seeded checkpoint,
+        historical catch-up. Either way, the checkpoint's build is then run
+        through ``reconcile_once`` so any of its unrecorded targets are recorded
+        — closing a gap from a crash between recording and persisting the
+        checkpoint (or vice versa), and, for a freshly-seeded checkpoint,
         actually recording its target (seeding is not itself a "don't record"
         special case).
 
+        Ordering matters when seeding: the seeded checkpoint is written only
+        after its target is confirmed recorded. Writing first would durably
+        advance the watermark past a target whose recording then failed —
+        recording failures here are logged and swallowed — leaving it
+        permanently unrecorded with nothing to retry it.
+
         Leaves ``self._last_seen`` as ``None`` if there is no checkpoint to
-        load and nothing to seed from (no successful target exists yet); the
-        next scan then has nothing to do until one succeeds.
+        load and nothing to seed from (no successful target exists yet), or if
+        a freshly-seeded checkpoint's target failed to record; the next scan
+        then has nothing to do until one succeeds, and the next ``start()``
+        re-seeds and retries.
         """
         checkpoint = storage.status_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
-        if checkpoint is None:
+        seeding = checkpoint is None
+        if seeding:
             latest = get_most_recent_successful_target(storage)
             if latest is None:
                 return
@@ -164,52 +179,39 @@ class LineageWatcher:
                 "build_id": latest.build_id,
                 "finished_at": latest.finished_at.isoformat(),
             }
+
+        # Verify/re-record via reconcile_once — the same central selector the
+        # steady-state scan uses — scoped to the checkpoint's own build, so the
+        # per-sink filter_unrecorded check, expected-run-count derivation and
+        # prerun-skip handling are shared rather than reimplemented here. Its
+        # returned build_id is non-None only if a target actually recorded, and
+        # on_error reports any that failed.
+        failed = False
+
+        def _on_error(build_id: str, target_id: str, exc: Exception) -> None:
+            nonlocal failed
+            failed = True
+            logger.exception(
+                "Failed to re-record checkpoint target %s in build %s on start(): %s",
+                target_id,
+                build_id,
+                exc,
+            )
+
+        if self._store is not None:
+            reconcile_once(
+                self._store, storage, build_id=checkpoint["build_id"], on_error=_on_error
+            )
+        # A freshly-seeded checkpoint is persisted only once its target is known
+        # recorded: writing it up-front would durably advance the watermark past
+        # a target whose recording then failed (failures here are logged and
+        # swallowed), leaving nothing to retry it. Leaving it unwritten means the
+        # next start() re-seeds and retries.
+        if seeding:
+            if failed:
+                return
             storage.status_storage.set_value(LINEAGE_WATCHER_CHECKPOINT_KEY, checkpoint)
-
-        checkpoint_build_id = checkpoint["build_id"]
-        checkpoint_finished_at = datetime.fromisoformat(checkpoint["finished_at"])
-        self._verify_checkpoint_target_recorded(storage, checkpoint_build_id)
-        self._last_seen = checkpoint_finished_at
-
-    def _verify_checkpoint_target_recorded(
-        self, storage: SingletonAdminStorage, build_id: str
-    ) -> None:
-        """Re-record the checkpoint's target(s) if the store doesn't have them.
-
-        A crash could have persisted the checkpoint without the store write
-        actually landing (or the checkpoint could be freshly seeded and never
-        recorded at all). ``filter_unrecorded`` is the same per-sink check
-        ``reconcile_once`` uses, so this is a harmless idempotent no-op when
-        the target really is already recorded.
-        """
-        if self._store is None:
-            return
-        targets = [
-            t
-            for t in storage.target_storage.get_by_where({"build_id": build_id})
-            if t.status == Status.SUCCESS
-        ]
-        if not targets:
-            return
-        expected_counts = {
-            t.uuid: _expected_run_count(t)
-            for t in targets
-            if not t.skipped_for_prerun_target_id
-        }
-        by_uuid = {t.uuid: t for t in targets}
-        unrecorded = self._store.filter_unrecorded(set(by_uuid), expected_counts)
-        for uuid in unrecorded:
-            target = by_uuid[uuid]
-            try:
-                record_target_lineage(
-                    self._store, storage, build_id=target.build_id, target_id=target.uuid
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to re-record checkpoint target %s in build %s on start()",
-                    target.uuid,
-                    target.build_id,
-                )
+        self._last_seen = datetime.fromisoformat(checkpoint["finished_at"])
 
     def _run(self) -> None:
         """Main monitoring loop (runs in daemon thread)."""

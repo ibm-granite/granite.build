@@ -317,6 +317,66 @@ class TestLineageWatcherCheckpoint:
         assert store.calls == [("b1", "t1")]
         assert watcher._last_seen == _BASE
 
+    def test_seed_not_persisted_when_its_target_fails_to_record(self):
+        """A freshly-seeded checkpoint must not be written if recording failed.
+
+        Persisting it would durably advance the watermark past a target whose
+        lineage was never recorded (the failure is logged and swallowed), leaving
+        nothing to retry it. Leaving it unwritten means the next start() re-seeds
+        and retries.
+        """
+        self._targets = [_target("b1", "t1", _BASE)]
+        watcher, store = self._make_watcher(fail={"t1"})
+
+        watcher._load_or_seed_checkpoint(self.storage)
+
+        assert store.calls == []
+        assert (
+            self.storage.status_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY) is None
+        )
+        assert watcher._last_seen is None
+
+        # A later start() re-seeds and retries now that recording works.
+        store._fail = set()
+        watcher._load_or_seed_checkpoint(self.storage)
+        assert ("b1", "t1") in store.calls
+        assert watcher._last_seen == _BASE
+
+    def test_verification_is_scoped_to_the_checkpoint_build(self):
+        """Start-time verification only records the checkpoint's own build."""
+        self._targets = [
+            _target("b1", "t1", _BASE),
+            _target("b2", "t2", _BASE + timedelta(seconds=5)),
+        ]
+        watcher, store = self._make_watcher()
+        self.storage.status_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            {"build_id": "b1", "finished_at": _BASE.isoformat()},
+        )
+
+        watcher._load_or_seed_checkpoint(self.storage)
+
+        # b2's target is newer but belongs to another build: the steady-state
+        # scan picks it up, not checkpoint verification.
+        assert store.calls == [("b1", "t1")]
+
+    def test_verification_handles_prerun_skipped_target(self):
+        """A prerun-skipped target in the checkpoint's build records cleanly.
+
+        It has no expected-run count of its own (it records the *original*
+        target's outputs), so it must fall back to the presence check rather than
+        being passed to filter_unrecorded with a missing count.
+        """
+        skipped = _target("b1", "t1", _BASE)
+        skipped.skipped_for_prerun_target_id = "orig-target"
+        self._targets = [skipped]
+        watcher, store = self._make_watcher()
+
+        watcher._load_or_seed_checkpoint(self.storage)
+
+        assert ("b1", "t1") in store.calls
+        assert watcher._last_seen == _BASE
+
     def test_load_checkpoint_not_actually_recorded_gets_recorded(self):
         self._targets = [_target("b1", "t1", _BASE)]
         watcher, store = self._make_watcher()
