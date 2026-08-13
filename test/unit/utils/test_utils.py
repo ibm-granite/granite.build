@@ -325,6 +325,24 @@ class TestSanitizeK8sLabelValue:
         assert len(result) <= K8S_LABEL_VALUE_MAX_LENGTH
         assert _is_valid_k8s_label_value(result)
 
+    def test_valid_charset_truncated_on_separator_is_still_valid(self):
+        # Regression: an all-valid-charset value (unchanged path) longer than
+        # 63 chars whose truncation boundary falls on a separator must not end
+        # in '.'/'-'/'_'. Space names commonly contain dots/dashes.
+        value = "a" * 62 + "." + "b" * 5
+        result = sanitize_k8s_label_value(value)
+        assert len(result) <= K8S_LABEL_VALUE_MAX_LENGTH
+        assert _is_valid_k8s_label_value(result)
+        assert not result.endswith(".")
+
+    def test_all_separators_valid_charset_uses_fallback(self):
+        # All chars are in the allowed set but none are alphanumeric, so after
+        # trimming nothing usable remains -> fallback.
+        assert (
+            sanitize_k8s_label_value("." * 70, fallback="no_spacename")
+            == "no_spacename"
+        )
+
     def test_leading_trailing_non_alnum_trimmed(self):
         # '@' -> '_' at both ends would be invalid; must be trimmed.
         result = sanitize_k8s_label_value("@user@")

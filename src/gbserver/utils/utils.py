@@ -116,9 +116,12 @@ def sanitize_k8s_label_value(value: str, fallback: str = "unknown") -> str:
         value: The raw string to sanitize.
         fallback: Value to use when sanitization would otherwise yield an
             empty string (e.g. input made entirely of invalid characters).
+            The caller is responsible for passing a valid label value here;
+            it is returned as-is (not re-sanitized).
 
     Returns:
-        A string that satisfies the Kubernetes label value constraints.
+        A string that satisfies the Kubernetes label value constraints,
+        provided `fallback` (if used) is itself a valid label value.
     """
     original = value or ""
     # Replace any disallowed character with '_' so the result stays readable
@@ -131,20 +134,22 @@ def sanitize_k8s_label_value(value: str, fallback: str = "unknown") -> str:
     body = re.sub(r"^[^A-Za-z0-9]+", "", sanitized)
     body = re.sub(r"[^A-Za-z0-9]+$", "", body)
 
+    # When the value was altered, reserve room for a "-<8charhash>" suffix so
+    # different originals that map to the same sanitized body stay distinct.
+    suffix = "-" + short_alphanumeric_lower_hash(original) if changed else ""
+    max_body = K8S_LABEL_VALUE_MAX_LENGTH - len(suffix)
+
+    # Truncate to fit, then re-trim: truncation may cut in the middle of a run
+    # of separators and leave a trailing '.', '-' or '_', which is illegal at
+    # the end of a label value. This applies whether or not a suffix follows.
+    body = re.sub(r"[^A-Za-z0-9]+$", "", body[:max_body])
+
     if not body:
-        # Nothing usable survived (e.g. input was entirely invalid chars).
+        # Nothing usable survived (input was empty, entirely invalid chars, or
+        # truncated down to only separators).
         return fallback
 
-    if changed:
-        # Reserve room for a "-<8charhash>" suffix so different originals that
-        # map to the same sanitized body remain distinguishable.
-        suffix = "-" + short_alphanumeric_lower_hash(original)
-        max_body = K8S_LABEL_VALUE_MAX_LENGTH - len(suffix)
-        # Re-trim in case truncation left a trailing non-alnum before the suffix.
-        body = re.sub(r"[^A-Za-z0-9]+$", "", body[:max_body])
-        return (body + suffix) if body else fallback
-
-    return body[:K8S_LABEL_VALUE_MAX_LENGTH]
+    return body + suffix
 
 
 def cmd_safe_join(cmd: List[str]) -> str:
