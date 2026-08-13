@@ -290,50 +290,37 @@ def _is_valid_k8s_label_value(value: str) -> bool:
 
 class TestSanitizeK8sLabelValue:
     def test_valid_value_unchanged(self):
-        # A plain github-style username is already valid and must be preserved.
+        # Already-valid values must be returned verbatim.
         assert sanitize_k8s_label_value("octocat") == "octocat"
         assert sanitize_k8s_label_value("a.b-c_d") == "a.b-c_d"
+        assert sanitize_k8s_label_value("my.space-name") == "my.space-name"
+        assert sanitize_k8s_label_value("a" * 63) == "a" * 63
 
-    def test_email_username_is_sanitized(self):
-        # ibmid auth mode: username is an email address containing '@'.
-        result = sanitize_k8s_label_value("user@example.com")
-        assert _is_valid_k8s_label_value(result)
-        assert "@" not in result
-        # Readable prefix preserved; '@' replaced with '_'.
-        assert result.startswith("user_example.com")
-
-    def test_altered_values_get_hash_suffix(self):
-        # Distinct inputs that share a sanitized prefix must not collide:
-        # "alice@corp" and "alice#corp" both sanitize to "alice_corp".
-        a = sanitize_k8s_label_value("alice@corp")
-        b = sanitize_k8s_label_value("alice#corp")
-        assert a != b
-        assert _is_valid_k8s_label_value(a)
-        assert _is_valid_k8s_label_value(b)
-
-    def test_unchanged_value_gets_no_hash_suffix(self):
-        # Already-valid values are returned verbatim (no hash noise appended).
-        assert sanitize_k8s_label_value("plainuser") == "plainuser"
+    def test_email_username_is_sanitized_in_place(self):
+        # ibmid auth mode: username is an email address containing '@'. The
+        # result stays as close to the original as possible -- illegal chars
+        # are replaced in place, with no encoding or hash suffix.
+        assert sanitize_k8s_label_value("ABC@foo.com") == "ABC_foo.com"
+        assert sanitize_k8s_label_value("user@example.com") == "user_example.com"
 
     def test_long_value_is_truncated_to_limit(self):
         result = sanitize_k8s_label_value("a" * 200)
-        assert len(result) <= K8S_LABEL_VALUE_MAX_LENGTH
+        assert result == "a" * K8S_LABEL_VALUE_MAX_LENGTH
         assert _is_valid_k8s_label_value(result)
 
-    def test_long_altered_value_is_truncated_with_suffix(self):
+    def test_long_altered_value_is_valid(self):
         result = sanitize_k8s_label_value("bad@" + "x" * 200)
         assert len(result) <= K8S_LABEL_VALUE_MAX_LENGTH
         assert _is_valid_k8s_label_value(result)
 
-    def test_valid_charset_truncated_on_separator_is_still_valid(self):
-        # Regression: an all-valid-charset value (unchanged path) longer than
-        # 63 chars whose truncation boundary falls on a separator must not end
-        # in '.'/'-'/'_'. Space names commonly contain dots/dashes.
+    def test_value_truncated_on_separator_does_not_end_in_separator(self):
+        # A value longer than 63 chars whose truncation boundary falls on a
+        # separator must not end in '.'/'-'/'_'. Space names commonly contain
+        # dots/dashes.
         value = "a" * 62 + "." + "b" * 5
         result = sanitize_k8s_label_value(value)
-        assert len(result) <= K8S_LABEL_VALUE_MAX_LENGTH
+        assert result == "a" * 62
         assert _is_valid_k8s_label_value(result)
-        assert not result.endswith(".")
 
     def test_all_separators_valid_charset_uses_fallback(self):
         # All chars are in the allowed set but none are alphanumeric, so after
@@ -345,9 +332,9 @@ class TestSanitizeK8sLabelValue:
 
     def test_leading_trailing_non_alnum_trimmed(self):
         # '@' -> '_' at both ends would be invalid; must be trimmed.
-        result = sanitize_k8s_label_value("@user@")
-        assert _is_valid_k8s_label_value(result)
-        assert result[0].isalnum() and result[-1].isalnum()
+        assert sanitize_k8s_label_value("@user@") == "user"
+        assert sanitize_k8s_label_value(".leading") == "leading"
+        assert sanitize_k8s_label_value("trailing.") == "trailing"
 
     def test_empty_uses_fallback(self):
         assert sanitize_k8s_label_value("") == "unknown"

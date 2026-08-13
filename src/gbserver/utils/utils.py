@@ -107,10 +107,11 @@ def sanitize_k8s_label_value(value: str, fallback: str = "unknown") -> str:
     Values that violate these rules (e.g. an ibmid email username containing
     '@') would otherwise be rejected by the API server when creating the
     job/pod. These labels are used only for human tracking/grouping, not for
-    any functional lookup or matching, so a lossy-but-readable transformation
-    is acceptable. To keep distinct inputs from silently collapsing onto the
-    same label (which would defeat the tracking purpose), a short hash of the
-    original value is appended whenever the input had to be altered.
+    any functional lookup or matching, so a lossy transformation is fine. The
+    result is kept as close to the original as possible for readability -- the
+    goal is simply that the value not break job creation -- so illegal
+    characters are replaced in place (e.g. "ABC@foo.com" -> "ABC_foo.com")
+    rather than encoded or suffixed.
 
     Args:
         value: The raw string to sanitize.
@@ -123,33 +124,21 @@ def sanitize_k8s_label_value(value: str, fallback: str = "unknown") -> str:
         A string that satisfies the Kubernetes label value constraints,
         provided `fallback` (if used) is itself a valid label value.
     """
-    original = value or ""
     # Replace any disallowed character with '_' so the result stays readable
-    # (e.g. "user@example.com" -> "user_example.com").
-    sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", original)
-    changed = sanitized != original
+    # (e.g. "ABC@foo.com" -> "ABC_foo.com").
+    sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", value or "")
 
-    # Trim leading/trailing characters that aren't alphanumeric so the value
-    # begins and ends with an alphanumeric as k8s requires.
-    body = re.sub(r"^[^A-Za-z0-9]+", "", sanitized)
-    body = re.sub(r"[^A-Za-z0-9]+$", "", body)
+    # Truncate to the length limit, then trim leading/trailing non-alphanumeric
+    # characters so the value begins and ends with an alphanumeric as k8s
+    # requires. Trimming after truncation also cleans up any separator left
+    # dangling at the cut point.
+    sanitized = sanitized[:K8S_LABEL_VALUE_MAX_LENGTH]
+    sanitized = re.sub(r"^[^A-Za-z0-9]+", "", sanitized)
+    sanitized = re.sub(r"[^A-Za-z0-9]+$", "", sanitized)
 
-    # When the value was altered, reserve room for a "-<8charhash>" suffix so
-    # different originals that map to the same sanitized body stay distinct.
-    suffix = "-" + short_alphanumeric_lower_hash(original) if changed else ""
-    max_body = K8S_LABEL_VALUE_MAX_LENGTH - len(suffix)
-
-    # Truncate to fit, then re-trim: truncation may cut in the middle of a run
-    # of separators and leave a trailing '.', '-' or '_', which is illegal at
-    # the end of a label value. This applies whether or not a suffix follows.
-    body = re.sub(r"[^A-Za-z0-9]+$", "", body[:max_body])
-
-    if not body:
-        # Nothing usable survived (input was empty, entirely invalid chars, or
-        # truncated down to only separators).
-        return fallback
-
-    return body + suffix
+    # Nothing usable survived (input was empty or made entirely of invalid or
+    # separator characters).
+    return sanitized or fallback
 
 
 def cmd_safe_join(cmd: List[str]) -> str:
