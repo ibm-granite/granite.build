@@ -6,6 +6,10 @@ This file provides guidance to coding agents (Claude Code and others) when worki
 
 Always create commits with the `-s` (sign-off) flag — e.g. `git commit -s -m "..."`. The upstream repo (`ibm-granite/granite.build`) enforces the [DCO check](https://developercertificate.org/), which requires a `Signed-off-by:` trailer on every commit. Commits without it will fail CI on the PR.
 
+## GitHub PRs and Issues
+
+When writing PR or issue descriptions, comments, and reviews, do **not** use bare `#`-number notation (`#1`, `#2`, …) to enumerate list items or steps. GitHub auto-links `#N` to the issue or PR with that number, so a list numbered this way turns into a set of misleading cross-references. Use plain numbers (`1.`, `2.`), letters (`(a)`, `(b)`), or descriptive names instead. Reserve `#N` for genuine references to a specific issue or PR (e.g. "builds on #257").
+
 ## Project Overview
 
 gbserver is the build orchestration server for LLM.Build (Granite.Build). It manages model build pipelines — watching PRs and repos for build configurations, executing multi-step builds on Kubernetes/LSF clusters, and exposing a REST API for build management. Written in Python 3.11+, it uses Click for CLI, FastAPI for the REST API, and SQLAlchemy with PostgreSQL for metadata storage.
@@ -20,26 +24,13 @@ source .venv/bin/activate
 ```
 
 ### Running Tests
+`pytest -s test` runs the suite (requires `GBTEST_SPS_IBMCLOUD_API_KEY` for secret retrieval); narrow with the usual `test/dir`, `file.py`, or `file.py::Class::method` args. The non-obvious make targets:
 ```shell
-# Run all tests (requires GBTEST_SPS_IBMCLOUD_API_KEY for secrets)
-pytest -s test
-
-# Run a specific test directory
-pytest -s test/gbserver_test/api
-
-# Run a specific test file
-pytest -s test/gbserver_test/api/test_artifacts.py
-
-# Run a single test method
-pytest -s test/gbserver_test/api/test_artifacts.py::TestArtifactAPI::test_artifact_get
-
-# CI test suites (creates venv, runs with coverage and parallel execution)
-make cicd-pr-test     # abbreviated test set
-make cicd-merge-test  # extended test set (the `extended` marker)
-
-# Local test suites (the `-setup` target provisions the venv and any infra first)
-make quick-tests-setup quick-tests        # fast suite: GBTEST_MODE=mock, -m "not ibm and not extended"
-make extended-tests-setup extended-tests  # full suite: GBTEST_MODE=live, -m "not ibm" (includes `extended` tests); setup also brings up MinIO + SLURM
+make cicd-pr-test     # abbreviated CI set (coverage + parallel)
+make cicd-merge-test  # extended CI set (the `extended` marker)
+# `-setup` targets provision the venv and infra first:
+make quick-tests-setup quick-tests        # fast: GBTEST_MODE=mock, -m "not ibm and not extended"
+make extended-tests-setup extended-tests  # full: GBTEST_MODE=live, -m "not ibm"; setup also brings up MinIO + SLURM
 ```
 
 ### Formatting and Linting
@@ -68,38 +59,21 @@ gbserver build-runner ...
 
 ### Source Layout (`src/gbserver/`)
 
-- **cli.py** — Click-based CLI root. Dynamically discovers subcommands from `commands/command_*.py` files (filename maps to CLI command: `command_build_watch.py` → `build-watch`).
-- **commands/** — CLI subcommand implementations. Each file exports a `cli` Click command.
-- **api/** — FastAPI REST API for build management. Routes prefixed with `/api/v1`.
-- **build/** — Core build execution engine. Key classes: `Build`, `BuildRun`, `Target`, `TargetRun`, `Step`, `TargetStepRun`. Represents the hierarchy: a Build contains Targets, each Target has Steps, each Step produces a TargetStepRun.
-- **buildwatcher/** — Watches for pending builds (from PRs or local directories) and dispatches build runners. Can run builds as k8s jobs, processes, or threads (controlled by `GBSERVER_DEFAULT_BUILDRUNNER_TYPE`).
-- **storage/** — Data persistence layer with multiple backends:
-  - `sql/` — Primary backend using SQLAlchemy with PostgreSQL
-  - `sqlite/` — SQLite backend for local/testing use
-  - `singleton_storage.py` — Global storage access point
-  - `storage_factory.py` — Backend selection based on `GBSERVER_METADATA_STORAGE` env var
-- **types/** — Pydantic models and configuration types. `constants.py` is the central env var registry — almost all `GBSERVER_*` env vars are defined here. `gbserverenvconfig.py` handles per-environment (DEV/STAGING/PROD) configuration.
-- **spacesecretmanager/** — Secret management abstraction with IBM Cloud, local, hybrid, and env-based implementations.
-- **github/** — GitHub Enterprise API integration for PR operations and repo access.
-- **messaging/** — RabbitMQ/AMQP messaging integration (aio-pika).
-- **resilience/** — Retry strategies and resilience patterns (uses tenacity).
-- **metrics/** — Metrics collection and push to metrics endpoint.
-- **monitoring/** — Health checks and sidecar monitoring.
-- **environment/** — Compute environment abstractions (Kubernetes, LSF).
+Most directory names are self-describing; these carry non-obvious behavior worth knowing up front:
+
+- **cli.py** — Click CLI root. Discovers subcommands from `commands/command_*.py` (`command_build_watch.py` → `build-watch`).
+- **build/** — Core execution engine. Hierarchy: a `Build` contains `Target`s, each has `Step`s, each `Step` produces a `TargetStepRun`.
+- **buildwatcher/** — Watches for pending builds (PRs or local dirs) and dispatches runners as k8s jobs, processes, or threads (`GBSERVER_DEFAULT_BUILDRUNNER_TYPE`).
+- **storage/** — Persistence layer; `storage_factory.py` selects the backend (`sql/` PostgreSQL, `sqlite/` local) from `GBSERVER_METADATA_STORAGE`. `singleton_storage.py` is the global access point.
+- **types/** — Pydantic models. `constants.py` is the central `GBSERVER_*` env-var registry; `gbserverenvconfig.py` handles DEV/STAGING/PROD config.
 - **builtins/** — Built-in step implementations (gbstep, hfpull, lhpull, lhpush, cosrclone).
+- **api/** (FastAPI, routes under `/api/v1`), **spacesecretmanager/**, **github/**, **messaging/**, **resilience/**, **metrics/**, **monitoring/**, **environment/** (k8s, LSF) — self-explanatory by name.
 
 ### Test Layout (`test/`)
 
-- **conftest.py** — Session-level fixture that fetches test secrets from IBM Cloud Secret Manager (SPS) using `GBTEST_SPS_IBMCLOUD_API_KEY`. Also hooks into pytest failure reporting to dump build state for debugging.
-- **gbserver_test/** — Mirrors source structure. Tests marked `secret_manager` require real IBM Cloud connections and are excluded by default.
-- **sidecar_test/** — Tests for the monitoring sidecar container.
-- Test parallelism: uses `pytest-xdist` with `--dist=loadgroup` mode.
-
-### Key Dependencies
-- **dmf-lib** (v1.10.2) — Data Model Factory library for Lakehouse integration. Installed from IBM Artifactory.
-- **kubernetes_asyncio** — Async Kubernetes client for job management.
-- **SQLAlchemy + psycopg2** — PostgreSQL storage backend.
-- **aio-pika** — AMQP messaging.
+- **conftest.py** — Session fixture fetching test secrets from IBM Cloud Secret Manager via `GBTEST_SPS_IBMCLOUD_API_KEY`; also dumps build state on pytest failure.
+- **gbserver_test/** — Mirrors source structure. `secret_manager`-marked tests need real IBM Cloud and are excluded by default.
+- Parallelism via `pytest-xdist` `--dist=loadgroup`.
 
 ## Environment Variables
 
@@ -178,24 +152,7 @@ cd frontend && yarn dev       # proxies /api/* to gbserver at :8080 (no CORS)
 
 ### Running with the analytics service
 
-`gb_ui_backend` is bundled with the `standalone` extra. If installed, gbserver includes its routers directly into its own process at startup — no separate process or port. When `GB_UI_DATABASE_URL` is unset, gbserver derives it from the main store's own backend config (`GBSERVER_METADATA_STORAGE`) instead of an independent default — see `derive_analytics_database_url()` in `src/gbserver/types/constants.py`:
-
-```shell
-pip install -e ".[standalone]"
-gbserver standalone
-# Analytics routes are served at /api/analytics/* on gbserver's own port
-# GBSERVER_METADATA_STORAGE=sqlite (standalone default): analytics uses its own
-# ~/.granite.build/dashboard-analytics.db (auto-created on first run).
-# GBSERVER_METADATA_STORAGE=sql: analytics inherits GBSERVER_SQL_* automatically,
-# translated to a postgresql+asyncpg:// URL (including the SQL TLS cert, if any) —
-# it connects to the same Postgres as the main store, not a separate database.
-```
-
-To override the derived default explicitly:
-
-```shell
-GB_UI_DATABASE_URL="postgresql+asyncpg://user:pass@host/db" gbserver standalone
-```
+`gb_ui_backend` ships in the `standalone` extra (`pip install -e ".[standalone]"`). When installed, gbserver mounts its routers at `/api/analytics/*` in its own process — no separate port. The analytics DB (`GB_UI_DATABASE_URL`, see table below) is auto-derived from `GBSERVER_METADATA_STORAGE` when unset.
 
 ### Frontend source layout
 
@@ -216,14 +173,13 @@ GB_UI_DATABASE_URL="postgresql+asyncpg://user:pass@host/db" gbserver standalone
 
 | Variable | Where set | Description |
 |---|---|---|
-| `GBSERVER_API_URL` | `frontend/.env.local` or build env | API base URL. Dev: sets the rewrite proxy target. Standalone: baked into the bundle at `make build-frontend` time. Unset = same-origin default. |
+| `GBSERVER_API_URL` | `frontend/.env.local` or build env | API base URL. Dev: rewrite-proxy target. Standalone: baked into the bundle at `make build-frontend` time. Unset = same-origin default. |
 | `GBSERVER_UI_DIR` | gbserver env | Override path to compiled frontend (default: `src/gbserver/static/ui/`) |
-| `GB_UI_DATABASE_URL` | gbserver env | Analytics DB. Auto-derived from the main store's own backend (`GBSERVER_METADATA_STORAGE`) when unset — see `derive_analytics_database_url()` in `src/gbserver/types/constants.py`. `sql` mode inherits `GBSERVER_SQL_*` as a `postgresql+asyncpg://` URL; `sqlite` mode uses its own `dashboard-analytics.db` under `GB_HOME_DIR`. |
-| `GB_UI_DATABASE_CONNECT_ARGS` | gbserver env (internal) | JSON-encoded `create_async_engine()` connect args, set by gbserver when the main SQL store requires TLS — carries the cert file path across the env-var boundary since an `ssl.SSLContext` isn't JSON-serializable. Not meant to be hand-set. |
+| `GB_UI_DATABASE_URL` | gbserver env | Analytics DB. Auto-derived from `GBSERVER_METADATA_STORAGE` when unset (`derive_analytics_database_url()` in `constants.py`): `sql` inherits `GBSERVER_SQL_*` as a `postgresql+asyncpg://` URL (with TLS cert if any), connecting to the same Postgres; `sqlite` uses its own `dashboard-analytics.db` under `GB_HOME_DIR`. |
+| `GB_UI_DATABASE_CONNECT_ARGS` | gbserver env (internal) | JSON `create_async_engine()` connect args, set by gbserver when the SQL store needs TLS (carries the cert path — `ssl.SSLContext` isn't JSON-serializable). Not hand-set. |
 | `GB_UI_GBSERVER_DB_URL` | gbserver env | gbserver's own DB for richer analytics. Auto-set to gbserver's SQLite file when unset and storage is sqlite. |
-| `GB_UI_GBSERVER_URL` | analytics env | gbserver URL, used for the standalone dev-mode startup banner (default: `http://localhost:8080`) |
-| `GB_UI_LLM_BASE_URL` | analytics env | OpenAI-compatible endpoint for AI analysis |
-| `GB_UI_LLM_API_KEY` | analytics env | API key for the LLM endpoint |
+| `GB_UI_GBSERVER_URL` | analytics env | gbserver URL for the dev-mode startup banner (default: `http://localhost:8080`) |
+| `GB_UI_LLM_BASE_URL` / `GB_UI_LLM_API_KEY` | analytics env | OpenAI-compatible endpoint + key for AI analysis |
 
 ## Deployment
 
