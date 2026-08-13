@@ -16,15 +16,16 @@
 
 The watcher drives admin-DB reconciliation (see ``lineage_reconciler``) on an
 interval; these tests stub the admin storage and the lineage store, then drive
-``_reconcile`` directly (bypassing the background thread). They run in CI without
-a cluster, PostgreSQL, or wandb credentials.
+``start()``/``_reconcile`` directly (bypassing the background thread). They run
+in CI without a cluster, PostgreSQL, or wandb credentials.
 
-They cover that the watcher records successful targets, advances its
-``finished_at`` watermark so steady-state scans read only newly-finished
-targets, does not re-record what a sink already has (per-sink
-``filter_unrecorded``), retries a transiently-failing target, and drops a
+They cover that the watcher records successful targets, persists its
+``finished_at``/``build_id`` checkpoint to ``gb_status`` immediately after each
+successfully-recorded target so steady-state scans (and restarts) read only
+newly-finished targets, does not re-record what a sink already has (per-sink
+``filter_unrecorded``), retries a transiently-failing target, drops a
 persistently failing one after ``_MAX_RECORD_ATTEMPTS`` so it cannot wedge later
-scans.
+scans, and that ``start()`` loads/seeds/verifies the checkpoint correctly.
 """
 
 from datetime import datetime, timedelta
@@ -32,6 +33,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gbserver.lineage.lineage_reconciler import LINEAGE_WATCHER_CHECKPOINT_KEY
 from gbserver.lineage.lineage_watcher import LineageWatcher
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
@@ -68,6 +70,19 @@ class _StubStore:
         return set(target_ids) - self._recorded
 
 
+class _StubStatusStorage:
+    """In-memory stand-in for ``status_storage`` (the ``gb_status`` key-value store)."""
+
+    def __init__(self):
+        self._values: dict = {}
+
+    def get_value(self, key):
+        return self._values.get(key)
+
+    def set_value(self, key, value):
+        self._values[key] = value
+
+
 @pytest.mark.live("storage", "lineage")
 class TestLineageWatcher:
     """Reconciliation and retry behaviour of LineageWatcher._reconcile."""
@@ -75,13 +90,17 @@ class TestLineageWatcher:
     @pytest.fixture(autouse=True)
     def _stub_storage(self):
         """Stub admin storage whose target_storage returns configurable targets,
-        ordered newest-``finished_at``-first and honoring pagination."""
+        ordered newest-``finished_at``-first and honoring pagination and a
+        ``build_id`` filter (used by checkpoint verification on start())."""
         self._targets: list[StoredTargetRun] = []
         admin_storage = MagicMock()
 
         def _get_by_where(where, query_control=None):
+            matching = self._targets
+            if where and "build_id" in where:
+                matching = [t for t in matching if t.build_id == where["build_id"]]
             ordered = sorted(
-                self._targets,
+                matching,
                 key=lambda t: (t.finished_at is not None, t.finished_at or _BASE),
                 reverse=True,
             )
@@ -92,6 +111,7 @@ class TestLineageWatcher:
             return ordered
 
         admin_storage.target_storage.get_by_where.side_effect = _get_by_where
+        admin_storage.status_storage = _StubStatusStorage()
         self.storage = admin_storage
         with patch(
             "gbserver.lineage.lineage_watcher.get_admin_storage",
@@ -183,29 +203,131 @@ class TestLineageWatcher:
         # Dropped target is in the skip set so it stops wedging every scan.
         assert "target-p" in watcher._dropped
 
-    def test_first_scan_is_full_catch_up(self):
-        """Fresh watcher (no watermark) records everything already in the DB.
-
-        This is the restart-blind-spot fix: targets that succeeded while the
-        watcher was down are recovered on the first scan after restart.
+    def test_first_scan_after_seed_and_verify_records_only_the_next_target(self):
+        """A fresh watcher seeds its checkpoint from the newest target, records
+        it via the start()-time verification (not the scan itself), and the
+        first ``_reconcile()`` only picks up anything newer than that.
         """
         self._targets = [
             _target("b1", "t1", _BASE),
             _target("b2", "t2", _BASE + timedelta(seconds=1)),
         ]
         watcher, store = self._make_watcher()
-        assert watcher._last_seen is None
-
-        watcher._reconcile()
-
-        assert {c[1] for c in store.calls} == {"t1", "t2"}
+        watcher._load_or_seed_checkpoint(self.storage)
+        # t2 (the newest) was seeded and verified/recorded at start()-time.
         assert watcher._last_seen == _BASE + timedelta(seconds=1)
+        assert ("b2", "t2") in store.calls
 
-    def test_stop_resets_watermark_for_full_catch_up(self):
+        store.calls.clear()
+        # A genuinely newer target appears. The scan re-reads t1 too (it falls
+        # within the watermark-overlap window and was never actually recorded
+        # in the stub store — only the checkpointed t2 was) but that re-read is
+        # a harmless idempotent no-op in a real store; what matters is the scan
+        # is bounded to the overlap window, not a full-DB rescan.
+        self._targets.append(_target("b3", "t3", _BASE + timedelta(minutes=1)))
+        watcher._reconcile()
+        assert {c[1] for c in store.calls} == {"t1", "t3"}
+
+    def test_stop_does_not_reset_watermark(self):
         self._targets = [_target("b1", "t1", _BASE)]
         watcher, _ = self._make_watcher()
         watcher._reconcile()
         assert watcher._last_seen == _BASE
 
         watcher.stop()
+        # The checkpoint is persisted; a restart reloads it rather than needing
+        # in-memory state to survive, so stop() leaves it as-is.
+        assert watcher._last_seen == _BASE
+
+
+@pytest.mark.live("storage", "lineage")
+class TestLineageWatcherCheckpoint:
+    """``start()``'s load/seed/verify flow, driven directly via
+    ``_load_or_seed_checkpoint`` (bypassing the background thread)."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_storage(self):
+        self._targets: list[StoredTargetRun] = []
+        admin_storage = MagicMock()
+
+        def _get_by_where(where, query_control=None):
+            matching = self._targets
+            if where and "build_id" in where:
+                matching = [t for t in matching if t.build_id == where["build_id"]]
+            ordered = sorted(
+                matching,
+                key=lambda t: (t.finished_at is not None, t.finished_at or _BASE),
+                reverse=True,
+            )
+            if query_control is not None and query_control.pagination is not None:
+                p = query_control.pagination
+                start = p.index * p.size
+                return ordered[start : start + p.size]
+            return ordered
+
+        admin_storage.target_storage.get_by_where.side_effect = _get_by_where
+        admin_storage.status_storage = _StubStatusStorage()
+        self.storage = admin_storage
+        yield
+
+    def _make_watcher(self, fail: set = None) -> tuple[LineageWatcher, _StubStore]:
+        watcher = LineageWatcher()
+        store = _StubStore(fail=fail)
+        watcher._store = store
+        return watcher, store
+
+    def test_seed_when_checkpoint_missing_with_existing_target_records_it(self):
+        self._targets = [_target("b1", "t1", _BASE)]
+        watcher, store = self._make_watcher()
+
+        watcher._load_or_seed_checkpoint(self.storage)
+
+        assert watcher._last_seen == _BASE
+        assert ("b1", "t1") in store.calls
+        assert self.storage.status_storage.get_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY
+        ) == {"build_id": "b1", "finished_at": _BASE.isoformat()}
+
+    def test_seed_when_checkpoint_missing_and_no_targets_yet_writes_nothing(self):
+        self._targets = []
+        watcher, store = self._make_watcher()
+
+        watcher._load_or_seed_checkpoint(self.storage)
+
         assert watcher._last_seen is None
+        assert store.calls == []
+        assert (
+            self.storage.status_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+            is None
+        )
+
+    def test_load_checkpoint_already_recorded_is_a_no_op(self):
+        self._targets = [_target("b1", "t1", _BASE)]
+        watcher, store = self._make_watcher()
+        self.storage.status_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            {"build_id": "b1", "finished_at": _BASE.isoformat()},
+        )
+        store.calls.append(("b1", "t1"))  # Pre-record it in the stub store.
+        store._recorded.add("t1")
+
+        watcher._load_or_seed_checkpoint(self.storage)
+
+        # Already recorded: filter_unrecorded excludes it, no duplicate call.
+        assert store.calls == [("b1", "t1")]
+        assert watcher._last_seen == _BASE
+
+    def test_load_checkpoint_not_actually_recorded_gets_recorded(self):
+        self._targets = [_target("b1", "t1", _BASE)]
+        watcher, store = self._make_watcher()
+        # Checkpoint says t1 is done, but the store never actually recorded it
+        # (e.g. a crash between recording and persisting the checkpoint).
+        self.storage.status_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            {"build_id": "b1", "finished_at": _BASE.isoformat()},
+        )
+
+        watcher._load_or_seed_checkpoint(self.storage)
+
+        assert ("b1", "t1") in store.calls
+        assert watcher._last_seen == _BASE

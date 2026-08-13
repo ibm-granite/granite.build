@@ -7,6 +7,7 @@ from gbserver.storage.event_storage import IStoredEventStorage
 from gbserver.storage.node_failure_storage import INodeFailureStorage
 from gbserver.storage.space_storage import IStoredSpaceStorage
 from gbserver.storage.space_user_storage import ISpaceUserStorage
+from gbserver.storage.status_storage import IStatusStorage
 from gbserver.storage.steprun_storage import IStoredStepRunStorage
 from gbserver.storage.target_run_storage import IStoredTargetRunStorage
 
@@ -43,4 +44,8 @@ class StorageFactory(abc.ABC):
 
     @abstractmethod
     def create_space_user_storage(self, table_name: str) -> ISpaceUserStorage:
+        raise ValueError("Sub-class must implement")
+
+    @abstractmethod
+    def create_status_storage(self, table_name: str) -> IStatusStorage:
         raise ValueError("Sub-class must implement")

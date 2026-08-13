@@ -7,6 +7,7 @@ from gbserver.storage.sqlite.sqlite_storage import (
     SqliteNodeFailureStorage,
     SqliteSpaceStorage,
     SqliteSpaceUserStorage,
+    SqliteStatusStorage,
     SqliteStepRunStorage,
     SqliteTargetRunStorage,
 )
@@ -37,3 +38,6 @@ class SqliteStorageFactory(StorageFactory):
 
     def create_space_user_storage(self, table_name: Optional[str] = None):
         return SqliteSpaceUserStorage(table_name=table_name)
+
+    def create_status_storage(self, table_name: Optional[str] = None):
+        return SqliteStatusStorage(table_name=table_name)

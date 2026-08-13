@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 from gbserver.lineage.lineage_reconciler import (
+    ReconcileResult,
     _expected_run_count,
     reconcile_once,
     record_selected_targets,
@@ -217,10 +218,12 @@ class TestReconcileOnce:
             ]
         )
 
-        watermark = reconcile_once(store, storage)
+        result = reconcile_once(store, storage)
 
         assert {c[1] for c in store.recorded_calls} == {"t1", "t2"}
-        assert watermark == _BASE + timedelta(seconds=1)
+        assert result == ReconcileResult(_BASE + timedelta(seconds=1), "b1")
+        # Recorded oldest-finished-first.
+        assert [c[1] for c in store.recorded_calls] == ["t1", "t2"]
 
     def test_already_recorded_targets_are_skipped(self):
         store = _StubStore(already_recorded={"t1"})
@@ -322,19 +325,63 @@ class TestReconcileOnce:
         assert ("b1", "t1") not in store.recorded_calls
         assert errors == [("b1", "t1", "boom")]
 
-    def test_skip_set_excludes_targets_but_advances_watermark(self):
+    def test_skip_set_excludes_targets_and_does_not_advance_watermark(self):
         store = _StubStore()
         t1 = _target("b1", "t1", finished_at=_BASE)
         t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=5))
         storage = _admin_storage_with([t1, t2])
 
-        watermark = reconcile_once(store, storage, skip={"t2"})
+        result = reconcile_once(store, storage, skip={"t2"})
 
         # t2 is skipped (dropped), t1 still recorded.
         assert store.recorded_calls == [("b1", "t1")]
-        # Watermark still advances past the skipped target so it is not
-        # reconsidered forever.
-        assert watermark == _BASE + timedelta(seconds=5)
+        # Watermark only reflects the actually-recorded target; a skipped
+        # target must not advance a persisted checkpoint past it.
+        assert result == ReconcileResult(_BASE, "b1")
+
+    def test_on_checkpoint_advance_fires_per_target_oldest_first(self):
+        store = _StubStore()
+        t1 = _target("b1", "t1", finished_at=_BASE)
+        t2 = _target("b2", "t2", finished_at=_BASE + timedelta(seconds=5))
+        storage = _admin_storage_with([t1, t2])
+        advances = []
+
+        reconcile_once(
+            store,
+            storage,
+            on_checkpoint_advance=lambda build_id, finished_at: advances.append(
+                (build_id, finished_at)
+            ),
+        )
+
+        assert advances == [
+            ("b1", _BASE),
+            ("b2", _BASE + timedelta(seconds=5)),
+        ]
+
+    def test_on_checkpoint_advance_stops_at_last_successful_target(self):
+        store = _StubStore(fail={"t2"})
+        t1 = _target("b1", "t1", finished_at=_BASE)
+        t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=5))
+        t3 = _target("b1", "t3", finished_at=_BASE + timedelta(seconds=10))
+        storage = _admin_storage_with([t1, t2, t3])
+        advances = []
+
+        result = reconcile_once(
+            store,
+            storage,
+            on_checkpoint_advance=lambda build_id, finished_at: advances.append(
+                (build_id, finished_at)
+            ),
+        )
+
+        # t2 fails; t1 and t3 still record (failure does not abort the scan),
+        # but the checkpoint callback only fires for actually-recorded targets.
+        assert advances == [
+            ("b1", _BASE),
+            ("b1", _BASE + timedelta(seconds=10)),
+        ]
+        assert result == ReconcileResult(_BASE + timedelta(seconds=10), "b1")
 
     def test_passes_expected_run_counts_derived_from_outputs(self):
         store = _StubStore()

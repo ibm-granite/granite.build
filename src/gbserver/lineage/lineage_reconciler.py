@@ -43,7 +43,7 @@ down is picked up on the next scan — there is no restart blind spot.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable, NamedTuple, Optional
 
 from gbserver.lineage.jobstats import ILineageStore
 from gbserver.storage.singleton_storage import SingletonAdminStorage
@@ -53,6 +53,12 @@ from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# gb_status key under which the LineageWatcher persists its checkpoint, so a
+# restart resumes from the last successfully-recorded target instead of
+# rescanning the whole admin DB. Value shape: {"build_id": str, "finished_at":
+# <ISO 8601 str>}.
+LINEAGE_WATCHER_CHECKPOINT_KEY = "lineage_store_latest_build_id"
 
 # Column the reconciliation scan sorts/paginates successful targets by. A target
 # gets finished_at set when it succeeds, so it is the moment the target becomes
@@ -180,6 +186,23 @@ def select_recordable_targets(
     return selected
 
 
+def get_most_recent_successful_target(
+    storage: SingletonAdminStorage,
+) -> Optional[StoredTargetRun]:
+    """Return the single newest-finished successful target, or ``None``.
+
+    Used to seed the LineageWatcher's checkpoint on a fresh deployment (no
+    persisted checkpoint yet): a single-page, newest-first query rather than
+    the full ``select_recordable_targets`` walk, since only the first result is
+    needed. Targets with no ``finished_at`` are skipped, mirroring
+    ``select_recordable_targets``.
+    """
+    for target in _successful_targets_page(storage, page_index=0):
+        if target.finished_at is not None:
+            return target
+    return None
+
+
 def _expected_run_count(target: StoredTargetRun) -> int:
     """Number of lineage runs a fully-recorded ``target`` should have in a sink.
 
@@ -195,14 +218,29 @@ def _expected_run_count(target: StoredTargetRun) -> int:
     return n if n > 0 else 1
 
 
+class ReconcileResult(NamedTuple):
+    """Outcome of one ``reconcile_once`` pass.
+
+    ``max_finished_at``/``max_finished_at_build_id`` describe the last target
+    that was *actually recorded successfully* this pass (not merely the newest
+    one considered) — a failed or skipped target must not advance a persisted
+    checkpoint past it. Both are ``None`` when nothing was recorded and no
+    watermark existed coming in.
+    """
+
+    max_finished_at: Optional[datetime]
+    max_finished_at_build_id: Optional[str]
+
+
 def reconcile_once(
     store: ILineageStore,
     storage: SingletonAdminStorage,
     finished_after: Optional[datetime] = None,
     on_error: Optional[Callable[[str, str, Exception], None]] = None,
     on_success: Optional[Callable[[str, str], None]] = None,
+    on_checkpoint_advance: Optional[Callable[[str, datetime], None]] = None,
     skip: Optional[set[str]] = None,
-) -> Optional[datetime]:
+) -> ReconcileResult:
     """Reconcile admin-DB lineage into the store once (the central mechanism).
 
     Selects successful target runs that finished at or after ``finished_after``
@@ -240,27 +278,37 @@ def reconcile_once(
             it was tracking for that target (a target that failed a prior scan
             and then succeeds is only reported here — it drops out of the
             unrecorded set, so ``on_error`` is never called for it again).
+        on_checkpoint_advance: Optional callback ``(build_id, finished_at)``
+            invoked immediately after each individual target records
+            successfully (oldest-``finished_at``-first). Lets the caller persist
+            a checkpoint per-target rather than once per batch, so a crash
+            mid-scan leaves a durable checkpoint at the last target actually
+            recorded — not at the newest one merely considered, and not stuck at
+            the pre-scan watermark until the whole batch finishes.
         skip: Target uuids the caller has given up on (e.g. dropped after
             exhausting retries). These are excluded from recording so a
             persistently failing target — which still falls within the watermark
-            window every scan — cannot wedge the scan. They still count toward
-            the returned watermark so it can advance past them.
+            window every scan — cannot wedge the scan. They do NOT advance the
+            returned watermark or fire ``on_checkpoint_advance`` themselves
+            (only an actually-recorded target does that); the caller's
+            in-memory dedup — e.g. ``LineageWatcher._dropped`` — is what keeps a
+            skipped target from being reconsidered forever, independent of the
+            checkpoint.
 
     Returns:
-        The maximum ``finished_at`` across the targets *considered* this pass
-        (whether or not each recorded successfully), or ``finished_after``
-        unchanged when the scan found nothing newer. The caller threads this back
-        in as ``finished_after`` on the next call so the watermark advances.
+        A ``ReconcileResult`` describing the last target *actually recorded
+        successfully* this pass (``finished_after`` unchanged, with no
+        build_id, when nothing recorded). Callers that need per-target
+        granularity (e.g. persisting a checkpoint immediately as each target is
+        recorded) should use ``on_checkpoint_advance`` instead — this return
+        value is a coarser end-of-scan summary.
     """
-    targets = select_recordable_targets(storage, finished_after=finished_after)
-
-    max_finished_at = finished_after
-    for target in targets:
-        if target.finished_at is not None and (
-            max_finished_at is None
-            or _as_utc_naive(target.finished_at) > _as_utc_naive(max_finished_at)
-        ):
-            max_finished_at = target.finished_at
+    # Selection is newest-finished-first (bounds the DB walk: it can stop as
+    # soon as it crosses the watermark). Recording order is the reverse —
+    # oldest-first — so finished_at advances monotonically as each target
+    # records, letting a checkpoint be persisted safely after every single
+    # target rather than only once at the end of the batch.
+    targets = list(reversed(select_recordable_targets(storage, finished_after=finished_after)))
 
     skip = skip or set()
     by_uuid = {t.uuid: t for t in targets if t.uuid not in skip}
@@ -269,7 +317,7 @@ def reconcile_once(
     # only the watermark-overlap boundary targets are all skipped) does not fire
     # a backend query (e.g. a wandb api.runs call) that would return nothing.
     if not by_uuid:
-        return max_finished_at
+        return ReconcileResult(finished_after, None)
     # Expected run count per candidate, so the sink can tell a fully-recorded
     # target from one whose runs were only partially emitted on a prior crashed
     # scan (see ILineageStore.filter_unrecorded). Derived in memory from the
@@ -284,14 +332,24 @@ def reconcile_once(
     }
     unrecorded = store.filter_unrecorded(set(by_uuid), expected_counts)
 
+    max_finished_at = finished_after
+    max_finished_at_build_id = None
     newly_recorded = 0
-    for uuid in unrecorded:
-        target = by_uuid[uuid]
+    # Iterate in oldest-first order (the `targets` order), not the (unordered)
+    # `unrecorded` set, so the checkpoint advances monotonically.
+    for target in targets:
+        if target.uuid not in unrecorded:
+            continue
         try:
             record_target_lineage(
                 store, storage, build_id=target.build_id, target_id=target.uuid
             )
             newly_recorded += 1
+            if target.finished_at is not None:
+                max_finished_at = target.finished_at
+                max_finished_at_build_id = target.build_id
+                if on_checkpoint_advance is not None:
+                    on_checkpoint_advance(target.build_id, target.finished_at)
             if on_success is not None:
                 on_success(target.build_id, target.uuid)
         except Exception as exc:  # noqa: BLE001 - reconciliation must not abort
@@ -308,7 +366,7 @@ def reconcile_once(
 
     if newly_recorded:
         logger.info("Reconciled lineage for %d target(s)", newly_recorded)
-    return max_finished_at
+    return ReconcileResult(max_finished_at, max_finished_at_build_id)
 
 
 def record_selected_targets(
