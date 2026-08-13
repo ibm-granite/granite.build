@@ -1648,8 +1648,7 @@ Download : {download_msg}
             )
             self.storage.target_storage.update(stored_target_run)
         if payload.status == Status.SUCCESS:
-            # Lineage is now recorded asynchronously by LineageWatcher from gb_events.
-            # The target-SUCCESS event is persisted above (buildrunner.py:836).
+            # Lineage is now recorded via DB reconciliation, not from gb_events.
             pass
 
     @staticmethod
