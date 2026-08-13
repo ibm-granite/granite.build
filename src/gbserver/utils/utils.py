@@ -93,6 +93,60 @@ def short_alphanumeric_lower_hash(input_string: str) -> str:
     return base64_encoded[:8].lower()
 
 
+K8S_LABEL_VALUE_MAX_LENGTH = 63
+
+
+def sanitize_k8s_label_value(value: str, fallback: str = "unknown") -> str:
+    """Coerce an arbitrary string into a valid Kubernetes label value.
+
+    Kubernetes label values must (per the API validation rules):
+      - be 63 characters or less,
+      - consist of alphanumerics, '-', '_' or '.',
+      - begin and end with an alphanumeric character (or be empty).
+
+    Values that violate these rules (e.g. an ibmid email username containing
+    '@') would otherwise be rejected by the API server when creating the
+    job/pod. These labels are used only for human tracking/grouping, not for
+    any functional lookup or matching, so a lossy-but-readable transformation
+    is acceptable. To keep distinct inputs from silently collapsing onto the
+    same label (which would defeat the tracking purpose), a short hash of the
+    original value is appended whenever the input had to be altered.
+
+    Args:
+        value: The raw string to sanitize.
+        fallback: Value to use when sanitization would otherwise yield an
+            empty string (e.g. input made entirely of invalid characters).
+
+    Returns:
+        A string that satisfies the Kubernetes label value constraints.
+    """
+    original = value or ""
+    # Replace any disallowed character with '_' so the result stays readable
+    # (e.g. "user@example.com" -> "user_example.com").
+    sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", original)
+    changed = sanitized != original
+
+    # Trim leading/trailing characters that aren't alphanumeric so the value
+    # begins and ends with an alphanumeric as k8s requires.
+    body = re.sub(r"^[^A-Za-z0-9]+", "", sanitized)
+    body = re.sub(r"[^A-Za-z0-9]+$", "", body)
+
+    if not body:
+        # Nothing usable survived (e.g. input was entirely invalid chars).
+        return fallback
+
+    if changed:
+        # Reserve room for a "-<8charhash>" suffix so different originals that
+        # map to the same sanitized body remain distinguishable.
+        suffix = "-" + short_alphanumeric_lower_hash(original)
+        max_body = K8S_LABEL_VALUE_MAX_LENGTH - len(suffix)
+        # Re-trim in case truncation left a trailing non-alnum before the suffix.
+        body = re.sub(r"[^A-Za-z0-9]+$", "", body[:max_body])
+        return (body + suffix) if body else fallback
+
+    return body[:K8S_LABEL_VALUE_MAX_LENGTH]
+
+
 def cmd_safe_join(cmd: List[str]) -> str:
     """Preserves arguments with spaces in them."""
     return " ".join(f"'{x}'" if " " in x else x for x in cmd)

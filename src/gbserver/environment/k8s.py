@@ -287,6 +287,9 @@ class K8s(Environment):
         labels["granite-dot-build/build-step-id"] = (
             runmetadata.targetsteprun_id or "no_targetsteprun_id"
         )
+        # If re-enabled, run the value through
+        # gbserver.utils.utils.sanitize_k8s_label_value() first: usernames may
+        # be email addresses (ibmid auth) that are invalid as k8s label values.
         # labels["granite-dot-build/username"] = ""
         kwargs["labels"] = labels
         if runmetadata.targetstep_uri:
