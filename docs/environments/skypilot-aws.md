@@ -167,6 +167,11 @@ pytest -s -m extended --strict-markers \
   regenerated cleanly from `environment.yaml`.
 - **Collision safety.** Materialization refuses to overwrite an existing profile whose values
   differ; pick a name (e.g. `gb-skypilot`) you don't already have in `~/.aws/credentials`.
+- **Field names are exact; typos are silent.** `aws_credentials` entries are validated
+  permissively, so a misspelled key (e.g. `access_key_id` instead of `aws_access_key_id`) is
+  dropped rather than rejected and the value stays unset — surfacing later as a confusing
+  credential-resolution failure, not a config error. Use the field names exactly: `profile`,
+  `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`.
 - **Region is separate.** Placement comes from the launcher `resources.infra` (e.g. `aws/us-east-2`),
   not from this profile.
 
