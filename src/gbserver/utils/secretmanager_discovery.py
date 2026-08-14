@@ -49,10 +49,22 @@ def discover_secret_managers(
     """
     if len(registry) != 0:
         return
+    # Import locally to avoid a hard import-time dependency and keep parity with
+    # the other subsystems, which import the registrar lazily too.
+    from gbcommon.plugins import (
+        GROUP_SECRET_MANAGERS,
+        PluginRegistrar,
+        keys_by_name_lower,
+    )
+
     package_dir = os.path.dirname(package_file)
     base_name = base_class.__name__  # e.g. "UserSecretManager"
     suffix = base_name.lower()  # e.g. "usersecretmanager"
     self_module = os.path.basename(package_file)
+
+    # Key = the discovered name lowercased (module <key> prefix in-tree,
+    # entry-point name for plugins). Both passes register through this registrar.
+    registrar = PluginRegistrar(registry, f"{base_name} key", keys_by_name_lower)
 
     for filename in os.listdir(package_dir):
         if not filename.endswith(".py"):
@@ -78,7 +90,7 @@ def discover_secret_managers(
             if isinstance(handler_class, type) and issubclass(
                 handler_class, base_class
             ):
-                registry[key_name] = handler_class
+                registrar.add(handler_class, key_name)
             else:
                 logger.error(
                     "Ignoring %s since it is not a subclass of %s",
@@ -89,3 +101,9 @@ def discover_secret_managers(
             logger.error("Error importing module %s: %s", type_name, e)
         except Exception as e:
             logger.error("Error loading secret manager type from %s: %s", type_name, e)
+
+    # Discover secret managers shipped by separately-installed plugin packages.
+    # Runs after the in-tree scan so the core-wins rule protects built-ins. The
+    # one group feeds both the Space and User families — the ``issubclass``
+    # filter in ``discover`` routes each class to the family it belongs to.
+    registrar.discover(GROUP_SECRET_MANAGERS, base_class)
