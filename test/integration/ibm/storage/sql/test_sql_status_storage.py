@@ -3,6 +3,8 @@ import os
 import pytest
 from libgbtest.storage.status_storage import (
     BaseStatusStorageTest,
+)
+from libgbtest.storage.status_storage import (
     TestStatusValueMethods as _TestStatusValueMethods,
 )
 

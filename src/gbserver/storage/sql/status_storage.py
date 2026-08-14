@@ -18,8 +18,8 @@
 SQL storage implementation for the generic gb_status key-value store.
 """
 
-from gbserver.storage.status_storage import BaseStatusStorage, IStatusStorage
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
+from gbserver.storage.status_storage import BaseStatusStorage, IStatusStorage
 from gbserver.storage.stored_status import StoredStatus
 
 
