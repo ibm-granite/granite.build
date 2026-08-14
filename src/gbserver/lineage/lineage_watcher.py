@@ -262,6 +262,11 @@ class LineageWatcher:
                 storage,
                 finished_after=datetime.min,
                 build_id=build_id,
+                # Same durable drop set the steady-state scan honours: a target
+                # already dropped for exceeding _MAX_RECORD_ATTEMPTS must not be
+                # re-attempted here, or every restart would burn the attempt
+                # budget again and block checkpoint advancement for the sweep.
+                skip=self._dropped,
                 on_error=_on_error,
             )
 
