@@ -88,7 +88,7 @@ class _StubStatusStorage:
 
 
 def _seed(storage, build_id: str, finished_at: datetime) -> None:
-    """Write the lineage checkpoint, the way ``gbserver lineage-seed`` does."""
+    """Write the lineage checkpoint, the way ``lineage-watch --seed`` does."""
     storage.status_storage.set_value(
         LINEAGE_WATCHER_CHECKPOINT_KEY,
         {"build_id": build_id, "finished_at": finished_at.isoformat()},

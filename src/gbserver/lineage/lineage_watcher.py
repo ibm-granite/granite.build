@@ -68,7 +68,7 @@ class LineageWatcher:
 
     The checkpoint is never created implicitly: with no checkpoint the watcher
     records *nothing* and every scan is a no-op until the key is seeded
-    explicitly (see ``gbserver lineage-seed``). Choosing where centralized
+    explicitly (see ``gbserver lineage-watch --seed``). Choosing where centralized
     recording begins — "from now", from a given build, or the full history — is
     the operator's call, so a fresh deployment stays silent rather than picking a
     starting point on its own. When the checkpoint does exist, ``start()``
@@ -198,7 +198,7 @@ class LineageWatcher:
         The checkpoint is never created here, or anywhere else implicitly. When
         ``LINEAGE_WATCHER_CHECKPOINT_KEY`` is absent this is a no-op and so is
         every subsequent scan, until the key is seeded explicitly (see
-        ``gbserver lineage-seed``). Auto-seeding it from the newest successful
+        ``gbserver lineage-watch --seed``). Auto-seeding it from the newest successful
         target would silently pick a starting point for the operator; deciding
         where centralized recording begins — "from now", from a chosen build, or
         the full history — belongs to whoever seeds it, not to whichever process

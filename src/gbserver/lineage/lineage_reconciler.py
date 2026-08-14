@@ -211,8 +211,8 @@ def get_most_recent_successful_target(
 ) -> Optional[StoredTargetRun]:
     """Return the single newest-finished successful target, or ``None``.
 
-    Used by ``gbserver lineage-seed`` to write the LineageWatcher's checkpoint:
-    a single-page, newest-first query rather than the full
+    Used by ``lineage_seeding`` (``gbserver lineage-watch --seed``) to place the
+    LineageWatcher's checkpoint: a single-page, newest-first query rather than the full
     ``select_recordable_targets`` walk, since only the first result is needed.
     Targets with no ``finished_at`` are skipped, mirroring
     ``select_recordable_targets``.
