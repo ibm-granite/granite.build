@@ -54,10 +54,17 @@ class TestGbmcpPolicy:
         assert set(CONFIRMABLE_GBMCP_TOOLS) == _CONFIRMABLE
 
     def test_allowed_tools_are_everything_else(self):
-        assert set(ALLOWED_GBMCP_TOOLS) == set(ALL_GBMCP_TOOLS) - _DISALLOWED - _CONFIRMABLE
+        assert (
+            set(ALLOWED_GBMCP_TOOLS)
+            == set(ALL_GBMCP_TOOLS) - _DISALLOWED - _CONFIRMABLE
+        )
 
     def test_the_three_buckets_partition_all_tools_with_no_overlap(self):
-        allowed, confirmable, disallowed = set(ALLOWED_GBMCP_TOOLS), set(CONFIRMABLE_GBMCP_TOOLS), set(DISALLOWED_GBMCP_TOOLS)
+        allowed, confirmable, disallowed = (
+            set(ALLOWED_GBMCP_TOOLS),
+            set(CONFIRMABLE_GBMCP_TOOLS),
+            set(DISALLOWED_GBMCP_TOOLS),
+        )
         assert allowed & confirmable == set()
         assert allowed & disallowed == set()
         assert confirmable & disallowed == set()
@@ -69,7 +76,9 @@ class TestGbmcpPolicy:
         read-only — so they were never part of the injection-impact concern
         that got build_start/build_cancel/gbserver_stop gated/moved."""
         for tool in ("secret_list", "secret_get", "secret_create", "secret_update"):
-            assert tool in ALLOWED_GBMCP_TOOLS, f"{tool} should still be directly allowed"
+            assert (
+                tool in ALLOWED_GBMCP_TOOLS
+            ), f"{tool} should still be directly allowed"
 
     def test_all_18_known_gbmcp_tools_are_accounted_for(self):
         assert len(ALL_GBMCP_TOOLS) == 18

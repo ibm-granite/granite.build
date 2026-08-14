@@ -92,24 +92,34 @@ class _FakeMcpSession:
 
     async def list_tools(self):
         tool = lambda name: SimpleNamespace(  # noqa: E731
-            name=name, description=f"{name} tool", inputSchema={"type": "object", "properties": {}}
+            name=name,
+            description=f"{name} tool",
+            inputSchema={"type": "object", "properties": {}},
         )
         return SimpleNamespace(tools=[tool("build_start"), tool("gbserver_stop")])
 
     async def call_tool(self, name: str, args: dict):
         self.call_tool_calls.append((name, args))
         if name == "gbserver_stop":
-            return SimpleNamespace(content=[SimpleNamespace(text="gbserver stopped")], isError=False)
-        return SimpleNamespace(content=[SimpleNamespace(text="ERROR: no such space")], isError=True)
+            return SimpleNamespace(
+                content=[SimpleNamespace(text="gbserver stopped")], isError=False
+            )
+        return SimpleNamespace(
+            content=[SimpleNamespace(text="ERROR: no such space")], isError=True
+        )
 
 
 @pytest.fixture
 def backend(monkeypatch):
     stub_provider = _StubProvider()
     monkeypatch.setattr(tool_loop_backend, "_resolve_gbmcp_bin", lambda: "fake-gbmcp")
-    monkeypatch.setattr(tool_loop_backend, "stdio_client", lambda params: _FakeStdioClient())
+    monkeypatch.setattr(
+        tool_loop_backend, "stdio_client", lambda params: _FakeStdioClient()
+    )
     monkeypatch.setattr(tool_loop_backend, "ClientSession", _FakeMcpSession)
-    monkeypatch.setattr(tool_loop_backend, "_build_provider", lambda config, prompt: stub_provider)
+    monkeypatch.setattr(
+        tool_loop_backend, "_build_provider", lambda config, prompt: stub_provider
+    )
     return ToolLoopBackend(Config(_env_file=None))
 
 
@@ -131,7 +141,10 @@ class TestConfirmableToolsAreProposedNotExecuted:
         session = backend._sessions["s1"]
         assert session.mcp_session.call_tool_calls == []
         assert confirmation_id in session.pending_confirmations
-        assert session.pending_confirmations[confirmation_id] == {"action": "build_start", "args": {}}
+        assert session.pending_confirmations[confirmation_id] == {
+            "action": "build_start",
+            "args": {},
+        }
 
 
 @pytest.mark.asyncio
@@ -142,7 +155,12 @@ class TestConfirmAction:
 
         result = await backend.confirm_action("s1", confirmation_id, approved=True)
 
-        assert result == {"found": True, "approved": True, "result": "gbserver stopped", "is_error": False}
+        assert result == {
+            "found": True,
+            "approved": True,
+            "result": "gbserver stopped",
+            "is_error": False,
+        }
         assert session.mcp_session.call_tool_calls == [("gbserver_stop", {})]
         assert confirmation_id not in session.pending_confirmations
         assert "approved the proposed gbserver_stop action" in str(session.history[-1])
@@ -168,15 +186,21 @@ class TestConfirmAction:
         assert confirmation_id not in session.pending_confirmations
         assert "declined the proposed build_start action" in str(session.history[-1])
 
-    async def test_unknown_confirmation_id_returns_found_false_without_raising(self, backend):
+    async def test_unknown_confirmation_id_returns_found_false_without_raising(
+        self, backend
+    ):
         await _propose(backend, "s1", "build_start")  # ensures the session exists
 
         result = await backend.confirm_action("s1", "not-a-real-id", approved=True)
 
         assert result == {"found": False}
 
-    async def test_unknown_session_id_returns_found_false_without_raising(self, backend):
-        result = await backend.confirm_action("no-such-session", "not-a-real-id", approved=True)
+    async def test_unknown_session_id_returns_found_false_without_raising(
+        self, backend
+    ):
+        result = await backend.confirm_action(
+            "no-such-session", "not-a-real-id", approved=True
+        )
 
         assert result == {"found": False}
 
@@ -190,4 +214,6 @@ class TestConfirmAction:
 
         assert first["found"] is True
         assert second == {"found": False}
-        assert backend._sessions["s1"].mcp_session.call_tool_calls == [("gbserver_stop", {})]
+        assert backend._sessions["s1"].mcp_session.call_tool_calls == [
+            ("gbserver_stop", {})
+        ]

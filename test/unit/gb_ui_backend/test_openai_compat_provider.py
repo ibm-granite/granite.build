@@ -31,36 +31,51 @@ import asyncio
 
 import pytest
 
-from gb_ui_backend.services.chat_agents.providers.openai_compat_provider import OpenAICompatProvider
+from gb_ui_backend.services.chat_agents.providers.openai_compat_provider import (
+    OpenAICompatProvider,
+)
 from gb_ui_backend.services.chat_agents.tool_registry import ToolSpec
 
 
 def _make_provider() -> OpenAICompatProvider:
-    return OpenAICompatProvider(base_url="http://fake", api_key="x", model="fake-model", system_prompt="sys")
+    return OpenAICompatProvider(
+        base_url="http://fake", api_key="x", model="fake-model", system_prompt="sys"
+    )
 
 
 @pytest.mark.asyncio
 class TestInterruptRollsBackHistory:
-    async def test_interrupt_during_model_call_leaves_history_at_pre_turn_state(self, monkeypatch):
+    async def test_interrupt_during_model_call_leaves_history_at_pre_turn_state(
+        self, monkeypatch
+    ):
         provider = _make_provider()
         interrupt_event = asyncio.Event()
 
         async def slow_chat_completion(**kwargs):
             interrupt_event.set()  # simulate POST /chat/stop firing while the model call is in flight
-            await asyncio.sleep(10)  # would hang the test if race_interrupt didn't cancel this
+            await asyncio.sleep(
+                10
+            )  # would hang the test if race_interrupt didn't cancel this
             raise AssertionError("should have been cancelled before this ever resolved")
 
         monkeypatch.setattr(provider._client, "chat_completion", slow_chat_completion)
 
         history: list = []
-        events = [e async for e in provider.run_turn(history, [], "hello", asyncio.Queue(), interrupt_event)]
+        events = [
+            e
+            async for e in provider.run_turn(
+                history, [], "hello", asyncio.Queue(), interrupt_event
+            )
+        ]
 
         # Only the bootstrap system message survives — the user message this
         # turn added gets rolled back, not left dangling with no reply.
         assert history == [{"role": "system", "content": "sys"}]
         assert events == []
 
-    async def test_interrupt_during_tool_call_leaves_history_at_pre_turn_state(self, monkeypatch):
+    async def test_interrupt_during_tool_call_leaves_history_at_pre_turn_state(
+        self, monkeypatch
+    ):
         provider = _make_provider()
         interrupt_event = asyncio.Event()
 
@@ -71,7 +86,15 @@ class TestInterruptRollsBackHistory:
                         "message": {
                             "role": "assistant",
                             "content": None,
-                            "tool_calls": [{"id": "call_1", "function": {"name": "slow_tool", "arguments": "{}"}}],
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "slow_tool",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ],
                         }
                     }
                 ]
@@ -84,20 +107,29 @@ class TestInterruptRollsBackHistory:
             await asyncio.sleep(10)
             raise AssertionError("should have been cancelled before this ever resolved")
 
-        tool = ToolSpec(name="slow_tool", description="", parameters={}, handler=slow_handler)
+        tool = ToolSpec(
+            name="slow_tool", description="", parameters={}, handler=slow_handler
+        )
 
         history: list = []
         events = [
-            e async for e in provider.run_turn(history, [tool], "hello", asyncio.Queue(), interrupt_event)
+            e
+            async for e in provider.run_turn(
+                history, [tool], "hello", asyncio.Queue(), interrupt_event
+            )
         ]
 
         # Rolled back past the assistant's tool_use message too — not just
         # the user message — so there's no orphaned tool_call with no
         # matching tool result left behind.
         assert history == [{"role": "system", "content": "sys"}]
-        assert events == [{"type": "tool_call", "tool_name": "slow_tool", "tool_input": {}}]
+        assert events == [
+            {"type": "tool_call", "tool_name": "slow_tool", "tool_input": {}}
+        ]
 
-    async def test_malformed_tool_call_missing_id_and_name_does_not_crash(self, monkeypatch):
+    async def test_malformed_tool_call_missing_id_and_name_does_not_crash(
+        self, monkeypatch
+    ):
         """A non-compliant OpenAI-compatible endpoint (this provider's whole
         point is supporting less-standardized ones) can return a tool_call
         missing `id`/`function.name` — that must degrade to a clean tool
@@ -111,7 +143,13 @@ class TestInterruptRollsBackHistory:
             if call_count == 1:
                 return {
                     "choices": [
-                        {"message": {"role": "assistant", "content": None, "tool_calls": [{"function": {}}]}}
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [{"function": {}}],
+                            }
+                        }
                     ]
                 }
             # Second round: no further tool calls, so the loop ends naturally
@@ -123,16 +161,24 @@ class TestInterruptRollsBackHistory:
         history: list = []
         events = [
             e
-            async for e in provider.run_turn(history, [], "hello", asyncio.Queue(), asyncio.Event())
+            async for e in provider.run_turn(
+                history, [], "hello", asyncio.Queue(), asyncio.Event()
+            )
         ]
 
         assert events == [
             {"type": "tool_call", "tool_name": "<missing tool name>", "tool_input": {}},
             {"type": "text_delta", "text": "done"},
         ]
-        assert {"role": "tool", "tool_call_id": "", "content": "Unknown tool '<missing tool name>'"} in history
+        assert {
+            "role": "tool",
+            "tool_call_id": "",
+            "content": "Unknown tool '<missing tool name>'",
+        } in history
 
-    async def test_invalid_json_arguments_still_yields_a_tool_call_event(self, monkeypatch):
+    async def test_invalid_json_arguments_still_yields_a_tool_call_event(
+        self, monkeypatch
+    ):
         """Regression: the invalid-JSON branch used to append straight to
         history and `continue`, skipping the tool_call event every other
         failure mode (unknown tool, handler exception) yields. That left a
@@ -153,7 +199,13 @@ class TestInterruptRollsBackHistory:
                                 "role": "assistant",
                                 "content": None,
                                 "tool_calls": [
-                                    {"id": "call_1", "function": {"name": "build_status", "arguments": "{bad json"}}
+                                    {
+                                        "id": "call_1",
+                                        "function": {
+                                            "name": "build_status",
+                                            "arguments": "{bad json",
+                                        },
+                                    }
                                 ],
                             }
                         }
@@ -165,7 +217,12 @@ class TestInterruptRollsBackHistory:
         monkeypatch.setattr(provider._client, "chat_completion", fake_chat_completion)
 
         history: list = []
-        events = [e async for e in provider.run_turn(history, [], "hello", asyncio.Queue(), asyncio.Event())]
+        events = [
+            e
+            async for e in provider.run_turn(
+                history, [], "hello", asyncio.Queue(), asyncio.Event()
+            )
+        ]
 
         assert events == [
             {"type": "tool_call", "tool_name": "build_status", "tool_input": {}},

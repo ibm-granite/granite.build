@@ -34,7 +34,14 @@ MAX_TOKENS = 4096
 
 def _to_openai_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
     return [
-        {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+            },
+        }
         for t in tools
     ]
 
@@ -44,7 +51,9 @@ class OpenAICompatProvider:
     # so the frontend can show which model/provider is actually running.
     PROVIDER_NAME = "openai_compatible"
 
-    def __init__(self, base_url: str, api_key: str, model: str, system_prompt: str) -> None:
+    def __init__(
+        self, base_url: str, api_key: str, model: str, system_prompt: str
+    ) -> None:
         self._client = LLMClient(base_url=base_url, api_key=api_key, models=[model])
         self.model = model
         self._system_prompt = system_prompt
@@ -70,7 +79,9 @@ class OpenAICompatProvider:
         try:
             for _ in range(MAX_TOOL_ROUNDS):
                 response = await race_interrupt(
-                    self._client.chat_completion(messages=history, max_tokens=MAX_TOKENS, tools=openai_tools),
+                    self._client.chat_completion(
+                        messages=history, max_tokens=MAX_TOKENS, tools=openai_tools
+                    ),
                     interrupt_event,
                 )
 
@@ -106,7 +117,11 @@ class OpenAICompatProvider:
                         args = {}
                         content = f"Invalid JSON arguments: {raw_arguments!r}"
 
-                    yield {"type": "tool_call", "tool_name": tool_name, "tool_input": args}
+                    yield {
+                        "type": "tool_call",
+                        "tool_name": tool_name,
+                        "tool_input": args,
+                    }
 
                     if content is None:
                         tool = tool_by_name.get(tool_name)
@@ -118,17 +133,28 @@ class OpenAICompatProvider:
                                 # can run for up to 30 minutes; without this,
                                 # /chat/stop would only take effect once it
                                 # finished on its own.
-                                content = str(await race_interrupt(tool.handler(args), interrupt_event))
+                                content = str(
+                                    await race_interrupt(
+                                        tool.handler(args), interrupt_event
+                                    )
+                                )
                             except InterruptedError:
                                 raise  # let the outer handler roll history back — don't treat this as a tool error
-                            except Exception as exc:  # noqa: BLE001 - surfaced to the model as a tool error, not raised
+                            except (
+                                Exception
+                            ) as exc:  # noqa: BLE001 - surfaced to the model as a tool error, not raised
                                 content = str(exc)
 
-                    history.append({"role": "tool", "tool_call_id": call_id, "content": content})
+                    history.append(
+                        {"role": "tool", "tool_call_id": call_id, "content": content}
+                    )
                     while not event_queue.empty():
                         yield event_queue.get_nowait()
 
-            logger.warning("OpenAI-compatible tool-calling loop hit MAX_TOOL_ROUNDS=%d without finishing", MAX_TOOL_ROUNDS)
+            logger.warning(
+                "OpenAI-compatible tool-calling loop hit MAX_TOOL_ROUNDS=%d without finishing",
+                MAX_TOOL_ROUNDS,
+            )
             yield {
                 "type": "error",
                 "message": f"Stopped after {MAX_TOOL_ROUNDS} tool-calling rounds without a final answer.",

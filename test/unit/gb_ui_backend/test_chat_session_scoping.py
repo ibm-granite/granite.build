@@ -33,15 +33,21 @@ from types import SimpleNamespace
 from gb_ui_backend.api.chat import _resolve_identity, _scoped_session_id
 
 
-def _fake_request(user_email: str | None = None, header_email: str | None = None) -> SimpleNamespace:
-    state = SimpleNamespace(data={"user": SimpleNamespace(email=user_email)} if user_email else {})
+def _fake_request(
+    user_email: str | None = None, header_email: str | None = None
+) -> SimpleNamespace:
+    state = SimpleNamespace(
+        data={"user": SimpleNamespace(email=user_email)} if user_email else {}
+    )
     headers = {"x-user-email": header_email} if header_email else {}
     return SimpleNamespace(state=state, headers=headers)
 
 
 class TestResolveIdentity:
     def test_trusted_authmiddleware_user_wins_over_header(self):
-        request = _fake_request(user_email="alice@example.com", header_email="bob@example.com")
+        request = _fake_request(
+            user_email="alice@example.com", header_email="bob@example.com"
+        )
         assert _resolve_identity(request) == "alice@example.com"
 
     def test_header_is_a_fallback_when_no_authmiddleware_user(self):
@@ -62,14 +68,18 @@ class TestScopedSessionId:
         alice_request = _fake_request(user_email="alice@example.com")
         bob_request = _fake_request(user_email="bob@example.com")
 
-        assert _scoped_session_id(alice_request, raw_id) != _scoped_session_id(bob_request, raw_id)
+        assert _scoped_session_id(alice_request, raw_id) != _scoped_session_id(
+            bob_request, raw_id
+        )
 
     def test_same_identity_and_raw_id_scopes_identically(self):
         raw_id = "11111111-1111-1111-1111-111111111111"
         request_a = _fake_request(user_email="alice@example.com")
         request_b = _fake_request(user_email="alice@example.com")
 
-        assert _scoped_session_id(request_a, raw_id) == _scoped_session_id(request_b, raw_id)
+        assert _scoped_session_id(request_a, raw_id) == _scoped_session_id(
+            request_b, raw_id
+        )
 
     def test_standalone_mode_still_scopes_by_the_shared_sentinel(self):
         """Standalone/apikey mode has no per-user identity at all — this is

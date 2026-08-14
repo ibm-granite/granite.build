@@ -162,8 +162,12 @@ class Config(BaseSettings):
         # OpenAI-compatible endpoint (RITS, Ollama, ...) also enables chat —
         # see tool_loop_backend.py's provider-selection precedence (Anthropic
         # wins if both are configured).
-        has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY")) or bool(os.environ.get("ANTHROPIC_AUTH_TOKEN"))
-        has_openai_compat = bool(self.resolved_chat_llm_base_url and self.resolved_chat_llm_api_key)
+        has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY")) or bool(
+            os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        )
+        has_openai_compat = bool(
+            self.resolved_chat_llm_base_url and self.resolved_chat_llm_api_key
+        )
         return has_anthropic or has_openai_compat
 
 

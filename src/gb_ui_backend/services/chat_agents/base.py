@@ -14,7 +14,13 @@ from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Literal, TypedDict
 
 NormalizedEventType = Literal[
-    "text_delta", "tool_call", "tool_result", "ui_action", "confirm_action", "done", "error"
+    "text_delta",
+    "tool_call",
+    "tool_result",
+    "ui_action",
+    "confirm_action",
+    "done",
+    "error",
 ]
 
 
@@ -80,7 +86,9 @@ class ChatAgentBackend(ABC):
         different key set — the frontend only shows what's present."""
 
     @abstractmethod
-    async def confirm_action(self, session_id: str, confirmation_id: str, approved: bool) -> dict[str, Any]:
+    async def confirm_action(
+        self, session_id: str, confirmation_id: str, approved: bool
+    ) -> dict[str, Any]:
         """Resolve a pending confirm_action proposal (see NormalizedEvent's
         confirmation_id) — approved executes the real action outside the
         model loop entirely; declined discards it. Either way, a note about

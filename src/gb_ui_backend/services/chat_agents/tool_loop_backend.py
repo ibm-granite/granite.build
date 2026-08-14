@@ -31,7 +31,10 @@ from gb_ui_backend.services.chat_agents.tool_registry import (
     build_gbmcp_tools,
     build_navigation_tool,
 )
-from gb_ui_backend.services.chat_agents.ui_actions import NAVIGABLE_ROUTES, describe_current_page
+from gb_ui_backend.services.chat_agents.ui_actions import (
+    NAVIGABLE_ROUTES,
+    describe_current_page,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +50,9 @@ DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"
 NAVIGATION_TOOL_NAME = "suggest_navigation"
 IDLE_EVICTION_SECONDS = 30 * 60
 
-_ROUTE_MAP_TEXT = "\n".join(f"- {key}: {entry['description']}" for key, entry in NAVIGABLE_ROUTES.items())
+_ROUTE_MAP_TEXT = "\n".join(
+    f"- {key}: {entry['description']}" for key, entry in NAVIGABLE_ROUTES.items()
+)
 
 
 def _build_system_prompt(cloud_logs_available: bool) -> str:
@@ -113,7 +118,9 @@ Keep responses concise.
 """
 
 
-def _build_augmented_message(user_message: str, page_pathname: str | None, page_search: str | None) -> str:
+def _build_augmented_message(
+    user_message: str, page_pathname: str | None, page_search: str | None
+) -> str:
     """Prepends a bracketed, clearly-labeled note describing the frontend page
     the user is currently viewing — passive browser-awareness context, never
     part of what the user actually typed. Both providers see the exact same
@@ -155,12 +162,19 @@ def _build_provider(config: Config, system_prompt: str) -> ModelProvider:
     the explicit opt-in to use Claude instead of whatever OpenAI-compatible
     endpoint (RITS, Ollama, ...) is otherwise configured."""
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
-        from gb_ui_backend.services.chat_agents.providers.anthropic_provider import AnthropicProvider
+        from gb_ui_backend.services.chat_agents.providers.anthropic_provider import (
+            AnthropicProvider,
+        )
 
-        return AnthropicProvider(model=config.chat_model or DEFAULT_ANTHROPIC_MODEL, system_prompt=system_prompt)
+        return AnthropicProvider(
+            model=config.chat_model or DEFAULT_ANTHROPIC_MODEL,
+            system_prompt=system_prompt,
+        )
 
     if config.resolved_chat_llm_base_url and config.resolved_chat_llm_api_key:
-        from gb_ui_backend.services.chat_agents.providers.openai_compat_provider import OpenAICompatProvider
+        from gb_ui_backend.services.chat_agents.providers.openai_compat_provider import (
+            OpenAICompatProvider,
+        )
 
         models = config.llm_models_list
         model = config.chat_model or (models[0] if models else "")
@@ -227,7 +241,9 @@ class _Session:
 class ToolLoopBackend(ChatAgentBackend):
     def __init__(self, config: Config) -> None:
         if not _MCP_AVAILABLE:
-            raise RuntimeError("mcp is not installed. Install it with `pip install -e '.[chat]'`.")
+            raise RuntimeError(
+                "mcp is not installed. Install it with `pip install -e '.[chat]'`."
+            )
         self._config = config
         self._sessions: dict[str, _Session] = {}
         self._lock = asyncio.Lock()
@@ -236,7 +252,9 @@ class ToolLoopBackend(ChatAgentBackend):
         # stateless aside from credentials/model/system_prompt (all
         # backend-wide config); per-session state (history, tools, the gbmcp
         # connection) lives on _Session instead.
-        self._provider = _build_provider(config, _build_system_prompt(cloud_logs_available))
+        self._provider = _build_provider(
+            config, _build_system_prompt(cloud_logs_available)
+        )
 
     async def _get_or_create_session(self, session_id: str) -> _Session:
         async with self._lock:
@@ -249,17 +267,23 @@ class ToolLoopBackend(ChatAgentBackend):
             stack = AsyncExitStack()
             try:
                 params = StdioServerParameters(
-                    command=_resolve_gbmcp_bin(), args=[], env={"GBSERVER_PORT": _gbserver_port(self._config)}
+                    command=_resolve_gbmcp_bin(),
+                    args=[],
+                    env={"GBSERVER_PORT": _gbserver_port(self._config)},
                 )
                 read, write = await stack.enter_async_context(stdio_client(params))
-                mcp_session = await stack.enter_async_context(ClientSession(read, write))
+                mcp_session = await stack.enter_async_context(
+                    ClientSession(read, write)
+                )
                 await mcp_session.initialize()
 
                 event_queue: "asyncio.Queue[NormalizedEvent]" = asyncio.Queue()
                 pending_confirmations: dict[str, dict] = {}
                 tools = (
                     await build_gbmcp_tools(mcp_session)
-                    + await build_confirmable_gbmcp_tools(mcp_session, event_queue, pending_confirmations)
+                    + await build_confirmable_gbmcp_tools(
+                        mcp_session, event_queue, pending_confirmations
+                    )
                     + [build_navigation_tool(event_queue)]
                     + build_dashboard_tools(self._config)
                 )
@@ -280,12 +304,18 @@ class ToolLoopBackend(ChatAgentBackend):
     async def _evict_idle_sessions_locked(self) -> None:
         """Caller must hold self._lock."""
         now = time.monotonic()
-        stale_ids = [sid for sid, s in self._sessions.items() if now - s.last_used > IDLE_EVICTION_SECONDS]
+        stale_ids = [
+            sid
+            for sid, s in self._sessions.items()
+            if now - s.last_used > IDLE_EVICTION_SECONDS
+        ]
         for sid in stale_ids:
             session = self._sessions.pop(sid)
             try:
                 await session.stack.aclose()
-            except Exception:  # noqa: BLE001 - best-effort cleanup of an idle subprocess
+            except (
+                Exception
+            ):  # noqa: BLE001 - best-effort cleanup of an idle subprocess
                 logger.exception("Error closing idle chat session %s", sid)
 
     async def create_session(self, session_id: str) -> None:
@@ -312,7 +342,9 @@ class ToolLoopBackend(ChatAgentBackend):
         session.interrupt_event.set()
         return True
 
-    async def confirm_action(self, session_id: str, confirmation_id: str, approved: bool) -> dict:
+    async def confirm_action(
+        self, session_id: str, confirmation_id: str, approved: bool
+    ) -> dict:
         async with self._lock:
             session = self._sessions.get(session_id)
         if session is None:
@@ -331,7 +363,10 @@ class ToolLoopBackend(ChatAgentBackend):
 
             if not approved:
                 session.history.append(
-                    {"role": "user", "content": f"[The user declined the proposed {action} action]"}
+                    {
+                        "role": "user",
+                        "content": f"[The user declined the proposed {action} action]",
+                    }
                 )
                 return {"found": True, "approved": False}
 
@@ -340,7 +375,11 @@ class ToolLoopBackend(ChatAgentBackend):
                 text = _extract_mcp_result_text(result)
                 is_error = result.isError
             except Exception as exc:  # noqa: BLE001 - reported back, not raised
-                logger.exception("Error executing confirmed action %s for session %s", action, session_id)
+                logger.exception(
+                    "Error executing confirmed action %s for session %s",
+                    action,
+                    session_id,
+                )
                 text = str(exc)
                 is_error = True
 
@@ -351,7 +390,12 @@ class ToolLoopBackend(ChatAgentBackend):
                     "content": f"[The user approved the proposed {action} action. It {outcome}. Result: {text}]",
                 }
             )
-            return {"found": True, "approved": True, "result": text, "is_error": is_error}
+            return {
+                "found": True,
+                "approved": True,
+                "result": text,
+                "is_error": is_error,
+            }
 
     async def stream_turn(
         self,
@@ -374,7 +418,9 @@ class ToolLoopBackend(ChatAgentBackend):
         # page context can never leak into another session's turn, and a
         # later turn in the same session with no page context (or a
         # different one) doesn't inherit a stale value.
-        augmented_message = _build_augmented_message(user_message, page_pathname, page_search)
+        augmented_message = _build_augmented_message(
+            user_message, page_pathname, page_search
+        )
 
         # Serializes turns for this session — see _Session.turn_lock. A
         # second overlapping stream_turn() call waits here rather than
@@ -385,7 +431,11 @@ class ToolLoopBackend(ChatAgentBackend):
             session.interrupt_event.clear()
             try:
                 async for event in self._provider.run_turn(
-                    session.history, session.tools, augmented_message, session.event_queue, session.interrupt_event
+                    session.history,
+                    session.tools,
+                    augmented_message,
+                    session.event_queue,
+                    session.interrupt_event,
                 ):
                     yield event
                 yield {"type": "done"}

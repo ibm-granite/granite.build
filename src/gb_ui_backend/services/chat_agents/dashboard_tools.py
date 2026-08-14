@@ -104,7 +104,9 @@ def search_docs(topic: str) -> str:
         target = matches[0] if matches else None
 
     if target is None or not target.is_file():
-        raise DashboardToolError(f"No doc found for topic {topic!r}. Known topics: {', '.join(sorted(DOC_TOPICS))}")
+        raise DashboardToolError(
+            f"No doc found for topic {topic!r}. Known topics: {', '.join(sorted(DOC_TOPICS))}"
+        )
 
     text = target.read_text(encoding="utf-8", errors="replace")
     if len(text) > _MAX_DOC_CHARS:
@@ -127,7 +129,9 @@ async def search_builds(
 ) -> list[dict[str, Any]]:
     source = get_gbserver_source()
     if source is None:
-        raise DashboardToolError("gbserver's build database isn't connected (GB_UI_GBSERVER_DB_URL not set).")
+        raise DashboardToolError(
+            "gbserver's build database isn't connected (GB_UI_GBSERVER_DB_URL not set)."
+        )
 
     builds = await source.list_builds(
         days_back=days_back,
@@ -150,10 +154,14 @@ _MAX_YAML_SCAN_LIMIT = 200  # mirrors search_builds' own cap
 _REGEX_MATCH_TIMEOUT_SECONDS = 2.0
 
 
-async def search_build_yaml(pattern: str, days_back: int = 5, limit: int = 200) -> dict[str, Any]:
+async def search_build_yaml(
+    pattern: str, days_back: int = 5, limit: int = 200
+) -> dict[str, Any]:
     source = get_gbserver_source()
     if source is None:
-        raise DashboardToolError("gbserver's build database isn't connected (GB_UI_GBSERVER_DB_URL not set).")
+        raise DashboardToolError(
+            "gbserver's build database isn't connected (GB_UI_GBSERVER_DB_URL not set)."
+        )
     try:
         regex = re.compile(pattern, re.IGNORECASE)
     except re.error as exc:
@@ -165,7 +173,9 @@ async def search_build_yaml(pattern: str, days_back: int = 5, limit: int = 200) 
 
     # No indexed search exists — build.yaml lives inside a zipped archive
     # column, so this is fetch-and-unzip-per-build, O(N) bounded by limit/days_back.
-    builds, warning = await source.list_builds_for_dp_scan(days_back=days_back, limit=limit)
+    builds, warning = await source.list_builds_for_dp_scan(
+        days_back=days_back, limit=limit
+    )
 
     matches = []
     timed_out_for = []
@@ -181,13 +191,21 @@ async def search_build_yaml(pattern: str, days_back: int = 5, limit: int = 200) 
             # is an acceptable one-off cost here since it's bounded by
             # `limit`, not a growing leak.
             found = await asyncio.wait_for(
-                asyncio.to_thread(regex.search, yaml_content), timeout=_REGEX_MATCH_TIMEOUT_SECONDS
+                asyncio.to_thread(regex.search, yaml_content),
+                timeout=_REGEX_MATCH_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
             timed_out_for.append(b["uuid"])
             continue
         if found:
-            matches.append({"uuid": b["uuid"], "name": b["name"], "status": b["status"], "username": b.get("username")})
+            matches.append(
+                {
+                    "uuid": b["uuid"],
+                    "name": b["name"],
+                    "status": b["status"],
+                    "username": b.get("username"),
+                }
+            )
 
     result: dict[str, Any] = {"matches": matches, "scanned": len(builds)}
     if warning:
@@ -200,15 +218,24 @@ async def search_build_yaml(pattern: str, days_back: int = 5, limit: int = 200) 
 # ── search_build_errors ────────────────────────────────────────────────────────
 
 
-async def search_build_errors(query: str, days_back: int = 7, limit: int = 200) -> list[dict[str, Any]]:
+async def search_build_errors(
+    query: str, days_back: int = 7, limit: int = 200
+) -> list[dict[str, Any]]:
     config = get_config()
     if not config.db_enabled:
-        raise DashboardToolError("AI analysis database isn't configured (GB_UI_DATABASE_URL not set).")
+        raise DashboardToolError(
+            "AI analysis database isn't configured (GB_UI_DATABASE_URL not set)."
+        )
 
     since = datetime.now(timezone.utc) - timedelta(days=days_back)
     q = query.lower()
     async with _get_session_factory()() as session:
-        stmt = select(GbdMeta).where(GbdMeta.created_at >= since).order_by(GbdMeta.created_at.desc()).limit(limit)
+        stmt = (
+            select(GbdMeta)
+            .where(GbdMeta.created_at >= since)
+            .order_by(GbdMeta.created_at.desc())
+            .limit(limit)
+        )
         result = await session.execute(stmt)
         rows = result.scalars().all()
 
@@ -231,7 +258,9 @@ async def search_build_errors(query: str, days_back: int = 7, limit: int = 200) 
 async def get_ai_analysis(build_id: str) -> list[dict[str, Any]]:
     config = get_config()
     if not config.db_enabled:
-        raise DashboardToolError("AI analysis database isn't configured (GB_UI_DATABASE_URL not set).")
+        raise DashboardToolError(
+            "AI analysis database isn't configured (GB_UI_DATABASE_URL not set)."
+        )
     try:
         build_uuid = UUID(build_id)
     except ValueError as exc:
@@ -264,13 +293,19 @@ async def get_ai_analysis(build_id: str) -> list[dict[str, Any]]:
 # ── search_build_logs ──────────────────────────────────────────────────────────
 
 
-async def search_build_logs(build_id: str, search: Optional[str] = None, tail: int = 500) -> list[str]:
+async def search_build_logs(
+    build_id: str, search: Optional[str] = None, tail: int = 500
+) -> list[str]:
     config = get_config()
     if not (config.cloud_logs_url and config.cloud_logs_api_key):
-        raise DashboardToolError("Cloud logs aren't configured (GB_UI_CLOUD_LOGS_URL/API_KEY not set).")
+        raise DashboardToolError(
+            "Cloud logs aren't configured (GB_UI_CLOUD_LOGS_URL/API_KEY not set)."
+        )
 
     client = get_cloud_logs_client(config.cloud_logs_url, config.cloud_logs_api_key)
-    response = await client.query_logs(build_id=build_id, page_size=min(max(tail, 1), 2000))
+    response = await client.query_logs(
+        build_id=build_id, page_size=min(max(tail, 1), 2000)
+    )
     lines = client.parse_logs(response)
     if search:
         needle = search.lower()
@@ -286,7 +321,9 @@ async def compare_builds(build_ids: list[str], days_back: int = 30) -> dict[str,
         raise DashboardToolError("Need at least two build IDs to compare.")
     source = get_gbserver_source()
     if source is None:
-        raise DashboardToolError("gbserver's build database isn't connected (GB_UI_GBSERVER_DB_URL not set).")
+        raise DashboardToolError(
+            "gbserver's build database isn't connected (GB_UI_GBSERVER_DB_URL not set)."
+        )
 
     builds: dict[str, dict[str, Any]] = {}
     for bid in build_ids:
@@ -300,7 +337,9 @@ async def compare_builds(build_ids: list[str], days_back: int = 30) -> dict[str,
     # widens the scan to days_back and matches by ID. Builds older than that
     # window won't have YAML available here; the structured-field diff below
     # still works regardless.
-    scanned, _warning = await source.list_builds_for_dp_scan(days_back=days_back, limit=5000)
+    scanned, _warning = await source.list_builds_for_dp_scan(
+        days_back=days_back, limit=5000
+    )
     yaml_by_id = {b["uuid"]: b.get("yaml_content") for b in scanned}
 
     fields = ["name", "space_name", "username", "status"]
@@ -310,15 +349,15 @@ async def compare_builds(build_ids: list[str], days_back: int = 30) -> dict[str,
     yaml_diffs: dict[str, str] = {}
     for i in range(len(ids_with_yaml)):
         for j in range(i + 1, len(ids_with_yaml)):
-            a, b = ids_with_yaml[i], ids_with_yaml[j]
+            id_a, id_b = ids_with_yaml[i], ids_with_yaml[j]
             diff = difflib.unified_diff(
-                (yaml_by_id[a] or "").splitlines(),
-                (yaml_by_id[b] or "").splitlines(),
-                fromfile=a,
-                tofile=b,
+                (yaml_by_id[id_a] or "").splitlines(),
+                (yaml_by_id[id_b] or "").splitlines(),
+                fromfile=id_a,
+                tofile=id_b,
                 lineterm="",
             )
-            yaml_diffs[f"{a}_vs_{b}"] = "\n".join(diff) or "(identical)"
+            yaml_diffs[f"{id_a}_vs_{id_b}"] = "\n".join(diff) or "(identical)"
 
     result: dict[str, Any] = {"fields": comparison, "yaml_diffs": yaml_diffs}
     missing_yaml = [bid for bid in build_ids if bid not in ids_with_yaml]
@@ -332,14 +371,18 @@ async def compare_builds(build_ids: list[str], days_back: int = 30) -> dict[str,
 _TERMINAL_STATUSES = {"success", "failed", "cancelled", "invalid", "error"}
 
 
-async def wait_for_build(build_id: str, timeout_minutes: int = 15, poll_interval_seconds: int = 15) -> dict[str, Any]:
+async def wait_for_build(
+    build_id: str, timeout_minutes: int = 15, poll_interval_seconds: int = 15
+) -> dict[str, Any]:
     # Capped well below gb_dashboard's 360 min — this runs inside a chat
     # turn's async context, don't let one call hold a session open for hours.
     timeout_minutes = min(max(timeout_minutes, 1), 30)
     poll_interval_seconds = max(poll_interval_seconds, 10)
     source = get_gbserver_source()
     if source is None:
-        raise DashboardToolError("gbserver's build database isn't connected (GB_UI_GBSERVER_DB_URL not set).")
+        raise DashboardToolError(
+            "gbserver's build database isn't connected (GB_UI_GBSERVER_DB_URL not set)."
+        )
 
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout_minutes * 60
@@ -378,7 +421,9 @@ async def list_artifacts(
         params["tag"] = tag
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(f"{config.gbserver_url}/api/v1/artifacts/", params=params)
+        resp = await client.get(
+            f"{config.gbserver_url}/api/v1/artifacts/", params=params
+        )
         resp.raise_for_status()
         data = resp.json()
     return data.get("artifacts", [])

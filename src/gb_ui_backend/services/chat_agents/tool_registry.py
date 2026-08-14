@@ -22,8 +22,14 @@ from mcp import ClientSession
 from gb_ui_backend.config import Config
 from gb_ui_backend.services.chat_agents import dashboard_tools
 from gb_ui_backend.services.chat_agents.base import NormalizedEvent
-from gb_ui_backend.services.chat_agents.gbmcp_policy import ALLOWED_GBMCP_TOOLS, CONFIRMABLE_GBMCP_TOOLS
-from gb_ui_backend.services.chat_agents.ui_actions import NAVIGABLE_ROUTES, build_navigation_route
+from gb_ui_backend.services.chat_agents.gbmcp_policy import (
+    ALLOWED_GBMCP_TOOLS,
+    CONFIRMABLE_GBMCP_TOOLS,
+)
+from gb_ui_backend.services.chat_agents.ui_actions import (
+    NAVIGABLE_ROUTES,
+    build_navigation_route,
+)
 
 ToolHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
@@ -33,7 +39,9 @@ class ToolSpec:
     name: str
     description: str
     parameters: dict[str, Any]  # JSON schema
-    handler: ToolHandler  # raises on failure; callers turn that into a tool-error result
+    handler: (
+        ToolHandler  # raises on failure; callers turn that into a tool-error result
+    )
 
 
 class ModelProvider(Protocol):
@@ -58,7 +66,9 @@ class ModelProvider(Protocol):
         user_message: str,
         event_queue: "asyncio.Queue[NormalizedEvent]",
         interrupt_event: asyncio.Event,
-    ) -> Any:  # AsyncIterator[NormalizedEvent] — Protocol can't spell this precisely for a generator method
+    ) -> (
+        Any
+    ):  # AsyncIterator[NormalizedEvent] — Protocol can't spell this precisely for a generator method
         ...
 
 
@@ -70,7 +80,9 @@ async def race_interrupt(coro: Awaitable[Any], interrupt_event: asyncio.Event) -
     task: asyncio.Task = asyncio.ensure_future(coro)
     interrupt_task = asyncio.ensure_future(interrupt_event.wait())
     try:
-        done, _pending = await asyncio.wait({task, interrupt_task}, return_when=asyncio.FIRST_COMPLETED)
+        done, _pending = await asyncio.wait(
+            {task, interrupt_task}, return_when=asyncio.FIRST_COMPLETED
+        )
         if task in done:
             return task.result()
         raise InterruptedError("Chat turn interrupted")
@@ -190,7 +202,9 @@ def build_navigation_tool(event_queue: "asyncio.Queue[NormalizedEvent]") -> Tool
         # normal tool-error result the model can see and react to, using the
         # already-descriptive message build_navigation_route constructs.
         result = build_navigation_route(page, reason, **params)
-        await event_queue.put({"type": "ui_action", "route": result["route"], "label": result["label"]})
+        await event_queue.put(
+            {"type": "ui_action", "route": result["route"], "label": result["label"]}
+        )
         return f"Proposed navigating to {result['route']}: {reason}"
 
     return ToolSpec(
@@ -223,7 +237,9 @@ def build_navigation_tool(event_queue: "asyncio.Queue[NormalizedEvent]") -> Tool
     )
 
 
-def _wrap(name: str, description: str, parameters: dict[str, Any], fn: Callable[..., Any]) -> ToolSpec:
+def _wrap(
+    name: str, description: str, parameters: dict[str, Any], fn: Callable[..., Any]
+) -> ToolSpec:
     async def handler(args: dict[str, Any]) -> Any:
         try:
             result = fn(**args)
@@ -231,7 +247,9 @@ def _wrap(name: str, description: str, parameters: dict[str, Any], fn: Callable[
         except dashboard_tools.DashboardToolError as exc:
             raise RuntimeError(str(exc)) from exc
 
-    return ToolSpec(name=name, description=description, parameters=parameters, handler=handler)
+    return ToolSpec(
+        name=name, description=description, parameters=parameters, handler=handler
+    )
 
 
 def build_dashboard_tools(config: Config) -> list[ToolSpec]:
@@ -263,8 +281,14 @@ def build_dashboard_tools(config: Config) -> list[ToolSpec]:
             {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Text to match against build name"},
-                    "status": {"type": "string", "description": "e.g. running, success, failed"},
+                    "query": {
+                        "type": "string",
+                        "description": "Text to match against build name",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "e.g. running, success, failed",
+                    },
                     "user": {"type": "string", "description": "Username to filter by"},
                     "space_name": {"type": "string"},
                     "days_back": {"type": "integer", "description": "Default 30"},
@@ -282,7 +306,10 @@ def build_dashboard_tools(config: Config) -> list[ToolSpec]:
             {
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regex pattern to search for",
+                    },
                     "days_back": {"type": "integer", "description": "Default 5"},
                     "limit": {"type": "integer", "description": "Default 200"},
                 },
@@ -307,7 +334,11 @@ def build_dashboard_tools(config: Config) -> list[ToolSpec]:
         _wrap(
             "get_ai_analysis",
             "Fetch stored AI analysis (root cause, summary, suggested action) for one build.",
-            {"type": "object", "properties": {"build_id": {"type": "string"}}, "required": ["build_id"]},
+            {
+                "type": "object",
+                "properties": {"build_id": {"type": "string"}},
+                "required": ["build_id"],
+            },
             dashboard_tools.get_ai_analysis,
         ),
         _wrap(
@@ -316,8 +347,15 @@ def build_dashboard_tools(config: Config) -> list[ToolSpec]:
             {
                 "type": "object",
                 "properties": {
-                    "build_ids": {"type": "array", "items": {"type": "string"}, "minItems": 2},
-                    "days_back": {"type": "integer", "description": "YAML lookup window, default 30"},
+                    "build_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 2,
+                    },
+                    "days_back": {
+                        "type": "integer",
+                        "description": "YAML lookup window, default 30",
+                    },
                 },
                 "required": ["build_ids"],
             },
@@ -330,8 +368,14 @@ def build_dashboard_tools(config: Config) -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "build_id": {"type": "string"},
-                    "timeout_minutes": {"type": "integer", "description": "Default 15, max 30"},
-                    "poll_interval_seconds": {"type": "integer", "description": "Default 15, min 10"},
+                    "timeout_minutes": {
+                        "type": "integer",
+                        "description": "Default 15, max 30",
+                    },
+                    "poll_interval_seconds": {
+                        "type": "integer",
+                        "description": "Default 15, min 10",
+                    },
                 },
                 "required": ["build_id"],
             },
@@ -354,7 +398,11 @@ def build_dashboard_tools(config: Config) -> list[ToolSpec]:
         _wrap(
             "describe_artifact",
             "Fetch full metadata for one artifact by ID (URI, checksum, tags, lineage).",
-            {"type": "object", "properties": {"artifact_id": {"type": "string"}}, "required": ["artifact_id"]},
+            {
+                "type": "object",
+                "properties": {"artifact_id": {"type": "string"}},
+                "required": ["artifact_id"],
+            },
             dashboard_tools.describe_artifact,
         ),
     ]
@@ -369,8 +417,14 @@ def build_dashboard_tools(config: Config) -> list[ToolSpec]:
                     "type": "object",
                     "properties": {
                         "build_id": {"type": "string"},
-                        "search": {"type": "string", "description": "Substring to filter for"},
-                        "tail": {"type": "integer", "description": "Max lines to return, default 500"},
+                        "search": {
+                            "type": "string",
+                            "description": "Substring to filter for",
+                        },
+                        "tail": {
+                            "type": "integer",
+                            "description": "Max lines to return, default 500",
+                        },
                     },
                     "required": ["build_id"],
                 },

@@ -129,7 +129,11 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     backend = get_backend()
     session_id = _scoped_session_id(request, body.session_id)
     return StreamingResponse(
-        _sse_encode(backend.stream_turn(session_id, body.message, body.page_pathname, body.page_search)),
+        _sse_encode(
+            backend.stream_turn(
+                session_id, body.message, body.page_pathname, body.page_search
+            )
+        ),
         media_type="text/event-stream",
     )
 
@@ -141,12 +145,16 @@ async def chat_stop(body: ChatStopRequest, request: Request) -> ChatStopResponse
         raise HTTPException(status_code=503, detail="Chat assistant is not configured")
 
     backend = get_backend()
-    interrupted = await backend.interrupt_session(_scoped_session_id(request, body.session_id))
+    interrupted = await backend.interrupt_session(
+        _scoped_session_id(request, body.session_id)
+    )
     return ChatStopResponse(interrupted=interrupted)
 
 
 @router.post("/confirm", response_model=ChatConfirmResponse)
-async def chat_confirm(body: ChatConfirmRequest, request: Request) -> ChatConfirmResponse:
+async def chat_confirm(
+    body: ChatConfirmRequest, request: Request
+) -> ChatConfirmResponse:
     """Resolves a pending confirm_action proposal (see base.py's
     NormalizedEvent.confirmation_id) — approved executes the real gbmcp
     action outside the model loop; declined discards it. found=False is a
@@ -164,5 +172,7 @@ async def chat_confirm(body: ChatConfirmRequest, request: Request) -> ChatConfir
 
     backend = get_backend()
     session_id = _scoped_session_id(request, body.session_id)
-    result = await backend.confirm_action(session_id, body.confirmation_id, body.approved)
+    result = await backend.confirm_action(
+        session_id, body.confirmation_id, body.approved
+    )
     return ChatConfirmResponse(**result)

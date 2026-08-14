@@ -91,10 +91,14 @@ def build_navigation_route(page: str, reason: str, **params: str) -> dict[str, s
     """
     entry = NAVIGABLE_ROUTES.get(page)
     if entry is None:
-        raise UnknownPageError(f"Unknown page {page!r}. Valid pages: {sorted(NAVIGABLE_ROUTES)}")
+        raise UnknownPageError(
+            f"Unknown page {page!r}. Valid pages: {sorted(NAVIGABLE_ROUTES)}"
+        )
     missing = [p for p in entry["params"] if p not in params]
     if missing:
-        raise MissingRouteParamsError(f"Missing required params for {page!r}: {missing}")
+        raise MissingRouteParamsError(
+            f"Missing required params for {page!r}: {missing}"
+        )
     route = entry["template"].format(**params)
     return {"route": route, "label": reason}
 

@@ -70,5 +70,7 @@ CONFIRMABLE_GBMCP_TOOLS: list[str] = ["build_start", "gbserver_stop"]
 
 # Auto-approved without a permission prompt — everything except the tools above.
 ALLOWED_GBMCP_TOOLS: list[str] = [
-    t for t in ALL_GBMCP_TOOLS if t not in DISALLOWED_GBMCP_TOOLS and t not in CONFIRMABLE_GBMCP_TOOLS
+    t
+    for t in ALL_GBMCP_TOOLS
+    if t not in DISALLOWED_GBMCP_TOOLS and t not in CONFIRMABLE_GBMCP_TOOLS
 ]
