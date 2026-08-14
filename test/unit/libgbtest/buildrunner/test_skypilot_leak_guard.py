@@ -84,3 +84,40 @@ def test_should_fail_only_when_leaked_and_passed():
     assert guard._should_fail(set(), passed) is False
     assert guard._should_fail({"gb-x"}, failed) is False
     assert guard._should_fail({"gb-x"}, None) is False
+
+
+def _req(passed):
+    """Fake pytest request node carrying a rep_call with the given outcome."""
+    node = types.SimpleNamespace(rep_call=types.SimpleNamespace(passed=passed))
+    return types.SimpleNamespace(node=node)
+
+
+def test_leak_guard_fails_when_leaked_and_test_passed(monkeypatch):
+    fake = _install(monkeypatch, [])          # nothing up before
+    gen = guard._leak_guard(_req(passed=True))
+    next(gen)                                 # setup: snapshot (empty)
+    fake.add("gb-leak")                        # a cluster appears during the test
+    with pytest.raises(pytest.fail.Exception):
+        next(gen)                             # teardown: downs it, then fails
+    assert fake.downed == ["gb-leak"]         # still cleaned up
+
+
+def test_leak_guard_cleans_but_does_not_fail_when_test_failed(monkeypatch):
+    fake = _install(monkeypatch, [])
+    gen = guard._leak_guard(_req(passed=False))
+    next(gen)
+    fake.add("gb-leak")
+    with pytest.raises(StopIteration):        # no extra failure raised
+        next(gen)
+    assert fake.downed == ["gb-leak"]         # but the cluster is still torn down
+
+
+def test_leak_guard_skips_everything_when_teardown_disabled(monkeypatch):
+    monkeypatch.setattr(guard, "GBTEST_SKIP_BUILD_TEARDOWN", True)
+    fake = _install(monkeypatch, [])
+    gen = guard._leak_guard(_req(passed=True))
+    next(gen)
+    fake.add("gb-leak")
+    with pytest.raises(StopIteration):
+        next(gen)
+    assert fake.downed == []                   # no snapshot, no down, no assert

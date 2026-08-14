@@ -33,6 +33,8 @@ downed, so pre-existing developer clusters on a shared host are never touched.
 
 import logging
 
+import pytest
+
 from libgbtest.constants import GBTEST_SKIP_BUILD_TEARDOWN
 
 logger = logging.getLogger(__name__)
@@ -106,3 +108,40 @@ def _should_fail(leaked: set[str], rep) -> bool:
     that would mask the primary failure.
     """
     return bool(leaked) and rep is not None and rep.passed
+
+
+def _leak_guard(request):
+    """Generator body of the autouse fixture (separated for unit testing)."""
+    if GBTEST_SKIP_BUILD_TEARDOWN:
+        yield
+        return
+    before = snapshot_gb_clusters()
+    try:
+        yield
+    finally:
+        leaked = down_new_gb_clusters(before)
+        rep = getattr(request.node, "rep_call", None)
+        if _should_fail(leaked, rep):
+            pytest.fail(
+                "SkyPilot clusters leaked (torn down by guard): "
+                f"{sorted(leaked)}"
+            )
+
+
+@pytest.fixture(autouse=True)
+def skypilot_cluster_leak_guard(request):
+    """Autouse guard: tear down any gb-* cluster this test leaked.
+
+    Activated per test tree by importing this fixture into that tree's
+    ``conftest.py``. Requires the ``pytest_runtest_makereport`` hook below so
+    ``request.node.rep_call`` reflects the test outcome.
+    """
+    yield from _leak_guard(request)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Stash each phase's report on the item so the fixture can read rep_call."""
+    rep = yield
+    setattr(item, "rep_" + rep.when, rep)
+    return rep
