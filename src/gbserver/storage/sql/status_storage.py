@@ -29,3 +29,11 @@ class SQLStatusStorage(
     IStatusStorage,
 ):
     """SQL-based storage implementation for the generic gb_status key-value store."""
+
+    def __init__(self, **kwargs) -> None:
+        # Keys are looked up individually (get_value/set_value by `key`), so
+        # index that column. Follows the sibling SQL storages' **kwargs
+        # constructor pattern, which also keeps the factory's
+        # `SQLStatusStorage(table_name=...)` call type-checkable.
+        kwargs["indexed_columns"] = ["key"]
+        super().__init__(**kwargs)

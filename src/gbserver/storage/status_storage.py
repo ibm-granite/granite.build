@@ -62,7 +62,12 @@ class BaseStatusStorage(BaseItemStorage[StoredStatus], IStatusStorage):
 
     def get_value(self, key: str) -> Optional[Dict[str, Any]]:
         item = self.get_by_uuid(key)
-        return item.value if item is not None else None
+        # get_by_uuid's return type covers the list-returning `uuid=None` form
+        # too; a concrete str key always yields a single item (or None), so
+        # narrow rather than assume.
+        if not isinstance(item, StoredStatus):
+            return None
+        return item.value
 
     def set_value(self, key: str, value: Dict[str, Any]) -> None:
         item = StoredStatus(uuid=key, value=value)
