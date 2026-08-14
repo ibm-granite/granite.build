@@ -107,6 +107,7 @@ if _ANALYTICS_ENABLED:
     from gb_ui_backend.api import ai as _gb_ai
     from gb_ui_backend.api import analytics as _gb_analytics
     from gb_ui_backend.api import builds as _gb_builds
+    from gb_ui_backend.api import chat as _gb_chat
     from gb_ui_backend.api import data_processing as _gb_data_processing
     from gb_ui_backend.api import plans as _gb_plans
 
@@ -116,6 +117,7 @@ if _ANALYTICS_ENABLED:
         _gb_builds.router,
         _gb_data_processing.router,
         _gb_plans.router,
+        _gb_chat.router,
     ):
         root_api.include_router(_router, prefix="/api/analytics")
 

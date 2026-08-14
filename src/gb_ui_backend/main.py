@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 _env_file = os.path.join(os.path.dirname(__file__), "../../../.env")
 load_dotenv(_env_file, override=False)
 
-from gb_ui_backend.api import ai, analytics, builds, data_processing, plans
+from gb_ui_backend.api import ai, analytics, builds, chat, data_processing, plans
 from gb_ui_backend.config import Config, get_config
 
 logging.basicConfig(
@@ -102,6 +102,7 @@ app.include_router(ai.router, prefix="/api/analytics")
 app.include_router(builds.router, prefix="/api/analytics")
 app.include_router(data_processing.router, prefix="/api/analytics")
 app.include_router(plans.router, prefix="/api/analytics")
+app.include_router(chat.router, prefix="/api/analytics")
 
 
 @app.get("/health")
