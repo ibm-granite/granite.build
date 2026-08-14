@@ -368,6 +368,14 @@ class LineageWatcher:
         back timezone-aware; leaving it aware would make the caller's
         ``watermark - datetime.min`` arithmetic raise ``TypeError`` on every
         scan and record nothing at all.
+
+        ``OverflowError`` is caught alongside the parse errors because the
+        normalization itself can raise it: ``as_utc_naive`` shifts an aware value
+        to UTC, which overflows for a timestamp within the UTC offset of
+        ``datetime.min``/``datetime.max`` — e.g. the ``--seed all`` anchor
+        (``datetime.min``) read back aware with a positive offset. Uncaught it
+        would escape to ``_run``'s blanket handler and fail every scan forever,
+        the same wedge this guard exists to prevent for unparseable values.
         """
         checkpoint = storage.status_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
         if checkpoint is None:
@@ -383,7 +391,7 @@ class LineageWatcher:
             return None
         try:
             return as_utc_naive(datetime.fromisoformat(raw))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             logger.error(
                 "lineage checkpoint %s has an unparseable finished_at (%r); "
                 "recording stays off until it is re-seeded",

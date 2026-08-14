@@ -251,6 +251,32 @@ class TestLineageWatcher:
 
         assert store.calls == []
 
+    def test_overflowing_aware_checkpoint_records_instead_of_wedging(self):
+        """An aware ``datetime.min`` checkpoint records rather than failing forever.
+
+        Regression: ``--seed all`` anchors the checkpoint at ``datetime.min``, and
+        a backend may hand that back timezone-aware with a positive UTC offset.
+        Normalizing it shifts backwards past ``datetime.min``, raising
+        ``OverflowError`` — which the read guard did not catch (only ``TypeError``
+        and ``ValueError``), so it escaped to ``_run``'s blanket handler and every
+        scan failed, recording nothing at all. That is the same wedge the guard
+        already prevents for unparseable values, so it is handled the same way:
+        the value clamps to ``datetime.min`` and the backfill proceeds.
+        """
+        self._targets = [_target("build-1", "target-1", _BASE)]
+        watcher, store = self._make_watcher()
+        _seed(
+            self.storage,
+            "seed-build",
+            datetime.min.replace(tzinfo=timezone(timedelta(hours=5))),
+        )
+
+        # Must not raise, and must still record (a clamped datetime.min anchor is
+        # a full backfill, not a disabled scan).
+        watcher._reconcile()
+
+        assert store.calls == [("build-1", "target-1")]
+
     def test_successful_target_records_lineage(self):
         self._targets = [_target("build-1", "target-1", _BASE)]
         watcher, store = self._make_watcher()

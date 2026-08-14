@@ -29,6 +29,7 @@ from unittest.mock import MagicMock
 
 from gbserver.lineage.lineage_reconciler import (
     _expected_run_count,
+    get_most_recent_successful_target,
     reconcile_once,
     record_selected_targets,
     record_target_lineage,
@@ -195,6 +196,58 @@ class TestSelectRecordableTargets:
 
         selected = select_recordable_targets(storage, finished_after=_BASE)
         assert {t.uuid for t in selected} == {"t_aware"}
+
+    def test_overflowing_aware_finished_at_does_not_abort_scan(self):
+        # The --seed all anchor is datetime.min itself, and a backend may hand it
+        # back aware with a positive UTC offset. Shifting that to UTC overflows
+        # datetime.min, which would raise OverflowError out of the whole scan
+        # (through reconcile_once and start()) rather than merely comparing wrong.
+        # It must be clamped to the bound instead, leaving the walk intact.
+        overflowing = datetime.min.replace(tzinfo=timezone(timedelta(hours=5)))
+        t_min = _target("b1", "t_min", finished_at=overflowing)
+        t_new = _target("b1", "t_new", finished_at=_BASE + timedelta(seconds=10))
+        storage = _admin_storage_returning([[t_new, t_min]])
+
+        selected = select_recordable_targets(storage, finished_after=_BASE)
+        # t_min clamps to datetime.min, which is older than the watermark, so it
+        # ends the walk — but t_new, read before it, is still selected.
+        assert {t.uuid for t in selected} == {"t_new"}
+
+    def test_overflowing_aware_watermark_does_not_abort_scan(self):
+        # Same overflow on the cutoff side: a datetime.min watermark read back
+        # aware must clamp to datetime.min (selecting everything, per --seed all)
+        # rather than raising out of the scan.
+        cutoff = datetime.min.replace(tzinfo=timezone(timedelta(hours=5)))
+        t1 = _target("b1", "t1", finished_at=_BASE)
+        storage = _admin_storage_with([t1])
+
+        selected = select_recordable_targets(storage, finished_after=cutoff)
+        assert {t.uuid for t in selected} == {"t1"}
+
+
+class TestGetMostRecentSuccessfulTarget:
+    """Seeding anchor lookup — must survive a pre-``finished_at`` NULL backlog."""
+
+    def test_pages_past_a_full_first_page_of_nulls(self):
+        # finished_at stamping was added after rows already existed, so real
+        # deployments hold SUCCESS targets with finished_at NULL — and PostgreSQL
+        # sorts NULLs FIRST under DESC (the sort is a bare desc(), no NULLS LAST).
+        # Reading only page 0 would return None here, making `--seed` raise
+        # LineageSeedError on exactly the deployments that have history to anchor
+        # against — a crashloop, since --seed is meant to stay in the pod spec.
+        nulls = [_target("b1", f"t_null_{i}") for i in range(_SCAN_PAGE_SIZE)]
+        anchor = _target("b2", "t_anchor", finished_at=_BASE)
+        storage = _admin_storage_returning([nulls, [anchor]])
+
+        found = get_most_recent_successful_target(storage)
+        assert found is not None and found.uuid == "t_anchor"
+
+    def test_stops_at_a_short_page_of_nulls(self):
+        # A short page is the last one: no non-NULL row exists, so this must
+        # return None rather than paging forever.
+        storage = _admin_storage_returning([[_target("b1", "t_null")]])
+        assert get_most_recent_successful_target(storage) is None
+        assert storage.target_storage.get_by_where.call_count == 1
 
 
 class TestRecordTargetLineage:
