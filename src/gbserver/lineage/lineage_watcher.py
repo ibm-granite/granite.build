@@ -25,6 +25,7 @@ from gbserver.lineage.jobstats import ILineageStore, get_lineage_store
 from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_CHECKPOINT_KEY,
     LINEAGE_WATCHER_DROPPED_KEY,
+    as_utc_naive,
     reconcile_once,
 )
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
@@ -212,6 +213,20 @@ class LineageWatcher:
                 LINEAGE_WATCHER_CHECKPOINT_KEY,
             )
             return
+        build_id = checkpoint.get("build_id")
+        if build_id is None:
+            # Malformed checkpoint. start() guards only per-target recording
+            # errors via on_error, so raising KeyError here would abort start()
+            # entirely and leave the watcher not running at all. Skipping the
+            # verification sweep instead is strictly better: the steady-state
+            # scan still works off the watermark, and it re-runs on next start().
+            logger.error(
+                "lineage checkpoint %s has no build_id (%r); skipping the "
+                "start-up verification sweep for its build",
+                LINEAGE_WATCHER_CHECKPOINT_KEY,
+                checkpoint,
+            )
+            return
 
         # Verify/re-record via reconcile_once — the same central selector the
         # steady-state scan uses — scoped to the checkpoint's own build, so the
@@ -246,7 +261,7 @@ class LineageWatcher:
                 self._store,
                 storage,
                 finished_after=datetime.min,
-                build_id=checkpoint["build_id"],
+                build_id=build_id,
                 on_error=_on_error,
             )
 
@@ -323,12 +338,39 @@ class LineageWatcher:
         """Read the watermark from the durable checkpoint, or ``None`` if unset.
 
         ``None`` means the key has not been seeded, which the caller treats as
-        "record nothing" rather than as "no lower bound".
+        "record nothing" rather than as "no lower bound". A checkpoint that is
+        present but malformed (missing/unparseable ``finished_at``) is treated
+        the same way: recording stays off until it is corrected, which is the
+        safe direction — the alternative is raising out of every scan.
+
+        The parsed value is normalized to naive UTC. ``finished_at`` is written
+        straight from a stored target, which a backend or DB driver may hand
+        back timezone-aware; leaving it aware would make the caller's
+        ``watermark - datetime.min`` arithmetic raise ``TypeError`` on every
+        scan and record nothing at all.
         """
         checkpoint = storage.status_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
         if checkpoint is None:
             return None
-        return datetime.fromisoformat(checkpoint["finished_at"])
+        raw = checkpoint.get("finished_at")
+        if raw is None:
+            logger.error(
+                "lineage checkpoint %s has no finished_at (%r); recording stays "
+                "off until it is re-seeded",
+                LINEAGE_WATCHER_CHECKPOINT_KEY,
+                checkpoint,
+            )
+            return None
+        try:
+            return as_utc_naive(datetime.fromisoformat(raw))
+        except (TypeError, ValueError):
+            logger.error(
+                "lineage checkpoint %s has an unparseable finished_at (%r); "
+                "recording stays off until it is re-seeded",
+                LINEAGE_WATCHER_CHECKPOINT_KEY,
+                raw,
+            )
+            return None
 
     def _on_checkpoint_advance(
         self, storage: SingletonAdminStorage, build_id: str, finished_at: datetime

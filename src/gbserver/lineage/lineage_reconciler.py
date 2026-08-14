@@ -133,7 +133,7 @@ def _successful_targets_page(
     return [t for t in targets if isinstance(t, StoredTargetRun)]
 
 
-def _as_utc_naive(value: datetime) -> datetime:
+def as_utc_naive(value: datetime) -> datetime:
     """Normalize a ``finished_at`` to naive UTC for safe comparison.
 
     ``finished_at`` values are written naive (``datetime.now()`` / event
@@ -185,7 +185,7 @@ def select_recordable_targets(
     """
     selected: list[StoredTargetRun] = []
     page_index = 0
-    cutoff = _as_utc_naive(finished_after)
+    cutoff = as_utc_naive(finished_after)
     while True:
         page = _successful_targets_page(storage, page_index, build_id=build_id)
         for target in page:
@@ -196,7 +196,7 @@ def select_recordable_targets(
                 continue
             # Sorted newest-finished-first: once we reach a target that finished
             # before the watermark, every later one is older too — stop early.
-            if _as_utc_naive(target.finished_at) < cutoff:
+            if as_utc_naive(target.finished_at) < cutoff:
                 return selected
             selected.append(target)
         if len(page) < _SCAN_PAGE_SIZE:

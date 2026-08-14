@@ -29,7 +29,7 @@ scans, that ``start()`` loads and verifies the checkpoint correctly, and that a
 *missing* checkpoint records nothing at all rather than being seeded implicitly.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -198,6 +198,58 @@ class TestLineageWatcher:
 
         assert store.calls == [("build-1", "target-1")]
         assert _watermark(self.storage) == _BASE
+
+    def test_timezone_aware_checkpoint_watermark_records(self):
+        """A checkpoint seeded with a timezone-aware ``finished_at`` still records.
+
+        Regression: the checkpoint is written straight from a stored target's
+        ``finished_at``, which a storage backend or DB driver may hand back
+        timezone-aware (this is why ``as_utc_naive`` exists at all). An aware
+        watermark made ``_reconcile``'s ``watermark - datetime.min`` raise
+        ``TypeError: can't subtract offset-naive and offset-aware datetimes``
+        before any recording, so every scan failed and nothing was ever
+        recorded. The watermark is normalized to naive UTC on read instead.
+        """
+        self._targets = [_target("build-1", "target-1", _BASE)]
+        watcher, store = self._make_watcher()
+        # UTC+0 keeps the instant identical to the naive seed, so this isolates
+        # awareness itself rather than also shifting the watermark.
+        aware = (_BASE - timedelta(days=1)).replace(tzinfo=timezone.utc)
+        _seed(self.storage, "seed-build", aware)
+
+        watcher._reconcile()
+
+        assert store.calls == [("build-1", "target-1")]
+
+    def test_malformed_checkpoint_records_nothing_instead_of_raising(self):
+        """A checkpoint missing ``finished_at`` turns recording off, not a crash.
+
+        ``_reconcile`` used to index the key directly, so a hand-edited or
+        partially-written ``gb_status`` row raised ``KeyError`` out of the scan.
+        Recording stays off until the key is corrected — the safe direction.
+        """
+        self._targets = [_target("build-1", "target-1", _BASE)]
+        watcher, store = self._make_watcher()
+        self.storage.status_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY, {"build_id": "seed-build"}
+        )
+
+        watcher._reconcile()
+
+        assert store.calls == []
+
+    def test_unparseable_checkpoint_records_nothing_instead_of_raising(self):
+        """A non-ISO ``finished_at`` is reported and disables recording."""
+        self._targets = [_target("build-1", "target-1", _BASE)]
+        watcher, store = self._make_watcher()
+        self.storage.status_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            {"build_id": "seed-build", "finished_at": "not-a-timestamp"},
+        )
+
+        watcher._reconcile()
+
+        assert store.calls == []
 
     def test_successful_target_records_lineage(self):
         self._targets = [_target("build-1", "target-1", _BASE)]
@@ -399,6 +451,26 @@ class TestLineageWatcherCheckpoint:
 
         assert store.calls == []
         assert _watermark(self.storage) is None
+
+    def test_checkpoint_without_build_id_skips_verification_without_raising(self):
+        """A checkpoint missing ``build_id`` skips the sweep instead of failing.
+
+        Regression: ``build_id`` was indexed directly, so a malformed
+        ``gb_status`` row raised ``KeyError`` out of ``_verify_checkpoint`` —
+        and ``start()`` guards only per-target recording errors, so the watcher
+        would not start at all. Skipping the start-up sweep is strictly better:
+        steady-state scans still run off the watermark.
+        """
+        self._targets = [_target("b1", "t1", _BASE)]
+        watcher, store = self._make_watcher()
+        self.storage.status_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY, {"finished_at": _BASE.isoformat()}
+        )
+
+        # Must not raise; the sweep is skipped rather than half-run.
+        watcher._verify_checkpoint(self.storage)
+
+        assert store.calls == []
 
     def test_verify_checkpoint_already_recorded_is_a_no_op(self):
         self._targets = [_target("b1", "t1", _BASE)]
