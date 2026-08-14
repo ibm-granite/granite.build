@@ -293,10 +293,20 @@ class LineageWatcher:
         # Query slightly before the watermark so a boundary-timestamp completion
         # is not skipped; idempotent recording makes the overlap re-reads
         # harmless.
+        #
+        # Clamped at datetime.min: the --all backfill anchor *is* datetime.min, and
+        # subtracting from it raises OverflowError — which, being raised before any
+        # recording, would fail every scan forever and record nothing at all.
+        # Nothing can have finished before datetime.min anyway, so there is no
+        # boundary case for the overlap to protect there.
+        if watermark - datetime.min < self._WATERMARK_OVERLAP:
+            finished_after = datetime.min
+        else:
+            finished_after = watermark - self._WATERMARK_OVERLAP
         reconcile_once(
             self._store,
             storage,
-            finished_after=watermark - self._WATERMARK_OVERLAP,
+            finished_after=finished_after,
             on_error=lambda build_id, target_id, exc: (
                 self._on_record_error(storage, build_id, target_id, exc)
             ),

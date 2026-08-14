@@ -181,6 +181,24 @@ class TestLineageWatcher:
         assert store.calls == []
         assert _watermark(self.storage) is None
 
+    def test_backfill_anchor_watermark_does_not_overflow(self):
+        """A ``datetime.min`` watermark (the ``--all`` backfill anchor) records.
+
+        Regression: ``_reconcile`` subtracts ``_WATERMARK_OVERLAP`` from the
+        watermark, and ``datetime.min - 5s`` raises OverflowError. That is raised
+        before any recording, so every scan failed and ``--all`` recorded nothing
+        at all, forever. Nothing can finish before ``datetime.min``, so the
+        subtraction is clamped there rather than attempted.
+        """
+        self._targets = [_target("build-1", "target-1", _BASE)]
+        watcher, store = self._make_watcher(since=datetime.min)
+
+        # Must not raise (the loop catches, so assert on the effect too).
+        watcher._reconcile()
+
+        assert store.calls == [("build-1", "target-1")]
+        assert _watermark(self.storage) == _BASE
+
     def test_successful_target_records_lineage(self):
         self._targets = [_target("build-1", "target-1", _BASE)]
         watcher, store = self._make_watcher()
