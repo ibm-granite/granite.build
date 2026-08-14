@@ -68,6 +68,40 @@ deployments:
     - GBSERVER_WANDB_API_KEY
     - GBSERVER_WANDB_ENTITY
     # OpenLineage / WandB ---
+  lineageWatcher:
+    # Single-writer of centralized lineage: reconciles the admin DB into the
+    # lineage store (W&B) in its own pod, off the build watcher's hot path.
+    enable: true
+    replicas: 1
+    resources:
+      limits:
+        cpu: "1"
+        ephemeral-storage: 2Gi
+        memory: 2Gi
+      requests:
+        cpu: "250m"
+        ephemeral-storage: 1Gi
+        memory: 512Mi
+    env:
+      GBSERVER_SQL_SSLROOT_CERT: ibm-cloud-databases.cert
+      GBSERVER_LINEAGE_PROVIDER: wandb
+      GBSERVER_WANDB_BASE_URL: https://ibm.wandb.io
+      GBSERVER_WANDB_PROJECT: lineage-tracking
+    envFromMainSecret:
+    - GB_ENVIRONMENT
+    # Admin DB access (reconciliation reads builds/targets from admin storage).
+    - GBSERVER_SQL_USER
+    - GBSERVER_SQL_PASSWD
+    - GBSERVER_SQL_HOST
+    - GBSERVER_SQL_PORT
+    - GBSERVER_SQL_DBNAME
+    - GBSERVER_SQL_SCHEMA
+    - GBSERVER_SQL_ECHO
+    - GBSERVER_METADATA_STORAGE
+    # OpenLineage / WandB ---
+    - GBSERVER_WANDB_API_KEY
+    - GBSERVER_WANDB_ENTITY
+    # OpenLineage / WandB ---
   restServer:
     enable: true
     # enable: false

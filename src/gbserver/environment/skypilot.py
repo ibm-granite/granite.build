@@ -442,6 +442,24 @@ def _build_skypilot_mounts(
     return file_mounts, storage_mounts
 
 
+def aws_credentials_present() -> bool:
+    """Return True when boto3 would resolve AWS credentials from the environment.
+
+    Checks the credential environment variables boto3 reads: an explicit access
+    key pair (``AWS_ACCESS_KEY_ID`` + ``AWS_SECRET_ACCESS_KEY``) or a named
+    profile (``AWS_PROFILE``). It does not validate the credentials — only that
+    boto3 has something to try. Useful for gating operations (and tests) that
+    require a real AWS backend so they can be skipped cleanly when no
+    credentials are configured.
+
+    :returns: True if AWS credential env vars are set, False otherwise.
+    """
+    has_key_pair = bool(os.environ.get("AWS_ACCESS_KEY_ID")) and bool(
+        os.environ.get("AWS_SECRET_ACCESS_KEY")
+    )
+    return has_key_pair or bool(os.environ.get("AWS_PROFILE"))
+
+
 class Skypilot(Environment):
     """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
 

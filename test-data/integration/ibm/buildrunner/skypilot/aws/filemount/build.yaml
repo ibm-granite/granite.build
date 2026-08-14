@@ -1,0 +1,63 @@
+granite.build:
+  name: skypilot-aws-filemount-test
+  # Single command-step target on AWS EC2 (via SkyPilot) that runs a custom step
+  # (space://steps/filemount-check) declaring a `file_mounts` key. The mount
+  # copies the `payload/` directory shipped next to the step's step.yaml onto the
+  # provisioned instance; the source is RELATIVE, so the SkyPilot launcher
+  # resolves it against the step.yaml's own directory (the per-run asset dir) —
+  # the behavior under test. The step's run command verifies the copy landed and
+  # fails the build if it did not. This is the AWS analog of the
+  # skypilot/bluevela/filemount fixture (which mounts through LSF's enroot).
+  #
+  # Runs BARE (empty command_config.image): file_mounts land in the VM run workdir
+  # (${GB_BUILD_WORKDIR}), which is the run command's CWD, so ./payload is
+  # reachable directly. (bluevela used an enroot container to also exercise
+  # in-container visibility; on AWS we test the core relative-source resolution on
+  # the bare VM, mirroring the aws/2target fixture.)
+  #
+  # env:// (env_local) I/O is a no-op: push/pull do nothing, so artifact
+  # registration/binding works purely on the LLMB_ARTIFACT_PATH string and no real
+  # files need to exist. Keeps the test HF/S3-credential-free and fast.
+  targets:
+    filemount:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        # env:// input: pulled as a no-op. The path need not exist and its value
+        # isn't asserted; it just flows to the command as a binding.
+        env_input:
+          uri: "env:///tmp/gb-env-input.txt"
+      outputs:
+        # env:// output: registered inline from the LLMB_ARTIFACT marker the
+        # command emits below. `type` is required for env:// outputs; the path is
+        # arbitrary (env:// push/pull are no-ops) and just has to match the marker.
+        env_output:
+          uri: "env:///tmp/gb-aws-filemount/out.txt"
+          type: fileset
+      steps:
+        # Custom test step defined in the co-located test space (space/steps/).
+        # It declares a `file_mounts` key that copies the `payload/` directory
+        # shipped next to its step.yaml onto the instance, then (in its run)
+        # verifies the copy landed before running the command below.
+        - step_uri: space://steps/filemount-check
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Empty image => run BARE on the EC2 VM (no Docker). SkyPilot installs
+              # its runtime on the VM directly, so a small box suffices and there is
+              # no container indirection for the mounted payload.
+              image: ""
+              command: >-
+                echo "env input path: {{ bindings.env_input.binding.path }}";
+                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-aws-filemount/out.txt"
+            # AWS must size an EC2 instance (unlike bluevela's single LSF cluster).
+            # Region is parameterized via the AWS_REGION space variable (default
+            # us-east-2), encoded in `infra` as cloud/region.
+            launcher_config:
+              resources:
+                infra: "aws/{{ space.variables.AWS_REGION | default('us-east-2') }}"
+                # t3.small = 2 vCPU / 2 GiB (~$0.02/hr in us-east-2): cheapest
+                # reliable size for a bare command.
+                instance_type: t3.small
+                # Trim the default root volume to cut EBS cost.
+                disk_size: 40

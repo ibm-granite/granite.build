@@ -1,3 +1,5 @@
-# Generated deployable step bundles produced by `make step`.
-# The source of truth is step-template.yaml + src/; the step/ dir is derived.
-*/*/step/
+# Generated Space directories produced by `make space` (common.mk's SPACE_DIR,
+# default "space"), e.g. byoc/skypilot/space/ or eval/skypilot/space/. The source
+# of truth is step-template.yaml + src/; the Space is derived. The dir name is a
+# fixed literal, so ignore any `space/` at any depth under steps/.
+**/space/

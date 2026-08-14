@@ -3,7 +3,10 @@
     "gbmcp": {
       "type": "stdio",
       "command": "bash",
-      "args": ["-c", "exec \"$CLAUDE_PROJECT_DIR/.venv/bin/gbmcp\""],
+      "args": [
+        "-c",
+        "exec \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.venv/bin/gbmcp\""
+      ],
       "env": {
         "GBSERVER_PORT": "${GBSERVER_PORT:-8080}"
       }

@@ -50,6 +50,10 @@ config:
       # SkyPilot aws: settings, e.g. security groups, VPC, etc.
 ```
 
+> **Not here: `profile`.** Selecting a named AWS profile is *not* a valid key in this
+> global `aws:` block — SkyPilot rejects it with `Found unsupported field 'profile'` and the
+> API server fails to start. Profile selection is workspace-scoped; see the runbook below.
+
 ### Resources: instance type, spot, accelerators
 
 AWS-relevant launcher `resources` fields:
@@ -76,6 +80,100 @@ launchers:
 
 For cross-step state, point `shared_workdir` at a path backed by **EFS / FSx** mounted on every worker
 (e.g. `/mnt/efs`). See [skypilot.md](skypilot.md#shared_workdir).
+
+## Runbook: use a non-default AWS profile via the local secret store
+
+Use this when the gbserver host **already has a working `~/.aws/credentials` `[default]`** whose
+identity differs from the one you want SkyPilot to use. Materializing into `[default]` would raise
+`SkypilotConfigCollisionError`; instead materialize a **named** profile and select it. This keeps
+one `environment.yaml` usable in both standalone and shared deployments — only the secret backend
+differs (a local file here, a server-managed store in shared).
+
+### 1. Declare a named profile + select it in `environment.yaml`
+
+```yaml
+config:
+  default_cloud: aws
+  # Materialize a NON-default profile (values are secret NAMES, resolved by the
+  # space's secret_manager — never commit literals).
+  aws_credentials:
+    - profile: gb-skypilot
+      aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+      aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+  # Select that profile. `profile` is ONLY valid under workspaces.<name>.aws —
+  # NOT the global aws: block (that form crashes the API server). `default` is
+  # SkyPilot's default active workspace.
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+```
+
+### 2. Seed the local secret store (standalone)
+
+With `secret_manager: type: local`, secrets are read from `$GB_HOME_DIR/space_secrets/` (default
+`~/.granite.build/space_secrets/`). Files may be `.json`/`.yaml`/`.env`; **values are base64-encoded**
+and looked up by exact name. Write a file whose keys match the secret names above:
+
+```bash
+mkdir -p ~/.granite.build/space_secrets
+python3 - <<'PY'
+import os, base64, json, pathlib
+d = pathlib.Path.home() / ".granite.build" / "space_secrets"; d.mkdir(parents=True, exist_ok=True)
+enc = lambda v: base64.b64encode(v.encode()).decode()
+p = d / "aws.json"
+p.write_text(json.dumps({
+    "GB_AWS_ACCESS_KEY_ID":     enc(os.environ["AWS_ACCESS_KEY_ID"]),
+    "GB_AWS_SECRET_ACCESS_KEY": enc(os.environ["AWS_SECRET_ACCESS_KEY"]),
+}, indent=2))
+p.chmod(0o600)
+PY
+```
+
+> The `env` secret manager (`type: env`) is an alternative: it reads `GBSERVER_SECRET_<NAME>`
+> env vars (prefixed, upper-cased) — note it does **not** read a bare `AWS_ACCESS_KEY_ID`.
+
+### 3. Verify cheaply (no EC2)
+
+Confirm the profile is materialized and actually used, **with the ambient AWS env vars unset** so a
+pass proves the profile — not your shell — supplied the credentials:
+
+```bash
+grep -A2 '^\[gb-skypilot\]' ~/.aws/credentials    # written by gbserver at launch
+sky api stop
+env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY sky check aws   # expect: AWS: enabled
+```
+
+### 4. Run the build standalone
+
+```bash
+export GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live
+# e.g. the fixture test that provisions one t3.medium in us-east-2:
+pytest -s -m extended --strict-markers \
+  test/integration/ibm/buildrunner/skypilot/aws/test_1step_image.py
+```
+
+### How it works / gotchas
+
+- **Explicit profile wins over env vars.** `cloud_config.workspaces.default.aws.profile` makes
+  SkyPilot call `boto3.Session(profile_name=…)`, which (being an *explicit* profile) removes the env
+  provider from botocore's chain — so `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` in the shell are
+  ignored while the profile is set.
+- **`profile` is workspace-scoped only.** The global `aws:` block rejects it
+  (`unsupported field 'profile'`) and the API server exits on startup.
+- **Stale `~/.sky/config.yaml`.** `cloud_config` is deep-merged, not replaced. If a bad global
+  `aws: {profile: …}` was written by an earlier attempt, delete `~/.sky/config.yaml` so it is
+  regenerated cleanly from `environment.yaml`.
+- **Collision safety.** Materialization refuses to overwrite an existing profile whose values
+  differ; pick a name (e.g. `gb-skypilot`) you don't already have in `~/.aws/credentials`.
+- **Field names are exact; typos are silent.** `aws_credentials` entries are validated
+  permissively, so a misspelled key (e.g. `access_key_id` instead of `aws_access_key_id`) is
+  dropped rather than rejected and the value stays unset — surfacing later as a confusing
+  credential-resolution failure, not a config error. Use the field names exactly: `profile`,
+  `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`.
+- **Region is separate.** Placement comes from the launcher `resources.infra` (e.g. `aws/us-east-2`),
+  not from this profile.
 
 ## Example `environment.yaml`
 

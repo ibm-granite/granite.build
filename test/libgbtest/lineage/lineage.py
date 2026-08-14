@@ -8,6 +8,7 @@ from libgbtest.storage.target_storage import TargetStorageTestSupport
 from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbcommon.uri.lh import LhURI
+from gbserver.lineage.lineage_reconciler import _expected_run_count
 from gbserver.storage.singleton_storage import get_storage_factory
 
 
@@ -242,6 +243,132 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         assert lineage_storage.does_release_id_exist(
             release_id=build.uuid, expected_count=output_count
         ), f"Did not create {output_count} JobStats"
+
+    def test_target_with_no_artifacts_still_emits_one_event(self):
+        """A successful target with no inputs and no outputs must still record.
+
+        Regression: the event builder only emitted from output artifacts, with a
+        "no-output" fallback gated on having inputs. A target with neither (e.g.
+        a pure generation/compute target) produced zero events, so recording was
+        a silent backend no-op the reconciler still marked "recorded".
+        """
+        build_storage = self.storage.build_storage
+        target_storage = self.storage.target_storage
+
+        tsts, bsts, ssts, asts = get_test_support()
+
+        build = bsts._get_test_item(0)
+        build_storage.add(build)
+
+        targetrun = tsts._get_test_item(0)
+        targetrun.build_id = build.uuid
+        targetrun.input_artifacts = {}
+        targetrun.output_artifacts = {}
+        target_storage.add(targetrun)
+
+        lineage_storage = self._get_tested_lineage_storage()
+        events, events_dict = lineage_storage.create_jobstats_for_target(
+            self.storage, targetrun, build
+        )
+
+        assert len(events) == 1, "Expected exactly one event for artifact-less target"
+        assert "no-output" in events_dict
+        assert events[0].get("inputs", []) == []
+        assert events[0].get("outputs", []) == []
+        # The reconciler's in-memory count must match what the builder emits.
+        assert _expected_run_count(targetrun) == len(events)
+
+    def test_expected_run_count_matches_events_built(self):
+        """``_expected_run_count`` must equal the events the builder emits.
+
+        The reconciler derives a target's expected run count from the in-memory
+        ``StoredTargetRun`` (to avoid a storage read) while the sink emits one run
+        per built event. If the two ever diverge, a fully-recorded target could be
+        seen as partial (harmless but wasteful re-record) or vice versa (the gap
+        this guards against). This pins them together against real storage.
+        """
+        build_storage = self.storage.build_storage
+        target_storage = self.storage.target_storage
+        artifact_registry = self.storage.artifact_registry
+
+        tsts, bsts, ssts, asts = get_test_support()
+
+        build = bsts._get_test_item(0)
+        build_storage.add(build)
+
+        # Two output-artifact names, the second holding two artifacts -> 3 runs.
+        out0 = asts._get_test_item(0)
+        out1 = asts._get_test_item(1)
+        out2 = asts._get_test_item(2)
+        for a in (out0, out1, out2):
+            artifact_registry.add(a)
+
+        targetrun = tsts._get_test_item(0)
+        targetrun.build_id = build.uuid
+        targetrun.input_artifacts = {}
+        targetrun.output_artifacts = {
+            "out0": [out0.uuid],
+            "out1": [out1.uuid, out2.uuid],
+        }
+        target_storage.add(targetrun)
+
+        lineage_storage = self._get_tested_lineage_storage()
+        events, _ = lineage_storage.create_jobstats_for_target(
+            self.storage, targetrun, build
+        )
+
+        assert _expected_run_count(targetrun) == 3
+        assert _expected_run_count(targetrun) == len(events)
+
+    def test_filter_unrecorded_requires_full_run_count(self):
+        """A partially-recorded target stays unrecorded until all its runs exist.
+
+        Regression: ``filter_unrecorded`` marked a target recorded on the first
+        run carrying its ``target_id`` tag. A target that emits N runs but crashed
+        part-way through left 1..N-1 runs tagged, so it was filtered out and never
+        re-recorded -> permanent partial lineage. It must count runs against the
+        expected total instead.
+        """
+        build_storage = self.storage.build_storage
+        target_storage = self.storage.target_storage
+        artifact_registry = self.storage.artifact_registry
+
+        tsts, bsts, ssts, asts = get_test_support()
+
+        build = bsts._get_test_item(0)
+        build_storage.add(build)
+
+        out0 = asts._get_test_item(0)
+        out1 = asts._get_test_item(1)
+        for a in (out0, out1):
+            artifact_registry.add(a)
+
+        targetrun = tsts._get_test_item(0)
+        targetrun.build_id = build.uuid
+        targetrun.input_artifacts = {}
+        targetrun.output_artifacts = {"out0": [out0.uuid], "out1": [out1.uuid]}
+        target_storage.add(targetrun)
+
+        store = self._get_tested_lineage_storage()
+        events, _ = store.create_jobstats_for_target(self.storage, targetrun, build)
+        assert len(events) == 2
+        tid = targetrun.uuid
+        expected = {tid: 2}
+
+        # No runs yet: unrecorded regardless of expected count.
+        assert store.filter_unrecorded({tid}, expected) == {tid}
+
+        # Emit only the first of the two runs (simulates a crash mid-target).
+        store._service.emit_event(events[0])
+        # Count-based check: still unrecorded because 1 < 2 ...
+        assert store.filter_unrecorded({tid}, expected) == {tid}
+        # ... but the old presence-based fallback (no expected count) would have
+        # wrongly considered it recorded — the exact masking this fix removes.
+        assert store.filter_unrecorded({tid}, None) == set()
+
+        # Emit the second run: now fully recorded under the count-based check.
+        store._service.emit_event(events[1])
+        assert store.filter_unrecorded({tid}, expected) == set()
 
     def test_create_from_artifact(self):
         tsts, bsts, ssts, asts = get_test_support()

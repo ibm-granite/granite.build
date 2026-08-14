@@ -824,13 +824,12 @@ def _mock_lineage(request):
     mock_store.create_jobstats_for_target.return_value = ([], {})
     mock_store.create_jobstats_for_original_artifact.return_value = None
 
+    # NOTE: buildrunner no longer imports get_lineage_store — lineage recording
+    # moved to LineageWatcher, which resolves the store via
+    # gbserver.lineage.jobstats.get_lineage_store (patched above).
     with (
         patch("gbserver.lineage.jobstats.get_lineage_store", return_value=mock_store),
         patch("gbserver.api.artifacts.get_lineage_store", return_value=mock_store),
-        patch(
-            "gbserver.buildrunner.buildrunner.get_lineage_store",
-            return_value=mock_store,
-        ),
         patch(
             "integration.ibm.api.test_artifacts.get_lineage_store",
             return_value=mock_store,

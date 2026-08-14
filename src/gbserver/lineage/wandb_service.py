@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import deque
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
@@ -36,9 +37,11 @@ from gbserver.types.constants import (
     GBSERVER_WANDB_API_KEY,
     GBSERVER_WANDB_BASE_URL,
     GBSERVER_WANDB_ENTITY,
+    GBSERVER_WANDB_LOG_LEVEL,
     GBSERVER_WANDB_PROJECT,
+    GBSERVER_WANDB_QUIET,
 )
-from gbserver.utils.logger import get_logger
+from gbserver.utils.logger import get_log_level, get_logger
 
 logger = get_logger(__name__)
 
@@ -60,6 +63,14 @@ class WandBLineageService(LineageService):
 
     def __init__(self):
         wandb.login(key=GBSERVER_WANDB_API_KEY, host=GBSERVER_WANDB_BASE_URL)
+        # Route wandb's Python-logger messages through gbserver's root handler
+        # (CustomFormatter) so any that surface match the gbserver log format,
+        # instead of wandb's own handler printing them raw. See issue #181 Task 1.
+        wandb_logger = logging.getLogger("wandb")
+        wandb_logger.setLevel(get_log_level(GBSERVER_WANDB_LOG_LEVEL))
+        for handler in list(wandb_logger.handlers):
+            wandb_logger.removeHandler(handler)
+        wandb_logger.propagate = True
         self._runs = {}
 
     def _get_run(self, run_id: str, job_name: str):
@@ -72,10 +83,74 @@ class WandBLineageService(LineageService):
             id=run_id,
             name=job_name,
             resume="allow",
+            # These runs are lineage *events*, not training runs. wandb's default
+            # code/git capture would snapshot the lineage-watcher process's own
+            # working tree (the gbserver checkout) into every recorded target —
+            # producing misleading code/, diff.patch, diff_<hash>.patch files and
+            # leaking the recorder's source/diff into wandb. Disable all of it.
+            settings=wandb.Settings(
+                quiet=GBSERVER_WANDB_QUIET,
+                save_code=False,
+                disable_code=True,
+                disable_git=True,
+            ),
         )
 
         self._runs[run_id] = run
         return run
+
+    # wandb run modes in which a live backend IS available, so artifact
+    # registration can proceed. Any other mode (offline/disabled/dryrun/...) is
+    # treated as "no live backend" and artifact registration is skipped. Using
+    # an online allowlist rather than an offline denylist means a new or renamed
+    # non-live mode fails safe (skip) instead of raising against a dead backend.
+    _ONLINE_MODES = ("online", "run", "shared")
+
+    def _is_offline(self, run: Any) -> bool:
+        """Check whether a wandb run lacks a live backend for artifact ops.
+
+        Prefers the documented ``run.settings.mode`` (e.g. "online"/"offline"/
+        "disabled"/"dryrun"), treating anything not in ``_ONLINE_MODES`` as
+        offline. Falls back to the ``run.offline`` attribute for wandb versions
+        that do not expose settings on the run. Defaults to False (treat as
+        online) if neither is available.
+        """
+        mode = getattr(getattr(run, "settings", None), "mode", None)
+        if isinstance(mode, str):
+            return mode not in self._ONLINE_MODES
+        return bool(getattr(run, "offline", False))
+
+    def _register_artifacts(self, run: Any, event: Dict) -> None:
+        """Register input and output artifacts for the run.
+
+        Requires a live wandb backend; callers must skip this in offline mode.
+        """
+        for direction, resources in (
+            ("input", event.get("inputs", [])),
+            ("output", event.get("outputs", [])),
+        ):
+            is_output = direction == "output"
+            for resource in resources:
+                resource_name = self._dataset_name(resource)
+                resource_type = self._get_hf_type(resource)
+                artifact_type = (
+                    resource_type
+                    if resource_type in ("model", "dataset", "bucket")
+                    else "dataset"
+                )
+
+                if self._is_huggingface_resource(resource):
+                    self._register_hf_reference(
+                        run, resource, resource_name, is_output=is_output
+                    )
+                else:
+                    artifact = wandb.Artifact(
+                        name=resource_name, type=artifact_type, metadata=resource
+                    )
+                    if is_output:
+                        run.log_artifact(artifact)
+                    else:
+                        run.use_artifact(artifact)
 
     def emit_event(self, event: Dict) -> None:
         try:
@@ -85,41 +160,16 @@ class WandBLineageService(LineageService):
 
             run = self._get_run(run_id, job_name)
 
-            for inp in event.get("inputs", []):
-                resource_name = self._dataset_name(inp)
-                resource_type = self._get_hf_type(inp)
-                artifact_type = (
-                    resource_type
-                    if resource_type in ("model", "dataset", "bucket")
-                    else "dataset"
+            # Artifact registration requires a live wandb backend; in offline
+            # mode it raises. Skip only the artifact block here (run config,
+            # facets, tags and the event log below still apply offline).
+            if self._is_offline(run):
+                logger.warning(
+                    "wandb offline mode; skipping artifact lineage registration for run %s",
+                    run_id,
                 )
-
-                if self._is_huggingface_resource(inp):
-                    self._register_hf_reference(
-                        run, inp, resource_name, is_output=False
-                    )
-                else:
-                    artifact = wandb.Artifact(
-                        name=resource_name, type=artifact_type, metadata=inp
-                    )
-                    run.use_artifact(artifact)
-
-            for out in event.get("outputs", []):
-                resource_name = self._dataset_name(out)
-                resource_type = self._get_hf_type(out)
-                artifact_type = (
-                    resource_type
-                    if resource_type in ("model", "dataset", "bucket")
-                    else "dataset"
-                )
-
-                if self._is_huggingface_resource(out):
-                    self._register_hf_reference(run, out, resource_name, is_output=True)
-                else:
-                    artifact = wandb.Artifact(
-                        name=resource_name, type=artifact_type, metadata=out
-                    )
-                    run.log_artifact(artifact)
+            else:
+                self._register_artifacts(run, event)
 
             run_facets = event.get("run", {}).get("facets", {})
             job_facets = event.get("job", {}).get("facets", {})
@@ -763,6 +813,91 @@ class WandBLineageService(LineageService):
         except Exception as e:
             logger.error("Failed to count runs by tags: %s", e)
             return 0
+
+    def filter_unrecorded(
+        self,
+        target_ids: set[str],
+        expected_counts: Optional[dict[str, int]] = None,
+    ) -> set[str]:
+        """Return the subset of ``target_ids`` not yet recorded in wandb.
+
+        Bounded to the given candidates: it queries only for runs tagged with one
+        of ``target_ids`` (a server-side ``{"tags": {"$in": [...]}}`` filter)
+        rather than scanning the whole project. Each recorded run carries a
+        ``target_id=<uuid>`` tag (see WandBLineageStore._build_events_for_target),
+        so we derive which candidates are already recorded from that tag and
+        return the rest. We match on the tag rather than parsing run ids — a run
+        id is ``"<target_uuid>-<output_uuid>"`` and both halves contain hyphens,
+        making it ambiguous to split.
+
+        A single target emits one run per output artifact (or one run when it has
+        no outputs), so presence of *a* tagged run does not mean the target is
+        fully recorded: a prior scan that crashed part-way through emitting a
+        target's runs leaves some runs tagged but the lineage incomplete. To
+        avoid masking such a partial record (which would leave a permanent gap,
+        since the target would never be re-selected), we *count* the tagged runs
+        per candidate and treat a target as recorded only when its run count
+        meets or exceeds ``expected_counts[tid]``. When ``expected_counts`` is
+        ``None`` or lacks a candidate's key, that candidate falls back to the
+        presence check (recorded once >=1 run exists) — the pre-count behavior,
+        which keeps older fully-recorded runs (that predate this check) from
+        being needlessly re-recorded.
+
+        This is an efficiency optimization only: it lets the recorder skip
+        re-emitting candidates wandb already has. Idempotent recording
+        (deterministic run ids + resume="allow") preserves correctness
+        regardless, so on any failure we return ``target_ids`` unchanged — the
+        caller then re-records the candidates, a harmless backend no-op.
+        """
+        if not target_ids:
+            return set()
+        try:
+            api = wandb.Api()
+            project_path = (
+                f"{GBSERVER_WANDB_ENTITY}/{GBSERVER_WANDB_PROJECT}"
+                if GBSERVER_WANDB_ENTITY
+                else GBSERVER_WANDB_PROJECT
+            )
+            # Bound the query to this scan's candidates: match only runs whose
+            # target_id tag is one of ours. This is a set-membership ($in) filter,
+            # not the $regex the IBM wandb backend times out on, so it stays cheap
+            # and reliable regardless of how many historical runs exist. A single
+            # query serves all candidates; the counting below is a post-filter
+            # over the fetched runs, never a per-target query.
+            candidate_tags = [f"target_id={tid}" for tid in target_ids]
+            run_counts: dict[str, int] = {}
+            for run in api.runs(
+                project_path, filters={"tags": {"$in": candidate_tags}}
+            ):
+                # A run can carry more than one target_id tag (e.g. a run resumed
+                # across targets), so credit every candidate tag it carries. Use a
+                # set so a run counts at most once per target even if the same tag
+                # appears twice on it.
+                for target_id in {
+                    tag.split("=", 1)[1]
+                    for tag in (run.tags or [])
+                    if tag.startswith("target_id=")
+                }:
+                    # Only count candidates we actually asked about; ignore empty
+                    # values and any unrelated tag the backend returns.
+                    if target_id in target_ids:
+                        run_counts[target_id] = run_counts.get(target_id, 0) + 1
+            recorded: set[str] = set()
+            for tid in target_ids:
+                count = run_counts.get(tid, 0)
+                if count == 0:
+                    continue
+                expected = (expected_counts or {}).get(tid)
+                # No expected count for this target → presence check (>=1);
+                # otherwise require the full set of runs.
+                if expected is None or count >= expected:
+                    recorded.add(tid)
+            return target_ids - recorded
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 — best-effort; any failure re-records the candidates
+            logger.error("Failed to filter unrecorded target ids from wandb: %s", e)
+            return target_ids
 
     def search_lineage_by_tags(
         self, tags: list, limit: int = 10, offset: int = 0

@@ -15,11 +15,17 @@
 # limitations under the License.
 
 import asyncio
+import re
 from pathlib import Path
 
 from gbserver.types.errors import LogMonitoringFailedException
 from gbserver.utils.unwrap_errors import unwrap_errors
-from gbserver.utils.utils import get_common_ancestor, get_sha256sum
+from gbserver.utils.utils import (
+    K8S_LABEL_VALUE_MAX_LENGTH,
+    get_common_ancestor,
+    get_sha256sum,
+    sanitize_k8s_label_value,
+)
 
 
 class TestSha256sum:
@@ -271,3 +277,73 @@ assert 0 > 0
         except BaseException as e:
             readable_error = unwrap_errors(e)
             assert readable_error == expected_err
+
+
+# Kubernetes label value validation regex (from the API server rules):
+# up to 63 chars, alphanumerics/'-'/'_'/'.', beginning and ending alphanumeric.
+_K8S_LABEL_VALUE_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$")
+
+
+def _is_valid_k8s_label_value(value: str) -> bool:
+    return bool(_K8S_LABEL_VALUE_RE.fullmatch(value))
+
+
+class TestSanitizeK8sLabelValue:
+    def test_valid_value_unchanged(self):
+        # Already-valid values must be returned verbatim.
+        assert sanitize_k8s_label_value("octocat") == "octocat"
+        assert sanitize_k8s_label_value("a.b-c_d") == "a.b-c_d"
+        assert sanitize_k8s_label_value("my.space-name") == "my.space-name"
+        assert sanitize_k8s_label_value("a" * 63) == "a" * 63
+
+    def test_email_username_is_sanitized_in_place(self):
+        # ibmid auth mode: username is an email address containing '@'. The
+        # result stays as close to the original as possible -- illegal chars
+        # are replaced in place, with no encoding or hash suffix.
+        assert sanitize_k8s_label_value("ABC@foo.com") == "ABC_foo.com"
+        assert sanitize_k8s_label_value("user@example.com") == "user_example.com"
+
+    def test_long_value_is_truncated_to_limit(self):
+        result = sanitize_k8s_label_value("a" * 200)
+        assert result == "a" * K8S_LABEL_VALUE_MAX_LENGTH
+        assert _is_valid_k8s_label_value(result)
+
+    def test_long_altered_value_is_valid(self):
+        result = sanitize_k8s_label_value("bad@" + "x" * 200)
+        assert len(result) <= K8S_LABEL_VALUE_MAX_LENGTH
+        assert _is_valid_k8s_label_value(result)
+
+    def test_value_truncated_on_separator_does_not_end_in_separator(self):
+        # A value longer than 63 chars whose truncation boundary falls on a
+        # separator must not end in '.'/'-'/'_'. Space names commonly contain
+        # dots/dashes.
+        value = "a" * 62 + "." + "b" * 5
+        result = sanitize_k8s_label_value(value)
+        assert result == "a" * 62
+        assert _is_valid_k8s_label_value(result)
+
+    def test_all_separators_valid_charset_uses_fallback(self):
+        # All chars are in the allowed set but none are alphanumeric, so after
+        # trimming nothing usable remains -> fallback.
+        assert (
+            sanitize_k8s_label_value("." * 70, fallback="no_spacename")
+            == "no_spacename"
+        )
+
+    def test_leading_trailing_non_alnum_trimmed(self):
+        # '@' -> '_' at both ends would be invalid; must be trimmed.
+        assert sanitize_k8s_label_value("@user@") == "user"
+        assert sanitize_k8s_label_value(".leading") == "leading"
+        assert sanitize_k8s_label_value("trailing.") == "trailing"
+
+    def test_empty_uses_fallback(self):
+        assert sanitize_k8s_label_value("") == "unknown"
+        assert sanitize_k8s_label_value("", fallback="no_username") == "no_username"
+
+    def test_all_invalid_chars_uses_fallback(self):
+        # Reduces to empty after trimming leading/trailing non-alnum.
+        assert sanitize_k8s_label_value("@@@", fallback="no_username") == "no_username"
+
+    def test_none_like_falsy_handled(self):
+        # buildrunnerjob passes `stored_build.username or ""`; guard "" here.
+        assert sanitize_k8s_label_value("", fallback="no_username") == "no_username"

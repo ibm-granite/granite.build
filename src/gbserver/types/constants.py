@@ -899,6 +899,8 @@ GBSERVER_WANDB_ENTITY = os.getenv(ENV_VAR_PREFIX + "_WANDB_ENTITY", "dmf-testing
 GBSERVER_WANDB_BASE_URL = os.getenv(
     ENV_VAR_PREFIX + "_WANDB_BASE_URL", "https://ibm.wandb.io"
 )
+GBSERVER_WANDB_QUIET = getenv_boolean(ENV_VAR_PREFIX + "_WANDB_QUIET", True)
+GBSERVER_WANDB_LOG_LEVEL = os.getenv(ENV_VAR_PREFIX + "_WANDB_LOG_LEVEL", "warning")
 
 GBSERVER_SQL_SCHEME = os.getenv(ENV_VAR_GBSERVER_SQL_SCHEME, "postgresql")
 GBSERVER_SQL_HOST = os.getenv(
