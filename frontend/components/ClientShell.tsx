@@ -6,6 +6,7 @@ import { Theme } from "@carbon/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useTheme } from "@/hooks/useTheme";
 import { AppHeader } from "@/components/AppHeader";
+import { ChatWidget } from "@/components/ChatWidget";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -48,6 +49,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
           {children}
         </div>
       </Theme>
+      <ChatWidget />
     </>
   );
 }
