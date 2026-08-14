@@ -18,7 +18,7 @@
 
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from gbserver.lineage.jobstats import ILineageStore, get_lineage_store
@@ -28,6 +28,7 @@ from gbserver.lineage.lineage_reconciler import (
     as_utc_naive,
     reconcile_once,
 )
+from gbserver.lineage.lineage_seeding import BACKFILL_BUILD_ID
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.utils.logger import get_logger
 
@@ -233,7 +234,7 @@ class LineageWatcher:
         # per-sink filter_unrecorded check, expected-run-count derivation and
         # prerun-skip handling are shared rather than reimplemented here.
         #
-        # Failures are logged and swallowed rather than aborting start(): the
+        # Failures are recorded and swallowed rather than aborting start(): the
         # checkpoint is already durable, so nothing is lost by continuing, and a
         # watcher that refused to start would record nothing at all. Note what
         # each kind of failure costs, though. A target sitting at the watermark is
@@ -243,13 +244,15 @@ class LineageWatcher:
         # sweep is its only path back, and a failure here defers it to the next
         # start(). That is the gap this call exists to close, so its failures are
         # worth reading in the log even though they are non-fatal.
+        #
+        # Failures route through the same ``_on_record_error`` bookkeeping the
+        # steady-state scan uses, not a log-only callback. A target that fails
+        # this sweep is one the sweep is the *only* path back for, so it must be
+        # able to exhaust ``_MAX_RECORD_ATTEMPTS`` and be dropped durably;
+        # otherwise a permanently-unrecordable target behind the watermark blocks
+        # checkpoint advancement for this build on every restart, forever.
         def _on_error(build_id: str, target_id: str, exc: Exception) -> None:
-            logger.exception(
-                "Failed to re-record checkpoint target %s in build %s on start(): %s",
-                target_id,
-                build_id,
-                exc,
-            )
+            self._on_record_error(storage, build_id, target_id, exc)
 
         if self._store is not None:
             # datetime.min: every target of this build is in scope, however long
@@ -268,6 +271,7 @@ class LineageWatcher:
                 # budget again and block checkpoint advancement for the sweep.
                 skip=self._dropped,
                 on_error=_on_error,
+                on_success=self._on_record_success,
             )
 
     def _run(self) -> None:
@@ -323,6 +327,12 @@ class LineageWatcher:
             finished_after = datetime.min
         else:
             finished_after = watermark - self._WATERMARK_OVERLAP
+        # Stamped before the scan, not after: a target that finishes while the
+        # scan is running must stay in scope for the next one. Retiring the
+        # anchor to an after-the-fact timestamp would step over it.
+        # Naive UTC, matching every other watermark in this module (see
+        # as_utc_naive); utcnow() itself is deprecated.
+        scan_started = datetime.now(timezone.utc).replace(tzinfo=None)
         reconcile_once(
             self._store,
             storage,
@@ -333,6 +343,11 @@ class LineageWatcher:
             on_success=self._on_record_success,
             on_checkpoint_advance=lambda build_id, finished_at: (
                 self._on_checkpoint_advance(storage, build_id, finished_at)
+            ),
+            on_scan_complete=lambda untouched: (
+                self._retire_backfill_anchor(
+                    storage, watermark, untouched, scan_started
+                )
             ),
             skip=self._dropped,
         )
@@ -376,6 +391,46 @@ class LineageWatcher:
                 raw,
             )
             return None
+
+    def _retire_backfill_anchor(
+        self,
+        storage: SingletonAdminStorage,
+        watermark: datetime,
+        watermark_untouched: bool,
+        scan_started: datetime,
+    ) -> None:
+        """Move a spent ``datetime.min`` backfill anchor up to the scan time.
+
+        ``--seed all`` anchors the checkpoint at ``datetime.min`` so the first
+        scan walks the entire history. Normally the first recorded target
+        advances the checkpoint off that anchor via ``_on_checkpoint_advance``.
+        When the backfill records nothing, though — an empty DB, or one where
+        every candidate is in the drop set — nothing advances it, and *every*
+        subsequent scan re-walks the whole table at ``finished_after=datetime.min``
+        instead of reading only newly-finished rows.
+
+        Retiring the anchor is safe only under both conditions checked here:
+
+        - The watermark really is the backfill anchor. A normal watermark must
+          never be moved by anything but a recorded target, so this is scoped to
+          ``datetime.min`` and nothing else.
+        - ``watermark_untouched``: the pass recorded nothing, failed nothing and
+          dropped nothing (see ``reconcile_once``). Any of those would mean
+          unrecorded lineage sits *behind* the new anchor, and the steady-state
+          scan never looks behind its watermark, so moving it would strand that
+          lineage permanently. A record in the same pass has already advanced the
+          checkpoint to the right place via ``_on_checkpoint_advance``; moving it
+          again to the scan time would step over every target after it.
+        """
+        if not watermark_untouched or watermark != datetime.min:
+            return
+        logger.info(
+            "Full-history lineage backfill completed with nothing left to "
+            "record; advancing the checkpoint off the datetime.min anchor to %s "
+            "so later scans read only newly-finished targets.",
+            scan_started,
+        )
+        self._on_checkpoint_advance(storage, BACKFILL_BUILD_ID, scan_started)
 
     def _on_checkpoint_advance(
         self, storage: SingletonAdminStorage, build_id: str, finished_at: datetime

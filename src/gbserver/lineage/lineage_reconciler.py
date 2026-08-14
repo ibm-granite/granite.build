@@ -248,6 +248,7 @@ def reconcile_once(
     on_error: Optional[Callable[[str, str, Exception], None]] = None,
     on_success: Optional[Callable[[str, str], None]] = None,
     on_checkpoint_advance: Optional[Callable[[str, datetime], None]] = None,
+    on_scan_complete: Optional[Callable[[bool], None]] = None,
     skip: Optional[set[str]] = None,
     build_id: Optional[str] = None,
 ) -> int:
@@ -303,6 +304,19 @@ def reconcile_once(
             it, durably advancing the checkpoint beyond a target that was never
             recorded — retry would then rest solely on the caller's in-memory
             state and a restart would drop it permanently.
+        on_scan_complete: Optional callback ``(watermark_untouched)`` invoked once
+            when the pass finishes. ``True`` means the pass completed having left
+            the watermark exactly where it found it *and* with no unrecorded
+            lineage behind it: nothing recorded (so no ``on_checkpoint_advance``
+            fired), nothing failed, and nothing dropped via ``skip``. That is the
+            only condition under which a caller may move its watermark on its own
+            — notably to retire a ``datetime.min`` backfill anchor that would
+            otherwise re-walk the whole table on every scan.
+
+            ``newly_recorded == 0`` alone does NOT imply it: the count is also 0
+            when every candidate failed or was skipped, and moving the watermark
+            then would strand that lineage permanently, since the steady-state
+            scan never looks behind its watermark.
         skip: Target uuids the caller has given up on (e.g. dropped after
             exhausting retries). These are excluded from recording so a
             persistently failing target — which still falls within the watermark
@@ -341,6 +355,14 @@ def reconcile_once(
     # only the watermark-overlap boundary targets are all skipped) does not fire
     # a backend query (e.g. a wandb api.runs call) that would return nothing.
     if not by_uuid:
+        # A pass with nothing to do — report it so a caller anchored at
+        # datetime.min can retire the backfill anchor instead of re-walking the
+        # whole table on every scan. But it is only *clean* if there were no
+        # candidates at all: when `targets` is non-empty, every one of them was
+        # dropped via `skip`, i.e. lineage that will never be recorded is being
+        # left behind, and the anchor must stay put.
+        if on_scan_complete is not None:
+            on_scan_complete(not targets)
         return 0
     # Expected run count per candidate, so the sink can tell a fully-recorded
     # target from one whose runs were only partially emitted on a prior crashed
@@ -373,11 +395,16 @@ def reconcile_once(
                 store, storage, build_id=target.build_id, target_id=target.uuid
             )
             newly_recorded += 1
-            if (
-                target.finished_at is not None
-                and not checkpoint_blocked
-                and on_checkpoint_advance is not None
-            ):
+            if target.finished_at is None:
+                # Unreachable via select_recordable_targets, which skips NULL
+                # finished_at rows. Guarded anyway because the failure mode is
+                # silent: with no timestamp there is nothing to advance the
+                # watermark to, and merely *not* advancing would let the next
+                # target advance past this one. Block instead, so a future
+                # caller that bypasses the selector cannot move the checkpoint
+                # beyond a target the watermark can no longer re-surface.
+                checkpoint_blocked = True
+            elif not checkpoint_blocked and on_checkpoint_advance is not None:
                 on_checkpoint_advance(target.build_id, target.finished_at)
             if on_success is not None:
                 on_success(target.build_id, target.uuid)
@@ -400,6 +427,12 @@ def reconcile_once(
 
     if newly_recorded:
         logger.info("Reconciled lineage for %d target(s)", newly_recorded)
+    if on_scan_complete is not None:
+        # "Left the watermark alone": nothing recorded (so no per-target advance
+        # fired) and nothing blocked. Either a record or a block means the
+        # watermark is already where this pass wants it, and a caller must not
+        # move it further.
+        on_scan_complete(newly_recorded == 0 and not checkpoint_blocked)
     return newly_recorded
 
 
