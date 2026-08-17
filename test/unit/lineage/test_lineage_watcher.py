@@ -199,6 +199,36 @@ class TestLineageWatcher:
         assert store.calls == [("build-1", "target-1")]
         assert _watermark(self.storage) == _BASE
 
+    def test_target_inside_the_overlap_window_does_not_lower_the_watermark(self):
+        """Recording a target behind the watermark must not move it backward.
+
+        Regression: ``_on_checkpoint_advance`` wrote unconditionally, so a target
+        that legitimately finished inside ``_WATERMARK_OVERLAP`` (clock skew or
+        interleaved builds) dragged the durable watermark below its prior high
+        mark. With no newer target in the same pass to push it back up, it stayed
+        lowered and every later scan re-read that window. The target is still
+        recorded; only the watermark write is suppressed.
+        """
+        behind = _BASE - timedelta(seconds=30)
+        self._targets = [_target("build-1", "target-1", behind)]
+        watcher, store = self._make_watcher(since=_BASE)
+
+        watcher._reconcile()
+
+        assert store.calls == [("build-1", "target-1")]
+        assert _watermark(self.storage) == _BASE
+
+    def test_watermark_still_advances_for_a_newer_target(self):
+        """The monotonic guard must not block genuine forward progress."""
+        ahead = _BASE + timedelta(seconds=30)
+        self._targets = [_target("build-1", "target-1", ahead)]
+        watcher, store = self._make_watcher(since=_BASE)
+
+        watcher._reconcile()
+
+        assert store.calls == [("build-1", "target-1")]
+        assert _watermark(self.storage) == ahead
+
     def test_timezone_aware_checkpoint_watermark_records(self):
         """A checkpoint seeded with a timezone-aware ``finished_at`` still records.
 

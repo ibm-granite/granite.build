@@ -467,7 +467,32 @@ class LineageWatcher:
         durable checkpoint always reflects the last target actually recorded —
         never a target merely considered or one that failed to record. The next
         scan reads it back, so this write alone advances the watermark.
+
+        The watermark is monotonic: a target inside the ``_WATERMARK_OVERLAP``
+        window legitimately finished *behind* the current watermark (clock skew
+        or interleaved builds — see that constant), and recording it must not
+        drag the durable watermark back down with it. Without this guard such a
+        target lowers the watermark, and if no newer target in the same pass
+        pushes it back up it stays lowered, re-reading that window on every
+        later scan. Recording still happens either way; only the watermark write
+        is suppressed.
+
+        The comparison is against the *durable* value rather than an in-process
+        high-water mark so a restart cannot forget it and re-open the same
+        regression. The ``datetime.min`` backfill anchor compares below every
+        real timestamp, so ``_retire_backfill_anchor`` still advances off it.
         """
+        current = self._checkpoint_watermark(storage)
+        if current is not None and finished_at <= current:
+            logger.debug(
+                "Not moving the lineage checkpoint from %s back to %s for build "
+                "%s; the target finished within the overlap window and the "
+                "watermark is monotonic.",
+                current,
+                finished_at,
+                build_id,
+            )
+            return
         storage.status_storage.set_value(
             LINEAGE_WATCHER_CHECKPOINT_KEY,
             {"build_id": build_id, "finished_at": finished_at.isoformat()},
