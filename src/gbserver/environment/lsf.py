@@ -41,6 +41,7 @@ from gbserver.asset.assetstore import Assetstore
 from gbserver.asset.cosstore import Cosstore
 from gbserver.asset.hfstore import Hfstore
 from gbserver.asset.lhstore import Lhstore
+from gbserver.environment.bv_project_access import confirm_any_project_membership
 from gbserver.environment.environment import (
     BINDING_KEY,
     Environment,
@@ -717,10 +718,17 @@ class Lsf(Environment):
         self: Self,
         setup_id: str,
         space_secrets: Optional[Dict[str, str]] = None,
+        runmetadata: Optional[EntityRunMetadata] = None,
         **kwargs,
     ) -> Dict:
         """One time instance setup of the ssh keys and tunnel (via _synchronized_setup method)
         Called by reflection.
+
+        ``runmetadata`` is injected by ``Run._add_to_run_kwargs`` and carries the
+        submitting user's login; it is declared as a named parameter (rather than
+        read out of ``kwargs``) following ``setup_skypilot``. Optional so the
+        signature stays valid for callers that don't supply it — the gate treats a
+        missing login as a denial, per its fail-closed rule.
         """
         if not space_secrets:
             raise ValueError(f"setup_id: {setup_id} space_secrets should not be empty")
@@ -736,6 +744,16 @@ class Lsf(Environment):
             assert self._key_file_path
             # await self.__preload_unreachable_ssh_nodes()
             await self._open_ssh_tunnel(setup_id)
+            # Gate on BV project membership before any job reaches the scheduler.
+            # Deliberately after the tunnel opens: the tunnel is already required
+            # for the build to run, so the check adds no new dependency, and it
+            # reuses the open connection rather than paying another handshake.
+            # No-op unless the rollout mode is enabled (default off).
+            ssh_tunnel = self._ssh_tunnel
+            assert ssh_tunnel
+            await confirm_any_project_membership(
+                ssh_tunnel, (runmetadata.username if runmetadata else "") or ""
+            )
             return {
                 "ssh_key_file": self._key_file_path,
                 "space_secrets": space_secrets,

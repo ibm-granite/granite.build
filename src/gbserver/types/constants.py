@@ -436,6 +436,48 @@ ENV_FILES_GETENT_BATCH_MAX = int(
     os.getenv(ENV_VAR_GBSERVER_ENV_FILES_GETENT_BATCH_MAX, "256")
 )
 
+# BlueVela project-membership gate: a build may only run on an LSF/BlueVela
+# environment if the submitting user belongs to at least one BV project, i.e. a
+# POSIX group named with BV_PROJECT_GROUP_PREFIX on the login nodes. Checked in
+# `Lsf.setup_bsub` once the tunnel is already open, so it adds no new dependency
+# — the tunnel is a prerequisite for the build to run at all.
+#
+# Three states rather than a boolean, because this gate FAILS CLOSED (see
+# environment/bv_project_access.py) and its identity mapping assumes the BV
+# account name equals the granite.build login. If that assumption is wrong,
+# enforcing would deny every build — so a shadow state is the only safe way to
+# roll it out:
+#
+#   off      — no check at all (default; nothing changes)
+#   shadow   — run the check, log the decision, ALLOW regardless
+#   enforce  — deny when the user has no project
+#
+# Roll out off -> shadow -> enforce, reading the shadow logs before flipping.
+# This is a rollout control, not a per-user bypass.
+ENV_VAR_GBSERVER_BV_PROJECT_ACCESS_MODE = ENV_VAR_PREFIX + "_BV_PROJECT_ACCESS_MODE"
+BV_PROJECT_ACCESS_MODE_OFF = "off"
+BV_PROJECT_ACCESS_MODE_SHADOW = "shadow"
+BV_PROJECT_ACCESS_MODE_ENFORCE = "enforce"
+BV_PROJECT_ACCESS_MODES = (
+    BV_PROJECT_ACCESS_MODE_OFF,
+    BV_PROJECT_ACCESS_MODE_SHADOW,
+    BV_PROJECT_ACCESS_MODE_ENFORCE,
+)
+# An unrecognized value falls back to `off`, NOT to enforce. Fail-closed governs
+# the membership *lookup* — an unparseable value of our own rollout flag is a
+# config typo, and a typo must not silently start denying every build.
+BV_PROJECT_ACCESS_MODE = (
+    os.getenv(ENV_VAR_GBSERVER_BV_PROJECT_ACCESS_MODE, BV_PROJECT_ACCESS_MODE_OFF)
+    .strip()
+    .lower()
+)
+
+# Prefix identifying a BV project group. Matches the `proj_{folder}` convention
+# the environment-files API already relies on (see EnvironmentFilesConfig and
+# environment_files_paths._group_name).
+ENV_VAR_GBSERVER_BV_PROJECT_GROUP_PREFIX = ENV_VAR_PREFIX + "_BV_PROJECT_GROUP_PREFIX"
+BV_PROJECT_GROUP_PREFIX = os.getenv(ENV_VAR_GBSERVER_BV_PROJECT_GROUP_PREFIX, "proj_")
+
 
 @dataclass(frozen=True)
 class EnvironmentFilesConfig:
