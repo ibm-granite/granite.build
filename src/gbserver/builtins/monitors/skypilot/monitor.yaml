@@ -68,4 +68,6 @@ config:
         - field_name: metadata_key
           field_regex: "(?<=LLMB_STEP_METADATA_KEY:)[^ ]+"
         - field_name: metadata_value
-          field_regex: "(?<=LLMB_STEP_METADATA_VALUE:).*"
+          # Trim trailing whitespace/carriage-return (CRLF logs) so it is not folded
+          # into the value; internal spaces are preserved.
+          field_regex: '(?<=LLMB_STEP_METADATA_VALUE:).*?(?=\s*$)'

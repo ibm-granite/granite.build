@@ -103,6 +103,21 @@ async def test_all_monitors_parse_marker(monitor):
 
 @pytest.mark.standalone
 @pytest.mark.asyncio
+@pytest.mark.parametrize("monitor", ["bash", "docker", "skypilot"])
+@pytest.mark.parametrize("trailer", ["\r", "  ", "\t", " \r"])
+async def test_trailing_whitespace_trimmed_from_value(monitor, trailer):
+    """Trailing whitespace/CR (e.g. CRLF logs) is not folded into the value.
+
+    Guards the value regex against capturing to end-of-line: a trailing ``\\r`` would
+    otherwise corrupt the recorded SHA and fail a ``^[0-9a-f]{40}$`` assertion.
+    """
+    events = await _parse(monitor, _MARKER + trailer)
+    assert len(events) == 1
+    assert events[0].payload.metadata_value == _SHA
+
+
+@pytest.mark.standalone
+@pytest.mark.asyncio
 async def test_bash_anchor_rejects_prefixed_line():
     """Bash anchors the marker, so an echoed/prefixed line does not match."""
     assert await _parse("bash", "byoc: echoing " + _MARKER) == []
