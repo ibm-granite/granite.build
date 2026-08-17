@@ -31,7 +31,7 @@ spec:
         command:
         - bash
         - -c
-        - gbserver lineage-watch
+        - gbserver lineage-watch{{ with .Values.deployments.lineageWatcher.baseBuildId }} --base-build-id {{ . | quote }}{{ end }}
         env:
         {{- range $key, $value := .Values.deployments.lineageWatcher.env }}
         - name: {{ $key | quote }}
