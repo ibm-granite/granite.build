@@ -15,6 +15,16 @@ target_expectations:
     input_artifact_count: 1
     output_artifact_count: 1
     jobstats_count: 1
+    # Verify the byoc step captured its runtime commit SHA as step metadata (via
+    # the LLMB_STEP_METADATA_KEY/VALUE hook) and that the rendered config persisted.
+    # Single step, so step_uri is omitted. Read from step_storage directly, so this
+    # holds even under standalone's NoopLineageStore.
+    expected_steps:
+      - metadata_matches:
+          commit_hash: "^[0-9a-f]{40}$"
+        config:
+          byoc_config:
+            repo: "https://github.com/octocat/Hello-World.git"
 # The Space this test resolves the step (and the environment, monitors, and any
 # other assets) through. In the step dir (Mode 1) it is the local Space rendered
 # by `make space` two levels up (steps/byoc/skypilot/space/), which carries
