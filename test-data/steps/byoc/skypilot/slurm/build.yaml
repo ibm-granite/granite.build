@@ -1,0 +1,55 @@
+granite.build:
+  name: skypilot-slurm-byoc-test
+  targets:
+    byoc-run:
+      environment_uri: space://environments/skypilot/slurm
+      inputs:
+        # env:// input: a shared-FS path pulled as a no-op (pullasset_envstore).
+        # The path need not physically exist — EnvURI.exists()/pull() are stubs —
+        # it just flows to the command as a binding. Keeps the test HF-free/fast.
+        env_input:
+          uri: "env:///tmp/gb-env-input.txt"
+      outputs:
+        # env:// output: registered inline (pushasset_envstore) from the artifact
+        # marker the command emits below. `type` is required for env:// outputs.
+        # The path is arbitrary (env:// push/pull are no-ops); it just has to be
+        # the same value in this uri and in the command's LLMB_ARTIFACT marker.
+        env_output:
+          uri: "env:///tmp/gb-byoc-output.txt"
+          type: fileset
+      steps:
+        # The byoc step, resolved from the Space rendered by `make space` (see the
+        # test's _get_test_specification). It git-clones the repo below during
+        # `setup` and runs `command` from inside the clone during `run`.
+        - step_uri: space://steps/byoc
+          config:
+            # Fast completion detection for the test (base skypilot default is
+            # 300s; a quick test job finishes in seconds).
+            poll_interval_seconds: 5
+            byoc_config:
+              # Empty image => run on the bare launcher node (no Pyxis needed, so
+              # this works on the local Docker slurm cluster).
+              image: ""
+              # GitHub's canonical tiny, stable public test repo.
+              repo: "https://github.com/octocat/Hello-World.git"
+              # Default branch; the command does not depend on repo contents.
+              ref: ""
+              workdir: "code"
+              # Exercises setup_command: write a sentinel into $GB_BUILD_WORKDIR
+              # during setup. The run command below requires it (set -eu), so the
+              # build only reaches SUCCESS if setup_command actually ran.
+              setup_command: >-
+                echo byoc-setup-ran > "$GB_BUILD_WORKDIR/setup_marker"
+              # Emits the artifact marker skypilot_monitor captures. The path must
+              # equal the env:// output uri path above. byoc's run block cd's into
+              # the clone first, so this runs from inside the cloned repo.
+              # `test -f` fails the step (set -eu) unless setup_command wrote the
+              # sentinel, so reaching SUCCESS proves the setup phase ran it.
+              command: >-
+                test -f "$GB_BUILD_WORKDIR/setup_marker";
+                echo "setup marker: $(cat "$GB_BUILD_WORKDIR/setup_marker")";
+                echo "env input path: {{ bindings.env_input.binding.path }}";
+                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-byoc-output.txt"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

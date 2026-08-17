@@ -52,6 +52,7 @@ SECURITY — this file is the access-control core of the environment-files API:
 
 import re
 import shlex
+from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import List, Optional, Set
 
@@ -65,7 +66,9 @@ from gbserver.api.build_files_paths import (  # noqa: F401
 from gbserver.types.constants import (
     ENV_FILES_GETENT_BATCH_MAX,
     ENVIRONMENT_FILES_REGISTRY,
+    SUPPORTED_ENV_FOR_FILES,
     EnvironmentFilesConfig,
+    get_supported_env_for_files_uri,
 )
 from gbserver.utils.logger import get_logger
 
@@ -99,9 +102,10 @@ class EnvironmentNotConfigured(HTTPException):
     """503 for a *known* environment that is unconfigured on this deployment.
 
     Distinct from ``AccessDenied``: reaching this means the ``{environment}`` is
-    supported (in the registry) but its ``environment_uri`` is unset, which is a
-    deployment-config problem — not something a caller can probe for, so it does
-    not need to hide behind the uniform 404.
+    supported (in the registry) but its ``environment_uri`` could not be derived
+    from the public space config on this deployment, which is a deployment-config
+    problem — not something a caller can probe for, so it does not need to hide
+    behind the uniform 404.
     """
 
     def __init__(self, environment: str) -> None:
@@ -117,15 +121,25 @@ def resolve_environment(environment: str) -> EnvironmentFilesConfig:
     Raises ``AccessDenied`` (the uniform 404) for any unsupported environment —
     identical to a missing folder, so the supported set can't be enumerated.
     Raises ``EnvironmentNotConfigured`` (503) for a supported environment whose
-    ``environment_uri`` is unset on this deployment. Otherwise returns the
-    ``EnvironmentFilesConfig`` the handlers thread into tunnel + path resolution.
+    environment URI can't be derived from the public space config repo on this
+    deployment. Otherwise returns the ``EnvironmentFilesConfig`` the handlers
+    thread into tunnel + path resolution, with ``environment_uri`` set to the
+    derived value.
     """
     config = ENVIRONMENT_FILES_REGISTRY.get(environment)
     if config is None:
         raise AccessDenied()
-    if not config.environment_uri:
+    # bluevela is the only supported environment today, so its derivation is
+    # called directly. A second environment would generalize this to a per-entry
+    # resolver; not abstracted prematurely.
+    environment_uri = (
+        get_supported_env_for_files_uri()
+        if environment == SUPPORTED_ENV_FOR_FILES
+        else config.environment_uri
+    )
+    if not environment_uri:
         raise EnvironmentNotConfigured(environment)
-    return config
+    return replace(config, environment_uri=environment_uri)
 
 
 def validate_folder_name(folder: str) -> str:

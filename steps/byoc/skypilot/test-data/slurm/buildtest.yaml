@@ -1,0 +1,34 @@
+# YAML-driven spec for test_skypilot_byoc.py (located by the test/ <-> test-data/
+# helper, so this pairing holds in both test modes; see steps/README.md).
+# The target runs the byoc step (space://steps/byoc), which git-clones a small
+# public repo (octocat/Hello-World) in setup and runs a command in run. HF-free
+# (env:// in/out) so it is fast and needs no HF_TOKEN.
+targets:
+  - byoc-run
+target_expectations:
+  - target_name: byoc-run
+    # Just the one workload runs: the env:// input/output are no-ops on the
+    # shared FS (one input + one output artifact each, no extra pull/push step).
+    # jobstats_count is not asserted under standalone's NoopLineageStore, but
+    # kept accurate for a single step.
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+# The Space this test resolves the step (and the environment, monitors, and any
+# other assets) through. In the step dir (Mode 1) it is the local Space rendered
+# by `make space` two levels up (steps/byoc/skypilot/space/), which carries
+# steps/byoc/step.yaml and chains (base_uris) to configurations/assets. When
+# `make publish-step` copies this fixture into test-data/steps/ (Mode 2), it rewrites
+# this line to point at the shared space configurations/spaces/local, which
+# resolves the PUBLISHED step from the assets tree. Either way the build
+# references the step by space://steps/byoc.
+space_uri: ../../space
+# Run only the basic build (skip the cancellation variant) — the command
+# finishes near-instantly, so there is no stable RUNNING window to cancel in.
+tests:
+  - runner
+# A single clean run with no injected synthetic failure: a failed clone/command
+# fails the build, so reaching SUCCESS proves the step ran end to end.
+simulate_step_failure: false
+timeout_minutes: 10 # Sufficient on mac running the local Docker slurm cluster.

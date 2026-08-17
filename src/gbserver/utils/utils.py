@@ -93,6 +93,54 @@ def short_alphanumeric_lower_hash(input_string: str) -> str:
     return base64_encoded[:8].lower()
 
 
+K8S_LABEL_VALUE_MAX_LENGTH = 63
+
+
+def sanitize_k8s_label_value(value: str, fallback: str = "unknown") -> str:
+    """Coerce an arbitrary string into a valid Kubernetes label value.
+
+    Kubernetes label values must (per the API validation rules):
+      - be 63 characters or less,
+      - consist of alphanumerics, '-', '_' or '.',
+      - begin and end with an alphanumeric character (or be empty).
+
+    Values that violate these rules (e.g. an ibmid email username containing
+    '@') would otherwise be rejected by the API server when creating the
+    job/pod. These labels are used only for human tracking/grouping, not for
+    any functional lookup or matching, so a lossy transformation is fine. The
+    result is kept as close to the original as possible for readability -- the
+    goal is simply that the value not break job creation -- so illegal
+    characters are replaced in place (e.g. "ABC@foo.com" -> "ABC_foo.com")
+    rather than encoded or suffixed.
+
+    Args:
+        value: The raw string to sanitize.
+        fallback: Value to use when sanitization would otherwise yield an
+            empty string (e.g. input made entirely of invalid characters).
+            The caller is responsible for passing a valid label value here;
+            it is returned as-is (not re-sanitized).
+
+    Returns:
+        A string that satisfies the Kubernetes label value constraints,
+        provided `fallback` (if used) is itself a valid label value.
+    """
+    # Replace any disallowed character with '_' so the result stays readable
+    # (e.g. "ABC@foo.com" -> "ABC_foo.com").
+    sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", value or "")
+
+    # Truncate to the length limit, then trim leading/trailing non-alphanumeric
+    # characters so the value begins and ends with an alphanumeric as k8s
+    # requires. Trimming after truncation also cleans up any separator left
+    # dangling at the cut point.
+    sanitized = sanitized[:K8S_LABEL_VALUE_MAX_LENGTH]
+    sanitized = re.sub(r"^[^A-Za-z0-9]+", "", sanitized)
+    sanitized = re.sub(r"[^A-Za-z0-9]+$", "", sanitized)
+
+    # Nothing usable survived (input was empty or made entirely of invalid or
+    # separator characters).
+    return sanitized or fallback
+
+
 def cmd_safe_join(cmd: List[str]) -> str:
     """Preserves arguments with spaces in them."""
     return " ".join(f"'{x}'" if " " in x else x for x in cmd)

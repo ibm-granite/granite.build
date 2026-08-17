@@ -58,6 +58,9 @@ COVERAGE_GATE = $(if $(strip $(PYTEST_COV)),coverage report --fail-under=$(MIN_C
 # (`make quick-tests PYTEST_CAPTURE=`) to let pytest capture output — handy when
 # debugging xdist/subprocess interactions.
 PYTEST_CAPTURE ?= -s
+# The Mode-2 step build tests under test/steps/ are auto-marked `extended` by
+# test/steps/conftest.py (see steps/README.md), so `not extended` keeps them out of
+# the quick/PR selections while extended-tests runs them; no dedicated marker needed.
 DEFAULT_PYTEST_MARKERS ?= not secret_manager and not nats_server and not docker_required
 # PR runs the quick (non-extended) selection; merge includes extended tests.
 PR_PYTEST_MARKERS ?= $(DEFAULT_PYTEST_MARKERS) and not extended
@@ -489,6 +492,7 @@ clean-frontend:
 .PHONY: build-frontend
 build-frontend:
 	cd frontend && $(YARN) install --frozen-lockfile && $(YARN) build
+	mkdir -p src/gbserver/static/ui
 	rsync -a --delete frontend/apps/standalone/out/ src/gbserver/static/ui/
 
 .PHONY: build

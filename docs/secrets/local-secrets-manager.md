@@ -168,3 +168,9 @@ Each secret supports the following fields:
 - Users may specify a directory or a direct file path for secrets.
 - First-time synchronization automatically populates the local secrets file when enabled.
 - Secrets are structured in a consistent, space-based hierarchy.
+
+## See also
+
+- [SkyPilot on AWS — runbook: non-default AWS profile via the local secret store](../environments/skypilot-aws.md#runbook-use-a-non-default-aws-profile-via-the-local-secret-store)
+  — a worked example that seeds this store and resolves the seeded names into a materialized
+  `~/.aws/credentials` profile.

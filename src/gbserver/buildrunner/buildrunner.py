@@ -51,7 +51,6 @@ from gbserver.buildrunner.buildlogger import (
     get_message_logger,
 )
 from gbserver.github.myghapi import MyGHApi
-from gbserver.lineage.jobstats import get_lineage_store
 from gbserver.metrics.metrics_client import push_metrics
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
@@ -1649,20 +1648,8 @@ Download : {download_msg}
             )
             self.storage.target_storage.update(stored_target_run)
         if payload.status == Status.SUCCESS:
-            # Target complete - record lineage here
-            try:
-                logger.info("create job stats for completed target %s", targetrun_id)
-                get_lineage_store().add_jobstats_for_build_target(
-                    self.storage,
-                    build_id=build_id,
-                    target_id=targetrun_id,
-                )
-            except Exception as e:
-                logger.warning(
-                    "failed to create job stats for completed build %s: %s",
-                    build_id,
-                    e,
-                )
+            # Lineage is now recorded via DB reconciliation, not from gb_events.
+            pass
 
     @staticmethod
     def _apply_run_timestamps(

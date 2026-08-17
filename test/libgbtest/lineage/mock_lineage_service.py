@@ -46,6 +46,36 @@ class MockLineageService(LineageService):
                 total += 1
         return total
 
+    def filter_unrecorded(
+        self, target_ids: set, expected_counts: Optional[Dict[str, int]] = None
+    ) -> set:
+        # Mirror the real service: count the distinct runs carrying each
+        # ``target_id=<uuid>`` tag (emitted events are the in-memory stand-in for
+        # wandb run metadata), then treat a candidate as recorded only when its
+        # run count meets its expected count. A ``None`` expected count (or a
+        # missing key) falls back to the presence check (recorded once >=1 run).
+        run_counts: Dict[str, int] = {}
+        seen: set = set()  # (target_id, run_id) so each run counts once per target
+        for event in self._events:
+            run_id = event.get("run", {}).get("runId", "")
+            for tag in self._tags_for_event(event):
+                if not tag.startswith("target_id="):
+                    continue
+                tid = tag.split("=", 1)[1]
+                if (tid, run_id) in seen:
+                    continue
+                seen.add((tid, run_id))
+                run_counts[tid] = run_counts.get(tid, 0) + 1
+        recorded: set = set()
+        for tid in target_ids:
+            count = run_counts.get(tid, 0)
+            if count == 0:
+                continue
+            expected = (expected_counts or {}).get(tid)
+            if expected is None or count >= expected:
+                recorded.add(tid)
+        return set(target_ids) - recorded
+
     def search_lineage_by_tags(
         self, tags: List[str], limit: int = 10, offset: int = 0
     ) -> Tuple[int, List[Dict]]:

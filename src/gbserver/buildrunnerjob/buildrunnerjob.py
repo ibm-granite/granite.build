@@ -59,6 +59,7 @@ from gbserver.types.constants import (
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 from gbserver.utils.template import fill_template
+from gbserver.utils.utils import sanitize_k8s_label_value
 
 logger = get_logger(__name__)
 
@@ -242,10 +243,18 @@ class BuildRunnerJob(AbstractBuildRunner):
         stored_build = self.stored_build
         build_id = stored_build.uuid or "no_build_id"
         source_uri = stored_build.source_uri or ""
+        # username/spacename are used only for human tracking (no functional
+        # lookup matches on them), so sanitize to satisfy the k8s label-value
+        # constraints. In ibmid auth mode the username is an email address
+        # (e.g. contains '@'), which the API server would otherwise reject.
         labels = {
             "granite-dot-build/build-id": build_id,
-            "granite-dot-build/username": stored_build.username or "no_username",
-            "granite-dot-build/spacename": stored_build.space_name or "no_spacename",
+            "granite-dot-build/username": sanitize_k8s_label_value(
+                stored_build.username or "", fallback="no_username"
+            ),
+            "granite-dot-build/spacename": sanitize_k8s_label_value(
+                stored_build.space_name or "", fallback="no_spacename"
+            ),
         }
         annotations = {"granite-dot-build/pr": source_uri}
         kube_job_name = f"gb-build-runner-{build_id}"

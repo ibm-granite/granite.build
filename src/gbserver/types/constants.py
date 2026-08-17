@@ -452,17 +452,20 @@ class EnvironmentFilesConfig:
         caller-supplied.
       * ``space_name`` — space whose IBM Cloud Secret Manager holds the service
         SSH key used to open the tunnel (server-resolved, never the requester).
-      * ``environment_uri`` — a ``space://…`` asset URI pointing at the LSF
-        ``environment.yaml`` whose login nodes mount ``gpfs_base``. This is the
-        one value that differs per deployment (dev/staging/prod) and cannot be
-        inferred from code; it MUST be set for the environment to function. An
-        empty value means "known environment, not configured for this
-        deployment" → the endpoints return 503 rather than guess.
+      * ``environment_uri`` — the asset URI pointing at the LSF
+        ``environment.yaml`` whose login nodes mount ``gpfs_base``. Registry
+        entries leave this empty: it is filled per request by
+        ``resolve_environment``, which derives it from the public space's config
+        repo (see ``get_supported_env_for_files_uri``), yielding a
+        ``git+ssh://…@<config-branch>#subdirectory=environments/<env>`` asset URI.
+        Per-deployment (dev/staging/prod) differences come "for free" from the
+        public space config, so there is no separately-set value; the endpoints
+        return 503 when the URI can't be derived (rather than guess).
     """
 
     gpfs_base: str
     space_name: str
-    environment_uri: str
+    environment_uri: str = ""
 
 
 # Registry of supported environments for the files API. Adding a new supported
@@ -470,26 +473,96 @@ class EnvironmentFilesConfig:
 # environment is `bluevela` (LSF login nodes mounting /proj), preserving the
 # behavior the API shipped with.
 #
-# The env vars carry the module-wide GBSERVER_ prefix (ENV_VAR_PREFIX), i.e.
-# GBSERVER_BLUEVELA_FILES_SPACE_NAME / GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI —
-# NOT a bare GB_ prefix.
-# GBSERVER_BLUEVELA_FILES_SPACE_NAME: defaults to the public space (literal
-#   "public"; the PUBLIC_SPACE_NAME constant is defined further down this file).
-# GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI: empty default → bluevela is a known
-#   environment but "not configured" on this deployment (503, not a guess).
+# GBSERVER_BLUEVELA_FILES_SPACE_NAME carries the module-wide GBSERVER_ prefix
+# (ENV_VAR_PREFIX) — NOT a bare GB_ prefix — and defaults to the public space
+# (literal "public"; the PUBLIC_SPACE_NAME constant is defined further down this
+# file). There is no environment-URI env var: the asset URI is always derived
+# from the public space config repo at request time (see
+# get_supported_env_for_files_uri below), so per-deployment differences come from
+# the public space config, not a separately-set value.
 ENV_VAR_GBSERVER_BLUEVELA_FILES_SPACE_NAME = (
     ENV_VAR_PREFIX + "_BLUEVELA_FILES_SPACE_NAME"
 )
-ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI = (
-    ENV_VAR_PREFIX + "_BLUEVELA_FILES_ENVIRONMENT_URI"
-)
+
+# The single supported environment name for the files API. Used both as the
+# registry key and by the environment-URI derivation (the `environments/<name>`
+# subdirectory in the public space config repo). Only the value is "bluevela"
+# specific; the symbol is generic so a future supported env is a data change.
+SUPPORTED_ENV_FOR_FILES = "bluevela"
+
 ENVIRONMENT_FILES_REGISTRY: Dict[str, EnvironmentFilesConfig] = {
-    "bluevela": EnvironmentFilesConfig(
+    SUPPORTED_ENV_FOR_FILES: EnvironmentFilesConfig(
         gpfs_base="/proj",
         space_name=os.getenv(ENV_VAR_GBSERVER_BLUEVELA_FILES_SPACE_NAME, "public"),
-        environment_uri=os.getenv(ENV_VAR_GBSERVER_BLUEVELA_FILES_ENVIRONMENT_URI, ""),
+        # environment_uri is left empty here and filled per request by
+        # resolve_environment via get_supported_env_for_files_uri().
     ),
 }
+
+
+# Process-level cache of the derived environment URI, keyed by public-space repo
+# URL. Only a *stable* derivation is cached (a git result with a config branch, or
+# a file:// path); a branchless git result / failures / empties are not, so a later
+# request retries once the gbspace-config branch / token is healthy. Lock-free
+# write is fine: dict assignment is atomic, worst case is a redundant re-probe.
+_DERIVED_ENV_FOR_FILES_URI_CACHE: Dict[str, str] = {}
+
+
+def get_supported_env_for_files_uri() -> str:
+    """Derive the supported environment's environment.yaml asset URI.
+
+    Converts ``PUBLIC_SPACE_GIT_URI`` (the public space config repo) into a
+    ``git+ssh://…[@<config-branch>]#subdirectory=environments/<env>`` asset URI
+    via ``GitURI.get_gb_space_config_uri`` (the same conversion the build path
+    uses) and appends the env subdirectory. There is no override; the URI is
+    always derived, so per-deployment differences come from the public space.
+
+    Returns ``""`` (→ 503 in the caller) whenever a URI can't be produced: no
+    ``PUBLIC_SPACE_GIT_URI`` (e.g. STANDALONE), or the GitHub config-branch probe
+    failing — the exception is caught so a transient GitHub problem reads as "not
+    configured", not a 500.
+
+    Lazy (not evaluated at import) to avoid a cycle: git.py imports
+    ``GBSERVER_GITHUB_TOKEN`` from this module. See the cache note above for what
+    is / isn't memoized.
+    """
+    if not PUBLIC_SPACE_GIT_URI:
+        return ""
+    cached = _DERIVED_ENV_FOR_FILES_URI_CACHE.get(PUBLIC_SPACE_GIT_URI)
+    if cached is not None:
+        return cached
+    # Function-local import: git.py imports from this module (cycle otherwise).
+    from requests import RequestException
+
+    from gbcommon.uri.git import GitURI
+    from gbcommon.uri.uri import URI
+    from gbserver.utils.logger import get_logger
+
+    try:
+        base = GitURI.get_gb_space_config_uri(PUBLIC_SPACE_GIT_URI)
+    except (ValueError, RuntimeError, RequestException) as e:
+        # is_branch_present raises ValueError (401) / RuntimeError (non-404) /
+        # requests error (network); degrade those to 503, not 500. Anything else
+        # is an unexpected bug and propagates. Not cached — retry on recovery.
+        get_logger(__name__).warning(
+            "failed to derive files-env URI from public space %r: %s",
+            PUBLIC_SPACE_GIT_URI,
+            e,
+        )
+        return ""
+    if not base:
+        return ""
+    # get_gb_space_config_uri never adds a fragment (only `@<branch>` on a match),
+    # so append_path always creates the `#subdirectory=` fragment here.
+    uri = URI.get_uri(base)
+    uri.append_path(f"environments/{SUPPORTED_ENV_FOR_FILES}")
+    resolved = str(uri)
+    # Cache only a stable result (file:// path, or git with a config branch); a
+    # branchless git URI points at the default branch and is left uncached.
+    if base.startswith("file://") or "@" in base.split("#", 1)[0]:
+        _DERIVED_ENV_FOR_FILES_URI_CACHE[PUBLIC_SPACE_GIT_URI] = resolved
+    return resolved
+
 
 ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT = (
     ENV_VAR_PREFIX + "_DEFAULT_GH_REQUEST_TIMEOUT"
@@ -826,6 +899,8 @@ GBSERVER_WANDB_ENTITY = os.getenv(ENV_VAR_PREFIX + "_WANDB_ENTITY", "dmf-testing
 GBSERVER_WANDB_BASE_URL = os.getenv(
     ENV_VAR_PREFIX + "_WANDB_BASE_URL", "https://ibm.wandb.io"
 )
+GBSERVER_WANDB_QUIET = getenv_boolean(ENV_VAR_PREFIX + "_WANDB_QUIET", True)
+GBSERVER_WANDB_LOG_LEVEL = os.getenv(ENV_VAR_PREFIX + "_WANDB_LOG_LEVEL", "warning")
 
 GBSERVER_SQL_SCHEME = os.getenv(ENV_VAR_GBSERVER_SQL_SCHEME, "postgresql")
 GBSERVER_SQL_HOST = os.getenv(

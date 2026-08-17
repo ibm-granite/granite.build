@@ -1,7 +1,8 @@
 # byoc (SkyPilot)
 
 Bring-Your-Own-Code step for SkyPilot clusters. Runs in a **public container
-image** (or on the bare launcher node), clones a public git repo during `setup`,
+image** (or on the bare launcher node), clones a public git repo during `setup`
+(optionally running a `setup_command` afterwards, e.g. to install dependencies),
 and runs a user-defined command during `run` — no custom image is built or
 published for this step.
 
@@ -12,12 +13,13 @@ shared Makefile conventions — see the framework overview:
 
 ## Referencing the step
 
-`byoc` is a generated bundle referenced by an **absolute `file://` URI** to the
-`step/` directory produced by `make step`:
+`make space` renders a self-contained Space into `space/` (see `SPACE_DIR` in the
+[framework overview](../../README.md)). Point the build's Space at that directory
+and reference the step by the stable `space://steps/byoc` URI:
 
 ```yaml
 steps:
-  - step_uri: file:///abs/path/to/steps/byoc/skypilot/step
+  - step_uri: space://steps/byoc
 ```
 
 ## Config contract (`byoc_config`)
@@ -35,9 +37,10 @@ All fields live under the step's `config.byoc_config`.
 
 | Field | Type | Purpose |
 |---|---|---|
-| `image` | string | Public container image the step runs in, e.g. `python:3.12-slim`. Rendered at runtime as SkyPilot `docker:<image>`. Empty (default) runs on the bare launcher node. |
+| `image` | string | Public container image the step runs in, e.g. `python:3.12-slim`. Rendered at runtime as SkyPilot `docker:<image>`. Defaults to `quay.io/fedora/fedora-minimal:42`; set to `""` to run on the bare launcher node instead (e.g. a cluster without Pyxis, which cannot run container images). |
 | `ref` | string | Branch, tag, or commit checked out after cloning. Default: the repo's default branch. |
 | `workdir` | string | Subdirectory (under `$GB_BUILD_WORKDIR`) the repo is cloned into. Default: `code`. |
+| `setup_command` | string | Bash command run during `setup`, **after** the clone, from `$GB_BUILD_WORKDIR` (the workdir root). Use it for dependency installation, e.g. `cd code && pip install -r requirements.txt`. `set -eu` is in effect, so a failure fails the build. Empty (default) => skipped. |
 
 > **`image` is a runtime choice, not a built image.** Unlike custom-image steps
 > (e.g. [eval](../../eval/skypilot/README.md)), `byoc` builds no Dockerfile;
@@ -63,23 +66,27 @@ All fields live under the step's `config.byoc_config`.
 
 ## Env vars the step provides to your commands
 
-Exported by the SkyPilot launcher into both `setup` and `run`:
-
-| Variable | Set when | Meaning |
-|---|---|---|
-| `$GB_BUILD_WORKDIR` | always | Per-run workdir; the run script's initial CWD. `repo` is cloned to `$GB_BUILD_WORKDIR/<workdir>`; `src/` is mounted at `$GB_BUILD_WORKDIR/src`. |
-| `$GB_SHARED_WORKDIR` | env sets `shared_workdir` | Env-level shared dir mounted on every worker, for cross-step state. |
-| `$GB_BUILD_ID`, `$GB_TARGETRUN_ID` | run metadata present | Build / target-run identifiers, for correlating logs and shared state. |
-| `$GB_SKYPILOT_LAUNCH_ID`, `$GB_SKYPILOT_CLUSTER_NAME` | always | This launch's id and the SkyPilot cluster name. |
+The SkyPilot launcher exports `$GB_BUILD_WORKDIR` into both `setup` and `run`: the
+per-run workdir and the run script's initial CWD. `repo` is cloned to
+`$GB_BUILD_WORKDIR/<workdir>` and `src/` is mounted at `$GB_BUILD_WORKDIR/src`.
 
 ## Generating and deploying the step
 
 `byoc` has no `Dockerfile`, so the `image`/`publish-image` targets are no-ops;
-only `make step` (render + bundle `src/`), `make clean`, and `make help` do
-anything here. For the full target list and variables, see the shared
-[Makefile target conventions](../../README.md#makefile-target-conventions).
+only `make space` (render the Space + bundle `src/`), `make clean`, and
+`make help` do anything here. For the full target list and variables, see the
+shared [Makefile target conventions](../../README.md#makefile-target-conventions).
 
-Then reference `step/` by absolute `file://` URI (see above).
+Then point the build's Space at the generated `space/` directory and reference
+the step by `space://steps/byoc` (see above).
+
+To promote the step into the repo's committed assets tree
+(`configurations/assets/environments/skypilot/steps/byoc/`) and copy its slurm
+build test into `test/steps/byoc/skypilot/` so it is runnable from VSCode against
+the published step, run `make publish-step`. See
+[Two test modes](../../README.md#two-test-modes) for how the same test runs both
+against the locally rendered `space/` (Mode 1, `make test`) and against the
+published step (Mode 2, under `test/steps/`).
 
 ## Example build.yaml
 
@@ -94,7 +101,7 @@ granite.build:
         result:
           uri: lh://prod/myspace/models/shared/byoc-out-{{ run_metadata.targetsteprun_id | short_hash }}/1
       steps:
-        - step_uri: file:///abs/path/to/steps/byoc/skypilot/step
+        - step_uri: space://steps/byoc
           config:
             compute_config: { num_nodes: 1, num_gpus_per_node: 1 }
             byoc_config:
@@ -102,6 +109,7 @@ granite.build:
               repo: "https://github.com/org/repo"
               ref: "main"
               workdir: "code"
+              setup_command: "cd code && pip install -r requirements.txt"
               command: "python main.py --out $GB_BUILD_WORKDIR/result"
 ```
 

@@ -8,10 +8,11 @@
 # Usage:
 #   make image          # build the image for $(PLATFORM) (default linux/amd64)
 #   make publish-image  # push to $(REGISTRY) (requires prior `podman login`)
-#   make step           # render step-template.yaml -> step/step.yaml (offline)
-#   make all            # image + publish-image + step (full pipeline)
-#   make clean          # remove step/
-#   make help           # show the shared steps/README.md
+#   make space          # render a Space (space.yaml + steps/eval/step.yaml) into space/ (offline)
+#   make all            # image + publish-image + space (full pipeline)
+#   make test           # run the step's Python tests in test/
+#   make clean          # remove space/
+#   make help           # list targets; points to the shared steps/README.md
 #
 # Override the image coordinates as needed, e.g.:
 #   make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0
@@ -21,7 +22,7 @@ STEP_NAME := eval
 # before publishing, or override per invocation:
 #   make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0
 # This `?=` default satisfies common.mk's image-step REGISTRY guard so offline
-# targets (make step / make image) work out of the box; but `make publish-image`
+# targets (make space / make image) work out of the box; but `make publish-image`
 # WILL push to this bogus registry and fail auth unless you set a real one.
 # IMAGE_TAG defaults to the git short SHA if not set.
 REGISTRY ?= quay.io/your-org
