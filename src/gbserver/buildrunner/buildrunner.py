@@ -1763,10 +1763,17 @@ Download : {download_msg}
             stored_step_run.uuid == targetsteprun_id
         ), f"expected {targetsteprun_id} actual {stored_step_run.uuid}"
         logger.info("creating/updating the step: %s", stored_step_run)
+        # Merge any step metadata buffered before this row existed (a log-parsed
+        # STEP_METADATA_UPDATE_EVENT can race ahead of this status event) so the
+        # single update below persists status and metadata together, rather than
+        # re-fetching and writing a second time. The buffer is cleared only after
+        # the write succeeds.
+        pending_metadata = self._pending_step_metadata.get(targetsteprun_id)
+        if pending_metadata:
+            stored_step_run.metadata.update(pending_metadata)
         self.storage.step_storage.update(stored_step_run)
-        # Flush any step metadata that was processed before this row existed (a
-        # log-parsed STEP_METADATA_UPDATE_EVENT can race ahead of this status event).
-        self._apply_pending_step_metadata(targetsteprun_id)
+        if pending_metadata:
+            del self._pending_step_metadata[targetsteprun_id]
 
     def __process_step_metadata_update_event(self: Self, event: BuildEvent) -> None:
         """Buffer a runtime key/value and merge it into the step's metadata.
