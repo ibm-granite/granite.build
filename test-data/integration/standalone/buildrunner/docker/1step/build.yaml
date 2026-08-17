@@ -19,8 +19,10 @@ granite.build:
               # Docker Hub).  The docker `command` step runs `bash -c <command>`,
               # so the image must contain bash — which rules out the busybox
               # images used elsewhere in the tests (sh only).
+              # We include a sleep 5 to allow the cancellation test to pass
               image: quay.io/fedora/fedora-minimal:42
               command: >-
+                sleep 5;
                 mkdir /gb-workspace/outputs;
                 file=/gb-workspace/outputs/foo1a.json; echo '{"artifact": "output_model1", "file": "foo1a"}' > $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
                 file=/gb-workspace/outputs/foo1b.json; echo '{"artifact": "output_model1", "file": "foo1b"}' > $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
