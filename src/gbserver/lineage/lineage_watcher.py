@@ -70,17 +70,19 @@ class LineageWatcher:
 
     The checkpoint is never created implicitly: with no checkpoint the watcher
     records *nothing* and every scan is a no-op until the key is seeded
-    explicitly (see ``gbserver lineage-watch --seed``). Choosing where centralized
-    recording begins — "from now", from a given build, or the full history — is
-    the operator's call, so a fresh deployment stays silent rather than picking a
-    starting point on its own. When the checkpoint does exist, ``start()``
-    verifies its build against the store's own recorded-state
-    (``filter_unrecorded``, via a build-scoped ``reconcile_once``) and
-    re-records what is missing, closing any gap left by a crash between recording
-    and persisting the checkpoint (or vice versa). A small
-    ``_WATERMARK_OVERLAP`` is subtracted when querying so a target that
-    finished in the same instant as the watermark boundary is never skipped;
-    idempotent recording makes the resulting re-reads harmless.
+    explicitly (see ``gbserver lineage-watch --base-build-id``). Choosing where
+    centralized recording begins — "from now", from a given build, or the full
+    history — is the operator's call, so a fresh deployment stays silent rather
+    than picking a starting point on its own. When the checkpoint does exist,
+    ``start()`` verifies its build against the store's own recorded-state
+    (``filter_unrecorded``, via a build-scoped ``reconcile_once``) and re-records
+    what is missing, closing any gap left by a crash between recording
+    and persisting the checkpoint (or vice versa). That sweep is scoped to one
+    build, though, so the general safety net is ``_WATERMARK_OVERLAP``:
+    subtracted when querying, it re-surfaces any target that landed behind an
+    already-advanced watermark — whether from clock skew or from builds
+    interleaving in the global finished_at queue — for every build rather than
+    just the checkpoint's. Idempotent recording makes the re-reads harmless.
 
     Which of those newly-finished targets actually get recorded is decided
     per-sink by ``store.filter_unrecorded`` (see ``reconcile_once``): the time
@@ -114,20 +116,35 @@ class LineageWatcher:
     # Subtracted from the watermark when querying so a target that finished at (or
     # a hair before) the boundary is re-surfaced rather than skipped.
     #
-    # The case only this can cover is clock skew: finished_at is stamped from the
-    # writer's own clock (``datetime.now()`` in the buildrunner), not the DB's, so
-    # a target can land with a timestamp slightly *older* than a watermark that
-    # has already advanced — on the wrong side of the cutoff, where no amount of
-    # tie-breaking would find it. Equal timestamps are also re-surfaced here, but
-    # those have a second safety net: ``_verify_checkpoint`` re-scans the
-    # checkpoint's whole build at start(), so a cursor left mid-way through a
-    # group of same-instant targets is repaired on the next restart. This overlap
-    # is what repairs it *without* waiting for one.
+    # The case only this can cover is a target landing *behind* an already-advanced
+    # watermark, where it sits on the wrong side of the cutoff and no amount of
+    # tie-breaking would find it. Two things put it there:
     #
-    # Re-reads are harmless: per-sink ``filter_unrecorded`` drops
-    # already-recorded targets before anything is written, so the cost is a few
-    # extra rows in the paged query, not extra recording work.
-    _WATERMARK_OVERLAP = timedelta(seconds=5)
+    #  - Clock skew: finished_at is stamped from the writer's own clock
+    #    (``datetime.now()`` in the buildrunner), not the DB's, so a target can be
+    #    written with a timestamp slightly older than the current watermark.
+    #  - Concurrent builds: the scan is a single global queue ordered by
+    #    finished_at, not a per-build walk, so targets of different builds
+    #    interleave. A target that commits its finished_at a moment after a
+    #    faster build's target already pushed the watermark past that instant is
+    #    behind the cutoff by the time it is visible to a scan.
+    #
+    # Equal timestamps are re-surfaced here too, and those have a second safety
+    # net — but only a partial one, which is why this window carries the real
+    # weight. ``_verify_checkpoint`` re-scans at start(), yet it is scoped to the
+    # *checkpoint's own build*, and which build that is depends on whichever
+    # target recorded last (see ``_on_checkpoint_advance``). With builds running
+    # concurrently that is effectively arbitrary among the active ones, so a gap
+    # in any other build is not covered by it at all. This overlap is
+    # build-agnostic and repairs all of them, without waiting for a restart.
+    #
+    # Sized in minutes rather than seconds for that reason: seconds cover only
+    # clock skew, while interleaved commits across builds can land a target
+    # further back. Re-reads are harmless — per-sink ``filter_unrecorded`` drops
+    # already-recorded targets before anything is written, so the cost of a wider
+    # window is extra rows in the paged query and one sink query over them, not
+    # extra recording work.
+    _WATERMARK_OVERLAP = timedelta(minutes=1)
 
     def __init__(self, monitoring_interval: float = 30.0) -> None:
         """Initialize the LineageWatcher.
@@ -200,11 +217,11 @@ class LineageWatcher:
         The checkpoint is never created here, or anywhere else implicitly. When
         ``LINEAGE_WATCHER_CHECKPOINT_KEY`` is absent this is a no-op and so is
         every subsequent scan, until the key is seeded explicitly (see
-        ``gbserver lineage-watch --seed``). Auto-seeding it from the newest successful
-        target would silently pick a starting point for the operator; deciding
-        where centralized recording begins — "from now", from a chosen build, or
-        the full history — belongs to whoever seeds it, not to whichever process
-        happens to start first.
+        ``gbserver lineage-watch --base-build-id``). Auto-seeding it from the
+        newest successful target would silently pick a starting point for the
+        operator; deciding where centralized recording begins — "from now", from
+        a chosen build, or the full history — belongs to whoever seeds it, not to
+        whichever process happens to start first.
         """
         checkpoint = storage.status_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
         if checkpoint is None:
@@ -314,9 +331,10 @@ class LineageWatcher:
             # No checkpoint: recording is deliberately off until the key is
             # seeded. Return before querying targets or touching the sink.
             return
-        # Query slightly before the watermark so a boundary-timestamp completion
-        # is not skipped; idempotent recording makes the overlap re-reads
-        # harmless.
+        # Query behind the watermark so a target that landed on the older side of
+        # it — clock skew, or a concurrent build committing out of order — is
+        # re-surfaced instead of skipped; idempotent recording makes the overlap
+        # re-reads harmless. See ``_WATERMARK_OVERLAP``.
         #
         # Clamped at datetime.min: the --all backfill anchor *is* datetime.min, and
         # subtracting from it raises OverflowError — which, being raised before any
@@ -372,7 +390,7 @@ class LineageWatcher:
         ``OverflowError`` is caught alongside the parse errors because the
         normalization itself can raise it: ``as_utc_naive`` shifts an aware value
         to UTC, which overflows for a timestamp within the UTC offset of
-        ``datetime.min``/``datetime.max`` — e.g. the ``--seed all`` anchor
+        ``datetime.min``/``datetime.max`` — e.g. the ``--base-build-id all`` anchor
         (``datetime.min``) read back aware with a positive offset. Uncaught it
         would escape to ``_run``'s blanket handler and fail every scan forever,
         the same wedge this guard exists to prevent for unparseable values.
@@ -409,7 +427,7 @@ class LineageWatcher:
     ) -> None:
         """Move a spent ``datetime.min`` backfill anchor up to the scan time.
 
-        ``--seed all`` anchors the checkpoint at ``datetime.min`` so the first
+        ``--base-build-id all`` anchors the checkpoint at ``datetime.min`` so the first
         scan walks the entire history. Normally the first recorded target
         advances the checkpoint off that anchor via ``_on_checkpoint_advance``.
         When the backfill records nothing, though — an empty DB, or one where
