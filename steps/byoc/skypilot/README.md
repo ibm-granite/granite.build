@@ -49,20 +49,47 @@ All fields live under the step's `config.byoc_config`.
 
 ## Inputs and outputs
 
-- **Inputs** — this step declares no target `inputs:` of its own; it brings its
-  code by cloning `repo`. Bind target inputs in your `build.yaml` as usual if the
-  cloned command needs them (they are resolved by the environment before `run`).
-- **File mounts** — the optional `src/` directory beside the template is mounted
-  to `$GB_BUILD_WORKDIR/src` on the cluster (see [`src/helpers.sh`](src/helpers.sh)),
-  demonstrating the SkyPilot `file_mounts` input.
-- **Outputs** — to register an artifact, have your `command` print a line that
-  begins with the Granite.build marker (captured by `skypilot_monitor`):
+`byoc` declares no step-level I/O schema of its own, but the **target** can declare
+**any number** of keyed `inputs:` and `outputs:` — there is nothing to change on the
+step to consume more of either.
 
-  ```
-  LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>
-  ```
+### Inputs (any number)
 
-  `<output-id>` must match an `outputs.<id>` declared on the target.
+Declare each input on the target (a direct `uri:`, or a `binding:` to an upstream
+target's output). The byoc `command` references each one by name via Jinja, which is
+rendered into `config.byoc_config.command` **before** `run` (inputs are resolved by the
+environment first, so they are concrete paths/values at launch time):
+
+- filesystem-backed inputs (`env://`, `hf://`, `file://`, `lh://`, …):
+  `{{ bindings.<name>.binding.path }}`
+- `mem://` state inputs: `{{ bindings.<name>.binding.state }}`
+
+Reference each input by the scheme it actually uses (`.path` for filesystem, `.state`
+for `mem://`) — byoc accesses bindings explicitly, so there is no auto-exported
+`GB_BYOC_INPUT_*` env var.
+
+**File mounts** — the optional `src/` directory beside the template is mounted to
+`$GB_BUILD_WORKDIR/src` on the cluster (see [`src/helpers.sh`](src/helpers.sh)),
+demonstrating the SkyPilot `file_mounts` input.
+
+### Outputs (any number)
+
+Declare each output on the target, then have your `command` register an artifact by
+printing one marker line per artifact (captured by `skypilot_monitor`):
+
+```
+LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>
+```
+
+- `<output-id>` must match an `outputs.<id>` declared on the target.
+- Emit one line per artifact; **repeat** the same `<output-id>` on additional lines to
+  register multiple artifacts under a single output.
+- For `mem://` outputs, use `LLMB_ARTIFACT_STATE:<value>` instead of `LLMB_ARTIFACT_PATH`.
+
+For the full target I/O schema and the `bindings.*` Jinja variables, see
+[docs/builds/build-yaml-reference.md](../../../docs/builds/build-yaml-reference.md); for
+the marker convention (PATH vs STATE, anchoring, the shipped monitors), see
+[docs/steps/monitoring-and-artifact-events.md](../../../docs/steps/monitoring-and-artifact-events.md).
 
 ## Env vars the step provides to your commands
 
@@ -90,6 +117,11 @@ published step (Mode 2, under `test/steps/`).
 
 ## Example build.yaml
 
+This example wires **two inputs** (one direct `uri:`, one `binding:` to an upstream
+target's output) and **two outputs** (one of which receives two artifacts via repeated
+markers). The `command` reads each input via `{{ bindings.<name>.binding.path }}` and
+registers each artifact via a marker line:
+
 ```yaml
 granite.build:
   name: byoc-example
@@ -97,9 +129,16 @@ granite.build:
   targets:
     run:
       environment_uri: space://environments/skypilot/aws
+      inputs:
+        dataset:
+          uri: hf:///datasets/org/my-dataset
+        upstream_model:
+          binding: pretrain.model   # <upstream-target>.<output-id>
       outputs:
-        result:
+        checkpoints:
           uri: lh://prod/myspace/models/shared/byoc-out-{{ run_metadata.targetsteprun_id | short_hash }}/1
+        report:
+          uri: lh://prod/myspace/reports/shared/byoc-report-{{ run_metadata.targetsteprun_id | short_hash }}/1
       steps:
         - step_uri: space://steps/byoc
           config:
@@ -110,8 +149,18 @@ granite.build:
               ref: "main"
               workdir: "code"
               setup_command: "cd code && pip install -r requirements.txt"
-              command: "python main.py --out $GB_BUILD_WORKDIR/result"
+              command: >-
+                python main.py
+                --dataset "{{ bindings.dataset.binding.path }}"
+                --init-model "{{ bindings.upstream_model.binding.path }}"
+                --out-dir "$GB_BUILD_WORKDIR/out";
+                echo "LLMB_ARTIFACT_ID:checkpoints LLMB_ARTIFACT_PATH:$GB_BUILD_WORKDIR/out/epoch-1.ckpt";
+                echo "LLMB_ARTIFACT_ID:checkpoints LLMB_ARTIFACT_PATH:$GB_BUILD_WORKDIR/out/epoch-2.ckpt";
+                echo "LLMB_ARTIFACT_ID:report LLMB_ARTIFACT_PATH:$GB_BUILD_WORKDIR/out/report.json"
 ```
+
+A single direct input and output are just the one-entry case of the above — see the
+runnable fixtures at [`test-data/slurm/build.yaml`](test-data/slurm/build.yaml).
 
 ## Notes and limitations
 
@@ -121,5 +170,7 @@ granite.build:
 - **No dependency caching.** Unlike `custom_code_lsf`'s hash-keyed conda cache,
   dependencies are whatever the chosen public `image` provides plus anything your
   `command`/repo installs at run time.
-- **Single output artifact** in the exemplar; emit additional `LLMB_ARTIFACT_ID`
-  lines and declare matching `outputs` to register more.
+- **Variable inputs/outputs are a target-level feature, not a step limitation.**
+  Declare any number of `inputs:`/`outputs:` on the target and wire them from the
+  `command` as shown in [Inputs and outputs](#inputs-and-outputs) — no change to the
+  step is required.
