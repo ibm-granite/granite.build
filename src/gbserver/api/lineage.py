@@ -225,11 +225,14 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
             )
             if not has_access:
                 continue
-            # job_input_params carries step config/metadata that can embed
-            # credentials. The write-side builder (wandb_jobstats._build_events_for_target)
-            # already masks secret-named keys; redact again here as defense-in-depth on
-            # this persisted-read path so the surfaced metadata (e.g. commit_hash) stays
-            # visible while secret-named keys remain masked.
+            # job_input_params carries per-step config/metadata that can embed
+            # credentials. Always redact it here on the read path, unconditionally:
+            # the write-side builder (wandb_jobstats._build_events_for_target) already
+            # masks secret-named keys, so for freshly-persisted rows this runs twice —
+            # an accepted redundancy that also protects any row persisted before the
+            # write-side masking landed. redact_sensitive is idempotent, so the double
+            # pass is harmless; secret-named keys stay masked while step metadata
+            # (e.g. commit_hash) and config surface with their non-secret values intact.
             run_facets["job_input_params"] = redact_sensitive(
                 run_facets.get("job_input_params") or {}
             )

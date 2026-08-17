@@ -148,6 +148,49 @@ def test_search_lineage_events_redacts_job_input_params():
     assert params == {"SECRET": "<redacted>"}
 
 
+def test_search_lineage_events_redacts_step_config_and_metadata():
+    """Search redacts secret-named keys in both step config and metadata (recursively).
+
+    The whole job_input_params facet is redacted unconditionally on the read path:
+    non-secret values (uri, repo, commit_hash) surface intact, while secret-named keys
+    anywhere in the nested config/metadata have their values masked.
+    """
+    my_run = _search_run(MY_SPACE)
+    my_run["run"]["facets"]["job_input_params"] = {
+        "steps": [
+            {
+                "uri": "space://steps/byoc",
+                "config": {
+                    "byoc_config": {"repo": "https://example/r.git", "token": "sekret"}
+                },
+                "metadata": {"commit_hash": "deadbeef", "api_key": "supersecret"},
+            }
+        ]
+    }
+    fake_service = SimpleNamespace(
+        search_lineage_by_tags=lambda tags, limit, offset: (1, [my_run])
+    )
+    is_admin, is_member = _member_of(MY_SPACE)
+    with (
+        is_admin,
+        is_member,
+        patch.object(
+            lineage_mod, "_get_openlineage_service", return_value=fake_service
+        ),
+    ):
+        resp = lineage_mod.search_lineage_events(
+            _fake_request("member", "member@example.com"), TagSearchRequest(tags=[])
+        )
+    step = resp.runs[0]["run"]["facets"]["job_input_params"]["steps"][0]
+    assert step["uri"] == "space://steps/byoc"
+    # config surfaces (redacted), consistent with the by-id jobstats endpoints.
+    assert step["config"]["byoc_config"]["repo"] == "https://example/r.git"
+    assert step["config"]["byoc_config"]["token"] == "<redacted>"
+    # metadata surfaces; non-secret value kept, secret-named key masked.
+    assert step["metadata"]["commit_hash"] == "deadbeef"
+    assert step["metadata"]["api_key"] == "<redacted>"
+
+
 # ---------------------------------------------------------------- artifact graph
 
 
