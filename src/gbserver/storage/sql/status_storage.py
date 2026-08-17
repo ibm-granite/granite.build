@@ -31,9 +31,11 @@ class SQLStatusStorage(
     """SQL-based storage implementation for the generic gb_status key-value store."""
 
     def __init__(self, **kwargs) -> None:
-        # Keys are looked up individually (get_value/set_value by `key`), so
-        # index that column. Follows the sibling SQL storages' **kwargs
+        # Keys are looked up individually (get_value/set_value resolve `key` to
+        # a row), so `key` carries a unique index: it is the store's lookup
+        # identity, and the uniqueness is what lets set_value treat a found row
+        # as *the* row for that key. Follows the sibling SQL storages' **kwargs
         # constructor pattern, which also keeps the factory's
         # `SQLStatusStorage(table_name=...)` call type-checkable.
-        kwargs["indexed_columns"] = ["key"]
+        kwargs["unique_columns"] = {"key": None}
         super().__init__(**kwargs)

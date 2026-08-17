@@ -33,6 +33,14 @@ from gbserver.types.constants import GB_STATUS_TABLE_NAME
 class IStatusStorage(IItemStorage[StoredStatus]):
     """Interface for the generic key/JSON-value status storage."""
 
+    def get_by_key(self, key: str) -> Optional[StoredStatus]:
+        """Look up the unique row stored under ``key``, or None if not set.
+
+        Raises:
+            ValueError: if more than one row is found for ``key``.
+        """
+        raise NotImplementedError
+
     def get_value(self, key: str) -> Optional[Dict[str, Any]]:
         """Get the JSON value stored under ``key``, or None if not set."""
         raise NotImplementedError
@@ -52,23 +60,46 @@ class BaseStatusStorage(BaseItemStorage[StoredStatus], IStatusStorage):
         super().__init__(**kwargs)
 
     def _get_column_values(self, item: StoredStatus) -> dict:
-        json = {CREATED_TIME_FIELD_NAME: item.created_time}
+        # `key` must be a real column: it is the lookup identity (see
+        # get_by_key) and what SQLStatusStorage's index and unique constraint
+        # attach to.
+        json = {"key": item.key, CREATED_TIME_FIELD_NAME: item.created_time}
         return json
 
     @classmethod
     def _get_sample_item(cls) -> StoredStatus:
         """Return a sample item for use by BaseItemStorage to initialize schema."""
-        return StoredStatus(uuid="sample-status-key", value={"sample": "value"})
+        return StoredStatus(key="sample-status-key", value={"sample": "value"})
+
+    def get_by_key(self, key: str) -> Optional[StoredStatus]:
+        """Look up the unique row stored under ``key``, or None if not set."""
+        return self._get_by_single_field(  # type: ignore[return-value]
+            column_name="key", column_value=key, allow_multiple=False
+        )
 
     def get_value(self, key: str) -> Optional[Dict[str, Any]]:
-        item = self.get_by_uuid(key)
-        # get_by_uuid's return type covers the list-returning `uuid=None` form
-        # too; a concrete str key always yields a single item (or None), so
-        # narrow rather than assume.
-        if not isinstance(item, StoredStatus):
+        item = self.get_by_key(key)
+        if item is None:
             return None
         return item.value
 
     def set_value(self, key: str, value: Dict[str, Any]) -> None:
-        item = StoredStatus(uuid=key, value=value)
+        # The base class's update()/get_by_uuid() are all uuid-keyed, so the
+        # upsert has to resolve `key` to a row first. Reusing the existing row's
+        # uuid is what makes this an update rather than a second row under the
+        # same key.
+        existing = self.get_by_key(key)
+        if existing is None:
+            self.add(StoredStatus(key=key, value=value))
+            return
+        # created_time means "when the key was first set", so carry the stored
+        # value forward explicitly. update() would also preserve it by popping
+        # the field, but relying on that made the invariant a side effect that
+        # any future add()-based upsert would silently reset.
+        item = StoredStatus(
+            uuid=existing.uuid,
+            key=key,
+            value=value,
+            created_time=existing.created_time,
+        )
         self.update(item, create_if_not_exist=True)

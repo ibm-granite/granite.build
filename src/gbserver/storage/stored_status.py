@@ -18,8 +18,9 @@
 Generic key/JSON-value application status storage.
 
 Provides a small key-value table (``gb_status``) for app-level state that
-doesn't warrant its own typed table, e.g. watcher checkpoints. The key is the
-item's ``uuid`` (inherited from ``BaseStoredItem``).
+doesn't warrant its own typed table, e.g. watcher checkpoints. Lookups are by
+the ``key`` column; ``uuid`` is a generated row identifier as in every other
+stored item.
 """
 
 import datetime
@@ -36,11 +37,14 @@ class StoredStatus(BaseStoredItem):
     Persistent key/JSON-value pair.
 
     Attributes:
-        value: Arbitrary JSON-serializable payload associated with the key
-            (``uuid``).
-        created_time: When the key was first set.
+        key: Caller-supplied lookup key. Unique across the table — this, not
+            ``uuid``, is the identity callers address rows by.
+        value: Arbitrary JSON-serializable payload associated with ``key``.
+        created_time: When the key was first set. Preserved across updates by
+            ``BaseStatusStorage.set_value``.
     """
 
+    key: str
     value: Dict[str, Any] = Field(default_factory=dict)
     # The name of this field must match that defined in storage.CREATED_TIME_FIELD_NAME
     created_time: datetime.datetime = Field(default_factory=get_utc_time)
