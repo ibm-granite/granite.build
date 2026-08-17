@@ -28,9 +28,26 @@ from typing import Any
 __all__ = ["SENSITIVE_KEY_RE", "REDACTED", "redact_sensitive"]
 
 # Case-insensitive, ``-``/``_`` tolerant match on common secret-bearing key names.
+# Verbose form (whitespace/comments ignored) for readability; each alternative is a
+# substring test against the key name. ``[_-]?`` also tolerates camelCase because the
+# separator is optional and the following letter is matched case-insensitively (so
+# ``apiKey``/``sshKey`` match too).
 SENSITIVE_KEY_RE = re.compile(
-    r"(password|passwd|pwd|secret|token|api[_-]?key|credential|access[_-]?key|private[_-]?key)",
-    re.IGNORECASE,
+    r"""
+      password | passwd | pwd
+    | secret
+    | token
+    | credential
+    | cookie
+    | bearer
+    | api[_-]?key
+    | access[_-]?key
+    | private[_-]?key
+    | ssh[_-]?key
+    | authorization
+    | auth(?!(?-i:[a-z]))    # 'auth', 'auth_token', 'authToken' — but NOT 'author(ization)'
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 # Placeholder substituted for the value of any secret-looking key.

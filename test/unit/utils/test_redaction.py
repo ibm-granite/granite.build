@@ -42,6 +42,15 @@ def test_masks_common_secret_key_names():
             "token": "t",
             "credential": "c",
             "SECRET": "s",
+            "authorization": "a",
+            "Authorization": "a",
+            "bearer": "b",
+            "cookie": "c",
+            "ssh_key": "sk",
+            "sshKey": "sk",
+            "auth": "au",
+            "auth_token": "au",
+            "authToken": "au",
         }
     )
     assert set(result.values()) == {REDACTED}
@@ -51,6 +60,17 @@ def test_masks_common_secret_key_names():
 def test_non_secret_keys_pass_through():
     """Operational keys (e.g. commit_hash) are returned unchanged."""
     data = {"commit_hash": "deadbeef", "uri": "space://steps/byoc", "count": 3}
+    assert redact_sensitive(data) == data
+
+
+@pytest.mark.standalone
+def test_auth_prefix_does_not_over_mask():
+    """``auth`` matches as a token but not the ``author``/``authentication`` prefix.
+
+    Guards the bounded ``auth`` alternative: git-oriented metadata legitimately carries
+    ``author``-style keys, which must survive into lineage unmasked.
+    """
+    data = {"author": "octocat", "authored_date": "2026-01-01", "authenticated": True}
     assert redact_sensitive(data) == data
 
 
