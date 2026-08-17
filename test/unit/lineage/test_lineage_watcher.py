@@ -88,7 +88,7 @@ class _StubStatusStorage:
 
 
 def _seed(storage, build_id: str, finished_at: datetime) -> None:
-    """Write the lineage checkpoint, the way ``lineage-watch --seed`` does."""
+    """Write the lineage checkpoint, the way ``lineage-watch --base-build-id`` does."""
     storage.status_storage.set_value(
         LINEAGE_WATCHER_CHECKPOINT_KEY,
         {"build_id": build_id, "finished_at": finished_at.isoformat()},
@@ -254,8 +254,9 @@ class TestLineageWatcher:
     def test_overflowing_aware_checkpoint_records_instead_of_wedging(self):
         """An aware ``datetime.min`` checkpoint records rather than failing forever.
 
-        Regression: ``--seed all`` anchors the checkpoint at ``datetime.min``, and
-        a backend may hand that back timezone-aware with a positive UTC offset.
+        Regression: ``--base-build-id all`` anchors the checkpoint at
+        ``datetime.min``, and a backend may hand that back timezone-aware with a
+        positive UTC offset.
         Normalizing it shifts backwards past ``datetime.min``, raising
         ``OverflowError`` — which the read guard did not catch (only ``TypeError``
         and ``ValueError``), so it escaped to ``_run``'s blanket handler and every

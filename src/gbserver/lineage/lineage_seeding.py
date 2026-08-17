@@ -22,7 +22,7 @@ The watcher never creates its checkpoint implicitly: with no
 centralized recording begins — "from now", from a chosen build, or the platform's
 whole history — belongs to an operator, not to whichever process starts first.
 
-``gbserver lineage-watch --seed`` is how that decision is expressed. It is
+``gbserver lineage-watch --base-build-id`` is how that decision is expressed. It is
 seed-*if-absent*: an existing checkpoint is never overwritten, which is what
 makes the flag safe to leave in a pod spec permanently, since a re-seed on every
 restart would either skip accumulated lineage (anchor moved forward) or re-drive

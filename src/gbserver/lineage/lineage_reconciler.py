@@ -145,7 +145,7 @@ def as_utc_naive(value: datetime) -> datetime:
 
     Shifting to UTC can itself raise ``OverflowError``, when the shift would
     carry the value outside ``datetime.min``/``datetime.max`` — reachable here
-    because the ``--seed all`` backfill anchor *is* ``datetime.min``, and a
+    because the ``--base-build-id all`` backfill anchor *is* ``datetime.min``, and a
     backend may hand it back aware with a positive UTC offset. That would abort
     the whole scan, so it is clamped to the bound it overflowed past instead. The
     clamp cannot distort an ordering decision: an overflow means the true UTC
@@ -238,9 +238,10 @@ def get_most_recent_successful_target(
 ) -> Optional[StoredTargetRun]:
     """Return the single newest-finished successful target, or ``None``.
 
-    Used by ``lineage_seeding`` (``gbserver lineage-watch --seed``) to place the
-    LineageWatcher's checkpoint: a single-page, newest-first query rather than the full
-    ``select_recordable_targets`` walk, since only the first result is needed.
+    Used by ``lineage_seeding`` (``gbserver lineage-watch --base-build-id``) to
+    place the LineageWatcher's checkpoint: a single-page, newest-first query
+    rather than the full ``select_recordable_targets`` walk, since only the first
+    result is needed.
     Targets with no ``finished_at`` are skipped, mirroring
     ``select_recordable_targets``.
 
@@ -252,10 +253,10 @@ def get_most_recent_successful_target(
     successful targets with ``finished_at`` NULL — and PostgreSQL sorts NULLs
     *first* under ``DESC`` (the sort is a bare ``desc()``, with no
     ``NULLS LAST``). A single-page read would therefore return ``None`` whenever
-    the NULL backlog fills the first page, making ``--seed`` raise
+    the NULL backlog fills the first page, making ``--base-build-id`` raise
     ``LineageSeedError`` on exactly the deployments that have history to anchor
-    against — and since ``--seed`` is meant to live permanently in the pod spec,
-    that is a crashloop rather than a one-off error.
+    against — and since ``--base-build-id`` is meant to live permanently in the
+    pod spec, that is a crashloop rather than a one-off error.
     """
     page_index = 0
     while True:

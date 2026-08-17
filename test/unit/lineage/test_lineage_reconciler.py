@@ -198,8 +198,8 @@ class TestSelectRecordableTargets:
         assert {t.uuid for t in selected} == {"t_aware"}
 
     def test_overflowing_aware_finished_at_does_not_abort_scan(self):
-        # The --seed all anchor is datetime.min itself, and a backend may hand it
-        # back aware with a positive UTC offset. Shifting that to UTC overflows
+        # The --base-build-id all anchor is datetime.min itself, and a backend may
+        # hand it back aware with a positive UTC offset. Shifting that to UTC overflows
         # datetime.min, which would raise OverflowError out of the whole scan
         # (through reconcile_once and start()) rather than merely comparing wrong.
         # It must be clamped to the bound instead, leaving the walk intact.
@@ -215,8 +215,8 @@ class TestSelectRecordableTargets:
 
     def test_overflowing_aware_watermark_does_not_abort_scan(self):
         # Same overflow on the cutoff side: a datetime.min watermark read back
-        # aware must clamp to datetime.min (selecting everything, per --seed all)
-        # rather than raising out of the scan.
+        # aware must clamp to datetime.min (selecting everything, per
+        # --base-build-id all) rather than raising out of the scan.
         cutoff = datetime.min.replace(tzinfo=timezone(timedelta(hours=5)))
         t1 = _target("b1", "t1", finished_at=_BASE)
         storage = _admin_storage_with([t1])
@@ -232,9 +232,10 @@ class TestGetMostRecentSuccessfulTarget:
         # finished_at stamping was added after rows already existed, so real
         # deployments hold SUCCESS targets with finished_at NULL — and PostgreSQL
         # sorts NULLs FIRST under DESC (the sort is a bare desc(), no NULLS LAST).
-        # Reading only page 0 would return None here, making `--seed` raise
-        # LineageSeedError on exactly the deployments that have history to anchor
-        # against — a crashloop, since --seed is meant to stay in the pod spec.
+        # Reading only page 0 would return None here, making `--base-build-id`
+        # raise LineageSeedError on exactly the deployments that have history to
+        # anchor against — a crashloop, since --base-build-id is meant to stay in
+        # the pod spec.
         nulls = [_target("b1", f"t_null_{i}") for i in range(_SCAN_PAGE_SIZE)]
         anchor = _target("b2", "t_anchor", finished_at=_BASE)
         storage = _admin_storage_returning([nulls, [anchor]])

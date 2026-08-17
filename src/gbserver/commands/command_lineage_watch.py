@@ -22,12 +22,12 @@ Deployed as its own single-replica pod (``dep-lineage-watcher.yaml``) so the
 single-writer guarantee is a deployment fact and lineage recording is isolated
 from the build watcher's failure domain, restarts, and resource contention.
 
-``--seed`` is optional. Without it the watcher reads the ``gb_status`` checkpoint
-and, when the key is absent, records nothing until it is seeded. With it, an
-*absent* key is seeded before the first scan, so a fresh deployment does not need
-a separate exec/init-container step just to become useful. It never overwrites an
-existing checkpoint, which is what makes it safe to leave in a pod spec across
-restarts.
+``--base-build-id`` is optional. Without it the watcher reads the ``gb_status``
+checkpoint and, when the key is absent, records nothing until it is seeded. With
+it, an *absent* key is seeded before the first scan, so a fresh deployment does
+not need a separate exec/init-container step just to become useful. It never
+overwrites an existing checkpoint, which is what makes it safe to leave in a pod
+spec across restarts.
 """
 
 import traceback
@@ -54,7 +54,7 @@ logger = get_logger(__name__)
     help="Seconds between admin-DB reconciliation scans.",
 )
 @click.option(
-    "--seed",
+    "--base-build-id",
     required=False,
     type=str,
     default=None,
@@ -69,7 +69,7 @@ logger = get_logger(__name__)
     ),
 )
 @pass_environment
-def cli(ctx: CliEnvironment, interval: float, seed: str):
+def cli(ctx: CliEnvironment, interval: float, base_build_id: str):
     """Start the centralized lineage recording watcher."""
     store = get_lineage_store()
     if not store.records_centralized_lineage:
@@ -81,7 +81,7 @@ def cli(ctx: CliEnvironment, interval: float, seed: str):
         )
         return
 
-    if seed is not None:
+    if base_build_id is not None:
         # Seed-if-absent, before start(): the watcher's own _verify_checkpoint
         # and first scan both read the key, so placing it here means the very
         # first scan is already driven by it. A failure to resolve the anchor is
@@ -89,7 +89,7 @@ def cli(ctx: CliEnvironment, interval: float, seed: str):
         # and silently starting up with no checkpoint (recording nothing) would
         # look like a working watcher that never records.
         try:
-            seed_if_absent(get_admin_storage(), seed)
+            seed_if_absent(get_admin_storage(), base_build_id)
         except LineageSeedError as exc:
             raise click.ClickException(str(exc)) from exc
 
