@@ -251,6 +251,43 @@ class TestLineageWatcher:
 
         assert store.calls == [("build-1", "target-1")]
 
+    def test_timezone_aware_target_finished_at_advances_the_checkpoint(self):
+        """An aware ``finished_at`` must still advance the checkpoint.
+
+        Regression: the monotonic guard in ``_on_checkpoint_advance`` compared the
+        target's ``finished_at`` — passed through raw by ``reconcile_once`` — against
+        the naive-UTC watermark from ``_checkpoint_watermark``. In production
+        ``finished_at`` is aware (stamped from ``BuildEvent.timestamp``, i.e.
+        ``get_time()``), so the comparison raised ``TypeError: can't compare
+        offset-naive and offset-aware datetimes``.
+
+        The raise lands inside ``reconcile_once``'s per-target ``try``, so it was
+        misattributed to *recording* — which had already succeeded — blocking the
+        checkpoint and, after ``_MAX_RECORD_ATTEMPTS`` scans, dropping the target
+        durably. Hence both assertions: recording alone passed throughout, so only
+        the watermark catches this.
+
+        The sibling test above makes the *checkpoint* aware and the target naive,
+        which exercises the read path's normalization and never reaches this
+        comparison; this is the inverse case.
+        """
+        # UTC-03:00 rather than UTC so a naive-vs-aware mixup cannot coincidentally
+        # compare equal, and a day ahead so the watermark must genuinely move.
+        aware = (_BASE + timedelta(days=1)).replace(
+            tzinfo=timezone(timedelta(hours=-3))
+        )
+        self._targets = [_target("build-1", "target-1", aware)]
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "seed-build", _BASE)
+
+        watcher._reconcile()
+
+        assert store.calls == [("build-1", "target-1")]
+        # Normalized to naive UTC on write: 2026-01-02T00:00-03:00 -> 2026-01-02T03:00.
+        assert _watermark(self.storage) == aware.astimezone(timezone.utc).replace(
+            tzinfo=None
+        )
+
     def test_malformed_checkpoint_records_nothing_instead_of_raising(self):
         """A checkpoint missing ``finished_at`` turns recording off, not a crash.
 

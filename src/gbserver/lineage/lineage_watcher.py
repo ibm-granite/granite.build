@@ -481,7 +481,22 @@ class LineageWatcher:
         high-water mark so a restart cannot forget it and re-open the same
         regression. The ``datetime.min`` backfill anchor compares below every
         real timestamp, so ``_retire_backfill_anchor`` still advances off it.
+
+        ``finished_at`` arrives straight off a ``StoredTargetRun`` (see
+        ``reconcile_once``), so it is timezone-*aware* in production: it is
+        stamped from ``BuildEvent.timestamp``, which defaults to
+        ``get_time()`` (``datetime.now().astimezone()``). The watermark read back
+        by ``_checkpoint_watermark`` is naive UTC, so comparing the two raises
+        ``TypeError: can't compare offset-naive and offset-aware datetimes``.
+        Normalizing here is what keeps the guard from turning every real
+        deployment's checkpoint write into a spurious *recording* failure — the
+        raise happens inside ``reconcile_once``'s per-target ``try``, so it is
+        misattributed to recording (which already succeeded), blocks the
+        checkpoint, and after ``_MAX_RECORD_ATTEMPTS`` scans lands the target in
+        the durable dropped set. It also keeps the persisted ``isoformat()``
+        consistently naive UTC, matching what the seeding path writes.
         """
+        finished_at = as_utc_naive(finished_at)
         current = self._checkpoint_watermark(storage)
         if current is not None and finished_at <= current:
             logger.debug(
