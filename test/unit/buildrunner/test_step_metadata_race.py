@@ -25,6 +25,7 @@ handler). These tests pin that buffer/flush behavior directly on
 ``BuildRunner._apply_pending_step_metadata`` and the metadata handler, using a
 stub ``self`` so no full BuildRunner has to be constructed.
 """
+
 from types import SimpleNamespace
 
 from gbserver.buildrunner.buildrunner import BuildRunner
