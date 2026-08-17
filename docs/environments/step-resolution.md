@@ -1,6 +1,18 @@
 # Step resolution: routing steps to environments
 
-When a target runs, every `space://steps/<name>` URI is resolved against the active environment.  Two mechanisms are available — pick whichever fits the step:
+When a target runs, every `space://steps/<name>` URI is resolved against the active environment.  Several mechanisms are available — pick whichever fits the step:
+
+## Space-root steps (highest priority)
+
+The **space's own directory** — the first entry in `base_uris`, i.e. the space's own `uristr` — is the most authoritative step source.  A step the space ships at `<space>/steps/<name>/step.yaml` **overrides** any env-co-located step (the ancestor-walk below) or any step inherited through the rest of the `base_uris` chain (e.g. a published `configurations/assets` tree).
+
+This is what lets a step be **developed and tested inside its own space before it is published** into an inherited assets tree.  A step's `space/` dir is re-rendered on every `make test`, so the co-located test exercises that freshly-rendered local copy — not the already-published copy reachable via `base_uris` — and publishing (`make publish-step`) is only needed once the test passes.
+
+The override honors the same `subtypes` restriction (below) as every other tier: a space-root step whose `subtypes` exclude the active env is skipped, and resolution falls through to the ancestor-walk and the remaining tiers.
+
+> Practically this only changes resolution when the space itself ships a `steps/<name>`.  A consuming space (e.g. `configurations/spaces/local`) that ships no steps is unaffected — its steps still resolve through the ancestor-walk / env-class-match against the inherited assets tree.
+
+> **Environments and asset stores get this priority for free.**  `space://environments/<name>` and `space://assetstores/<name>` have no env-co-located ancestor-walk — they resolve directly against the `base_uris` chain in order, and the space's own directory is `base_uris[0]`.  So a space's own `environments/<name>` / `assetstores/<name>` already overrides any inherited copy without a special case; only steps needed the explicit space-root check above, because their ancestor-walk would otherwise reach into the inherited tree first.  See [Spaces and `space.yaml`](../spaces/README.md#base_uris-and-space-resolution).
 
 ## Co-located steps and the ancestor-walk
 
@@ -60,19 +72,21 @@ When the active env class is `K8s`, the resolver picks `steps/k8s/s3push/step.ya
 
 For `space://steps/<name>` and an env of class `K8s` loaded from `<env-dir>`:
 
-1. Walk `<env-dir>` → parents up to the enclosing `base_uri`, first `steps/<name>/step.yaml` hit wins (nearest overrides); a candidate whose `subtypes` restriction excludes the active env is skipped and the walk continues.
-2. Recursive glob `<base>/**/<name>/step.yaml` across `base_uris` — first candidate (by specificity, then lex) whose `environment_configs` contains `K8s` (case-insensitively) **and** whose `subtypes` restriction admits the active env's sub-type.
-3. `<base>/steps/<name>/step.yaml` — env-agnostic fallback.  Existence is checked via the resolved URI's own scheme-aware `exists()`, and the resolved (git or file) URI is returned as-is; the `subtypes` restriction and `<rest>` containment are still enforced against the base's local materialization, so a candidate the active env's sub-type excludes is skipped.
-4. unresolvable → `ValueError`.
+1. **Space-root** — `base_uris[0]/steps/<name>/step.yaml` (the space's own dir); if present and its `subtypes` restriction admits the active env, it wins outright.  This step runs at the head of the ancestor-walk, so it applies whenever an env is active; when no env is active, step 4's base_uris-order scan already checks `base_uris[0]` first, so the space still wins.
+2. Walk `<env-dir>` → parents up to the enclosing `base_uri`, first `steps/<name>/step.yaml` hit wins (nearest overrides); a candidate whose `subtypes` restriction excludes the active env is skipped and the walk continues.
+3. Recursive glob `<base>/**/<name>/step.yaml` across `base_uris` — first candidate (by specificity, then lex) whose `environment_configs` contains `K8s` (case-insensitively) **and** whose `subtypes` restriction admits the active env's sub-type.
+4. `<base>/steps/<name>/step.yaml` — env-agnostic fallback.  Existence is checked via the resolved URI's own scheme-aware `exists()`, and the resolved (git or file) URI is returned as-is; the `subtypes` restriction and `<rest>` containment are still enforced against the base's local materialization, so a candidate the active env's sub-type excludes is skipped.
+5. unresolvable → `ValueError`.
 
 The `subtypes` restriction is honored by **all** step tiers, so it is never bypassed by falling through from one tier to the next.
 
 ### Git-backed spaces
 
-`base_uris` may be git URIs (`git+ssh://…`), not just local `file://` dirs.  All three tiers operate off a repo's **already-cloned** local copy (the thread-local git clone cache, reused — no re-clone), via a git-aware local-path resolver:
+`base_uris` may be git URIs (`git+ssh://…`), not just local `file://` dirs.  All step lookups operate off a repo's **already-cloned** local copy (the thread-local git clone cache, reused — no re-clone), via a git-aware local-path resolver:
 
-- Tier 2 (glob) and Tier 3 (fallback) scan/inspect any git base's clone.
-- Tier 1 (ancestor-walk) resolves the env dir to its clone and walks within it, so co-located steps in the **same repo** (base_uri) as the environment resolve.  Steps in a *different* repo from the env live in a separate clone and are not reachable by the walk — use env-class-match or the fallback for those.
+- The env-class-match glob and the env-agnostic fallback scan/inspect any git base's clone.
+- The ancestor-walk resolves the env dir to its clone and walks within it, so co-located steps in the **same repo** (base_uri) as the environment resolve.  Steps in a *different* repo from the env live in a separate clone and are not reachable by the walk — use env-class-match or the fallback for those.
+- The space-root check resolves `base_uris[0]` to its clone as well, so a git-backed space's own `steps/<name>` still takes priority.
 
 A base that can't be materialized locally (unsupported scheme, or a clone failure) is treated as "can't inspect": Tier 1/2 skip it and Tier 3 admits by path existence only, matching pre-`subtypes` behavior.
 
@@ -95,5 +109,5 @@ Auto-discovery of the active env's dir still happens on top of this — listing 
 
 - [Spaces and `space.yaml`](../spaces/README.md) — the `base_uris` chain these lookups walk.
 - [Environments overview](README.md) — `environment.yaml` / `step.yaml` reference and the per-type pages.
-- [`src/gbcommon/uri/space.py`](../../src/gbcommon/uri/space.py) — the `SpaceURI` resolver implementing the three-tier lookup.
+- [`src/gbcommon/uri/space.py`](../../src/gbcommon/uri/space.py) — the `SpaceURI` resolver implementing the space-root check and the three-tier lookup.
 - [`src/gbserver/build/targetstep.py`](../../src/gbserver/build/targetstep.py) — scopes the active env on the resolver thread-local during step assimilation.

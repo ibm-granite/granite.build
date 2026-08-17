@@ -54,9 +54,10 @@ class SpaceURI(URI):
             uri_suffix = uristr.removeprefix(GBSPACE_SCHEME + "://")
         elif uristr.startswith(SPACE_SCHEME):
             uri_suffix = uristr.removeprefix(SPACE_SCHEME + "://")
-        # Tier 1: env-co-located step lookup with ancestor-walk (nearest-wins),
-        # bounded by the enclosing base_uri.  Applies only to `space://steps/<name>`
-        # and honors any per-step ``subtypes`` restriction.
+        # Tier 1: for `space://steps/<name>` with an active env, first honor the
+        # space's own root step (`base_uris[0]/steps/<name>`, highest priority),
+        # then the env-co-located ancestor-walk (nearest-wins), bounded by the
+        # enclosing base_uri.  Honors any per-step ``subtypes`` restriction.
         if uri_suffix.startswith(STEPS_PREFIX):
             walked = SpaceURI._walk_colocated_steps(uri_suffix)
             if walked is not None:
@@ -316,8 +317,50 @@ class SpaceURI(URI):
         )
 
     @staticmethod
+    def _space_root_step(
+        name: str, rest: str, env_class: Optional[str], env_subtype: Optional[str]
+    ) -> Optional[URI]:
+        """Resolve ``steps/<name>`` against the space's own root (``base_uris[0]``).
+
+        The space directory (the first base_uri — the space's own ``uristr``) is
+        the most authoritative step source: a step it ships at
+        ``<space>/steps/<name>`` overrides an env-co-located step or one inherited
+        via ``base_uris[1:]`` (e.g. a published assets tree).  This lets a step
+        being developed in its own space be exercised (by ``make test``) before it
+        is published into an inherited tree.  The same ``subtypes`` restriction as
+        the ancestor-walk is applied, so a space step that excludes the active
+        env's sub-type is skipped and resolution falls through.
+
+        Args:
+            name: Step name.
+            rest: Sub-asset suffix appended to the step dir (empty for a bare URI).
+            env_class: Active env class name (for the sub-type gate), or ``None``.
+            env_subtype: Active env sub-type (for the sub-type gate), or ``None``.
+
+        Returns:
+            The resolved step ``URI`` when the space ships an admitting
+            ``steps/<name>``, else ``None``.
+        """
+        base_uris = getattr(SpaceURI._thread_local, "base_uris", None)
+        if not base_uris:
+            return None
+        space_root = SpaceURI._uri_to_local_path(base_uris[0])
+        if space_root is None:
+            return None
+        step_yaml = space_root.resolve() / "steps" / name / STEP_FILE_NAME
+        if not step_yaml.is_file() or not SpaceURI._step_subtype_ok(
+            step_yaml, env_class, env_subtype
+        ):
+            return None
+        return SpaceURI._step_uri_from_dir(step_yaml.parent, rest)
+
+    @staticmethod
     def _walk_colocated_steps(uri_suffix: str) -> Optional[URI]:
         """Resolve ``space://steps/<name>`` by walking up from the active env dir.
+
+        Before the walk, the space's own root step (``base_uris[0]/steps/<name>``,
+        see :meth:`_space_root_step`) takes priority, so a step the space ships
+        overrides an env-co-located or inherited copy of the same name.
 
         Starting at ``current_env_dir_uri`` the resolver checks
         ``<dir>/steps/<name>/step.yaml`` at each ancestor, nearest-wins, stopping
@@ -354,6 +397,12 @@ class SpaceURI(URI):
         env_path = env_path.resolve()
         env_class = getattr(SpaceURI._thread_local, "current_env_class_name", None)
         env_subtype = getattr(SpaceURI._thread_local, "current_env_subtype", None)
+        # Space-root priority: a step the space itself ships at
+        # ``<space>/steps/<name>`` overrides any env-co-located or inherited copy,
+        # so a locally-developed step is exercised before it is published.
+        space_hit = SpaceURI._space_root_step(name, rest, env_class, env_subtype)
+        if space_hit is not None:
+            return space_hit
         boundary = SpaceURI._enclosing_base_boundary(env_path)
         cur = env_path
         while True:
