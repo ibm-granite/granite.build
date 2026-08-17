@@ -173,6 +173,14 @@ class BuildRunner(AbstractBuildRunner):
         # is written unconditionally, but entity finalization only touches
         # unfinished entities).
         self._finalize_lock = threading.Lock()
+        # Buffers step metadata (targetsteprun_id -> {key: value}) pushed by a
+        # STEP_METADATA_UPDATE_EVENT that is processed before the status event which
+        # creates the StoredStepRun row. These come from different producers (log
+        # parsing vs. step lifecycle) with no ordering guarantee, so the value is held
+        # here and flushed onto the row once it exists (see _apply_pending_step_metadata),
+        # rather than dropped. The single serial worker loop is the only accessor, so
+        # no lock is needed.
+        self._pending_step_metadata: dict[str, dict[str, str]] = {}
 
     def stop(self: Self) -> None:
         """Stop the building thread if it was started."""
@@ -1756,14 +1764,19 @@ Download : {download_msg}
         ), f"expected {targetsteprun_id} actual {stored_step_run.uuid}"
         logger.info("creating/updating the step: %s", stored_step_run)
         self.storage.step_storage.update(stored_step_run)
+        # Flush any step metadata that was processed before this row existed (a
+        # log-parsed STEP_METADATA_UPDATE_EVENT can race ahead of this status event).
+        self._apply_pending_step_metadata(targetsteprun_id)
 
     def __process_step_metadata_update_event(self: Self, event: BuildEvent) -> None:
-        """Merge a runtime key/value into the step's StoredStepRun.metadata.
+        """Buffer a runtime key/value and merge it into the step's metadata.
 
-        Correlates via event.run_metadata.targetsteprun_id and preserves all existing
-        metadata keys. Logs and no-ops if the step row is not present yet (a later
-        status event will create it; metadata for an unknown step is dropped rather
-        than crashing the single serial worker loop).
+        Correlates via event.run_metadata.targetsteprun_id. The value is recorded in
+        _pending_step_metadata first, then flushed onto StoredStepRun.metadata by
+        _apply_pending_step_metadata. If the row does not exist yet (this log-parsed
+        event was processed before the status event that creates it), the value stays
+        buffered and is flushed when the step status handler creates the row, so
+        metadata is never lost to event-ordering.
 
         :param event: a STEP_METADATA_UPDATE_EVENT carrying a
             StepMetadataUpdateEventPayload.
@@ -1771,14 +1784,29 @@ Download : {download_msg}
         payload = event.payload
         assert isinstance(payload, StepMetadataUpdateEventPayload)
         targetsteprun_id = event.run_metadata.targetsteprun_id
+        assert isinstance(targetsteprun_id, str)
+        self._pending_step_metadata.setdefault(targetsteprun_id, {})[
+            payload.metadata_key
+        ] = payload.metadata_value
+        self._apply_pending_step_metadata(targetsteprun_id)
+
+    def _apply_pending_step_metadata(self: Self, targetsteprun_id: str) -> None:
+        """Flush buffered step metadata onto its StoredStepRun row once it exists.
+
+        No-op while the row is absent (a metadata event arrived before the status
+        event that creates the row); the buffer is retried from here and from the step
+        status handler after row creation. On success the buffered keys are merged into
+        the row (existing keys preserved) and the buffer entry is cleared.
+
+        :param targetsteprun_id: uuid of the step run whose buffered metadata to flush.
+        """
+        pending = self._pending_step_metadata.get(targetsteprun_id)
+        if not pending:
+            return
         stored = self.storage.step_storage.get_by_uuid(targetsteprun_id)
         if stored is None:
-            logger.warning(
-                "step metadata update for unknown step %s (key=%s); dropping",
-                targetsteprun_id,
-                payload.metadata_key,
-            )
-            return
+            return  # row not created yet; keep buffered for a later flush
         assert isinstance(stored, StoredStepRun)
-        stored.metadata[payload.metadata_key] = payload.metadata_value
+        stored.metadata.update(pending)
         self.storage.step_storage.update(stored)
+        del self._pending_step_metadata[targetsteprun_id]
