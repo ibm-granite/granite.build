@@ -140,7 +140,12 @@ def test_search_lineage_events_redacts_job_input_params():
         resp = lineage_mod.search_lineage_events(
             _fake_request("member", "member@example.com"), TagSearchRequest(tags=[])
         )
-    assert "SECRET" not in str(resp.runs)
+    # Redact-not-omit: the facet is retained so non-secret step data (e.g. a
+    # commit_hash) still surfaces, but any secret-named key has its VALUE masked.
+    # The key "SECRET" itself is preserved by design; only "should-not-leak" must go.
+    assert "should-not-leak" not in str(resp.runs)
+    params = resp.runs[0]["run"]["facets"]["job_input_params"]
+    assert params == {"SECRET": "<redacted>"}
 
 
 # ---------------------------------------------------------------- artifact graph
