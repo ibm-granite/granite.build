@@ -53,17 +53,20 @@ editing the released asset in place.
 ### What promotion does — and what the framework is *for*
 
 Promotion is deliberately narrow. `make publish-step` (and the `make space` render it
-builds on) does four things and no more:
+builds on) does five things and no more:
 
 1. **Renders one token.** `step-template.yaml` → `step.yaml` substituting only the
    literal `${IMAGE_REF}` (empty for public-image steps); all runtime Jinja `{{ … }}`
    and shell `${VAR}` pass through verbatim.
 2. **Copies `src/`** into the released step.
-3. **Copies the per-cluster build tests** into `test/steps/<name>/<env>/<cluster>/`
+3. **Publishes `USAGE.md` as `README.md`** beside the released `step.yaml`, so the
+   step ships user docs (the authoring `README.md` is dev-oriented and is *not*
+   published).
+4. **Copies the per-cluster build tests** into `test/steps/<name>/<env>/<cluster>/`
    and their fixtures into `test-data/steps/…`, **rewriting each `buildtest.yaml`'s
    `space_uri`** so the *same* test file resolves in both modes (see
    [Two test modes](#two-test-modes)).
-4. **Freezes the image tag** for custom-image steps — the per-commit `IMAGE_REF`
+5. **Freezes the image tag** for custom-image steps — the per-commit `IMAGE_REF`
    (default tag = git short SHA) that you can't reasonably hand-maintain.
 
 It is **not** a one-to-many generator and **not** parameterized templating: one source
@@ -107,6 +110,15 @@ The minimum a step/environment directory needs for `make` to render it:
 * **`Makefile`** — a thin file that sets a couple of variables (notably `STEP_NAME`)
   and includes the shared [`common.mk`](common.mk). It exposes the conventional
   targets below.
+* **`USAGE.md`** — the **user-facing** doc: how to reference, configure (the
+  `config` contract), and wire the step's inputs/outputs in a `build.yaml`, with a
+  worked example. `make publish-step` copies it to `README.md` **beside the published
+  `step.yaml`** (see the publish sections below), so the released step in
+  `configurations/` ships user docs. Because that copy lands several levels deep in a
+  different subtree, `USAGE.md` must be **self-contained**: only co-located links that
+  survive the copy (e.g. `src/<file>`, which is published next to `step.yaml`) and
+  in-file `#anchors`; reference framework/repo docs by plain-text path, not a relative
+  link that would rot at the published depth.
 
 ### Optional
 
@@ -131,10 +143,13 @@ Present or absent depending on what the step needs:
   `build.yaml`/`buildtest.yaml` in `test-data/slurm/` or `test-data/docker/`).
   Kept beside the step rather than in the repo's parallel `test/` ↔ `test-data/`
   tree, so the step is self-contained.
-* **`README.md`** — documents that step's function, its `config` contract, and its
-  inputs/outputs (see [`byoc/skypilot`](byoc/skypilot/README.md) and
-  [`eval/skypilot`](eval/skypilot/README.md) for the two step-type examples).
-  Conventional for every step, though not needed to build or render one.
+* **`README.md`** — the **development-oriented** doc: how the step is
+  generated/built/published, its test modes, drift, and framework framing, plus a
+  prominent pointer to `USAGE.md` (see [`byoc/skypilot`](byoc/skypilot/README.md) and
+  [`eval/skypilot`](eval/skypilot/README.md) for the two step-type examples). Unlike
+  `USAGE.md`, this authoring README is **not** published — `publish-step` ships
+  `USAGE.md` as the released step's `README.md` instead. Conventional for every step,
+  though not needed to build or render one.
 
 ### Generated
 
@@ -176,7 +191,8 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   bundled `src/`. Cheap and offline; it does *not* rebuild/push.
 * **`publish-step`** — promote the step into the repo's committed assets tree
   (`configurations/assets/environments/<env>/steps/<step-name>/`, rendered exactly as
-  `space` renders `step.yaml` + bundled `src/`) **and** copy the step's per-cluster
+  `space` renders `step.yaml` + bundled `src/`, plus `USAGE.md` copied there as
+  `README.md`) **and** copy the step's per-cluster
   build tests into the top-level `test/steps/<step-name>/<env>/<cluster>/` tree, with
   their fixtures in the parallel `test-data/steps/<step-name>/<env>/<cluster>/` tree
   (mirroring the repo's `test/` ↔ `test-data/` convention) and each copied
@@ -430,11 +446,11 @@ only.
 ## Generated artifacts and drift
 
 `make publish-step` writes **three committed trees derived from the step's source** under
-`steps/<step>/<env>/` (its `step-template.yaml`, `src/`, and per-cluster
+`steps/<step>/<env>/` (its `step-template.yaml`, `src/`, `USAGE.md`, and per-cluster
 `test/`+`test-data/`):
 
 1. the assets step — `configurations/assets/environments/<env>/steps/<name>/`
-   (`step.yaml` + bundled `src/`);
+   (`step.yaml` + bundled `src/` + `README.md` copied from `USAGE.md`);
 2. the Mode-2 tests — `test/steps/<name>/<env>/<cluster>/`;
 3. their fixtures — `test-data/steps/<name>/<env>/<cluster>/`.
 
