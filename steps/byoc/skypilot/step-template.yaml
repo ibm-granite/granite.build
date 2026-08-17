@@ -78,10 +78,20 @@ environment_configs:
             set -eu
             CODE_DIR="${GB_BUILD_WORKDIR:-$HOME}/{{ config.byoc_config.workdir }}"
             cd "$CODE_DIR"
+            # Record the resolved commit as step metadata so build lineage captures
+            # exactly which commit was built (build.yaml may pin only a branch/tag,
+            # or nothing). Defensive: never fail the build for lineage metadata,
+            # even though set -eu is in effect.
+            COMMIT_SHA="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
+            [ -n "$COMMIT_SHA" ] && echo "LLMB_STEP_METADATA_KEY:commit_hash LLMB_STEP_METADATA_VALUE:$COMMIT_SHA"
             echo "byoc: running command in $(pwd)"
             {{ config.byoc_config.command }}
-            # To register an output artifact, print (at the start of a line):
-            #   echo "LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>"
+            # Markers the skypilot monitor captures (print at the start of a line):
+            #   register an output artifact:
+            #     echo "LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>"
+            #   record step metadata (merged into StoredStepRun.metadata, surfaced
+            #   in lineage):
+            #     echo "LLMB_STEP_METADATA_KEY:<key> LLMB_STEP_METADATA_VALUE:<value>"
     monitors:
       # Standard artifact/status convention from the shipped monitor library.
       skypilot_monitor:

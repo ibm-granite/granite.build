@@ -25,7 +25,7 @@ from datetime import timedelta
 from enum import Enum
 from pathlib import Path
 from time import sleep, time
-from typing import TYPE_CHECKING, ClassVar, List, Optional, Self, Union
+from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Self, Union
 
 import pytest
 import yaml
@@ -95,6 +95,21 @@ from gbserver.utils.utils import get_time, get_uuid
 logger = get_logger(__name__)
 
 
+class ExpectedStep(BaseModel):
+    """Optional assertions checked against a target's StoredStepRun row(s)."""
+
+    step_uri: Optional[str] = None
+    """Match the step by its definition_uri; if omitted, applies to the target's
+    single step (fails if the target has more than one step)."""
+    metadata: dict[str, str] = {}
+    """Key -> exact value that must be present in StoredStepRun.metadata."""
+    metadata_matches: dict[str, str] = {}
+    """Key -> regex the StoredStepRun.metadata value must fullmatch (for
+    runtime-variable values such as a commit SHA)."""
+    config: dict[str, Any] = {}
+    """Nested subset that must be present in StoredStepRun.config."""
+
+
 class ExpectedTarget(BaseModel):
     target_name: str
     """Name of the target as it appears in the build.yaml"""
@@ -105,6 +120,10 @@ class ExpectedTarget(BaseModel):
     output_artifact_count: int
     """Number of output artifacts to be recorded in the recorded target record."""
     jobstats_count: int
+    expected_steps: list[ExpectedStep] = []
+    """Optional per-step metadata/config assertions checked against the persisted
+    StoredStepRun rows. Empty (default) means not checked, so existing fixtures are
+    unaffected."""
 
 
 class BuildTestSpecification(BaseModel):
@@ -1170,7 +1189,113 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             )
         self._verify_steplist_status(build_id, step_list, status_list)
 
+        self._verify_step_data(build_id, step_list, expected)
+
         self._verify_lineage(built_target, expected)
+
+    def _verify_step_data(
+        self: Self,
+        build_id: str,
+        step_list: list[StoredStepRun],
+        expected: ExpectedTarget,
+    ) -> None:
+        """Assert each ExpectedStep's metadata/config against the persisted steps.
+
+        No-op when ``expected.expected_steps`` is empty. Each ExpectedStep is
+        matched to a StoredStepRun by ``step_uri`` (its definition_uri), or to the
+        target's sole step when ``step_uri`` is omitted.
+
+        :param build_id: id of the build under test (for failure messages).
+        :param step_list: the target's persisted StoredStepRun rows.
+        :param expected: the target's expectation carrying ``expected_steps``.
+        """
+        for expected_step in expected.expected_steps:
+            step = self._resolve_expected_step(build_id, step_list, expected_step)
+            for key, value in expected_step.metadata.items():
+                assert step.metadata.get(key) == value, self._failed_build_msg(
+                    build_id,
+                    f"step {step.definition_uri} metadata[{key}]: "
+                    f"actual {step.metadata.get(key)!r} expected {value!r}",
+                )
+            for key, pattern in expected_step.metadata_matches.items():
+                actual = step.metadata.get(key, "")
+                assert re.fullmatch(pattern, actual), self._failed_build_msg(
+                    build_id,
+                    f"step {step.definition_uri} metadata[{key}]={actual!r} "
+                    f"does not match /{pattern}/",
+                )
+            self._assert_contains_subset(
+                build_id,
+                step.config,
+                expected_step.config,
+                f"step {step.definition_uri} config",
+            )
+
+    def _resolve_expected_step(
+        self: Self,
+        build_id: str,
+        step_list: list[StoredStepRun],
+        expected_step: ExpectedStep,
+    ) -> StoredStepRun:
+        """Find the StoredStepRun an ExpectedStep refers to.
+
+        Matches by ``expected_step.step_uri`` (definition_uri) when set; otherwise
+        requires the target to have exactly one step.
+
+        :param build_id: id of the build under test (for failure messages).
+        :param step_list: the target's persisted StoredStepRun rows.
+        :param expected_step: the expectation to resolve.
+        :returns: the uniquely matched StoredStepRun.
+        :raises AssertionError: if no unique match exists.
+        """
+        if expected_step.step_uri is not None:
+            matches = [
+                s for s in step_list if s.definition_uri == expected_step.step_uri
+            ]
+            assert len(matches) == 1, self._failed_build_msg(
+                build_id,
+                f"expected exactly one step with uri {expected_step.step_uri}, "
+                f"found {len(matches)}",
+            )
+            return matches[0]
+        assert len(step_list) == 1, self._failed_build_msg(
+            build_id,
+            f"expected_steps entry omits step_uri but target has "
+            f"{len(step_list)} steps",
+        )
+        return step_list[0]
+
+    def _assert_contains_subset(
+        self: Self,
+        build_id: str,
+        actual: Any,
+        expected: Any,
+        ctx: str,
+    ) -> None:
+        """Assert ``expected`` is contained in ``actual`` (recursive for dicts).
+
+        Dicts are matched key-by-key (each expected key must be present and its
+        value contained); all other values must be equal. Lets a fixture assert
+        only the config keys it cares about.
+
+        :param build_id: id of the build under test (for failure messages).
+        :param actual: the persisted value.
+        :param expected: the expected subset.
+        :param ctx: dotted path describing the location, for failure messages.
+        """
+        if isinstance(expected, dict):
+            assert isinstance(actual, dict), self._failed_build_msg(
+                build_id, f"{ctx}: expected a mapping, got {type(actual).__name__}"
+            )
+            for key, sub in expected.items():
+                assert key in actual, self._failed_build_msg(
+                    build_id, f"{ctx}: missing key {key!r}"
+                )
+                self._assert_contains_subset(build_id, actual[key], sub, f"{ctx}.{key}")
+        else:
+            assert actual == expected, self._failed_build_msg(
+                build_id, f"{ctx}: actual {actual!r} expected {expected!r}"
+            )
 
     def _verify_lineage(
         self: Self,

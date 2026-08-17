@@ -341,6 +341,36 @@ Both submit their `build.yaml` through the buildtest framework; for ad-hoc runs,
 submit a `build.yaml` via the `gbserver` MCP tools (see the `run-gbserver` and
 `create-step` skills).
 
+## Emitting data from a step (stdout markers)
+
+A step's only channel back to the server is its **stdout**, which the builtin
+monitors (`bash`, `docker`, `skypilot`) parse into build events. Two general
+step-framework hooks are recognised — print either at the start of a line from the
+step's `run:` block:
+
+* **Register an output artifact** — bind a produced path (or `mem://` state) to a
+  named build output:
+
+  ```sh
+  echo "LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>"
+  ```
+
+* **Record step metadata** — push a runtime-generated key/value that is merged into
+  the step's `StoredStepRun.metadata` and surfaced in build lineage (secret-*named*
+  keys are redacted before emission). Use it for values only known on the remote node
+  at runtime — the byoc step records the resolved git commit with it:
+
+  ```sh
+  COMMIT_SHA="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$COMMIT_SHA" ] && echo "LLMB_STEP_METADATA_KEY:commit_hash LLMB_STEP_METADATA_VALUE:$COMMIT_SHA"
+  ```
+
+  Metadata is kept separate from the step's declared `config` (the rendered
+  `build.yaml` input) so step-produced data never mutates the configuration. The hook
+  is monitor-level, so any step running under a builtin monitor gets it for free; a
+  build test can assert the persisted values via `expected_steps` in its
+  `buildtest.yaml` (see [Two test modes](#two-test-modes)).
+
 ## Two test modes
 
 A step's build tests run in **two modes** against the **same test files** — the

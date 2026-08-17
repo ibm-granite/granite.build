@@ -145,15 +145,53 @@ def _resolved_dir(uri: URI) -> Path:
 
 
 class TestTier1EnvColocated:
-    def test_env_colocated_hit_wins_over_base(self, tmp_path):
-        """A step inside the active env's own dir wins over a same-named step
-        reachable via base_uris."""
-        base = _write_step(tmp_path / "base" / "steps" / "hello").parent.parent
+    def test_env_colocated_hit_wins_over_inherited_base(self, tmp_path):
+        """A step in the active env's own dir wins over a same-named step in an
+        *inherited* base_uri (base_uris[1:]).  Only the space's own root
+        (base_uris[0]) outranks an env-co-located step (see the space-root tests
+        below); an inherited base does not."""
+        space_root = tmp_path / "space"  # base_uris[0], ships no steps/hello
+        space_root.mkdir()
+        inherited = _write_step(tmp_path / "assets" / "steps" / "hello").parent.parent
         env_dir = tmp_path / "envs" / "bash"
         colocated = _write_step(env_dir / "steps" / "hello")
-        _set_bases(base)
+        _set_bases(space_root, inherited)
 
         with SpaceURI.with_current_env(_make_env("Bash", env_dir)):
+            resolved = _resolve("space://steps/hello")
+
+        assert _resolved_dir(resolved).samefile(colocated)
+
+    def test_space_root_step_wins_over_env_colocated(self, tmp_path):
+        """The space's own root step (base_uris[0]/steps/<name>) overrides an
+        env-co-located step of the same name — so a step developed in its own
+        space is exercised before it is published into an inherited tree."""
+        space_root = tmp_path / "space"
+        space_step = _write_step(space_root / "steps" / "hello")
+        env_dir = tmp_path / "assets" / "skypilot" / "slurm"
+        _write_step(env_dir / "steps" / "hello")  # env-co-located, must lose
+        _set_bases(space_root, tmp_path / "assets")
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            resolved = _resolve("space://steps/hello")
+
+        assert _resolved_dir(resolved).samefile(space_step)
+
+    def test_space_root_step_skipped_when_subtypes_exclude_env(self, tmp_path):
+        """A space-root step whose ``subtypes`` exclude the active env is skipped,
+        so resolution falls through to the env-co-located step (the space-root
+        priority never bypasses the sub-type gate)."""
+        space_root = tmp_path / "space"
+        _write_step(
+            space_root / "steps" / "hello",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes"],  # excludes aws
+        )
+        env_dir = tmp_path / "assets" / "skypilot" / "aws"
+        colocated = _write_step(env_dir / "steps" / "hello")
+        _set_bases(space_root, tmp_path / "assets")
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir, subtype="aws")):
             resolved = _resolve("space://steps/hello")
 
         assert _resolved_dir(resolved).samefile(colocated)

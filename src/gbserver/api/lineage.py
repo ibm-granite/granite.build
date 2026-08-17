@@ -41,6 +41,7 @@ from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.utils.logger import get_logger
+from gbserver.utils.redaction import redact_sensitive
 
 logger = get_logger(__name__)
 
@@ -224,10 +225,14 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
             )
             if not has_access:
                 continue
-            # job_input_params carries raw build.yaml step config and can embed
-            # credentials — redact it here too, same as get_build_jobstats, rather
-            # than widening who can read pipeline secrets via search.
-            run_facets.pop("job_input_params", None)
+            # job_input_params carries step config/metadata that can embed
+            # credentials. The write-side builder (wandb_jobstats._build_events_for_target)
+            # already masks secret-named keys; redact again here as defense-in-depth on
+            # this persisted-read path so the surfaced metadata (e.g. commit_hash) stays
+            # visible while secret-named keys remain masked.
+            run_facets["job_input_params"] = redact_sensitive(
+                run_facets.get("job_input_params") or {}
+            )
             accessible.append(result)
         backend_offset += len(page_results)
 

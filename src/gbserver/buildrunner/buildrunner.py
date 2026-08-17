@@ -73,6 +73,7 @@ from gbserver.types.buildevent import (
     BuildEventType,
     BuildEventWorkloadStatusPayload,
     CreatedArtifactEventPayload,
+    StepMetadataUpdateEventPayload,
 )
 from gbserver.types.constants import (
     DEFAULT_DIR_PERMS,
@@ -920,6 +921,8 @@ class BuildRunner(AbstractBuildRunner):
             self.__process_workload_status_event(event=event)
         elif event.type is BuildEventType.METRICS_EVENT:
             self.__process_metrics_event(event=event)
+        elif event.type is BuildEventType.STEP_METADATA_UPDATE_EVENT:
+            self.__process_step_metadata_update_event(event=event)
         else:
             logger.error("unsupported event type: %s", event)
         logger.debug("BuildRunner.process_event end")
@@ -1753,3 +1756,29 @@ Download : {download_msg}
         ), f"expected {targetsteprun_id} actual {stored_step_run.uuid}"
         logger.info("creating/updating the step: %s", stored_step_run)
         self.storage.step_storage.update(stored_step_run)
+
+    def __process_step_metadata_update_event(self: Self, event: BuildEvent) -> None:
+        """Merge a runtime key/value into the step's StoredStepRun.metadata.
+
+        Correlates via event.run_metadata.targetsteprun_id and preserves all existing
+        metadata keys. Logs and no-ops if the step row is not present yet (a later
+        status event will create it; metadata for an unknown step is dropped rather
+        than crashing the single serial worker loop).
+
+        :param event: a STEP_METADATA_UPDATE_EVENT carrying a
+            StepMetadataUpdateEventPayload.
+        """
+        payload = event.payload
+        assert isinstance(payload, StepMetadataUpdateEventPayload)
+        targetsteprun_id = event.run_metadata.targetsteprun_id
+        stored = self.storage.step_storage.get_by_uuid(targetsteprun_id)
+        if stored is None:
+            logger.warning(
+                "step metadata update for unknown step %s (key=%s); dropping",
+                targetsteprun_id,
+                payload.metadata_key,
+            )
+            return
+        assert isinstance(stored, StoredStepRun)
+        stored.metadata[payload.metadata_key] = payload.metadata_value
+        self.storage.step_storage.update(stored)

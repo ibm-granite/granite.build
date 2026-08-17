@@ -32,6 +32,7 @@ from gbserver.types.constants import (
     GB_JOB_STATS_DETAIL_TYPE,
 )
 from gbserver.types.status import Status
+from gbserver.utils.redaction import redact_sensitive
 
 _LINEAGE_REPO_ORG = "ibm-granite" if is_public_github() else "granite-dot-build"
 LINEAGE_PRODUCER_URL = f"https://{DEFAULT_GH_DOMAIN}/{_LINEAGE_REPO_ORG}/granite.build"
@@ -202,13 +203,17 @@ class WandBLineageStore(ILineageStore):
         step_configs = []
         steps = storage.step_storage.get_by_where({"target_id": targetrun.uuid})
         for step in steps:
-            # step.config/config_dir are copied verbatim from the build's own
-            # build.yaml and can embed credentials — jobstats is readable by any
-            # space member (not just the build owner/admin, unlike get_build_archive),
-            # so omit them here rather than widening who can read pipeline secrets.
+            # step.config is the rendered build.yaml input and step.metadata is
+            # runtime data the step pushed (e.g. commit_hash). jobstats is readable
+            # by any space member (not just the build owner/admin), so both are
+            # emitted with secret-*named* keys masked via redact_sensitive rather
+            # than omitted — a secret stored under a non-secret-looking key would
+            # not be masked (accepted tradeoff; see utils/redaction.py).
             step_configs.append(
                 {
                     "uri": step.definition_uri,
+                    "config": redact_sensitive(step.config),
+                    "metadata": redact_sensitive(step.metadata),
                 }
             )
 

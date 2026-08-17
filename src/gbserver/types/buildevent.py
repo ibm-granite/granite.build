@@ -61,6 +61,9 @@ class BuildEventType(StrEnum):
     TARGET_ARTIFACTS_DONE_EVENT = auto()
     """Internal sentinel: a target has emitted all its output-artifact events.
     Used by TargetRun/BuildRun to barrier on output-push enqueuing. """
+    STEP_METADATA_UPDATE_EVENT = auto()
+    """A step pushed a runtime key/value (via the LLMB_STEP_METADATA_KEY/VALUE stdout
+    hook) to be merged into its StoredStepRun.metadata. """
     # LOG_EVENT = auto()
     # """Log events are typically internal log messages produced by the internals of gbserver, but which may still be useful to both developers and end users. """
 
@@ -114,6 +117,8 @@ class EventPayload:
                 return BuildEventMetricsPayload(**metrics_data)
             case BuildEventType.VALIDATION_DATA_EVENT:
                 return BuildEventValidationDataPayload(**data)
+            case BuildEventType.STEP_METADATA_UPDATE_EVENT:
+                return StepMetadataUpdateEventPayload(**data)
         self = cls(data=data)
         return self
 
@@ -257,6 +262,18 @@ class ArtifactPushedEventPayload(EventPayload):
     uri: Optional[str] = None
     binding_id: str = ""
     type: Optional[ArtifactType] = ArtifactType.UNDEFINED
+
+
+@dataclass
+class StepMetadataUpdateEventPayload(EventPayload):
+    """Runtime key/value merged into a step's StoredStepRun.metadata.
+
+    metadata_key: metadata field name to set/overwrite.
+    metadata_value: its runtime-resolved string value.
+    """
+
+    metadata_key: str = ""
+    metadata_value: str = ""
 
 
 @dataclass

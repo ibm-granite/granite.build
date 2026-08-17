@@ -4,6 +4,9 @@
 # `ref: space://monitors/skypilot` and overrides only what differs (poll
 # interval, log_retrieval mode, extra event_configs).
 #
+# It also detects the LLMB_STEP_METADATA_KEY/VALUE marker, merged into the step's
+# StoredStepRun.metadata (e.g. a git commit_hash resolved at runtime).
+#
 # The artifact event emits a `binding` payload ({"path": <artifact path>}) — this
 # is what downstream targets dereference as `{{ bindings.<x>.binding.path }}`, and
 # it enables retry-transparent NEWARTIFACT deduplication. Every {{ config.* }}
@@ -54,3 +57,15 @@ config:
         - field_name: binding
           field_value_template: '{ "state": "{{ fields.data.state }}" }'
           is_json: true
+    # step metadata: merges <value> into the step's StoredStepRun.metadata under
+    # <key> (e.g. a git commit_hash resolved at runtime). Both fields are
+    # top-level, so they are splatted into StepMetadataUpdateEventPayload. NOT
+    # anchored and event-level is_json omitted, matching the artifact blocks above
+    # (retrieved log lines are prefixed, so `^` would not match).
+    - event_type: STEP_METADATA_UPDATE_EVENT
+      line_regex: "LLMB_STEP_METADATA_KEY:.* LLMB_STEP_METADATA_VALUE:.*"
+      event_fields:
+        - field_name: metadata_key
+          field_regex: "(?<=LLMB_STEP_METADATA_KEY:)[^ ]+"
+        - field_name: metadata_value
+          field_regex: "(?<=LLMB_STEP_METADATA_VALUE:).*"
