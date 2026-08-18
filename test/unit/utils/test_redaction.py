@@ -22,7 +22,11 @@ the member-readable build-lineage facet.
 
 import pytest
 
-from gbserver.utils.redaction import REDACTED, redact_sensitive
+from gbserver.utils.redaction import (
+    REDACTED,
+    redact_sensitive,
+    scrub_url_credentials,
+)
 
 
 @pytest.mark.standalone
@@ -84,6 +88,55 @@ def test_auth_prefix_does_not_over_mask():
         "AUTHENTICATED": True,
     }
     assert redact_sensitive(data) == data
+
+
+@pytest.mark.standalone
+def test_scrubs_credentialed_url_under_non_secret_key():
+    """A ``user:secret`` clone URL under an innocuous key (``repo``) is scrubbed.
+
+    Guards the byoc/BYOS regression: key-name masking alone misses this because the
+    key name isn't secret-looking, so the value pass must strip the credential pair.
+    """
+    result = redact_sensitive(
+        {
+            "repo": "https://x-access-token:ghp_SECRET@github.com/org/repo",
+            "uri": "https://user:pw@github.com/org/repo.git",
+        }
+    )
+    assert result == {
+        "repo": f"https://{REDACTED}@github.com/org/repo",
+        "uri": f"https://{REDACTED}@github.com/org/repo.git",
+    }
+
+
+@pytest.mark.standalone
+def test_scrubs_url_embedded_in_command_string():
+    """Credentials survive inside a larger command line — scrub them there too."""
+    result = redact_sensitive(
+        {"start_command": "git clone https://user:pw@github.com/org/repo.git /w"}
+    )
+    assert result == {
+        "start_command": f"git clone https://{REDACTED}@github.com/org/repo.git /w"
+    }
+
+
+@pytest.mark.standalone
+def test_scrub_url_credentials_leaves_clean_urls_untouched():
+    """URLs with no ``user:secret`` pair are unchanged.
+
+    Only a credential *pair* is masked, so a bare username (``git@``, ``user@``,
+    token-as-username) is preserved — as are clean URLs, ``space://`` refs, and an
+    ``@`` that appears in a path segment rather than the authority.
+    """
+    for clean in (
+        "https://github.com/org/repo.git",
+        "space://steps/byoc",
+        "https://github.com/org/repo/path@ref",  # @ after a path segment, not userinfo
+        "git+ssh://git@github.com/org/repo.git",  # bare username, no password
+        "https://ghp_TOKEN@github.com/org/repo",  # token-as-username, no ':' (see caveat)
+        "just a plain string, no url",
+    ):
+        assert scrub_url_credentials(clean) == clean
 
 
 @pytest.mark.standalone

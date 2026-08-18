@@ -378,7 +378,8 @@ step's `run:` block:
 
 * **Record step metadata** — push a runtime-generated key/value that is merged into
   the step's `StoredStepRun.metadata` and surfaced in build lineage (secret-*named*
-  keys are redacted before emission). Use it for values only known on the remote node
+  keys are redacted, and `userinfo@` credentials in any URL-shaped value are scrubbed,
+  before emission). Use it for values only known on the remote node
   at runtime — the byoc step records the resolved git commit with it:
 
   ```sh

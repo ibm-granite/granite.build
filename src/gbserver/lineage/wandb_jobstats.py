@@ -32,7 +32,7 @@ from gbserver.types.constants import (
     GB_JOB_STATS_DETAIL_TYPE,
 )
 from gbserver.types.status import Status
-from gbserver.utils.redaction import redact_sensitive
+from gbserver.utils.redaction import redact_sensitive, scrub_url_credentials
 
 _LINEAGE_REPO_ORG = "ibm-granite" if is_public_github() else "granite-dot-build"
 LINEAGE_PRODUCER_URL = f"https://{DEFAULT_GH_DOMAIN}/{_LINEAGE_REPO_ORG}/granite.build"
@@ -206,12 +206,13 @@ class WandBLineageStore(ILineageStore):
             # step.config is the rendered build.yaml input and step.metadata is
             # runtime data the step pushed (e.g. commit_hash). jobstats is readable
             # by any space member (not just the build owner/admin), so both are
-            # emitted with secret-*named* keys masked via redact_sensitive rather
-            # than omitted — a secret stored under a non-secret-looking key would
-            # not be masked (accepted tradeoff; see utils/redaction.py).
+            # emitted with secret-*named* keys masked via redact_sensitive, which
+            # also scrubs userinfo@ credentials out of any URL-shaped value. The
+            # definition_uri is scrubbed the same way so a credentialed BYOS clone
+            # URL (git+ssh://token@... / https://token@...) cannot leak here.
             step_configs.append(
                 {
-                    "uri": step.definition_uri,
+                    "uri": scrub_url_credentials(step.definition_uri),
                     "config": redact_sensitive(step.config),
                     "metadata": redact_sensitive(step.metadata),
                 }
