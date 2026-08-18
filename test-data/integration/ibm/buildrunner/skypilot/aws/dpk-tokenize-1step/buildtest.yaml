@@ -1,0 +1,31 @@
+# YAML-driven spec for
+# test/integration/ibm/buildrunner/skypilot/aws/test_dpk_tokenize_1step.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# Single-instance DPK tokenize+validate on AWS EC2 (via SkyPilot). ONE target,
+# ONE command step runs both stages on the same instance, so there is no S3
+# handoff and no bucket/secrets are needed — the cheap smoke variant of the
+# dpk-tokenize fixture. Reaching SUCCESS proves DPK runs on real EC2 and
+# validate_tokens.py passes (3 arrow files, 6 documents, 85 tokens).
+targets:
+  - dpk-tokenize-validate
+target_expectations:
+  # One command step; the env:// `report` output is a no-op (registered inline,
+  # no push step), so step_count stays 1. Confirmed against a real EC2 run.
+  # jobstats_count may not be asserted under standalone's NoopLineageStore.
+  - target_name: dpk-tokenize-validate
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    jobstats_count: 1
+# Resolve space:// URIs (the aws environment + the shared `command` step) from
+# the repo's local space without cloning from GitHub. Relative to this YAML's
+# directory — same depth as the sibling aws fixtures.
+space_uri: ../../../../../../../configurations/spaces/local
+# Happy-path smoke run — no simulated failure, skip the cancellation variant.
+simulate_step_failure: false
+tests:
+  - runner
+# One EC2 provision plus a runtime pip install (DPK/transformers/pyarrow) and a
+# tokenizer download; a real run completed in a few minutes, but leave headroom.
+timeout_minutes: 30
