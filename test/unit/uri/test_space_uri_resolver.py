@@ -575,6 +575,31 @@ class TestEnvClassPresence:
 
         assert _resolved_dir(resolved).samefile(universal)
 
+    def test_present_but_null_class_entry_resolves(self, tmp_path):
+        """A step keyed for the active class with a **null** value
+        (``environment_configs: {Skypilot:}``) declares the class and must
+        resolve — presence is by key, not value. A value-based ``is None`` gate
+        would wrongly skip this step, which is scoped to exactly the active env."""
+        base = tmp_path / "assets"
+        step_dir = base / "steps" / "foo"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        (step_dir / "step.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "foo",
+                    "version": "v1",
+                    "type": "custom",
+                    "environment_configs": {"Skypilot": None},
+                }
+            )
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            resolved = _resolve("space://steps/foo")
+
+        assert _resolved_dir(resolved).samefile(step_dir)
+
 
 # --------------------------------------------------------------------------- #
 # Tier 2 — env-class match (specificity + tie-break)

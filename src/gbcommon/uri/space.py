@@ -179,14 +179,40 @@ class SpaceURI(URI):
         return boundary
 
     @staticmethod
-    def _env_config_entry(data: dict, env_class: str):
-        """Look up ``environment_configs[<env_class>]`` case-insensitively.
+    def _matching_env_key(configs, env_class: str) -> Optional[str]:
+        """Return the ``environment_configs`` key that matches ``env_class``.
 
         Env class names (``K8s``, ``Skypilot``, ...) and the ``environment_configs``
         keys authored in ``step.yaml`` don't always agree on case (e.g. a step
         keyed ``k8s`` for the ``K8s`` env class), so the match is by
         case-insensitive string equality.  An exact match is preferred; a
-        case-insensitive match is the fallback.
+        case-insensitive match is the fallback.  The lookup is on the **key**
+        only and ignores the entry's value, so a present-but-null entry
+        (``{Skypilot:}``) still reports its key.
+
+        Args:
+            configs: The ``environment_configs`` mapping (any non-dict value,
+                including ``None``, yields ``None``).
+            env_class: Active env class name.
+
+        Returns:
+            The matching key, or ``None`` when no key matches.
+        """
+        if not isinstance(configs, dict):
+            return None
+        if env_class in configs:
+            return env_class
+        lowered = env_class.lower()
+        for key in configs:
+            if isinstance(key, str) and key.lower() == lowered:
+                return key
+        return None
+
+    @staticmethod
+    def _env_config_entry(data: dict, env_class: str):
+        """Look up the value of ``environment_configs[<env_class>]``.
+
+        Uses :meth:`_matching_env_key` for the case-insensitive key match.
 
         Args:
             data: Parsed ``step.yaml`` mapping.
@@ -194,18 +220,37 @@ class SpaceURI(URI):
 
         Returns:
             The matching ``environment_configs`` value, or ``None`` when no key
-            matches.
+            matches **or the matched key's value is null**.  Because a null value
+            is indistinguishable from an absent key here, callers testing whether
+            the class is *declared* must use :meth:`_env_class_present`, not an
+            ``is None`` check on this result.
         """
-        configs = data.get("environment_configs") or {}
+        configs = data.get("environment_configs")
         if not isinstance(configs, dict):
             return None
-        if env_class in configs:
-            return configs[env_class]
-        lowered = env_class.lower()
-        for key, value in configs.items():
-            if isinstance(key, str) and key.lower() == lowered:
-                return value
-        return None
+        key = SpaceURI._matching_env_key(configs, env_class)
+        return configs[key] if key is not None else None
+
+    @staticmethod
+    def _env_class_present(data: dict, env_class: str) -> bool:
+        """Return whether ``environment_configs`` *declares* ``env_class`` by key.
+
+        Presence is decided by the key alone, so a class that is present but null
+        (``environment_configs: {Skypilot:}`` — declared, hence admissible under
+        the active ``Skypilot`` env) is distinguished from one that is genuinely
+        absent (the step is scoped to other classes only).
+
+        Args:
+            data: Parsed ``step.yaml`` mapping.
+            env_class: Active env class name.
+
+        Returns:
+            ``True`` when a key matches ``env_class`` (case-insensitively).
+        """
+        return (
+            SpaceURI._matching_env_key(data.get("environment_configs"), env_class)
+            is not None
+        )
 
     @staticmethod
     def _subtype_ok(
@@ -263,14 +308,21 @@ class SpaceURI(URI):
 
         * ``env_class`` unknown → ``True`` (no class context to filter on, as in
           :meth:`_subtype_ok`).
-        * a **non-empty** ``environment_configs`` block that does **not** list the
-          active class → ``False``: the step is scoped to other env classes and
-          cannot run here, so it is not a match.  This is the class-presence
-          requirement the sub-type-only predicate deliberately left to callers.
-        * otherwise (the class is present, **or** the step declares no
+        * a **non-empty** ``environment_configs`` block whose keys do **not**
+          include the active class → ``False``: the step is scoped to other env
+          classes and cannot run here, so it is not a match.  This is the
+          class-presence requirement the sub-type-only predicate deliberately left
+          to callers.
+        * otherwise (the class **key** is present, **or** the step declares no
           ``environment_configs`` at all) → delegate to :meth:`_subtype_ok`.  A
           step with no ``environment_configs`` stays env-agnostic/universal,
           preserving the directory-placed ancestor-walk behavior.
+
+        Presence is decided by the class **key**, not its value: a present-but-null
+        entry (``environment_configs: {Skypilot:}``) declares the class and so is
+        admitted (:meth:`_subtype_ok` then treats the null entry as unrestricted).
+        A value-based ``is None`` check would wrongly skip such a step, which is
+        scoped to exactly the active class.
 
         Args:
             data: Parsed ``step.yaml`` mapping.
@@ -283,7 +335,7 @@ class SpaceURI(URI):
         if (
             isinstance(configs, dict)
             and configs
-            and SpaceURI._env_config_entry(data, env_class) is None
+            and not SpaceURI._env_class_present(data, env_class)
         ):
             # Declared for other env classes only → not a match for this env.
             return False
