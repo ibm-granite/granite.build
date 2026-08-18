@@ -119,6 +119,7 @@ submit time with `--param KEY=VALUE`.
 | `TRANSFORMERS_VERSION` | `>=4.38.2` | HuggingFace `transformers` constraint. |
 | `INPUT_LOCAL_DIR` | `samples/data/dpk-tokenization/input` | Local dir rsync'd to the worker via `file_mounts`. |
 | `VALIDATE_SCRIPT` | `.../scripts/validate_tokens.py` | Validation script shipped to the worker. |
+| `TOKENS_URI` | `env:///tmp/dpk-tokenize-output` | How `tokens` is handed from `tokenize` to `validate`. Keep `env://` on shared-filesystem endpoints; use `s3://…` on `skypilot/aws`. See [Cross-node handoff](#cross-node-handoff). |
 | `TOKENIZER` | `hf-internal-testing/llama-tokenizer` | Any HF AutoTokenizer-compatible name or path. |
 | `DOC_ID_COLUMN` | `document_id` | Input column holding unique document IDs. |
 | `DOC_CONTENT_COLUMN` | `contents` | Input column holding document text. |
@@ -127,6 +128,31 @@ submit time with `--param KEY=VALUE`.
 | `NUM_GPUS_PER_NODE` | `0` | CPU-only workload. |
 | `TOTAL_MEMORY_PER_NODE` | `4Gi` | Raise for large inputs (DPK suggests 64Gi at scale). |
 | `POLL_INTERVAL_SECONDS` | `30` | Completion-detection interval. The monitor default is 300s, which would dominate wall-clock here. |
+
+### Cross-node handoff
+
+`validate` **reads** the `tokens` directory that `tokenize` produced — so the two
+targets must be able to see the same bytes. They are separate workloads, and on
+`skypilot/aws` each provisions its **own EC2 instance with no shared filesystem**.
+Because `env://` registers only a node-local path (it moves no bytes), an
+`env://` handoff leaves `validate` on a different instance reading an absent
+directory, and the build fails with `no .arrow files found`.
+
+- **Shared-filesystem endpoints** (`skypilot/slurm`, `skypilot/lsf` — both define
+  a `shared_workdir` of `/shared`): the default `TOKENS_URI=env://…` is fine
+  *when the targets co-locate or write under the shared workdir*.
+- **`skypilot/aws`** (and any endpoint without a shared FS): route `tokens`
+  through S3 so `tokenize` pushes it and `validate` pulls it locally:
+
+  ```bash
+  gb build start -f build.yaml \
+    --param ENVIRONMENT=skypilot/aws \
+    --param TOKENS_URI=s3://<your-bucket>/dpk-tokenize/tokens
+  ```
+
+  This needs the S3 assetstore secrets `COS_ACCESS_KEY_ID` / `COS_SECRET_ACCESS_KEY`
+  (the `skypilot/aws` env already lists the `s3` assetstore). The `report` output
+  can stay `env://` — nothing downstream consumes it.
 
 ### Using your own data
 
@@ -195,7 +221,7 @@ consider KubeRay instead.
 | Build hangs ~5 min after the job finishes | `POLL_INTERVAL_SECONDS` too high, or omitted so the 300s monitor default applies. |
 | `pip install` fails on the worker | No outbound PyPI access. Pre-bake DPK into an image and set `command_config.image`. |
 | `OSError: ... is not a local folder` for the tokenizer | Tokenizer name is wrong, or it is gated and needs `HF_TOKEN`. |
-| `no .arrow files found` | Input dir had no Parquet files, or all were empty. Check the `tokenize` log's output tree. |
+| `no .arrow files found` | Either the input dir had no Parquet files / all were empty (check the `tokenize` log's output tree), **or** `tokenize` succeeded but `validate` ran on a different node with an `env://` handoff — set `TOKENS_URI=s3://…` (see [Cross-node handoff](#cross-node-handoff)). |
 | `token count mismatch` in validate | A real inconsistency between the token stream and its sidecars — inspect `validation.json` in the `report` artifact. |
 | `space://steps/command` unresolvable | The target env is not of class `Skypilot`. Native `k8s`/`lsf`/`runpod` have no builtin `command` step. |
 

@@ -1,0 +1,46 @@
+# YAML-driven spec for
+# test/integration/ibm/buildrunner/skypilot/aws/test_dpk_tokenize.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# DPK tokenize -> validate on AWS EC2 (via SkyPilot). `tokenize` runs Data Prep
+# Kit over the committed sample Parquet and pushes the result to S3; `validate`
+# pulls it and runs validate_tokens.py, failing the build on any inconsistency.
+# Reaching SUCCESS proves the template runs end to end on real EC2 AND that the
+# known-good fixture validates (3 arrow files, 6 documents, 85 tokens).
+targets:
+  - tokenize
+  - validate
+target_expectations:
+  # NOTE: unlike the env:// aws fixtures (2target/filemount/1step-image), this
+  # fixture uses the S3 assetstore, which queues REAL pull/push steps in addition
+  # to the command step — so step_count is NOT 1 here. The exact counts below are
+  # a first estimate and MUST be calibrated against the first successful real-EC2
+  # run (same empirical calibration the byoc/eval aws fixtures needed). Under
+  # standalone's NoopLineageStore jobstats_count may not be asserted; keep it
+  # accurate once observed.
+  - target_name: tokenize
+    # command step + one S3 push step for the `tokens` output.  # CALIBRATE
+    step_count: 2
+    input_artifact_count: 0
+    output_artifact_count: 1
+    jobstats_count: 1
+  - target_name: validate
+    # one S3 pull step for the bound `tokens` input + command step. The env://
+    # `report` output is a no-op (no push step).  # CALIBRATE
+    step_count: 2
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+# Resolve space:// URIs (the aws environment, the shared `command` step, and the
+# S3 assetstore) from the repo's local space without cloning from GitHub.
+# Relative to this YAML's directory — same depth as the sibling aws fixtures.
+space_uri: ../../../../../../../configurations/spaces/local
+# Happy-path handoff test — no simulated failure, and skip the cancellation run
+# (cancel/retry is covered by the aws/1step-image fixture).
+simulate_step_failure: false
+tests:
+  - runner
+# Two sequential EC2 provisions (validate waits for tokenize's binding), each
+# with a runtime pip install (DPK/transformers on tokenize, pyarrow on validate)
+# plus a tokenizer download and the S3 push/pull — give generous headroom.
+timeout_minutes: 50

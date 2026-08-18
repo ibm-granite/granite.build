@@ -28,12 +28,20 @@ granite.build:
     tokenize:
       environment_uri: space://environments/$${ENVIRONMENT}
       outputs:
-        # env:// is a no-op transfer on the worker's own filesystem, registered
-        # inline from the LLMB_ARTIFACT marker the command emits. It is supported
-        # by every environment class, which keeps this template portable. `type`
-        # is required for env:// outputs.
+        # Cross-target handoff to `validate`, controlled by TOKENS_URI so it
+        # survives on every endpoint (see parameters.yaml + README "Cross-node
+        # handoff"). The command always writes the local dir /tmp/dpk-tokenize-
+        # output and emits it as the LLMB_ARTIFACT marker; the assetstore then
+        # routes it per the URI scheme:
+        #   env:// — no-op registration of the local path. Works only when
+        #            `validate` shares a filesystem with `tokenize` (a shared_
+        #            workdir endpoint, or co-located targets). `type` is required.
+        #   s3://  — the local dir is PUSHED to S3 and `validate` PULLS it locally.
+        #            Required on skypilot/aws, where each target is a separate EC2
+        #            instance with no shared FS (env:// there leaves validate with
+        #            an absent path).
         tokens:
-          uri: "env:///tmp/dpk-tokenize-output"
+          uri: "$${TOKENS_URI}"
           type: dataset
       steps:
         - step_uri: space://steps/command
