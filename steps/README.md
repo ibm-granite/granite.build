@@ -387,6 +387,31 @@ step's `run:` block:
   build test can assert the persisted values via `expected_steps` in its
   `buildtest.yaml` (see [Two test modes](#two-test-modes)).
 
+### Metadata coverage and rollout
+
+The *parse* side (the monitor markers above) is universal — every step under a
+builtin monitor can emit either marker. The *emit* side, however, is **opt-in per
+step**: a step records metadata only if its own `run:` block prints the marker.
+
+- **Where it is authored.** The emit line lives in the step's **authored source**
+  (`steps/<step>/<env>/step-template.yaml`). `make publish-step` renders that source
+  into the released `configurations/assets/.../steps/<step>/step.yaml`, so the *same*
+  line appears in both files. That pair is [source vs. release](#source-of-truth-steps-vs-configurations),
+  **not** a duplicate hand-edit — only the `step-template.yaml` copy is edited; the
+  asset copy is regenerated. Never hand-edit the emitted marker in the asset tree.
+- **Current coverage.** Only [`byoc/skypilot`](byoc/skypilot/step-template.yaml)
+  emits metadata today (a `commit_hash` recording the resolved git commit). Every
+  other step emits nothing — the absence is expected, not a bug.
+- **Asset-only steps cannot inherit it.** The ~30+ steps that exist *only* under
+  `configurations/assets/.../steps/*` (no `steps/` source, so no `step-template.yaml`)
+  have no template to carry the line. Adding metadata to one means either authoring
+  its own emit line, or first migrating the step into `steps/` so it gains a source of
+  truth. There is no central switch that turns metadata on for all steps at once.
+- **Intended rollout.** Extend emission step-by-step as each step gains a value worth
+  recording in lineage, preferring migration into `steps/` first. This mostly becomes
+  moot once every step is sourced under `steps/`; until then, treat each step's emit
+  line as its own small change.
+
 ## Two test modes
 
 A step's build tests run in **two modes** against the **same test files** — the
