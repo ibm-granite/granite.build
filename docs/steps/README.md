@@ -133,6 +133,7 @@ Three approaches for running custom code:
 
 ## See also
 
+- [Step Implementation Framework](../../steps/README.md) — how step implementations are authored, rendered, and published from the `steps/` source tree (for step *developers*, complementing this user-facing guide)
 - [Monitoring and artifact events](monitoring-and-artifact-events.md) — how a step captures its outputs by parsing workload logs
 - [bash environment](../environments/bash.md) — how bash steps execute (inputs, config, outputs)
 - [Templates](../templates/README.md) — reusable build.yaml patterns

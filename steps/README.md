@@ -8,6 +8,11 @@ Subdirectories contain step implementations (`eval`, `byoc`, etc.), each with
 per-compute-environment subdirectories (`skypilot`, `lsf`, `k8s`, ...). For
 example, `steps/eval/skypilot` holds the eval step's SkyPilot implementation.
 
+> **Audience:** step *developers* authoring and publishing step implementations.
+> If you are instead *using* steps in a `build.yaml` (referencing, configuring, or
+> picking a built-in step), see the user-facing guide:
+> [docs/steps/README.md](../docs/steps/README.md).
+
 ## Source of truth: `steps/` vs. `configurations/`
 
 Think of the two trees as **source vs. release**: `steps/` is a source-like
