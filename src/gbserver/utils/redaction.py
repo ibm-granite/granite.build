@@ -45,7 +45,10 @@ SENSITIVE_KEY_RE = re.compile(
     | private[_-]?key
     | ssh[_-]?key
     | authorization
-    | auth(?!(?-i:[a-z]))    # 'auth', 'auth_token', 'authToken' — but NOT 'author(ization)'
+    | auth(?!or|en)          # 'auth', 'auth_token', 'authToken' — but NOT 'author'/'authentic…'
+                             # Exclusion is on the word stem (case-insensitive via re.IGNORECASE),
+                             # so all-caps keys like AUTHOR / AUTHORED_DATE / GIT_AUTHOR are also
+                             # left unmasked (the old (?-i:[a-z]) guard only skipped lowercase).
     """,
     re.IGNORECASE | re.VERBOSE,
 )
