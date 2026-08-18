@@ -539,9 +539,7 @@ class TestEnvClassPresence:
             base / "skypilot" / "steps" / "digit", env_classes=["Skypilot"]
         )
         env_dir = base / "skypilot" / "aws"
-        _write_step(
-            env_dir / "steps" / "digit", env_classes=["Bash"]  # wrong class
-        )
+        _write_step(env_dir / "steps" / "digit", env_classes=["Bash"])  # wrong class
         _set_bases(base)
 
         with SpaceURI.with_current_env(_make_env("Skypilot", env_dir, subtype="aws")):
