@@ -36,7 +36,7 @@ loaders already use.
 
 from collections.abc import Hashable
 from importlib.metadata import EntryPoint, entry_points
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Type
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type
 
 from gbserver.utils.logger import get_logger
 
@@ -64,23 +64,34 @@ GROUP_BUILTIN_STEPS = "gbserver.builtin_steps"
 GROUP_CLI_PLUGINS = "gbcli.plugins"
 
 
-def iter_entry_point_objects(group: str) -> Iterable[Tuple[str, Any]]:
-    """Yield ``(name, loaded_object)`` for every entry point in *group*.
+# Loaded entry points, cached per group. A group's entry-point table is fixed
+# for the life of the process (installed packages don't change under a running
+# server), and a single group can be consumed by more than one registry pass —
+# the secret-manager group, for instance, feeds both the Space and the User
+# family. Loading once and caching means each entry point is imported (and any
+# load failure logged) exactly once per group, not once per consuming pass.
+_loaded_groups: Dict[str, Tuple[Tuple[str, Any], ...]] = {}
 
-    ``loaded_object`` is whatever the entry point points at — a class, a
-    module, a function. Callers that require a class should use
-    :func:`iter_entry_point_classes` instead.
 
-    Never raises: a failure to enumerate the group, or to ``load()`` an
-    individual entry point, is logged at ERROR and that entry point is skipped.
-    A group with no entry points yields nothing (the no-plugin-installed case).
+def _clear_entry_point_cache() -> None:
+    """Drop the per-group load cache. For tests that swap ``entry_points``."""
+    _loaded_groups.clear()
+
+
+def _load_group(group: str) -> Tuple[Tuple[str, Any], ...]:
+    """Enumerate and ``load()`` *group* once, returning ``(name, obj)`` pairs.
+
+    Enumeration failure -> ``()``; a single entry point that fails to load is
+    logged (once) and dropped. The result is memoized in ``_loaded_groups``.
     """
     try:
         eps: Iterable[EntryPoint] = entry_points(group=group)
     except Exception as e:  # pragma: no cover - defensive; enumerate rarely fails
         logger.error("Error enumerating plugin entry points for group %s: %s", group, e)
-        return
+        _loaded_groups[group] = ()
+        return ()
 
+    loaded: List[Tuple[str, Any]] = []
     for ep in eps:
         try:
             obj = ep.load()
@@ -94,7 +105,30 @@ def iter_entry_point_objects(group: str) -> Iterable[Tuple[str, Any]]:
                 e,
             )
             continue
-        yield ep.name, obj
+        loaded.append((ep.name, obj))
+
+    result = tuple(loaded)
+    _loaded_groups[group] = result
+    return result
+
+
+def iter_entry_point_objects(group: str) -> Iterable[Tuple[str, Any]]:
+    """Yield ``(name, loaded_object)`` for every entry point in *group*.
+
+    ``loaded_object`` is whatever the entry point points at — a class, a
+    module, a function. Callers that require a class should use
+    :func:`iter_entry_point_classes` instead.
+
+    Never raises: a failure to enumerate the group, or to ``load()`` an
+    individual entry point, is logged at ERROR and that entry point is skipped.
+    A group with no entry points yields nothing (the no-plugin-installed case).
+    The group is loaded at most once (see :data:`_loaded_groups`); repeat calls
+    for the same group replay the cached objects without re-importing.
+    """
+    cached = _loaded_groups.get(group)
+    if cached is None:
+        cached = _load_group(group)
+    yield from cached
 
 
 def iter_entry_point_classes(
@@ -176,8 +210,16 @@ class PluginRegistrar:
         self.keys_of = keys_of
 
     def add(self, cls: Type, name: Optional[str] = None) -> None:
-        """Register ``cls`` under each of its keys, honoring core-wins."""
+        """Register ``cls`` under each of its keys, honoring core-wins.
+
+        A class that yields *no* keys (e.g. a discovered handler that forgot to
+        override its key method and inherits the base ``[]``) is filed nowhere
+        and would silently never resolve; warn so its author gets a diagnostic
+        rather than a handler that is quietly ignored at runtime.
+        """
+        produced_key = False
         for key in self.keys_of(cls, name):
+            produced_key = True
             existing = self.registry.get(key)
             if existing is not None and existing is not cls:
                 logger.warning(
@@ -189,6 +231,13 @@ class PluginRegistrar:
                 )
                 continue
             self.registry[key] = cls
+        if not produced_key:
+            logger.warning(
+                "%s: %s produced no keys and was not registered; "
+                "check that its key derivation is implemented",
+                self.label,
+                getattr(cls, "__name__", cls),
+            )
 
     def discover(self, group: str, base_class: Type) -> None:
         """Run the entry-point plugin pass for ``group`` into this registry.
@@ -246,9 +295,20 @@ def keys_by_name_lower(_cls: Type, name: Optional[str]) -> Iterable[Hashable]:
 
 
 def keys_by_name_cased(_cls: Type, name: Optional[str]) -> Iterable[Hashable]:
-    """Keys = the name lowercased *and* capitalized. (environments)"""
+    """Keys = the name lowercased *and* the name exactly as declared. (environments)
+
+    The declared name is preserved verbatim so a plugin's own casing stays
+    reachable: an entry point ``AWSBatch`` registers under both ``awsbatch`` and
+    ``AWSBatch``, so a build referencing ``type: AWSBatch`` resolves. (An earlier
+    version used ``str.capitalize()``, which lowercases every character after the
+    first and left internal capitals unreachable.) In-tree names are already a
+    single ``str.capitalize()`` (module ``k8s`` -> ``K8s``), so this keeps the
+    historical ``{k8s, K8s}`` keys unchanged while no longer mangling plugins.
+    """
     resolved = _require_name(name)
-    return (resolved.lower(), resolved.capitalize())
+    lowered = resolved.lower()
+    # Dedup so an already-lowercase name doesn't file the same key twice.
+    return (lowered,) if resolved == lowered else (lowered, resolved)
 
 
 def keys_from_method(method_name: str) -> KeysOf:

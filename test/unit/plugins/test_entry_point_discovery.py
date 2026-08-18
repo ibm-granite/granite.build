@@ -72,6 +72,19 @@ def _patch_entry_points(monkeypatch, group_to_eps):
         return group_to_eps.get(group, [])
 
     monkeypatch.setattr(plugins, "entry_points", fake_entry_points)
+    # The group load-cache may already hold results read from the *real*
+    # entry_points at package-import time (some subsystems discover on import);
+    # swapping the source invalidates it.
+    plugins._clear_entry_point_cache()
+
+
+@pytest.fixture(autouse=True)
+def _clear_plugin_group_cache():
+    """Isolate the per-group load cache so one test's fake entry points don't
+    leak into the next (the cache is keyed by group and lives for the process)."""
+    plugins._clear_entry_point_cache()
+    yield
+    plugins._clear_entry_point_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +199,14 @@ def test_registrar_reregister_same_class_is_quiet(caplog):
 
 def test_keys_of_helpers():
     assert list(plugins.keys_by_name_lower(_Good, "Foo")) == ["foo"]
-    assert list(plugins.keys_by_name_cased(_Good, "foo")) == ["foo", "Foo"]
+    # An in-tree name is already capitalized (module k8s -> "K8s"), giving the
+    # historical {lower, cased} pair.
+    assert list(plugins.keys_by_name_cased(_Good, "K8s")) == ["k8s", "K8s"]
+    # An already-lowercase name files exactly one key, not a duplicate pair.
+    assert list(plugins.keys_by_name_cased(_Good, "foo")) == ["foo"]
+    # A plugin's internal capitals survive verbatim so `type: AWSBatch` resolves
+    # (the old str.capitalize() would have mangled this to "Awsbatch").
+    assert list(plugins.keys_by_name_cased(_Good, "AWSBatch")) == ["awsbatch", "AWSBatch"]
 
     class HasKeys:
         @classmethod
@@ -195,6 +215,47 @@ def test_keys_of_helpers():
 
     keys_of = plugins.keys_from_method("get_supported_schemes")
     assert list(keys_of(HasKeys, None)) == ["a", "b"]
+
+
+def test_registrar_warns_when_class_produces_no_keys(caplog):
+    """A discovered class whose key derivation yields nothing is filed nowhere;
+    warn so its author isn't left with a handler that silently never resolves."""
+    reg: dict = {}
+    registrar = plugins.PluginRegistrar(reg, "URI scheme", keys_of=lambda cls, name: [])
+    registrar.add(_Good, "forgot_to_override")
+    assert reg == {}
+    assert "produced no keys" in caplog.text
+    assert "_Good" in caplog.text
+
+
+def test_group_loaded_once_and_cached(monkeypatch):
+    """Two passes over the same group import each entry point once, not twice
+    (the secret-manager group feeds both the Space and User families)."""
+    load_calls = {"n": 0}
+
+    class _CountingEP(EntryPoint):
+        def load(self):  # type: ignore[override]
+            load_calls["n"] += 1
+            return _Good
+
+    ep = _CountingEP(name="good", value="_x:_Good", group="ignored")
+    _patch_entry_points(monkeypatch, {"shared": [ep]})
+
+    first = list(plugins.iter_entry_point_objects("shared"))
+    second = list(plugins.iter_entry_point_objects("shared"))
+    assert first == second == [("good", _Good)]
+    assert load_calls["n"] == 1  # loaded once, replayed from cache the second time
+
+
+def test_broken_entry_point_logged_once_across_passes(monkeypatch, caplog):
+    """A failing load() is logged a single time even when the group is consumed
+    by multiple passes — no double error per broken plugin."""
+    eps = _make_entry_points(monkeypatch, {"boom": ("Boom", RAISE)})
+    _patch_entry_points(monkeypatch, {"shared": eps})
+
+    list(plugins.iter_entry_point_objects("shared"))
+    list(plugins.iter_entry_point_objects("shared"))
+    assert caplog.text.count("Error loading plugin entry point boom") == 1
 
 
 def test_registrar_discover_routes_through_add(monkeypatch):
@@ -313,18 +374,39 @@ def env_registry_snapshot():
     Environment.environment_types.update(saved)
 
 
-def test_environment_plugin_adds_type_both_cases(monkeypatch, env_registry_snapshot):
+def test_environment_plugin_registers_declared_name_verbatim(
+    monkeypatch, env_registry_snapshot
+):
+    """The declared entry-point name is preserved as-is (plus a lowercase alias),
+    so a plugin's own casing stays reachable — `type: DummyEnv` resolves. The old
+    str.capitalize() would have filed this only under 'Dummyenv' and lost it."""
     from gbserver.environment.environment import Environment
 
     # A bare subclass; the loader only touches the registry, not instantiation.
     DummyEnv = type("DummyEnv", (Environment,), {})
 
-    eps = _make_entry_points(monkeypatch, {"dummyenv": ("DummyEnv", DummyEnv)})
+    eps = _make_entry_points(monkeypatch, {"DummyEnv": ("DummyEnv", DummyEnv)})
     _patch_entry_points(monkeypatch, {plugins.GROUP_ENVIRONMENTS: eps})
 
     Environment._load_environment_types()
     assert Environment.environment_types["dummyenv"] is DummyEnv
-    assert Environment.environment_types["Dummyenv"] is DummyEnv
+    assert Environment.environment_types["DummyEnv"] is DummyEnv
+    # The mangled middle-cased form is no longer produced.
+    assert "Dummyenv" not in Environment.environment_types
+
+
+def test_environment_plugin_lowercase_name_single_key(
+    monkeypatch, env_registry_snapshot
+):
+    """An already-lowercase entry-point name files exactly one key (no dup pair)."""
+    from gbserver.environment.environment import Environment
+
+    LowerEnv = type("LowerEnv", (Environment,), {})
+    eps = _make_entry_points(monkeypatch, {"lowerenv": ("LowerEnv", LowerEnv)})
+    _patch_entry_points(monkeypatch, {plugins.GROUP_ENVIRONMENTS: eps})
+
+    Environment._load_environment_types()
+    assert Environment.environment_types["lowerenv"] is LowerEnv
 
 
 def test_environment_plugin_collision_core_wins(

@@ -37,6 +37,14 @@ ibmcloud = "granite_build_ibm.secret_managers.ibmcloud:IbmcloudSpaceSecretManage
 myenv = "granite_build_ibm.environments.myenv:Myenv"
 ```
 
+> **The double-quotes around the group name are required.** These groups contain a dot, and in TOML an
+> unquoted dot is a table-nesting separator — `[project.entry-points.gbserver.uri_handlers]` declares two
+> nested tables (`gbserver` → `uri_handlers`), *not* an entry-point group named `gbserver.uri_handlers`.
+> Quoting the whole dotted name keeps it a single key. (The [entry-points
+> spec](https://packaging.python.org/en/latest/specifications/entry-points/) shows dotted group names
+> unquoted only because its examples are in the `entry_points.txt` INI format, where section headers like
+> `[pygments.styles]` are never quoted; the TOML `pyproject.toml` surface has the opposite requirement.)
+
 The shared discovery helper lives in [`src/gbcommon/plugins.py`](../../src/gbcommon/plugins.py). It wraps
 `importlib.metadata.entry_points(group=...)`, loads each entry point, and is **defensive by
 construction**: if the entry-point table cannot be read, or a single entry point fails to import, the
@@ -65,18 +73,17 @@ listed base class and provide the listed key.
 |---|---|---|
 | `gbserver.uri_handlers` | `gbcommon.uri.uri.URI` | the scheme(s) returned by `get_supported_schemes()` |
 | `gbserver.asset_stores` | `gbserver.asset.assetstore.Assetstore` | the URI class(es) returned by `get_supported_uri_classes()` |
-| `gbserver.environments` | `gbserver.environment.environment.Environment` | the **entry-point name** (registered under both `name.lower()` and `name.capitalize()`) |
+| `gbserver.environments` | `gbserver.environment.environment.Environment` | the **entry-point name** (registered under both `name.lower()` and the name exactly as declared) |
 | `gbserver.secret_managers` | `SpaceSecretManager` **or** `UserSecretManager` | the **entry-point name** (lowercased). One group feeds both families; each class is routed to the family whose base class it subclasses |
 
 For the URI and asset-store groups the entry-point *name* is cosmetic — the registration key comes from
 the class's own method, so name your entry point whatever reads well. For the environment and
 secret-manager groups the entry-point *name* is the registration key.
 
-> **Name-keyed groups are case-normalized.** Environments register under both `name.lower()` and
-> `name.capitalize()`, and secret managers under `name.lower()`. `str.capitalize()` lowercases every
-> character after the first, so an entry-point name with intended internal capitals (e.g. `AWSBatch`)
-> is only reachable as `awsbatch` / `Awsbatch` — a build that references `type: AWSBatch` will not
-> resolve. Use a lowercase entry-point name to avoid surprises.
+> **Name-keyed groups are case-normalized.** Environments register under both `name.lower()` and the
+> entry-point name exactly as you declared it; secret managers under `name.lower()`. Because the declared
+> name is preserved verbatim, an entry-point name with internal capitals (e.g. `AWSBatch`) is reachable
+> both as `awsbatch` and as `AWSBatch`, so a build referencing `type: AWSBatch` resolves as written.
 
 ## Reserved groups (wired in later releases)
 
@@ -110,6 +117,18 @@ class LhURI(URI):
         return ["lh"]
     # ... the rest of the URI contract
 ```
+
+Register it by adding the class to the `gbserver.uri_handlers` group in your `pyproject.toml`:
+
+```toml
+# pyproject.toml of granite_build_ibm
+[project.entry-points."gbserver.uri_handlers"]
+lh = "granite_build_ibm.uri_handlers.lh:LhURI"
+```
+
+The entry-point *name* on the left (`lh`) is cosmetic for this group — the registration key comes from
+`get_supported_schemes()`, so name it whatever reads well. The value on the right is
+`<import.path>:<ClassName>`.
 
 Once your package is installed (`pip install granite_build_ibm`), starting `gbserver` will resolve
 `lh://` URIs through `LhURI` with no further configuration.
