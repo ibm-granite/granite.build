@@ -360,9 +360,7 @@ class SpaceURI(URI):
                 return False
         env_class = getattr(SpaceURI._thread_local, "current_env_class_name", None)
         env_subtype = getattr(SpaceURI._thread_local, "current_env_subtype", None)
-        return SpaceURI._step_env_ok(
-            step_dir / STEP_FILE_NAME, env_class, env_subtype
-        )
+        return SpaceURI._step_env_ok(step_dir / STEP_FILE_NAME, env_class, env_subtype)
 
     @staticmethod
     def _space_root_step(
