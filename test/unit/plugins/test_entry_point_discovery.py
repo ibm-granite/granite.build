@@ -206,7 +206,10 @@ def test_keys_of_helpers():
     assert list(plugins.keys_by_name_cased(_Good, "foo")) == ["foo"]
     # A plugin's internal capitals survive verbatim so `type: AWSBatch` resolves
     # (the old str.capitalize() would have mangled this to "Awsbatch").
-    assert list(plugins.keys_by_name_cased(_Good, "AWSBatch")) == ["awsbatch", "AWSBatch"]
+    assert list(plugins.keys_by_name_cased(_Good, "AWSBatch")) == [
+        "awsbatch",
+        "AWSBatch",
+    ]
 
     class HasKeys:
         @classmethod
