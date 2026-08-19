@@ -38,7 +38,11 @@ from gbserver.lineage.lineage_reconciler import (
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 
-_BASE = datetime(2026, 1, 1, 0, 0, 0)
+# Aware UTC, matching what a real finished_at carries: utils.get_time() stamps
+# them with datetime.now().astimezone(). A naive value here would be read as
+# *local* (see as_utc_aware) and shift every expectation by the test machine's
+# UTC offset.
+_BASE = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 
 def _target(
@@ -183,13 +187,12 @@ class TestSelectRecordableTargets:
         assert {t.uuid for t in selected} == {"t_new", "t_recordable"}
 
     def test_tz_aware_finished_at_does_not_break_watermark_compare(self):
-        # A storage backend may hand finished_at back timezone-aware even though
-        # it was written naive. Comparing a naive watermark against an aware
-        # finished_at (or vice versa) would raise TypeError and abort the scan;
-        # both sides are normalized to naive UTC so the walk still works. Here
-        # _BASE is treated as UTC, so the aware value one hour later in UTC (=
-        # _BASE + 1h) is newer than the watermark and must be selected.
-        aware = (_BASE + timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        # Mixed awareness must not abort the scan: comparing a naive datetime
+        # against an aware one raises TypeError. Both sides are normalized to
+        # aware UTC instants, so the walk works whichever awareness the backend
+        # yields. Here the aware value is one hour after the watermark, so it is
+        # newer and must be selected.
+        aware = _BASE + timedelta(hours=1)
         t_aware = _target("b1", "t_aware", finished_at=aware)
         older = _target("b1", "t_older", finished_at=_BASE - timedelta(seconds=10))
         storage = _admin_storage_returning([[t_aware, older]])

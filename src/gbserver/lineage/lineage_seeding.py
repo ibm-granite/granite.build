@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Placing the LineageWatcher's ``gb_status`` checkpoint.
+"""Placing the LineageWatcher's ``gb_kv_pairs`` checkpoint.
 
 The watcher never creates its checkpoint implicitly: with no
 ``lineage_store_latest_build_id`` key it records nothing at all (see
@@ -32,10 +32,10 @@ Three anchors, expressed as a single spec string (``from-latest``, ``all``, or a
 build id) so no invalid combination is representable.
 """
 
-from datetime import datetime
-
 from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_CHECKPOINT_KEY,
+    UTC_MIN,
+    as_utc_aware,
     get_most_recent_successful_target,
 )
 from gbserver.storage.singleton_storage import SingletonAdminStorage
@@ -66,17 +66,19 @@ def _build_checkpoint(storage: SingletonAdminStorage, spec: str) -> dict:
         spec: ``"from-latest"``, ``"all"``, or a build id.
 
     Returns:
-        ``{"build_id": str, "finished_at": <ISO 8601 str>}``.
+        ``{"build_id": str, "finished_at": <ISO 8601 str, aware UTC>}``.
 
     Raises:
         LineageSeedError: When the anchor resolves to no successful target — an
             empty DB, or a build id that does not exist or never succeeded.
     """
     if spec == SEED_ALL:
-        # datetime.min: older than any real finished_at, so nothing is excluded.
+        # UTC_MIN: older than any real finished_at, so nothing is excluded. Aware,
+        # matching every other watermark — a naive datetime.min would raise
+        # TypeError the moment it met an aware finished_at.
         return {
             "build_id": BACKFILL_BUILD_ID,
-            "finished_at": datetime.min.isoformat(),
+            "finished_at": UTC_MIN.isoformat(),
         }
 
     build_id = None if spec == SEED_FROM_LATEST else spec
@@ -90,9 +92,16 @@ def _build_checkpoint(storage: SingletonAdminStorage, spec: str) -> dict:
             f"No successful target with a finish time found in {scope}; "
             "nothing to anchor a checkpoint at."
         )
+    # Serialize as an aware UTC instant, the single format every writer of this
+    # key uses (see LineageWatcher._on_checkpoint_advance). `finished_at` is a
+    # DateTime(timezone=True) column, so Postgres hands it back aware while
+    # SQLite drops the offset; normalizing here means the stored string is one
+    # unambiguous instant either way, and keeping the "+00:00" makes it
+    # round-trip losslessly instead of becoming a naive value that a reader has
+    # to guess the offset of.
     return {
         "build_id": target.build_id,
-        "finished_at": target.finished_at.isoformat(),
+        "finished_at": as_utc_aware(target.finished_at).isoformat(),
     }
 
 
@@ -111,7 +120,7 @@ def seed_if_absent(storage: SingletonAdminStorage, spec: str) -> bool:
         LineageSeedError: When no checkpoint exists and the anchor cannot be
             resolved.
     """
-    existing = storage.status_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+    existing = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
     if existing is not None:
         logger.info(
             "Lineage checkpoint %s already exists (%s); keeping it and ignoring "
@@ -123,7 +132,7 @@ def seed_if_absent(storage: SingletonAdminStorage, spec: str) -> bool:
         return False
 
     checkpoint = _build_checkpoint(storage, spec)
-    storage.status_storage.set_value(LINEAGE_WATCHER_CHECKPOINT_KEY, checkpoint)
+    storage.kv_pair_storage.set_value(LINEAGE_WATCHER_CHECKPOINT_KEY, checkpoint)
     logger.info(
         "Seeded lineage checkpoint %s = %s. The watcher records targets that "
         "finish at or after this point on its next scan.",

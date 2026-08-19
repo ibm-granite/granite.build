@@ -22,7 +22,7 @@ Deployed as its own single-replica pod (``dep-lineage-watcher.yaml``) so the
 single-writer guarantee is a deployment fact and lineage recording is isolated
 from the build watcher's failure domain, restarts, and resource contention.
 
-``--base-build-id`` is optional. Without it the watcher reads the ``gb_status``
+``--base-build-id`` is optional. Without it the watcher reads the ``gb_kv_pairs``
 checkpoint and, when the key is absent, records nothing until it is seeded. With
 it, an *absent* key is seeded before the first scan, so a fresh deployment does
 not need a separate exec/init-container step just to become useful. It never
@@ -63,7 +63,7 @@ logger = get_logger(__name__)
         "Seed the lineage checkpoint before the first scan, but only if it is "
         "not already set: 'from-latest' starts recording from now, 'all' walks "
         "the full history (expensive first scan), any other value is treated as "
-        "a build id. Omit to use whatever is already in gb_status (recording "
+        "a build id. Omit to use whatever is already in gb_kv_pairs (recording "
         "nothing while the key is absent). Never overwrites an existing "
         "checkpoint."
     ),

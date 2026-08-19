@@ -20,7 +20,7 @@ interval; these tests stub the admin storage and the lineage store, then drive
 in CI without a cluster, PostgreSQL, or wandb credentials.
 
 They cover that the watcher records successful targets, persists its
-``finished_at``/``build_id`` checkpoint to ``gb_status`` immediately after each
+``finished_at``/``build_id`` checkpoint to ``gb_kv_pairs`` immediately after each
 successfully-recorded target so steady-state scans (and restarts) read only
 newly-finished targets, does not re-record what a sink already has (per-sink
 ``filter_unrecorded``), retries a transiently-failing target, drops a
@@ -42,7 +42,11 @@ from gbserver.lineage.lineage_watcher import LineageWatcher
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 
-_BASE = datetime(2026, 1, 1, 0, 0, 0)
+# Aware UTC, matching what a real finished_at carries: utils.get_time() stamps
+# them with datetime.now().astimezone(). A naive value here would be interpreted
+# as *local* (see as_utc_aware), so the expected watermarks would shift by the
+# test machine's UTC offset and the suite would only pass in UTC.
+_BASE = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 
 def _target(build_id: str, uuid: str, finished_at: datetime = None) -> StoredTargetRun:
@@ -74,8 +78,8 @@ class _StubStore:
         return set(target_ids) - self._recorded
 
 
-class _StubStatusStorage:
-    """In-memory stand-in for ``status_storage`` (the ``gb_status`` key-value store)."""
+class _StubKeyValuePairStorage:
+    """In-memory stand-in for ``kv_pair_storage`` (the ``gb_kv_pairs`` key-value store)."""
 
     def __init__(self):
         self._values: dict = {}
@@ -89,7 +93,7 @@ class _StubStatusStorage:
 
 def _seed(storage, build_id: str, finished_at: datetime) -> None:
     """Write the lineage checkpoint, the way ``lineage-watch --base-build-id`` does."""
-    storage.status_storage.set_value(
+    storage.kv_pair_storage.set_value(
         LINEAGE_WATCHER_CHECKPOINT_KEY,
         {"build_id": build_id, "finished_at": finished_at.isoformat()},
     )
@@ -102,7 +106,7 @@ def _watermark(storage) -> datetime | None:
     watermark lives — so assertions about "where the watcher got to" read it back
     from the durable store, which is also what survives a restart.
     """
-    checkpoint = storage.status_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+    checkpoint = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
     return (
         None
         if checkpoint is None
@@ -138,7 +142,7 @@ class TestLineageWatcher:
             return ordered
 
         admin_storage.target_storage.get_by_where.side_effect = _get_by_where
-        admin_storage.status_storage = _StubStatusStorage()
+        admin_storage.kv_pair_storage = _StubKeyValuePairStorage()
         self.storage = admin_storage
         with patch(
             "gbserver.lineage.lineage_watcher.get_admin_storage",
@@ -174,7 +178,7 @@ class TestLineageWatcher:
         self._targets = [_target("build-1", "target-1", _BASE)]
         watcher, store = self._make_watcher()
         # Drop the seeded key: this is the unseeded state start() leaves behind.
-        self.storage.status_storage._values.clear()
+        self.storage.kv_pair_storage._values.clear()
 
         watcher._reconcile()
 
@@ -234,7 +238,7 @@ class TestLineageWatcher:
 
         Regression: the checkpoint is written straight from a stored target's
         ``finished_at``, which a storage backend or DB driver may hand back
-        timezone-aware (this is why ``as_utc_naive`` exists at all). An aware
+        timezone-aware (this is why ``as_utc_aware`` exists at all). An aware
         watermark made ``_reconcile``'s ``watermark - datetime.min`` raise
         ``TypeError: can't subtract offset-naive and offset-aware datetimes``
         before any recording, so every scan failed and nothing was ever
@@ -256,7 +260,7 @@ class TestLineageWatcher:
 
         Regression: the monotonic guard in ``_on_checkpoint_advance`` compared the
         target's ``finished_at`` — passed through raw by ``reconcile_once`` — against
-        the naive-UTC watermark from ``_checkpoint_watermark``. In production
+        the normalized watermark from ``_checkpoint_watermark``. In production
         ``finished_at`` is aware (stamped from ``BuildEvent.timestamp``, i.e.
         ``get_time()``), so the comparison raised ``TypeError: can't compare
         offset-naive and offset-aware datetimes``.
@@ -283,21 +287,20 @@ class TestLineageWatcher:
         watcher._reconcile()
 
         assert store.calls == [("build-1", "target-1")]
-        # Normalized to naive UTC on write: 2026-01-02T00:00-03:00 -> 2026-01-02T03:00.
-        assert _watermark(self.storage) == aware.astimezone(timezone.utc).replace(
-            tzinfo=None
-        )
+        # Normalized to aware UTC on write: 2026-01-02T00:00-03:00 ->
+        # 2026-01-02T03:00+00:00 (the same instant, one unambiguous format).
+        assert _watermark(self.storage) == aware.astimezone(timezone.utc)
 
     def test_malformed_checkpoint_records_nothing_instead_of_raising(self):
         """A checkpoint missing ``finished_at`` turns recording off, not a crash.
 
         ``_reconcile`` used to index the key directly, so a hand-edited or
-        partially-written ``gb_status`` row raised ``KeyError`` out of the scan.
+        partially-written ``gb_kv_pairs`` row raised ``KeyError`` out of the scan.
         Recording stays off until the key is corrected — the safe direction.
         """
         self._targets = [_target("build-1", "target-1", _BASE)]
         watcher, store = self._make_watcher()
-        self.storage.status_storage.set_value(
+        self.storage.kv_pair_storage.set_value(
             LINEAGE_WATCHER_CHECKPOINT_KEY, {"build_id": "seed-build"}
         )
 
@@ -309,7 +312,7 @@ class TestLineageWatcher:
         """A non-ISO ``finished_at`` is reported and disables recording."""
         self._targets = [_target("build-1", "target-1", _BASE)]
         watcher, store = self._make_watcher()
-        self.storage.status_storage.set_value(
+        self.storage.kv_pair_storage.set_value(
             LINEAGE_WATCHER_CHECKPOINT_KEY,
             {"build_id": "seed-build", "finished_at": "not-a-timestamp"},
         )
@@ -439,14 +442,14 @@ class TestLineageWatcher:
         for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS):
             watcher._reconcile()
         assert "target-p" in watcher._dropped
-        assert self.storage.status_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY) == {
+        assert self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY) == {
             "target_ids": ["target-p"]
         }
         # It blocked the checkpoint while it was still being retried: the
         # watermark never moved off where the watcher started.
         assert _watermark(self.storage) == started_at
 
-        # Simulate a restart: fresh watcher, same durable gb_status. It reloads
+        # Simulate a restart: fresh watcher, same durable gb_kv_pairs. It reloads
         # the drop set the way start() does; the watermark needs no restoring
         # since it is read from the checkpoint on each scan.
         restarted = LineageWatcher()
@@ -519,7 +522,7 @@ class TestLineageWatcherCheckpoint:
             return ordered
 
         admin_storage.target_storage.get_by_where.side_effect = _get_by_where
-        admin_storage.status_storage = _StubStatusStorage()
+        admin_storage.kv_pair_storage = _StubKeyValuePairStorage()
         self.storage = admin_storage
         yield
 
@@ -550,14 +553,14 @@ class TestLineageWatcherCheckpoint:
         """A checkpoint missing ``build_id`` skips the sweep instead of failing.
 
         Regression: ``build_id`` was indexed directly, so a malformed
-        ``gb_status`` row raised ``KeyError`` out of ``_verify_checkpoint`` —
+        ``gb_kv_pairs`` row raised ``KeyError`` out of ``_verify_checkpoint`` —
         and ``start()`` guards only per-target recording errors, so the watcher
         would not start at all. Skipping the start-up sweep is strictly better:
         steady-state scans still run off the watermark.
         """
         self._targets = [_target("b1", "t1", _BASE)]
         watcher, store = self._make_watcher()
-        self.storage.status_storage.set_value(
+        self.storage.kv_pair_storage.set_value(
             LINEAGE_WATCHER_CHECKPOINT_KEY, {"finished_at": _BASE.isoformat()}
         )
 
@@ -591,7 +594,7 @@ class TestLineageWatcherCheckpoint:
         self._targets = [_target("b1", "t1", _BASE)]
         watcher, store = self._make_watcher(fail={"t1"})
         checkpoint = {"build_id": "b1", "finished_at": _BASE.isoformat()}
-        self.storage.status_storage.set_value(
+        self.storage.kv_pair_storage.set_value(
             LINEAGE_WATCHER_CHECKPOINT_KEY, checkpoint
         )
 
@@ -600,7 +603,7 @@ class TestLineageWatcherCheckpoint:
         assert store.calls == []
         # Unchanged on disk, and the watermark still loads, so scans continue.
         assert (
-            self.storage.status_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+            self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
             == checkpoint
         )
         assert _watermark(self.storage) == _BASE
@@ -624,7 +627,7 @@ class TestLineageWatcherCheckpoint:
             _target("b2", "t2", _BASE + timedelta(seconds=5)),
         ]
         watcher, store = self._make_watcher()
-        self.storage.status_storage.set_value(
+        self.storage.kv_pair_storage.set_value(
             LINEAGE_WATCHER_CHECKPOINT_KEY,
             {"build_id": "b1", "finished_at": _BASE.isoformat()},
         )
@@ -646,7 +649,7 @@ class TestLineageWatcherCheckpoint:
         skipped.skipped_for_prerun_target_id = "orig-target"
         self._targets = [skipped]
         watcher, store = self._make_watcher()
-        self.storage.status_storage.set_value(
+        self.storage.kv_pair_storage.set_value(
             LINEAGE_WATCHER_CHECKPOINT_KEY,
             {"build_id": "b1", "finished_at": _BASE.isoformat()},
         )
@@ -661,7 +664,7 @@ class TestLineageWatcherCheckpoint:
         watcher, store = self._make_watcher()
         # Checkpoint says t1 is done, but the store never actually recorded it
         # (e.g. a crash between recording and persisting the checkpoint).
-        self.storage.status_storage.set_value(
+        self.storage.kv_pair_storage.set_value(
             LINEAGE_WATCHER_CHECKPOINT_KEY,
             {"build_id": "b1", "finished_at": _BASE.isoformat()},
         )

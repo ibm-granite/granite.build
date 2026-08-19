@@ -15,20 +15,20 @@
 # limitations under the License.
 
 """
-SQL storage implementation for the generic gb_status key-value store.
+SQL storage implementation for the generic gb_kv_pairs key-value store.
 """
 
+from gbserver.storage.kv_pair_storage import BaseKeyValuePairStorage, IKeyValuePairStorage
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
-from gbserver.storage.status_storage import BaseStatusStorage, IStatusStorage
-from gbserver.storage.stored_status import StoredStatus
+from gbserver.storage.stored_kv_pair import StoredKeyValuePair
 
 
-class SQLStatusStorage(
-    BaseSQLItemStorage[StoredStatus],
-    BaseStatusStorage,
-    IStatusStorage,
+class SQLKeyValuePairStorage(
+    BaseSQLItemStorage[StoredKeyValuePair],
+    BaseKeyValuePairStorage,
+    IKeyValuePairStorage,
 ):
-    """SQL-based storage implementation for the generic gb_status key-value store."""
+    """SQL-based storage implementation for the generic gb_kv_pairs key-value store."""
 
     def __init__(self, **kwargs) -> None:
         # Keys are looked up individually (get_value/set_value resolve `key` to
@@ -36,6 +36,6 @@ class SQLStatusStorage(
         # identity, and the uniqueness is what lets set_value treat a found row
         # as *the* row for that key. Follows the sibling SQL storages' **kwargs
         # constructor pattern, which also keeps the factory's
-        # `SQLStatusStorage(table_name=...)` call type-checkable.
+        # `SQLKeyValuePairStorage(table_name=...)` call type-checkable.
         kwargs["unique_columns"] = {"key": None}
         super().__init__(**kwargs)

@@ -15,12 +15,13 @@
 # limitations under the License.
 
 """
-Generic key/JSON-value application status storage.
+Generic key/JSON-value application runtime storage.
 
-Provides a small key-value table (``gb_status``) for app-level state that
-doesn't warrant its own typed table, e.g. watcher checkpoints. Lookups are by
-the ``key`` column; ``uuid`` is a generated row identifier as in every other
-stored item.
+Provides a small key-value table (``gb_kv_pairs``) for app-level state that
+doesn't warrant its own typed table, e.g. watcher checkpoints. This is a
+general key value store for the app runtime, and is not a "KV cache" in the
+AI models sense. Lookups are by the ``key`` column; ``uuid`` is a generated
+row identifier as in every other stored item.
 """
 
 import datetime
@@ -32,7 +33,7 @@ from gbserver.storage.storage import BaseStoredItem
 from gbserver.utils.utils import get_utc_time
 
 
-class StoredStatus(BaseStoredItem):
+class StoredKeyValuePair(BaseStoredItem):
     """
     Persistent key/JSON-value pair.
 
@@ -41,7 +42,7 @@ class StoredStatus(BaseStoredItem):
             ``uuid``, is the identity callers address rows by.
         value: Arbitrary JSON-serializable payload associated with ``key``.
         created_time: When the key was first set. Preserved across updates by
-            ``BaseStatusStorage.set_value``.
+            ``BaseKeyValuePairStorage.set_value``.
     """
 
     key: str

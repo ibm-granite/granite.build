@@ -31,7 +31,7 @@ from gbserver.storage.space_storage import IStoredSpaceStorage
 from gbserver.storage.space_user_storage import ISpaceUserStorage
 from gbserver.storage.sql.storage_factory import SQLStorageFactory
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
-from gbserver.storage.status_storage import IStatusStorage
+from gbserver.storage.kv_pair_storage import IKeyValuePairStorage
 from gbserver.storage.steprun_storage import IStoredStepRunStorage
 from gbserver.storage.storage_factory import StorageFactory
 from gbserver.storage.target_run_storage import IStoredTargetRunStorage
@@ -44,7 +44,7 @@ from gbserver.types.constants import (
     GB_NODE_FAILURES_TABLE_NAME,
     GB_SPACE_USERS_TABLE_NAME,
     GB_SPACES_TABLE_NAME,
-    GB_STATUS_TABLE_NAME,
+    GB_KV_PAIRS_TABLE_NAME,
     GB_STEP_RUNS_TABLE_NAME,
     GB_TARGET_RUNS_TABLE_NAME,
 )
@@ -64,7 +64,7 @@ class SingletonAdminStorage(BaseModel):
     event_storage: IStoredEventStorage
     node_failure_storage: INodeFailureStorage
     space_user_storage: ISpaceUserStorage
-    status_storage: IStatusStorage
+    kv_pair_storage: IKeyValuePairStorage
     table_name_prefix: str
 
 
@@ -161,8 +161,8 @@ def set_storage_prefix(table_prefix: Optional[str] = None) -> SingletonAdminStor
     space_user_storage = factory.create_space_user_storage(
         table_name=table_prefix + GB_SPACE_USERS_TABLE_NAME
     )
-    status_storage = factory.create_status_storage(
-        table_name=table_prefix + GB_STATUS_TABLE_NAME
+    kv_pair_storage = factory.create_kv_pair_storage(
+        table_name=table_prefix + GB_KV_PAIRS_TABLE_NAME
     )
 
     # # Force the table creation as early as possible.
@@ -185,7 +185,7 @@ def set_storage_prefix(table_prefix: Optional[str] = None) -> SingletonAdminStor
         event_storage=event_storage,
         node_failure_storage=node_failure_storage,
         space_user_storage=space_user_storage,
-        status_storage=status_storage,
+        kv_pair_storage=kv_pair_storage,
         table_name_prefix=table_prefix,
     )
     return __STORAGE

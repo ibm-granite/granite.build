@@ -31,7 +31,7 @@ from gbserver.storage.sql.event_storage import SQLEventStorage
 from gbserver.storage.sql.node_failure_storage import SQLNodeFailureStorage
 from gbserver.storage.sql.space_storage import SQLSpaceStorage
 from gbserver.storage.sql.space_user_storage import SQLSpaceUserStorage
-from gbserver.storage.sql.status_storage import SQLStatusStorage
+from gbserver.storage.sql.kv_pair_storage import SQLKeyValuePairStorage
 from gbserver.storage.sql.steprun_storage import SQLStepRunStorage
 from gbserver.storage.sql.target_run_storage import SQLTargetRunStorage
 from gbserver.storage.storage import BASE_ITEM_TYPE, IItemStorage, QueryControl
@@ -188,7 +188,7 @@ class SqliteSpaceUserStorage(SqliteStorageOverrides, SQLSpaceUserStorage):
         super().__init__(**kwargs)
 
 
-class SqliteStatusStorage(SqliteStorageOverrides, SQLStatusStorage):
+class SqliteKeyValuePairStorage(SqliteStorageOverrides, SQLKeyValuePairStorage):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)

@@ -25,7 +25,8 @@ from gbserver.lineage.jobstats import ILineageStore, get_lineage_store
 from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_CHECKPOINT_KEY,
     LINEAGE_WATCHER_DROPPED_KEY,
-    as_utc_naive,
+    UTC_MIN,
+    as_utc_aware,
     reconcile_once,
 )
 from gbserver.lineage.lineage_seeding import BACKFILL_BUILD_ID
@@ -61,7 +62,7 @@ class LineageWatcher:
     Steady state uses a ``finished_at`` *time watermark*: each scan asks the
     admin DB only for targets that finished at or after it, so per-scan work
     stays bounded no matter how many builds have accumulated. The watermark lives
-    solely in the ``gb_status`` checkpoint (see
+    solely in the ``gb_kv_pairs`` checkpoint (see
     ``lineage_reconciler.LINEAGE_WATCHER_CHECKPOINT_KEY``), rewritten after each
     individually-recorded target and re-read at the top of every scan — so a
     restart resumes from the last successfully-recorded target rather than
@@ -98,7 +99,7 @@ class LineageWatcher:
     target that keeps failing is dropped after ``_MAX_RECORD_ATTEMPTS`` (into
     ``_dropped``, passed as ``skip``) so a persistent failure cannot wedge later
     scans or hold the checkpoint back forever. That drop set is itself persisted
-    to ``gb_status`` (``LINEAGE_WATCHER_DROPPED_KEY``) and reloaded by
+    to ``gb_kv_pairs`` (``LINEAGE_WATCHER_DROPPED_KEY``) and reloaded by
     ``start()``: because the checkpoint deliberately refuses to advance past an
     unrecorded target, an in-memory-only drop set would let a dropped target
     return after a restart, block the watermark, exhaust its attempts again, and
@@ -159,13 +160,26 @@ class LineageWatcher:
         self._store: Optional[ILineageStore] = None
         # Target uuids dropped after exhausting retries; skipped on later scans
         # so a persistently failing target cannot wedge every scan. Loaded from
-        # (and persisted to) gb_status, because the checkpoint refuses to advance
+        # (and persisted to) gb_kv_pairs, because the checkpoint refuses to advance
         # past an unrecorded target: an in-memory-only drop set would let a
         # dropped target return after a restart and block the watermark forever.
         self._dropped: set[str] = set()
         # target_uuid -> attempts so far, for targets whose recording failed and
         # should be retried on a subsequent scan.
         self._failed_attempts: dict[str, int] = {}
+        # Whether the start-up verification sweep has run against a checkpoint.
+        # It cannot run while the key is absent, so it stays pending and is
+        # retried at the top of each scan until a checkpoint is seeded — a
+        # watcher started before seeding must still get the sweep, otherwise the
+        # unrecorded targets behind the seeded watermark would have no path back
+        # until the next restart.
+        self._checkpoint_verified = False
+        # Whether the "no checkpoint yet" notice has been logged. The check runs
+        # every scan, so without this the message would repeat forever at the
+        # monitoring interval; it is a one-time operator notice, not a per-scan
+        # event. Reset once a checkpoint is seen, so a checkpoint that is later
+        # deleted is announced again.
+        self._missing_checkpoint_logged = False
 
     def start(self) -> None:
         """Start the watcher thread (daemon=True, does not keep process alive)."""
@@ -178,7 +192,7 @@ class LineageWatcher:
         # Load the durable drop set before the first scan, so a target already
         # given up on stays skipped instead of blocking the checkpoint again.
         self._load_dropped(storage)
-        self._verify_checkpoint(storage)
+        self._checkpoint_verified = self._verify_checkpoint(storage)
         self.worker_thread = threading.Thread(
             target=self._run, name="lineage-watcher", daemon=True
         )
@@ -195,42 +209,52 @@ class LineageWatcher:
         attempts again, and repeat every restart — wedging all newer lineage
         behind it.
         """
-        value = storage.status_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
+        value = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
         if value:
             self._dropped = set(value.get("target_ids", []))
 
     def _persist_dropped(self, storage: SingletonAdminStorage) -> None:
         """Persist the drop set so the decision survives a restart."""
-        storage.status_storage.set_value(
+        storage.kv_pair_storage.set_value(
             LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": sorted(self._dropped)}
         )
 
-    def _verify_checkpoint(self, storage: SingletonAdminStorage) -> None:
+    def _verify_checkpoint(self, storage: SingletonAdminStorage) -> bool:
         """Re-record any unrecorded target in the checkpoint's own build.
 
-        Run once at ``start()``. This closes the gap left by a crash between
+        Runs once against the checkpoint: at ``start()`` when the key is already
+        seeded, otherwise at the first scan that finds one. Returns ``True`` when
+        the sweep is done with (including the malformed-checkpoint case, which no
+        amount of retrying fixes) and ``False`` while it is still pending because
+        no checkpoint exists yet. This closes the gap left by a crash between
         recording a target and persisting its checkpoint (or vice versa): the
         checkpoint may name a target whose lineage never reached the sink, and
         the steady-state scan — which starts *at* that watermark — would not
         re-surface everything in its build.
 
         The checkpoint is never created here, or anywhere else implicitly. When
-        ``LINEAGE_WATCHER_CHECKPOINT_KEY`` is absent this is a no-op and so is
-        every subsequent scan, until the key is seeded explicitly (see
+        ``LINEAGE_WATCHER_CHECKPOINT_KEY`` is absent this defers (and so does
+        every scan) until the key is seeded explicitly (see
         ``gbserver lineage-watch --base-build-id``). Auto-seeding it from the
         newest successful target would silently pick a starting point for the
         operator; deciding where centralized recording begins — "from now", from
         a chosen build, or the full history — belongs to whoever seeds it, not to
         whichever process happens to start first.
         """
-        checkpoint = storage.status_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+        checkpoint = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
         if checkpoint is None:
+            if self._missing_checkpoint_logged:
+                return False
+            self._missing_checkpoint_logged = True
             logger.info(
-                "No lineage checkpoint (%s) found; recording nothing. Seed it "
-                "to choose where centralized lineage recording starts.",
+                "No lineage checkpoint (%s) found; recording nothing for now. "
+                "Seed it to choose where centralized lineage recording starts "
+                "\u2014 the watcher keeps checking and picks it up on the next "
+                "scan, without a restart.",
                 LINEAGE_WATCHER_CHECKPOINT_KEY,
             )
-            return
+            return False
+        self._missing_checkpoint_logged = False
         build_id = checkpoint.get("build_id")
         if build_id is None:
             # Malformed checkpoint. start() guards only per-target recording
@@ -244,7 +268,7 @@ class LineageWatcher:
                 LINEAGE_WATCHER_CHECKPOINT_KEY,
                 checkpoint,
             )
-            return
+            return True
 
         # Verify/re-record via reconcile_once — the same central selector the
         # steady-state scan uses — scoped to the checkpoint's own build, so the
@@ -272,7 +296,7 @@ class LineageWatcher:
             self._on_record_error(storage, build_id, target_id, exc)
 
         if self._store is not None:
-            # datetime.min: every target of this build is in scope, however long
+            # UTC_MIN: every target of this build is in scope, however long
             # ago it finished. build_id already bounds the scan to one build, so
             # there is nothing for a watermark to bound here — and a build whose
             # targets finished before the checkpoint's own timestamp must still
@@ -280,7 +304,7 @@ class LineageWatcher:
             reconcile_once(
                 self._store,
                 storage,
-                finished_after=datetime.min,
+                finished_after=UTC_MIN,
                 build_id=build_id,
                 # Same durable drop set the steady-state scan honours: a target
                 # already dropped for exceeding _MAX_RECORD_ATTEMPTS must not be
@@ -308,7 +332,7 @@ class LineageWatcher:
         central mechanism), passing the ``finished_at`` watermark so steady-state
         scans read only newly-finished targets.
 
-        The watermark is read from the ``gb_status`` checkpoint on every scan
+        The watermark is read from the ``gb_kv_pairs`` checkpoint on every scan
         rather than cached in memory: the checkpoint is the single source of
         truth, and re-reading it means a key seeded (or corrected) while the
         watcher is running takes effect on the next scan instead of at the next
@@ -326,6 +350,13 @@ class LineageWatcher:
             logger.error("lineage store not initialized; start() must run first")
             return
         storage = get_admin_storage()
+        if not self._checkpoint_verified:
+            # A checkpoint seeded after start() still needs the verification
+            # sweep, and only this retry can give it one: the steady-state scan
+            # below starts *at* the watermark and never looks behind it, so
+            # unrecorded targets earlier in the checkpoint's build would
+            # otherwise wait for a restart.
+            self._checkpoint_verified = self._verify_checkpoint(storage)
         watermark = self._checkpoint_watermark(storage)
         if watermark is None:
             # No checkpoint: recording is deliberately off until the key is
@@ -336,21 +367,21 @@ class LineageWatcher:
         # re-surfaced instead of skipped; idempotent recording makes the overlap
         # re-reads harmless. See ``_WATERMARK_OVERLAP``.
         #
-        # Clamped at datetime.min: the --all backfill anchor *is* datetime.min, and
+        # Clamped at UTC_MIN: the --all backfill anchor *is* UTC_MIN, and
         # subtracting from it raises OverflowError — which, being raised before any
         # recording, would fail every scan forever and record nothing at all.
-        # Nothing can have finished before datetime.min anyway, so there is no
+        # Nothing can have finished before UTC_MIN anyway, so there is no
         # boundary case for the overlap to protect there.
-        if watermark - datetime.min < self._WATERMARK_OVERLAP:
-            finished_after = datetime.min
+        if watermark - UTC_MIN < self._WATERMARK_OVERLAP:
+            finished_after = UTC_MIN
         else:
             finished_after = watermark - self._WATERMARK_OVERLAP
         # Stamped before the scan, not after: a target that finishes while the
         # scan is running must stay in scope for the next one. Retiring the
         # anchor to an after-the-fact timestamp would step over it.
-        # Naive UTC, matching every other watermark in this module (see
-        # as_utc_naive); utcnow() itself is deprecated.
-        scan_started = datetime.now(timezone.utc).replace(tzinfo=None)
+        # Aware UTC, matching every other watermark in this module (see
+        # as_utc_aware); utcnow() itself is deprecated.
+        scan_started = datetime.now(timezone.utc)
         reconcile_once(
             self._store,
             storage,
@@ -388,14 +419,14 @@ class LineageWatcher:
         scan and record nothing at all.
 
         ``OverflowError`` is caught alongside the parse errors because the
-        normalization itself can raise it: ``as_utc_naive`` shifts an aware value
+        normalization itself can raise it: ``as_utc_aware`` shifts an aware value
         to UTC, which overflows for a timestamp within the UTC offset of
         ``datetime.min``/``datetime.max`` — e.g. the ``--base-build-id all`` anchor
         (``datetime.min``) read back aware with a positive offset. Uncaught it
         would escape to ``_run``'s blanket handler and fail every scan forever,
         the same wedge this guard exists to prevent for unparseable values.
         """
-        checkpoint = storage.status_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+        checkpoint = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
         if checkpoint is None:
             return None
         raw = checkpoint.get("finished_at")
@@ -408,7 +439,7 @@ class LineageWatcher:
             )
             return None
         try:
-            return as_utc_naive(datetime.fromisoformat(raw))
+            return as_utc_aware(datetime.fromisoformat(raw))
         except (TypeError, ValueError, OverflowError):
             logger.error(
                 "lineage checkpoint %s has an unparseable finished_at (%r); "
@@ -448,7 +479,7 @@ class LineageWatcher:
           checkpoint to the right place via ``_on_checkpoint_advance``; moving it
           again to the scan time would step over every target after it.
         """
-        if not watermark_untouched or watermark != datetime.min:
+        if not watermark_untouched or watermark != UTC_MIN:
             return
         logger.info(
             "Full-history lineage backfill completed with nothing left to "
@@ -496,7 +527,7 @@ class LineageWatcher:
         the durable dropped set. It also keeps the persisted ``isoformat()``
         consistently naive UTC, matching what the seeding path writes.
         """
-        finished_at = as_utc_naive(finished_at)
+        finished_at = as_utc_aware(finished_at)
         current = self._checkpoint_watermark(storage)
         if current is not None and finished_at <= current:
             logger.debug(
@@ -508,7 +539,7 @@ class LineageWatcher:
                 build_id,
             )
             return
-        storage.status_storage.set_value(
+        storage.kv_pair_storage.set_value(
             LINEAGE_WATCHER_CHECKPOINT_KEY,
             {"build_id": build_id, "finished_at": finished_at.isoformat()},
         )
@@ -540,7 +571,7 @@ class LineageWatcher:
         it still falls within the watermark window each scan, so the skip set is
         what keeps it from wedging the scan.
 
-        The drop is persisted to ``gb_status``: giving up is permanent, and since
+        The drop is persisted to ``gb_kv_pairs``: giving up is permanent, and since
         the checkpoint never advances past an unrecorded target, a drop that was
         forgotten on restart would block the watermark forever.
 
@@ -596,5 +627,5 @@ class LineageWatcher:
                 )
         self.worker_thread = None
         self.stop_event.clear()
-        # Nothing watermark-related to reset: it lives only in the gb_status
+        # Nothing watermark-related to reset: it lives only in the gb_kv_pairs
         # checkpoint, which the next start() re-verifies and every scan re-reads.
