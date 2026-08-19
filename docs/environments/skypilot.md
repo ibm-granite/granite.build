@@ -201,9 +201,18 @@ it runs via Docker on the provisioned EC2 host.
 
 `run` is the job body executed on every launch; `setup` runs once at cluster bring-up and is cached
 across cluster reuse (put `pip install`/downloads here, not in `run`). Both are shell scripts and are
-Jinja-templated against the step `config` — reference build inputs with `{{ config.<key> }}`. To fail
-the step on any error, start `run` with `set -euo pipefail`.
+Jinja-templated against the step `config` — reference build inputs with `{{ config.<key> }}`. Both
+bodies run under `set -eu` (see **Failure semantics** below).
 
+- **Failure semantics (`set -eu`):** the launcher prepends `set -eu` to every `run` and `setup` body,
+  so a non-zero exit *anywhere* aborts the step and referencing an unset variable errors out — a body
+  need not add its own `set -eu`. This also governs the raw command a step interpolates: the
+  [`command`](../steps/command.md) step runs `{{ config.command_config.command }}` verbatim, so
+  `python train.py; echo done` never reaches `echo done` if `train.py` exits non-zero, and
+  `deploy.sh $OPTIONAL_FLAG` fails under `set -u` when `OPTIONAL_FLAG` is unset. Guard optional
+  variables with `${VAR:-}` and append `|| true` where a non-zero exit is acceptable. `pipefail` is
+  *not* enabled by default (it would change pipeline semantics for every step); add `set -o pipefail`
+  yourself if a failing command *within a pipeline* should fail the step.
 - **Artifacts:** emit a line matching `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>` (or
   `... LLMB_ARTIFACT_STATE:<value>` for an in-memory value) and the monitor registers it as the step's
   output binding. The marker need not be at column 0 — retrieved SkyPilot logs prefix stdout lines.
