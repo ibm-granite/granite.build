@@ -133,6 +133,8 @@ class TestExplicitSelection:
             _config(chat_provider="bogus")
 
     def test_blank_chat_provider_falls_back_to_auto_detection(self):
-        config = _config(chat_provider="", chat_llm_base_url="http://fake", chat_llm_api_key="x")
+        config = _config(
+            chat_provider="", chat_llm_base_url="http://fake", chat_llm_api_key="x"
+        )
         assert config.chat_provider is None
         assert _build_provider(config, "sys") is _OPENAI_SENTINEL
