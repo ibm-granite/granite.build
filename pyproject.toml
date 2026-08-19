@@ -139,6 +139,13 @@ analytics = [
 # by `mcp`/`analytics`) — see `chat-anthropic` below for Claude support.
 chat = [
     "mcp>=1.0",
+    # search_build_yaml compiles/matches model-chosen regex patterns against
+    # build.yaml content — stdlib re never releases the GIL during a match,
+    # so a catastrophically backtracking pattern would freeze the whole
+    # single-threaded server, not just that one call. The `regex` package's
+    # `timeout=` kwarg is a real, hard bound enforced inside its own
+    # matching loop.
+    "regex",
 ]
 # Adds Claude support on top of `chat`, via the official `anthropic` package
 # (not a CLI subprocess). Deliberately NOT bundled into `chat` or

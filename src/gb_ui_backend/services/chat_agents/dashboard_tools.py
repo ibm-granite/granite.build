@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import difflib
-import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 from uuid import UUID
 
 import httpx
+import regex
 from sqlalchemy import select
 
 from gb_ui_backend.config import get_config
@@ -163,8 +163,8 @@ async def search_build_yaml(
             "gbserver's build database isn't connected (GB_UI_GBSERVER_DB_URL not set)."
         )
     try:
-        regex = re.compile(pattern, re.IGNORECASE)
-    except re.error as exc:
+        compiled_pattern = regex.compile(pattern, regex.IGNORECASE)
+    except regex.error as exc:
         raise DashboardToolError(f"Invalid regex pattern: {exc}") from exc
 
     # pattern is model-chosen, not developer-written — clamp like
@@ -184,17 +184,33 @@ async def search_build_yaml(
         if not yaml_content:
             continue
         try:
-            # Off the event loop and time-boxed: a catastrophically
-            # backtracking pattern would otherwise block this single-threaded
-            # server for every session, not just this one call. The worker
-            # thread itself can't be killed on timeout — an abandoned thread
-            # is an acceptable one-off cost here since it's bounded by
-            # `limit`, not a growing leak.
+            # `timeout=` here is a real, hard bound enforced inside the
+            # `regex` module's own matching loop (it checks elapsed time
+            # during backtracking and raises TimeoutError itself) — unlike
+            # stdlib `re`, which never releases the GIL during a match, so
+            # asyncio.wait_for's timeout couldn't actually preempt a
+            # catastrophically backtracking pattern (it would just block the
+            # whole single-threaded server, for every session, until the
+            # match finally returned on its own — which could be effectively
+            # forever). asyncio.to_thread + the outer wait_for stay as a
+            # belt-and-suspenders backstop and to keep this off the event
+            # loop for the duration of a match; the worker thread itself
+            # can't be killed on timeout, but that's an acceptable one-off
+            # cost bounded by `limit`, not a growing leak.
             found = await asyncio.wait_for(
-                asyncio.to_thread(regex.search, yaml_content),
-                timeout=_REGEX_MATCH_TIMEOUT_SECONDS,
+                asyncio.to_thread(
+                    compiled_pattern.search,
+                    yaml_content,
+                    timeout=_REGEX_MATCH_TIMEOUT_SECONDS,
+                ),
+                timeout=_REGEX_MATCH_TIMEOUT_SECONDS + 1,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
+            # Covers both: regex's own internal timeout (the expected case
+            # — see the comment above) and asyncio.wait_for's outer one
+            # (the backstop) — asyncio.TimeoutError has been an alias for
+            # the builtin TimeoutError since Python 3.11, so one except
+            # clause catches either.
             timed_out_for.append(b["uuid"])
             continue
         if found:
@@ -217,6 +233,15 @@ async def search_build_yaml(
 
 # ── search_build_errors ────────────────────────────────────────────────────────
 
+# Shared with compare_builds below — both take a model-supplied days_back
+# with no schema-level minimum/maximum, so an arbitrarily large value must
+# be clamped here rather than trusted (an unbounded window on
+# search_build_errors materializes the whole matching table into Python
+# objects in one request; on compare_builds it widens an
+# archive-fetch-and-unzip scan over that many days' builds).
+_MAX_DAYS_BACK = 365
+_MAX_SEARCH_ERRORS_LIMIT = 200  # mirrors search_builds' own cap
+
 
 async def search_build_errors(
     query: str, days_back: int = 7, limit: int = 200
@@ -226,6 +251,9 @@ async def search_build_errors(
         raise DashboardToolError(
             "AI analysis database isn't configured (GB_UI_DATABASE_URL not set)."
         )
+
+    days_back = min(max(days_back, 1), _MAX_DAYS_BACK)
+    limit = min(max(limit, 1), _MAX_SEARCH_ERRORS_LIMIT)
 
     since = datetime.now(timezone.utc) - timedelta(days=days_back)
     q = query.lower()
@@ -302,15 +330,19 @@ async def search_build_logs(
             "Cloud logs aren't configured (GB_UI_CLOUD_LOGS_URL/API_KEY not set)."
         )
 
+    # Clamped separately from the slice below: the API's page_size wants at
+    # least 1, but the slice must preserve tail=0 meaning "return nothing"
+    # — `lines[-0:]` is `lines[0:]` (the whole list, since `-0 == 0`), which
+    # is why this used the raw, unclamped `tail` for the slice before.
+    page_size = min(max(tail, 1), 2000)
+    clamped_tail = min(max(tail, 0), 2000)
     client = get_cloud_logs_client(config.cloud_logs_url, config.cloud_logs_api_key)
-    response = await client.query_logs(
-        build_id=build_id, page_size=min(max(tail, 1), 2000)
-    )
+    response = await client.query_logs(build_id=build_id, page_size=page_size)
     lines = client.parse_logs(response)
     if search:
         needle = search.lower()
         lines = [line for line in lines if needle in line.lower()]
-    return lines[-tail:]
+    return lines[-clamped_tail:] if clamped_tail else []
 
 
 # ── compare_builds ─────────────────────────────────────────────────────────────
@@ -325,9 +357,16 @@ async def compare_builds(build_ids: list[str], days_back: int = 30) -> dict[str,
             "gbserver's build database isn't connected (GB_UI_GBSERVER_DB_URL not set)."
         )
 
+    days_back = min(max(days_back, 1), _MAX_DAYS_BACK)
+
+    # Concurrent, not sequential — these are independent network/DB round
+    # trips, so N of them cost roughly one round trip's latency instead of
+    # N. Checked back in list order afterward so the error for multiple
+    # missing builds still names the first one, matching the old sequential
+    # behavior exactly.
+    fetched = await asyncio.gather(*(source.get_build(bid) for bid in build_ids))
     builds: dict[str, dict[str, Any]] = {}
-    for bid in build_ids:
-        b = await source.get_build(bid)
+    for bid, b in zip(build_ids, fetched):
         if b is None:
             raise DashboardToolError(f"Build {bid} not found.")
         builds[bid] = b
@@ -399,8 +438,20 @@ async def wait_for_build(
 
 # ── list_artifacts / describe_artifact ────────────────────────────────────────
 # No existing Python wrapper for gbserver REST calls to copy — modeled on
-# ai_prompts.py's per-call `async with httpx.AsyncClient(...)` shape. No auth
-# header needed, per frontend/api/gbserver.ts's own usage of these endpoints.
+# ai_prompts.py's per-call `async with httpx.AsyncClient(...)` shape, but
+# caching the client across calls the way cloud_logs.py's CloudLogsClient
+# does, rather than opening a fresh one (and its connection pool) per call.
+# No auth header needed, per frontend/api/gbserver.ts's own usage of these
+# endpoints.
+
+_artifacts_http_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_artifacts_http_client() -> httpx.AsyncClient:
+    global _artifacts_http_client
+    if _artifacts_http_client is None:
+        _artifacts_http_client = httpx.AsyncClient(timeout=30.0)
+    return _artifacts_http_client
 
 
 async def list_artifacts(
@@ -420,21 +471,19 @@ async def list_artifacts(
     if tag:
         params["tag"] = tag
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            f"{config.gbserver_url}/api/v1/artifacts/", params=params
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    client = _get_artifacts_http_client()
+    resp = await client.get(f"{config.gbserver_url}/api/v1/artifacts/", params=params)
+    resp.raise_for_status()
+    data = resp.json()
     return data.get("artifacts", [])
 
 
 async def describe_artifact(artifact_id: str) -> dict[str, Any]:
     config = get_config()
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(f"{config.gbserver_url}/api/v1/artifacts/{artifact_id}")
-        if resp.status_code == 404:
-            raise DashboardToolError(f"Artifact {artifact_id} not found.")
-        resp.raise_for_status()
-        data = resp.json()
+    client = _get_artifacts_http_client()
+    resp = await client.get(f"{config.gbserver_url}/api/v1/artifacts/{artifact_id}")
+    if resp.status_code == 404:
+        raise DashboardToolError(f"Artifact {artifact_id} not found.")
+    resp.raise_for_status()
+    data = resp.json()
     return data.get("artifact", data)
