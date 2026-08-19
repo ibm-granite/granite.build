@@ -494,7 +494,7 @@ def reconcile_once(
         scope_desc = f"for build {build_id}"
     elif watermark_build_id is not None:
         scope_desc = (
-            f"at or after {finished_after} (watermark from build "
+            f"at or after {finished_after} (the watermark from build "
             f"{watermark_build_id})"
         )
     else:
@@ -578,12 +578,22 @@ def reconcile_once(
             ),
         )
     else:
+        # When every candidate belongs to the watermark's own build, the scan did
+        # not find pending work at all: it re-selected the target the watermark
+        # already sits on, which the _WATERMARK_OVERLAP window deliberately keeps
+        # in range so a target finishing in the same second as the checkpoint is
+        # never skipped. Say so, because "1 candidate, already recorded" otherwise
+        # reads as a target the sink keeps refusing to accept.
+        candidate_builds = {t.build_id for t in by_uuid.values()}
+        if watermark_build_id is not None and candidate_builds == {watermark_build_id}:
+            reprocessed_note = " (the watermark's own build, within the overlap window)"
+        else:
+            reprocessed_note = ""
         logger.info(
-            "Lineage scan found nothing new to process: all %d candidate "
-            "target(s) %s are already recorded in the sink; waiting "
-            "for the next iteration.",
+            "Lineage up to date: all %d candidate target(s) %s already recorded%s.",
             len(by_uuid),
             scope_desc,
+            reprocessed_note,
         )
 
     newly_recorded = 0

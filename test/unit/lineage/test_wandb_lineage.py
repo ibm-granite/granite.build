@@ -12,4 +12,7 @@ class TestWandBLineage(AbstractLineageTest):
     def _get_tested_lineage_storage(self: Self):
         store = WandBLineageStore.__new__(WandBLineageStore)
         store._service = MockLineageService()
+        # __new__ skips __init__ (which would build a real wandb client), so the
+        # per-process caches __init__ sets up have to be seeded here too.
+        store._recorded_until = {}
         return store

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN, is_public_github
@@ -163,10 +164,34 @@ def _add_jobstats_mirror_fields(event: dict) -> None:
     event["targets"] = event.get("outputs", [])
 
 
+# How long a "fully recorded in wandb" verdict stays trusted without re-asking
+# wandb. The reconciler re-selects already-recorded targets on every scan by
+# design (the watermark overlap window deliberately keeps the newest target in
+# range), so in steady state the same candidate is verified every
+# monitoring_interval — a network round-trip per scan to re-learn an unchanged
+# fact. Caching the positive verdict collapses that to one call per TTL.
+#
+# Only *positive* verdicts are cached, and only for this long: a run deleted in
+# wandb, or a target whose runs were only partially emitted, must eventually be
+# noticed and re-recorded. The TTL bounds that staleness instead of making it
+# permanent, and the cache is per-process, so a restart always re-verifies.
+_RECORDED_CACHE_TTL_SECONDS = 6 * 60 * 60
+
+
 class WandBLineageStore(ILineageStore):
 
     def __init__(self) -> None:
         self._service: LineageService = LineageServiceFactory.create("wandb")
+        # (target uuid, expected run count) -> monotonic deadline after which the
+        # verdict is re-checked. The expected count is part of the key, not just
+        # the value: a verdict of "recorded" means "has all the runs we expected
+        # *at the time we asked*", so a target that later grows an output (and so
+        # expects more runs) must be re-checked rather than inherit the old
+        # verdict. ``None`` is a distinct key, matching the presence-check
+        # fallback for candidates with no expected count.
+        # Monotonic, not wall-clock, so a system clock adjustment cannot expire
+        # every entry at once or freeze them past the TTL.
+        self._recorded_until: dict[tuple[str, Optional[int]], float] = {}
 
     def _build_events_for_target(
         self,
@@ -470,12 +495,45 @@ class WandBLineageStore(ILineageStore):
         target_ids: set[str],
         expected_counts: Optional[dict[str, int]] = None,
     ) -> set[str]:
+        # Drop candidates whose "fully recorded" verdict is still within its TTL,
+        # so a steady-state scan that re-selects the same target does not re-ask
+        # wandb every interval (see _RECORDED_CACHE_TTL_SECONDS). Expired entries
+        # are removed here rather than by a sweep: the dict only ever holds
+        # candidates the reconciler is still selecting, which is bounded by the
+        # watermark window.
+        now = time.monotonic()
+        counts = expected_counts or {}
+        cached_recorded = set()
+        for tid in target_ids:
+            key = (tid, counts.get(tid))
+            deadline = self._recorded_until.get(key)
+            if deadline is None:
+                continue
+            if deadline > now:
+                cached_recorded.add(tid)
+            else:
+                del self._recorded_until[key]
+        to_check = target_ids - cached_recorded
+        if not to_check:
+            return set()
+
         # Delegate to the service, which checks the candidates against wandb run
         # metadata. ``expected_counts`` lets it require a *full* set of runs per
         # target rather than mere presence (see ILineageStore.filter_unrecorded).
         # Never raises: returns the candidates unchanged on failure so the caller
         # re-records them (a harmless idempotent no-op).
-        return self._service.filter_unrecorded(target_ids, expected_counts)
+        unrecorded = self._service.filter_unrecorded(to_check, expected_counts)
+
+        # Cache only the positive verdicts, and only for targets we actually
+        # asked about. A failed query returns its candidates unchanged, so those
+        # land in `unrecorded` and are never cached — a wandb outage cannot be
+        # mistaken for "recorded". An unrecorded target is likewise not cached:
+        # its verdict is expected to change as soon as recording succeeds, and a
+        # stale negative would be re-queried anyway.
+        deadline = now + _RECORDED_CACHE_TTL_SECONDS
+        for tid in to_check - unrecorded:
+            self._recorded_until[(tid, counts.get(tid))] = deadline
+        return unrecorded
 
     def _build_event_for_artifact(
         self,
