@@ -5,7 +5,14 @@ It lets you point at a `buildtest.yaml` file directly and run it through pytest
 without having to author or remember the path of a concrete test class.
 
 ```shell
+# Run a buildtest.yaml (assumes a sibling build.yaml)
 gbtest path/to/buildtest.yaml [extra pytest args...]
+
+# Run against an explicit executable build.yaml (need not be named build.yaml)
+gbtest path/to/buildtest.yaml -f path/to/exec-build.yaml
+
+# Generate a skeleton buildtest.yaml from an executable build.yaml
+gbtest render path/to/build.yaml [-o buildtest.yaml]
 ```
 
 It is installed automatically by `make venv` (via the `[project.scripts]`
@@ -106,6 +113,60 @@ gbtest test-data/integration/ibm/buildrunner/k8s/1step/cpu/buildtest.yaml -vv
 gbtest test-data/integration/ibm/buildrunner/k8s/1step/cpu/buildtest.yaml \
        --collect-only -q
 ```
+
+## Testing a parameterized sample/template
+
+Samples and templates often use the `gb` CLI's `$${...}` parameterization, but a
+`buildtest.yaml` needs a concrete, executable `build.yaml`. The convention
+([issue #278](https://github.com/ibm-granite/granite.build/issues/278)) is:
+
+```shell
+# 1. Render the executable build from parameters.
+#    (Skip this step if the build file is NOT parameterized.)
+gb build render -f template/build.yaml --param ENVIRONMENT=skypilot/aws > exec-build.yaml
+
+# 2. Generate the initial buildtest.yaml from the executable build.
+gbtest render exec-build.yaml -o buildtest.yaml
+
+# 3. Edit buildtest.yaml to confirm the verification values — replace every FIXME
+#    (step_count, jobstats_count). See "gbtest render" below.
+
+# 4. Run it — -f points gbtest at the executable build.
+gbtest buildtest.yaml -f exec-build.yaml
+```
+
+`gb build render` is the single entry point for parameter substitution (it reuses
+the same engine as `gb build start`); `gbtest` only *consumes* an executable
+`build.yaml`.
+
+### `gbtest render`
+
+`gbtest render <build.yaml> [-o <out>]` reads an executable `build.yaml` and emits
+a **skeleton** `buildtest.yaml` (to stdout, or to `-o`). It:
+
+- derives `input_artifact_count` / `output_artifact_count` from each target's
+  declared inputs/outputs;
+- emits `FIXME` for the values it cannot determine statically — `step_count`
+  (environment-dependent) and `jobstats_count` — which you must replace;
+- pre-sets `simulate_step_failure: false` (no step-retry testing) and
+  `tests: [runner]` (no cancellation run).
+
+The `FIXME` placeholders **fail validation** if left unreplaced: loading the spec
+(on any `gbtest` run) raises a clear error naming the field, so you cannot
+accidentally run a half-filled skeleton. Replace `step_count` with the observed
+step count (or `-1` to skip that assertion) and `jobstats_count` with the expected
+value.
+
+> `output_artifact_count` counts *declared* outputs; a declared output whose
+> command emits no `LLMB_ARTIFACT` marker will over-count — the first real run
+> catches it.
+
+### The `-f` override
+
+`gbtest <buildtest.yaml> -f <build.yaml>` runs the test against the given
+`build.yaml` instead of the sibling default. The path resolves against the current
+directory (where you ran `gbtest`), so a rendered build kept under a distinct name
+(e.g. `exec-build.yaml`) works without renaming.
 
 ## How it works
 
