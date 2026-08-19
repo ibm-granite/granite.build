@@ -36,6 +36,15 @@ build_start/gbserver_stop have no equivalent page anywhere in this
 frontend, so instead of declining them outright, they're confirmable:
 available to the model, but gated behind an explicit user Approve/Decline
 before gbmcp is ever actually called.
+
+gbserver_start mutates the same way gbserver_stop does (spawns a real
+gbserver process — see gbmcp's lifecycle.py) and is gated for the same
+reason, even though in the common standalone deployment (chat routes
+mounted into the very gbserver process gbmcp would be starting) it's
+usually a no-op: gbmcp's own docstring notes its tools stay reachable even
+when gbserver is down, so in a deployment where chat is served independently
+of the gbserver instance gbmcp controls, gbserver_start has a real,
+unconfirmed effect if left auto-approved.
 """
 
 from __future__ import annotations
@@ -66,11 +75,26 @@ ALL_GBMCP_TOOLS: list[str] = [
 DISALLOWED_GBMCP_TOOLS: list[str] = ["secret_delete", "build_cancel"]
 
 # Available, but only via propose-then-confirm — see module docstring.
-CONFIRMABLE_GBMCP_TOOLS: list[str] = ["build_start", "gbserver_stop"]
+CONFIRMABLE_GBMCP_TOOLS: list[str] = ["build_start", "gbserver_start", "gbserver_stop"]
 
 # Auto-approved without a permission prompt — everything except the tools above.
 ALLOWED_GBMCP_TOOLS: list[str] = [
     t
     for t in ALL_GBMCP_TOOLS
     if t not in DISALLOWED_GBMCP_TOOLS and t not in CONFIRMABLE_GBMCP_TOOLS
+]
+
+# Curated, manually-maintained list of gbmcp tools known to mutate real state
+# directly (as opposed to secret_get/create/update, which only ever return a
+# shell command for the user to run themselves — see above). Exists purely as
+# a regression guard (test_gbmcp_policy.py) so a future edit here — or a
+# future gbmcp tool added straight to ALLOWED_GBMCP_TOOLS without updating
+# this list — fails loudly instead of silently landing a mutating tool in the
+# auto-approved bucket.
+KNOWN_MUTATING_GBMCP_TOOLS: list[str] = [
+    "build_start",
+    "build_cancel",
+    "gbserver_start",
+    "gbserver_stop",
+    "secret_delete",
 ]

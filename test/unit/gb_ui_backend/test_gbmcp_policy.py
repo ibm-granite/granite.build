@@ -28,11 +28,14 @@ build_start/build_cancel/gbserver_stop were briefly allowed to execute
 directly during development, then walked back after a security review (see
 gbmcp_policy.py's module docstring). build_cancel is handled through
 suggest_navigation instead (a real page — the build detail page — already
-has the actual Cancel button). build_start/gbserver_stop have no
-equivalent page, so instead of being declined outright, they're
+has the actual Cancel button). build_start/gbserver_start/gbserver_stop have
+no equivalent page, so instead of being declined outright, they're
 confirmable: the model can call them, but only ever proposes the action —
 real execution happens later, outside the model loop, only if the user
-clicks Approve.
+clicks Approve. gbserver_start is gated for the same reason as
+gbserver_stop even though it's a no-op in the common standalone deployment
+(chat mounted into the very gbserver process it would start) — see
+gbmcp_policy.py's module docstring.
 """
 
 from gb_ui_backend.services.chat_agents.gbmcp_policy import (
@@ -40,17 +43,18 @@ from gb_ui_backend.services.chat_agents.gbmcp_policy import (
     ALLOWED_GBMCP_TOOLS,
     CONFIRMABLE_GBMCP_TOOLS,
     DISALLOWED_GBMCP_TOOLS,
+    KNOWN_MUTATING_GBMCP_TOOLS,
 )
 
 _DISALLOWED = {"secret_delete", "build_cancel"}
-_CONFIRMABLE = {"build_start", "gbserver_stop"}
+_CONFIRMABLE = {"build_start", "gbserver_start", "gbserver_stop"}
 
 
 class TestGbmcpPolicy:
     def test_disallowed_tools_are_exactly_these_two(self):
         assert set(DISALLOWED_GBMCP_TOOLS) == _DISALLOWED
 
-    def test_confirmable_tools_are_exactly_these_two(self):
+    def test_confirmable_tools_are_exactly_these_three(self):
         assert set(CONFIRMABLE_GBMCP_TOOLS) == _CONFIRMABLE
 
     def test_allowed_tools_are_everything_else(self):
@@ -83,3 +87,9 @@ class TestGbmcpPolicy:
     def test_all_18_known_gbmcp_tools_are_accounted_for(self):
         assert len(ALL_GBMCP_TOOLS) == 18
         assert len(set(ALL_GBMCP_TOOLS)) == 18  # no duplicates
+
+    def test_no_known_mutating_tool_is_auto_approved(self):
+        """Guards the code-review concern that a future gbmcp addition could
+        silently land in ALLOWED_GBMCP_TOOLS without a page or confirm gate —
+        see gbmcp_policy.py's KNOWN_MUTATING_GBMCP_TOOLS docstring."""
+        assert set(KNOWN_MUTATING_GBMCP_TOOLS) & set(ALLOWED_GBMCP_TOOLS) == set()
