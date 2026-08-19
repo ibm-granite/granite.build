@@ -97,6 +97,21 @@ def cli(ctx: CliEnvironment, interval: float, base_build_id: str, force_build_id
         )
         return
 
+    # Reject empty anchors before the dispatch below, which tests truthiness: an
+    # empty string passes the `is not None` guard, then matches neither branch, so
+    # the watcher would start unseeded and record nothing while the operator
+    # believes an anchor was applied. Erroring beats normalizing to None, which
+    # would turn an explicit --force-build-id into a silent no-seed.
+    for flag, value in (
+        ("--base-build-id", base_build_id),
+        ("--force-build-id", force_build_id),
+    ):
+        if value is not None and not value.strip():
+            raise click.ClickException(
+                f"{flag} was given an empty value; pass "
+                "'from-latest', 'all', or a build id."
+            )
+
     if base_build_id is not None and force_build_id is not None:
         # One anchor decision per invocation: the two flags disagree by
         # construction (keep-if-present vs replace), so accepting both would make
