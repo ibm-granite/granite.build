@@ -100,7 +100,23 @@ def build_navigation_route(page: str, reason: str, **params: str) -> dict[str, s
             f"Missing required params for {page!r}: {missing}"
         )
     route = entry["template"].format(**params)
-    return {"route": route, "label": reason}
+    # ChatWidget.tsx only renders the ui_action card when `label` is
+    # truthy — an empty/whitespace `reason` from the model used to produce
+    # an empty label, silently dropping the card while the tool still
+    # reported success back to the model (which then believed it had shown
+    # the user an offer that never actually appeared).
+    label = reason.strip() or f"Navigate to {page}"
+    return {"route": route, "label": label}
+
+
+# NAVIGABLE_ROUTES is static, so this reverse lookup (normalized template
+# path -> entry) is computed once at import time rather than recomputed on
+# every describe_current_page() call — a hot-ish path, called once per chat
+# turn that carries page context.
+_PATH_TO_ROUTE: dict[str, RouteEntry] = {
+    entry["template"].split("?", 1)[0].rstrip("/") or "/": entry
+    for entry in NAVIGABLE_ROUTES.values()
+}
 
 
 def describe_current_page(pathname: str, query_string: str = "") -> str:
@@ -109,22 +125,19 @@ def describe_current_page(pathname: str, query_string: str = "") -> str:
     _build_augmented_message()) — never used to authorize or perform
     anything, only to help the model resolve references like "this build".
 
-    Deliberately reuses NAVIGABLE_ROUTES rather than a second route table, so
-    this can never drift out of sync with what suggest_navigation itself
-    knows about. None of our route templates have a placeholder in the path
-    segment (only in the query string, via build_detail/artifact_detail's
-    "?id=" convention) — so matching is a plain path comparison, no
-    regex/placeholder parsing needed.
+    Deliberately reuses NAVIGABLE_ROUTES (via _PATH_TO_ROUTE above) rather
+    than a second route table, so this can never drift out of sync with what
+    suggest_navigation itself knows about. None of our route templates have
+    a placeholder in the path segment (only in the query string, via
+    build_detail/artifact_detail's "?id=" convention) — so matching is a
+    plain path lookup, no regex/placeholder parsing needed.
     """
     normalized = pathname.rstrip("/") or "/"
+    entry = _PATH_TO_ROUTE.get(normalized)
+    if entry is None:
+        return "An unrecognized page in the dashboard"
+
     params = dict(parse_qsl(query_string.lstrip("?")))
-
-    for entry in NAVIGABLE_ROUTES.values():
-        template_path = entry["template"].split("?", 1)[0].rstrip("/") or "/"
-        if template_path != normalized:
-            continue
-        if entry["params"] and "id" in params:
-            return f"{entry['description']} (id={params['id']})"
-        return entry["description"]
-
-    return "An unrecognized page in the dashboard"
+    if entry["params"] and "id" in params:
+        return f"{entry['description']} (id={params['id']})"
+    return entry["description"]
