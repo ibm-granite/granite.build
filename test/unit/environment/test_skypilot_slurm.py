@@ -277,8 +277,7 @@ class TestBuildWorkdir:
 
         task_kwargs = mock_sky.Task.call_args[1]
         assert task_kwargs["envs"]["GB_BUILD_WORKDIR"] == "/shared/builds/b/runs/r"
-        # The cd falls back to $HOME (resolved remotely) when the var is unset.
-        cd_prefix = 'mkdir -p "$GB_BUILD_WORKDIR"\ncd "${GB_BUILD_WORKDIR:-$HOME}"\n'
+        cd_prefix = 'mkdir -p "$GB_BUILD_WORKDIR"\ncd "$GB_BUILD_WORKDIR"\n'
         run_script = task_kwargs["run"]
         assert run_script.startswith(cd_prefix)
         assert run_script.endswith("hostname")
@@ -287,10 +286,10 @@ class TestBuildWorkdir:
         assert setup_script.endswith("echo prep")
 
     @pytest.mark.asyncio
-    async def test_launch_skypilot_cds_to_home_when_workdir_unset(self, slurm_env):
+    async def test_launch_skypilot_skips_cd_when_workdir_unset(self, slurm_env):
         """No build_workdir in setup_config -> GB_BUILD_WORKDIR is not exported
-        and the run script cd's into $HOME (via ${GB_BUILD_WORKDIR:-$HOME}, with
-        no mkdir) so the step still starts in a known directory."""
+        and no cd is prepended, so the run script is left untouched and runs in
+        SkyPilot's default ~/sky_workdir (where relative file_mounts land)."""
         mock_sky = _mock_sky()
 
         with (
@@ -307,7 +306,7 @@ class TestBuildWorkdir:
         task_kwargs = mock_sky.Task.call_args[1]
         envs = task_kwargs["envs"] or {}
         assert "GB_BUILD_WORKDIR" not in envs
-        assert task_kwargs["run"] == 'cd "${GB_BUILD_WORKDIR:-$HOME}"\nhostname'
+        assert task_kwargs["run"] == "hostname"
 
     @pytest.mark.asyncio
     async def test_teardown_skypilot_removes_stashed_workdir(self, slurm_env):

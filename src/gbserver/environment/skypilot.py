@@ -394,25 +394,32 @@ def _remap_relative_dest(dst: str, build_workdir: Optional[str]) -> str:
 
 
 def _get_cli_prefix(build_workdir: Optional[str]) -> str:
-    """Build a shell snippet that changes into the step's working directory.
+    """Build a shell snippet that changes into the per-run build workdir.
 
-    Emits ``cd "${GB_BUILD_WORKDIR:-$HOME}"`` so ``setup``/``run`` scripts start
-    in the per-run build workdir when one was provisioned, and otherwise fall
-    back to the execution environment's ``HOME``. The fallback is expressed as a
-    shell parameter expansion so ``$HOME`` is resolved remotely by the step's own
-    shell — gbserver never computes it. When a ``build_workdir`` is known, a
-    ``mkdir -p`` precedes the ``cd`` so the directory exists before use.
+    When a ``build_workdir`` was provisioned (the env configures
+    ``shared_workdir``), emit ``mkdir -p`` + ``cd "$GB_BUILD_WORKDIR"`` so both
+    the ``setup`` and ``run`` scripts start in that per-run workdir. Making the
+    launcher own the ``cd`` lets step authors write outputs with relative paths
+    and stay agnostic about where the step runs: they never need to reference
+    ``$GB_BUILD_WORKDIR`` themselves.
 
-    Making the launcher own the ``cd`` lets step authors write outputs with
-    relative paths and stay agnostic about where the step runs: they never need
-    to reference ``$GB_BUILD_WORKDIR`` themselves.
+    When no ``build_workdir`` is set (envs without ``shared_workdir``), return an
+    empty string — prepend no ``cd`` at all. SkyPilot then runs the scripts in
+    its own default working directory (``~/sky_workdir``), which is exactly where
+    its relative ``file_mounts`` rewrite places payloads (see
+    ``_remap_relative_dest``, which leaves relative destinations untouched in
+    this case). Injecting a ``cd`` elsewhere (e.g. ``$HOME``) would move the CWD
+    away from the mounted payloads, so relative-in/relative-out steps would fail
+    to find them; not cd'ing keeps the run CWD aligned with the mount location.
 
     :param build_workdir: the provisioned per-run workdir path, or ``None`` when
-        no ``shared_workdir`` is configured (falls back to ``$HOME``).
-    :returns: a shell snippet terminated by a trailing newline.
+        no ``shared_workdir`` is configured (no ``cd`` is emitted).
+    :returns: a shell snippet terminated by a trailing newline, or ``""`` when
+        no ``build_workdir`` is set.
     """
-    mkdir = 'mkdir -p "$GB_BUILD_WORKDIR"\n' if build_workdir else ""
-    return f'{mkdir}cd "${{GB_BUILD_WORKDIR:-$HOME}}"\n'
+    if not build_workdir:
+        return ""
+    return 'mkdir -p "$GB_BUILD_WORKDIR"\ncd "$GB_BUILD_WORKDIR"\n'
 
 
 def _build_skypilot_mounts(
@@ -1034,11 +1041,13 @@ class Skypilot(Environment):
                     build_workdir,
                 )
 
-            # Prepend a `cd` into the per-run workdir (or $HOME) to both setup
-            # and run so step scripts start in a known directory and can use
-            # relative paths without referencing $GB_BUILD_WORKDIR. Only prefix
-            # setup when there is a setup script, so steps without one don't
-            # acquire a spurious (cd-only) setup phase.
+            # When a per-run workdir was provisioned, prepend a `cd` into it to
+            # both setup and run so step scripts start in a known directory and
+            # can use relative paths without referencing $GB_BUILD_WORKDIR. With
+            # no shared_workdir, _get_cli_prefix returns "" so the scripts stay in
+            # SkyPilot's default ~/sky_workdir, where relative file_mounts land.
+            # Only prefix setup when there is a setup script, so steps without one
+            # don't acquire a spurious (cd-only) setup phase.
             cli_prefix = _get_cli_prefix(build_workdir)
             run_script = cli_prefix + launcher_config.get("run", "")
             if setup_script:
