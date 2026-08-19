@@ -27,14 +27,25 @@ steady-state scans read only newly-finished targets, and that the per-sink
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import pytest
+
 from gbserver.lineage.lineage_reconciler import (
+    UTC_MIN,
     _expected_run_count,
+    as_utc_aware,
     get_most_recent_successful_target,
     get_oldest_successful_target,
     reconcile_once,
     record_selected_targets,
     record_target_lineage,
     select_recordable_targets,
+)
+from gbserver.lineage.lineage_seeding import (
+    BACKFILL_BUILD_ID,
+    SEED_ALL,
+    SEED_FROM_LATEST,
+    LineageSeedError,
+    _build_checkpoint,
 )
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
@@ -253,6 +264,64 @@ class TestGetMostRecentSuccessfulTarget:
         storage = _admin_storage_returning([[_target("b1", "t_null")]])
         assert get_most_recent_successful_target(storage) is None
         assert storage.target_storage.get_by_where.call_count == 1
+
+
+class TestSeedAnchors:
+    """Where each --base-build-id spec places the checkpoint."""
+
+    @staticmethod
+    def _storage(targets):
+        storage = MagicMock()
+
+        def _get_by_where(where, query_control=None):
+            rows = [
+                t
+                for t in targets
+                if "build_id" not in where or t.build_id == where["build_id"]
+            ]
+            rows.sort(key=lambda t: t.finished_at, reverse=True)
+            return rows if query_control.pagination.index == 0 else []
+
+        storage.target_storage.get_by_where.side_effect = _get_by_where
+        return storage
+
+    def test_from_latest_anchors_at_the_newest_build_s_oldest_target(self):
+        # Two steps: the most recent completion names the build, then the anchor is
+        # that build's *oldest* target. Anchoring at the newest completion would
+        # start recording mid-build and skip the rest of its already-finished
+        # targets, while still naming their build in the checkpoint.
+        new_last = _target("b_new", "n3", finished_at=_BASE + timedelta(minutes=20))
+        new_mid = _target("b_new", "n2", finished_at=_BASE + timedelta(minutes=10))
+        new_first = _target("b_new", "n1", finished_at=_BASE)
+        old = _target("b_old", "o1", finished_at=_BASE - timedelta(days=1))
+        storage = self._storage([new_last, new_mid, new_first, old])
+
+        checkpoint = _build_checkpoint(storage, SEED_FROM_LATEST)
+
+        assert checkpoint["build_id"] == "b_new"
+        # The newest build's first completion, not its last.
+        assert checkpoint["finished_at"] == as_utc_aware(_BASE).isoformat()
+
+    def test_build_id_anchors_at_that_build_s_oldest_target(self):
+        first = _target("b1", "t1", finished_at=_BASE)
+        last = _target("b1", "t2", finished_at=_BASE + timedelta(minutes=30))
+        storage = self._storage([last, first])
+
+        checkpoint = _build_checkpoint(storage, "b1")
+
+        assert checkpoint["build_id"] == "b1"
+        assert checkpoint["finished_at"] == as_utc_aware(_BASE).isoformat()
+
+    def test_all_anchors_at_utc_min(self):
+        checkpoint = _build_checkpoint(self._storage([]), SEED_ALL)
+        assert checkpoint["build_id"] == BACKFILL_BUILD_ID
+        assert checkpoint["finished_at"] == UTC_MIN.isoformat()
+
+    def test_from_latest_on_an_empty_db_raises(self):
+        # Nothing to anchor against; the CLI turns this into a ClickException
+        # rather than seeding something arbitrary.
+        with pytest.raises(LineageSeedError):
+            _build_checkpoint(self._storage([]), SEED_FROM_LATEST)
 
 
 class TestGetOldestSuccessfulTarget:

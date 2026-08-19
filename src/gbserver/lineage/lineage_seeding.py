@@ -31,12 +31,13 @@ the whole history (anchor moved back).
 Three anchors, expressed as a single spec string (``from-latest``, ``all``, or a
 build id) so no invalid combination is representable.
 
-The two build-derived anchors deliberately pick opposite ends. ``from-latest``
-takes the *newest* completion — it means "start here, skip what came before".
-A build id takes that build's *oldest* completion, because the watermark is
-inclusive but forward-only: anchoring at the build's newest target would exclude
-the build's own earlier targets, and lose any concurrent build's targets in that
-window for good.
+Both build-derived anchors land on a build's *oldest* completion, because the
+watermark is inclusive but forward-only: anchoring at a build's newest target
+would exclude that build's own earlier targets, and lose any concurrent build's
+targets in that window for good. They differ only in how the build is chosen —
+``from-latest`` takes the build of the most recent completion, a build id takes
+the one named. So "from now on" means from the start of the newest build, not
+from the middle of it.
 """
 
 from gbserver.lineage.lineage_reconciler import (
@@ -71,10 +72,10 @@ def _build_checkpoint(storage: SingletonAdminStorage, spec: str) -> dict:
 
     Args:
         storage: Admin storage to resolve the anchor target against.
-        spec: ``"from-latest"`` (anchor at the newest successful target), ``"all"``
-            (anchor at ``UTC_MIN``, i.e. the full history), or a build id (anchor at
-            that build's *oldest* successful target, so the whole build is in
-            scope).
+        spec: ``"from-latest"`` (anchor at the oldest successful target of the
+            *newest* build), ``"all"`` (anchor at ``UTC_MIN``, i.e. the full
+            history), or a build id (anchor at that build's oldest successful
+            target). Either way the anchored build is recorded whole.
 
     Returns:
         ``{"build_id": str, "finished_at": <ISO 8601 str, aware UTC>}``.
@@ -93,10 +94,23 @@ def _build_checkpoint(storage: SingletonAdminStorage, spec: str) -> dict:
         }
 
     if spec == SEED_FROM_LATEST:
-        # "From now on": the newest completion is the intended starting line, and
-        # everything before it is deliberately excluded.
-        target = get_most_recent_successful_target(storage)
-        build_id = None
+        # Resolve the build in two steps: the most recent completion names the
+        # build to start from, but the anchor is then that build's *oldest*
+        # target — the same treatment a build id gets, with the build chosen
+        # automatically instead of by the operator.
+        #
+        # Anchoring directly at the newest completion would start recording
+        # mid-build: the watermark is inclusive but forward-only, so the rest of
+        # that build's already-finished targets would be skipped, while the
+        # checkpoint still names their build. "From now on" means from the start
+        # of the newest build, not from the middle of it.
+        latest = get_most_recent_successful_target(storage)
+        build_id = latest.build_id if latest is not None else None
+        target = (
+            get_oldest_successful_target(storage, build_id=build_id)
+            if build_id is not None
+            else None
+        )
     else:
         # A specific build: anchor at that build's *oldest* target, not its
         # newest. The watermark is inclusive but forward-only, so anchoring at the
@@ -128,22 +142,48 @@ def _build_checkpoint(storage: SingletonAdminStorage, spec: str) -> dict:
     }
 
 
-def seed_if_absent(storage: SingletonAdminStorage, spec: str) -> bool:
-    """Seed the checkpoint only when one does not already exist.
+def seed_if_absent(
+    storage: SingletonAdminStorage, spec: str, force: bool = False
+) -> bool:
+    """Seed the checkpoint, by default only when one does not already exist.
 
     Leaving an existing checkpoint alone is the whole point: the flag is meant to
     live permanently in a Deployment spec, and re-seeding on every pod restart
     would either skip lineage (anchor moved forward) or re-drive the full history
     (anchor moved back).
 
+    ``force`` overrides that, replacing an existing checkpoint with the requested
+    anchor. It exists for the case the seed-if-absent rule cannot fix on its own:
+    a checkpoint left at a wrong or unusable value (seeded at the wrong build, or
+    written in a stale format), where recording stays stuck until someone moves it
+    by hand. Moving the anchor *backwards* re-drives lineage that was already
+    recorded, which is idempotent at the sink but not free, and moving it forwards
+    skips lineage permanently — so it must never live in a Deployment spec, where
+    it would re-apply on every restart.
+
     Returns:
-        True if a checkpoint was written, False if one already existed.
+        True if the checkpoint was written, False if one already existed and
+        was kept.
 
     Raises:
-        LineageSeedError: When no checkpoint exists and the anchor cannot be
-            resolved.
+        LineageSeedError: When the anchor cannot be resolved.
     """
     existing = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+    if existing is not None and force:
+        # Resolve the new anchor before overwriting: if it cannot be resolved this
+        # raises, and the existing checkpoint must survive that rather than being
+        # cleared by a failed re-seed.
+        checkpoint = _build_checkpoint(storage, spec)
+        storage.kv_pair_storage.set_value(LINEAGE_WATCHER_CHECKPOINT_KEY, checkpoint)
+        logger.warning(
+            "Overwrote lineage checkpoint %s: %s -> %s (--force-build-id). "
+            "Lineage between the two anchors is re-driven if the anchor moved "
+            "back, or skipped for good if it moved forward.",
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            existing,
+            checkpoint,
+        )
+        return True
     if existing is not None:
         logger.info(
             "Lineage checkpoint %s already exists (%s); keeping it and ignoring "
