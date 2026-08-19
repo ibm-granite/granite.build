@@ -94,6 +94,26 @@ logger = get_logger(__name__)
 
 BINDING_KEY = "binding"
 
+# ANSI escape sequences (colour codes, cursor moves, etc.). Some environments'
+# retrieved logs colourise their line prefixes — SkyPilot, for example, wraps its
+# `(name, pid=N)` worker prefix in a cyan SGR sequence (`\x1b[36m(...)\x1b[0m`).
+# Left in place these would (a) defeat a `^`-anchored line_regex, since the line no
+# longer starts with the marker, and (b) leak into a captured field value (e.g. a
+# trailing reset folded onto a commit hash). We strip them once, centrally, in
+# get_events_from_log_line so every monitor sees clean text and no per-environment
+# regex has to account for ANSI — the handling is uniform across all environments.
+# Pattern covers both CSI sequences (`\x1b[...<final>`) and two-char escapes.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences (colour codes, cursor moves) from a log line.
+
+    :param text: a raw log line that may carry terminal escape sequences.
+    :returns: the line with all ANSI escape sequences removed.
+    """
+    return _ANSI_ESCAPE_RE.sub("", text)
+
 
 class EventFieldRegexLogParserConfig(Config):
     """Details of a single field in the event payload."""
