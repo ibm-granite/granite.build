@@ -39,8 +39,8 @@ All fields live under the step's `config.byoc_config`.
 |---|---|---|
 | `image` | string | Public container image the step runs in, e.g. `python:3.12-slim`. Rendered at runtime as SkyPilot `docker:<image>`. Defaults to `quay.io/fedora/fedora-minimal:42`; set to `""` to run on the bare launcher node instead (e.g. a cluster without Pyxis, which cannot run container images). |
 | `ref` | string | Branch, tag, or commit checked out after cloning. Default: the repo's default branch. |
-| `workdir` | string | Subdirectory (under `$GB_BUILD_WORKDIR`) the repo is cloned into. Default: `code`. |
-| `setup_command` | string | Bash command run during `setup`, **after** the clone, from `$GB_BUILD_WORKDIR` (the workdir root). Use it for dependency installation, e.g. `cd code && pip install -r requirements.txt`. `set -eu` is in effect, so a failure fails the build. Empty (default) => skipped. |
+| `workdir` | string | Subdirectory (relative to the step's working directory) the repo is cloned into. Default: `code`. |
+| `setup_command` | string | Bash command run during `setup`, **after** the clone, from the step's working directory (the workdir root). Use it for dependency installation, e.g. `cd code && pip install -r requirements.txt`. `set -eu` is in effect, so a failure fails the build. Empty (default) => skipped. |
 
 > **`image` is a runtime choice, not a built image.** Unlike custom-image steps
 > (e.g. [eval](../../eval/skypilot/README.md)), `byoc` builds no Dockerfile;
@@ -53,7 +53,7 @@ All fields live under the step's `config.byoc_config`.
   code by cloning `repo`. Bind target inputs in your `build.yaml` as usual if the
   cloned command needs them (they are resolved by the environment before `run`).
 - **File mounts** — the optional `src/` directory beside the template is mounted
-  to `$GB_BUILD_WORKDIR/src` on the cluster (see [`src/helpers.sh`](src/helpers.sh)),
+  to `./src` at the workdir root on the cluster (see [`src/helpers.sh`](src/helpers.sh)),
   demonstrating the SkyPilot `file_mounts` input.
 - **Outputs** — to register an artifact, have your `command` print a line that
   begins with the Granite.build marker (captured by `skypilot_monitor`):
@@ -64,11 +64,15 @@ All fields live under the step's `config.byoc_config`.
 
   `<output-id>` must match an `outputs.<id>` declared on the target.
 
-## Env vars the step provides to your commands
+## Working directory and paths
 
-The SkyPilot launcher exports `$GB_BUILD_WORKDIR` into both `setup` and `run`: the
-per-run workdir and the run script's initial CWD. `repo` is cloned to
-`$GB_BUILD_WORKDIR/<workdir>` and `src/` is mounted at `$GB_BUILD_WORKDIR/src`.
+The SkyPilot launcher starts both `setup` and `run` in a per-run working
+directory (falling back to `$HOME` when the environment defines no
+`shared_workdir`), so your commands don't need to know where they run — use
+**relative paths**. `repo` is cloned to `<workdir>` (default `code`), `src/` is
+mounted at `./src`, and `run` executes from inside the cloned repo. When you need
+an **absolute** path (e.g. for the artifact marker below), derive it from the CWD
+with `$(pwd)`, e.g. `$(pwd)/result` — don't hard-code a location.
 
 ## Generating and deploying the step
 
@@ -110,7 +114,7 @@ granite.build:
               ref: "main"
               workdir: "code"
               setup_command: "cd code && pip install -r requirements.txt"
-              command: "python main.py --out $GB_BUILD_WORKDIR/result"
+              command: "python main.py --out $(pwd)/result"
 ```
 
 ## Notes and limitations

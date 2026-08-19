@@ -286,7 +286,7 @@ sed "s#\${IMAGE_REF}#$ref#g" step-template.yaml > $(SPACE_DIR)/steps/<step-name>
 Because only the literal `${IMAGE_REF}` is replaced, everything else passes through
 untouched — importantly, the **runtime Jinja** `{{ ... }}` (resolved later by the
 build, e.g. `{{ config.eval_config.model_path }}`) and shell expansions like
-`${GB_BUILD_WORKDIR}` / `$(hostname)` inside `run:`/`setup:` blocks. (The image ref
+`${HOME}` / `$(hostname)` inside `run:`/`setup:` blocks. (The image ref
 is escaped first so a value containing `#`, `&`, or `\` can't corrupt the
 substitution.) This is factored into the `render-step-template` helper in
 [`common.mk`](common.mk), shared by both targets.

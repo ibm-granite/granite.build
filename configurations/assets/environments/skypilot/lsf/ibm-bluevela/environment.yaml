@@ -5,8 +5,9 @@ config:
   default_cloud: lsf
   # Env-level shared filesystem root for per-run build workdirs. gbserver
   # derives ${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/ from this
-  # (see skypilot.py:_compute_run_workdir), exports it as GB_BUILD_WORKDIR, and
-  # makes it the run script's CWD. On bluevela this must be on /proj (the shared
+  # (see skypilot.py:setup_skypilot), exports it as GB_BUILD_WORKDIR, and makes
+  # it the CWD of both the setup and run scripts (falling back to $HOME when no
+  # shared_workdir is configured). On bluevela this must be on /proj (the shared
   # network FS that is bind-mounted identity into the enroot container), so a
   # step's relative file_mounts destination — remapped under this dir — is
   # visible inside the container at the same relative path.

@@ -75,11 +75,12 @@ All fields live under the step's `config.eval_config` and are templated into the
   `run:` block (see [Who emits the artifact line?](#who-emits-the-artifact-line)),
   not by `eval.sh`. Bind a matching `outputs.results` on the target to persist it.
 
-## Env vars the step provides to your commands
+## Working directory and paths
 
-The SkyPilot launcher exports `$GB_BUILD_WORKDIR` into `run`: the per-run workdir
-and the run script's initial CWD. Relative `output_dir` values resolve here, giving
-per-run isolation.
+The SkyPilot launcher starts `run` in a per-run working directory (falling back
+to `$HOME` when the environment defines no `shared_workdir`), so commands need
+not know where they run — use relative paths. Relative `output_dir` values
+resolve against this CWD, giving per-run isolation.
 
 The eval script runs inside the **image** (built from `Dockerfile`); the exemplar
 is a shell script, so the image needs no Python interpreter or runtime venv.

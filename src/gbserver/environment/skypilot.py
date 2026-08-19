@@ -393,6 +393,28 @@ def _remap_relative_dest(dst: str, build_workdir: Optional[str]) -> str:
     return os.path.normpath(os.path.join(build_workdir, dst))
 
 
+def _get_cli_prefix(build_workdir: Optional[str]) -> str:
+    """Build a shell snippet that changes into the step's working directory.
+
+    Emits ``cd "${GB_BUILD_WORKDIR:-$HOME}"`` so ``setup``/``run`` scripts start
+    in the per-run build workdir when one was provisioned, and otherwise fall
+    back to the execution environment's ``HOME``. The fallback is expressed as a
+    shell parameter expansion so ``$HOME`` is resolved remotely by the step's own
+    shell — gbserver never computes it. When a ``build_workdir`` is known, a
+    ``mkdir -p`` precedes the ``cd`` so the directory exists before use.
+
+    Making the launcher own the ``cd`` lets step authors write outputs with
+    relative paths and stay agnostic about where the step runs: they never need
+    to reference ``$GB_BUILD_WORKDIR`` themselves.
+
+    :param build_workdir: the provisioned per-run workdir path, or ``None`` when
+        no ``shared_workdir`` is configured (falls back to ``$HOME``).
+    :returns: a shell snippet terminated by a trailing newline.
+    """
+    mkdir = 'mkdir -p "$GB_BUILD_WORKDIR"\n' if build_workdir else ""
+    return f'{mkdir}cd "${{GB_BUILD_WORKDIR:-$HOME}}"\n'
+
+
 def _build_skypilot_mounts(
     file_mounts_raw: dict,
     asset_dir: Union[Path, str, None],
@@ -1012,13 +1034,15 @@ class Skypilot(Environment):
                     build_workdir,
                 )
 
-            run_script = launcher_config.get("run", "")
-            if build_workdir:
-                run_script = (
-                    'mkdir -p "$GB_BUILD_WORKDIR"\n'
-                    'cd "$GB_BUILD_WORKDIR"\n'
-                    f"{run_script}"
-                )
+            # Prepend a `cd` into the per-run workdir (or $HOME) to both setup
+            # and run so step scripts start in a known directory and can use
+            # relative paths without referencing $GB_BUILD_WORKDIR. Only prefix
+            # setup when there is a setup script, so steps without one don't
+            # acquire a spurious (cd-only) setup phase.
+            cli_prefix = _get_cli_prefix(build_workdir)
+            run_script = cli_prefix + launcher_config.get("run", "")
+            if setup_script:
+                setup_script = cli_prefix + setup_script
 
             # Build sky.Task
             task = sky.Task(

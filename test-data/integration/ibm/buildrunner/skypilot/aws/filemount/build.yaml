@@ -9,8 +9,8 @@ granite.build:
   # fails the build if it did not. This is the AWS analog of the
   # skypilot/bluevela/filemount fixture (which mounts through LSF's enroot).
   #
-  # Runs BARE (empty command_config.image): file_mounts land in the VM run workdir
-  # (${GB_BUILD_WORKDIR}), which is the run command's CWD, so ./payload is
+  # Runs BARE (empty command_config.image): file_mounts land in the VM run workdir,
+  # which is the run command's CWD, so ./payload is
   # reachable directly. (bluevela used an enroot container to also exercise
   # in-container visibility; on AWS we test the core relative-source resolution on
   # the bare VM, mirroring the aws/2target fixture.)

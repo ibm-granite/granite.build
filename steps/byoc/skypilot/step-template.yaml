@@ -20,8 +20,9 @@ config:
     # Command executed by `run`, from inside the cloned repo directory.
     command: ""
     # Optional bash command run during `setup`, after the repo is cloned, from
-    # $GB_BUILD_WORKDIR (the workdir root — cd into the repo yourself if needed,
-    # e.g. "cd code && pip install -r requirements.txt"). Empty => skipped.
+    # the step's working directory (the workdir root — cd into the repo yourself
+    # if needed, e.g. "cd code && pip install -r requirements.txt"). Empty =>
+    # skipped.
     setup_command: ""
 
 environment_configs:
@@ -40,16 +41,18 @@ environment_configs:
           # config.launcher_config.resources.
           resources: {}
           # Optional helper assets shipped alongside the step. A relative dest is
-          # remapped under $GB_BUILD_WORKDIR, so these land at
-          # $GB_BUILD_WORKDIR/src on the cluster.
+          # remapped into the per-run workdir, which is also the step's working
+          # directory, so these land at ./src.
           file_mounts:
             src: src
-          # setup runs once at cluster bring-up: fetch the code.
+          # setup runs once at cluster bring-up: fetch the code. The launcher
+          # starts this script in the per-run workdir, so a relative CODE_DIR
+          # clones under it without the step needing to know the absolute path.
           setup: |
             set -eu
             REPO="{{ config.byoc_config.repo }}"
             REF="{{ config.byoc_config.ref }}"
-            CODE_DIR="${GB_BUILD_WORKDIR:-$HOME}/{{ config.byoc_config.workdir }}"
+            CODE_DIR="{{ config.byoc_config.workdir }}"
             if [ -z "$REPO" ]; then
               echo "byoc: config.byoc_config.repo is empty; nothing to clone" >&2
               exit 1
@@ -68,15 +71,17 @@ environment_configs:
             # fails the build, just as a failed clone does.
             SETUP_ENABLED="{{ 'yes' if config.byoc_config.setup_command else '' }}"
             if [ -n "$SETUP_ENABLED" ]; then
-              cd "${GB_BUILD_WORKDIR:-$HOME}"
+              # Already in the workdir root (the launcher cd's here), so the
+              # command runs relative to it — e.g. "cd code && pip install ...".
               echo "byoc: running setup_command in $(pwd)"
               {{ config.byoc_config.setup_command }}
             fi
           # run executes the user-defined command from inside the cloned repo.
-          # File-mounted helpers are available at $GB_BUILD_WORKDIR/src.
+          # The launcher starts run in the per-run workdir, so CODE_DIR is
+          # relative; file-mounted helpers are available at ./src.
           run: |
             set -eu
-            CODE_DIR="${GB_BUILD_WORKDIR:-$HOME}/{{ config.byoc_config.workdir }}"
+            CODE_DIR="{{ config.byoc_config.workdir }}"
             cd "$CODE_DIR"
             echo "byoc: running command in $(pwd)"
             {{ config.byoc_config.command }}
