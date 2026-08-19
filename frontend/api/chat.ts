@@ -1,17 +1,16 @@
 /**
  * API client for the chat assistant (/api/analytics/chat/*).
  * Deliberately not using the shared axios client for streaming — axios
- * doesn't stream cleanly in-browser — so this uses native fetch + ReadableStream,
- * the first streaming consumer in the codebase.
+ * doesn't stream cleanly in-browser — so this uses native fetch + ReadableStream.
  */
 import axios from 'axios'
 
 import { apiBase } from '@/api/client'
+import { parseSSEStream } from '@/lib/sse'
 
 export type ChatEventType =
   | 'text_delta'
   | 'tool_call'
-  | 'tool_result'
   | 'ui_action'
   | 'confirm_action'
   | 'done'
@@ -50,6 +49,24 @@ export async function getChatStatus(): Promise<ChatStatus> {
   }
 }
 
+export interface ChatStopResult {
+  interrupted: boolean
+}
+
+/**
+ * Requests server-side interruption of whatever turn is currently running
+ * for this session (a model call or a tool call, e.g. a long-running
+ * wait_for_build) — complements aborting the client's own fetch/read loop,
+ * since that alone only stops the browser from reading further SSE frames,
+ * not the backend work producing them.
+ */
+export async function stopChat(sessionId: string): Promise<ChatStopResult> {
+  const { data } = await statusClient.post<ChatStopResult>('/chat/stop', {
+    session_id: sessionId,
+  })
+  return data
+}
+
 export interface ChatConfirmResult {
   found: boolean
   approved?: boolean
@@ -85,8 +102,8 @@ export interface ChatPageContext {
 }
 
 /**
- * Streams one chat turn. Yields each NormalizedEvent as the server sends it.
- * Parses newline-delimited SSE frames of the form `data: {...}\n\n`.
+ * Streams one chat turn. Yields each NormalizedEvent as the server sends it
+ * (see lib/sse.ts's parseSSEStream for the actual frame parsing).
  *
  * pageContext is passive browser-awareness info (which dashboard route the
  * user is currently viewing) — never treated as part of the message itself;
@@ -115,30 +132,5 @@ export async function* streamChat(
     throw new Error(`Chat stream request failed: ${res.status}`)
   }
 
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-
-    let separatorIndex: number
-    // SSE frames are separated by a blank line ("\n\n")
-    while ((separatorIndex = buffer.indexOf('\n\n')) !== -1) {
-      const frame = buffer.slice(0, separatorIndex)
-      buffer = buffer.slice(separatorIndex + 2)
-
-      for (const line of frame.split('\n')) {
-        if (!line.startsWith('data: ')) continue
-        const payload = line.slice(6)
-        try {
-          yield JSON.parse(payload) as ChatEvent
-        } catch {
-          // Ignore malformed frames rather than killing the whole stream.
-        }
-      }
-    }
-  }
+  yield* parseSSEStream<ChatEvent>(res.body)
 }

@@ -7,9 +7,9 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
 import { Button, InlineNotification, Tag, TextInput, Tile } from "@carbon/react";
-import { ChatBot, Close, Send } from "@carbon/icons-react";
+import { ChatBot, Close, Send, StopFilledAlt } from "@carbon/icons-react";
 
-import { ChatStatus, confirmAction, getChatStatus, streamChat } from "@/api/chat";
+import { ChatStatus, confirmAction, getChatStatus, stopChat, streamChat } from "@/api/chat";
 import styles from "./ChatWidget.module.scss";
 
 interface UiActionState {
@@ -45,6 +45,10 @@ interface ChatMessage {
   uiActions: UiActionState[];
   confirmActions: ConfirmActionState[];
   isStreaming?: boolean;
+  /** Name of the tool currently running for this message, if any — surfaced
+   * so a tool-only turn (no text_delta in between calls) shows what's
+   * happening instead of a bare, uninformative spinner. */
+  activeToolCall?: string;
 }
 
 function newId(): string {
@@ -76,6 +80,7 @@ export function ChatWidget() {
   const sessionIdRef = useRef<string>(newId());
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     getChatStatus().then(setStatus);
@@ -190,6 +195,22 @@ export function ChatWidget() {
     });
   }
 
+  async function handleStop() {
+    // Aborting the client's own fetch/read loop only stops this browser
+    // from reading further SSE frames — it doesn't stop the backend work
+    // producing them (a model call, or a tool call like wait_for_build that
+    // can run for up to 30 minutes). /chat/stop asks the server to
+    // interrupt that work too; best-effort, since the abort() above already
+    // unblocks the composer regardless of whether this call succeeds.
+    abortControllerRef.current?.abort();
+    try {
+      await stopChat(sessionIdRef.current);
+    } catch {
+      // Nothing actionable for the user here — the client-side stream is
+      // already stopped either way.
+    }
+  }
+
   async function handleSend() {
     const text = input.trim();
     if (!text || isStreaming) return;
@@ -204,6 +225,8 @@ export function ChatWidget() {
       { id: activeId, role: "assistant", text: "", uiActions: [], confirmActions: [], isStreaming: true },
     ]);
     setIsStreaming(true);
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
       // Read window.location directly rather than next/navigation's
@@ -223,7 +246,7 @@ export function ChatWidget() {
       // away and open a fresh placeholder for whatever comes next — a
       // preamble and the real answer show up as two distinct messages
       // instead of one bubble that appears to change after the fact.
-      for await (const event of streamChat(sessionIdRef.current, text, pageContext)) {
+      for await (const event of streamChat(sessionIdRef.current, text, pageContext, abortController.signal)) {
         if (event.type === "text_delta" && event.text) {
           const finishedId = activeId;
           const finishedText = event.text;
@@ -234,6 +257,8 @@ export function ChatWidget() {
             ...prev,
             { id: activeId, role: "assistant", text: "", uiActions: [], confirmActions: [], isStreaming: true },
           ]);
+        } else if (event.type === "tool_call" && event.tool_name) {
+          updateMessage(activeId, (m) => ({ ...m, activeToolCall: event.tool_name }));
         } else if (event.type === "ui_action" && event.route && event.label) {
           updateMessage(activeId, (m) => ({
             ...m,
@@ -262,10 +287,16 @@ export function ChatWidget() {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Chat request failed.");
+      // The user's own Stop click aborts the fetch — that's success, not a
+      // failure to surface as a scary error banner.
+      const wasUserInitiatedStop = err instanceof DOMException && err.name === "AbortError";
+      if (!wasUserInitiatedStop) {
+        setError(err instanceof Error ? err.message : "Chat request failed.");
+      }
       finalizePlaceholder(activeId);
     } finally {
       setIsStreaming(false);
+      abortControllerRef.current = null;
       // Safety net: if the stream ended without ever finalizing the trailing
       // placeholder (e.g. the connection dropped with no "done"/error
       // event), don't leave its loading dots stuck on screen forever.
@@ -374,6 +405,11 @@ export function ChatWidget() {
                         ) : (
                           message.text
                         )
+                      ) : message.activeToolCall ? (
+                        <span style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "var(--cds-text-secondary)" }}>
+                          Calling <code>{message.activeToolCall}</code>
+                          <LoadingDots />
+                        </span>
                       ) : (
                         <LoadingDots />
                       )}
@@ -382,16 +418,15 @@ export function ChatWidget() {
                   {message.uiActions.map((action) => (
                     <Tile
                       key={action.id}
+                      className={styles.actionTile}
                       style={{
-                        padding: "0.75rem",
-                        alignSelf: "flex-start",
                         maxWidth: "85%",
                         border: "1px solid var(--cds-border-subtle-01)",
                       }}
                     >
-                      <p style={{ fontSize: "0.8125rem", marginBottom: "0.5rem" }}>{action.label}</p>
+                      <p className={styles.actionLabel}>{action.label}</p>
                       {action.status === "pending" && (
-                        <div style={{ display: "flex", gap: "0.5rem" }}>
+                        <div className={styles.actionButtonRow}>
                           <Button
                             kind="primary"
                             size="sm"
@@ -424,15 +459,14 @@ export function ChatWidget() {
                   {message.confirmActions.map((action) => (
                     <Tile
                       key={action.id}
+                      className={styles.actionTile}
                       style={{
-                        padding: "0.75rem",
-                        alignSelf: "flex-start",
                         maxWidth: "95%",
                         minWidth: 0,
                         border: "1px solid var(--cds-support-warning, #f1c21b)",
                       }}
                     >
-                      <p style={{ fontSize: "0.8125rem", marginBottom: "0.5rem", fontWeight: 600 }}>
+                      <p className={styles.actionLabel} style={{ fontWeight: 600 }}>
                         {action.label}
                       </p>
                       {/* Show the real args (e.g. build_start's file_content is actual
@@ -453,7 +487,7 @@ export function ChatWidget() {
                         {JSON.stringify(action.toolInput, null, 2)}
                       </pre>
                       {action.status === "pending" && (
-                        <div style={{ display: "flex", gap: "0.5rem" }}>
+                        <div className={styles.actionButtonRow}>
                           <Button kind="danger" size="sm" onClick={() => handleApprove(message.id, action)}>
                             Approve
                           </Button>
@@ -510,15 +544,26 @@ export function ChatWidget() {
               }}
               size="md"
             />
-            <Button
-              kind="primary"
-              size="md"
-              hasIconOnly
-              iconDescription="Send"
-              renderIcon={Send}
-              disabled={isStreaming || !input.trim()}
-              onClick={handleSend}
-            />
+            {isStreaming ? (
+              <Button
+                kind="danger"
+                size="md"
+                hasIconOnly
+                iconDescription="Stop"
+                renderIcon={StopFilledAlt}
+                onClick={handleStop}
+              />
+            ) : (
+              <Button
+                kind="primary"
+                size="md"
+                hasIconOnly
+                iconDescription="Send"
+                renderIcon={Send}
+                disabled={!input.trim()}
+                onClick={handleSend}
+              />
+            )}
           </div>
         </div>
       ) : (
