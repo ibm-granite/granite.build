@@ -1,11 +1,12 @@
 'use client'
 
 import * as React from 'react'
-import { Button, ComposedModal, InlineLoading, Modal, ModalBody, ModalFooter, ModalHeader, OverflowMenu, OverflowMenuItem } from '@carbon/react'
+import { Button, ComposedModal, IconButton, InlineLoading, Modal, ModalBody, ModalFooter, ModalHeader, OverflowMenu, OverflowMenuItem } from '@carbon/react'
 import {
   ArrowLeft,
   ArrowRight,
   CenterSquare,
+  Close,
   Launch,
   ZoomFit,
   ZoomIn,
@@ -21,8 +22,28 @@ import { getArtifact } from '@/api/gbserver'
 import { getBuildArchiveFiles } from '@/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@/components/LineageGraph/Graph'
 import { getSubgraph } from '@/components/LineageGraph/diagramUtilities'
+import StepDetailsPanel from './StepDetailsPanel'
 
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending'])
+
+// Target nodes are keyed `target-${name}`; the details panel needs the name back.
+const TARGET_NODE_PREFIX = 'target-'
+
+const TARGET_NODE_HEIGHT = 64
+// Taller when a step subtitle is present, so the card doesn't clip it.
+const TARGET_NODE_HEIGHT_WITH_STEPS = 84
+
+// How many step names to name explicitly in a node subtitle before eliding.
+const SUBTITLE_MAX_STEPS = 3
+
+/** "3 steps: fetch → tune → eval", or "" when the target has no step runs. */
+function stepSubtitle(steps: { step_name: string }[]): string {
+  if (steps.length === 0) return ''
+  const names = steps.slice(0, SUBTITLE_MAX_STEPS).map((s) => s.step_name)
+  if (steps.length > SUBTITLE_MAX_STEPS) names.push('…')
+  const count = `${steps.length} step${steps.length === 1 ? '' : 's'}`
+  return `${count}: ${names.join(' → ')}`
+}
 
 interface PlannedTarget {
   target_name: string
@@ -91,16 +112,21 @@ function buildGraphData(
 
   // ── Actual lineage from runtime status ────────────────────────────────────
   for (const [targetName, targetRun] of Object.entries(buildStatus?.targets ?? {})) {
-    const targetId = `target-${targetName}`
+    const targetId = `${TARGET_NODE_PREFIX}${targetName}`
     seenTargets.add(targetName)
+
+    // The node advertises its steps; a target with no step runs yet gets no
+    // subtitle (and so keeps its normal height).
+    const subtitle = stepSubtitle(targetRun.steps ?? [])
 
     nodes.push({
       id: targetId,
       title: targetName,
       type: 'Build',
       width: 192,
-      height: 64,
+      height: subtitle ? TARGET_NODE_HEIGHT_WITH_STEPS : TARGET_NODE_HEIGHT,
       labels: [{ text: targetName }],
+      ...(subtitle ? { subtitle } : {}),
     })
 
     for (const [paramName, artifactId] of Object.entries(targetRun.inputs ?? {})) {
@@ -136,16 +162,18 @@ function buildGraphData(
       const targetName = plannedTarget.target_name
       if (seenTargets.has(targetName)) continue  // target already in actual lineage
 
-      const targetId = `target-${targetName}`
+      const targetId = `${TARGET_NODE_PREFIX}${targetName}`
       seenTargets.add(targetName)
 
+      // Planned targets have no step runs to describe, so they keep the plain
+      // height and get no subtitle.
       nodes.push({
         id: targetId,
         title: targetName,
         type: 'Build',
         planned: true,
         width: 192,
-        height: 64,
+        height: TARGET_NODE_HEIGHT,
         labels: [{ text: targetName }],
       })
 
@@ -261,6 +289,20 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     return yaml ? parseDefinitionTargets(yaml) : []
   }, [archiveFiles])
 
+  // Step metadata (issue #224): target nodes advertise their steps, and clicking
+  // one opens the step details. The step data already rides along on
+  // getBuildStatus, so this costs no extra request.
+  const [stepDetailTarget, setStepDetailTarget] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    if (!stepDetailTarget) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setStepDetailTarget(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [stepDetailTarget])
+
   const { nodes: allNodes, links: allLinks, artifactIds } = React.useMemo(
     () => buildGraphData(buildStatus, plannedTargets, isActive),
     [buildStatus, plannedTargets, isActive]
@@ -349,6 +391,12 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     if (node.type !== 'Build' && isUUID(node.id)) {
       const uri = artifactUriMap.get(node.id)
       setArtifactNavNode({ node, hfUrl: uri ? getHuggingFaceUrl(uri) : null })
+      return
+    }
+    // Clicking a target (run) node opens its step details. Artifact
+    // click-through is handled above and is unchanged.
+    if (node.type === 'Build' && node.id.startsWith(TARGET_NODE_PREFIX)) {
+      setStepDetailTarget(node.id.slice(TARGET_NODE_PREFIX.length))
     }
   }
 
@@ -514,6 +562,37 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
           </>
         )}
       </div>
+
+      {stepDetailTarget && (
+        <>
+          <div
+            className={styles.stepSidePanelOverlay}
+            onClick={() => setStepDetailTarget(null)}
+          />
+          <div className={styles.stepSidePanel} role="dialog" aria-label={`Step details — ${stepDetailTarget}`}>
+            <div className={styles.stepSidePanelHeader}>
+              <div>
+                <div className={styles.stepSidePanelLabel}>Lineage</div>
+                <h4 className={styles.stepSidePanelHeading}>Step details — {stepDetailTarget}</h4>
+              </div>
+              <IconButton
+                kind="ghost"
+                label="Close"
+                onClick={() => setStepDetailTarget(null)}
+              >
+                <Close />
+              </IconButton>
+            </div>
+            <div className={styles.stepSidePanelBody}>
+              <StepDetailsPanel
+                targetName={stepDetailTarget}
+                target={buildStatus?.targets?.[stepDetailTarget]}
+                sourceUri={build?.source_uri}
+              />
+            </div>
+          </div>
+        </>
+      )}
 
       {artifactNavNode?.hfUrl ? (
         <ComposedModal

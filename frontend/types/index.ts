@@ -22,6 +22,17 @@ export interface BuildStepRun {
   started_at?: string
   updated_at?: string
   log_path?: string
+  // Step metadata, all optional — populated from the StoredStepRun
+  // rows returned by GET /builds/{id}/status. `config` holds the step's
+  // build.yaml runtime parameters; `image` is best-effort (see
+  // stepImageFromConfig in api/gbserver.ts — the image is usually resolved at
+  // launch time and never persisted, so it is often absent).
+  uuid?: string
+  config?: Record<string, unknown>
+  image?: string
+  launcher?: string
+  status_msg?: string
+  finished_at?: string
 }
 
 export interface BuildTargetRun {

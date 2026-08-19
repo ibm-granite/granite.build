@@ -90,9 +90,35 @@ function stepNameFromUri(uri: string): string {
   return uri.split(/[/?#@]/).filter(Boolean).pop() ?? uri
 }
 
+// Best-effort container image for a step, read from the step's own build.yaml
+// config. The image is normally resolved inside each compute environment's
+// launcher at launch time and is never persisted (see
+// src/gbserver/environment/docker.py:_resolve_image), so it is only visible
+// here when the build.yaml named it explicitly. Precedence mirrors that
+// resolver: launcher config first, then the step's docker block, then a
+// bare top-level key. Returns undefined when the build.yaml didn't name one.
+function stepImageFromConfig(config: Record<string, unknown> | undefined): string | undefined {
+  if (!config) return undefined
+  const launcherConfig = (config.launcher_config as Record<string, unknown>) ?? {}
+  const dockerConfig = (config.docker as Record<string, unknown>) ?? {}
+  const candidates = [
+    launcherConfig.image,
+    launcherConfig.image_id,
+    dockerConfig.image,
+    config.image,
+    config.image_id,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate
+  }
+  return undefined
+}
+
 function adaptStepRun(raw: Record<string, unknown>): BuildStepRun {
   const json = (raw.json as Record<string, unknown>) ?? {}
   const definitionUri = (raw.definition_uri as string) || ''
+  const config = (raw.config as Record<string, unknown>) ?? undefined
+  const launcher = config?.launcher
   return {
     step_name: (definitionUri ? stepNameFromUri(definitionUri) : undefined) || (raw.uuid as string),
     status: adaptStatus((raw.status as string) || (json.status as string)),
@@ -100,6 +126,16 @@ function adaptStepRun(raw: Record<string, unknown>): BuildStepRun {
     started_at: (raw.started_at as string) || (json.started_at as string),
     updated_at: (raw.finished_at as string) || (json.finished_at as string),
     log_path: (raw.log_path as string) || (json.log_path as string) || undefined,
+    uuid: raw.uuid as string | undefined,
+    // Step config is the build.yaml's own runtime parameters. It reaches the
+    // client only via GET /builds/{id}/status, which is gated by
+    // authorize_build_read_access — do NOT copy it onto the lineage/jobstats
+    // path, where it is deliberately redacted because any space member can read.
+    config,
+    image: stepImageFromConfig(config),
+    launcher: typeof launcher === 'string' ? launcher : undefined,
+    status_msg: (raw.status_msg as string) || undefined,
+    finished_at: (raw.finished_at as string) || undefined,
   }
 }
 
