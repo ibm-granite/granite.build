@@ -145,7 +145,10 @@ NATS_TEST_PORT ?= 4222
 start-nats: start-docker
 	@echo "Starting NATS (JetStream) test server '${NATS_TEST_CONTAINER}'..."
 	@${DOCKER} rm -f ${NATS_TEST_CONTAINER} >/dev/null 2>&1 || true
-	@${DOCKER} run -d --rm --name ${NATS_TEST_CONTAINER} \
+	@# No --rm: a crashed container must survive so the readiness-timeout path below
+	@# can still read its logs. Cleanup is handled by the rm -f above on the next run
+	@# and by the stop-nats target.
+	@${DOCKER} run -d --name ${NATS_TEST_CONTAINER} \
 		-p ${NATS_TEST_PORT}:4222 nats:latest -js >/dev/null
 	@echo "Waiting for NATS on localhost:${NATS_TEST_PORT}..."
 	@for i in $$(seq 1 30); do \
