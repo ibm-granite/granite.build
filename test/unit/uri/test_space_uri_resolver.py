@@ -620,6 +620,38 @@ class TestTier2EnvClassMatch:
 
         assert _resolved_dir(resolved).samefile(specific)
 
+    def test_present_but_null_class_entry_wins_specificity(self, tmp_path):
+        """A present-but-null class entry (``{K8s:}``) is admitted by this tier and
+        ranks by specificity like any declared class.
+
+        Pins the fix for the second env-class gate: a value-based
+        ``_env_config_entry(...) is not None`` check would silently drop the
+        null-valued, single-env file, letting the less-specific multi-env catch-all
+        win here — disagreeing with the sibling ``_env_ok`` tier. With presence
+        decided by key, the null-valued split file (1 key) beats the catch-all.
+        This tier must decide (no env dir, so Tier 1 is inert and Tier 3 never runs).
+        """
+        base = tmp_path / "base"
+        _write_step(base / "foo", env_classes=["K8s", "Skypilot"])  # catch-all, 2 keys
+        specific = base / "k8s" / "foo"  # null-valued, single-env
+        specific.mkdir(parents=True, exist_ok=True)
+        (specific / "step.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "foo",
+                    "version": "v1",
+                    "type": "custom",
+                    "environment_configs": {"K8s": None},
+                }
+            )
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("K8s"):
+            resolved = _resolve("space://steps/foo")
+
+        assert _resolved_dir(resolved).samefile(specific)
+
     def test_equal_specificity_lexicographic_tiebreak(self, tmp_path):
         """Among equally-specific matches, the lexicographically smaller path
         wins (deterministic tie-break)."""

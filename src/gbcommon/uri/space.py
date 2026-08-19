@@ -575,9 +575,14 @@ class SpaceURI(URI):
                 if not isinstance(data, dict):
                     continue
                 env_keys = list((data.get("environment_configs") or {}).keys())
-                if SpaceURI._env_config_entry(
+                # Class-presence by key (not value): a present-but-null entry
+                # (``{Skypilot:}``) is still declared for the active class and must
+                # match here, matching the _env_ok tier.  Testing
+                # ``_env_config_entry(...) is not None`` would silently drop it (its
+                # value is null), leaving the two tiers disagreeing on such steps.
+                if SpaceURI._env_class_present(
                     data, env_class
-                ) is not None and SpaceURI._subtype_ok(data, env_class, env_subtype):
+                ) and SpaceURI._subtype_ok(data, env_class, env_subtype):
                     matches.append((len(env_keys), str(cand), cand))
         if not matches:
             return None
