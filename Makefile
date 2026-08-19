@@ -149,7 +149,7 @@ start-nats: start-docker
 		-p ${NATS_TEST_PORT}:4222 nats:latest -js >/dev/null
 	@echo "Waiting for NATS on localhost:${NATS_TEST_PORT}..."
 	@for i in $$(seq 1 30); do \
-		if nc -z localhost ${NATS_TEST_PORT} 2>/dev/null; then \
+		if $(PYTHON) -c "import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(s.connect_ex(('localhost', ${NATS_TEST_PORT})))" 2>/dev/null; then \
 			echo "NATS is ready."; \
 			exit 0; \
 		fi; \
