@@ -179,16 +179,6 @@ def as_aware(value: datetime) -> datetime:
     offset — true for a single-timezone deployment, a best-effort guess
     otherwise. Keeping ``finished_at`` aware at rest is what removes the guess;
     until then this is the closest correct reading of a naive value.
-
-    Shifting to UTC can itself raise ``OverflowError``, when the shift would
-    carry the value outside ``datetime.min``/``datetime.max`` — reachable here
-    because the ``--base-build-id all`` backfill anchor *is* ``datetime.min``, and a
-    backend may hand it back aware with a positive UTC offset. That would abort
-    the whole scan, so it is clamped to the bound it overflowed past instead. The
-    clamp cannot distort an ordering decision: an overflow means the true UTC
-    instant lies beyond the bound, and the bound is already older (or newer) than
-    every representable ``finished_at``, so every comparison against it yields
-    the same answer the unrepresentable value would have.
     """
     if value.tzinfo is None:
         value = value.replace(tzinfo=local_tzinfo())
