@@ -125,6 +125,28 @@ class ExpectedTarget(BaseModel):
     StoredStepRun rows. Empty (default) means not checked, so existing fixtures are
     unaffected."""
 
+    @field_validator(
+        "step_count",
+        "input_artifact_count",
+        "output_artifact_count",
+        "jobstats_count",
+        mode="before",
+    )
+    @classmethod
+    def _reject_placeholder(cls, v, info):
+        """Fail loudly if a `gbtest render` skeleton placeholder was left unreplaced.
+
+        The generator (``buildtest_gen.PLACEHOLDER``) emits ``FIXME`` for values it
+        cannot derive; keeping the literal here (rather than importing that module)
+        avoids pulling its deps into this already-heavy module.
+        """
+        if isinstance(v, str) and v.strip() == "FIXME":
+            raise ValueError(
+                f"unreplaced FIXME placeholder for '{info.field_name}': edit the "
+                f"`gbtest render` skeleton before running it"
+            )
+        return v
+
 
 class BuildTestSpecification(BaseModel):
     build_yaml: str
