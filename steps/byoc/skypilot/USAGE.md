@@ -24,7 +24,7 @@ All fields live under the step's `config.byoc_config`.
 | Field | Type | Purpose |
 |---|---|---|
 | `repo` | string | Public git repository URL cloned during `setup`. An empty value fails the step. |
-| `command` | string | Bash command executed during `run`, from inside the cloned repo directory. |
+| `command` | string | Bash command executed during `run`, from the step's working directory (the workdir root). `cd` into the cloned repo yourself if needed, e.g. `cd code && python main.py`. |
 
 ### Optional
 
@@ -32,8 +32,8 @@ All fields live under the step's `config.byoc_config`.
 |---|---|---|
 | `image` | string | Public container image the step runs in, e.g. `python:3.12-slim`. Rendered at runtime as SkyPilot `docker:<image>`. Defaults to `quay.io/fedora/fedora-minimal:42`; set to `""` to run on the bare launcher node instead (e.g. a cluster without Pyxis, which cannot run container images). |
 | `ref` | string | Branch, tag, or commit checked out after cloning. Default: the repo's default branch. |
-| `workdir` | string | Subdirectory (under `$GB_BUILD_WORKDIR`) the repo is cloned into. Default: `code`. |
-| `setup_command` | string | Bash command run during `setup`, **after** the clone, from `$GB_BUILD_WORKDIR` (the workdir root). Use it for dependency installation, e.g. `cd code && pip install -r requirements.txt`. `set -eu` is in effect, so a failure fails the build. Empty (default) => skipped. |
+| `workdir` | string | Subdirectory (under the workdir root) the repo is cloned into. Default: `code`. |
+| `setup_command` | string | Bash command run during `setup`, **after** the clone, from the workdir root. Use it for dependency installation, e.g. `cd code && pip install -r requirements.txt`. `set -eu` is in effect, so a failure fails the build. Empty (default) => skipped. |
 
 > **`image` is a runtime choice, not a built image.** Unlike custom-image steps (which
 > build a Dockerfile), `byoc` builds no image; `image` selects an existing public image
@@ -61,7 +61,7 @@ for `mem://`) — byoc accesses bindings explicitly, so there is no auto-exporte
 `GB_BYOC_INPUT_*` env var.
 
 **File mounts** — the optional `src/` directory beside the template is mounted to
-`$GB_BUILD_WORKDIR/src` on the cluster (see [`src/helpers.sh`](src/helpers.sh)),
+`./src` at the workdir root on the cluster (see [`src/helpers.sh`](src/helpers.sh)),
 demonstrating the SkyPilot `file_mounts` input.
 
 ### Outputs (any number)
@@ -83,11 +83,13 @@ For the full target I/O schema and the `bindings.*` Jinja variables, see
 anchoring, the shipped monitors), see `docs/steps/monitoring-and-artifact-events.md` in
 the granite.build repository.
 
-## Env vars the step provides to your commands
+## Working directory and paths
 
-The SkyPilot launcher exports `$GB_BUILD_WORKDIR` into both `setup` and `run`: the
-per-run workdir and the run script's initial CWD. `repo` is cloned to
-`$GB_BUILD_WORKDIR/<workdir>` and `src/` is mounted at `$GB_BUILD_WORKDIR/src`.
+Both `setup` and `run` start in the same **working directory** (the step's per-run
+workdir), so the step never needs to know its absolute location. `repo` is cloned
+into `<workdir>` (default `code/`) beneath it, and `src/` is mounted at `./src`.
+Use relative paths from there; when you need an absolute path — e.g. for an
+`LLMB_ARTIFACT_PATH` marker — derive it at run time with `$(pwd)`.
 
 ## Example build.yaml
 
@@ -124,13 +126,14 @@ granite.build:
               workdir: "code"
               setup_command: "cd code && pip install -r requirements.txt"
               command: >-
+                cd code;
                 python main.py
                 --dataset "{{ bindings.dataset.binding.path }}"
                 --init-model "{{ bindings.upstream_model.binding.path }}"
-                --out-dir "$GB_BUILD_WORKDIR/out";
-                echo "LLMB_ARTIFACT_ID:checkpoints LLMB_ARTIFACT_PATH:$GB_BUILD_WORKDIR/out/epoch-1.ckpt";
-                echo "LLMB_ARTIFACT_ID:checkpoints LLMB_ARTIFACT_PATH:$GB_BUILD_WORKDIR/out/epoch-2.ckpt";
-                echo "LLMB_ARTIFACT_ID:report LLMB_ARTIFACT_PATH:$GB_BUILD_WORKDIR/out/report.json"
+                --out-dir "$(pwd)/out";
+                echo "LLMB_ARTIFACT_ID:checkpoints LLMB_ARTIFACT_PATH:$(pwd)/out/epoch-1.ckpt";
+                echo "LLMB_ARTIFACT_ID:checkpoints LLMB_ARTIFACT_PATH:$(pwd)/out/epoch-2.ckpt";
+                echo "LLMB_ARTIFACT_ID:report LLMB_ARTIFACT_PATH:$(pwd)/out/report.json"
 ```
 
 A single direct input and output are just the one-entry case of the above.
