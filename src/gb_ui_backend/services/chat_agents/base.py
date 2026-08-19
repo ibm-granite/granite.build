@@ -16,7 +16,6 @@ from typing import Any, AsyncIterator, Literal, TypedDict
 NormalizedEventType = Literal[
     "text_delta",
     "tool_call",
-    "tool_result",
     "ui_action",
     "confirm_action",
     "done",

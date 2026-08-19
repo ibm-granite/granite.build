@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import shutil
 import sys
 import time
@@ -20,7 +19,13 @@ from pathlib import Path
 from typing import AsyncIterator
 from urllib.parse import urlparse
 
-from gb_ui_backend.config import Config
+from gb_ui_backend.config import (
+    Config,
+)
+from gb_ui_backend.config import has_anthropic_chat_config as _has_anthropic_config
+from gb_ui_backend.config import (
+    has_openai_compat_chat_config as _has_openai_compat_config,
+)
 from gb_ui_backend.services.chat_agents.base import ChatAgentBackend, NormalizedEvent
 from gb_ui_backend.services.chat_agents.tool_registry import (
     ModelProvider,
@@ -49,6 +54,13 @@ except ImportError:  # base install has no chat extra — that's fine
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"
 NAVIGATION_TOOL_NAME = "suggest_navigation"
 IDLE_EVICTION_SECONDS = 30 * 60
+# Backstop against unbounded subprocess growth independent of chat.py's
+# per-identity rate limit on /chat/stream (which doesn't cover every caller
+# of _get_or_create_session, and rate-limits calls, not live session count
+# directly) — each session holds its own gbmcp subprocess for up to
+# IDLE_EVICTION_SECONDS, so this bounds total concurrent subprocesses across
+# every identity combined.
+MAX_SESSIONS = 500
 
 _ROUTE_MAP_TEXT = "\n".join(
     f"- {key}: {entry['description']}" for key, entry in NAVIGABLE_ROUTES.items()
@@ -157,47 +169,77 @@ def _gbserver_port(config: Config) -> str:
     return str(urlparse(config.gbserver_url).port or 8080)
 
 
+def _build_anthropic_provider(config: Config, system_prompt: str) -> ModelProvider:
+    from gb_ui_backend.services.chat_agents.providers.anthropic_provider import (
+        AnthropicProvider,
+    )
+
+    return AnthropicProvider(
+        model=config.chat_model or DEFAULT_ANTHROPIC_MODEL,
+        system_prompt=system_prompt,
+    )
+
+
+def _build_openai_compat_provider(config: Config, system_prompt: str) -> ModelProvider:
+    from gb_ui_backend.services.chat_agents.providers.openai_compat_provider import (
+        OpenAICompatProvider,
+    )
+
+    models = config.llm_models_list
+    model = config.chat_model or (models[0] if models else "")
+    if not model:
+        raise RuntimeError(
+            "No chat model configured — set GB_UI_CHAT_MODEL (or GB_UI_LLM_MODELS as a fallback)."
+        )
+    return OpenAICompatProvider(
+        base_url=config.resolved_chat_llm_base_url,
+        api_key=config.resolved_chat_llm_api_key,
+        model=model,
+        system_prompt=system_prompt,
+    )
+
+
 def _build_provider(config: Config, system_prompt: str) -> ModelProvider:
-    """Anthropic wins if both are configured — supplying Anthropic env vars is
-    the explicit opt-in to use Claude instead of whatever OpenAI-compatible
-    endpoint (RITS, Ollama, ...) is otherwise configured."""
-    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
-        from gb_ui_backend.services.chat_agents.providers.anthropic_provider import (
-            AnthropicProvider,
-        )
-
-        return AnthropicProvider(
-            model=config.chat_model or DEFAULT_ANTHROPIC_MODEL,
-            system_prompt=system_prompt,
-        )
-
-    if config.resolved_chat_llm_base_url and config.resolved_chat_llm_api_key:
-        from gb_ui_backend.services.chat_agents.providers.openai_compat_provider import (
-            OpenAICompatProvider,
-        )
-
-        models = config.llm_models_list
-        model = config.chat_model or (models[0] if models else "")
-        if not model:
+    """GB_UI_CHAT_PROVIDER, when set, is authoritative — errors loudly if that
+    provider's own credentials aren't actually configured, rather than
+    silently falling through to the other one. Left unset, auto-detects: the
+    OpenAI-compatible endpoint wins if configured (the natural default for a
+    self-hosted dashboard — no external API key, no request data leaving the
+    deployment), falling back to Anthropic only if that's all that's
+    configured. This means an operator with ANTHROPIC_API_KEY exported for
+    an unrelated reason doesn't silently get routed to Claude for chat over a
+    local endpoint they configured on purpose."""
+    if config.chat_provider == "anthropic":
+        if not _has_anthropic_config():
             raise RuntimeError(
-                "No chat model configured — set GB_UI_CHAT_MODEL (or GB_UI_LLM_MODELS as a fallback)."
+                "GB_UI_CHAT_PROVIDER=anthropic but neither ANTHROPIC_API_KEY nor "
+                "ANTHROPIC_AUTH_TOKEN is set."
             )
-        return OpenAICompatProvider(
-            base_url=config.resolved_chat_llm_base_url,
-            api_key=config.resolved_chat_llm_api_key,
-            model=model,
-            system_prompt=system_prompt,
-        )
+        return _build_anthropic_provider(config, system_prompt)
+
+    if config.chat_provider == "openai_compatible":
+        if not _has_openai_compat_config(config):
+            raise RuntimeError(
+                "GB_UI_CHAT_PROVIDER=openai_compatible but GB_UI_CHAT_LLM_BASE_URL+"
+                "GB_UI_CHAT_LLM_API_KEY (or the GB_UI_LLM_* fallback) is not set."
+            )
+        return _build_openai_compat_provider(config, system_prompt)
+
+    if _has_openai_compat_config(config):
+        return _build_openai_compat_provider(config, system_prompt)
+
+    if _has_anthropic_config():
+        return _build_anthropic_provider(config, system_prompt)
 
     raise RuntimeError(
-        "Chat assistant is not configured — set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN or "
-        "GB_UI_CHAT_LLM_BASE_URL+GB_UI_CHAT_LLM_API_KEY."
+        "Chat assistant is not configured — set GB_UI_CHAT_LLM_BASE_URL+GB_UI_CHAT_LLM_API_KEY "
+        "(or ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN). Set GB_UI_CHAT_PROVIDER to pick explicitly "
+        "when both are configured."
     )
 
 
 class _Session:
     __slots__ = (
-        "stack",
         "mcp_session",
         "tools",
         "history",
@@ -206,17 +248,17 @@ class _Session:
         "turn_lock",
         "pending_confirmations",
         "last_used",
+        "owner_task",
+        "close_event",
     )
 
     def __init__(
         self,
-        stack: AsyncExitStack,
         mcp_session: "ClientSession",
         tools: list[ToolSpec],
         event_queue: "asyncio.Queue[NormalizedEvent]",
         pending_confirmations: dict[str, dict],
     ) -> None:
-        self.stack = stack
         self.mcp_session = mcp_session
         self.tools = tools
         self.history: list = []
@@ -236,6 +278,12 @@ class _Session:
         # eviction.
         self.pending_confirmations = pending_confirmations
         self.last_used = time.monotonic()
+        # Set by ToolLoopBackend._get_or_create_session() right after
+        # construction — see _run_session_owner()'s docstring for why the
+        # owning task, not whoever wants to close the session, must be the
+        # one to exit the AsyncExitStack.
+        self.owner_task: asyncio.Task | None = None
+        self.close_event: asyncio.Event | None = None
 
 
 class ToolLoopBackend(ChatAgentBackend):
@@ -255,17 +303,34 @@ class ToolLoopBackend(ChatAgentBackend):
         self._provider = _build_provider(
             config, _build_system_prompt(cloud_logs_available)
         )
+        # Also backend-wide, not per session, for the same reason as
+        # self._provider above: build_dashboard_tools() is a pure function
+        # of config — every session would otherwise reconstruct the same
+        # ToolSpecs (same descriptions, same JSON schemas) from scratch.
+        self._dashboard_tools = build_dashboard_tools(config)
 
-    async def _get_or_create_session(self, session_id: str) -> _Session:
-        async with self._lock:
-            await self._evict_idle_sessions_locked()
-            session = self._sessions.get(session_id)
-            if session is not None:
-                session.last_used = time.monotonic()
-                return session
+    async def _run_session_owner(
+        self,
+        ready_event: asyncio.Event,
+        close_event: asyncio.Event,
+        holder: dict,
+    ) -> None:
+        """Owns the gbmcp subprocess's AsyncExitStack for the whole life of
+        one session, entirely within this one task.
 
-            stack = AsyncExitStack()
-            try:
+        stdio_client/ClientSession are anyio-based, and anyio cancel scopes
+        can only be exited by the exact task that entered them — a task that
+        has already returned (as _get_or_create_session's caller task does,
+        long before the session itself is done) can never validly close them
+        again, from any task, including its own former one. So instead of
+        entering the stack in a request task and trying to close it later
+        from a different request task (which raised and leaked the gbmcp
+        subprocess), this task enters the stack, publishes the constructed
+        _Session via `holder`, then blocks on `close_event` until told to
+        shut down — and closes the stack itself, right here, when it does.
+        """
+        try:
+            async with AsyncExitStack() as stack:
                 params = StdioServerParameters(
                     command=_resolve_gbmcp_bin(),
                     args=[],
@@ -279,44 +344,84 @@ class ToolLoopBackend(ChatAgentBackend):
 
                 event_queue: "asyncio.Queue[NormalizedEvent]" = asyncio.Queue()
                 pending_confirmations: dict[str, dict] = {}
+                listed_tools = (await mcp_session.list_tools()).tools
                 tools = (
-                    await build_gbmcp_tools(mcp_session)
-                    + await build_confirmable_gbmcp_tools(
-                        mcp_session, event_queue, pending_confirmations
+                    build_gbmcp_tools(mcp_session, listed_tools)
+                    + build_confirmable_gbmcp_tools(
+                        listed_tools, event_queue, pending_confirmations
                     )
                     + [build_navigation_tool(event_queue)]
-                    + build_dashboard_tools(self._config)
+                    + self._dashboard_tools
                 )
-            except Exception:
-                await stack.aclose()
-                raise
 
-            session = _Session(
-                stack=stack,
-                mcp_session=mcp_session,
-                tools=tools,
-                event_queue=event_queue,
-                pending_confirmations=pending_confirmations,
+                holder["session"] = _Session(
+                    mcp_session=mcp_session,
+                    tools=tools,
+                    event_queue=event_queue,
+                    pending_confirmations=pending_confirmations,
+                )
+                ready_event.set()
+                await close_event.wait()
+        except Exception as exc:  # noqa: BLE001 - surfaced to the waiting caller
+            holder["error"] = exc
+            ready_event.set()
+
+    async def _get_or_create_session(self, session_id: str) -> _Session:
+        async with self._lock:
+            await self._evict_idle_sessions_locked()
+            session = self._sessions.get(session_id)
+            if session is not None:
+                session.last_used = time.monotonic()
+                return session
+
+            if len(self._sessions) >= MAX_SESSIONS:
+                raise RuntimeError(
+                    "Too many concurrent chat sessions — please try again shortly."
+                )
+
+            ready_event = asyncio.Event()
+            close_event = asyncio.Event()
+            holder: dict = {}
+            owner_task = asyncio.create_task(
+                self._run_session_owner(ready_event, close_event, holder)
             )
+            await ready_event.wait()
+            if "error" in holder:
+                raise holder["error"]
+
+            session = holder["session"]
+            session.owner_task = owner_task
+            session.close_event = close_event
             self._sessions[session_id] = session
             return session
 
     async def _evict_idle_sessions_locked(self) -> None:
-        """Caller must hold self._lock."""
+        """Caller must hold self._lock. Never evicts a session with an
+        in-flight turn: turn_lock is held for that turn's full duration
+        (including any long-running tool call), so it's a more accurate
+        liveness signal than last_used's staleness — without this check, a
+        turn running longer than IDLE_EVICTION_SECONDS could have its
+        session (and gbmcp subprocess) torn down by a concurrent request out
+        from under it."""
         now = time.monotonic()
         stale_ids = [
             sid
             for sid, s in self._sessions.items()
-            if now - s.last_used > IDLE_EVICTION_SECONDS
+            if not s.turn_lock.locked() and now - s.last_used > IDLE_EVICTION_SECONDS
         ]
         for sid in stale_ids:
             session = self._sessions.pop(sid)
-            try:
-                await session.stack.aclose()
-            except (
-                Exception
-            ):  # noqa: BLE001 - best-effort cleanup of an idle subprocess
-                logger.exception("Error closing idle chat session %s", sid)
+            await self._close_session_owner(sid, session)
+
+    async def _close_session_owner(self, session_id: str, session: _Session) -> None:
+        """Signals the session's owner task to exit — see
+        _run_session_owner()'s docstring for why only that task may close
+        the stack — and waits for it to actually finish."""
+        session.close_event.set()
+        try:
+            await asyncio.wait_for(session.owner_task, timeout=10)
+        except Exception:  # noqa: BLE001 - best-effort cleanup of a chat session
+            logger.exception("Error closing chat session %s", session_id)
 
     async def create_session(self, session_id: str) -> None:
         await self._get_or_create_session(session_id)
@@ -332,7 +437,7 @@ class ToolLoopBackend(ChatAgentBackend):
         async with self._lock:
             session = self._sessions.pop(session_id, None)
         if session is not None:
-            await session.stack.aclose()
+            await self._close_session_owner(session_id, session)
 
     async def interrupt_session(self, session_id: str) -> bool:
         async with self._lock:
@@ -350,15 +455,20 @@ class ToolLoopBackend(ChatAgentBackend):
         if session is None:
             return {"found": False}
 
-        pending = session.pending_confirmations.pop(confirmation_id, None)
-        if pending is None:
-            return {"found": False}
-        action = pending["action"]
-
         # Same lock stream_turn() holds for the duration of a turn — without
         # it, a confirm click racing an in-flight turn could interleave this
-        # method's history.append() with the turn's own appends.
+        # method's history.append() with the turn's own appends. The pop
+        # happens only after acquiring it (not before) so that if the
+        # in-flight turn this waits on ends up rolling back — discarding any
+        # confirmation it proposed, since its history entry no longer exists
+        # — this sees the entry already gone instead of racing ahead of that
+        # cleanup and executing a real gbmcp call for a proposal history no
+        # longer records.
         async with session.turn_lock:
+            pending = session.pending_confirmations.pop(confirmation_id, None)
+            if pending is None:
+                return {"found": False}
+            action = pending["action"]
             session.last_used = time.monotonic()
 
             if not approved:
@@ -429,6 +539,8 @@ class ToolLoopBackend(ChatAgentBackend):
         # whichever turn is currently running.
         async with session.turn_lock:
             session.interrupt_event.clear()
+            original_length = len(session.history)
+            confirmation_ids_before = set(session.pending_confirmations)
             try:
                 async for event in self._provider.run_turn(
                     session.history,
@@ -443,3 +555,19 @@ class ToolLoopBackend(ChatAgentBackend):
                 logger.exception("Error streaming chat turn for session %s", session_id)
                 yield {"type": "error", "message": str(exc)}
                 yield {"type": "done"}
+            finally:
+                # A provider rolls history back to original_length on
+                # MAX_TOOL_ROUNDS/InterruptedError/Exception — see e.g.
+                # AnthropicProvider.run_turn's `del history[original_length:]`
+                # sites. When that happened, any confirmation this turn
+                # proposed no longer has a matching history entry, so it
+                # must not survive to be approved later against a session
+                # that has no record it was ever proposed. Keyed on length
+                # rather than a raised exception because two of the three
+                # rollback paths (MAX_TOOL_ROUNDS, InterruptedError) return
+                # normally rather than raising here.
+                if len(session.history) == original_length:
+                    for cid in (
+                        set(session.pending_confirmations) - confirmation_ids_before
+                    ):
+                        session.pending_confirmations.pop(cid, None)

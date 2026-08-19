@@ -33,6 +33,7 @@ Covers three layers:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 import pytest
@@ -185,6 +186,9 @@ class _FakeMcpSession:
     async def initialize(self):
         pass
 
+    async def list_tools(self):
+        return SimpleNamespace(tools=[])
+
 
 @pytest.fixture
 def backend(monkeypatch):
@@ -198,10 +202,10 @@ def backend(monkeypatch):
     )
     monkeypatch.setattr(tool_loop_backend, "ClientSession", _FakeMcpSession)
 
-    async def _fake_build_gbmcp_tools(_session):
+    def _fake_build_gbmcp_tools(_mcp_session, _listed_tools):
         return []
 
-    async def _fake_build_confirmable_gbmcp_tools(_session, _event_queue, _pending):
+    def _fake_build_confirmable_gbmcp_tools(_listed_tools, _event_queue, _pending):
         return []
 
     monkeypatch.setattr(tool_loop_backend, "build_gbmcp_tools", _fake_build_gbmcp_tools)
@@ -278,6 +282,35 @@ class TestSessionIsolation:
         session_b = backend._sessions["session-b"]
         assert session_a.tools is not session_b.tools
         assert session_a.history is not session_b.history
+
+    async def test_dashboard_tools_are_built_once_and_shared_across_sessions(
+        self, backend
+    ):
+        """build_dashboard_tools() is a pure function of config — every
+        session used to reconstruct the same ToolSpecs from scratch instead
+        of reusing one backend-wide list the way self._provider already
+        is. Each session's own `tools` list is still a distinct list object
+        (asserted above) — what must be shared is the dashboard ToolSpec
+        instances within it, not the list holding them."""
+        async for _ in backend.stream_turn("session-a", "hello", None, None):
+            pass
+        async for _ in backend.stream_turn("session-b", "hello", None, None):
+            pass
+
+        session_a = backend._sessions["session-a"]
+        session_b = backend._sessions["session-b"]
+        dashboard_tool_names = {t.name for t in backend._dashboard_tools}
+
+        def _dashboard_tools_in(tools):
+            return [t for t in tools if t.name in dashboard_tool_names]
+
+        assert dashboard_tool_names  # sanity: there are some to compare
+        assert _dashboard_tools_in(session_a.tools) == backend._dashboard_tools
+        assert _dashboard_tools_in(session_b.tools) == backend._dashboard_tools
+        for tool_a, tool_b in zip(
+            _dashboard_tools_in(session_a.tools), _dashboard_tools_in(session_b.tools)
+        ):
+            assert tool_a is tool_b  # the exact same ToolSpec instance, not a rebuild
 
     async def test_overlapping_calls_for_the_same_session_are_serialized_not_interleaved(
         self, backend

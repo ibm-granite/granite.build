@@ -16,6 +16,24 @@ from gbcommon.types.gbenvconfig import parse_boolean
 ANALYTICS_DB_FILENAME = "dashboard-analytics.db"
 
 
+def has_anthropic_chat_config() -> bool:
+    # ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are deliberately not GB_UI_-
+    # prefixed — they're the standard Anthropic SDK credentials, read
+    # directly from os.environ by the `anthropic` package itself. Either one
+    # authenticates (API key for the direct Anthropic API, auth token for an
+    # internal gateway/proxy). Shared by Config.chat_enabled and
+    # tool_loop_backend.py's _build_provider() — both need the identical
+    # check, one to report whether chat is configured at all, the other to
+    # actually gate which provider gets constructed.
+    return bool(os.environ.get("ANTHROPIC_API_KEY")) or bool(
+        os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    )
+
+
+def has_openai_compat_chat_config(config: "Config") -> bool:
+    return bool(config.resolved_chat_llm_base_url and config.resolved_chat_llm_api_key)
+
+
 class Config(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="GB_UI_",
@@ -112,6 +130,34 @@ class Config(BaseSettings):
     chat_llm_base_url: str = Field(default="")
     chat_llm_api_key: str = Field(default="")
 
+    # Explicit provider selection — see tool_loop_backend.py's _build_provider().
+    # None (unset/blank) auto-detects: the OpenAI-compatible endpoint wins if
+    # configured (the natural default for a self-hosted deployment — no
+    # external API key, no request data leaving it), falling back to
+    # Anthropic only if that's all that's configured. Setting this always
+    # overrides auto-detection, and errors loudly if the selected provider's
+    # own credentials aren't actually configured, rather than silently
+    # falling through to the other one.
+    chat_provider: str | None = Field(
+        default=None,
+        description="'openai_compatible' or 'anthropic' — overrides auto-detection when both are configured.",
+    )
+
+    @field_validator("chat_provider", mode="before")
+    @classmethod
+    def _parse_chat_provider(cls, v: object) -> object:
+        if isinstance(v, str):
+            if v.strip() == "":
+                return (
+                    None  # blank/unset k8s ConfigMap idiom — fall back to auto-detect
+                )
+            if v.strip() not in ("openai_compatible", "anthropic"):
+                raise ValueError(
+                    f"GB_UI_CHAT_PROVIDER must be 'openai_compatible' or 'anthropic', got {v!r}"
+                )
+            return v.strip()
+        return v
+
     # Master on/off for the whole analytics subsystem, read from GB_UI_ANALYTICS_ENABLED.
     # Tri-state: None (unset) → auto-detect off the presence of compiled UI assets
     # (see analytics_is_enabled); explicit true/false wins. Lets a deployed, API-only
@@ -154,21 +200,12 @@ class Config(BaseSettings):
 
     @property
     def chat_enabled(self) -> bool:
-        # ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are deliberately not GB_UI_-
-        # prefixed — they're the standard Anthropic SDK credentials, read
-        # directly from os.environ by the `anthropic` package itself. Either
-        # one authenticates (API key for the direct Anthropic API, auth token
-        # for an internal gateway/proxy). If neither is set, any configured
+        # If neither Anthropic credential is set, any configured
         # OpenAI-compatible endpoint (RITS, Ollama, ...) also enables chat —
-        # see tool_loop_backend.py's provider-selection precedence (Anthropic
-        # wins if both are configured).
-        has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY")) or bool(
-            os.environ.get("ANTHROPIC_AUTH_TOKEN")
-        )
-        has_openai_compat = bool(
-            self.resolved_chat_llm_base_url and self.resolved_chat_llm_api_key
-        )
-        return has_anthropic or has_openai_compat
+        # see tool_loop_backend.py's _build_provider() for the actual
+        # provider-selection precedence (GB_UI_CHAT_PROVIDER if set, else
+        # OpenAI-compatible wins auto-detection, falling back to Anthropic).
+        return has_anthropic_chat_config() or has_openai_compat_chat_config(self)
 
 
 class GitHubConfig(BaseSettings):

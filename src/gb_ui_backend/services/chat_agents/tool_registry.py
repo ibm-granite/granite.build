@@ -13,6 +13,8 @@ blocked after the fact.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol
@@ -30,6 +32,17 @@ from gb_ui_backend.services.chat_agents.ui_actions import (
     NAVIGABLE_ROUTES,
     build_navigation_route,
 )
+
+logger = logging.getLogger(__name__)
+
+# Shared by every ModelProvider (anthropic_provider.py, openai_compat_
+# provider.py) — previously each declared its own identical copy of both,
+# risking one getting tuned and the other silently left behind.
+# MAX_TOOL_ROUNDS: safety net against a runaway tool-calling loop (e.g. the
+# model repeatedly mis-calling a tool) — well above any legitimate
+# multi-step investigation.
+MAX_TOOL_ROUNDS = 12
+MAX_TOKENS = 4096
 
 ToolHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
@@ -92,6 +105,103 @@ async def race_interrupt(coro: Awaitable[Any], interrupt_event: asyncio.Event) -
                 t.cancel()
 
 
+def drain_and_discard_events(event_queue: "asyncio.Queue[NormalizedEvent]") -> None:
+    """Called by a provider's run_turn when rolling history back — a
+    confirmable/navigation tool's handler may have already put a
+    confirm_action/ui_action event on the queue for a turn that's now being
+    erased, and this must not survive to be drained (and yielded, out of
+    context) by a later, unrelated turn. Discards rather than yields: a
+    generator can't safely yield again from an exception handler that's
+    mid-GeneratorExit, and the event describes a proposal history no longer
+    records anyway, so there's nothing left to show the user for it."""
+    while not event_queue.empty():
+        event_queue.get_nowait()
+
+
+async def run_tool_loop(
+    history: list[Any],
+    event_queue: "asyncio.Queue[NormalizedEvent]",
+    original_length: int,
+    run_one_round: Callable[[dict[str, Any]], Any],
+    provider_label: str,
+) -> Any:  # AsyncIterator[NormalizedEvent]
+    """Drives the round-by-round loop, rollback, and cleanup shared by every
+    ModelProvider — previously ~40-50 near-identical lines duplicated
+    between anthropic_provider.py and openai_compat_provider.py, with only
+    wire-format conversion actually differing between them. That
+    provider-specific part (extracting text/tool-calls from one model
+    response, dispatching tool calls, appending the result back onto
+    history in that provider's own shape) is `run_one_round` — an async
+    generator function taking a mutable `outcome` dict, yielding
+    NormalizedEvents for this round, and before finishing setting
+    outcome["status"] to:
+      - "continue": more tool-calling rounds needed
+      - "done": a natural end to the turn (e.g. no further tool calls)
+      - "empty": the model returned nothing usable at all — rolls back and
+        yields outcome.get("message", ...) as an error, same as exhausting
+        MAX_TOOL_ROUNDS below
+
+    `original_length` must be the history length from *before* this turn's
+    user message was appended, snapshotted synchronously by the caller —
+    not computed in here. This function is an async generator, so nothing
+    in its body runs until the caller's first `async for`/`asend()`; by
+    then, run_turn()'s own synchronous prefix (appending the user message,
+    and for OpenAI-compat, possibly a bootstrap system message first) has
+    already run. Snapshotting `len(history)` in here would capture a
+    length that already includes this turn's own user message, and rolling
+    back to it on error/interrupt would leave that message behind instead
+    of truly restoring pre-turn state.
+    """
+    try:
+        for _ in range(MAX_TOOL_ROUNDS):
+            outcome: dict[str, Any] = {"status": "continue"}
+            async for event in run_one_round(outcome):
+                yield event
+
+            if outcome["status"] == "done":
+                return
+            if outcome["status"] == "empty":
+                del history[original_length:]
+                drain_and_discard_events(event_queue)
+                yield {
+                    "type": "error",
+                    "message": outcome.get(
+                        "message",
+                        "Model returned an empty response with no content or tool calls.",
+                    ),
+                }
+                return
+
+        logger.warning(
+            "%s tool-calling loop hit MAX_TOOL_ROUNDS=%d without finishing",
+            provider_label,
+            MAX_TOOL_ROUNDS,
+        )
+        # Roll back before yielding the error — otherwise history ends in a
+        # dangling assistant tool-call entry with no matching result, which
+        # every provider's API rejects on the session's next turn.
+        del history[original_length:]
+        drain_and_discard_events(event_queue)
+        yield {
+            "type": "error",
+            "message": f"Stopped after {MAX_TOOL_ROUNDS} tool-calling rounds without a final answer.",
+        }
+    except InterruptedError:
+        del history[original_length:]
+        drain_and_discard_events(event_queue)
+        return
+    except BaseException:
+        # BaseException, not Exception: a client disconnect cancels this
+        # turn's task with asyncio.CancelledError, which is a BaseException
+        # subclass, not an Exception subclass — narrower coverage here
+        # would let cancellation skip the rollback, leaving a dangling
+        # tool-call entry for the life of the session. Same corruption risk
+        # applies to a network error, malformed response, etc. mid-turn.
+        del history[original_length:]
+        drain_and_discard_events(event_queue)
+        raise
+
+
 def _extract_mcp_result_text(result: Any) -> str:
     """Shared by the direct gbmcp handler and confirm_action()'s
     execute-on-approve path — both need the same text-content-blocks-joined
@@ -116,8 +226,13 @@ def _mcp_tool_handler(mcp_session: ClientSession, tool_name: str) -> ToolHandler
     return handler
 
 
-async def build_gbmcp_tools(mcp_session: ClientSession) -> list[ToolSpec]:
-    listed = await mcp_session.list_tools()
+def build_gbmcp_tools(
+    mcp_session: ClientSession, listed_tools: list[Any]
+) -> list[ToolSpec]:
+    """`listed_tools` is `(await mcp_session.list_tools()).tools` — fetched
+    once by the caller and shared with build_confirmable_gbmcp_tools()
+    rather than each independently calling list_tools() (a second real
+    round trip to the gbmcp subprocess for the identical listing)."""
     return [
         ToolSpec(
             name=tool.name,
@@ -125,7 +240,7 @@ async def build_gbmcp_tools(mcp_session: ClientSession) -> list[ToolSpec]:
             parameters=tool.inputSchema or {"type": "object", "properties": {}},
             handler=_mcp_tool_handler(mcp_session, tool.name),
         )
-        for tool in listed.tools
+        for tool in listed_tools
         if tool.name in ALLOWED_GBMCP_TOOLS
     ]
 
@@ -161,19 +276,20 @@ def _confirmable_tool_handler(
     return handler
 
 
-async def build_confirmable_gbmcp_tools(
-    mcp_session: ClientSession,
+def build_confirmable_gbmcp_tools(
+    listed_tools: list[Any],
     event_queue: "asyncio.Queue[NormalizedEvent]",
     pending: dict[str, dict[str, Any]],
 ) -> list[ToolSpec]:
     """Tools the model can call, but which only ever propose the action —
     see gbmcp_policy.py's module docstring and
     ToolLoopBackend.confirm_action() for the execute-on-approve half of
-    this. Reuses the exact same live mcp_session.list_tools() discovery as
-    build_gbmcp_tools(), so the model sees gbmcp's real schema for these
-    (e.g. build_start's file_content/space/params/tags/description) —
-    nothing hand-maintained to drift out of sync."""
-    listed = await mcp_session.list_tools()
+    this. `listed_tools` is the same `(await mcp_session.list_tools()).tools`
+    passed to build_gbmcp_tools() — one real round trip to the gbmcp
+    subprocess shared by both, not two independent ones for the identical
+    listing — so the model still sees gbmcp's real schema for these (e.g.
+    build_start's file_content/space/params/tags/description) with nothing
+    hand-maintained to drift out of sync."""
     return [
         ToolSpec(
             name=tool.name,
@@ -186,7 +302,7 @@ async def build_confirmable_gbmcp_tools(
             parameters=tool.inputSchema or {"type": "object", "properties": {}},
             handler=_confirmable_tool_handler(tool.name, event_queue, pending),
         )
-        for tool in listed.tools
+        for tool in listed_tools
         if tool.name in CONFIRMABLE_GBMCP_TOOLS
     ]
 
@@ -243,7 +359,7 @@ def _wrap(
     async def handler(args: dict[str, Any]) -> Any:
         try:
             result = fn(**args)
-            return await result if hasattr(result, "__await__") else result
+            return await result if inspect.isawaitable(result) else result
         except dashboard_tools.DashboardToolError as exc:
             raise RuntimeError(str(exc)) from exc
 

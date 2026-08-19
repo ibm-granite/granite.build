@@ -34,7 +34,7 @@ import pytest
 from gb_ui_backend.services.chat_agents.providers.openai_compat_provider import (
     OpenAICompatProvider,
 )
-from gb_ui_backend.services.chat_agents.tool_registry import ToolSpec
+from gb_ui_backend.services.chat_agents.tool_registry import MAX_TOOL_ROUNDS, ToolSpec
 
 
 def _make_provider() -> OpenAICompatProvider:
@@ -176,6 +176,125 @@ class TestInterruptRollsBackHistory:
             "content": "Unknown tool '<missing tool name>'",
         } in history
 
+    async def test_already_parsed_dict_arguments_are_used_directly(self, monkeypatch):
+        """Some OpenAI-compatible endpoints return `function.arguments`
+        already parsed as an object rather than a JSON string —
+        json.loads(dict) raises TypeError, which used to escape this
+        handler and roll back the whole turn instead of just using the
+        dict as-is."""
+        provider = _make_provider()
+        call_count = 0
+        received_args = None
+
+        async def fake_chat_completion(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "function": {
+                                            "name": "build_status",
+                                            "arguments": {"build_id": "abc123"},
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+
+        monkeypatch.setattr(provider._client, "chat_completion", fake_chat_completion)
+
+        async def handler(args):
+            nonlocal received_args
+            received_args = args
+            return "ok"
+
+        tool = ToolSpec(
+            name="build_status", description="", parameters={}, handler=handler
+        )
+
+        history: list = []
+        events = [
+            e
+            async for e in provider.run_turn(
+                history, [tool], "hello", asyncio.Queue(), asyncio.Event()
+            )
+        ]
+
+        assert received_args == {"build_id": "abc123"}
+        assert events == [
+            {
+                "type": "tool_call",
+                "tool_name": "build_status",
+                "tool_input": {"build_id": "abc123"},
+            },
+            {"type": "text_delta", "text": "done"},
+        ]
+
+    async def test_non_dict_non_string_arguments_degrade_to_a_clean_tool_error(
+        self, monkeypatch
+    ):
+        """Neither a JSON string nor an object — e.g. `null` explicitly
+        sent as arguments — must still degrade to a tool error rather than
+        raising TypeError out of the handler."""
+        provider = _make_provider()
+        call_count = 0
+
+        async def fake_chat_completion(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "function": {
+                                            "name": "build_status",
+                                            "arguments": 12345,
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+
+        monkeypatch.setattr(provider._client, "chat_completion", fake_chat_completion)
+
+        history: list = []
+        events = [
+            e
+            async for e in provider.run_turn(
+                history, [], "hello", asyncio.Queue(), asyncio.Event()
+            )
+        ]
+
+        assert events == [
+            {"type": "tool_call", "tool_name": "build_status", "tool_input": {}},
+            {"type": "text_delta", "text": "done"},
+        ]
+        assert any(
+            m.get("role") == "tool"
+            and m.get("tool_call_id") == "call_1"
+            and "Invalid JSON arguments" in m.get("content", "")
+            for m in history
+        )
+
     async def test_invalid_json_arguments_still_yields_a_tool_call_event(
         self, monkeypatch
     ):
@@ -234,3 +353,205 @@ class TestInterruptRollsBackHistory:
             and "Invalid JSON arguments" in m.get("content", "")
             for m in history
         )
+
+
+@pytest.mark.asyncio
+class TestMaxToolRoundsRollsBackHistory:
+    """Code-review finding: exhausting MAX_TOOL_ROUNDS used to yield an error
+    without rolling history back, leaving it ending in an assistant
+    tool_calls message with no matching tool result — the next stream_turn()
+    on the same session would then send a request most OpenAI-compatible
+    endpoints reject."""
+
+    async def test_exhausting_max_rounds_rolls_back_history(self, monkeypatch):
+        provider = _make_provider()
+
+        async def always_tool_call(**kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "loop_tool",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(provider._client, "chat_completion", always_tool_call)
+
+        async def handler(args):
+            return "ok"
+
+        tool = ToolSpec(
+            name="loop_tool", description="", parameters={}, handler=handler
+        )
+
+        history: list = []
+        events = [
+            e
+            async for e in provider.run_turn(
+                history, [tool], "hello", asyncio.Queue(), asyncio.Event()
+            )
+        ]
+
+        assert events[-1] == {
+            "type": "error",
+            "message": f"Stopped after {MAX_TOOL_ROUNDS} tool-calling rounds without a final answer.",
+        }
+        # Only the bootstrap system message survives — no dangling assistant
+        # tool_calls entry left behind for the next turn to choke on.
+        assert history == [{"role": "system", "content": "sys"}]
+
+
+@pytest.mark.asyncio
+class TestNonInterruptExceptionRollsBackHistory:
+    """Code-review finding: run_turn only rolled history back on
+    InterruptedError. A network error/malformed response mid-turn left the
+    partially-appended turn in history, corrupting every later turn in the
+    session until eviction."""
+
+    async def test_model_call_exception_rolls_back_history_and_propagates(
+        self, monkeypatch
+    ):
+        provider = _make_provider()
+
+        async def failing_chat_completion(**kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(
+            provider._client, "chat_completion", failing_chat_completion
+        )
+
+        history: list = []
+        with pytest.raises(RuntimeError, match="boom"):
+            async for _ in provider.run_turn(
+                history, [], "hello", asyncio.Queue(), asyncio.Event()
+            ):
+                pass
+
+        assert history == [{"role": "system", "content": "sys"}]
+
+    async def test_a_stale_queued_event_from_the_rolled_back_turn_is_discarded(
+        self, monkeypatch
+    ):
+        """A confirmable tool's handler puts a confirm_action event on
+        event_queue before a later round fails — that event must not
+        survive to be drained by a later, unrelated turn once this turn's
+        history is erased."""
+        provider = _make_provider()
+        call_count = 0
+
+        async def propose_then_fail(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "function": {
+                                            "name": "confirmable_tool",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(provider._client, "chat_completion", propose_then_fail)
+
+        event_queue: asyncio.Queue = asyncio.Queue()
+
+        async def handler(args):
+            await event_queue.put({"type": "confirm_action", "confirmation_id": "c1"})
+            return "proposed"
+
+        tool = ToolSpec(
+            name="confirmable_tool", description="", parameters={}, handler=handler
+        )
+
+        history: list = []
+        with pytest.raises(RuntimeError, match="boom"):
+            async for _ in provider.run_turn(
+                history, [tool], "hello", event_queue, asyncio.Event()
+            ):
+                pass
+
+        assert history == [{"role": "system", "content": "sys"}]
+        assert event_queue.empty()
+
+    async def test_cancellation_still_rolls_back_history_and_propagates(
+        self, monkeypatch
+    ):
+        """asyncio.CancelledError is a BaseException, not an Exception
+        subclass — narrower `except Exception` coverage here used to let a
+        client-disconnect cancellation skip the rollback, corrupting history
+        for the rest of the session."""
+        provider = _make_provider()
+
+        async def cancelled_chat_completion(**kwargs):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(
+            provider._client, "chat_completion", cancelled_chat_completion
+        )
+
+        history: list = []
+        with pytest.raises(asyncio.CancelledError):
+            async for _ in provider.run_turn(
+                history, [], "hello", asyncio.Queue(), asyncio.Event()
+            ):
+                pass
+
+        assert history == [{"role": "system", "content": "sys"}]
+
+
+@pytest.mark.asyncio
+class TestEmptyResponseGuard:
+    """Code-review finding: an assistant message with neither content nor
+    tool_calls (some endpoints do this on a stop/refusal) used to silently
+    end the turn with nothing shown to the user."""
+
+    async def test_no_content_and_no_tool_calls_yields_error_and_rolls_back(
+        self, monkeypatch
+    ):
+        provider = _make_provider()
+
+        async def empty_response(**kwargs):
+            return {"choices": [{"message": {"role": "assistant", "content": None}}]}
+
+        monkeypatch.setattr(provider._client, "chat_completion", empty_response)
+
+        history: list = []
+        events = [
+            e
+            async for e in provider.run_turn(
+                history, [], "hello", asyncio.Queue(), asyncio.Event()
+            )
+        ]
+
+        assert events == [
+            {
+                "type": "error",
+                "message": "Model returned an empty response with no content or tool calls.",
+            }
+        ]
+        assert history == [{"role": "system", "content": "sys"}]
