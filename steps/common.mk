@@ -229,7 +229,7 @@ help:
 	@echo
 	@echo "Targets:"
 	@echo "  space          render step.yaml + a space.yaml into the Space $(SPACE_DIR)/ (offline)"
-	@echo "  publish-step   render the step into the assets tree + copy build tests into test/steps/ (not in all; image steps: image must be published first, override with PUBLISH_REQUIRE_IMAGE=false)"
+	@echo "  publish-step   render the step into the assets tree (+ USAGE.md as README.md) + copy build tests into test/steps/ (not in all; image steps: image must be published first, override with PUBLISH_REQUIRE_IMAGE=false)"
 	@echo "  check-published  re-render to a temp dir and diff against the committed artifacts; exit 1 on drift"
 	@echo "  image          build the image from $(DOCKERFILE) for $(PLATFORM)  (no-op when no Dockerfile is present)"
 	@echo "  publish-image  push the image to the registry                 (no-op when no Dockerfile is present)"
@@ -353,8 +353,12 @@ space:
 # Promote the step into the committed assets tree and copy its build tests into
 # the repo's parallel top-level test/ <-> test-data/ trees:
 #   $(PUBLISH_STEP_DIR)/step.yaml               (+ bundled src/)   — the published step
+#   $(PUBLISH_STEP_DIR)/README.md               (from USAGE.md)    — user-facing usage doc
 #   $(PUBLISH_TEST_DIR)/<cluster>/              — per-cluster build tests (copied)
 #   $(PUBLISH_TESTDATA_DIR)/<cluster>/          — their fixtures, with space_uri rewritten
+#
+# The step's own README.md (development-oriented) is NOT published; only USAGE.md is,
+# renamed to README.md so a user browsing the released assets tree finds usage docs.
 #
 # The step's own `test/<cluster>/` nesting is flattened on copy (the inner `test`
 # segment is dropped) so the published test lands at test/steps/<name>/<env>/<cluster>/
@@ -380,6 +384,12 @@ publish-step:
 	@if [ -d "$(SRC_DIR)" ] && [ -n "$$(ls -A $(SRC_DIR) 2>/dev/null)" ]; then \
 		rm -rf "$(PUBLISH_STEP_DIR)/$(SRC_DIR)"; \
 		cp -R "$(SRC_DIR)" "$(PUBLISH_STEP_DIR)/$(SRC_DIR)"; \
+	fi
+	@if [ -f USAGE.md ]; then \
+		cp USAGE.md "$(PUBLISH_STEP_DIR)/README.md"; \
+		echo "[$(STEP_NAME)] published USAGE.md -> $(PUBLISH_STEP_DIR)/README.md"; \
+	else \
+		echo "[$(STEP_NAME)] WARNING: no USAGE.md to publish as README.md"; \
 	fi
 	@rm -rf "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"
 	@mkdir -p "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"

@@ -1,6 +1,7 @@
 # Shared monitor for the `docker_log` type (Docker environment). Referenced by
 # docker steps via `ref: space://monitors/docker`. Detects the standard
-# LLMB env:// artifact marker (with a binding payload) and streams every other
+# LLMB env:// artifact marker (with a binding payload) and the
+# LLMB_STEP_METADATA_KEY/VALUE step-metadata marker, and streams every other
 # line as a MESSAGE_EVENT.
 type: docker_log
 config:
@@ -36,6 +37,26 @@ config:
         - field_name: binding
           field_value_template: '{ "state": "{{ fields.data.state }}" }'
           is_json: true
+    # step metadata: merges <value> into the step's StoredStepRun.metadata under
+    # <key> (e.g. a git commit_hash resolved at runtime). Both fields are
+    # top-level, so they are splatted into StepMetadataUpdateEventPayload.
+    #
+    # Unlike the artifact markers above, this one is `^`-anchored: step metadata
+    # surfaces in lineage as authoritative build provenance, so it must not be
+    # injectable by arbitrary mid-stream output from cloned-repo code (e.g. a byoc
+    # command echoing a config that happens to contain the marker substring).
+    # Docker streams raw stdout (no platform prefix), so a plain `^` anchor is
+    # enough here — same posture as the bash monitor.
+    - event_type: STEP_METADATA_UPDATE_EVENT
+      line_regex: "^LLMB_STEP_METADATA_KEY:.* LLMB_STEP_METADATA_VALUE:.*"
+      is_json: false
+      event_fields:
+        - field_name: metadata_key
+          field_regex: (?<=LLMB_STEP_METADATA_KEY:)[^ ]+
+        - field_name: metadata_value
+          # Trim trailing whitespace/carriage-return (CRLF logs) so it is not folded
+          # into the value; internal spaces are preserved.
+          field_regex: '(?<=LLMB_STEP_METADATA_VALUE:).*?(?=\s*$)'
     - event_type: MESSAGE_EVENT
       line_regex: .*
       is_json: false

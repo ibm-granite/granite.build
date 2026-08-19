@@ -268,6 +268,24 @@ Anchoring `space://monitors/skypilot` "for consistency" once caused a real regre
 markers stopped matching and the job registered **zero** artifacts. If you author a new monitor,
 anchor only when the environment injects a line you must avoid matching.
 
+> **Exception — the step-metadata marker is anchored on every monitor.** Unlike the artifact
+> rules above, `LLMB_STEP_METADATA_KEY/VALUE` surfaces in lineage as *authoritative build
+> provenance* (e.g. a byoc step's resolved `commit_hash`), so it must not be injectable by
+> arbitrary mid-stream output from cloned-repo code. Bash and Docker anchor it with a plain
+> `^`; SkyPilot anchors it too but permits only its own `(name, pid=N) ` log prefix before the
+> marker (`^(\([^)]*\)\s+)?LLMB_STEP_METADATA_KEY:...`), so a marker embedded after other text
+> on the line is ignored. Do **not** un-anchor these to match the artifact rules — the trade-off
+> is deliberate. (Caveat: because SkyPilot prefixes every line, a *deliberate* clean-line echo of
+> just the marker is still indistinguishable from the scaffold's own emission; anchoring closes
+> the incidental/embedded case, which is the realistic one.)
+>
+> **ANSI is handled once, centrally — not per monitor.** SkyPilot colourises its line prefix
+> (`\x1b[36m(name, pid=N)\x1b[0m`) in retrieved logs. Rather than teach each monitor's regex to
+> skip escape codes (which would also be needed for the `^` anchor to match), `get_events_from_log_line`
+> strips all ANSI escape sequences from every log line before any rule runs. So monitor regexes —
+> in **all** environments — only ever see clean text, and captured values never absorb a stray
+> escape (e.g. a reset folded onto a commit hash). Keep ANSI handling there, not in `line_regex`.
+
 ### Gotcha: one line, one rule
 
 The engine's `get_events_from_log_line`

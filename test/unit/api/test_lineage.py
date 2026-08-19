@@ -77,6 +77,19 @@ def _graph_node(node_id: str, space_name: str, owner: str, name: str = "a-run"):
     }
 
 
+# ------------------------------------------------ shared redaction accessor
+
+
+def test_get_redacted_job_input_params():
+    """The shared accessor masks secret values, keeps non-secret data, empties absent."""
+    assert lineage_mod.get_redacted_job_input_params({}) == {}
+    assert lineage_mod.get_redacted_job_input_params({"job_input_params": None}) == {}
+    out = lineage_mod.get_redacted_job_input_params(
+        {"job_input_params": {"SECRET": "leak", "commit_hash": "abc123"}}
+    )
+    assert out == {"SECRET": "<redacted>", "commit_hash": "abc123"}
+
+
 # --------------------------------------------------------------------- search
 
 
@@ -140,7 +153,55 @@ def test_search_lineage_events_redacts_job_input_params():
         resp = lineage_mod.search_lineage_events(
             _fake_request("member", "member@example.com"), TagSearchRequest(tags=[])
         )
-    assert "SECRET" not in str(resp.runs)
+    # Redact-not-omit: the facet is retained so non-secret step data (e.g. a
+    # commit_hash) still surfaces, but any secret-named key has its VALUE masked.
+    # The key "SECRET" itself is preserved by design; only "should-not-leak" must go.
+    assert "should-not-leak" not in str(resp.runs)
+    params = resp.runs[0]["run"]["facets"]["job_input_params"]
+    assert params == {"SECRET": "<redacted>"}
+
+
+def test_search_lineage_events_redacts_step_config_and_metadata():
+    """Search redacts secret-named keys in both step config and metadata (recursively).
+
+    The whole job_input_params facet is redacted unconditionally on the read path:
+    non-secret values (uri, repo, commit_hash) surface intact, while secret-named keys
+    anywhere in the nested config/metadata have their values masked.
+    """
+    my_run = _search_run(MY_SPACE)
+    my_run["run"]["facets"]["job_input_params"] = {
+        "steps": [
+            {
+                "uri": "space://steps/byoc",
+                "config": {
+                    "byoc_config": {"repo": "https://example/r.git", "token": "sekret"}
+                },
+                "metadata": {"commit_hash": "deadbeef", "api_key": "supersecret"},
+            }
+        ]
+    }
+    fake_service = SimpleNamespace(
+        search_lineage_by_tags=lambda tags, limit, offset: (1, [my_run])
+    )
+    is_admin, is_member = _member_of(MY_SPACE)
+    with (
+        is_admin,
+        is_member,
+        patch.object(
+            lineage_mod, "_get_openlineage_service", return_value=fake_service
+        ),
+    ):
+        resp = lineage_mod.search_lineage_events(
+            _fake_request("member", "member@example.com"), TagSearchRequest(tags=[])
+        )
+    step = resp.runs[0]["run"]["facets"]["job_input_params"]["steps"][0]
+    assert step["uri"] == "space://steps/byoc"
+    # config surfaces (redacted), consistent with the by-id jobstats endpoints.
+    assert step["config"]["byoc_config"]["repo"] == "https://example/r.git"
+    assert step["config"]["byoc_config"]["token"] == "<redacted>"
+    # metadata surfaces; non-secret value kept, secret-named key masked.
+    assert step["metadata"]["commit_hash"] == "deadbeef"
+    assert step["metadata"]["api_key"] == "<redacted>"
 
 
 # ---------------------------------------------------------------- artifact graph
@@ -199,6 +260,34 @@ def test_get_artifact_graph_includes_owned_run_from_any_space():
             ArtifactGraphRequest(artifact_name="dataset-x", direction="both"),
         )
     assert len(resp.runs) == 1, "owner should see their own run regardless of space"
+
+
+def test_get_artifact_graph_redacts_job_input_params():
+    """The artifact-graph read path masks job_input_params like search does.
+
+    Both endpoints are member-readable, so redaction must be applied on each or a
+    secret the write-side missed leaks on one path but not the other. Asserts the
+    returned ArtifactRunEntry carries the masked value, not the raw secret.
+    """
+    node = _graph_node("run-mine", MY_SPACE, "someone_else@example.com")
+    node["metadata"]["job_input_params"] = {"SECRET": "should-not-leak"}
+    fake_service = SimpleNamespace(
+        get_artifact_graph=lambda **kw: _fake_graph_result([node])
+    )
+    is_admin, is_member = _member_of(MY_SPACE)
+    with (
+        is_admin,
+        is_member,
+        patch.object(
+            lineage_mod, "_get_openlineage_service", return_value=fake_service
+        ),
+    ):
+        resp = lineage_mod.get_artifact_graph(
+            _fake_request("member", "member@example.com"),
+            ArtifactGraphRequest(artifact_name="dataset-x", direction="both"),
+        )
+    assert "should-not-leak" not in str(resp.runs)
+    assert resp.runs[0].job_input_params == {"SECRET": "<redacted>"}
 
 
 def test_get_artifact_graph_excludes_run_with_no_owner_or_namespace():
