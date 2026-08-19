@@ -450,10 +450,11 @@ class LineageWatcher:
         the same way: recording stays off until it is corrected, which is the
         safe direction — the alternative is raising out of every scan.
 
-        The parsed value is made aware, keeping whatever offset it carries.
-        ``finished_at`` is written straight from a stored target, and a backend or
-        DB driver may hand that back either aware (Postgres ``timestamptz``) or
-        naive (SQLite drops the offset); filling in the local offset for a naive
+        The parsed value is made aware, keeping whatever offset it carries. The
+        checkpoint holds ``finished_at`` as a plain string inside a JSON dict, so
+        it is backend-opaque and round-trips its offset on both SQLite and
+        Postgres; every writer persists it aware-ISO, which is why the naive case
+        is defensive rather than expected. Filling in the local offset for a naive
         value is what lets the caller compare it against the targets' own
         timestamps without a ``TypeError`` from mixing awareness. Note the offset
         that gets filled in is the *local* one, so a caller testing for the
@@ -570,8 +571,8 @@ class LineageWatcher:
         ``reconcile_once``), so it is timezone-*aware* in production: it is
         stamped from ``BuildEvent.timestamp``, which defaults to
         ``get_time()`` (``datetime.now().astimezone()``) — aware *local*, not
-        UTC. ``as_aware`` only fills in an offset when one is missing (a backend
-        that drops it, e.g. SQLite), so the value persisted here is the
+        UTC. ``as_aware`` only fills in an offset when one is missing, which the
+        JSON-column read path does not produce, so the value persisted here is the
         ``gb_targets`` row's own timestamp verbatim, in the same form that table
         holds it. ``gb_targets`` is untouched by this; the checkpoint is what
         adopts its form.

@@ -170,15 +170,26 @@ def as_aware(value: datetime) -> datetime:
 
     A naive value is interpreted as **local**, not UTC. ``finished_at`` originates
     from ``utils.get_time()`` (``datetime.now().astimezone()``), which is aware
-    local; a value arriving naive has had that offset dropped by the storage
-    backend or DB driver (SQLite does, Postgres ``timestamptz`` does not), so the
-    offset to put back is the local one. Assuming UTC here would re-introduce
-    exactly the skew described above.
+    local, so the offset to put back is the local one. Assuming UTC here would
+    re-introduce exactly the skew described above.
 
-    That interpretation is only exact when the reader shares the writer's
-    offset — true for a single-timezone deployment, a best-effort guess
-    otherwise. Keeping ``finished_at`` aware at rest is what removes the guess;
-    until then this is the closest correct reading of a naive value.
+    Note where the offset *can* be lost, because it is not this path. A
+    ``StoredTargetRun`` is reconstructed from the JSON column, whose ISO string
+    carries the offset and round-trips losslessly on **both** SQLite and
+    Postgres — so ``finished_at`` arrives aware either way and the naive branch
+    below is defensive rather than routinely taken. The backend that drops an
+    offset is SQLite's typed ``DateTime(timezone=True)`` column, which stores
+    wall-clock text; that only affects the ``ORDER BY finished_at`` sort (see
+    ``select_recordable_targets``), not the value read back here.
+
+    Two caveats on the naive branch, for whoever does reach it. It is exact only
+    when the reader shares the writer's offset — true for a single-timezone
+    deployment, a best-effort guess otherwise. And ``local_tzinfo()`` reports the
+    offset in effect *now*, not the one in effect when the row was written, so
+    across a DST transition the interpreted instant shifts by an hour and a
+    target can land on the wrong side of the watermark. Keeping ``finished_at``
+    aware at rest is what removes both guesses; until then this is the closest
+    correct reading of a naive value.
     """
     if value.tzinfo is None:
         value = value.replace(tzinfo=local_tzinfo())
