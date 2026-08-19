@@ -255,8 +255,8 @@ class TestBuildWorkdir:
         self, slurm_env
     ):
         """launch_skypilot reads setup_config.skypilot.build_workdir,
-        exports GB_BUILD_WORKDIR, and prepends mkdir+cd to both the setup and
-        run scripts so step authors can use relative paths."""
+        exports GB_BUILD_WORKDIR, and prepends set -eu + mkdir+cd to both the
+        setup and run scripts so step authors can use relative paths."""
         mock_sky = _mock_sky()
 
         with (
@@ -277,7 +277,7 @@ class TestBuildWorkdir:
 
         task_kwargs = mock_sky.Task.call_args[1]
         assert task_kwargs["envs"]["GB_BUILD_WORKDIR"] == "/shared/builds/b/runs/r"
-        cd_prefix = 'mkdir -p "$GB_BUILD_WORKDIR"\ncd "$GB_BUILD_WORKDIR"\n'
+        cd_prefix = 'set -eu\nmkdir -p "$GB_BUILD_WORKDIR"\ncd "$GB_BUILD_WORKDIR"\n'
         run_script = task_kwargs["run"]
         assert run_script.startswith(cd_prefix)
         assert run_script.endswith("hostname")
@@ -288,8 +288,8 @@ class TestBuildWorkdir:
     @pytest.mark.asyncio
     async def test_launch_skypilot_skips_cd_when_workdir_unset(self, slurm_env):
         """No build_workdir in setup_config -> GB_BUILD_WORKDIR is not exported
-        and no cd is prepended, so the run script is left untouched and runs in
-        SkyPilot's default ~/sky_workdir (where relative file_mounts land)."""
+        and no cd is prepended (only the leading set -eu), so the run script runs
+        in SkyPilot's default ~/sky_workdir (where relative file_mounts land)."""
         mock_sky = _mock_sky()
 
         with (
@@ -306,7 +306,8 @@ class TestBuildWorkdir:
         task_kwargs = mock_sky.Task.call_args[1]
         envs = task_kwargs["envs"] or {}
         assert "GB_BUILD_WORKDIR" not in envs
-        assert task_kwargs["run"] == "hostname"
+        # set -eu is always prepended; no mkdir/cd is injected without a workdir.
+        assert task_kwargs["run"] == "set -eu\nhostname"
 
     @pytest.mark.asyncio
     async def test_teardown_skypilot_removes_stashed_workdir(self, slurm_env):
