@@ -83,9 +83,7 @@ def _graph_node(node_id: str, space_name: str, owner: str, name: str = "a-run"):
 def test_get_redacted_job_input_params():
     """The shared accessor masks secret values, keeps non-secret data, empties absent."""
     assert lineage_mod.get_redacted_job_input_params({}) == {}
-    assert (
-        lineage_mod.get_redacted_job_input_params({"job_input_params": None}) == {}
-    )
+    assert lineage_mod.get_redacted_job_input_params({"job_input_params": None}) == {}
     out = lineage_mod.get_redacted_job_input_params(
         {"job_input_params": {"SECRET": "leak", "commit_hash": "abc123"}}
     )
