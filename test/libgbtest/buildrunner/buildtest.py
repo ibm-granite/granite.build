@@ -210,7 +210,9 @@ class BuildTestSpecification(BaseModel):
         return v
 
     @classmethod
-    def from_yaml(cls, path: Path) -> "BuildTestSpecification":
+    def from_yaml(
+        cls, path: Path, build_yaml_override: Optional[str] = None
+    ) -> "BuildTestSpecification":
         """Construct a BuildTestSpecification from a YAML file.
 
         Path-typed fields are resolved relative to the YAML file's directory so a
@@ -239,7 +241,12 @@ class BuildTestSpecification(BaseModel):
         assert isinstance(data, dict), f"expected a dict, actual: {data}"
 
         yaml_dir = path.parent
-        data["build_yaml"] = _resolve_build_yaml(data.get("build_yaml"), yaml_dir)
+        if build_yaml_override is not None:
+            # An explicit `-f` override resolves against CWD (where gbtest was
+            # run), not the buildtest.yaml dir.
+            data["build_yaml"] = str(Path(build_yaml_override).resolve())
+        else:
+            data["build_yaml"] = _resolve_build_yaml(data.get("build_yaml"), yaml_dir)
         if data.get("space_uri") is not None:
             data["space_uri"] = _resolve_space_uri(data["space_uri"], yaml_dir)
         return cls.model_validate(data)
@@ -1501,7 +1508,8 @@ class AbstractYamlBuildRunnerTest(AbstractBuildRunnerTest):
         ``_get_yaml_spec_dir``.
         """
         return BuildTestSpecification.from_yaml(
-            self._get_yaml_spec_dir() / "buildtest.yaml"
+            self._get_yaml_spec_dir() / "buildtest.yaml",
+            build_yaml_override=getattr(self, "_build_yaml_override", None),
         )
 
     def _run_yaml_spec(self: Self, test_key: str, test_cancel: bool) -> None:
