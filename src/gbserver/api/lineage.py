@@ -67,6 +67,24 @@ def _uri_from_url(url: Optional[str]) -> Optional[str]:
         return url
 
 
+def get_redacted_job_input_params(source: dict) -> dict:
+    """Read ``job_input_params`` from a run mapping, redacted for the read path.
+
+    Both member-readable lineage read endpoints (``search_lineage_events`` and
+    ``get_artifact_graph``) must mask this facet unconditionally: the write-side
+    builder (``wandb_jobstats._build_events_for_target``) already masks secret-named
+    keys, but going through this single accessor guarantees the two paths stay
+    consistent and also protects any row persisted before that write-side masking
+    landed. Non-secret step data (e.g. a ``commit_hash``) surfaces intact;
+    ``redact_sensitive`` is idempotent, so re-masking an already-masked row is safe.
+
+    :param source: a run's facets (search path) or metadata (graph path) mapping.
+    :returns: the ``job_input_params`` mapping with secret-named values redacted,
+        or an empty dict when the key is absent/empty.
+    """
+    return redact_sensitive(source.get("job_input_params") or {})
+
+
 lineage_api = FastAPI()
 
 
@@ -225,17 +243,10 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
             )
             if not has_access:
                 continue
-            # job_input_params carries per-step config/metadata that can embed
-            # credentials. Always redact it here on the read path, unconditionally:
-            # the write-side builder (wandb_jobstats._build_events_for_target) already
-            # masks secret-named keys, so for freshly-persisted rows this runs twice —
-            # an accepted redundancy that also protects any row persisted before the
-            # write-side masking landed. redact_sensitive is idempotent, so the double
-            # pass is harmless; secret-named keys stay masked while step metadata
-            # (e.g. commit_hash) and config surface with their non-secret values intact.
-            run_facets["job_input_params"] = redact_sensitive(
-                run_facets.get("job_input_params") or {}
-            )
+            # Redact on the read path via the shared accessor (see
+            # get_redacted_job_input_params) so this and the artifact-graph path
+            # stay consistent.
+            run_facets["job_input_params"] = get_redacted_job_input_params(run_facets)
             accessible.append(result)
         backend_offset += len(page_results)
 
@@ -378,7 +389,9 @@ def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
             category=metadata.get("category") or "",
             owner=metadata.get("owner") or "",
             source_code_details=metadata.get("source_code_details") or {},
-            job_input_params=metadata.get("job_input_params") or {},
+            # Redact on the read path via the shared accessor, matching
+            # search_lineage_events above (both endpoints are member-readable).
+            job_input_params=get_redacted_job_input_params(metadata),
             execution_stats=metadata.get("execution_stats") or {},
             job_output_stats=metadata.get("job_output_stats") or {},
         )
