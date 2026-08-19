@@ -282,6 +282,25 @@ define render-step-template
 	sed "s#\$${IMAGE_REF}#$$ref#g" "$(TEMPLATE)" > "$(1)"
 endef
 
+# write-gbignore — drop a .gbignore next to the published step.yaml so the g.b
+# build process ships the listed files verbatim instead of Jinja-rendering them.
+# The .gbignore is an ADDITIVE glob list (this impl has NO gitignore-style "!"
+# negation — see utils/filesystem.py:_get_matching_ignored_files), so it must
+# enumerate what to SKIP rather than "ignore all but step.yaml": that keeps
+# step.yaml's runtime {{ ... }} rendered while sparing the docs (README.md, which
+# may show {{ ... }} examples) and the whole src/ tree (step scripts/helpers,
+# shipped as-is). The .gbignore is itself a dotfile, so the renderer's glob never
+# picks it up — its own {{ ... }} in the comment is safe. $(1) is the target dir.
+define write-gbignore
+	@printf '%s\n' \
+		'# The following allows the docs to contain {{ ... }} but be ignored by the g.b build process.' \
+		'**/*.md' \
+		'# Ship the src/ tree verbatim — do not jinja-process step scripts/helpers.' \
+		'src/**' \
+		> "$(1)/.gbignore"
+	@echo "[$(STEP_NAME)] wrote $(1)/.gbignore (skip Jinja for docs + src/)"
+endef
+
 # guard-publish-paths — fail fast before `publish-step` runs any rm -rf. The publish
 # destinations are absolute paths built from STEP_NAME/STEP_ENV; a stray empty
 # override (e.g. `make publish-step STEP_ENV=`) would collapse one to a broad path
@@ -354,11 +373,15 @@ space:
 # the repo's parallel top-level test/ <-> test-data/ trees:
 #   $(PUBLISH_STEP_DIR)/step.yaml               (+ bundled src/)   — the published step
 #   $(PUBLISH_STEP_DIR)/README.md               (from USAGE.md)    — user-facing usage doc
+#   $(PUBLISH_STEP_DIR)/.gbignore                                  — skip Jinja for **/*.md + src/
 #   $(PUBLISH_TEST_DIR)/<cluster>/              — per-cluster build tests (copied)
 #   $(PUBLISH_TESTDATA_DIR)/<cluster>/          — their fixtures, with space_uri rewritten
 #
 # The step's own README.md (development-oriented) is NOT published; only USAGE.md is,
 # renamed to README.md so a user browsing the released assets tree finds usage docs.
+# A .gbignore is written beside step.yaml so the g.b build process ships the docs
+# (**/*.md) and the src/ tree verbatim instead of Jinja-rendering them — docs may
+# contain {{ ... }} examples and src scripts must not be templated (see write-gbignore).
 #
 # The step's own `test/<cluster>/` nesting is flattened on copy (the inner `test`
 # segment is dropped) so the published test lands at test/steps/<name>/<env>/<cluster>/
@@ -391,6 +414,7 @@ publish-step:
 	else \
 		echo "[$(STEP_NAME)] WARNING: no USAGE.md to publish as README.md"; \
 	fi
+	$(call write-gbignore,$(PUBLISH_STEP_DIR))
 	@rm -rf "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"
 	@mkdir -p "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"
 	@copied=0; for d in $(TEST_DIR)/*/; do \

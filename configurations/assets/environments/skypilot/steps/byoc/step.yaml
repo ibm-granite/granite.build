@@ -11,11 +11,11 @@ config:
     # choice (rendered by Jinja from the build.yaml), not a custom image built by
     # this step's Makefile.
     image: "quay.io/fedora/fedora-minimal:42"
-    # Public git repository cloned into the build workdir during `setup`.
+    # Public git repository cloned into the step's working directory during `setup`.
     repo: ""
     # Optional branch, tag, or commit to check out after cloning.
     ref: ""
-    # Subdirectory (under the build workdir) the repo is cloned into.
+    # Subdirectory (under the step's working directory) the repo is cloned into.
     workdir: "code"
     # Command executed by `run`, from the step's working directory (the workdir
     # root — the same directory setup runs in). cd into the cloned repo yourself
@@ -42,14 +42,14 @@ environment_configs:
           # Cloud-agnostic: the build supplies cpus/memory/accelerators via
           # config.launcher_config.resources.
           resources: {}
-          # Optional helper assets shipped alongside the step. A relative dest is
-          # remapped into the per-run workdir, which is also the step's working
-          # directory, so these land at ./src.
+          # Optional helper assets shipped alongside the step. A relative dest
+          # lands at ./src, relative to the step's working directory (the same
+          # directory setup and run start in).
           file_mounts:
             src: src
-          # setup runs once at cluster bring-up: fetch the code. The launcher
-          # starts this script in the per-run workdir, so a relative CODE_DIR
-          # clones under it without the step needing to know the absolute path.
+          # setup runs once at cluster bring-up: fetch the code. setup starts in
+          # the step's working directory, so a relative CODE_DIR clones under it
+          # without the step needing to know its absolute path.
           setup: |
             set -eu
             REPO="{{ config.byoc_config.repo }}"
@@ -73,15 +73,15 @@ environment_configs:
             # fails the build, just as a failed clone does.
             SETUP_ENABLED="{{ 'yes' if config.byoc_config.setup_command else '' }}"
             if [ -n "$SETUP_ENABLED" ]; then
-              # Already in the workdir root (the launcher cd's here), so the
-              # command runs relative to it — e.g. "cd code && pip install ...".
+              # Still in setup's working directory, so the command runs relative
+              # to it — e.g. "cd code && pip install ...".
               echo "byoc: running setup_command in $(pwd)"
               {{ config.byoc_config.setup_command }}
             fi
-          # run executes the user-defined command from the workdir root — the
-          # same directory setup starts in (the launcher cd's both here). The
-          # command cd's into the cloned repo itself if it needs to; CODE_DIR is
-          # relative and file-mounted helpers are available at ./src.
+          # run executes the user-defined command from the step's working
+          # directory — the same directory setup starts in. The command cd's into
+          # the cloned repo itself if it needs to; CODE_DIR is relative and
+          # file-mounted helpers are available at ./src.
           run: |
             set -eu
             CODE_DIR="{{ config.byoc_config.workdir }}"
