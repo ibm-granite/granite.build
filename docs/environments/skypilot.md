@@ -91,9 +91,10 @@ admin provisions — gbserver does not create or mount it. When set, `shared_wor
 - is the default base for gbserver-managed caches (currently the HF asset cache);
 - is exported to every step's `run` as `GB_SHARED_WORKDIR`;
 - gets a per-target-run subdir `${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/` that is the
-  **initial CWD** of both the `setup` and `run` scripts (they fall back to `$HOME` when no
-  `shared_workdir` is configured). It is created lazily before the first step and `rm -rf`'d at
-  target-run teardown; retries get a fresh dir.
+  **initial CWD** of both the `setup` and `run` scripts (with no `shared_workdir` both phases instead
+  share SkyPilot's default `~/sky_workdir` — either way the two phases start in the same directory). It
+  is created lazily before the first step and `rm -rf`'d at target-run teardown; retries get a fresh
+  dir.
 
 When unset, gbserver-managed caches fall back to `~/.cache/gbserver/<store>` on the worker, which only
 works when consecutive steps land on the same machine. Example paths per backend: `slurm: /shared`
@@ -206,9 +207,13 @@ the step on any error, start `run` with `set -euo pipefail`.
 - **Artifacts:** emit a line matching `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>` (or
   `... LLMB_ARTIFACT_STATE:<value>` for an in-memory value) and the monitor registers it as the step's
   output binding. The marker need not be at column 0 — retrieved SkyPilot logs prefix stdout lines.
-- **Working directory:** when the env defines `shared_workdir`, both `setup` and `run` start in a
-  per-target-run workdir, so relative output paths are isolated per run; without `shared_workdir` they
-  start in `$HOME`. Prefer relative paths — steps need not know where they run.
+- **Working directory:** `setup` and `run` always start in the **same** directory, so a relative path
+  one phase writes (e.g. a repo `setup` clones) is read at the same place by the other. When the env
+  defines `shared_workdir`, that directory is a per-target-run workdir, so relative output paths are
+  isolated per run; without `shared_workdir` both phases run in SkyPilot's default `~/sky_workdir`
+  (where relative `file_mounts` also land — see [file_mounts](#file_mounts)). The shared CWD is
+  guaranteed by SkyPilot, which wraps both scripts with the same prologue that `cd`s into it. Prefer
+  relative paths — steps need not know where they run.
 
 #### `resources`
 
