@@ -32,7 +32,7 @@ import pytest
 from gbserver.lineage.lineage_reconciler import (
     UTC_MIN,
     _expected_run_count,
-    as_utc_aware,
+    as_aware,
     get_most_recent_successful_target,
     get_oldest_successful_target,
     reconcile_once,
@@ -52,7 +52,7 @@ from gbserver.types.status import Status
 
 # Aware UTC, matching what a real finished_at carries: utils.get_time() stamps
 # them with datetime.now().astimezone(). A naive value here would be read as
-# *local* (see as_utc_aware) and shift every expectation by the test machine's
+# *local* (see as_aware) and shift every expectation by the test machine's
 # UTC offset.
 _BASE = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
@@ -300,7 +300,7 @@ class TestSeedAnchors:
 
         assert checkpoint["build_id"] == "b_new"
         # The newest build's first completion, not its last.
-        assert checkpoint["finished_at"] == as_utc_aware(_BASE).isoformat()
+        assert checkpoint["finished_at"] == as_aware(_BASE).isoformat()
 
     def test_build_id_anchors_at_that_build_s_oldest_target(self):
         first = _target("b1", "t1", finished_at=_BASE)
@@ -310,7 +310,7 @@ class TestSeedAnchors:
         checkpoint = _build_checkpoint(storage, "b1")
 
         assert checkpoint["build_id"] == "b1"
-        assert checkpoint["finished_at"] == as_utc_aware(_BASE).isoformat()
+        assert checkpoint["finished_at"] == as_aware(_BASE).isoformat()
 
     def test_all_anchors_at_utc_min(self):
         checkpoint = _build_checkpoint(self._storage([]), SEED_ALL)

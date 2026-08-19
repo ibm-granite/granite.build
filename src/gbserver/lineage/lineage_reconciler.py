@@ -42,7 +42,8 @@ down is picked up on the next scan — there is no restart blind spot.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone, tzinfo
+import logging
+from datetime import datetime, timezone, tzinfo
 from typing import Callable, Iterable, Optional
 
 from gbserver.lineage.jobstats import ILineageStore
@@ -54,12 +55,12 @@ from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Aware-UTC equivalents of datetime.min/max, used as the backfill anchor and as
-# the clamp bounds. Every timestamp in the watermark comparison is aware UTC (see
-# as_utc_aware), so the bounds must be too — a naive datetime.min compared
-# against an aware instant raises TypeError.
+# Aware equivalent of datetime.min, used as the backfill anchor. Every timestamp
+# in the watermark comparison is aware (see as_aware), so the anchor must be too
+# — a naive datetime.min compared against an aware instant raises TypeError. The
+# offset is UTC only because the anchor is a sentinel with no source row of its
+# own; it compares below every real finished_at whatever their offsets.
 UTC_MIN = datetime.min.replace(tzinfo=timezone.utc)
-UTC_MAX = datetime.max.replace(tzinfo=timezone.utc)
 
 # gb_kv_pairs key under which the LineageWatcher persists its checkpoint, so a
 # restart resumes from the last successfully-recorded target instead of
@@ -144,20 +145,28 @@ def local_tzinfo() -> Optional[tzinfo]:
     """Return the local UTC offset, used to interpret naive ``finished_at`` values.
 
     Split out so the assumption has one home and the tests can pin it: a naive
-    timestamp in this data is local, not UTC (see ``as_utc_aware``).
+    timestamp in this data is local, not UTC (see ``as_aware``).
     """
     return datetime.now().astimezone().tzinfo
 
 
-def as_utc_aware(value: datetime) -> datetime:
-    """Normalize a ``finished_at`` to a timezone-aware UTC instant.
+def as_aware(value: datetime) -> datetime:
+    """Ensure a ``finished_at`` is timezone-aware, preserving its own offset.
 
-    Every timestamp is coerced to aware UTC before any comparison, so the
-    watermark walk compares *instants* rather than wall-clock readings. Mixing
-    the two is what this exists to prevent: comparing a naive and an aware
-    ``datetime`` raises ``TypeError``, and — more insidiously — treating a naive
-    local reading as UTC silently shifts it by the local offset, which can put a
-    target on the wrong side of the watermark and truncate the scan.
+    Every timestamp is made aware before any comparison, so the watermark walk
+    compares *instants* rather than wall-clock readings. Mixing the two is what
+    this exists to prevent: comparing a naive and an aware ``datetime`` raises
+    ``TypeError``, and — more insidiously — treating a naive local reading as UTC
+    silently shifts it by the local offset, which can put a target on the wrong
+    side of the watermark and truncate the scan.
+
+    The offset is deliberately *not* rewritten to UTC. Two aware datetimes
+    compare as instants regardless of their offsets, so converting buys nothing
+    for the comparison — while it does make the value written to ``gb_kv_pairs``
+    disagree textually with the ``gb_targets`` row it came from, which is exactly
+    the confusion that made the same target read three hours apart depending on
+    which table it was loaded from. Keeping the offset means the checkpoint holds
+    the target's own timestamp verbatim (see ``get_time()``, aware local).
 
     A naive value is interpreted as **local**, not UTC. ``finished_at`` originates
     from ``utils.get_time()`` (``datetime.now().astimezone()``), which is aware
@@ -183,16 +192,7 @@ def as_utc_aware(value: datetime) -> datetime:
     """
     if value.tzinfo is None:
         value = value.replace(tzinfo=local_tzinfo())
-    try:
-        return value.astimezone(timezone.utc)
-    except OverflowError:
-        # Overflow is only reachable within one UTC offset (<24h) of a bound, so
-        # the sign of the offset says which bound was crossed: a positive offset
-        # shifts backwards past datetime.min, a negative one forwards past max.
-        offset = value.utcoffset()
-        if offset is not None and offset > timedelta(0):
-            return UTC_MIN
-        return UTC_MAX
+    return value
 
 
 def select_recordable_targets(
@@ -240,7 +240,7 @@ def select_recordable_targets(
     """
     selected: list[StoredTargetRun] = []
     page_index = 0
-    cutoff = as_utc_aware(finished_after)
+    cutoff = as_aware(finished_after)
     while True:
         page = _successful_targets_page(storage, page_index, build_id=build_id)
         for target in page:
@@ -251,7 +251,26 @@ def select_recordable_targets(
                 continue
             # Sorted newest-finished-first: once we reach a target that finished
             # before the watermark, every later one is older too — stop early.
-            if as_utc_aware(target.finished_at) < cutoff:
+            if as_aware(target.finished_at) < cutoff:
+                # Log where the walk stopped and what it was holding. The early
+                # return is load-bearing *and* it is the one place a mis-sorted
+                # page silently truncates the scan: it trusts the backend's
+                # ORDER BY finished_at DESC, and a backend that does not order
+                # instants (SQLite stores these as strings, so rows with mixed
+                # UTC offsets sort by their text) can put an old row first and
+                # end the walk before any newer one is seen — reporting "nothing
+                # to process" while real targets sit unread behind it.
+                logger.debug(
+                    "Lineage SQL walk stopped at %s(%s, build %s, finished %s): "
+                    "older than the %s cutoff. Holding %d selected target(s) so "
+                    "far; rows after this one on the page were not examined.",
+                    target.name or "<unnamed>",
+                    target.uuid[:8],
+                    target.build_id,
+                    target.finished_at,
+                    cutoff,
+                    len(selected),
+                )
                 return selected
             selected.append(target)
         if len(page) < _SCAN_PAGE_SIZE:
@@ -326,6 +345,10 @@ def get_oldest_successful_target(
     oldest target.
     """
     oldest: Optional[StoredTargetRun] = None
+    # Tracked alongside `oldest` rather than re-derived from it: `finished_at` is
+    # Optional on the model, so reaching back through `oldest` to compare would
+    # need a redundant None check that the loop above has already done.
+    oldest_at: Optional[datetime] = None
     page_index = 0
     while True:
         page = _successful_targets_page(storage, page_index, build_id=build_id)
@@ -334,10 +357,9 @@ def get_oldest_successful_target(
                 continue
             # Compare as instants: finished_at may arrive aware or naive
             # depending on the backend, and mixing the two raises TypeError.
-            if oldest is None or as_utc_aware(target.finished_at) < as_utc_aware(
-                oldest.finished_at
-            ):
-                oldest = target
+            finished_at = as_aware(target.finished_at)
+            if oldest_at is None or finished_at < oldest_at:
+                oldest, oldest_at = target, finished_at
         if len(page) < _SCAN_PAGE_SIZE:
             return oldest
         page_index += 1
@@ -368,6 +390,7 @@ def reconcile_once(
     on_scan_complete: Optional[Callable[[bool], None]] = None,
     skip: Optional[set[str]] = None,
     build_id: Optional[str] = None,
+    watermark_build_id: Optional[str] = None,
 ) -> int:
     """Reconcile admin-DB lineage into the store once (the central mechanism).
 
@@ -467,6 +490,46 @@ def reconcile_once(
 
     skip = skip or set()
     by_uuid = {t.uuid: t for t in targets if t.uuid not in skip}
+    # build_id scans (the watcher's start-time checkpoint verification) always
+    # pass finished_after=UTC_MIN, since the whole point is to ignore the
+    # watermark and re-check that one build regardless of it. Printing UTC_MIN
+    # there reads as a suspiciously stuck watermark, so name the build instead
+    # of the epoch it is scanning from.
+    # The watermark alone does not say *why* the scan starts where it does. Naming
+    # the build whose target set it — the checkpoint's own build_id — makes a
+    # steady-state log line self-explanatory: the timestamp can be traced back to
+    # the row it came from instead of looking like an arbitrary epoch, which is
+    # what makes a stuck watermark recognizable as stuck.
+    if build_id is not None:
+        scope_desc = f"for build {build_id}"
+    elif watermark_build_id is not None:
+        scope_desc = (
+            f"at or after {finished_after} (watermark from build "
+            f"{watermark_build_id})"
+        )
+    else:
+        scope_desc = f"at or after {finished_after}"
+    # Dump what the SQL walk actually returned, oldest-first. The counts alone
+    # cannot distinguish the states that matter when a scan looks stuck: a query
+    # returning nothing, a query returning rows that the watermark then excluded,
+    # and rows excluded because they were permanently dropped all print as some
+    # flavour of "nothing to process". Naming each row — and whether it survived
+    # the skip set — is what makes "the same target every iteration" diagnosable
+    # instead of inferred. DEBUG, because this is per-row output on every scan.
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Lineage SQL walk %s returned %d successful target(s) with a finish "
+            "time, oldest-first: %s",
+            scope_desc,
+            len(targets),
+            ", ".join(
+                f"{t.name or '<unnamed>'}({t.uuid[:8]}, build {t.build_id}, "
+                f"finished {t.finished_at}"
+                f"{', SKIPPED as permanently dropped' if t.uuid in skip else ''})"
+                for t in targets
+            )
+            or "<none>",
+        )
     # No candidates → nothing to record and nothing to check. Skip the
     # per-sink filter_unrecorded query entirely so an idle scan (or one where
     # only the watermark-overlap boundary targets are all skipped) does not fire
@@ -477,10 +540,10 @@ def reconcile_once(
         # indistinguishable in the log.
         logger.info(
             "Lineage scan found nothing new to process (%d successful target(s) "
-            "at or after %s, %d skipped as permanently dropped); waiting for the "
+            "%s, %d skipped as permanently dropped); waiting for the "
             "next iteration.",
             len(targets),
-            finished_after,
+            scope_desc,
             len(targets) - len(by_uuid),
         )
         # A pass with nothing to do — report it so a caller anchored at
@@ -510,10 +573,10 @@ def reconcile_once(
     # all" are very different states that otherwise look the same.
     if unrecorded:
         logger.info(
-            "Lineage scan selected %d candidate target(s) at or after %s; %d "
+            "Lineage scan selected %d candidate target(s) %s; %d "
             "already recorded in the sink, recording %d: %s",
             len(by_uuid),
-            finished_after,
+            scope_desc,
             len(by_uuid) - len(unrecorded),
             len(unrecorded),
             ", ".join(
@@ -527,10 +590,10 @@ def reconcile_once(
     else:
         logger.info(
             "Lineage scan found nothing new to process: all %d candidate "
-            "target(s) at or after %s are already recorded in the sink; waiting "
+            "target(s) %s are already recorded in the sink; waiting "
             "for the next iteration.",
             len(by_uuid),
-            finished_after,
+            scope_desc,
         )
 
     newly_recorded = 0
@@ -545,7 +608,42 @@ def reconcile_once(
     # Position within the batch, so a slow or stuck pass is readable as progress
     # ("3/7") rather than as an unexplained gap between log lines.
     to_record = [t for t in targets if t.uuid in unrecorded]
-    for position, target in enumerate(to_record, start=1):
+    # Walk *every* candidate, not just the unrecorded ones, so an already-recorded
+    # target still advances the watermark past itself. Otherwise it stays inside
+    # the window forever: each scan re-selects it, asks the sink about it, and
+    # reports "already recorded" without the watermark ever clearing it — the
+    # per-scan cost is permanent and the log line is indistinguishable from a
+    # wedged watcher. Ordering is the `targets` order (oldest-first), which is
+    # what keeps the advance monotonic across the mixed set.
+    position = 0
+    # `targets` still holds the skip set; iterate the filtered candidates instead.
+    # A skipped target is NOT in the sink, so it must never advance the watermark
+    # — doing so would move it past lineage that was deliberately given up on and
+    # can no longer be re-surfaced. It is excluded here rather than treated as
+    # already-recorded (it is absent from `unrecorded` for the opposite reason).
+    for target in (t for t in targets if t.uuid in by_uuid):
+        if target.uuid not in unrecorded:
+            # Already in the sink: nothing to write, but the watermark may still
+            # move past it — subject to the same contiguity rule as a recorded
+            # one. `checkpoint_blocked` means an *earlier* target in this pass
+            # failed, so advancing past this one would strand that failure behind
+            # the watermark, where no later scan looks.
+            if target.finished_at is None:
+                # No timestamp to advance to; block rather than let a later
+                # target step over it (see the same guard below).
+                checkpoint_blocked = True
+            elif not checkpoint_blocked and on_checkpoint_advance is not None:
+                logger.debug(
+                    "Advancing the lineage watermark past already-recorded "
+                    "target %s (%s) of build %s, finished %s.",
+                    target.name or "<unnamed>",
+                    target.uuid,
+                    target.build_id,
+                    target.finished_at,
+                )
+                on_checkpoint_advance(target.build_id, target.finished_at)
+            continue
+        position += 1
         # Logged *before* the write, not only after: this is the call that reaches
         # the sink (a wandb api round-trip), so it is where a pass stalls. Logging
         # only on success would leave the target that hung invisible — the very

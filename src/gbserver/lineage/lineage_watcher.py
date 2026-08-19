@@ -26,7 +26,7 @@ from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_CHECKPOINT_KEY,
     LINEAGE_WATCHER_DROPPED_KEY,
     UTC_MIN,
-    as_utc_aware,
+    as_aware,
     reconcile_once,
 )
 from gbserver.lineage.lineage_seeding import BACKFILL_BUILD_ID
@@ -315,6 +315,14 @@ class LineageWatcher:
                 on_success=self._on_record_success,
             )
 
+        # The sweep is a once-per-checkpoint pass, so report it as done. Falling
+        # off the end here would return None, leaving `_checkpoint_verified`
+        # falsy and re-running the whole build-scoped scan on every single
+        # iteration of the monitoring loop — one wasted sink round-trip per
+        # scan, forever, plus a log line that reads like a wedged watcher
+        # stuck on the same target.
+        return True
+
     def _run(self) -> None:
         """Main monitoring loop (runs in daemon thread)."""
         while not self.stop_event.is_set():
@@ -367,20 +375,30 @@ class LineageWatcher:
         # re-surfaced instead of skipped; idempotent recording makes the overlap
         # re-reads harmless. See ``_WATERMARK_OVERLAP``.
         #
-        # Clamped at UTC_MIN: the --all backfill anchor *is* UTC_MIN, and
-        # subtracting from it raises OverflowError — which, being raised before any
-        # recording, would fail every scan forever and record nothing at all.
-        # Nothing can have finished before UTC_MIN anyway, so there is no
+        # Clamped near the low bound: the --all backfill anchor is datetime.min,
+        # and subtracting from it raises OverflowError — which, being raised
+        # before any recording, would fail every scan forever and record nothing
+        # at all. Nothing can have finished that long ago anyway, so there is no
         # boundary case for the overlap to protect there.
-        if watermark - UTC_MIN < self._WATERMARK_OVERLAP:
-            finished_after = UTC_MIN
+        #
+        # The headroom is measured against datetime.min *in the watermark's own
+        # offset*, not against UTC_MIN. Since as_aware preserves the source
+        # offset rather than rewriting it to UTC, `watermark - UTC_MIN` for a
+        # datetime.min anchor read back at, say, -03:00 is 3h — comfortably over
+        # the one-minute overlap, so the guard would wave the subtraction through
+        # and overflow anyway. Comparing within one offset keeps the question
+        # ("is there a minute of room below this value?") answerable.
+        floor = datetime.min.replace(tzinfo=watermark.tzinfo)
+        if watermark - floor < self._WATERMARK_OVERLAP:
+            finished_after = watermark
         else:
             finished_after = watermark - self._WATERMARK_OVERLAP
         # Stamped before the scan, not after: a target that finishes while the
         # scan is running must stay in scope for the next one. Retiring the
         # anchor to an after-the-fact timestamp would step over it.
-        # Aware UTC, matching every other watermark in this module (see
-        # as_utc_aware); utcnow() itself is deprecated.
+        # Aware, so it compares against the targets' own aware timestamps (see
+        # as_aware). UTC here because this is a sentinel stamped from the clock
+        # rather than a value read off a gb_targets row; utcnow() is deprecated.
         scan_started = datetime.now(timezone.utc)
         reconcile_once(
             self._store,
@@ -399,7 +417,26 @@ class LineageWatcher:
                 )
             ),
             skip=self._dropped,
+            # Log-only: names the build whose target set the watermark, so a
+            # steady-state line reads as "starting here because of that row"
+            # rather than as a bare epoch. Deliberately not used for selection —
+            # the steady-state scan is time-bounded, not build-bounded.
+            watermark_build_id=self._checkpoint_build_id(storage),
         )
+
+    def _checkpoint_build_id(self, storage: SingletonAdminStorage) -> Optional[str]:
+        """Return the checkpoint's ``build_id``, or ``None`` if unset/malformed.
+
+        Read separately from ``_checkpoint_watermark`` rather than returned
+        alongside it: this value is for the log only, so a missing or malformed
+        one must never affect whether a scan runs. Every failure mode collapses to
+        ``None``, which simply omits the build from the log line.
+        """
+        checkpoint = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+        if checkpoint is None:
+            return None
+        build_id = checkpoint.get("build_id")
+        return build_id if isinstance(build_id, str) else None
 
     def _checkpoint_watermark(
         self, storage: SingletonAdminStorage
@@ -412,20 +449,21 @@ class LineageWatcher:
         the same way: recording stays off until it is corrected, which is the
         safe direction — the alternative is raising out of every scan.
 
-        The parsed value is normalized to an aware UTC instant. ``finished_at`` is
-        written straight from a stored target, and a backend or DB driver may hand
-        that back either aware (Postgres ``timestamptz``) or naive (SQLite drops
-        the offset); normalizing both to aware UTC is what lets the caller compare
-        it against ``UTC_MIN`` and the targets' own timestamps without a
-        ``TypeError`` from mixing awareness — or, worse, a silent offset skew.
+        The parsed value is made aware, keeping whatever offset it carries.
+        ``finished_at`` is written straight from a stored target, and a backend or
+        DB driver may hand that back either aware (Postgres ``timestamptz``) or
+        naive (SQLite drops the offset); filling in the local offset for a naive
+        value is what lets the caller compare it against ``UTC_MIN`` and the
+        targets' own timestamps without a ``TypeError`` from mixing awareness.
+        The offset is not rewritten to UTC — aware values already compare as
+        instants, and rewriting made the key disagree textually with the
+        ``gb_targets`` row behind it (see ``_on_checkpoint_advance``).
 
-        ``OverflowError`` is caught alongside the parse errors because the
-        normalization itself can raise it: ``as_utc_aware`` shifts an aware value
-        to UTC, which overflows for a timestamp within the UTC offset of
-        ``datetime.min``/``datetime.max`` — e.g. the ``--base-build-id all`` anchor
-        (``datetime.min``) read back aware with a positive offset. Uncaught it
-        would escape to ``_run``'s blanket handler and fail every scan forever,
-        the same wedge this guard exists to prevent for unparseable values.
+        ``OverflowError`` is still caught alongside the parse errors: it is
+        reachable from arithmetic on an extreme parsed value (the
+        ``--base-build-id all`` anchor is ``datetime.min``). Uncaught it would
+        escape to ``_run``'s blanket handler and fail every scan forever, the same
+        wedge this guard exists to prevent for unparseable values.
         """
         checkpoint = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
         if checkpoint is None:
@@ -440,7 +478,7 @@ class LineageWatcher:
             )
             return None
         try:
-            return as_utc_aware(datetime.fromisoformat(raw))
+            return as_aware(datetime.fromisoformat(raw))
         except (TypeError, ValueError, OverflowError):
             logger.error(
                 "lineage checkpoint %s has an unparseable finished_at (%r); "
@@ -517,18 +555,28 @@ class LineageWatcher:
         ``finished_at`` arrives straight off a ``StoredTargetRun`` (see
         ``reconcile_once``), so it is timezone-*aware* in production: it is
         stamped from ``BuildEvent.timestamp``, which defaults to
-        ``get_time()`` (``datetime.now().astimezone()``). The watermark read back
-        by ``_checkpoint_watermark`` was naive UTC, so comparing the two raised
+        ``get_time()`` (``datetime.now().astimezone()``) — aware *local*, not
+        UTC. ``as_aware`` only fills in an offset when one is missing (a backend
+        that drops it, e.g. SQLite), so the value persisted here is the
+        ``gb_targets`` row's own timestamp verbatim, in the same form that table
+        holds it. ``gb_targets`` is untouched by this; the checkpoint is what
+        adopts its form.
+
+        Rewriting the offset to UTC instead would still compare correctly — aware
+        datetimes compare as instants — but it made the checkpoint disagree
+        *textually* with the row it came from, so the same target read three hours
+        apart depending on whether it was loaded from ``gb_targets`` or
+        ``gb_kv_pairs``, which is unreadable in a log and in the key itself.
+
+        Ensuring awareness is still required: the watermark read back by
+        ``_checkpoint_watermark`` was once naive, and comparing the two raised
         ``TypeError: can't compare offset-naive and offset-aware datetimes``.
-        Normalizing here is what keeps the guard from turning every real
-        deployment's checkpoint write into a spurious *recording* failure — the
-        raise happens inside ``reconcile_once``'s per-target ``try``, so it is
-        misattributed to recording (which already succeeded), blocks the
+        That raise happens inside ``reconcile_once``'s per-target ``try``, so it
+        is misattributed to recording (which already succeeded), blocks the
         checkpoint, and after ``_MAX_RECORD_ATTEMPTS`` scans lands the target in
-        the durable dropped set. It also keeps the persisted ``isoformat()``
-        consistently aware UTC, matching what the seeding path writes.
+        the durable dropped set.
         """
-        finished_at = as_utc_aware(finished_at)
+        finished_at = as_aware(finished_at)
         current = self._checkpoint_watermark(storage)
         if current is not None and finished_at <= current:
             logger.debug(

@@ -43,7 +43,7 @@ from the middle of it.
 from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_CHECKPOINT_KEY,
     UTC_MIN,
-    as_utc_aware,
+    as_aware,
     get_most_recent_successful_target,
     get_oldest_successful_target,
 )
@@ -129,16 +129,17 @@ def _build_checkpoint(storage: SingletonAdminStorage, spec: str) -> dict:
             f"No successful target with a finish time found in {scope}; "
             "nothing to anchor a checkpoint at."
         )
-    # Serialize as an aware UTC instant, the single format every writer of this
-    # key uses (see LineageWatcher._on_checkpoint_advance). `finished_at` is a
-    # DateTime(timezone=True) column, so Postgres hands it back aware while
-    # SQLite drops the offset; normalizing here means the stored string is one
-    # unambiguous instant either way, and keeping the "+00:00" makes it
-    # round-trip losslessly instead of becoming a naive value that a reader has
-    # to guess the offset of.
+    # Serialize as an aware timestamp keeping the target's own offset — the
+    # single format every writer of this key uses (see
+    # LineageWatcher._on_checkpoint_advance), and the same form the gb_targets
+    # row holds. `finished_at` is a DateTime(timezone=True) column, so Postgres
+    # hands it back aware while SQLite drops the offset; filling in the offset
+    # here means the stored string is one unambiguous instant either way and
+    # round-trips losslessly, instead of a naive value a reader has to guess the
+    # offset of.
     return {
         "build_id": target.build_id,
-        "finished_at": as_utc_aware(target.finished_at).isoformat(),
+        "finished_at": as_aware(target.finished_at).isoformat(),
     }
 
 

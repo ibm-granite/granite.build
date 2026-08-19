@@ -44,7 +44,7 @@ from gbserver.types.status import Status
 
 # Aware UTC, matching what a real finished_at carries: utils.get_time() stamps
 # them with datetime.now().astimezone(). A naive value here would be interpreted
-# as *local* (see as_utc_aware), so the expected watermarks would shift by the
+# as *local* (see as_aware), so the expected watermarks would shift by the
 # test machine's UTC offset and the suite would only pass in UTC.
 _BASE = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
@@ -238,7 +238,7 @@ class TestLineageWatcher:
 
         Regression: the checkpoint is written straight from a stored target's
         ``finished_at``, which a storage backend or DB driver may hand back
-        timezone-aware (this is why ``as_utc_aware`` exists at all). An aware
+        timezone-aware (this is why ``as_aware`` exists at all). An aware
         watermark made ``_reconcile``'s ``watermark - datetime.min`` raise
         ``TypeError: can't subtract offset-naive and offset-aware datetimes``
         before any recording, so every scan failed and nothing was ever
@@ -581,6 +581,23 @@ class TestLineageWatcherCheckpoint:
         # Already recorded: filter_unrecorded excludes it, no duplicate call.
         assert store.calls == [("b1", "t1")]
         assert _watermark(self.storage) == _BASE
+
+    def test_verify_checkpoint_reports_done_so_the_sweep_runs_once(self):
+        """The success path must return True, not fall off the end as None.
+
+        ``_reconcile`` gates the sweep on ``if not self._checkpoint_verified``
+        and stores this return value there. A None return is falsy, so the
+        build-scoped scan would re-run on every iteration of the monitoring
+        loop: a wasted sink round-trip per scan forever, and a log line that
+        repeats the checkpoint's own target endlessly, reading like a watcher
+        wedged on one target while the steady-state scan quietly makes progress
+        past it.
+        """
+        self._targets = [_target("b1", "t1", _BASE)]
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "b1", _BASE)
+
+        assert watcher._verify_checkpoint(self.storage) is True
 
     def test_failed_verification_leaves_the_checkpoint_intact(self):
         """A verification failure at start() must not disturb the checkpoint.
