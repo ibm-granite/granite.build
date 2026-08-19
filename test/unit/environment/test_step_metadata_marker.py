@@ -17,8 +17,13 @@
 """Unit tests for the LLMB_STEP_METADATA_KEY/VALUE step-metadata stdout hook.
 
 Covers the event/payload plumbing, the StoredStepRun.metadata field, and that all
-three builtin monitor configs (bash/docker/skypilot) parse the marker — including
-the anchoring difference (bash anchors, skypilot/docker do not).
+three builtin monitor configs (bash/docker/skypilot) parse the marker. All three
+anchor the metadata marker to keep it uninjectable by arbitrary mid-stream output
+(bash/docker with `^`; skypilot permits only its own `(name, pid=N) ` log prefix).
+
+ANSI escape sequences (SkyPilot colourises its line prefix) are stripped centrally
+in get_events_from_log_line before any rule runs, so the anchored regexes only ever
+see clean text; test_skypilot_matches_ansi_wrapped_prefixed_line pins that.
 """
 
 from pathlib import Path
@@ -118,15 +123,45 @@ async def test_trailing_whitespace_trimmed_from_value(monitor, trailer):
 
 @pytest.mark.standalone
 @pytest.mark.asyncio
-async def test_bash_anchor_rejects_prefixed_line():
-    """Bash anchors the marker, so an echoed/prefixed line does not match."""
-    assert await _parse("bash", "byoc: echoing " + _MARKER) == []
+@pytest.mark.parametrize("monitor", ["bash", "docker", "skypilot"])
+async def test_anchor_rejects_midline_injection(monitor):
+    """No monitor honors a marker preceded by arbitrary text on the line.
+
+    Guards provenance integrity: cloned-repo code echoing a config that mentions
+    the marker substring must not be able to inject/overwrite step metadata (e.g. a
+    spoofed commit_hash). All three monitors anchor the metadata marker for this
+    reason (bash/docker with `^`, skypilot allowing only its own log prefix).
+    """
+    assert await _parse(monitor, "byoc: echoing " + _MARKER) == []
 
 
 @pytest.mark.standalone
 @pytest.mark.asyncio
-async def test_skypilot_unanchored_matches_prefixed_line():
-    """SkyPilot's retrieved logs are prefixed, so the marker must match unanchored."""
+async def test_skypilot_matches_platform_prefixed_line():
+    """SkyPilot's own `(name, pid=N) ` log prefix is permitted before the marker.
+
+    The anchor tolerates exactly that structured platform prefix (so legitimate
+    scaffold emissions still parse) while rejecting arbitrary leading text.
+    """
     events = await _parse("skypilot", "(job, pid=123) " + _MARKER)
     assert len(events) == 1
     assert events[0].payload.metadata_value == _SHA
+
+    # A prefix followed by other text before the marker is still rejected.
+    assert await _parse("skypilot", "(job, pid=123) config: " + _MARKER) == []
+
+
+@pytest.mark.standalone
+@pytest.mark.asyncio
+async def test_skypilot_matches_ansi_wrapped_prefixed_line():
+    """SkyPilot's colourised prefix parses once ANSI is stripped centrally.
+
+    Mirrors a real captured log line, whose `(name, pid=N)` prefix is wrapped in a
+    cyan SGR sequence and which ends with a reset. Escape codes are stripped in
+    get_events_from_log_line before the anchor runs, so the marker still matches and
+    the reset is not folded into the captured value.
+    """
+    line = f"\x1b[36m(gb-b75b5177-f4e, pid=17574)\x1b[0m {_MARKER}\x1b[0m"
+    events = await _parse("skypilot", line)
+    assert len(events) == 1
+    assert events[0].payload.metadata_value == _SHA  # no trailing escape absorbed

@@ -1471,6 +1471,12 @@ class Environment(ABC):
         the events will be plain dicts instead of BuildEvent
         to allow sending over the network.
         """
+        # Normalise away terminal colour codes before any rule runs, so anchored
+        # markers still match and captured values never absorb a stray escape. Done
+        # once here rather than per-monitor, keeping ANSI handling uniform across all
+        # environments (SkyPilot's retrieved logs colourise their line prefix; bash
+        # and docker stream raw stdout and are unaffected).
+        log_line = _strip_ansi(log_line)
         logger.debug("Running get_events_from_log_line for line: %s", log_line)
         if event_q is None:
             event_q = asyncio.Queue()
