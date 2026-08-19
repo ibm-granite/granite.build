@@ -85,6 +85,27 @@ def _meta_event(key: str, value: str) -> SimpleNamespace:
     )
 
 
+def _meta_event_no_id(targetsteprun_id) -> SimpleNamespace:
+    """A metadata event whose run_metadata carries no usable targetsteprun_id."""
+    return SimpleNamespace(
+        payload=StepMetadataUpdateEventPayload(metadata_key="k", metadata_value="v"),
+        run_metadata=SimpleNamespace(targetsteprun_id=targetsteprun_id),
+    )
+
+
+def test_metadata_event_without_targetsteprun_id_is_dropped():
+    """A stray/uncorrelated marker (no targetsteprun_id) is a no-op, not a raise.
+
+    Guards against an AssertionError here failing the whole build under
+    GBSERVER_RAISE_BUILD_EXCEPTIONS. Both ``None`` and ``""`` are treated as absent.
+    """
+    for bad_id in (None, ""):
+        runner = _stub_runner(_FakeStepStorage())
+        _process_metadata(runner, _meta_event_no_id(bad_id))
+        # Nothing buffered, nothing raised.
+        assert runner._pending_step_metadata == {}
+
+
 def test_flush_noop_when_row_absent():
     """Buffered metadata is retained (not dropped) while the row does not exist."""
     runner = _stub_runner(_FakeStepStorage())

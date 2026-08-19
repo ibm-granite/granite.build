@@ -1785,13 +1785,25 @@ Download : {download_msg}
         buffered and is flushed when the step status handler creates the row, so
         metadata is never lost to event-ordering.
 
+        An event with no targetsteprun_id to correlate against — e.g. a stray marker
+        in non-step output, or an uncorrelated monitor context — is dropped with a
+        warning rather than raising, matching the buffering path's "no-op if the row
+        isn't present" posture. A raise here would fail the whole build under
+        GBSERVER_RAISE_BUILD_EXCEPTIONS over a benign lineage marker.
+
         :param event: a STEP_METADATA_UPDATE_EVENT carrying a
             StepMetadataUpdateEventPayload.
         """
         payload = event.payload
         assert isinstance(payload, StepMetadataUpdateEventPayload)
         targetsteprun_id = event.run_metadata.targetsteprun_id
-        assert isinstance(targetsteprun_id, str)
+        if not targetsteprun_id:
+            logger.warning(
+                "Ignoring STEP_METADATA_UPDATE_EVENT with no targetsteprun_id "
+                "(key=%s); nothing to correlate it to.",
+                payload.metadata_key,
+            )
+            return
         self._pending_step_metadata.setdefault(targetsteprun_id, {})[
             payload.metadata_key
         ] = payload.metadata_value
