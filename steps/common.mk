@@ -346,6 +346,7 @@ endef
 
 # Render a self-contained Space into $(SPACE_DIR)/:
 #   $(SPACE_DIR)/steps/$(STEP_NAME)/step.yaml   (+ bundled src/)
+#   $(SPACE_DIR)/steps/$(STEP_NAME)/.gbignore   (skip Jinja for **/*.md + src/)
 #   $(SPACE_DIR)/space.yaml                       (base_uris -> $(SPACE_BASE_URI))
 # step-template.yaml is rendered substituting ONLY ${IMAGE_REF} so runtime Jinja
 # ({{ ... }}) and shell expansions (${VAR}, $(cmd)) in the run/setup blocks pass
@@ -360,6 +361,7 @@ space:
 		cp -R "$(SRC_DIR)" "$(SPACE_DIR)/steps/$(STEP_NAME)/$(SRC_DIR)"; \
 		echo "[$(STEP_NAME)] bundled $(SRC_DIR)/ into $(SPACE_DIR)/steps/$(STEP_NAME)/"; \
 	fi
+	$(call write-gbignore,$(SPACE_DIR)/steps/$(STEP_NAME))
 	@printf 'name: %s\nsecret_manager:\n  type: local\n  config: {}\nbase_uris:\n  - %s\n' \
 		"$(SPACE_NAME)" "$(SPACE_BASE_URI)" > $(SPACE_DIR)/space.yaml
 	@if [ -n "$(DEFAULT_ENVIRONMENT)" ]; then \
