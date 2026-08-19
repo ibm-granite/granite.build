@@ -250,6 +250,51 @@ def cli(ctx):
 
 @cli.command()
 @click.pass_context
+@click.option(
+    "-f",
+    "--filename",
+    "filename",
+    required=True,
+    help="Parameterized build.yaml to render.",
+)
+@click.option(
+    "--param", multiple=True, help="Override parameter 'KEY=VALUE' (repeatable)."
+)
+@click.option(
+    "--parameters-path",
+    "parameters_path",
+    help="parameters.yaml (defaults to the sibling of -f).",
+)
+@click.option(
+    "-o", "--out", "out_file", help="Write resolved build.yaml here (default: stdout)."
+)
+def render(ctx, filename, param, parameters_path, out_file):
+    """Apply parameters and output the executable build.yaml (to stdout by default)."""
+    from pathlib import Path
+
+    from gbcli.services.service_render import RenderError, render_build_yaml
+
+    try:
+        # NB: this module defines a `list` command, shadowing the builtin, so pass
+        # the `param` tuple directly (render_build_yaml does its own list()).
+        text = render_build_yaml(
+            Path(filename),
+            param,
+            Path(parameters_path) if parameters_path else None,
+        )
+    except (RenderError, FileNotFoundError) as e:
+        click.echo(f"❌ {e}", err=True)
+        ctx.exit(1)
+
+    if out_file:
+        Path(out_file).write_text(text, encoding="utf-8")
+        click.echo(f"✅ wrote {out_file}", err=True)
+    else:
+        click.echo(text, nl=False)
+
+
+@cli.command()
+@click.pass_context
 @click.argument("build_name", required=False)
 @click.option(
     "--filename",
