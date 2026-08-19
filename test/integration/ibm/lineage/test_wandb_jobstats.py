@@ -17,12 +17,12 @@
 from __future__ import annotations
 
 import datetime
-import os
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gbserver.lineage.jobstats import _resolve_lineage_provider
 from gbserver.lineage.openlineage_service import LineageService
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.singleton_storage import SingletonAdminStorage
@@ -544,8 +544,10 @@ class TestFeatureFlagSelection:
         reset_lineage_store()
 
     @pytest.mark.skipif(
-        os.getenv("GBSERVER_LINEAGE_PROVIDER") == "none",
-        reason="WandB store is not selected when GBSERVER_LINEAGE_PROVIDER=none",
+        _resolve_lineage_provider() == "none",
+        reason="WandB store is not selected when the resolved lineage provider is "
+        "'none' (explicit GBSERVER_LINEAGE_PROVIDER=none, or the standalone default "
+        "when the var is unset).",
     )
     def test_lineage_store_returns_wandb(self):
         import gbserver.lineage.jobstats as jobstats_mod
