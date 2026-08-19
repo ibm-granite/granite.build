@@ -32,6 +32,33 @@ from pathlib import Path
 import pytest
 
 
+def _render_main(args: list[str]) -> int:
+    """``gbtest render <build.yaml> [-o out]`` — print/write a skeleton buildtest.yaml.
+
+    Kept out of ``main`` so the generator (and its gbcommon deps) is imported
+    lazily, preserving this module's import-light property.
+    """
+    import argparse
+
+    from libgbtest.buildrunner.buildtest_gen import generate_skeleton
+
+    parser = argparse.ArgumentParser(prog="gbtest render")
+    parser.add_argument("build_yaml")
+    parser.add_argument("-o", "--out")
+    ns = parser.parse_args(args)
+    bp = Path(ns.build_yaml)
+    if not bp.is_file():
+        sys.stderr.write(f"gbtest render: not a file: {bp}\n")
+        return 1
+    text = generate_skeleton(bp)
+    if ns.out:
+        Path(ns.out).write_text(text, encoding="utf-8")
+        sys.stderr.write(f"wrote {ns.out}\n")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 def main() -> int:
     """Entry point for the ``gbtest`` console script.
 
@@ -41,8 +68,14 @@ def main() -> int:
     if len(sys.argv) < 2:
         sys.stderr.write(
             "Usage: gbtest path/to/buildtest.yaml [extra pytest args...]\n"
+            "       gbtest render path/to/build.yaml [-o out]\n"
         )
         return 2
+    if sys.argv[1] == "render":
+        if len(sys.argv) < 3:
+            sys.stderr.write("Usage: gbtest render path/to/build.yaml [-o out]\n")
+            return 2
+        return _render_main(sys.argv[2:])
     yaml_path = Path(sys.argv[1]).resolve()
     if not yaml_path.is_file():
         sys.stderr.write(f"gbtest: not a file: {yaml_path}\n")
