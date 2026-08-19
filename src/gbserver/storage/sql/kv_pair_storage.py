@@ -18,7 +18,10 @@
 SQL storage implementation for the generic gb_kv_pairs key-value store.
 """
 
-from gbserver.storage.kv_pair_storage import BaseKeyValuePairStorage, IKeyValuePairStorage
+from gbserver.storage.kv_pair_storage import (
+    BaseKeyValuePairStorage,
+    IKeyValuePairStorage,
+)
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
 from gbserver.storage.stored_kv_pair import StoredKeyValuePair
 

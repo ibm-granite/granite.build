@@ -26,12 +26,12 @@ from pydantic import BaseModel
 from gbserver.storage.artifact_registry import IArtifactRegistry
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.event_storage import IStoredEventStorage
+from gbserver.storage.kv_pair_storage import IKeyValuePairStorage
 from gbserver.storage.node_failure_storage import INodeFailureStorage
 from gbserver.storage.space_storage import IStoredSpaceStorage
 from gbserver.storage.space_user_storage import ISpaceUserStorage
 from gbserver.storage.sql.storage_factory import SQLStorageFactory
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
-from gbserver.storage.kv_pair_storage import IKeyValuePairStorage
 from gbserver.storage.steprun_storage import IStoredStepRunStorage
 from gbserver.storage.storage_factory import StorageFactory
 from gbserver.storage.target_run_storage import IStoredTargetRunStorage
@@ -40,11 +40,11 @@ from gbserver.types.constants import (
     GB_ARTIFACT_REGISTRY_TABLE_NAME,
     GB_BUILDS_TABLE_NAME,
     GB_EVENTS_TABLE_NAME,
+    GB_KV_PAIRS_TABLE_NAME,
     GB_METADATA_STORAGE,
     GB_NODE_FAILURES_TABLE_NAME,
     GB_SPACE_USERS_TABLE_NAME,
     GB_SPACES_TABLE_NAME,
-    GB_KV_PAIRS_TABLE_NAME,
     GB_STEP_RUNS_TABLE_NAME,
     GB_TARGET_RUNS_TABLE_NAME,
 )

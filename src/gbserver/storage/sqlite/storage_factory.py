@@ -4,10 +4,10 @@ from gbserver.storage.sqlite.sqlite_storage import (
     SqliteArtifactRegistry,
     SqliteBuildStorage,
     SqliteEventStorage,
+    SqliteKeyValuePairStorage,
     SqliteNodeFailureStorage,
     SqliteSpaceStorage,
     SqliteSpaceUserStorage,
-    SqliteKeyValuePairStorage,
     SqliteStepRunStorage,
     SqliteTargetRunStorage,
 )
