@@ -384,10 +384,11 @@ class LineageWatcher:
         # The headroom is measured against datetime.min *in the watermark's own
         # offset*, not against UTC_MIN. Since as_aware preserves the source
         # offset rather than rewriting it to UTC, `watermark - UTC_MIN` for a
-        # datetime.min anchor read back at, say, -03:00 is 3h — comfortably over
-        # the one-minute overlap, so the guard would wave the subtraction through
-        # and overflow anyway. Comparing within one offset keeps the question
-        # ("is there a minute of room below this value?") answerable.
+        # datetime.min anchor read back at a non-UTC offset is that offset's
+        # width — over the one-minute overlap, so the guard would wave the
+        # subtraction through and overflow anyway. Comparing within one offset
+        # keeps the question ("is there a minute of room below this value?")
+        # answerable.
         floor = datetime.min.replace(tzinfo=watermark.tzinfo)
         if watermark - floor < self._WATERMARK_OVERLAP:
             finished_after = watermark
@@ -453,8 +454,11 @@ class LineageWatcher:
         ``finished_at`` is written straight from a stored target, and a backend or
         DB driver may hand that back either aware (Postgres ``timestamptz``) or
         naive (SQLite drops the offset); filling in the local offset for a naive
-        value is what lets the caller compare it against ``UTC_MIN`` and the
-        targets' own timestamps without a ``TypeError`` from mixing awareness.
+        value is what lets the caller compare it against the targets' own
+        timestamps without a ``TypeError`` from mixing awareness. Note the offset
+        that gets filled in is the *local* one, so a caller testing for the
+        ``datetime.min`` backfill anchor must compare within the watermark's own
+        offset rather than against ``UTC_MIN`` (see ``_retire_backfill_anchor``).
         The offset is not rewritten to UTC — aware values already compare as
         instants, and rewriting made the key disagree textually with the
         ``gb_targets`` row behind it (see ``_on_checkpoint_advance``).
@@ -509,7 +513,16 @@ class LineageWatcher:
 
         - The watermark really is the backfill anchor. A normal watermark must
           never be moved by anything but a recorded target, so this is scoped to
-          ``datetime.min`` and nothing else.
+          ``datetime.min`` and nothing else. Compared against ``datetime.min`` in
+          the watermark's *own* offset, not against ``UTC_MIN``: the anchor is
+          written as ``UTC_MIN.isoformat()``, but ``as_aware`` preserves whatever
+          offset the backend returned, and a backend that drops the offset
+          (SQLite does; Postgres ``timestamptz`` does not) hands back a naive
+          ``datetime.min`` that is then re-tagged *local*. That is the same
+          instant only when the reader sits at UTC, so a bare ``!= UTC_MIN`` would
+          leave the anchor in place on every non-UTC deployment and re-walk the
+          whole target table on every scan, forever. Mirrors the ``floor``
+          comparison in ``_reconcile``.
         - ``watermark_untouched``: the pass recorded nothing, failed nothing and
           dropped nothing (see ``reconcile_once``). Any of those would mean
           unrecorded lineage sits *behind* the new anchor, and the steady-state
@@ -518,7 +531,8 @@ class LineageWatcher:
           checkpoint to the right place via ``_on_checkpoint_advance``; moving it
           again to the scan time would step over every target after it.
         """
-        if not watermark_untouched or watermark != UTC_MIN:
+        anchor = datetime.min.replace(tzinfo=watermark.tzinfo)
+        if not watermark_untouched or watermark != anchor:
             return
         logger.info(
             "Full-history lineage backfill completed with nothing left to "
