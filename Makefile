@@ -170,6 +170,12 @@ check-git-status-clean:
 
 # Fail if either resolved image tag reflects an uncommitted (dirty) git tree, since the
 # matching image was likely never built/pushed to the registry. Bypass with ALLOW_DIRTY.
+#
+# This is a prerequisite only of the live test entrypoints that run cluster/
+# BuildRunnerJob builds pulling the tagged image (extended-tests, ibm-extended-tests,
+# test-pr, test-merge). It is deliberately NOT on the shared .test / py-test targets:
+# mock/unit suites reached through them never pull an image, so a dirty tag is
+# irrelevant there and the guard would only block the edit -> test -> commit loop.
 .PHONY: check-image-tag-not-dirty
 check-image-tag-not-dirty:
 	@if [[ -z "${ALLOW_DIRTY}" ]] ; then \
@@ -295,7 +301,7 @@ extended-tests-setup:
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
 .PHONY: extended-tests
-extended-tests:
+extended-tests: check-image-tag-not-dirty
 	export GB_ENVIRONMENT=STANDALONE &&			\
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
@@ -322,7 +328,7 @@ ibm-extended-tests-setup: start-nats
 	$(MAKE) venv
 
 .PHONY: ibm-extended-tests
-ibm-extended-tests: check_ibm_sps_api_key
+ibm-extended-tests: check_ibm_sps_api_key check-image-tag-not-dirty
 	export GB_ENVIRONMENT=STAGING &&			\
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="ibm" 			\
@@ -340,7 +346,7 @@ check_ibm_sps_api_key:
 	echo The GBTEST_SPS_IBMCLOUD_API_KEY env var is present for IBM tests. 
 
 .PHONY: test-pr
-test-pr:
+test-pr: check-image-tag-not-dirty
 	# NOTE: #92 switched this target to GBTEST_MODE=mock, but the full PR suite is
 	# not green under mock yet (some tests need an admin GitHub token and the
 	# IBM-backed secret manager). Revert to live for now; making test-pr pass under
@@ -356,7 +362,7 @@ cicd-merge-test:
 	$(MAKE) test-merge 
 
 .PHONY: test-merge
-test-merge:
+test-merge: check-image-tag-not-dirty
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="$(MERGE_PYTEST_MARKERS)" 	\
 		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
@@ -380,7 +386,7 @@ check_hf_token:
 # 	PYTEST_MARKERS=  (use "not extended" to exclude the extended suite)
 #	PYTEST_TEST_TARGETS=
 .PHONY: .test
-.test:	check_hf_token check-image-tag-not-dirty
+.test:	check_hf_token
 	source $(VENVDIR)/bin/activate && \
 		export GBTEST_MOCKED_HF_OPS=${GBTEST_MOCKED_HF_OPS} &&	\
 		export GBTEST_MODE=${GBTEST_MODE} && \
@@ -394,7 +400,7 @@ check_hf_token:
 		$(COVERAGE_GATE)
 
 .PHONY: py-test
-py-test: check-image-tag-not-dirty
+py-test:
 	# - Default (all tests): make py-test
 	# - Specific test: make py-test ARGS=test/integration/ibm/utils/test_user_spaces_list.py
 	# - Multiple args: make py-test ARGS="test/integration/ibm/api -k test_artifact_get"
