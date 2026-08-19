@@ -158,9 +158,9 @@ filesystem roots (e.g. `/proj`), which are bind-mounted **identity** into the co
 therefore delivers container-bound mounts by writing them straight to the shared filesystem, routing by
 destination shape:
 
-- **relative** destinations are remapped to `$GB_BUILD_WORKDIR/<dst>` — an absolute path under the
+- **relative** destinations are remapped to `<workdir>/<dst>` — an absolute path under the
   per-target-run workdir on `/proj`. The payload is rsynced there directly on the (sudo-less) login node
-  and, because `/proj` is identity-mounted, the job (whose CWD is `$GB_BUILD_WORKDIR`) reads it at exactly
+  and, because `/proj` is identity-mounted, the job (whose CWD is that workdir) reads it at exactly
   `./<dst>`. No container staging or copy-back is involved. Persistent and per-target-run on the shared
   workdir; requires `shared_workdir` on the environment.
 - **absolute** destinations under a shared, identity-mounted root (e.g. `/proj/…`) are likewise written
@@ -179,7 +179,7 @@ gives per-target isolation, with the payload written onto the shared workdir for
 > `get_unwrapped_mount_prefixes()` (wired with `shared_fs_roots` in `instance.py`), and
 > `_execute_file_mounts` in `cloud_vm_ray_backend.py` skips the wrap for destinations under those roots.
 > gbserver's launcher (`_remap_relative_dest` in `environment/skypilot.py`) does the relative→
-> `$GB_BUILD_WORKDIR` remap for every backend; on shared-FS backends the remapped absolute path is what
+> per-run-workdir remap for every backend; on shared-FS backends the remapped absolute path is what
 > makes the payload land in the per-run workdir.
 
 ## See also

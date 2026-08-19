@@ -110,7 +110,7 @@ steps:
     config:
       command_config:
         image: "python:3.12-slim"
-        command: "python main.py --out $GB_BUILD_WORKDIR/out"
+        command: "python main.py --out $(pwd)/out"
       launcher_config:
         resources: { cpus: "4+", accelerators: "A100:1" }
 ```

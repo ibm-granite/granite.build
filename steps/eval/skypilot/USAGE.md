@@ -65,11 +65,11 @@ All fields live under the step's `config.eval_config` and are templated into the
   `run:` block (see [Who emits the artifact line?](#who-emits-the-artifact-line)),
   not by `eval.sh`. Bind a matching `outputs.results` on the target to persist it.
 
-## Env vars the step provides to your commands
+## Working directory and paths
 
-The SkyPilot launcher exports `$GB_BUILD_WORKDIR` into `run`: the per-run workdir
-and the run script's initial CWD. Relative `output_dir` values resolve here, giving
-per-run isolation.
+`run` starts in the step's per-run **working directory**, so the step never needs to
+know its absolute location. Relative `output_dir` values resolve there, giving per-run
+isolation; derive an absolute path with `$(pwd)` when you need one.
 
 ## Example build.yaml
 
