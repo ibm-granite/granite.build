@@ -30,6 +30,13 @@ the whole history (anchor moved back).
 
 Three anchors, expressed as a single spec string (``from-latest``, ``all``, or a
 build id) so no invalid combination is representable.
+
+The two build-derived anchors deliberately pick opposite ends. ``from-latest``
+takes the *newest* completion — it means "start here, skip what came before".
+A build id takes that build's *oldest* completion, because the watermark is
+inclusive but forward-only: anchoring at the build's newest target would exclude
+the build's own earlier targets, and lose any concurrent build's targets in that
+window for good.
 """
 
 from gbserver.lineage.lineage_reconciler import (
@@ -37,6 +44,7 @@ from gbserver.lineage.lineage_reconciler import (
     UTC_MIN,
     as_utc_aware,
     get_most_recent_successful_target,
+    get_oldest_successful_target,
 )
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.utils.logger import get_logger
@@ -63,7 +71,10 @@ def _build_checkpoint(storage: SingletonAdminStorage, spec: str) -> dict:
 
     Args:
         storage: Admin storage to resolve the anchor target against.
-        spec: ``"from-latest"``, ``"all"``, or a build id.
+        spec: ``"from-latest"`` (anchor at the newest successful target), ``"all"``
+            (anchor at ``UTC_MIN``, i.e. the full history), or a build id (anchor at
+            that build's *oldest* successful target, so the whole build is in
+            scope).
 
     Returns:
         ``{"build_id": str, "finished_at": <ISO 8601 str, aware UTC>}``.
@@ -81,11 +92,23 @@ def _build_checkpoint(storage: SingletonAdminStorage, spec: str) -> dict:
             "finished_at": UTC_MIN.isoformat(),
         }
 
-    build_id = None if spec == SEED_FROM_LATEST else spec
-    target = get_most_recent_successful_target(storage, build_id=build_id)
-    # get_most_recent_successful_target only returns targets that have a
-    # finished_at, but its return type does not say so; check both so the anchor
-    # is provably non-null rather than assumed.
+    if spec == SEED_FROM_LATEST:
+        # "From now on": the newest completion is the intended starting line, and
+        # everything before it is deliberately excluded.
+        target = get_most_recent_successful_target(storage)
+        build_id = None
+    else:
+        # A specific build: anchor at that build's *oldest* target, not its
+        # newest. The watermark is inclusive but forward-only, so anchoring at the
+        # newest would silently exclude every earlier target of the very build the
+        # operator asked to record — and any concurrent build's targets in that
+        # window, which no later scan re-surfaces (see
+        # get_oldest_successful_target).
+        build_id = spec
+        target = get_oldest_successful_target(storage, build_id=build_id)
+    # The selectors only return targets that have a finished_at, but their return
+    # type does not say so; check both so the anchor is provably non-null rather
+    # than assumed.
     if target is None or target.finished_at is None:
         scope = f"build {build_id}" if build_id else "the admin DB"
         raise LineageSeedError(

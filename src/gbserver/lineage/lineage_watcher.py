@@ -412,11 +412,12 @@ class LineageWatcher:
         the same way: recording stays off until it is corrected, which is the
         safe direction — the alternative is raising out of every scan.
 
-        The parsed value is normalized to naive UTC. ``finished_at`` is written
-        straight from a stored target, which a backend or DB driver may hand
-        back timezone-aware; leaving it aware would make the caller's
-        ``watermark - datetime.min`` arithmetic raise ``TypeError`` on every
-        scan and record nothing at all.
+        The parsed value is normalized to an aware UTC instant. ``finished_at`` is
+        written straight from a stored target, and a backend or DB driver may hand
+        that back either aware (Postgres ``timestamptz``) or naive (SQLite drops
+        the offset); normalizing both to aware UTC is what lets the caller compare
+        it against ``UTC_MIN`` and the targets' own timestamps without a
+        ``TypeError`` from mixing awareness — or, worse, a silent offset skew.
 
         ``OverflowError`` is caught alongside the parse errors because the
         normalization itself can raise it: ``as_utc_aware`` shifts an aware value
@@ -517,7 +518,7 @@ class LineageWatcher:
         ``reconcile_once``), so it is timezone-*aware* in production: it is
         stamped from ``BuildEvent.timestamp``, which defaults to
         ``get_time()`` (``datetime.now().astimezone()``). The watermark read back
-        by ``_checkpoint_watermark`` is naive UTC, so comparing the two raises
+        by ``_checkpoint_watermark`` was naive UTC, so comparing the two raised
         ``TypeError: can't compare offset-naive and offset-aware datetimes``.
         Normalizing here is what keeps the guard from turning every real
         deployment's checkpoint write into a spurious *recording* failure — the
@@ -525,7 +526,7 @@ class LineageWatcher:
         misattributed to recording (which already succeeded), blocks the
         checkpoint, and after ``_MAX_RECORD_ATTEMPTS`` scans lands the target in
         the durable dropped set. It also keeps the persisted ``isoformat()``
-        consistently naive UTC, matching what the seeding path writes.
+        consistently aware UTC, matching what the seeding path writes.
         """
         finished_at = as_utc_aware(finished_at)
         current = self._checkpoint_watermark(storage)

@@ -63,9 +63,10 @@ logger = get_logger(__name__)
         "Seed the lineage checkpoint before the first scan, but only if it is "
         "not already set: 'from-latest' starts recording from now, 'all' walks "
         "the full history (expensive first scan), any other value is treated as "
-        "a build id. Omit to use whatever is already in gb_kv_pairs (recording "
-        "nothing while the key is absent). Never overwrites an existing "
-        "checkpoint."
+        "a build id and anchors at that build's oldest completed target, so the "
+        "whole build is recorded. Omit to use whatever is already in gb_kv_pairs "
+        "(recording nothing while the key is absent). Never overwrites an "
+        "existing checkpoint."
     ),
 )
 @pass_environment

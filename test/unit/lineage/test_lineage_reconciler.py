@@ -30,6 +30,7 @@ from unittest.mock import MagicMock
 from gbserver.lineage.lineage_reconciler import (
     _expected_run_count,
     get_most_recent_successful_target,
+    get_oldest_successful_target,
     reconcile_once,
     record_selected_targets,
     record_target_lineage,
@@ -252,6 +253,77 @@ class TestGetMostRecentSuccessfulTarget:
         storage = _admin_storage_returning([[_target("b1", "t_null")]])
         assert get_most_recent_successful_target(storage) is None
         assert storage.target_storage.get_by_where.call_count == 1
+
+
+class TestGetOldestSuccessfulTarget:
+    """Anchoring a checkpoint at a build must not skip that build's own targets."""
+
+    def test_returns_the_oldest_finished_target(self):
+        # The anchor for a build id: its *oldest* completion. The watermark is
+        # inclusive but forward-only, so anchoring at the newest would exclude
+        # every earlier target of the same build.
+        t_old = _target("b1", "t_old", finished_at=_BASE)
+        t_mid = _target("b1", "t_mid", finished_at=_BASE + timedelta(minutes=10))
+        t_new = _target("b1", "t_new", finished_at=_BASE + timedelta(minutes=20))
+        storage = _admin_storage_with([t_old, t_mid, t_new])
+
+        found = get_oldest_successful_target(storage)
+        assert found is not None and found.uuid == "t_old"
+
+    def test_scoped_to_one_build(self):
+        # Only the requested build's targets may anchor it. The build_id must reach
+        # the query as a server-side filter (it is a real column), not be applied
+        # after the fact — otherwise another build's older target would drag the
+        # anchor down and re-drive unrelated lineage.
+        mine = _target("b1", "t_mine", finished_at=_BASE)
+        storage = _admin_storage_returning([[mine]])
+
+        found = get_oldest_successful_target(storage, build_id="b1")
+        assert found is not None and found.uuid == "t_mine"
+        where = storage.target_storage.get_by_where.call_args.args[0]
+        assert where == {"status": Status.SUCCESS.name, "build_id": "b1"}
+
+    def test_pages_to_the_end_to_find_the_oldest(self):
+        # Ordering is newest-first, so the oldest row is on the LAST page: a
+        # single-page read would return the wrong anchor.
+        first_page = [
+            _target("b1", f"t_{i}", finished_at=_BASE + timedelta(minutes=i + 1))
+            for i in range(_SCAN_PAGE_SIZE)
+        ]
+        oldest = _target("b1", "t_oldest", finished_at=_BASE)
+        storage = _admin_storage_returning([first_page, [oldest]])
+
+        found = get_oldest_successful_target(storage)
+        assert found is not None and found.uuid == "t_oldest"
+
+    def test_skips_null_finished_at(self):
+        # A NULL finished_at is not a completion; it must never become the anchor
+        # (and the NULL backlog PostgreSQL sorts first must not be mistaken for
+        # the oldest target).
+        t_null = _target("b1", "t_null", finished_at=None)
+        t_real = _target("b1", "t_real", finished_at=_BASE)
+        storage = _admin_storage_returning([[t_null, t_real]])
+
+        found = get_oldest_successful_target(storage)
+        assert found is not None and found.uuid == "t_real"
+
+    def test_returns_none_when_no_finished_target_exists(self):
+        storage = _admin_storage_returning([[_target("b1", "t_null")]])
+        assert get_oldest_successful_target(storage) is None
+
+    def test_mixed_awareness_does_not_raise(self):
+        # finished_at may arrive aware or naive depending on the backend; comparing
+        # the two directly raises TypeError, which would abort seeding entirely.
+        aware = _target("b1", "t_aware", finished_at=_BASE + timedelta(hours=1))
+        naive = _target(
+            "b1",
+            "t_naive",
+            finished_at=(_BASE + timedelta(hours=2)).replace(tzinfo=None),
+        )
+        storage = _admin_storage_returning([[naive, aware]])
+
+        found = get_oldest_successful_target(storage)
+        assert found is not None and found.uuid == "t_aware"
 
 
 class TestRecordTargetLineage:

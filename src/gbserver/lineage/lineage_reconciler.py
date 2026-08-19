@@ -298,6 +298,51 @@ def get_most_recent_successful_target(
         page_index += 1
 
 
+def get_oldest_successful_target(
+    storage: SingletonAdminStorage,
+    build_id: Optional[str] = None,
+) -> Optional[StoredTargetRun]:
+    """Return the single oldest-finished successful target, or ``None``.
+
+    Used by ``lineage_seeding`` to anchor a checkpoint at a *build*: a build has
+    many targets finishing at different times, and the watermark is inclusive
+    (``finished_at >= cutoff``), so anchoring at the build's newest target would
+    exclude every earlier target of that same build. Anchoring at its oldest
+    includes the whole build.
+
+    That matters beyond the anchored build itself. ``_verify_checkpoint`` does
+    re-scan the checkpoint's own build with no lower bound, so the anchored
+    build's earlier targets would be recovered there — but a *concurrent* build
+    whose targets finished inside the skipped window is covered by neither that
+    sweep (scoped to one build) nor the steady-state scan (which never looks
+    behind the watermark), and ``_WATERMARK_OVERLAP`` spans only a minute. Those
+    targets would be lost permanently, so the anchor is placed low enough that
+    they are never skipped in the first place.
+
+    Pages to the end rather than reading one page, because the ordering is
+    newest-first: the oldest row is on the *last* page. NULL-``finished_at`` rows
+    are skipped (mirroring ``select_recordable_targets``), which also means the
+    NULL backlog PostgreSQL sorts first under ``DESC`` cannot be mistaken for the
+    oldest target.
+    """
+    oldest: Optional[StoredTargetRun] = None
+    page_index = 0
+    while True:
+        page = _successful_targets_page(storage, page_index, build_id=build_id)
+        for target in page:
+            if target.finished_at is None:
+                continue
+            # Compare as instants: finished_at may arrive aware or naive
+            # depending on the backend, and mixing the two raises TypeError.
+            if oldest is None or as_utc_aware(target.finished_at) < as_utc_aware(
+                oldest.finished_at
+            ):
+                oldest = target
+        if len(page) < _SCAN_PAGE_SIZE:
+            return oldest
+        page_index += 1
+
+
 def _expected_run_count(target: StoredTargetRun) -> int:
     """Number of lineage runs a fully-recorded ``target`` should have in a sink.
 
@@ -497,14 +542,34 @@ def reconcile_once(
     checkpoint_blocked = False
     # Iterate in oldest-first order (the `targets` order), not the (unordered)
     # `unrecorded` set, so the checkpoint advances monotonically.
-    for target in targets:
-        if target.uuid not in unrecorded:
-            continue
+    # Position within the batch, so a slow or stuck pass is readable as progress
+    # ("3/7") rather than as an unexplained gap between log lines.
+    to_record = [t for t in targets if t.uuid in unrecorded]
+    for position, target in enumerate(to_record, start=1):
+        # Logged *before* the write, not only after: this is the call that reaches
+        # the sink (a wandb api round-trip), so it is where a pass stalls. Logging
+        # only on success would leave the target that hung invisible — the very
+        # one worth naming.
+        logger.info(
+            "Recording lineage %d/%d: target %s (%s) of build %s, finished %s",
+            position,
+            len(to_record),
+            target.name or "<unnamed>",
+            target.uuid,
+            target.build_id,
+            target.finished_at,
+        )
         try:
             record_target_lineage(
                 store, storage, build_id=target.build_id, target_id=target.uuid
             )
             newly_recorded += 1
+            logger.info(
+                "Recorded lineage for target %s (%s) of build %s",
+                target.name or "<unnamed>",
+                target.uuid,
+                target.build_id,
+            )
             if target.finished_at is None:
                 # Unreachable via select_recordable_targets, which skips NULL
                 # finished_at rows. Guarded anyway because the failure mode is
