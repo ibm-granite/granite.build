@@ -30,7 +30,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from gb_ui_backend.api.chat import _resolve_identity, _scoped_session_id
+import pytest
+from fastapi import HTTPException
+
+from gb_ui_backend.api import chat as chat_module
+from gb_ui_backend.api.chat import (
+    _rate_limit_chat_stream,
+    _resolve_identity,
+    _scoped_session_id,
+)
 
 
 def _fake_request(
@@ -88,3 +96,47 @@ class TestScopedSessionId:
         in that mode)."""
         raw_id = "abc123"
         assert _scoped_session_id(_fake_request(), raw_id) == "standalone:abc123"
+
+
+class TestRateLimitChatStream:
+    """Code-review finding: /chat/stream had no rate limit or cap on session
+    creation at all — each distinct session_id spawns a gbmcp subprocess, so
+    an unbounded caller could exhaust host resources. Mirrors ai.py's
+    _rate_limit_analyze_logs (same sliding-window shape, this endpoint's own
+    call-times dict)."""
+
+    def setup_method(self):
+        chat_module._chat_stream_call_times.clear()
+
+    def test_allows_calls_under_the_limit(self):
+        request = _fake_request(user_email="alice@example.com")
+        for _ in range(chat_module._CHAT_STREAM_RATE_LIMIT_MAX_CALLS):
+            _rate_limit_chat_stream(request)  # must not raise
+
+    def test_blocks_once_the_limit_is_exceeded(self):
+        request = _fake_request(user_email="alice@example.com")
+        for _ in range(chat_module._CHAT_STREAM_RATE_LIMIT_MAX_CALLS):
+            _rate_limit_chat_stream(request)
+
+        with pytest.raises(HTTPException) as exc_info:
+            _rate_limit_chat_stream(request)
+        assert exc_info.value.status_code == 429
+
+    def test_limit_is_tracked_independently_per_identity(self):
+        alice = _fake_request(user_email="alice@example.com")
+        bob = _fake_request(user_email="bob@example.com")
+        for _ in range(chat_module._CHAT_STREAM_RATE_LIMIT_MAX_CALLS):
+            _rate_limit_chat_stream(alice)
+
+        _rate_limit_chat_stream(bob)  # must not raise — separate identity, fresh window
+
+    def test_old_calls_outside_the_window_are_not_counted(self, monkeypatch):
+        request = _fake_request(user_email="alice@example.com")
+        fake_now = [1000.0]
+        monkeypatch.setattr(chat_module.time, "monotonic", lambda: fake_now[0])
+
+        for _ in range(chat_module._CHAT_STREAM_RATE_LIMIT_MAX_CALLS):
+            _rate_limit_chat_stream(request)
+
+        fake_now[0] += chat_module._CHAT_STREAM_RATE_LIMIT_WINDOW_SECONDS + 1
+        _rate_limit_chat_stream(request)  # must not raise — the old window has expired
