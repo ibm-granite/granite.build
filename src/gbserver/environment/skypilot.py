@@ -279,6 +279,27 @@ def _escapes_parent(rel_path: str) -> bool:
     return rel == ".." or rel.startswith(".." + os.sep)
 
 
+def _reject_home_prefixed(path: str, role: str) -> None:
+    """Reject a ``~``/``~/``-prefixed ``file_mounts`` path.
+
+    This launcher never expands ``~``: a ``~`` *source* would resolve to a literal
+    ``~`` directory under the step dir, and a ``~`` *destination* would sidestep
+    the single relative/absolute destination convention (it lands outside the
+    per-run workdir and, on containerized LSF, outside the container). Both roles
+    reject it so ``file_mounts`` has one consistent path model. Shared by the
+    source and destination guards.
+
+    :param path: the source or destination path from a ``file_mounts`` entry.
+    :param role: ``"source"`` or ``"destination"`` — named in the error message.
+    :raises ValueError: if ``path`` equals ``~`` or begins with ``~/``.
+    """
+    if path == "~" or path.startswith("~/"):
+        raise ValueError(
+            f"file_mounts {role} {path!r} uses '~', which is not expanded; "
+            f"use a relative or absolute path instead"
+        )
+
+
 def _resolve_local_mount_source(source: str, asset_dir: Union[Path, str, None]) -> str:
     """Resolve a ``file_mounts`` local source against the step's asset dir.
 
@@ -308,12 +329,7 @@ def _resolve_local_mount_source(source: str, asset_dir: Union[Path, str, None]) 
         return source
     if os.path.isabs(source):
         return source  # absolute host path — author's explicit choice
-    if source == "~" or source.startswith("~/"):
-        raise ValueError(
-            f"file_mounts source {source!r} uses '~', which is not expanded "
-            f"for sources; use an absolute path or one relative to the step "
-            f"directory"
-        )
+    _reject_home_prefixed(source, "source")
     if _escapes_parent(source):
         raise ValueError(
             f"file_mounts source {source!r} uses '..' to escape the step "
@@ -332,19 +348,6 @@ def _resolve_local_mount_source(source: str, asset_dir: Union[Path, str, None]) 
     return str(base / source)
 
 
-def _is_remappable_relative(dst: str) -> bool:
-    """Return whether ``dst`` is a plain relative ``file_mounts`` destination.
-
-    Absolute paths and ``~``/``~/``-prefixed paths opt out of the per-run-workdir
-    remap (they are the author's explicit location); everything else is treated
-    as relative to the build workdir.
-
-    :param dst: a ``file_mounts`` destination key.
-    :returns: ``True`` if the destination should be remapped, else ``False``.
-    """
-    return not (os.path.isabs(dst) or dst == "~" or dst.startswith("~/"))
-
-
 def _remap_relative_dest(dst: str, build_workdir: Optional[str]) -> str:
     """Map a relative ``file_mounts`` destination into the per-run workdir.
 
@@ -360,25 +363,29 @@ def _remap_relative_dest(dst: str, build_workdir: Optional[str]) -> str:
     ``sky/provision/lsf`` runner hook), so no container staging or copy-back is
     needed.
 
-    Absolute and ``~``-prefixed destinations pass through unchanged (author's
-    explicit choice). When ``build_workdir`` is unset (envs without
-    ``shared_workdir``) a relative destination is likewise returned unchanged,
-    preserving SkyPilot's own ``~/sky_workdir/`` rewrite.
+    Absolute destinations pass through unchanged (the author's explicit fixed
+    location). When ``build_workdir`` is unset (envs without ``shared_workdir``) a
+    relative destination is likewise returned unchanged, preserving SkyPilot's own
+    ``~/sky_workdir/`` rewrite.
 
-    A relative destination that uses ``..`` to climb out of its target directory
-    (e.g. ``../foo``) is always rejected — whether or not a remap applies — so it
-    can neither escape the per-run workdir nor SkyPilot's default rewrite. This
-    is an authoring guard, not a security boundary; the step author controls the
-    destination.
+    A ``~``/``~/``-prefixed destination is rejected, mirroring the source guard in
+    :func:`_resolve_local_mount_source`: ``~`` is never expanded by this launcher,
+    so ``file_mounts`` has a single destination convention — relative, or absolute
+    for a fixed location. A relative destination that uses ``..`` to climb out of
+    its target directory (e.g. ``../foo``) is likewise rejected — whether or not a
+    remap applies — so it can leave neither the per-run workdir nor SkyPilot's
+    default rewrite. These are authoring guards, not a security boundary; the step
+    author controls the destination.
 
     :param dst: the destination key from the raw ``file_mounts`` mapping.
     :param build_workdir: absolute per-run workdir, or ``None`` to disable remap.
     :returns: the (possibly rewritten) destination path.
-    :raises ValueError: if a relative ``dst`` escapes its target directory via
-        ``..`` traversal.
+    :raises ValueError: if ``dst`` is ``~``/``~/``-prefixed, or a relative ``dst``
+        escapes its target directory via ``..`` traversal.
     """
-    if not _is_remappable_relative(dst):
-        return dst  # absolute / ~-prefixed: author's explicit location
+    _reject_home_prefixed(dst, "destination")
+    if os.path.isabs(dst):
+        return dst  # absolute: author's explicit fixed location, left as-is
     # Reject ``..`` escapes regardless of whether a build_workdir remap follows,
     # so the destination can leave neither the per-run workdir nor SkyPilot's
     # default rewrite.

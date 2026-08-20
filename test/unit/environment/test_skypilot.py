@@ -160,12 +160,20 @@ class TestRemapRelativeDest:
         assert _remap_relative_dest("./foo", "/wd") == "/wd/foo"
         assert _remap_relative_dest("sub/foo", "/wd") == "/wd/sub/foo"
 
-    def test_absolute_and_home_dests_unchanged(self):
+    def test_absolute_dest_unchanged(self):
         from gbserver.environment.skypilot import _remap_relative_dest
 
         assert _remap_relative_dest("/abs/foo", "/wd") == "/abs/foo"
-        assert _remap_relative_dest("~/foo", "/wd") == "~/foo"
-        assert _remap_relative_dest("~", "/wd") == "~"
+
+    @pytest.mark.parametrize("dst", ["~", "~/foo", "~/sub/dir"])
+    def test_home_dest_rejected(self, dst):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        # '~' is not expanded for destinations either: it would sidestep the
+        # single relative/absolute convention and land outside the per-run
+        # workdir, so reject it (mirroring the source-side guard).
+        with pytest.raises(ValueError, match="~"):
+            _remap_relative_dest(dst, "/wd")
 
     def test_noop_without_build_workdir(self):
         from gbserver.environment.skypilot import _remap_relative_dest
