@@ -497,22 +497,22 @@ class WandBLineageStore(ILineageStore):
     ) -> set[str]:
         # Drop candidates whose "fully recorded" verdict is still within its TTL,
         # so a steady-state scan that re-selects the same target does not re-ask
-        # wandb every interval (see _RECORDED_CACHE_TTL_SECONDS). Expired entries
-        # are removed here rather than by a sweep: the dict only ever holds
-        # candidates the reconciler is still selecting, which is bounded by the
-        # watermark window.
+        # wandb every interval (see _RECORDED_CACHE_TTL_SECONDS).
         now = time.monotonic()
+        # Sweep before the per-candidate lookups. Pruning only the keys touched
+        # below cannot bound the dict: the checkpoint advances forward only, so
+        # once a recorded target falls behind the scan's lower bound it is never
+        # selected again and its entry would outlive its deadline for the life of
+        # the process -- one dead tuple per (target, count) ever recorded. The
+        # sweep is what makes an entry's lifetime the TTL rather than the
+        # process's.
+        self._prune_recorded_cache(now)
         counts = expected_counts or {}
-        cached_recorded = set()
-        for tid in target_ids:
-            key = (tid, counts.get(tid))
-            deadline = self._recorded_until.get(key)
-            if deadline is None:
-                continue
-            if deadline > now:
-                cached_recorded.add(tid)
-            else:
-                del self._recorded_until[key]
+        # A surviving entry is live by construction: the sweep above dropped every
+        # expired deadline, so mere presence is the whole test.
+        cached_recorded = {
+            tid for tid in target_ids if (tid, counts.get(tid)) in self._recorded_until
+        }
         to_check = target_ids - cached_recorded
         if not to_check:
             return set()
@@ -534,6 +534,18 @@ class WandBLineageStore(ILineageStore):
         for tid in to_check - unrecorded:
             self._recorded_until[(tid, counts.get(tid))] = deadline
         return unrecorded
+
+    def _prune_recorded_cache(self, now: float) -> None:
+        """Drop every "already recorded" verdict whose TTL has passed.
+
+        Runs on each filter pass so the cache is bounded by the TTL rather than
+        by how many targets the process has recorded over its lifetime.
+        """
+        expired = [
+            key for key, deadline in self._recorded_until.items() if deadline <= now
+        ]
+        for key in expired:
+            del self._recorded_until[key]
 
     def _build_event_for_artifact(
         self,
