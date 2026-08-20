@@ -264,9 +264,25 @@ def select_recordable_targets(
     ``datetime.min`` sentinel, which matches no real row) falls through to
     returning everything read. That is the safe direction: re-reads are
     idempotent, whereas truncating the walk would drop lineage silently. Note
-    this makes the equality comparison fail-safe rather than fail-closed, which
-    matters because SQLite stores the typed sort column as wall-clock text (see
-    the early-return note below and issue #279).
+    this makes the equality comparison fail-safe rather than fail-closed.
+
+    That fallthrough reads a full table scan, so it is worth being precise that
+    it is **one-shot, not recurring** — the paragraph above promises the scan is
+    bounded in steady state, and this is the exception that proves it rather than
+    a hole in it. Both never-match causes are self-clearing: the ``all`` sentinel
+    is a deliberate one-time backfill, and a pruned anchor is replaced as soon as
+    the caller's checkpoint advances to a row that still exists. Neither can
+    repeat on every scan.
+
+    In particular this is *not* affected by SQLite's offset dropping (issue
+    #279), which is the plausible-looking way it could become recurring — a
+    persistently unequal comparison would re-scan the whole table forever. It
+    does not, because the two are different columns: the anchor equality below
+    compares ``finished_at`` as reconstructed from the JSON blob, which
+    round-trips its offset losslessly on both backends (see ``as_aware``), while
+    the offset-dropping typed column backs only the ``ORDER BY`` (see the
+    early-return note below). Do not "fix" the comparison to tolerate an offset
+    skew it never sees.
 
     Caveat, deliberately accepted: this bounds the gap, it does not eliminate it.
     Guaranteeing "no target is ever missed" needs a *write* ordering to ask "which
@@ -296,10 +312,13 @@ def select_recordable_targets(
                 # an early return.
                 continue
             if stop_build_id is not None:
-                # Anchored walk: the bound is this row, not a timestamp. Collect
-                # it, then stop — everything the anchor was meant to cover has
-                # been read by now. An anchor that never matches simply falls
-                # through to the end of the table (see the docstring).
+                # Anchored walk: the bound is this row, not a timestamp, so
+                # `cutoff` is deliberately not consulted here — the anchor *is*
+                # the bound. Collect it, then stop; everything the anchor was
+                # meant to cover has been read by now. An anchor that never
+                # matches falls through to the end of the table, which is
+                # one-shot and fail-safe by design, not a missing cutoff check
+                # (see the docstring).
                 if (
                     target.build_id == stop_build_id
                     and as_aware(target.finished_at) == stop_finished_at
@@ -569,17 +588,16 @@ def reconcile_once(
 
     skip = skip or set()
     by_uuid = {t.uuid: t for t in targets if t.uuid not in skip}
-    # build_id scans (the watcher's start-time checkpoint verification) always
-    # pass finished_after=UTC_MIN, since the whole point is to ignore the
-    # watermark and re-check that one build regardless of it. Printing UTC_MIN
-    # there reads as a suspiciously stuck watermark, so name the build instead
-    # of the epoch it is scanning from.
-    # The watermark alone does not say *why* the scan starts where it does. Naming
-    # the build whose target set it — the checkpoint's own build_id — makes a
-    # steady-state log line self-explanatory: the timestamp can be traced back to
-    # the row it came from instead of looking like an arbitrary epoch, which is
-    # what makes a stuck watermark recognizable as stuck.
+    # Describe the scan's lower bound by what *set* it, not just the timestamp: a
+    # bare instant does not say why the scan starts where it does, and an
+    # unexplained epoch-looking value is indistinguishable from a stuck watermark.
+    # Each branch names its own bound.
     if build_id is not None:
+        # build_id scans (the watcher's start-time checkpoint verification) always
+        # pass finished_after=UTC_MIN, since the whole point is to ignore the
+        # watermark and re-check that one build regardless of it. Printing UTC_MIN
+        # there reads as a suspiciously stuck watermark, so name the build instead
+        # of the epoch it is scanning from.
         scope_desc = f"for build {build_id}"
     elif stop_at is not None:
         # Anchored: finished_after is UTC_MIN and printing it reads as exactly the
@@ -589,6 +607,10 @@ def reconcile_once(
             f"{stop_at[1]})"
         )
     elif watermark_build_id is not None:
+        # Steady state: the bound is a real timestamp, so print it — but name the
+        # build it came from too, so it can be traced back to its source row
+        # rather than read as an arbitrary epoch. That is what makes a genuinely
+        # stuck watermark recognizable as stuck.
         scope_desc = (
             f"at or after {finished_after} (the watermark from build "
             f"{watermark_build_id})"

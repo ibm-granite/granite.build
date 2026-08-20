@@ -143,13 +143,18 @@ class LineageWatcher:
         # retried at the top of each scan until a checkpoint is seeded — a
         # watcher started before seeding must still get the sweep, otherwise the
         # unrecorded targets behind the seeded watermark would have no path back
-        # until the next restart.
+        # until the next restart. Latches on the first True and is never cleared:
+        # the sweep repairs a crash gap in the checkpoint this process started
+        # from, which a later checkpoint does not reintroduce (see
+        # _verify_checkpoint).
         self._checkpoint_verified = False
         # Whether the "no checkpoint yet" notice has been logged. The check runs
         # every scan, so without this the message would repeat forever at the
         # monitoring interval; it is a one-time operator notice, not a per-scan
-        # event. Reset once a checkpoint is seen, so a checkpoint that is later
-        # deleted is announced again.
+        # event. Reset once a checkpoint is seen — defensive only: nothing in the
+        # codebase deletes the key (seeding either keeps or overwrites it, see
+        # seed_if_absent), so the absent -> present -> absent cycle this reset
+        # covers is not a path any caller can currently drive.
         self._missing_checkpoint_logged = False
 
     def start(self) -> None:
@@ -197,7 +202,19 @@ class LineageWatcher:
         seeded, otherwise at the first scan that finds one. Returns ``True`` when
         the sweep is done with (including the malformed-checkpoint case, which no
         amount of retrying fixes) and ``False`` while it is still pending because
-        no checkpoint exists yet. This closes the gap left by a crash between
+        no checkpoint exists yet.
+
+        Once it returns ``True`` the caller latches ``_checkpoint_verified`` and
+        this never runs again for the process's lifetime — deliberately, and it is
+        not a recovery gap. The sweep exists to close a *crash* gap (below), which
+        is a property of the checkpoint the process started from, not something a
+        later checkpoint reintroduces: a ``--force-build-id`` overwrite resolves a
+        fresh anchor from a chosen build, so there is no interrupted
+        record-then-persist to repair, and re-sweeping would re-drive that build
+        for nothing. There is likewise no delete-then-reseed cycle to handle,
+        since no code path removes the key.
+
+        This closes the gap left by a crash between
         recording a target and persisting its checkpoint (or vice versa): the
         checkpoint may name a target whose lineage never reached the sink, and
         the steady-state scan — which starts *at* that watermark — would not
@@ -518,8 +535,7 @@ class LineageWatcher:
           ``datetime.min`` that is then re-tagged *local*. That is the same
           instant only when the reader sits at UTC, so a bare ``!= UTC_MIN`` would
           leave the anchor in place on every non-UTC deployment and re-walk the
-          whole target table on every scan, forever. Mirrors the ``floor``
-          comparison in ``_reconcile``.
+          whole target table on every scan, forever.
         - ``watermark_untouched``: the pass recorded nothing, failed nothing and
           dropped nothing (see ``reconcile_once``). Any of those would mean
           unrecorded lineage sits *behind* the new anchor, and the steady-state
