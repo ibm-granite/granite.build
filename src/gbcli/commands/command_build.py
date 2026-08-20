@@ -250,51 +250,6 @@ def cli(ctx):
 
 @cli.command()
 @click.pass_context
-@click.option(
-    "-f",
-    "--filename",
-    "filename",
-    required=True,
-    help="Parameterized build.yaml to render.",
-)
-@click.option(
-    "--param", multiple=True, help="Override parameter 'KEY=VALUE' (repeatable)."
-)
-@click.option(
-    "--parameters-path",
-    "parameters_path",
-    help="parameters.yaml (defaults to the sibling of -f).",
-)
-@click.option(
-    "-o", "--out", "out_file", help="Write resolved build.yaml here (default: stdout)."
-)
-def render(ctx, filename, param, parameters_path, out_file):
-    """Apply parameters and output the executable build.yaml (to stdout by default)."""
-    from pathlib import Path
-
-    from gbcli.services.service_render import RenderError, render_build_yaml
-
-    try:
-        # NB: this module defines a `list` command, shadowing the builtin, so pass
-        # the `param` tuple directly (render_build_yaml does its own list()).
-        text = render_build_yaml(
-            Path(filename),
-            param,
-            Path(parameters_path) if parameters_path else None,
-        )
-    except (RenderError, FileNotFoundError) as e:
-        click.echo(f"❌ {e}", err=True)
-        ctx.exit(1)
-
-    if out_file:
-        Path(out_file).write_text(text, encoding="utf-8")
-        click.echo(f"✅ wrote {out_file}", err=True)
-    else:
-        click.echo(text, nl=False)
-
-
-@cli.command()
-@click.pass_context
 @click.argument("build_name", required=False)
 @click.option(
     "--filename",
@@ -538,6 +493,17 @@ def init(
 )
 @click.option("--skip-validation", is_flag=True, help="Skip build contents validation.")
 @click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Resolve parameters and output the executable build.yaml WITHOUT submitting (offline; no auth/space needed). Pairs with --save-build-file.",
+)
+@click.option(
+    "--save-build-file",
+    type=click.Path(dir_okay=False, writable=True),
+    help="With --dry-run, write the resolved build.yaml here (default: stdout).",
+)
+@click.option(
     "--parameters-path",
     type=click.Path(exists=True, readable=True, dir_okay=False),
     help="Path to parameters.yaml file.",
@@ -572,6 +538,8 @@ def start(
     tag: tuple,
     tags: str,
     skip_validation,
+    dry_run,
+    save_build_file,
     parameters_path,
     verbose_validation,
     format,
@@ -606,6 +574,33 @@ def start(
                     sys.exit(1)  # Exit with a non-zero status
             case _:
                 pass
+
+    if dry_run:
+        # Offline: resolve parameters and emit the executable build.yaml without
+        # contacting the server (no version check, banner, auth, or space needed).
+        build_client = GBClient.Build(get_user_token())
+        resolved = build_client.build_start(
+            True,
+            filename,
+            space,
+            param,
+            skip_validation,
+            parameters_path,
+            targets,
+            description,
+            [],
+            callback=echo_callback,
+            validation_type=validation_type,
+            dry_run=True,
+            save_build_file=save_build_file,
+        )
+        if resolved is None:
+            ctx.exit(1)
+        if save_build_file:
+            click.echo(f"✅ wrote {save_build_file}", err=True)
+        else:
+            click.echo(resolved, nl=False)
+        return
 
     if not skip_version_check and not is_standalone():
         try:
@@ -2286,9 +2281,37 @@ def log(
     default=False,
     help="Output build file contents",
 )
+@click.option(
+    "--param",
+    multiple=True,
+    help="Build run parameter ('param_name=param_value'). Use this option again to provide multiple parameters.",
+)
+@click.option(
+    "--parameters-path",
+    type=click.Path(exists=True, readable=True, dir_okay=False),
+    help="Path to parameters.yaml file.",
+)
 @common_options
-def describe(ctx, build_id, filename, format, space, raw, skip_version_check, quiet):
-    """Describe targets steps, description of a build"""
+def describe(
+    ctx,
+    build_id,
+    filename,
+    format,
+    space,
+    raw,
+    param,
+    parameters_path,
+    skip_version_check,
+    quiet,
+):
+    """Describe targets steps, description of a build.
+
+    With --raw, prints the build file. Supply --param/--parameters-path to
+    resolve a parameterized ($${...}) build.yaml through the same engine
+    `gb build start` uses, e.g.:
+
+        gb build describe -f template/build.yaml --raw --param ENV=skypilot/aws
+    """
     if not skip_version_check:
         try:
             outdated_version = check_current_and_latest_versions()
@@ -2374,6 +2397,8 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
                 build_id,
                 id_format,
                 space,
+                params=param,
+                parameters_path=parameters_path,
                 callback=echo_callback,
             )
             if build and build["build"]:
@@ -2475,6 +2500,8 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
                 build_id,
                 id_format,
                 space,
+                params=param,
+                parameters_path=parameters_path,
                 callback=echo_callback,
             )
             click.echo(yaml_str)
