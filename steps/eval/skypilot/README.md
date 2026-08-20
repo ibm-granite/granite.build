@@ -54,7 +54,7 @@ Eval-specific notes:
   release, e.g. `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
   `make publish-image` against the placeholder will fail auth — set a real
   registry first. `IMAGE_TAG` defaults to the git short SHA.
-- At `make space` time the image references
+- At `make space` time the image reference
   `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)` is substituted into **both** launcher
   blocks — the Skypilot `image_id: "docker:${IMAGE_REF}"` and the Docker
   launcher's `image` (see below).
