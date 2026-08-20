@@ -21,6 +21,13 @@ configured lineage store (see ``lineage_reconciler`` / ``lineage_watcher``).
 Deployed as its own single-replica pod (``dep-lineage-watcher.yaml``) so the
 single-writer guarantee is a deployment fact and lineage recording is isolated
 from the build watcher's failure domain, restarts, and resource contention.
+
+``--base-build-id`` is optional. Without it the watcher reads the ``gb_kv_pairs``
+checkpoint and, when the key is absent, records nothing until it is seeded. With
+it, an *absent* key is seeded before the first scan, so a fresh deployment does
+not need a separate exec/init-container step just to become useful. It never
+overwrites an existing checkpoint, which is what makes it safe to leave in a pod
+spec across restarts.
 """
 
 import traceback
@@ -28,7 +35,9 @@ import traceback
 import click
 
 from gbserver.lineage.jobstats import get_lineage_store
+from gbserver.lineage.lineage_seeding import LineageSeedError, seed_if_absent
 from gbserver.lineage.lineage_watcher import LineageWatcher
+from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
 
@@ -44,8 +53,39 @@ logger = get_logger(__name__)
     show_default=True,
     help="Seconds between admin-DB reconciliation scans.",
 )
+@click.option(
+    "--base-build-id",
+    required=False,
+    type=str,
+    default=None,
+    metavar="from-latest|all|BUILD_ID",
+    help=(
+        "Seed the lineage checkpoint before the first scan, but only if it is "
+        "not already set: 'from-latest' starts at the most recent build, 'all' "
+        "walks the full history (expensive first scan), any other value is "
+        "treated as a build id. Either way the anchor is that build's oldest "
+        "completed target, so the build is recorded whole rather than from its "
+        "middle. Omit to use whatever is already in gb_kv_pairs "
+        "(recording nothing while the key is absent). Never overwrites an "
+        "existing checkpoint."
+    ),
+)
+@click.option(
+    "--force-build-id",
+    required=False,
+    type=str,
+    default=None,
+    metavar="from-latest|all|BUILD_ID",
+    help=(
+        "Replace an existing lineage checkpoint instead of keeping it. Same spec "
+        "values as --base-build-id. Moving the anchor back re-drives lineage "
+        "already recorded; moving it forward skips lineage for good. Never put "
+        "this in a Deployment spec — it would re-apply on every restart. Mutually "
+        "exclusive with --base-build-id."
+    ),
+)
 @pass_environment
-def cli(ctx: CliEnvironment, interval: float):
+def cli(ctx: CliEnvironment, interval: float, base_build_id: str, force_build_id: str):
     """Start the centralized lineage recording watcher."""
     store = get_lineage_store()
     if not store.records_centralized_lineage:
@@ -56,6 +96,47 @@ def cli(ctx: CliEnvironment, interval: float):
             "lineage-watch has nothing to do. Exiting."
         )
         return
+
+    # Reject empty anchors before the dispatch below, which tests truthiness: an
+    # empty string passes the `is not None` guard, then matches neither branch, so
+    # the watcher would start unseeded and record nothing while the operator
+    # believes an anchor was applied. Erroring beats normalizing to None, which
+    # would turn an explicit --force-build-id into a silent no-seed.
+    for flag, value in (
+        ("--base-build-id", base_build_id),
+        ("--force-build-id", force_build_id),
+    ):
+        if value is not None and not value.strip():
+            raise click.ClickException(
+                f"{flag} was given an empty value; pass "
+                "'from-latest', 'all', or a build id."
+            )
+
+    if base_build_id is not None and force_build_id is not None:
+        # One anchor decision per invocation: the two flags disagree by
+        # construction (keep-if-present vs replace), so accepting both would make
+        # the outcome depend on evaluation order.
+        raise click.ClickException(
+            "--base-build-id and --force-build-id are mutually exclusive; pass "
+            "only one."
+        )
+
+    if force_build_id:
+        try:
+            seed_if_absent(get_admin_storage(), force_build_id, force=True)
+        except LineageSeedError as exc:
+            raise click.ClickException(str(exc)) from exc
+    elif base_build_id:
+        # Seed-if-absent, before start(): the watcher's own _verify_checkpoint
+        # and first scan both read the key, so placing it here means the very
+        # first scan is already driven by it. A failure to resolve the anchor is
+        # fatal on purpose — the operator asked for a specific starting point,
+        # and silently starting up with no checkpoint (recording nothing) would
+        # look like a working watcher that never records.
+        try:
+            seed_if_absent(get_admin_storage(), base_build_id)
+        except LineageSeedError as exc:
+            raise click.ClickException(str(exc)) from exc
 
     lineage_watcher = LineageWatcher(monitoring_interval=interval)
     try:

@@ -1,3 +1,4 @@
+import os
 import random
 import string
 
@@ -10,6 +11,10 @@ from gbserver.spacesecretmanager.ibmcloudspacesecretmanager import (
 pytestmark = pytest.mark.ibm
 
 
+@pytest.mark.skipif(
+    not os.getenv("IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL"),
+    reason="IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL not set (required to reach IBM Secret Manager)",
+)
 class TestIbmcloudSpaceSecretManagerAdmin:
     """
     Skipping this test by default because it uses actual access to IBM Secret Manager API. To run it,

@@ -86,6 +86,19 @@ class URI(ABC):
 
     @staticmethod
     def _load_urihandlers() -> None:
+        from gbcommon.plugins import (
+            GROUP_URI_HANDLERS,
+            PluginRegistrar,
+            keys_from_method,
+        )
+
+        # Files each URI handler under the scheme(s) it advertises. Both the
+        # in-tree scan and the plugin pass register through this one registrar.
+        registrar = PluginRegistrar(
+            URI.uri_handler_classes,
+            "URI scheme",
+            keys_from_method("get_supported_schemes"),
+        )
         package_dir = os.path.dirname(__file__)
 
         for filename in os.listdir(package_dir):
@@ -106,11 +119,7 @@ class URI(ABC):
                         if isinstance(handler_class, type) and issubclass(
                             handler_class, URI
                         ):
-                            supported_schemes = handler_class.get_supported_schemes()
-                            for supported_scheme in supported_schemes:
-                                URI.uri_handler_classes[supported_scheme] = (
-                                    handler_class
-                                )
+                            registrar.add(handler_class)
                         else:
                             logger.error(
                                 f"Ignoring {urihandler_name} since it is not a subclass or URI class"
@@ -125,6 +134,10 @@ class URI(ABC):
                     logger.error(
                         f"Error loading uri handler from {urihandler_name}: {e}"
                     )
+
+        # Discover URI handlers shipped by separately-installed plugin packages.
+        # Runs after the in-tree scan so the core-wins rule protects built-ins.
+        registrar.discover(GROUP_URI_HANDLERS, URI)
 
     @classmethod
     def get_uri_class(

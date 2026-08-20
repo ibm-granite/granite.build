@@ -1014,6 +1014,7 @@ GB_ARTIFACT_REGISTRY_TABLE_NAME = "gb_artifacts"
 GB_TARGET_RUNS_TABLE_NAME = "gb_targets"
 GB_NODE_FAILURES_TABLE_NAME = "gb_ndfail"
 GB_SPACE_USERS_TABLE_NAME = "gb_space_users"
+GB_KV_PAIRS_TABLE_NAME = "gb_kv_pairs"
 
 GB_JOB_STATS_DETAIL_CATEGORY = "granite-dot-build"
 GB_JOB_STATS_DETAIL_TYPE = "granite-dot-build"

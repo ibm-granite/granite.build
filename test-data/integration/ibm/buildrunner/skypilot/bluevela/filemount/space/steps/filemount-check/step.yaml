@@ -26,9 +26,9 @@ environment_configs:
           # the cluster. The source is relative, so the Skypilot launcher resolves
           # it against the step.yaml's own directory (the per-run asset dir) — this
           # is the behavior under test. The DESTINATION is also relative, which
-          # gbserver remaps under the per-run build workdir (${GB_BUILD_WORKDIR},
-          # on the shared /proj FS that is bind-mounted identity into the enroot
-          # container). The run script's CWD is that same workdir, so the payload
+          # gbserver remaps under the per-run build workdir (on the shared /proj FS
+          # that is bind-mounted identity into the enroot container). The run
+          # script's CWD is that same workdir, so the payload
           # is reachable at exactly ./payload — the same path, relative to the
           # step, that the source occupies on disk (relative in, relative out).
           # This exercises both container-visibility and per-target isolation.
@@ -37,7 +37,7 @@ environment_configs:
           run: |
             set -euo pipefail
             # Verify file_mounts copied the step-relative payload dir to the
-            # matching relative path in the run CWD (${GB_BUILD_WORKDIR}).
+            # matching relative path in the run CWD (the per-run workdir).
             # `set -e` + `test` fail the step (=> build FAILED) if it is absent.
             echo "verifying file_mounts copied the step-relative payload dir..."
             test -d ./payload

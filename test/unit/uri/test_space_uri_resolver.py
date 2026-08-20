@@ -145,15 +145,53 @@ def _resolved_dir(uri: URI) -> Path:
 
 
 class TestTier1EnvColocated:
-    def test_env_colocated_hit_wins_over_base(self, tmp_path):
-        """A step inside the active env's own dir wins over a same-named step
-        reachable via base_uris."""
-        base = _write_step(tmp_path / "base" / "steps" / "hello").parent.parent
+    def test_env_colocated_hit_wins_over_inherited_base(self, tmp_path):
+        """A step in the active env's own dir wins over a same-named step in an
+        *inherited* base_uri (base_uris[1:]).  Only the space's own root
+        (base_uris[0]) outranks an env-co-located step (see the space-root tests
+        below); an inherited base does not."""
+        space_root = tmp_path / "space"  # base_uris[0], ships no steps/hello
+        space_root.mkdir()
+        inherited = _write_step(tmp_path / "assets" / "steps" / "hello").parent.parent
         env_dir = tmp_path / "envs" / "bash"
         colocated = _write_step(env_dir / "steps" / "hello")
-        _set_bases(base)
+        _set_bases(space_root, inherited)
 
         with SpaceURI.with_current_env(_make_env("Bash", env_dir)):
+            resolved = _resolve("space://steps/hello")
+
+        assert _resolved_dir(resolved).samefile(colocated)
+
+    def test_space_root_step_wins_over_env_colocated(self, tmp_path):
+        """The space's own root step (base_uris[0]/steps/<name>) overrides an
+        env-co-located step of the same name — so a step developed in its own
+        space is exercised before it is published into an inherited tree."""
+        space_root = tmp_path / "space"
+        space_step = _write_step(space_root / "steps" / "hello")
+        env_dir = tmp_path / "assets" / "skypilot" / "slurm"
+        _write_step(env_dir / "steps" / "hello")  # env-co-located, must lose
+        _set_bases(space_root, tmp_path / "assets")
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            resolved = _resolve("space://steps/hello")
+
+        assert _resolved_dir(resolved).samefile(space_step)
+
+    def test_space_root_step_skipped_when_subtypes_exclude_env(self, tmp_path):
+        """A space-root step whose ``subtypes`` exclude the active env is skipped,
+        so resolution falls through to the env-co-located step (the space-root
+        priority never bypasses the sub-type gate)."""
+        space_root = tmp_path / "space"
+        _write_step(
+            space_root / "steps" / "hello",
+            env_classes=["Skypilot"],
+            subtypes=["kubernetes"],  # excludes aws
+        )
+        env_dir = tmp_path / "assets" / "skypilot" / "aws"
+        colocated = _write_step(env_dir / "steps" / "hello")
+        _set_bases(space_root, tmp_path / "assets")
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir, subtype="aws")):
             resolved = _resolve("space://steps/hello")
 
         assert _resolved_dir(resolved).samefile(colocated)
@@ -468,6 +506,102 @@ class TestSubtypeMatching:
 
 
 # --------------------------------------------------------------------------- #
+# Env-class presence — directory tiers must reject steps scoped to other classes
+# --------------------------------------------------------------------------- #
+
+
+class TestEnvClassPresence:
+    """The directory-based tiers (space-root, ancestor-walk, Tier-3 fallback)
+    must not admit a step whose ``environment_configs`` declares only *other*
+    env classes — such a step cannot run under the active environment."""
+
+    def test_space_root_mismatch_does_not_shadow_colocated(self, tmp_path):
+        """A space-root step declaring only another class (``Bash``) must NOT
+        shadow a valid co-located step for the active class (``Skypilot``);
+        resolution falls through the space-root priority to the co-located one."""
+        space_root = tmp_path / "space"
+        _write_step(space_root / "steps" / "foo", env_classes=["Bash"])
+        env_dir = tmp_path / "assets" / "skypilot" / "slurm"
+        colocated = _write_step(env_dir / "steps" / "foo", env_classes=["Skypilot"])
+        _set_bases(space_root, tmp_path / "assets")
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            resolved = _resolve("space://steps/foo")
+
+        assert _resolved_dir(resolved).samefile(colocated)
+
+    def test_ancestor_walk_skips_mismatched_class_step(self, tmp_path):
+        """A nearest (own-dir) step keyed for a different class is skipped by the
+        class gate and the walk continues to an admitting ancestor (mirrors the
+        sub-type own-dir-skip test, but for the class dimension)."""
+        base = tmp_path / "assets"
+        ancestor = _write_step(
+            base / "skypilot" / "steps" / "digit", env_classes=["Skypilot"]
+        )
+        env_dir = base / "skypilot" / "aws"
+        _write_step(env_dir / "steps" / "digit", env_classes=["Bash"])  # wrong class
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir, subtype="aws")):
+            resolved = _resolve("space://steps/digit")
+
+        assert _resolved_dir(resolved).samefile(ancestor)
+
+    def test_fallback_rejects_mismatched_class_step(self, tmp_path):
+        """A Tier-3 env-agnostic fallback hit whose ``environment_configs`` lists
+        only another class is rejected, so resolution raises rather than
+        resolving to a step that cannot run under the active env."""
+        space_root = tmp_path / "space"  # base_uris[0], ships no steps/foo
+        space_root.mkdir()
+        _write_step(tmp_path / "assets" / "steps" / "foo", env_classes=["Bash"])
+        _set_bases(space_root, tmp_path / "assets")
+
+        # No env dir -> Tier 1 walk is inert; Tier 2 skips (class absent); Tier 3
+        # finds assets/steps/foo but the class gate rejects it.
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/foo")
+
+    def test_step_without_environment_configs_stays_universal(self, tmp_path):
+        """A step that declares no ``environment_configs`` at all is env-agnostic
+        and still resolves for any active class — the class gate only applies to
+        a step that *declares* the block (preserves directory-placed steps)."""
+        base = tmp_path / "assets"
+        universal = _write_step(base / "steps" / "foo")  # no environment_configs
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            resolved = _resolve("space://steps/foo")
+
+        assert _resolved_dir(resolved).samefile(universal)
+
+    def test_present_but_null_class_entry_resolves(self, tmp_path):
+        """A step keyed for the active class with a **null** value
+        (``environment_configs: {Skypilot:}``) declares the class and must
+        resolve — presence is by key, not value. A value-based ``is None`` gate
+        would wrongly skip this step, which is scoped to exactly the active env."""
+        base = tmp_path / "assets"
+        step_dir = base / "steps" / "foo"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        (step_dir / "step.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "foo",
+                    "version": "v1",
+                    "type": "custom",
+                    "environment_configs": {"Skypilot": None},
+                }
+            )
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            resolved = _resolve("space://steps/foo")
+
+        assert _resolved_dir(resolved).samefile(step_dir)
+
+
+# --------------------------------------------------------------------------- #
 # Tier 2 — env-class match (specificity + tie-break)
 # --------------------------------------------------------------------------- #
 
@@ -483,6 +617,38 @@ class TestTier2EnvClassMatch:
 
         with SpaceURI.with_current_env_class_name("K8s"):
             resolved = _resolve("space://steps/s3push")
+
+        assert _resolved_dir(resolved).samefile(specific)
+
+    def test_present_but_null_class_entry_wins_specificity(self, tmp_path):
+        """A present-but-null class entry (``{K8s:}``) is admitted by this tier and
+        ranks by specificity like any declared class.
+
+        Pins the fix for the second env-class gate: a value-based
+        ``_env_config_entry(...) is not None`` check would silently drop the
+        null-valued, single-env file, letting the less-specific multi-env catch-all
+        win here — disagreeing with the sibling ``_env_ok`` tier. With presence
+        decided by key, the null-valued split file (1 key) beats the catch-all.
+        This tier must decide (no env dir, so Tier 1 is inert and Tier 3 never runs).
+        """
+        base = tmp_path / "base"
+        _write_step(base / "foo", env_classes=["K8s", "Skypilot"])  # catch-all, 2 keys
+        specific = base / "k8s" / "foo"  # null-valued, single-env
+        specific.mkdir(parents=True, exist_ok=True)
+        (specific / "step.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "foo",
+                    "version": "v1",
+                    "type": "custom",
+                    "environment_configs": {"K8s": None},
+                }
+            )
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("K8s"):
+            resolved = _resolve("space://steps/foo")
 
         assert _resolved_dir(resolved).samefile(specific)
 

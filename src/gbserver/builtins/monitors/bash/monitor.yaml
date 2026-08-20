@@ -1,8 +1,8 @@
 # Shared monitor for the `log_monitor` type (Bash environment). Referenced by
 # bash steps via `ref: space://monitors/bash`. Streams every log line as a
 # MESSAGE_EVENT and detects the standard LLMB artifact markers (env:// PATH and
-# mem:// STATE forms). Steps that emit no artifact markers simply never fire
-# those events.
+# mem:// STATE forms) plus the LLMB_STEP_METADATA_KEY/VALUE step-metadata marker.
+# Steps that emit no markers simply never fire those events.
 type: log_monitor
 config:
   event_configs:
@@ -48,3 +48,19 @@ config:
         - field_name: binding
           field_value_template: '{ "state": "{{ fields.data.state }}" }'
           is_json: true
+    # step metadata: a line that BEGINS with
+    #   LLMB_STEP_METADATA_KEY:<key> LLMB_STEP_METADATA_VALUE:<value>
+    # merges <value> into the step's StoredStepRun.metadata under <key> (e.g. a
+    # git commit_hash resolved at runtime). Both fields are top-level, so they are
+    # splatted into StepMetadataUpdateEventPayload. `^`-anchored for the same
+    # reason as the artifact markers (the command step echoes the command back).
+    - event_type: STEP_METADATA_UPDATE_EVENT
+      line_regex: "^LLMB_STEP_METADATA_KEY:.* LLMB_STEP_METADATA_VALUE:.*"
+      is_json: false
+      event_fields:
+        - field_name: metadata_key
+          field_regex: "(?<=LLMB_STEP_METADATA_KEY:)[^ ]+"
+        - field_name: metadata_value
+          # Trim trailing whitespace/carriage-return (CRLF logs) so it is not folded
+          # into the value; internal spaces are preserved.
+          field_regex: '(?<=LLMB_STEP_METADATA_VALUE:).*?(?=\s*$)'

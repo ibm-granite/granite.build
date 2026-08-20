@@ -1,0 +1,37 @@
+# YAML-driven spec for test_skypilot_aws_eval.py (located by the test/ <-> test-data/
+# helper, so this pairing holds in both test modes; see steps/README.md).
+# The target runs the eval step (space://steps/eval) on the SkyPilot aws
+# environment (a real EC2 backend), pulling the step's PUBLISHED image. HF-free
+# (env:// output) so it needs no HF_TOKEN — only AWS credentials. build_yaml
+# defaults to ./build.yaml (sibling).
+targets:
+  - eval-run
+target_expectations:
+  - target_name: eval-run
+    # One workload runs and registers one env:// output artifact; there are no
+    # inputs. jobstats_count is not asserted under standalone's NoopLineageStore
+    # but is kept accurate for a single step.
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    jobstats_count: 1
+# The Space this test resolves the step (and the skypilot/aws environment +
+# monitors) through. In the step dir (Mode 1) it is the local Space rendered by `make space`
+# two levels up (steps/eval/skypilot/space/), which carries steps/eval/step.yaml
+# and chains (base_uris) to configurations/assets. When `make publish-step` copies this
+# fixture into test-data/steps/ (Mode 2), it rewrites this line to point at the
+# shared space configurations/spaces/local, which resolves the PUBLISHED step from
+# the assets tree. Either way the build references the step by space://steps/eval.
+space_uri: ../../../../../configurations/spaces/local
+# A single clean run with no injected synthetic failure: a failed eval command
+# fails the build, so reaching SUCCESS proves the step ran end to end on real EC2.
+simulate_step_failure: false
+# Run only the basic build (skip the cancellation variant) — once the node is up
+# the placeholder eval finishes near-instantly, so there is no stable RUNNING
+# window to cancel.
+tests:
+  - runner
+# EC2 provisioning (and autostop teardown), plus pulling the eval image, is far
+# slower than the local Docker environment: allow for cold-start instance
+# bring-up plus SkyPilot setup and the image pull.
+timeout_minutes: 40

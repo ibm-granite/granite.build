@@ -16,6 +16,7 @@ from libgbtest.constants import (
     GBTEST_NON_ADMIN_GITHUB_TOKEN,
     GBTEST_SPACE_NAME,
 )
+from libgbtest.mode import is_mock_mode
 from libgbtest.storage.artifact_storage import ArtifactStorageTestSupport
 from libgbtest.storage.build_storage import BuildStorageTestSupport
 from libgbtest.storage.step_storage import StepStorageTestSupport
@@ -377,6 +378,17 @@ class TestBuildAPI(AbstractAPITest):
 
     def _helper_for_test_submit(self, as_admin: bool):
 
+        # The admin path registers a super-admin and then switches to the
+        # non-admin client to assert a 401. In mock mode the apikey auth
+        # middleware resolves every token to a single synthetic user, so that
+        # client is the same (now-admin) user and the 401 assertions can't hold.
+        # The non-admin path still works in mock: the synthetic user is not an
+        # admin, so system-tag submits are correctly rejected.
+        if as_admin and is_mock_mode():
+            pytest.skip(
+                reason="apikey auth maps every token to one synthetic user; "
+                "admin/non-admin authorization requires live GitHub identities"
+            )
         admin_token = GBTEST_ADMIN_GITHUB_TOKEN
         non_admin_token = GBTEST_NON_ADMIN_GITHUB_TOKEN
         if as_admin:

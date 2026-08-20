@@ -4,6 +4,7 @@ from abc import abstractmethod
 from gbserver.storage.artifact_registry import IArtifactRegistry
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.event_storage import IStoredEventStorage
+from gbserver.storage.kv_pair_storage import IKeyValuePairStorage
 from gbserver.storage.node_failure_storage import INodeFailureStorage
 from gbserver.storage.space_storage import IStoredSpaceStorage
 from gbserver.storage.space_user_storage import ISpaceUserStorage
@@ -43,4 +44,8 @@ class StorageFactory(abc.ABC):
 
     @abstractmethod
     def create_space_user_storage(self, table_name: str) -> ISpaceUserStorage:
+        raise ValueError("Sub-class must implement")
+
+    @abstractmethod
+    def create_kv_pair_storage(self, table_name: str) -> IKeyValuePairStorage:
         raise ValueError("Sub-class must implement")

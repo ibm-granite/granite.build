@@ -135,6 +135,19 @@ class Assetstore(ABC):
     def _load_assetstore_types(cls):
         if len(cls.assetstore_types) != 0:
             return
+        from gbcommon.plugins import (
+            GROUP_ASSET_STORES,
+            PluginRegistrar,
+            keys_from_method,
+        )
+
+        # Files each asset store under the URI class(es) it supports. Both the
+        # in-tree scan and the plugin pass register through this one registrar.
+        registrar = PluginRegistrar(
+            cls.assetstore_types,
+            "Asset store for URI class",
+            keys_from_method("get_supported_uri_classes"),
+        )
         package_dir = os.path.dirname(__file__)
 
         for filename in os.listdir(package_dir):
@@ -155,8 +168,7 @@ class Assetstore(ABC):
                         if isinstance(handler_class, type) and issubclass(
                             handler_class, cls
                         ):
-                            for uriclass in handler_class.get_supported_uri_classes():
-                                cls.assetstore_types[uriclass] = handler_class
+                            registrar.add(handler_class)
                         else:
                             logger.error(
                                 f"Ignoring {assetstore_classname} since it is not a subclass of AssetStore class"
@@ -173,6 +185,10 @@ class Assetstore(ABC):
                     logger.error(
                         f"Error loading AssetStore type from {assetstore_classname}: {e}"
                     )
+
+        # Discover asset stores shipped by separately-installed plugin packages.
+        # Runs after the in-tree scan so the core-wins rule protects built-ins.
+        registrar.discover(GROUP_ASSET_STORES, cls)
 
     @classmethod
     @abstractmethod

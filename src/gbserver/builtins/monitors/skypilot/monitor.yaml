@@ -4,6 +4,9 @@
 # `ref: space://monitors/skypilot` and overrides only what differs (poll
 # interval, log_retrieval mode, extra event_configs).
 #
+# It also detects the LLMB_STEP_METADATA_KEY/VALUE marker, merged into the step's
+# StoredStepRun.metadata (e.g. a git commit_hash resolved at runtime).
+#
 # The artifact event emits a `binding` payload ({"path": <artifact path>}) — this
 # is what downstream targets dereference as `{{ bindings.<x>.binding.path }}`, and
 # it enables retry-transparent NEWARTIFACT deduplication. Every {{ config.* }}
@@ -54,3 +57,31 @@ config:
         - field_name: binding
           field_value_template: '{ "state": "{{ fields.data.state }}" }'
           is_json: true
+    # step metadata: merges <value> into the step's StoredStepRun.metadata under
+    # <key> (e.g. a git commit_hash resolved at runtime). Both fields are
+    # top-level, so they are splatted into StepMetadataUpdateEventPayload.
+    #
+    # Unlike the artifact blocks above, this marker is anchored: step metadata
+    # surfaces in lineage as authoritative build provenance, so it must not be
+    # injectable by arbitrary mid-stream output from cloned-repo code (e.g. a byoc
+    # command echoing a config that happens to contain the marker substring). The
+    # anchor permits ONLY SkyPilot's own log prefix — a leading `(name, pid=N) `
+    # group — before the marker, then requires the marker immediately; a marker
+    # sitting mid-line after other text no longer matches.
+    #
+    # ANSI note: SkyPilot colourises that prefix (`\x1b[36m(...)\x1b[0m`) in its
+    # retrieved logs, but escape sequences are stripped centrally in
+    # get_events_from_log_line before this regex runs, so it only ever sees the
+    # plain `(name, pid=N) ` text — no ANSI handling belongs here. (Limitation:
+    # SkyPilot prefixes every line including user output, so a deliberate clean-line
+    # echo of just the marker is still indistinguishable from the scaffold's own
+    # emission; anchoring closes the incidental/embedded case, not that residual one.)
+    - event_type: STEP_METADATA_UPDATE_EVENT
+      line_regex: '^(\([^)]*\)\s+)?LLMB_STEP_METADATA_KEY:.* LLMB_STEP_METADATA_VALUE:.*'
+      event_fields:
+        - field_name: metadata_key
+          field_regex: "(?<=LLMB_STEP_METADATA_KEY:)[^ ]+"
+        - field_name: metadata_value
+          # Trim trailing whitespace/carriage-return (CRLF logs) so it is not folded
+          # into the value; internal spaces are preserved.
+          field_regex: '(?<=LLMB_STEP_METADATA_VALUE:).*?(?=\s*$)'

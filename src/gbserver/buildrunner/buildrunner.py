@@ -73,6 +73,7 @@ from gbserver.types.buildevent import (
     BuildEventType,
     BuildEventWorkloadStatusPayload,
     CreatedArtifactEventPayload,
+    StepMetadataUpdateEventPayload,
 )
 from gbserver.types.constants import (
     DEFAULT_DIR_PERMS,
@@ -172,6 +173,14 @@ class BuildRunner(AbstractBuildRunner):
         # is written unconditionally, but entity finalization only touches
         # unfinished entities).
         self._finalize_lock = threading.Lock()
+        # Buffers step metadata (targetsteprun_id -> {key: value}) pushed by a
+        # STEP_METADATA_UPDATE_EVENT that is processed before the status event which
+        # creates the StoredStepRun row. These come from different producers (log
+        # parsing vs. step lifecycle) with no ordering guarantee, so the value is held
+        # here and flushed onto the row once it exists (see _apply_pending_step_metadata),
+        # rather than dropped. The single serial worker loop is the only accessor, so
+        # no lock is needed.
+        self._pending_step_metadata: dict[str, dict[str, str]] = {}
 
     def stop(self: Self) -> None:
         """Stop the building thread if it was started."""
@@ -920,6 +929,8 @@ class BuildRunner(AbstractBuildRunner):
             self.__process_workload_status_event(event=event)
         elif event.type is BuildEventType.METRICS_EVENT:
             self.__process_metrics_event(event=event)
+        elif event.type is BuildEventType.STEP_METADATA_UPDATE_EVENT:
+            self.__process_step_metadata_update_event(event=event)
         else:
             logger.error("unsupported event type: %s", event)
         logger.debug("BuildRunner.process_event end")
@@ -1752,4 +1763,69 @@ Download : {download_msg}
             stored_step_run.uuid == targetsteprun_id
         ), f"expected {targetsteprun_id} actual {stored_step_run.uuid}"
         logger.info("creating/updating the step: %s", stored_step_run)
+        # Merge any step metadata buffered before this row existed (a log-parsed
+        # STEP_METADATA_UPDATE_EVENT can race ahead of this status event) so the
+        # single update below persists status and metadata together, rather than
+        # re-fetching and writing a second time. The buffer is cleared only after
+        # the write succeeds.
+        pending_metadata = self._pending_step_metadata.get(targetsteprun_id)
+        if pending_metadata:
+            stored_step_run.metadata.update(pending_metadata)
         self.storage.step_storage.update(stored_step_run)
+        if pending_metadata:
+            del self._pending_step_metadata[targetsteprun_id]
+
+    def __process_step_metadata_update_event(self: Self, event: BuildEvent) -> None:
+        """Buffer a runtime key/value and merge it into the step's metadata.
+
+        Correlates via event.run_metadata.targetsteprun_id. The value is recorded in
+        _pending_step_metadata first, then flushed onto StoredStepRun.metadata by
+        _apply_pending_step_metadata. If the row does not exist yet (this log-parsed
+        event was processed before the status event that creates it), the value stays
+        buffered and is flushed when the step status handler creates the row, so
+        metadata is never lost to event-ordering.
+
+        An event with no targetsteprun_id to correlate against — e.g. a stray marker
+        in non-step output, or an uncorrelated monitor context — is dropped with a
+        warning rather than raising, matching the buffering path's "no-op if the row
+        isn't present" posture. A raise here would fail the whole build under
+        GBSERVER_RAISE_BUILD_EXCEPTIONS over a benign lineage marker.
+
+        :param event: a STEP_METADATA_UPDATE_EVENT carrying a
+            StepMetadataUpdateEventPayload.
+        """
+        payload = event.payload
+        assert isinstance(payload, StepMetadataUpdateEventPayload)
+        targetsteprun_id = event.run_metadata.targetsteprun_id
+        if not targetsteprun_id:
+            logger.warning(
+                "Ignoring STEP_METADATA_UPDATE_EVENT with no targetsteprun_id "
+                "(key=%s); nothing to correlate it to.",
+                payload.metadata_key,
+            )
+            return
+        self._pending_step_metadata.setdefault(targetsteprun_id, {})[
+            payload.metadata_key
+        ] = payload.metadata_value
+        self._apply_pending_step_metadata(targetsteprun_id)
+
+    def _apply_pending_step_metadata(self: Self, targetsteprun_id: str) -> None:
+        """Flush buffered step metadata onto its StoredStepRun row once it exists.
+
+        No-op while the row is absent (a metadata event arrived before the status
+        event that creates the row); the buffer is retried from here and from the step
+        status handler after row creation. On success the buffered keys are merged into
+        the row (existing keys preserved) and the buffer entry is cleared.
+
+        :param targetsteprun_id: uuid of the step run whose buffered metadata to flush.
+        """
+        pending = self._pending_step_metadata.get(targetsteprun_id)
+        if not pending:
+            return
+        stored = self.storage.step_storage.get_by_uuid(targetsteprun_id)
+        if stored is None:
+            return  # row not created yet; keep buffered for a later flush
+        assert isinstance(stored, StoredStepRun)
+        stored.metadata.update(pending)
+        self.storage.step_storage.update(stored)
+        del self._pending_step_metadata[targetsteprun_id]

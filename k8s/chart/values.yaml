@@ -73,6 +73,20 @@ deployments:
     # lineage store (W&B) in its own pod, off the build watcher's hot path.
     enable: true
     replicas: 1
+    # Optional. Seeds the gb_kv_pairs lineage checkpoint before the first scan,
+    # but only when the key is absent -- an existing checkpoint is never
+    # overwritten, which is what makes this safe to leave set across pod
+    # restarts. Leave unset (the default) and the watcher uses whatever is
+    # already in gb_kv_pairs, recording nothing while the key is absent.
+    #   from-latest  anchor on the most recent build
+    #   all          walk the full history (expensive first scan)
+    #   <build id>   anchor on a specific build
+    # In every case the anchor is that build's *oldest* completed target, so the
+    # build is recorded whole rather than from its middle.
+    # Note: with no successful target to anchor on, seeding fails fatally and
+    # the pod crashloops by design, rather than idling as a watcher that looks
+    # healthy but records nothing.
+    # baseBuildId: from-latest
     resources:
       limits:
         cpu: "1"

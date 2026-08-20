@@ -1,3 +1,4 @@
+import time
 from abc import abstractmethod
 from typing import Self
 
@@ -369,6 +370,31 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         # Emit the second run: now fully recorded under the count-based check.
         store._service.emit_event(events[1])
         assert store.filter_unrecorded({tid}, expected) == set()
+
+    def test_expired_recorded_verdicts_are_swept_even_when_never_re_queried(self):
+        """The positive-verdict cache is bounded by its TTL, not by process life.
+
+        Regression: expired entries were pruned only when the *same*
+        ``(target, expected_count)`` key was looked up again. The lineage
+        checkpoint advances forward only, so a recorded target eventually falls
+        behind the scan's lower bound and is never selected again -- its entry
+        then outlived its deadline forever, leaking one tuple per target ever
+        recorded. Filtering an unrelated target must still reclaim it.
+        """
+        store = self._get_tested_lineage_storage()
+        stale_key = ("target-that-is-never-selected-again", 2)
+        store._recorded_until[stale_key] = time.monotonic() - 1.0
+        live_key = ("target-still-within-its-ttl", 1)
+        store._recorded_until[live_key] = time.monotonic() + 3600.0
+
+        # A filter pass for a completely different target id: the old lazy prune
+        # touched only the queried key, so the stale entry survived.
+        store.filter_unrecorded({"some-other-target"}, None)
+
+        assert stale_key not in store._recorded_until
+        # The sweep is deadline-driven, not a flush: live verdicts are kept, so
+        # the cache still spares wandb the repeat query it exists to avoid.
+        assert live_key in store._recorded_until
 
     def test_create_from_artifact(self):
         tsts, bsts, ssts, asts = get_test_support()

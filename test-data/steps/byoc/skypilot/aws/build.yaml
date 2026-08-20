@@ -20,7 +20,7 @@ granite.build:
       steps:
         # The byoc step, resolved from the Space rendered by `make space` (see the
         # test's _get_yaml_spec_dir). It git-clones the repo below during `setup`
-        # and runs `command` from inside the clone during `run`. Identical byoc
+        # and runs `command` from the workdir root during `run`. Identical byoc
         # config to the slurm fixture — only environment_uri differs — so the same
         # step is proven on a real cloud (EC2) backend.
         - step_uri: space://steps/byoc
@@ -36,19 +36,22 @@ granite.build:
               # Default branch; the command does not depend on repo contents.
               ref: ""
               workdir: "code"
-              # Exercises setup_command: write a sentinel into $GB_BUILD_WORKDIR
-              # during setup. The run command below requires it (set -eu), so the
-              # build only reaches SUCCESS if setup_command actually ran.
+              # Exercises setup_command: write a sentinel into the cloned repo
+              # dir (code/) during setup, using a path relative to the workdir
+              # root (setup_command's CWD). The run command below requires it
+              # (set -eu), so the build only reaches SUCCESS if setup_command
+              # actually ran.
               setup_command: >-
-                echo byoc-setup-ran > "$GB_BUILD_WORKDIR/setup_marker"
+                echo byoc-setup-ran > code/setup_marker
               # Emits the artifact marker skypilot_monitor captures. The path must
-              # equal the env:// output uri path above. byoc's run block cd's into
-              # the clone first, so this runs from inside the cloned repo.
-              # `test -f` fails the step (set -eu) unless setup_command wrote the
-              # sentinel, so reaching SUCCESS proves the setup phase ran it.
+              # equal the env:// output uri path above. run starts in the workdir
+              # root (same as setup), so the marker setup wrote lives at
+              # code/setup_marker. `test -f` fails the step (set -eu) unless
+              # setup_command wrote the sentinel, so reaching SUCCESS proves the
+              # setup phase ran it.
               command: >-
-                test -f "$GB_BUILD_WORKDIR/setup_marker";
-                echo "setup marker: $(cat "$GB_BUILD_WORKDIR/setup_marker")";
+                test -f code/setup_marker;
+                echo "setup marker: $(cat code/setup_marker)";
                 echo "env input path: {{ bindings.env_input.binding.path }}";
                 echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-byoc-output.txt"
             compute_config:

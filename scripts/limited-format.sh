@@ -12,6 +12,13 @@ echo 'format start'
 # run formatter separately for each file
 for x in "${files[@]}" ;
 do
+    # Skip paths that no longer exist on disk. `git diff` lists deleted and
+    # renamed-away files, but formatting them would make isort/black fail on a
+    # missing path (isort falls back to treating it as an invalid settings dir).
+    if [[ ! -f "${x}" ]]; then
+        echo "skip missing file: ${x}"
+        continue
+    fi
     if [[ "${x}" = *.py ]]; then
         echo "${MY_LINE_BREAK}"
         echo -e "\033[0;36m Formatting file: \033[0m\033[0;32m${x}\033[0m"

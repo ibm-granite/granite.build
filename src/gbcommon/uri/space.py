@@ -54,9 +54,13 @@ class SpaceURI(URI):
             uri_suffix = uristr.removeprefix(GBSPACE_SCHEME + "://")
         elif uristr.startswith(SPACE_SCHEME):
             uri_suffix = uristr.removeprefix(SPACE_SCHEME + "://")
-        # Tier 1: env-co-located step lookup with ancestor-walk (nearest-wins),
-        # bounded by the enclosing base_uri.  Applies only to `space://steps/<name>`
-        # and honors any per-step ``subtypes`` restriction.
+        # Tier 1: for `space://steps/<name>` with an active env, first honor the
+        # space's own root step (`base_uris[0]/steps/<name>`, highest priority),
+        # then the env-co-located ancestor-walk (nearest-wins), bounded by the
+        # enclosing base_uri.  Each candidate must be admissible for the active
+        # env: a step declaring ``environment_configs`` must list the active env
+        # class and satisfy its ``subtypes`` restriction, else it is skipped and
+        # resolution continues (a step scoped to other classes never wins here).
         if uri_suffix.startswith(STEPS_PREFIX):
             walked = SpaceURI._walk_colocated_steps(uri_suffix)
             if walked is not None:
@@ -175,14 +179,40 @@ class SpaceURI(URI):
         return boundary
 
     @staticmethod
-    def _env_config_entry(data: dict, env_class: str):
-        """Look up ``environment_configs[<env_class>]`` case-insensitively.
+    def _matching_env_key(configs, env_class: str) -> Optional[str]:
+        """Return the ``environment_configs`` key that matches ``env_class``.
 
         Env class names (``K8s``, ``Skypilot``, ...) and the ``environment_configs``
         keys authored in ``step.yaml`` don't always agree on case (e.g. a step
         keyed ``k8s`` for the ``K8s`` env class), so the match is by
         case-insensitive string equality.  An exact match is preferred; a
-        case-insensitive match is the fallback.
+        case-insensitive match is the fallback.  The lookup is on the **key**
+        only and ignores the entry's value, so a present-but-null entry
+        (``{Skypilot:}``) still reports its key.
+
+        Args:
+            configs: The ``environment_configs`` mapping (any non-dict value,
+                including ``None``, yields ``None``).
+            env_class: Active env class name.
+
+        Returns:
+            The matching key, or ``None`` when no key matches.
+        """
+        if not isinstance(configs, dict):
+            return None
+        if env_class in configs:
+            return env_class
+        lowered = env_class.lower()
+        for key in configs:
+            if isinstance(key, str) and key.lower() == lowered:
+                return key
+        return None
+
+    @staticmethod
+    def _env_config_entry(data: dict, env_class: str):
+        """Look up the value of ``environment_configs[<env_class>]``.
+
+        Uses :meth:`_matching_env_key` for the case-insensitive key match.
 
         Args:
             data: Parsed ``step.yaml`` mapping.
@@ -190,18 +220,37 @@ class SpaceURI(URI):
 
         Returns:
             The matching ``environment_configs`` value, or ``None`` when no key
-            matches.
+            matches **or the matched key's value is null**.  Because a null value
+            is indistinguishable from an absent key here, callers testing whether
+            the class is *declared* must use :meth:`_env_class_present`, not an
+            ``is None`` check on this result.
         """
-        configs = data.get("environment_configs") or {}
+        configs = data.get("environment_configs")
         if not isinstance(configs, dict):
             return None
-        if env_class in configs:
-            return configs[env_class]
-        lowered = env_class.lower()
-        for key, value in configs.items():
-            if isinstance(key, str) and key.lower() == lowered:
-                return value
-        return None
+        key = SpaceURI._matching_env_key(configs, env_class)
+        return configs[key] if key is not None else None
+
+    @staticmethod
+    def _env_class_present(data: dict, env_class: str) -> bool:
+        """Return whether ``environment_configs`` *declares* ``env_class`` by key.
+
+        Presence is decided by the key alone, so a class that is present but null
+        (``environment_configs: {Skypilot:}`` — declared, hence admissible under
+        the active ``Skypilot`` env) is distinguished from one that is genuinely
+        absent (the step is scoped to other classes only).
+
+        Args:
+            data: Parsed ``step.yaml`` mapping.
+            env_class: Active env class name.
+
+        Returns:
+            ``True`` when a key matches ``env_class`` (case-insensitively).
+        """
+        return (
+            SpaceURI._matching_env_key(data.get("environment_configs"), env_class)
+            is not None
+        )
 
     @staticmethod
     def _subtype_ok(
@@ -244,18 +293,66 @@ class SpaceURI(URI):
         if not isinstance(subtypes, list) or not subtypes:
             # Empty, or a non-list we can't interpret as sub-types → universal,
             # matching the module's "can't read the restriction → admit"
-            # convention (see :meth:`_step_subtype_ok`).
+            # convention (see :meth:`_step_env_ok`).
             return True
         return env_subtype in subtypes
 
     @staticmethod
-    def _step_subtype_ok(
+    def _env_ok(
+        data: dict, env_class: Optional[str], env_subtype: Optional[str]
+    ) -> bool:
+        """Return whether a step's ``environment_configs`` admit the active env.
+
+        This is the full directory-tier gate: a two-stage check that first
+        matches the env **class**, then (via :meth:`_subtype_ok`) the sub-type.
+
+        * ``env_class`` unknown → ``True`` (no class context to filter on, as in
+          :meth:`_subtype_ok`).
+        * a **non-empty** ``environment_configs`` block whose keys do **not**
+          include the active class → ``False``: the step is scoped to other env
+          classes and cannot run here, so it is not a match.  This is the
+          class-presence requirement the sub-type-only predicate deliberately left
+          to callers.
+        * otherwise (the class **key** is present, **or** the step declares no
+          ``environment_configs`` at all) → delegate to :meth:`_subtype_ok`.  A
+          step with no ``environment_configs`` stays env-agnostic/universal,
+          preserving the directory-placed ancestor-walk behavior.
+
+        Presence is decided by the class **key**, not its value: a present-but-null
+        entry (``environment_configs: {Skypilot:}``) declares the class and so is
+        admitted (:meth:`_subtype_ok` then treats the null entry as unrestricted).
+        A value-based ``is None`` check would wrongly skip such a step, which is
+        scoped to exactly the active class.
+
+        Args:
+            data: Parsed ``step.yaml`` mapping.
+            env_class: Active env class name (e.g. ``"Skypilot"``), or ``None``.
+            env_subtype: Active env sub-type (e.g. ``"kubernetes"``), or ``None``.
+        """
+        if not env_class:
+            return True
+        configs = data.get("environment_configs")
+        if (
+            isinstance(configs, dict)
+            and configs
+            and not SpaceURI._env_class_present(data, env_class)
+        ):
+            # Declared for other env classes only → not a match for this env.
+            return False
+        return SpaceURI._subtype_ok(data, env_class, env_subtype)
+
+    @staticmethod
+    def _step_env_ok(
         step_yaml: Path, env_class: Optional[str], env_subtype: Optional[str]
     ) -> bool:
-        """Parse ``step_yaml`` and apply :meth:`_subtype_ok`.
+        """Parse ``step_yaml`` and apply :meth:`_env_ok`.
 
-        A file that can't be read/parsed carries no sub-type restriction we can
-        evaluate, so it is admitted (directory-only match, as before sub-types).
+        Applies the class-presence + sub-type gate: a step declaring an
+        ``environment_configs`` block must list the active env class (and satisfy
+        its sub-type restriction) to be admitted; a step with no
+        ``environment_configs`` is env-agnostic and admitted.  A file that can't
+        be read/parsed carries no restriction we can evaluate, so it is admitted
+        (directory-only match, as before env/sub-type filtering).
 
         Args:
             step_yaml: Path to the candidate ``step.yaml``.
@@ -269,7 +366,7 @@ class SpaceURI(URI):
             return True
         if not isinstance(data, dict):
             return True
-        return SpaceURI._subtype_ok(data, env_class, env_subtype)
+        return SpaceURI._env_ok(data, env_class, env_subtype)
 
     @staticmethod
     def _fallback_steps_ok(base_uri: str, parsed: Tuple[str, str]) -> bool:
@@ -281,8 +378,11 @@ class SpaceURI(URI):
 
         * **containment** — a ``<rest>`` that escapes ``<base>/steps/<name>``
           (e.g. ``../../secret``) is rejected, matching Tiers 1 & 2;
-        * **sub-type** — the step's own ``step.yaml`` is read and its
-          ``subtypes`` restriction (if any) must admit the active env.
+        * **env** — the step's own ``step.yaml`` is read and its
+          ``environment_configs`` must admit the active env: a step that
+          declares that block must list the active env class (and satisfy its
+          ``subtypes`` restriction, if any); a step with no
+          ``environment_configs`` is env-agnostic and admitted.
 
         Reading the step's *own* ``step.yaml`` (resolved from ``<name>``, not
         from the possibly ``..``-displaced ``<rest>``) keeps the restriction
@@ -297,7 +397,8 @@ class SpaceURI(URI):
 
         Returns:
             ``True`` when the hit is admitted; ``False`` when ``rest`` escapes
-            the step dir or the ``subtypes`` restriction excludes the env.
+            the step dir or the ``environment_configs`` restriction (class or
+            sub-type) excludes the env.
         """
         name, rest = parsed
         root = SpaceURI._uri_to_local_path(base_uri)
@@ -311,21 +412,66 @@ class SpaceURI(URI):
                 return False
         env_class = getattr(SpaceURI._thread_local, "current_env_class_name", None)
         env_subtype = getattr(SpaceURI._thread_local, "current_env_subtype", None)
-        return SpaceURI._step_subtype_ok(
-            step_dir / STEP_FILE_NAME, env_class, env_subtype
-        )
+        return SpaceURI._step_env_ok(step_dir / STEP_FILE_NAME, env_class, env_subtype)
+
+    @staticmethod
+    def _space_root_step(
+        name: str, rest: str, env_class: Optional[str], env_subtype: Optional[str]
+    ) -> Optional[URI]:
+        """Resolve ``steps/<name>`` against the space's own root (``base_uris[0]``).
+
+        The space directory (the first base_uri — the space's own ``uristr``) is
+        the most authoritative step source: a step it ships at
+        ``<space>/steps/<name>`` overrides an env-co-located step or one inherited
+        via ``base_uris[1:]`` (e.g. a published assets tree).  This lets a step
+        being developed in its own space be exercised (by ``make test``) before it
+        is published into an inherited tree.  The same env gate as the
+        ancestor-walk is applied (:meth:`_step_env_ok`), so a space step that
+        declares ``environment_configs`` without the active env class — or whose
+        ``subtypes`` exclude the active env — is skipped and resolution falls
+        through (it must never override a valid step with one that cannot run
+        under the active environment).
+
+        Args:
+            name: Step name.
+            rest: Sub-asset suffix appended to the step dir (empty for a bare URI).
+            env_class: Active env class name (for the sub-type gate), or ``None``.
+            env_subtype: Active env sub-type (for the sub-type gate), or ``None``.
+
+        Returns:
+            The resolved step ``URI`` when the space ships an admitting
+            ``steps/<name>``, else ``None``.
+        """
+        base_uris = getattr(SpaceURI._thread_local, "base_uris", None)
+        if not base_uris:
+            return None
+        space_root = SpaceURI._uri_to_local_path(base_uris[0])
+        if space_root is None:
+            return None
+        step_yaml = space_root.resolve() / "steps" / name / STEP_FILE_NAME
+        if not step_yaml.is_file() or not SpaceURI._step_env_ok(
+            step_yaml, env_class, env_subtype
+        ):
+            return None
+        return SpaceURI._step_uri_from_dir(step_yaml.parent, rest)
 
     @staticmethod
     def _walk_colocated_steps(uri_suffix: str) -> Optional[URI]:
         """Resolve ``space://steps/<name>`` by walking up from the active env dir.
+
+        Before the walk, the space's own root step (``base_uris[0]/steps/<name>``,
+        see :meth:`_space_root_step`) takes priority, so a step the space ships
+        overrides an env-co-located or inherited copy of the same name.
 
         Starting at ``current_env_dir_uri`` the resolver checks
         ``<dir>/steps/<name>/step.yaml`` at each ancestor, nearest-wins, stopping
         at (and including) the deepest ``base_uri`` that encloses the env dir.
         This lets sibling environments under a common family directory share one
         step implementation while an env's own dir still overrides it.  A
-        candidate that declares a ``subtypes`` restriction not satisfied by the
-        active env is skipped and the walk continues upward.
+        candidate whose ``environment_configs`` don't admit the active env — it
+        declares that block without the active env class, or its ``subtypes``
+        exclude the active env — is skipped and the walk continues upward
+        (see :meth:`_step_env_ok`).
 
         The env dir URI is materialized to a local path via
         :meth:`_uri_to_local_path`, so a git-backed env resolves against its
@@ -354,11 +500,17 @@ class SpaceURI(URI):
         env_path = env_path.resolve()
         env_class = getattr(SpaceURI._thread_local, "current_env_class_name", None)
         env_subtype = getattr(SpaceURI._thread_local, "current_env_subtype", None)
+        # Space-root priority: a step the space itself ships at
+        # ``<space>/steps/<name>`` overrides any env-co-located or inherited copy,
+        # so a locally-developed step is exercised before it is published.
+        space_hit = SpaceURI._space_root_step(name, rest, env_class, env_subtype)
+        if space_hit is not None:
+            return space_hit
         boundary = SpaceURI._enclosing_base_boundary(env_path)
         cur = env_path
         while True:
             step_yaml = cur / "steps" / name / STEP_FILE_NAME
-            if step_yaml.is_file() and SpaceURI._step_subtype_ok(
+            if step_yaml.is_file() and SpaceURI._step_env_ok(
                 step_yaml, env_class, env_subtype
             ):
                 found = SpaceURI._step_uri_from_dir(step_yaml.parent, rest)
@@ -423,9 +575,14 @@ class SpaceURI(URI):
                 if not isinstance(data, dict):
                     continue
                 env_keys = list((data.get("environment_configs") or {}).keys())
-                if SpaceURI._env_config_entry(
+                # Class-presence by key (not value): a present-but-null entry
+                # (``{Skypilot:}``) is still declared for the active class and must
+                # match here, matching the _env_ok tier.  Testing
+                # ``_env_config_entry(...) is not None`` would silently drop it (its
+                # value is null), leaving the two tiers disagreeing on such steps.
+                if SpaceURI._env_class_present(
                     data, env_class
-                ) is not None and SpaceURI._subtype_ok(data, env_class, env_subtype):
+                ) and SpaceURI._subtype_ok(data, env_class, env_subtype):
                     matches.append((len(env_keys), str(cand), cand))
         if not matches:
             return None

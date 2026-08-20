@@ -102,7 +102,10 @@ class NATSMessaging(MessagingBase):
             name=stream_name,
             subjects=[f"gbserver.{self.addr.queue}.>"],
             retention=RetentionPolicy.LIMITS,
-            max_age=self._stream_max_age * 1_000_000_000,  # seconds to nanoseconds
+            # nats-py's StreamConfig.max_age is in seconds and is converted to
+            # nanoseconds internally (StreamConfig.as_dict); passing nanoseconds
+            # here double-converts and overflows the server's time.Duration.
+            max_age=self._stream_max_age,
             storage=StorageType.FILE,
             num_replicas=1,
         )
@@ -155,7 +158,10 @@ class NATSMessaging(MessagingBase):
                 config=ConsumerConfig(
                     ack_policy=AckPolicy.EXPLICIT,
                     max_deliver=self._max_deliver,
-                    ack_wait=self._ack_wait * 1_000_000_000,  # seconds to nanoseconds
+                    # ConsumerConfig.ack_wait is in seconds (converted to
+                    # nanoseconds internally by nats-py); passing nanoseconds
+                    # double-converts and overflows the server's time.Duration.
+                    ack_wait=self._ack_wait,
                 ),
             )
             logger.info(

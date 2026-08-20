@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from gbserver.storage.artifact_registry import IArtifactRegistry
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.event_storage import IStoredEventStorage
+from gbserver.storage.kv_pair_storage import IKeyValuePairStorage
 from gbserver.storage.node_failure_storage import INodeFailureStorage
 from gbserver.storage.space_storage import IStoredSpaceStorage
 from gbserver.storage.space_user_storage import ISpaceUserStorage
@@ -39,6 +40,7 @@ from gbserver.types.constants import (
     GB_ARTIFACT_REGISTRY_TABLE_NAME,
     GB_BUILDS_TABLE_NAME,
     GB_EVENTS_TABLE_NAME,
+    GB_KV_PAIRS_TABLE_NAME,
     GB_METADATA_STORAGE,
     GB_NODE_FAILURES_TABLE_NAME,
     GB_SPACE_USERS_TABLE_NAME,
@@ -62,6 +64,7 @@ class SingletonAdminStorage(BaseModel):
     event_storage: IStoredEventStorage
     node_failure_storage: INodeFailureStorage
     space_user_storage: ISpaceUserStorage
+    kv_pair_storage: IKeyValuePairStorage
     table_name_prefix: str
 
 
@@ -158,6 +161,9 @@ def set_storage_prefix(table_prefix: Optional[str] = None) -> SingletonAdminStor
     space_user_storage = factory.create_space_user_storage(
         table_name=table_prefix + GB_SPACE_USERS_TABLE_NAME
     )
+    kv_pair_storage = factory.create_kv_pair_storage(
+        table_name=table_prefix + GB_KV_PAIRS_TABLE_NAME
+    )
 
     # # Force the table creation as early as possible.
     # # This is primarily for tests which have multiple runnerjobs running simultaneiously in separate processes/jobs.
@@ -179,6 +185,7 @@ def set_storage_prefix(table_prefix: Optional[str] = None) -> SingletonAdminStor
         event_storage=event_storage,
         node_failure_storage=node_failure_storage,
         space_user_storage=space_user_storage,
+        kv_pair_storage=kv_pair_storage,
         table_name_prefix=table_prefix,
     )
     return __STORAGE
