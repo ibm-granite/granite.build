@@ -123,7 +123,7 @@ Samples and templates often use the `gb` CLI's `$${...}` parameterization, but a
 ```shell
 # 1. Render the executable build from parameters.
 #    (Skip this step if the build file is NOT parameterized.)
-gb build render -f template/build.yaml --param ENVIRONMENT=skypilot/aws > exec-build.yaml
+gb build describe -f template/build.yaml --raw --param ENVIRONMENT=skypilot/aws > exec-build.yaml
 
 # 2. Generate the initial buildtest.yaml from the executable build.
 gbtest render exec-build.yaml -o buildtest.yaml
@@ -135,9 +135,10 @@ gbtest render exec-build.yaml -o buildtest.yaml
 gbtest buildtest.yaml -f exec-build.yaml
 ```
 
-`gb build render` is the single entry point for parameter substitution (it reuses
-the same engine as `gb build start`); `gbtest` only *consumes* an executable
-`build.yaml`.
+`gb build describe --raw` (or `gb build start --dry-run --save-build-file <file>`)
+is the entry point for parameter substitution — both reuse the same engine as
+`gb build start`, so `gb` stays the single source of truth; `gbtest` only
+*consumes* an executable `build.yaml`.
 
 ### `gbtest render`
 

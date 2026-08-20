@@ -53,4 +53,4 @@ def test_generate_skeleton_emits_fixme_placeholders(tmp_path):
     tok = next(e for e in doc["target_expectations"] if e["target_name"] == "tokenize")
     assert tok["output_artifact_count"] == 1  # derivable -> filled
     assert tok["step_count"] == "FIXME"  # non-derivable -> must replace
-    assert tok["jobstats_count"] == "FIXME"  # non-derivable -> must replace
+    assert tok["jobstats_count"] == -1  # not asserted at run time yet -> -1 (skip)

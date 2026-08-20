@@ -39,6 +39,10 @@ def _split_build_yaml_flag(extra: List[str]) -> Tuple[Optional[str], List[str]]:
     ``pytest`` has no ``-f`` option, so the gbtest CLI translates it into the
     ``--build-yaml`` pytest option (see ``main``). Returns
     ``(override_path_or_None, remaining_args)``.
+
+    Raises:
+        ValueError: if ``-f`` / ``--build-yaml`` is given without a path (e.g. a
+            trailing bare ``-f``) — a usage error rather than a silent no-op.
     """
     override: Optional[str] = None
     rest: List[str] = []
@@ -50,8 +54,7 @@ def _split_build_yaml_flag(extra: List[str]) -> Tuple[Optional[str], List[str]]:
                 override = extra[i + 1]
                 i += 2
                 continue
-            i += 1
-            continue
+            raise ValueError(f"{arg} requires a build.yaml path")
         if arg.startswith("--build-yaml="):
             override = arg.split("=", 1)[1]
             i += 1
@@ -110,7 +113,11 @@ def main() -> int:
         sys.stderr.write(f"gbtest: not a file: {yaml_path}\n")
         return 1
     extra = sys.argv[2:]
-    build_yaml_override, extra = _split_build_yaml_flag(extra)
+    try:
+        build_yaml_override, extra = _split_build_yaml_flag(extra)
+    except ValueError as e:
+        sys.stderr.write(f"gbtest: {e}\n")
+        return 2
     runner_module = Path(__file__).resolve().parent / "gbtest_runner.py"
     args = ["-s", str(runner_module), f"--buildtest-yaml={yaml_path}", *extra]
     if build_yaml_override:

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Self, Union
 
 import pytest
 import yaml
+from libgbtest.buildrunner.placeholder import PLACEHOLDER
 from libgbtest.buildrunner.utils import (
     ExceptionRaisingThread,
     cluster_logout,
@@ -119,7 +120,10 @@ class ExpectedTarget(BaseModel):
     """Number of input artifacts to be recorded in the recorded target record."""
     output_artifact_count: int
     """Number of output artifacts to be recorded in the recorded target record."""
-    jobstats_count: int
+    jobstats_count: int = -1
+    """Expected jobstats records. Defaults to -1 (skip): jobstats are not asserted
+    at run time yet (lineage verification is a no-op under async lineage), so the
+    `gbtest render` skeleton does not force a value for it."""
     expected_steps: list[ExpectedStep] = []
     """Optional per-step metadata/config assertions checked against the persisted
     StoredStepRun rows. Empty (default) means not checked, so existing fixtures are
@@ -129,18 +133,18 @@ class ExpectedTarget(BaseModel):
         "step_count",
         "input_artifact_count",
         "output_artifact_count",
-        "jobstats_count",
         mode="before",
     )
     @classmethod
     def _reject_placeholder(cls, v, info):
         """Fail loudly if a `gbtest render` skeleton placeholder was left unreplaced.
 
-        The generator (``buildtest_gen.PLACEHOLDER``) emits ``FIXME`` for values it
-        cannot derive; keeping the literal here (rather than importing that module)
-        avoids pulling its deps into this already-heavy module.
+        The generator emits the shared ``PLACEHOLDER`` sentinel for values it
+        cannot derive; both modules import it from
+        ``libgbtest.buildrunner.placeholder`` so the token has a single source of
+        truth.
         """
-        if isinstance(v, str) and v.strip() == "FIXME":
+        if isinstance(v, str) and v.strip() == PLACEHOLDER:
             raise ValueError(
                 f"unreplaced FIXME placeholder for '{info.field_name}': edit the "
                 f"`gbtest render` skeleton before running it"

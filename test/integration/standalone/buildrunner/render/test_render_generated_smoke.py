@@ -11,7 +11,7 @@
 Exercises the full chain end-to-end on the in-process Bash environment (no cloud,
 no HF, no external gbserver):
 
-  1. ``gb build render`` (render_build_yaml) resolves a PARAMETERIZED build.yaml
+  1. ``gb build describe --raw`` (build_describe) resolves a PARAMETERIZED build.yaml
      into an executable one.
   2. ``gbtest render`` (generate_skeleton) emits a skeleton buildtest.yaml.
   3. The skeleton's FIXME placeholders are filled (simulating the human edit),
@@ -30,7 +30,7 @@ import yaml
 from libgbtest.buildrunner.buildtest import AbstractYamlBuildRunnerTest
 from libgbtest.buildrunner.buildtest_gen import generate_skeleton
 
-from gbcli.services.service_render import render_build_yaml
+from gbcli.services.service_build import build_describe
 
 pytestmark = pytest.mark.standalone
 
@@ -68,14 +68,19 @@ class TestRenderGeneratedBashSmoke(AbstractYamlBuildRunnerTest):
 
     @pytest.fixture(autouse=True)
     def _prepare_generated_fixture(self, tmp_path):
-        # 1. Render the parameterized build into an executable build.yaml. Keep a
-        #    distinct name so the run exercises the -f override (not the sibling).
+        # 1. Render the parameterized build into an executable build.yaml via the
+        #    offline `gb build describe --raw` path. Keep a distinct name so the
+        #    run exercises the -f override (not the sibling).
         src = tmp_path / "build.yaml.in"
         src.write_text(_PARAM_BUILD, encoding="utf-8")
         exec_build = tmp_path / "exec-build.yaml"
         exec_build.write_text(
-            render_build_yaml(
-                src, cli_params=["MESSAGE=hello", "SUFFIX=1"], parameters_path=None
+            build_describe(
+                github_token="",
+                filename=str(src),
+                format="yaml",
+                raw=True,
+                params=["MESSAGE=hello", "SUFFIX=1"],
             ),
             encoding="utf-8",
         )

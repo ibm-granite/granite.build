@@ -10,6 +10,7 @@
 
 from pathlib import Path
 
+import pytest
 from libgbtest.buildrunner.buildtest import (
     AbstractYamlBuildRunnerTest,
     BuildTestSpecification,
@@ -75,3 +76,14 @@ def test_split_build_yaml_flag_none_when_absent():
     override, rest = _split_build_yaml_flag(["-vv", "-k", "runner"])
     assert override is None
     assert rest == ["-vv", "-k", "runner"]
+
+
+def test_split_build_yaml_flag_trailing_bare_f_errors():
+    # A trailing `-f` with no path is a usage error, not a silent no-op.
+    with pytest.raises(ValueError, match="requires a build.yaml path"):
+        _split_build_yaml_flag(["-vv", "-f"])
+
+
+def test_split_build_yaml_flag_trailing_bare_long_flag_errors():
+    with pytest.raises(ValueError, match="requires a build.yaml path"):
+        _split_build_yaml_flag(["--build-yaml"])
