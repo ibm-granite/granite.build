@@ -376,8 +376,51 @@ def test_repeated_continuations_linearize_into_one_chain():
     assert c.retry_of_build_id == root.uuid
 
 
+def test_chain_walk_includes_intermediate_members_from_any_member():
+    """get_retry_chain_members must return EVERY member of a flat-to-root chain
+    (root -> mid -> tip), not just [self, root], regardless of which member it is
+    called from. Target reuse (BuildRunner.__get_retry_chain_build_ids) relies on
+    this: retry_of_build_id points every member at the root, so a backward walk
+    would miss `mid` and re-run a target that first succeeded there."""
+    root = _prior_build(ATTACKER, status=Status.FAILED)
+    mid = _prior_build(ATTACKER, status=Status.FAILED)
+    tip = _prior_build(ATTACKER, status=Status.FAILED)
+    # Flat-to-root: mid and tip both point their retry_of_build_id at the root.
+    mid.retry_of_build_id = root.uuid
+    tip.retry_of_build_id = root.uuid
+    root.retry_build_id = mid.uuid
+    mid.retry_build_id = tip.uuid
+    bs = _fake_build_storage({root.uuid: root, mid.uuid: mid, tip.uuid: tip})
+
+    expected = [root.uuid, mid.uuid, tip.uuid]
+    # The full chain is recovered from any starting member, and always includes mid.
+    for member in (root, mid, tip):
+        chain = [m.uuid for m in get_retry_chain_members(bs, member)]
+        assert chain == expected
+        assert mid.uuid in chain
+
+
 def test_continue_build_rejects_forged_username():
     prior = _prior_build(VICTIM, status=Status.FAILED)
+    with (
+        _patched_continue_storage({prior.uuid: prior}),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            continue_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                BuildContinueRequest(build_id=prior.uuid),
+            )
+    assert exc.value.status_code == 401
+
+
+def test_continue_build_authz_precedes_status_disclosure():
+    """An unauthorized caller must not learn a prior build's liveness: authz
+    (401) is enforced BEFORE the is_finished() 409, so continuing another user's
+    *active* build returns 401, not 409."""
+    prior = _prior_build(VICTIM, status=Status.RUNNING)
     with (
         _patched_continue_storage({prior.uuid: prior}),
         _real_authz(),

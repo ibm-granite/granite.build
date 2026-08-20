@@ -51,33 +51,36 @@ _BINDING = "model_out"
 def _make_runner(retry_chain_ids):
     """Build a BuildRunner with mocked storage, bypassing __init__.
 
-    ``retry_chain_ids[0]`` is treated as the current (retry) build; the rest are
-    ancestors reachable via ``retry_of_build_id``.
+    ``retry_chain_ids[0]`` is the current (tip/retry) build; the rest are
+    ancestors toward the root, so ``retry_chain_ids[-1]`` is the root. The mocks
+    model the real linkage the chain walk relies on: every non-root member's
+    ``retry_of_build_id`` points at the root (flat-to-root), and each member's
+    ``retry_build_id`` forward-links to the next-newer member. All members are
+    resolvable via ``get_by_uuid`` (get_retry_chain_members walks forward from
+    the root).
     """
     runner = object.__new__(BuildRunner)
 
-    current_id = retry_chain_ids[0]
-    parent_id = retry_chain_ids[1] if len(retry_chain_ids) > 1 else ""
+    root_id = retry_chain_ids[-1]
+    # Order root -> ... -> tip for building the forward retry_build_id links.
+    ordered = list(reversed(retry_chain_ids))
 
-    stored_build = MagicMock(spec=StoredBuild)
-    stored_build.uuid = current_id
-    stored_build.space_name = _SPACE
-    stored_build.username = _USER
-    stored_build.retry_of_build_id = parent_id
-    runner.stored_build = stored_build
+    members = {}
+    for idx, bid in enumerate(ordered):
+        member = MagicMock(spec=StoredBuild)
+        member.uuid = bid
+        member.space_name = _SPACE
+        member.username = _USER
+        # Flat-to-root: non-root members point at the root; the root has none.
+        member.retry_of_build_id = "" if bid == root_id else root_id
+        # Forward link to the next-newer member (None on the tip).
+        member.retry_build_id = ordered[idx + 1] if idx + 1 < len(ordered) else None
+        members[bid] = member
 
-    # build_storage walks the retry chain via get_by_uuid(retry_of_build_id).
-    ancestors = {}
-    for idx, bid in enumerate(retry_chain_ids[1:], start=1):
-        ancestor = MagicMock(spec=StoredBuild)
-        ancestor.uuid = bid
-        ancestor.retry_of_build_id = (
-            retry_chain_ids[idx + 1] if idx + 1 < len(retry_chain_ids) else ""
-        )
-        ancestors[bid] = ancestor
+    runner.stored_build = members[retry_chain_ids[0]]
 
     storage = MagicMock()
-    storage.build_storage.get_by_uuid.side_effect = lambda uuid: ancestors.get(uuid)
+    storage.build_storage.get_by_uuid.side_effect = members.get
     runner.storage = storage
 
     runner.build_run = None

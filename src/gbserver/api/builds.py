@@ -350,6 +350,20 @@ def continue_build(
             detail=f"Build {req.build_id} not found",
         )
 
+    # Authorize BEFORE disclosing the prior build's status: the build runs under
+    # its space and identity, so gate the caller the same way submit_build does.
+    # Doing this ahead of the is_finished() check keeps the 409 (which leaks the
+    # build's liveness) from reaching a caller who lacks write access.
+    stored_space = space_storage.get_by_name(prior.space_name)
+    if stored_space is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Space {prior.space_name} not found in space storage",
+        )
+    confirm_space_write_access(
+        request, username_on_target=prior.username, space_name=stored_space.name
+    )
+
     # A continuation spins up a fresh runner, so the prior build must not still be
     # active — otherwise the continuation could race a live runner working the same
     # chain. There is no runner-liveness table; the build status is the signal.
@@ -361,18 +375,6 @@ def continue_build(
                 "build (SUCCESS, FAILED, INVALID, or CANCELLED) can be continued"
             ),
         )
-
-    # The build runs under the prior build's space and identity; gate the caller
-    # the same way submit_build does.
-    stored_space = space_storage.get_by_name(prior.space_name)
-    if stored_space is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Space {prior.space_name} not found in space storage",
-        )
-    confirm_space_write_access(
-        request, username_on_target=prior.username, space_name=stored_space.name
-    )
 
     continuation = create_continuation_build(build_storage, prior)
     logger.info(
