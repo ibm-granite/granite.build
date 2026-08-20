@@ -18,7 +18,7 @@
 
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from gbserver.lineage.jobstats import ILineageStore, get_lineage_store
@@ -27,6 +27,7 @@ from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_DROPPED_KEY,
     UTC_MIN,
     as_aware,
+    get_oldest_successful_target,
     reconcile_once,
 )
 from gbserver.lineage.lineage_seeding import BACKFILL_BUILD_ID
@@ -79,11 +80,13 @@ class LineageWatcher:
     (``filter_unrecorded``, via a build-scoped ``reconcile_once``) and re-records
     what is missing, closing any gap left by a crash between recording
     and persisting the checkpoint (or vice versa). That sweep is scoped to one
-    build, though, so the general safety net is ``_WATERMARK_OVERLAP``:
-    subtracted when querying, it re-surfaces any target that landed behind an
-    already-advanced watermark — whether from clock skew or from builds
-    interleaving in the global finished_at queue — for every build rather than
-    just the checkpoint's. Idempotent recording makes the re-reads harmless.
+    build, though, so the general safety net is the scan's *anchor*: each scan
+    bounds its walk by the checkpoint build's oldest successful target rather than
+    by a timestamp, and because the query filters on status alone the sweep back to
+    that row re-surfaces the straggling targets of every build, not just the
+    checkpoint's. Idempotent recording makes the re-reads harmless. See
+    ``_reconcile`` for why a row anchor and not a time window, and for the residual
+    gap it does not close.
 
     Which of those newly-finished targets actually get recorded is decided
     per-sink by ``store.filter_unrecorded`` (see ``reconcile_once``): the time
@@ -113,39 +116,6 @@ class LineageWatcher:
     # on subsequent scans before being dropped, so a transient failure (e.g. a
     # network blip) is recovered without a persistent failure wedging the scan.
     _MAX_RECORD_ATTEMPTS = 3
-
-    # Subtracted from the watermark when querying so a target that finished at (or
-    # a hair before) the boundary is re-surfaced rather than skipped.
-    #
-    # The case only this can cover is a target landing *behind* an already-advanced
-    # watermark, where it sits on the wrong side of the cutoff and no amount of
-    # tie-breaking would find it. Two things put it there:
-    #
-    #  - Clock skew: finished_at is stamped from the writer's own clock
-    #    (``datetime.now()`` in the buildrunner), not the DB's, so a target can be
-    #    written with a timestamp slightly older than the current watermark.
-    #  - Concurrent builds: the scan is a single global queue ordered by
-    #    finished_at, not a per-build walk, so targets of different builds
-    #    interleave. A target that commits its finished_at a moment after a
-    #    faster build's target already pushed the watermark past that instant is
-    #    behind the cutoff by the time it is visible to a scan.
-    #
-    # Equal timestamps are re-surfaced here too, and those have a second safety
-    # net — but only a partial one, which is why this window carries the real
-    # weight. ``_verify_checkpoint`` re-scans at start(), yet it is scoped to the
-    # *checkpoint's own build*, and which build that is depends on whichever
-    # target recorded last (see ``_on_checkpoint_advance``). With builds running
-    # concurrently that is effectively arbitrary among the active ones, so a gap
-    # in any other build is not covered by it at all. This overlap is
-    # build-agnostic and repairs all of them, without waiting for a restart.
-    #
-    # Sized in minutes rather than seconds for that reason: seconds cover only
-    # clock skew, while interleaved commits across builds can land a target
-    # further back. Re-reads are harmless — per-sink ``filter_unrecorded`` drops
-    # already-recorded targets before anything is written, so the cost of a wider
-    # window is extra rows in the paged query and one sink query over them, not
-    # extra recording work.
-    _WATERMARK_OVERLAP = timedelta(minutes=1)
 
     def __init__(self, monitoring_interval: float = 30.0) -> None:
         """Initialize the LineageWatcher.
@@ -370,30 +340,53 @@ class LineageWatcher:
             # No checkpoint: recording is deliberately off until the key is
             # seeded. Return before querying targets or touching the sink.
             return
-        # Query behind the watermark so a target that landed on the older side of
-        # it — clock skew, or a concurrent build committing out of order — is
-        # re-surfaced instead of skipped; idempotent recording makes the overlap
-        # re-reads harmless. See ``_WATERMARK_OVERLAP``.
+        # Bound the walk by a *row*, not a timestamp. ``finished_at`` is stamped
+        # when the build event is created, not when its row is committed, so a row
+        # can become visible already carrying a timestamp behind an advanced
+        # watermark; a time cutoff excludes it from the query outright and the
+        # monotonic watermark never re-surfaces it. Anchoring on the checkpoint
+        # build's *oldest* successful target instead lets the walk retreat to a
+        # known row, and since the query never filters on build_id, that sweep
+        # also picks up the straggling targets of every concurrent build.
         #
-        # Clamped near the low bound: the --all backfill anchor is datetime.min,
-        # and subtracting from it raises OverflowError — which, being raised
-        # before any recording, would fail every scan forever and record nothing
-        # at all. Nothing can have finished that long ago anyway, so there is no
-        # boundary case for the overlap to protect there.
+        # The oldest rather than the checkpoint's own finished_at: the checkpoint
+        # names whichever target recorded last, so a build whose targets finished
+        # at staggered times would leave its earlier ones behind that row.
         #
-        # The headroom is measured against datetime.min *in the watermark's own
-        # offset*, not against UTC_MIN. Since as_aware preserves the source
-        # offset rather than rewriting it to UTC, `watermark - UTC_MIN` for a
-        # datetime.min anchor read back at a non-UTC offset is that offset's
-        # width — over the one-minute overlap, so the guard would wave the
-        # subtraction through and overflow anyway. Comparing within one offset
-        # keeps the question ("is there a minute of room below this value?")
-        # answerable.
-        floor = datetime.min.replace(tzinfo=watermark.tzinfo)
-        if watermark - floor < self._WATERMARK_OVERLAP:
-            finished_after = watermark
+        # The anchor can fail to resolve: a malformed checkpoint (no build_id), or
+        # a build whose successful targets are all gone or carry no finish time.
+        # There is then no row to aim at, so the scan falls back to the plain
+        # watermark cutoff — see below for what that costs.
+        checkpoint_build_id = self._checkpoint_build_id(storage)
+        stop_at: Optional[tuple[str, datetime]] = None
+        if checkpoint_build_id is not None:
+            oldest = get_oldest_successful_target(storage, build_id=checkpoint_build_id)
+            if oldest is not None and oldest.finished_at is not None:
+                stop_at = (checkpoint_build_id, as_aware(oldest.finished_at))
+        # The anchor is the real bound, so the timestamp cutoff opens all the way
+        # up; select_recordable_targets stops at the anchor row instead.
+        #
+        # With no anchor the walk falls back to the watermark cutoff, which is
+        # inclusive of the boundary row (the selector compares `<`) but reaches no
+        # further back. A target that finished strictly behind the watermark is
+        # therefore out of reach on this scan, and stays so while the anchor cannot
+        # be resolved — the one case where this design is no better than the fixed
+        # window it replaced. Nothing is subtracted to soften it: without a row to
+        # aim at there is no principled width to pick, and inventing one is exactly
+        # what the old overlap did. Logged as a warning so it is visible instead of
+        # silent.
+        if stop_at is not None:
+            finished_after = UTC_MIN
         else:
-            finished_after = watermark - self._WATERMARK_OVERLAP
+            finished_after = watermark
+            logger.warning(
+                "Lineage scan could not resolve an anchor row for checkpoint "
+                "build %s (no successful target with a finish time); falling back "
+                "to the bare %s watermark for this scan. A target that finished "
+                "behind it will not be re-surfaced.",
+                checkpoint_build_id,
+                watermark,
+            )
         # Stamped before the scan, not after: a target that finishes while the
         # scan is running must stay in scope for the next one. Retiring the
         # anchor to an after-the-fact timestamp would step over it.
@@ -420,9 +413,11 @@ class LineageWatcher:
             skip=self._dropped,
             # Log-only: names the build whose target set the watermark, so a
             # steady-state line reads as "starting here because of that row"
-            # rather than as a bare epoch. Deliberately not used for selection —
-            # the steady-state scan is time-bounded, not build-bounded.
-            watermark_build_id=self._checkpoint_build_id(storage),
+            # rather than as a bare epoch. This names the build for the log; the
+            # build's role in *selection* is carried by ``stop_at`` below, which
+            # bounds the walk at that build's oldest target.
+            watermark_build_id=checkpoint_build_id,
+            stop_at=stop_at,
         )
 
     def _checkpoint_build_id(self, storage: SingletonAdminStorage) -> Optional[str]:
@@ -553,10 +548,11 @@ class LineageWatcher:
         never a target merely considered or one that failed to record. The next
         scan reads it back, so this write alone advances the watermark.
 
-        The watermark is monotonic: a target inside the ``_WATERMARK_OVERLAP``
-        window legitimately finished *behind* the current watermark (clock skew
-        or interleaved builds — see that constant), and recording it must not
-        drag the durable watermark back down with it. Without this guard such a
+        The watermark is monotonic: a target swept in behind the current
+        watermark legitimately finished there (its row became visible late, or
+        builds interleaved — see the anchor rationale in ``_reconcile``), and
+        recording it must not drag the durable watermark back down with it.
+        Without this guard such a
         target lowers the watermark, and if no newer target in the same pass
         pushes it back up it stays lowered, re-reading that window on every
         later scan. Recording still happens either way; only the watermark write

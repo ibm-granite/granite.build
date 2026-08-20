@@ -200,6 +200,7 @@ def select_recordable_targets(
     storage: SingletonAdminStorage,
     finished_after: datetime,
     build_id: Optional[str] = None,
+    stop_at: Optional[tuple[str, datetime]] = None,
 ) -> list[StoredTargetRun]:
     """Select successful target runs whose lineage should be recorded.
 
@@ -236,12 +237,53 @@ def select_recordable_targets(
     want the same selection semantics over one build rather than the whole DB
     (e.g. verifying a checkpoint's own build on startup).
 
+    ``stop_at`` bounds the walk by *row identity* — ``(build_id, finished_at)`` —
+    instead of by the ``finished_after`` timestamp, and is what the steady-state
+    scan uses. The distinction matters because ``finished_at`` is stamped when the
+    build *event is created* (``BuildEvent.timestamp``, whose default factory is
+    ``get_time()``), not when the row is committed, so a row can become visible
+    already carrying a timestamp behind an advanced watermark. A time cutoff
+    excludes such a row from the query outright, and since the watermark only
+    moves forward it is never re-surfaced — lineage lost silently. Anchoring on a
+    row instead lets the walk retreat to a known point however far back in time
+    that is; because the query filters on ``status`` alone and never on
+    ``build_id``, sweeping that range also picks up the straggling targets of
+    *every other* build, which is what closes the gap for concurrent builds.
+
+    The anchor row is included in the result, mirroring the inclusive ``>=`` of
+    the cutoff: re-reading it is a harmless idempotent no-op, and treating it as
+    already-handled would reintroduce a boundary to lose targets on. Matching is
+    on the pair, not the timestamp alone, since concurrent builds can complete
+    targets in the same instant and stopping on the first matching timestamp
+    would drop the other build's row.
+
+    An anchor that is never found (pruned row, or the ``--base-build-id all``
+    ``datetime.min`` sentinel, which matches no real row) falls through to
+    returning everything read. That is the safe direction: re-reads are
+    idempotent, whereas truncating the walk would drop lineage silently. Note
+    this makes the equality comparison fail-safe rather than fail-closed, which
+    matters because SQLite stores the typed sort column as wall-clock text (see
+    the early-return note below and issue #279).
+
+    Caveat, deliberately accepted: this bounds the gap, it does not eliminate it.
+    Guaranteeing "no target is ever missed" needs a *write* ordering to ask "which
+    rows appeared since I last looked", and ``gb_targets`` has none —
+    ``StoredTargetRun`` carries only ``started_at``/``finished_at`` (both stamped
+    from the event, both in the past) and no ``created_time``/``updated_time``.
+    The anchor's margin is the spread of the anchor build's completion times,
+    against an event-pipeline lag of seconds to minutes: ample in practice,
+    without a formal guarantee. Closing it fully means promoting a write timestamp
+    on ``gb_targets`` and anchoring on that instead.
+
     Returns:
         The selected successful target runs, newest-finished first.
     """
     selected: list[StoredTargetRun] = []
     page_index = 0
     cutoff = as_aware(finished_after)
+    stop_build_id, stop_finished_at = (
+        (stop_at[0], as_aware(stop_at[1])) if stop_at is not None else (None, None)
+    )
     while True:
         page = _successful_targets_page(storage, page_index, build_id=build_id)
         for target in page:
@@ -249,6 +291,28 @@ def select_recordable_targets(
                 # Not yet finished. NULL finished_at rows may be interleaved
                 # rather than sorted last, so this is a skip-and-continue — never
                 # an early return.
+                continue
+            if stop_build_id is not None:
+                # Anchored walk: the bound is this row, not a timestamp. Collect
+                # it, then stop — everything the anchor was meant to cover has
+                # been read by now. An anchor that never matches simply falls
+                # through to the end of the table (see the docstring).
+                if (
+                    target.build_id == stop_build_id
+                    and as_aware(target.finished_at) == stop_finished_at
+                ):
+                    selected.append(target)
+                    logger.debug(
+                        "Lineage SQL walk reached its anchor %s(%s, build %s, "
+                        "finished %s); holding %d selected target(s).",
+                        target.name or "<unnamed>",
+                        target.uuid[:8],
+                        target.build_id,
+                        target.finished_at,
+                        len(selected),
+                    )
+                    return selected
+                selected.append(target)
                 continue
             # Sorted newest-finished-first: once we reach a target that finished
             # before the watermark, every later one is older too — stop early.
@@ -335,9 +399,8 @@ def get_oldest_successful_target(
     build's earlier targets would be recovered there — but a *concurrent* build
     whose targets finished inside the skipped window is covered by neither that
     sweep (scoped to one build) nor the steady-state scan (which never looks
-    behind the watermark), and ``_WATERMARK_OVERLAP`` spans only a minute. Those
-    targets would be lost permanently, so the anchor is placed low enough that
-    they are never skipped in the first place.
+    behind its own anchor). Those targets would be lost permanently, so the
+    anchor is placed low enough that they are never skipped in the first place.
 
     Pages to the end rather than reading one page, because the ordering is
     newest-first: the oldest row is on the *last* page. NULL-``finished_at`` rows
@@ -392,6 +455,7 @@ def reconcile_once(
     skip: Optional[set[str]] = None,
     build_id: Optional[str] = None,
     watermark_build_id: Optional[str] = None,
+    stop_at: Optional[tuple[str, datetime]] = None,
 ) -> int:
     """Reconcile admin-DB lineage into the store once (the central mechanism).
 
@@ -469,6 +533,12 @@ def reconcile_once(
         build_id: Restrict the pass to a single build. Used by the watcher's
             start-time checkpoint verification, which needs exactly this
             selection/filter/record behaviour over the checkpoint's own build.
+        stop_at: ``(build_id, finished_at)`` row identity to bound the walk at,
+            passed through to ``select_recordable_targets`` — see there for why a
+            row anchor rather than a timestamp is what keeps a concurrent build's
+            straggling target in scope. The steady-state scan passes this (with
+            ``finished_after=UTC_MIN``, since the anchor is then the real bound);
+            the build-scoped verification sweep does not.
 
     Returns:
         How many targets were newly recorded this pass. Where the watermark
@@ -484,7 +554,10 @@ def reconcile_once(
     targets = list(
         reversed(
             select_recordable_targets(
-                storage, finished_after=finished_after, build_id=build_id
+                storage,
+                finished_after=finished_after,
+                build_id=build_id,
+                stop_at=stop_at,
             )
         )
     )
@@ -591,10 +664,11 @@ def reconcile_once(
     else:
         # When every candidate belongs to the watermark's own build, the scan did
         # not find pending work at all: it re-selected the target the watermark
-        # already sits on, which the _WATERMARK_OVERLAP window deliberately keeps
-        # in range so a target finishing in the same second as the checkpoint is
-        # never skipped. Say so, because "1 candidate, already recorded" otherwise
-        # reads as a target the sink keeps refusing to accept.
+        # already sits on, which the anchored walk deliberately keeps in range
+        # (the anchor row is included) so a target finishing in the same second as
+        # the checkpoint is never skipped. Say so, because "1 candidate,
+        # already recorded" otherwise reads as a target the sink keeps refusing
+        # to accept.
         candidate_builds = {t.build_id for t in by_uuid.values()}
         if watermark_build_id is not None and candidate_builds == {watermark_build_id}:
             reprocessed_note = " (the watermark's own build, within the overlap window)"

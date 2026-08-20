@@ -185,14 +185,15 @@ class TestLineageWatcher:
         assert store.calls == []
         assert _watermark(self.storage) is None
 
-    def test_backfill_anchor_watermark_does_not_overflow(self):
-        """A ``datetime.min`` watermark (the ``--all`` backfill anchor) records.
+    def test_backfill_anchor_checkpoint_still_records(self):
+        """A ``datetime.min`` checkpoint (the ``--all`` backfill anchor) records.
 
-        Regression: ``_reconcile`` subtracts ``_WATERMARK_OVERLAP`` from the
-        watermark, and ``datetime.min - 5s`` raises OverflowError. That is raised
-        before any recording, so every scan failed and ``--all`` recorded nothing
-        at all, forever. Nothing can finish before ``datetime.min``, so the
-        subtraction is clamped there rather than attempted.
+        The anchor matches no real row, so ``select_recordable_targets`` walks the
+        whole table and returns everything — which is exactly what a full-history
+        backfill asks for. Previously this path did arithmetic on the watermark
+        (``datetime.min - _WATERMARK_OVERLAP``), which raised ``OverflowError``
+        before any recording and failed every scan forever; there is no such
+        subtraction left to overflow.
         """
         self._targets = [_target("build-1", "target-1", _BASE)]
         watcher, store = self._make_watcher(since=datetime.min)
@@ -203,19 +204,66 @@ class TestLineageWatcher:
         assert store.calls == [("build-1", "target-1")]
         assert _watermark(self.storage) == _BASE
 
-    def test_target_inside_the_overlap_window_does_not_lower_the_watermark(self):
+    def test_concurrent_build_gap_is_recorded(self):
+        """The reviewer's case, end to end: a quick build behind the watermark.
+
+        Build C is long-running with targets at T and T+15; the T+15 one recorded
+        last, so C is the checkpoint's build. Build B started later and finished
+        *earlier* (T+5), landing between C's two targets. Under the old fixed
+        one-minute window B fell outside the query and, the watermark being
+        monotonic, was never re-surfaced — its lineage was lost silently. The
+        anchor is C's oldest target, so the walk reaches back past B.
+        """
+        self._targets = [
+            _target("build-c", "t_c_early", _BASE),
+            _target("build-b", "t_b", _BASE + timedelta(seconds=5)),
+            _target("build-c", "t_c_late", _BASE + timedelta(seconds=15)),
+        ]
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE + timedelta(seconds=15))
+
+        watcher._reconcile()
+
+        assert "t_b" in {c[1] for c in store.calls}
+
+    def test_staggered_targets_within_checkpoint_build_are_not_lost(self):
+        """The checkpoint's build keeps its own earlier targets in scope.
+
+        The checkpoint names whichever target recorded last (here C's T+15 one),
+        but a build's targets finish at staggered times. Anchoring on that row
+        would leave C's own T+5 target behind the stop point; anchoring on the
+        build's *oldest* target includes it.
+        """
+        self._targets = [
+            _target("build-c", "t_early", _BASE + timedelta(seconds=5)),
+            _target("build-c", "t_late", _BASE + timedelta(seconds=15)),
+        ]
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE + timedelta(seconds=15))
+
+        watcher._reconcile()
+
+        assert {c[1] for c in store.calls} == {"t_early", "t_late"}
+
+    def test_target_behind_the_watermark_does_not_lower_it(self):
         """Recording a target behind the watermark must not move it backward.
 
         Regression: ``_on_checkpoint_advance`` wrote unconditionally, so a target
-        that legitimately finished inside ``_WATERMARK_OVERLAP`` (clock skew or
-        interleaved builds) dragged the durable watermark below its prior high
-        mark. With no newer target in the same pass to push it back up, it stayed
-        lowered and every later scan re-read that window. The target is still
-        recorded; only the watermark write is suppressed.
+        that legitimately finished behind the current watermark (its row became
+        visible late — see the anchor rationale in ``_reconcile``) dragged the
+        durable watermark below its prior high mark. With no newer target in the
+        same pass to push it back up it stayed lowered, and every later scan
+        re-read that range. The target is still recorded; only the watermark write
+        is suppressed.
+
+        The checkpoint names ``build-1`` so the anchor resolves to that build's
+        oldest target, which is what brings the behind-the-watermark row into
+        scope in the first place.
         """
         behind = _BASE - timedelta(seconds=30)
         self._targets = [_target("build-1", "target-1", behind)]
-        watcher, store = self._make_watcher(since=_BASE)
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "build-1", _BASE)
 
         watcher._reconcile()
 
@@ -486,14 +534,16 @@ class TestLineageWatcher:
         assert ("b2", "t2") in store.calls
 
         store.calls.clear()
-        # A genuinely newer target appears. The scan re-reads t1 too (it falls
-        # within the watermark-overlap window and was never actually recorded
-        # in the stub store — only the checkpointed t2 was) but that re-read is
-        # a harmless idempotent no-op in a real store; what matters is the scan
-        # is bounded to the overlap window, not a full-DB rescan.
+        # A genuinely newer target appears and is picked up. t1 is NOT: it
+        # finished *before* the anchor (b2's oldest target, which is the
+        # checkpointed t2 itself), and the anchored walk reaches back to the
+        # anchor row, not past it. That is the accepted bound of this design —
+        # the anchor covers stragglers between it and now, not lineage already
+        # behind it, which is what the start()-time verification sweep and an
+        # explicit re-seed are for.
         self._targets.append(_target("b3", "t3", _BASE + timedelta(minutes=1)))
         watcher._reconcile()
-        assert {c[1] for c in store.calls} == {"t1", "t3"}
+        assert {c[1] for c in store.calls} == {"t3"}
 
 
 @pytest.mark.live("storage", "lineage")

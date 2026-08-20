@@ -643,3 +643,152 @@ class TestRecordSelectedTargets:
         store.add_jobstats_for_build_target.assert_any_call(
             storage, build_id="b2", target_id="t2"
         )
+
+
+class TestStopAtAnchor:
+    """The ``stop_at`` anchor: walk back to a named row, not to a time cutoff.
+
+    The steady-state scan used to bound itself with ``finished_after`` alone
+    (``watermark - _WATERMARK_OVERLAP``), which silently dropped lineage:
+    ``finished_at`` is stamped when the *event is created*
+    (``BuildEvent.timestamp``, ``default_factory=get_time``), not when the row is
+    written, so a row can become visible carrying a timestamp already behind an
+    advanced watermark. With concurrent builds of differing durations, targets
+    interleave in ``finished_at`` order, so this is routine rather than an edge.
+
+    ``stop_at`` replaces the fixed window with a row identity — ``(build_id,
+    finished_at)`` — so the walk retreats to a known point regardless of how far
+    back in time that is. The query filters only on ``status``, never
+    ``build_id``, so sweeping that range picks up the straggling targets of
+    *every* build, which is what closes the gap.
+    """
+
+    def test_includes_the_anchor_target(self):
+        # Inclusive, mirroring the ``>=`` semantics of the finished_after cutoff:
+        # the anchor row itself is returned (re-reading it is a harmless
+        # idempotent no-op) rather than being treated as already-handled.
+        old = _target("b1", "t_old", finished_at=_BASE)
+        anchor = _target("b2", "t_anchor", finished_at=_BASE + timedelta(seconds=10))
+        newer = _target("b3", "t_newer", finished_at=_BASE + timedelta(seconds=20))
+        storage = _admin_storage_with([old, anchor, newer])
+
+        selected = select_recordable_targets(
+            storage,
+            finished_after=UTC_MIN,
+            stop_at=("b2", _BASE + timedelta(seconds=10)),
+        )
+
+        assert {t.uuid for t in selected} == {"t_anchor", "t_newer"}
+
+    def test_covers_concurrent_build_gap(self):
+        """The reviewer's case: a quick build that finished behind the watermark.
+
+        Build C is a long build whose targets finished at T and T+15; the T+15
+        one recorded last, so C is the checkpoint's build. Build B started later
+        but finished *earlier* (T+5), so it sits between C's two targets. Under
+        the old one-minute window B was excluded from the query outright and,
+        because the watermark only moves forward, was never re-surfaced — its
+        lineage was lost permanently.
+
+        The anchor is C's *oldest* target (T), which is what ``_reconcile``
+        derives via ``get_oldest_successful_target``. Anchoring on C's *newest*
+        row would stop the walk immediately and still lose B — which is precisely
+        why the oldest is the right anchor.
+        """
+        c_early = _target("build-c", "t_c_early", finished_at=_BASE)
+        b_target = _target("build-b", "t_b", finished_at=_BASE + timedelta(seconds=5))
+        c_late = _target(
+            "build-c", "t_c_late", finished_at=_BASE + timedelta(seconds=15)
+        )
+        storage = _admin_storage_with([c_early, b_target, c_late])
+
+        selected = select_recordable_targets(
+            storage,
+            finished_after=UTC_MIN,
+            stop_at=("build-c", _BASE),
+        )
+
+        # The straggler the fixed window dropped is back in scope.
+        assert {t.uuid for t in selected} == {"t_c_early", "t_b", "t_c_late"}
+
+    def test_covers_the_anchor_builds_own_staggered_targets(self):
+        """The anchor must be the build's *oldest* target, not the newest.
+
+        A build's targets finish at different times, and the checkpoint names
+        whichever one recorded last. Anchoring on that row would leave the same
+        build's earlier targets behind the stop point — the same silent loss,
+        narrowed to within one build. ``_reconcile`` therefore derives the anchor
+        from ``get_oldest_successful_target``; this pins that the selector honors
+        such an anchor (T+5) rather than the checkpoint's own timestamp (T+15).
+        """
+        early = _target("build-c", "t_early", finished_at=_BASE + timedelta(seconds=5))
+        late = _target("build-c", "t_late", finished_at=_BASE + timedelta(seconds=15))
+        storage = _admin_storage_with([early, late])
+
+        selected = select_recordable_targets(
+            storage,
+            finished_after=UTC_MIN,
+            stop_at=("build-c", _BASE + timedelta(seconds=5)),
+        )
+
+        assert {t.uuid for t in selected} == {"t_early", "t_late"}
+
+    def test_falls_back_to_full_scan_when_anchor_row_not_found(self):
+        """A missing anchor degrades toward scanning *more*, never less.
+
+        The anchor row can legitimately be absent — pruned, or the
+        ``--base-build-id all`` ``datetime.min`` sentinel that matches no real
+        row. Returning everything read is the safe direction: re-reads are
+        idempotent no-ops, whereas truncating would drop lineage silently.
+        """
+        t1 = _target("b1", "t1", finished_at=_BASE)
+        t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=10))
+        storage = _admin_storage_with([t1, t2])
+
+        selected = select_recordable_targets(
+            storage,
+            finished_after=UTC_MIN,
+            stop_at=("no-such-build", _BASE + timedelta(seconds=99)),
+        )
+
+        assert {t.uuid for t in selected} == {"t1", "t2"}
+
+    def test_disambiguates_same_instant_different_build(self):
+        """Matching is on ``(build_id, finished_at)``, not the timestamp alone.
+
+        Concurrent builds can complete targets in the same instant. Stopping on
+        the timestamp alone would end the walk at whichever row the backend
+        happened to return first, dropping the other build's target.
+        """
+        same_instant = _BASE + timedelta(seconds=10)
+        anchor = _target("build-anchor", "t_anchor", finished_at=same_instant)
+        other = _target("build-other", "t_other", finished_at=same_instant)
+        older = _target("build-older", "t_older", finished_at=_BASE)
+        storage = _admin_storage_returning([[anchor, other, older]])
+
+        selected = select_recordable_targets(
+            storage,
+            finished_after=UTC_MIN,
+            stop_at=("build-anchor", same_instant),
+        )
+
+        # The walk stops *at* the anchor, so the same-instant row from the other
+        # build (read before it here) is kept, and the older row is not reached.
+        assert "t_anchor" in {t.uuid for t in selected}
+        assert "t_older" not in {t.uuid for t in selected}
+
+    def test_none_preserves_finished_after_only_behavior(self):
+        """Without ``stop_at`` the selector behaves exactly as before.
+
+        The build-scoped verification sweep and the seeding lookups pass no
+        anchor, so the ``finished_after`` cutoff has to keep working unchanged.
+        """
+        t_old = _target("b1", "t_old", finished_at=_BASE)
+        t_new = _target("b1", "t_new", finished_at=_BASE + timedelta(seconds=20))
+        storage = _admin_storage_with([t_old, t_new])
+
+        selected = select_recordable_targets(
+            storage, finished_after=_BASE + timedelta(seconds=10)
+        )
+
+        assert {t.uuid for t in selected} == {"t_new"}
