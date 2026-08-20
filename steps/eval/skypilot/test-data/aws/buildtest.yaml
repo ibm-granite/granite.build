@@ -31,7 +31,6 @@ simulate_step_failure: false
 # window to cancel.
 tests:
   - runner
-# EC2 provisioning (and autostop teardown), plus pulling the eval image, is far
-# slower than the local Docker environment: allow for cold-start instance
-# bring-up plus SkyPilot setup and the image pull.
+# EC2 provisioning (and autostop teardown), plus pulling the eval image, is slow:
+# allow for cold-start instance bring-up plus SkyPilot setup and the image pull.
 timeout_minutes: 40

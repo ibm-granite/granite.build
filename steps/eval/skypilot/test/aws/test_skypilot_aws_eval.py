@@ -38,14 +38,12 @@ container runs ``eval.sh``, which writes a stub ``results.json`` (HF-free —
 nothing is downloaded) that the step registers as a single ``env://`` output
 artifact.
 
-**Custom image — must be PUBLISHED first.** Unlike the local Docker environment
-(``pull_policy=if-not-present``, which uses a locally built image), a SkyPilot
-EC2 node **pulls** the eval image from its registry by the reference frozen into
-the step's ``image_id`` (``docker:${IMAGE_REF}``). So this test can only pass
-once that image has been pushed to a **public/pullable** registry — build and
-publish it first with a real ``REGISTRY`` (``make image publish-image
-REGISTRY=...``); the committed default is the ``quay.io/your-org`` placeholder,
-which will not pull.
+**Custom image — must be PUBLISHED first.** A SkyPilot EC2 node **pulls** the
+eval image from its registry by the reference frozen into the step's
+``image_id`` (``docker:${IMAGE_REF}``). So this test can only pass once that
+image has been pushed to a **public/pullable** registry — build and publish it
+first with a real ``REGISTRY`` (``make image publish-image REGISTRY=...``); the
+committed default is the ``quay.io/your-org`` placeholder, which will not pull.
 
 **Real EC2 — never runs by accident.** It is in the extended suite only AND
 skips unless boto3's credential env vars are present (see
