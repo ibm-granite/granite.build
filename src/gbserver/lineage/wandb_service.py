@@ -88,11 +88,20 @@ class WandBLineageService(LineageService):
             # working tree (the gbserver checkout) into every recorded target —
             # producing misleading code/, diff.patch, diff_<hash>.patch files and
             # leaking the recorder's source/diff into wandb. Disable all of it.
+            # For the same reason, console capture earns nothing here: there is no
+            # workload stdout worth showing in the wandb UI, only the watcher's own
+            # logs. It also actively misbehaves — the stderr wrapper is uninstalled
+            # *after* finish() marks the run done, so any log line written in that
+            # window hits a callback that rejects writes to a finished run and
+            # raises UsageError (caught and logged by wandb's redirect.py). With
+            # wandb's own logging at DEBUG that is self-inflicted: its teardown
+            # messages trip their own wrapper. No redirect, no window, no noise.
             settings=wandb.Settings(
                 quiet=GBSERVER_WANDB_QUIET,
                 save_code=False,
                 disable_code=True,
                 disable_git=True,
+                console="off",
             ),
         )
 

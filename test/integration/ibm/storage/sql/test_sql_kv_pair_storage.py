@@ -1,11 +1,11 @@
 import os
 
 import pytest
-from libgbtest.storage.status_storage import (
-    BaseStatusStorageTest,
+from libgbtest.storage.kv_pair_storage import (
+    BaseKeyValuePairStorageTest,
 )
-from libgbtest.storage.status_storage import (
-    TestStatusValueMethods as _TestStatusValueMethods,
+from libgbtest.storage.kv_pair_storage import (
+    TestKeyValuePairValueMethods as _TestKeyValuePairValueMethods,
 )
 
 from gbserver.storage.sql.storage_factory import SQLStorageFactory
@@ -17,7 +17,7 @@ pytestmark = pytest.mark.ibm
     os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
     reason="Don't want to run this in CICD.",
 )
-class TestSQLStatusStorage(BaseStatusStorageTest):
+class TestSQLKeyValuePairStorage(BaseKeyValuePairStorageTest):
 
     @classmethod
     def _get_storage_factory(cls):
@@ -28,7 +28,7 @@ class TestSQLStatusStorage(BaseStatusStorageTest):
     os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
     reason="Don't want to run this in CICD.",
 )
-class TestSQLStatusValueMethods(_TestStatusValueMethods):
+class TestSQLKeyValuePairValueMethods(_TestKeyValuePairValueMethods):
 
     @classmethod
     def _get_storage_factory(cls):

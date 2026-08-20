@@ -5,6 +5,11 @@ Bring-Your-Own-Code step for SkyPilot clusters. It clones a **public git repo** 
 and runs a user-defined command during `run`, inside a **public container image** or on
 the bare launcher node — no custom image is built for this step.
 
+> **Developing or testing this step?** See `steps/byoc/skypilot/README.md` in the
+> granite.build repository for how the step is generated, tested, and published —
+> including the environment variables the SkyPilot **aws** integration test requires
+> (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, or `AWS_PROFILE`).
+
 ## Referencing the step
 
 Point your build's Space at one that provides the step, then reference it by the stable

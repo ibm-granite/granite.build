@@ -165,9 +165,9 @@ destination shape:
   workdir; requires `shared_workdir` on the environment.
 - **absolute** destinations under a shared, identity-mounted root (e.g. `/proj/…`) are likewise written
   directly — the author's explicit shared-FS location, reachable at the same path in the container.
-- **`~/…`** destinations keep SkyPilot's default behavior and land under the login-node cluster home;
-  they are **not** visible inside the container. Avoid `~/…` for container steps — use a relative
-  destination instead.
+- **`~/…`** destinations are **rejected** by the launcher (`~` is not expanded). They would land under
+  the login-node cluster home and be **invisible inside the container**, so `file_mounts` forbids them —
+  use a relative destination instead.
 
 Prefer a **relative** destination (see [file_mounts](skypilot.md#file_mounts)) — it is the simplest and
 gives per-target isolation, with the payload written onto the shared workdir for the job to read.

@@ -27,18 +27,34 @@ steady-state scans read only newly-finished targets, and that the per-sink
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import pytest
+
 from gbserver.lineage.lineage_reconciler import (
+    UTC_MIN,
     _expected_run_count,
+    as_aware,
     get_most_recent_successful_target,
+    get_oldest_successful_target,
     reconcile_once,
     record_selected_targets,
     record_target_lineage,
     select_recordable_targets,
 )
+from gbserver.lineage.lineage_seeding import (
+    BACKFILL_BUILD_ID,
+    SEED_ALL,
+    SEED_FROM_LATEST,
+    LineageSeedError,
+    _build_checkpoint,
+)
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 
-_BASE = datetime(2026, 1, 1, 0, 0, 0)
+# Aware UTC, matching what a real finished_at carries: utils.get_time() stamps
+# them with datetime.now().astimezone(). A naive value here would be read as
+# *local* (see as_aware) and shift every expectation by the test machine's
+# UTC offset.
+_BASE = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 
 def _target(
@@ -183,13 +199,12 @@ class TestSelectRecordableTargets:
         assert {t.uuid for t in selected} == {"t_new", "t_recordable"}
 
     def test_tz_aware_finished_at_does_not_break_watermark_compare(self):
-        # A storage backend may hand finished_at back timezone-aware even though
-        # it was written naive. Comparing a naive watermark against an aware
-        # finished_at (or vice versa) would raise TypeError and abort the scan;
-        # both sides are normalized to naive UTC so the walk still works. Here
-        # _BASE is treated as UTC, so the aware value one hour later in UTC (=
-        # _BASE + 1h) is newer than the watermark and must be selected.
-        aware = (_BASE + timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        # Mixed awareness must not abort the scan: comparing a naive datetime
+        # against an aware one raises TypeError. Both sides are normalized to
+        # aware UTC instants, so the walk works whichever awareness the backend
+        # yields. Here the aware value is one hour after the watermark, so it is
+        # newer and must be selected.
+        aware = _BASE + timedelta(hours=1)
         t_aware = _target("b1", "t_aware", finished_at=aware)
         older = _target("b1", "t_older", finished_at=_BASE - timedelta(seconds=10))
         storage = _admin_storage_returning([[t_aware, older]])
@@ -249,6 +264,135 @@ class TestGetMostRecentSuccessfulTarget:
         storage = _admin_storage_returning([[_target("b1", "t_null")]])
         assert get_most_recent_successful_target(storage) is None
         assert storage.target_storage.get_by_where.call_count == 1
+
+
+class TestSeedAnchors:
+    """Where each --base-build-id spec places the checkpoint."""
+
+    @staticmethod
+    def _storage(targets):
+        storage = MagicMock()
+
+        def _get_by_where(where, query_control=None):
+            rows = [
+                t
+                for t in targets
+                if "build_id" not in where or t.build_id == where["build_id"]
+            ]
+            rows.sort(key=lambda t: t.finished_at, reverse=True)
+            return rows if query_control.pagination.index == 0 else []
+
+        storage.target_storage.get_by_where.side_effect = _get_by_where
+        return storage
+
+    def test_from_latest_anchors_at_the_newest_build_s_oldest_target(self):
+        # Two steps: the most recent completion names the build, then the anchor is
+        # that build's *oldest* target. Anchoring at the newest completion would
+        # start recording mid-build and skip the rest of its already-finished
+        # targets, while still naming their build in the checkpoint.
+        new_last = _target("b_new", "n3", finished_at=_BASE + timedelta(minutes=20))
+        new_mid = _target("b_new", "n2", finished_at=_BASE + timedelta(minutes=10))
+        new_first = _target("b_new", "n1", finished_at=_BASE)
+        old = _target("b_old", "o1", finished_at=_BASE - timedelta(days=1))
+        storage = self._storage([new_last, new_mid, new_first, old])
+
+        checkpoint = _build_checkpoint(storage, SEED_FROM_LATEST)
+
+        assert checkpoint["build_id"] == "b_new"
+        # The newest build's first completion, not its last.
+        assert checkpoint["finished_at"] == as_aware(_BASE).isoformat()
+
+    def test_build_id_anchors_at_that_build_s_oldest_target(self):
+        first = _target("b1", "t1", finished_at=_BASE)
+        last = _target("b1", "t2", finished_at=_BASE + timedelta(minutes=30))
+        storage = self._storage([last, first])
+
+        checkpoint = _build_checkpoint(storage, "b1")
+
+        assert checkpoint["build_id"] == "b1"
+        assert checkpoint["finished_at"] == as_aware(_BASE).isoformat()
+
+    def test_all_anchors_at_utc_min(self):
+        checkpoint = _build_checkpoint(self._storage([]), SEED_ALL)
+        assert checkpoint["build_id"] == BACKFILL_BUILD_ID
+        assert checkpoint["finished_at"] == UTC_MIN.isoformat()
+
+    def test_from_latest_on_an_empty_db_raises(self):
+        # Nothing to anchor against; the CLI turns this into a ClickException
+        # rather than seeding something arbitrary.
+        with pytest.raises(LineageSeedError):
+            _build_checkpoint(self._storage([]), SEED_FROM_LATEST)
+
+
+class TestGetOldestSuccessfulTarget:
+    """Anchoring a checkpoint at a build must not skip that build's own targets."""
+
+    def test_returns_the_oldest_finished_target(self):
+        # The anchor for a build id: its *oldest* completion. The watermark is
+        # inclusive but forward-only, so anchoring at the newest would exclude
+        # every earlier target of the same build.
+        t_old = _target("b1", "t_old", finished_at=_BASE)
+        t_mid = _target("b1", "t_mid", finished_at=_BASE + timedelta(minutes=10))
+        t_new = _target("b1", "t_new", finished_at=_BASE + timedelta(minutes=20))
+        storage = _admin_storage_with([t_old, t_mid, t_new])
+
+        found = get_oldest_successful_target(storage)
+        assert found is not None and found.uuid == "t_old"
+
+    def test_scoped_to_one_build(self):
+        # Only the requested build's targets may anchor it. The build_id must reach
+        # the query as a server-side filter (it is a real column), not be applied
+        # after the fact — otherwise another build's older target would drag the
+        # anchor down and re-drive unrelated lineage.
+        mine = _target("b1", "t_mine", finished_at=_BASE)
+        storage = _admin_storage_returning([[mine]])
+
+        found = get_oldest_successful_target(storage, build_id="b1")
+        assert found is not None and found.uuid == "t_mine"
+        where = storage.target_storage.get_by_where.call_args.args[0]
+        assert where == {"status": Status.SUCCESS.name, "build_id": "b1"}
+
+    def test_pages_to_the_end_to_find_the_oldest(self):
+        # Ordering is newest-first, so the oldest row is on the LAST page: a
+        # single-page read would return the wrong anchor.
+        first_page = [
+            _target("b1", f"t_{i}", finished_at=_BASE + timedelta(minutes=i + 1))
+            for i in range(_SCAN_PAGE_SIZE)
+        ]
+        oldest = _target("b1", "t_oldest", finished_at=_BASE)
+        storage = _admin_storage_returning([first_page, [oldest]])
+
+        found = get_oldest_successful_target(storage)
+        assert found is not None and found.uuid == "t_oldest"
+
+    def test_skips_null_finished_at(self):
+        # A NULL finished_at is not a completion; it must never become the anchor
+        # (and the NULL backlog PostgreSQL sorts first must not be mistaken for
+        # the oldest target).
+        t_null = _target("b1", "t_null", finished_at=None)
+        t_real = _target("b1", "t_real", finished_at=_BASE)
+        storage = _admin_storage_returning([[t_null, t_real]])
+
+        found = get_oldest_successful_target(storage)
+        assert found is not None and found.uuid == "t_real"
+
+    def test_returns_none_when_no_finished_target_exists(self):
+        storage = _admin_storage_returning([[_target("b1", "t_null")]])
+        assert get_oldest_successful_target(storage) is None
+
+    def test_mixed_awareness_does_not_raise(self):
+        # finished_at may arrive aware or naive depending on the backend; comparing
+        # the two directly raises TypeError, which would abort seeding entirely.
+        aware = _target("b1", "t_aware", finished_at=_BASE + timedelta(hours=1))
+        naive = _target(
+            "b1",
+            "t_naive",
+            finished_at=(_BASE + timedelta(hours=2)).replace(tzinfo=None),
+        )
+        storage = _admin_storage_returning([[naive, aware]])
+
+        found = get_oldest_successful_target(storage)
+        assert found is not None and found.uuid == "t_aware"
 
 
 class TestRecordTargetLineage:
@@ -499,3 +643,122 @@ class TestRecordSelectedTargets:
         store.add_jobstats_for_build_target.assert_any_call(
             storage, build_id="b2", target_id="t2"
         )
+
+
+class TestStopAtAnchor:
+    """The ``stop_at`` anchor: walk back to a named row, not to a time cutoff.
+
+    The steady-state scan used to bound itself with ``finished_after`` alone
+    (``watermark - _WATERMARK_OVERLAP``), which silently dropped lineage:
+    ``finished_at`` is stamped when the *event is created*
+    (``BuildEvent.timestamp``, ``default_factory=get_time``), not when the row is
+    written, so a row can become visible carrying a timestamp already behind an
+    advanced watermark. With concurrent builds of differing durations, targets
+    interleave in ``finished_at`` order, so this is routine rather than an edge.
+
+    ``stop_at`` replaces the fixed window with a row identity — ``(build_id,
+    finished_at)`` — so the walk retreats to a known point regardless of how far
+    back in time that is. The query filters only on ``status``, never
+    ``build_id``, so sweeping that range picks up the straggling targets of
+    *every* build, which is what closes the gap.
+    """
+
+    def test_includes_the_anchor_target(self):
+        # Inclusive, mirroring the ``>=`` semantics of the finished_after cutoff:
+        # the anchor row itself is returned (re-reading it is a harmless
+        # idempotent no-op) rather than being treated as already-handled.
+        #
+        # This also covers the within-build case: rows above the anchor are kept
+        # whatever build they belong to, so the anchor build's own later targets
+        # are never behind the stop point. That the *anchor* is the build's oldest
+        # target (rather than the checkpoint's own row) is a `_reconcile`
+        # decision, pinned by
+        # test_staggered_targets_within_checkpoint_build_are_not_lost.
+        old = _target("b1", "t_old", finished_at=_BASE)
+        anchor = _target("b2", "t_anchor", finished_at=_BASE + timedelta(seconds=10))
+        newer = _target("b3", "t_newer", finished_at=_BASE + timedelta(seconds=20))
+        storage = _admin_storage_with([old, anchor, newer])
+
+        selected = select_recordable_targets(
+            storage,
+            finished_after=UTC_MIN,
+            stop_at=("b2", _BASE + timedelta(seconds=10)),
+        )
+
+        assert {t.uuid for t in selected} == {"t_anchor", "t_newer"}
+
+    def test_covers_concurrent_build_gap(self):
+        """The reviewer's case: a quick build that finished behind the watermark.
+
+        Build C is a long build whose targets finished at T and T+15; the T+15
+        one recorded last, so C is the checkpoint's build. Build B started later
+        but finished *earlier* (T+5), so it sits between C's two targets. Under
+        the old one-minute window B was excluded from the query outright and,
+        because the watermark only moves forward, was never re-surfaced — its
+        lineage was lost permanently.
+
+        The anchor is C's *oldest* target (T), which is what ``_reconcile``
+        derives via ``get_oldest_successful_target``. Anchoring on C's *newest*
+        row would stop the walk immediately and still lose B — which is precisely
+        why the oldest is the right anchor.
+        """
+        c_early = _target("build-c", "t_c_early", finished_at=_BASE)
+        b_target = _target("build-b", "t_b", finished_at=_BASE + timedelta(seconds=5))
+        c_late = _target(
+            "build-c", "t_c_late", finished_at=_BASE + timedelta(seconds=15)
+        )
+        storage = _admin_storage_with([c_early, b_target, c_late])
+
+        selected = select_recordable_targets(
+            storage,
+            finished_after=UTC_MIN,
+            stop_at=("build-c", _BASE),
+        )
+
+        # The straggler the fixed window dropped is back in scope.
+        assert {t.uuid for t in selected} == {"t_c_early", "t_b", "t_c_late"}
+
+    def test_falls_back_to_full_scan_when_anchor_row_not_found(self):
+        """A missing anchor degrades toward scanning *more*, never less.
+
+        The anchor row can legitimately be absent — pruned, or the
+        ``--base-build-id all`` ``datetime.min`` sentinel that matches no real
+        row. Returning everything read is the safe direction: re-reads are
+        idempotent no-ops, whereas truncating would drop lineage silently.
+        """
+        t1 = _target("b1", "t1", finished_at=_BASE)
+        t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=10))
+        storage = _admin_storage_with([t1, t2])
+
+        selected = select_recordable_targets(
+            storage,
+            finished_after=UTC_MIN,
+            stop_at=("no-such-build", _BASE + timedelta(seconds=99)),
+        )
+
+        assert {t.uuid for t in selected} == {"t1", "t2"}
+
+    def test_disambiguates_same_instant_different_build(self):
+        """Matching is on ``(build_id, finished_at)``, not the timestamp alone.
+
+        Concurrent builds can complete targets in the same instant. Stopping on
+        the timestamp alone would end the walk at whichever row the backend
+        happened to return first, dropping the other build's target.
+        """
+        same_instant = _BASE + timedelta(seconds=10)
+        # The other build's row comes FIRST, so a match on the timestamp alone
+        # would stop the walk here and never reach the real anchor — dropping it.
+        other = _target("build-other", "t_other", finished_at=same_instant)
+        anchor = _target("build-anchor", "t_anchor", finished_at=same_instant)
+        older = _target("build-older", "t_older", finished_at=_BASE)
+        storage = _admin_storage_returning([[other, anchor, older]])
+
+        selected = select_recordable_targets(
+            storage,
+            finished_after=UTC_MIN,
+            stop_at=("build-anchor", same_instant),
+        )
+
+        # Both same-instant rows are kept (the walk passed the other build's and
+        # stopped at the anchor); the older row is never reached.
+        assert {t.uuid for t in selected} == {"t_other", "t_anchor"}
