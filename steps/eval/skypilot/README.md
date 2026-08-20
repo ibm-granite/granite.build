@@ -121,6 +121,30 @@ region must be configured — via the AWS profile / `~/.aws/config`, or
 `AWS_DEFAULT_REGION`. No `HF_TOKEN` is needed: the exemplar fixture uses `env://`
 I/O and downloads nothing.
 
+#### Where the build's AWS creds actually come from (`GB_AWS_*`)
+
+The env vars above are only the **skip gate** — they decide whether the test runs
+on this host. They are **not** how the build authenticates to AWS. The AWS
+`environment.yaml`
+(`configurations/assets/environments/skypilot/aws/environment.yaml`) resolves the
+secret *names* `GB_AWS_ACCESS_KEY_ID` / `GB_AWS_SECRET_ACCESS_KEY` through the
+space **secret manager** and materializes them into a non-default `gb-skypilot`
+profile that SkyPilot then selects:
+
+```yaml
+aws_credentials:
+  - profile: gb-skypilot
+    aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+    aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+cloud_config: { workspaces: { default: { aws: { profile: gb-skypilot } } } }
+```
+
+Selecting an explicit profile **disables the ambient `AWS_*` env-var provider**, so
+provisioning uses the materialized profile, not your shell. Standalone: seed those
+secret names (base64) into `~/.granite.build/space_secrets/`; shared: the
+server-managed secret store supplies them. Full runbook:
+[docs/environments/skypilot-aws.md](../../../docs/environments/skypilot-aws.md).
+
 ### The image must be published first (unlike byoc)
 
 eval bakes its evaluator into a **custom image**, and the EC2 node *pulls* that
