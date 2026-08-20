@@ -40,6 +40,13 @@ step ships user-facing docs. See
 against the locally rendered `space/` (Mode 1, `make test`) and against the
 published step (Mode 2, under `test/steps/`).
 
+With the local `Docker` launcher removed, there is **no longer a way to exercise
+the built image locally**: `make test` runs the cluster-agnostic `eval.sh` unit
+tests ([test/test_eval.py](test/test_eval.py)) plus the real-EC2 integration test
+([test/aws/](test/aws/)), and the latter **skips unless AWS credentials are
+present**. Running the image end to end now requires a reachable remote cluster
+(the Skypilot launcher).
+
 Eval-specific notes:
 
 - `REGISTRY` ships as a **placeholder** (`quay.io/your-org`) so the offline
