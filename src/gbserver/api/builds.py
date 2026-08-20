@@ -44,7 +44,11 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.space_storage import IStoredSpaceStorage
-from gbserver.storage.stored_build import StoredBuild, get_retry_chain_members
+from gbserver.storage.stored_build import (
+    StoredBuild,
+    create_continuation_build,
+    get_retry_chain_members,
+)
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -91,10 +95,44 @@ class BuildSubmitRequest(BaseModel):
         return self
 
 
+class BuildContinueRequest(BaseModel):
+    """
+    A build continuation request.
+
+    Continues a previously-executed build: a *fresh* build runner re-runs the
+    prior build, skipping targets that already succeeded and re-running the rest.
+    The build definition (``build_archive``), space, and targets are sourced from
+    the prior build, so only its id is required.
+
+        build_id: uuid of any member of the prior build's retry chain to continue.
+    """
+
+    build_id: str
+
+    @model_validator(mode="after")
+    def validate_build_id(self: Self) -> Self:
+        if self.build_id == "":
+            raise ValueError("build_id cannot be empty")
+        return self
+
+
 class BuildSubmitResponse(BaseModel):
     """Response to a build submission."""
 
     build_id: str
+
+
+class BuildContinueResponse(BaseModel):
+    """Response to a build continuation.
+
+    build_id: uuid of the new (continuation) build.
+    root_build_id: uuid of the chain root the continuation links to via
+        retry_of_build_id. This is resolved server-side from whichever chain
+        member was passed, so the client can report the canonical root.
+    """
+
+    build_id: str
+    root_build_id: str
 
 
 class BuildValidateRequest(BaseModel):
@@ -287,6 +325,69 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
 
     return BuildSubmitResponse(
         build_id=stored_build.uuid,
+    )
+
+
+@builds_api.post("/continue")
+def continue_build(
+    request: Request, req: BuildContinueRequest
+) -> BuildContinueResponse:
+    """Continue a previously-executed build in a fresh runner.
+
+    Creates a new build that extends the prior build's retry chain, so the runner
+    skips targets that already succeeded (anywhere in the chain) and re-runs the
+    rest. The prior build must be finished — continuing a build that is still
+    active (there may be a live runner) is rejected.
+    """
+    storage = get_admin_storage()
+    build_storage: IStoredBuildStorage = storage.build_storage
+    space_storage: IStoredSpaceStorage = storage.space_storage
+
+    prior = build_storage.get_by_uuid(req.build_id)
+    if not isinstance(prior, StoredBuild):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Build {req.build_id} not found",
+        )
+
+    # A continuation spins up a fresh runner, so the prior build must not still be
+    # active — otherwise the continuation could race a live runner working the same
+    # chain. There is no runner-liveness table; the build status is the signal.
+    if not prior.status.is_finished():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Build {req.build_id} has status {prior.status}; only a finished "
+                "build (SUCCESS, FAILED, INVALID, or CANCELLED) can be continued"
+            ),
+        )
+
+    # The build runs under the prior build's space and identity; gate the caller
+    # the same way submit_build does.
+    stored_space = space_storage.get_by_name(prior.space_name)
+    if stored_space is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Space {prior.space_name} not found in space storage",
+        )
+    confirm_space_write_access(
+        request, username_on_target=prior.username, space_name=stored_space.name
+    )
+
+    continuation = create_continuation_build(build_storage, prior)
+    logger.info(
+        "created continuation build %s from build %s (chain root %s)",
+        continuation.uuid,
+        req.build_id,
+        continuation.retry_of_build_id,
+    )
+
+    # retry_of_build_id is the resolved chain root (set server-side regardless of
+    # which chain member was passed), so the client can report the canonical root.
+    assert continuation.retry_of_build_id is not None
+    return BuildContinueResponse(
+        build_id=continuation.uuid,
+        root_build_id=continuation.retry_of_build_id,
     )
 
 

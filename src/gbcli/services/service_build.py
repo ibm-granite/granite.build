@@ -52,6 +52,7 @@ from gbcli.utils.gbconstants import (
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gbserver import (
     cancel_build,
+    continue_build,
     get_build,
     get_build_events,
     get_build_lineage,
@@ -498,6 +499,49 @@ def build_start(
         )
 
     return gbserver_build["build_id"]
+
+
+def build_continue(
+    github_token: str,
+    build_id: str,
+    id_format: Optional[str] = None,
+    callback=None,
+) -> Optional[dict]:
+    """Continue a previously-executed build.
+
+    Unlike build_start there is no local build folder to zip: the server sources
+    the build definition, space, and targets from the prior build. Only the prior
+    build's id (or URL) is needed.
+
+    Returns the server response dict ``{"build_id", "root_build_id"}`` — the new
+    continuation build's id and the resolved chain root it links to — or None on
+    a server/connection error.
+    """
+    if id_format == "url":
+        build_id_from_url = get_build_id_from_url(github_token, build_id, callback)
+        build_id = build_id_from_url[0]["uuid"]
+
+    if callback is not None:
+        callback(
+            callback_event="continuing_build",
+            callback_args={"steps": 1, "build_id": build_id},
+        )
+
+    gbserver_build = make_gbserver_call(
+        lambda: continue_build(build_id, github_token, GBSERVER_BUILD_API),
+        callback,
+    )
+
+    if not gbserver_build:
+        return None
+
+    if callback is not None:
+        callback(
+            callback_event="continued_build",
+            callback_args={"steps": 100, "build_id": gbserver_build["build_id"]},
+        )
+
+    return gbserver_build
 
 
 def build_validate(

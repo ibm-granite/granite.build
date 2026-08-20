@@ -1155,6 +1155,106 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
         ctx.exit(1)  # Exit with a non-zero status
 
 
+@cli.command("continue")
+@click.pass_context
+@click.argument("build_id", required=True)
+@click.option(
+    "--format",
+    "format",
+    default="simple",
+    type=click.Choice(["simple", "json"], case_sensitive=True),
+    help="Output format: simple (default), json",
+)
+@common_options
+def continue_build_cmd(ctx, build_id, format, skip_version_check, quiet):
+    """
+    Continue a previously-executed build
+
+    Provide build ID or URL. A fresh build runner re-runs the build, skipping
+    targets that already succeeded and re-running the rest. The build must be
+    finished (not currently running). No local build folder is required — the
+    build definition is sourced from the previous build.
+    """
+    if format == "json":
+        quiet = True
+    if not skip_version_check:
+        try:
+            outdated_version = check_current_and_latest_versions()
+        except Exception as e:
+            click.echo(f"❌ {str(e)}.", err=True)
+            ctx.exit(1)  # Exit with a non-zero status
+        if outdated_version:
+            click.echo(outdated_version, err=True)
+            ctx.exit(1)  # Exit with a non-zero status
+
+    id_format = parse_build_identifier(build_id)
+    if id_format not in ["uuid", "url"]:
+        click.echo(
+            f"❌ Build identifier formatted incorrectly. Please try again with valid build ID or URL.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if id_format == "uuid" and len(build_id) < 36:
+        click.echo(
+            f"❌ Build ID formatted incorrectly. Please try again with a valid build ID.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if not quiet:
+        click.echo(f"🏁 {PROJECT_NAME} build continue")
+
+    build_client = GBClient.Build(get_user_token())
+
+    def echo_callback(callback_event: str, callback_args: Dict):
+        match callback_event:
+            case "error":
+                reason = callback_args.get("reason", "")
+                click.echo(
+                    f"\n❌ Build can't be continued at this moment... Reason: {reason}",
+                    err=True,
+                )
+                sys.exit(1)  # Exit with a non-zero status
+            case _:
+                pass
+
+    try:
+        result = build_client.build_continue(
+            build_id, id_format, callback=echo_callback
+        )
+
+        if result:
+            new_build_id = result["build_id"]
+            # The server resolves the chain root from whichever member was passed.
+            root_build_id = result.get("root_build_id")
+            details_page = f"{WEB_UI_URL}/builds/{new_build_id}"
+            if not quiet:
+                click.echo(
+                    f"✅ Continuing build {build_id} as new build: {details_page}"
+                )
+                if root_build_id and root_build_id != build_id:
+                    click.echo(f"   (continues build chain rooted at {root_build_id})")
+                click.echo(f"""To get the build status of the whole chain:
+```
+gb build status {new_build_id}
+```""")
+            if format == "json":
+                click.echo(
+                    json.dumps(
+                        {
+                            "build_id": new_build_id,
+                            "root_build_id": root_build_id,
+                            "continued_from": build_id,
+                        }
+                    )
+                )
+
+    except Exception as e:
+        click.echo(str_exc_chain(e), err=True)
+        ctx.exit(1)  # Exit with a non-zero status
+
+
 @cli.command()
 @pass_context_and_reject_standalone("build lineage")
 @click.argument("build_id", required=True)

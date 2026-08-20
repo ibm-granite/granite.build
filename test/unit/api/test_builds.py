@@ -223,3 +223,171 @@ def test_validate_build_allows_admin_impersonation_via_space_name():
             _validate_req(VICTIM, space_name=SPACE),
         )
     assert resp.status_code == 200
+
+
+# ------------------------------------------------------------------ continue_build
+
+from gbserver.api.builds import BuildContinueRequest, continue_build
+from gbserver.storage.stored_build import StoredBuild
+from gbserver.types.status import Status
+
+
+def _fake_build_storage(builds: dict):
+    """A build_storage mock backed by a {uuid: StoredBuild} dict that supports
+    the get_by_uuid / add / update surface create_continuation_build uses."""
+
+    def _add(b):
+        builds[b.uuid] = b
+        return b.uuid
+
+    def _update(b):
+        builds[b.uuid] = b
+        return b
+
+    return SimpleNamespace(
+        get_by_uuid=lambda uuid: builds.get(uuid),
+        add=_add,
+        update=_update,
+    )
+
+
+def _patched_continue_storage(builds: dict):
+    space = StoredSpace(name=SPACE, git_repo_uri="")
+    fake_storage = SimpleNamespace(
+        space_storage=SimpleNamespace(
+            get_by_name=lambda name: space if name == SPACE else None
+        ),
+        build_storage=_fake_build_storage(builds),
+    )
+    return patch.object(builds_module, "get_admin_storage", return_value=fake_storage)
+
+
+def _prior_build(username: str, status: Status = Status.FAILED) -> StoredBuild:
+    return StoredBuild(
+        name="poc",
+        space_name=SPACE,
+        source_uri="",
+        username=username,
+        build_archive="dGVzdA==",
+        status=status,
+        targets=["a", "b"],
+    )
+
+
+def test_continue_build_missing_build_returns_404():
+    with _patched_continue_storage({}):
+        with pytest.raises(HTTPException) as exc:
+            continue_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                BuildContinueRequest(build_id="does-not-exist"),
+            )
+    assert exc.value.status_code == 404
+
+
+def test_continue_build_rejects_active_build_409():
+    prior = _prior_build(ATTACKER, status=Status.RUNNING)
+    with _patched_continue_storage({prior.uuid: prior}):
+        with pytest.raises(HTTPException) as exc:
+            continue_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                BuildContinueRequest(build_id=prior.uuid),
+            )
+    assert exc.value.status_code == 409
+
+
+def test_continue_build_creates_linked_continuation():
+    prior = _prior_build(ATTACKER, status=Status.FAILED)
+    builds = {prior.uuid: prior}
+    with (
+        _patched_continue_storage(builds),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+    ):
+        resp = continue_build(
+            _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+            BuildContinueRequest(build_id=prior.uuid),
+        )
+    assert resp.build_id and resp.build_id != prior.uuid
+    # The response reports the resolved chain root (here the prior build itself).
+    assert resp.root_build_id == prior.uuid
+    continuation = builds[resp.build_id]
+    # Fresh build, linked to the prior chain root, fresh retry budget, SUBMITTED.
+    assert continuation.retry_of_build_id == prior.uuid
+    assert continuation.retry_count == 0
+    assert continuation.status == Status.SUBMITTED
+    assert continuation.build_archive == prior.build_archive
+    assert continuation.targets == prior.targets
+    # Back-link set on the prior (chain tip) so the chain advances.
+    assert builds[prior.uuid].retry_build_id == resp.build_id
+
+
+def test_continue_build_accepts_mid_chain_member_and_links_to_root():
+    # root -> mid (any member may be continued; continuation links to the root
+    # and the back-link lands on the chain tip, not the passed-in member).
+    root = _prior_build(ATTACKER, status=Status.FAILED)
+    mid = _prior_build(ATTACKER, status=Status.FAILED)
+    mid.retry_of_build_id = root.uuid
+    root.retry_build_id = mid.uuid
+    builds = {root.uuid: root, mid.uuid: mid}
+    with (
+        _patched_continue_storage(builds),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+    ):
+        resp = continue_build(
+            _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+            BuildContinueRequest(build_id=root.uuid),
+        )
+    continuation = builds[resp.build_id]
+    assert continuation.retry_of_build_id == root.uuid
+    # The response reports the resolved root even though a mid-chain member was passed.
+    assert resp.root_build_id == root.uuid
+    # Tip (mid) gets the back-link; root's existing link is untouched.
+    assert builds[mid.uuid].retry_build_id == resp.build_id
+    assert builds[root.uuid].retry_build_id == mid.uuid
+
+
+def test_repeated_continuations_linearize_into_one_chain():
+    """Continuing the same root repeatedly appends to the current tip, so the
+    chain stays linear (A -> B -> C) rather than branching into multiple chains
+    sharing a root. `gb build status --follow-retries` then shows every
+    continuation in a single walk."""
+    from gbserver.storage.stored_build import (
+        create_continuation_build,
+        get_retry_chain_members,
+    )
+
+    root = _prior_build(ATTACKER, status=Status.FAILED)
+    builds = {root.uuid: root}
+    bs = _fake_build_storage(builds)
+
+    # Continue root -> B, then continue root again -> C. Both attach to the tip.
+    b = create_continuation_build(bs, builds[root.uuid])
+    c = create_continuation_build(bs, builds[root.uuid])
+
+    chain = [m.uuid for m in get_retry_chain_members(bs, builds[root.uuid])]
+    assert chain == [root.uuid, b.uuid, c.uuid]
+    # No back-link was overwritten: root -> B -> C, each single forward hop.
+    assert builds[root.uuid].retry_build_id == b.uuid
+    assert builds[b.uuid].retry_build_id == c.uuid
+    # Every continuation links to the same resolved root.
+    assert b.retry_of_build_id == root.uuid
+    assert c.retry_of_build_id == root.uuid
+
+
+def test_continue_build_rejects_forged_username():
+    prior = _prior_build(VICTIM, status=Status.FAILED)
+    with (
+        _patched_continue_storage({prior.uuid: prior}),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            continue_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                BuildContinueRequest(build_id=prior.uuid),
+            )
+    assert exc.value.status_code == 401

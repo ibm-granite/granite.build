@@ -150,3 +150,11 @@ These are two independent mechanisms:
 
 A build-level retry only fires after the build has fully failed — i.e. after all step-level
 retries for that run have been exhausted.
+
+## Relationship to build continuation
+
+Build-level retry runs automatically, in the same runner, only for a `FAILED` build, within the
+`max_retries` budget. To re-run an **arbitrary finished build** (for any reason) in a **fresh**
+runner — skipping targets that already succeeded — use
+[build continuation](build-continuation.md) (`gb build continue <BUILD_ID>`), which reuses the
+same target-reuse machinery but on a fresh `max_retries` budget.

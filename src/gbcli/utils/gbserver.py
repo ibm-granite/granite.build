@@ -362,6 +362,18 @@ def cancel_build(build_id: str, token: str, gbserver_api: str) -> Any:
     )
 
 
+def continue_build(build_id: str, token: str, gbserver_api: str) -> Any:
+    continue_build_url = f"{gbserver_api}continue"
+
+    return gb_server_request(
+        user_token=token,
+        url=continue_build_url,
+        http_method="post",
+        body={"build_id": build_id},
+        params=None,
+    )
+
+
 def get_artifacts(
     token: str,
     server_artifact_url: str,
