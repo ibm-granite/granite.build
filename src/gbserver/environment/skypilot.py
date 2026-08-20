@@ -943,6 +943,14 @@ class Skypilot(Environment):
                 **self._resources_from_compute_config(
                     compute_config, cloud=cloud_group
                 ),
+                # override_res is passed VERBATIM to sky.Resources. On cloud
+                # catalogs (aws/gcp/azure/k8s) an explicit resources.cpus/memory
+                # must therefore use the "N+" minimum form (e.g. cpus: "3+"); a
+                # bare int is an EXACT request no catalog satisfies ("Catalog does
+                # not contain any instances satisfying ..."). The compute_config
+                # floor above converts for you, but this free-form passthrough of
+                # SkyPilot's own resources spec does not. (slurm/lsf match CPUs
+                # directly, so a bare int is fine there.)
                 **override_res,
             }
 
