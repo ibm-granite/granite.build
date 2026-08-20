@@ -9,7 +9,7 @@ from libgbtest.storage.target_storage import TargetStorageTestSupport
 from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbcommon.uri.lh import LhURI
-from gbserver.lineage.lineage_reconciler import _expected_run_count
+from gbserver.lineage.lineage_reconciler import expected_run_count
 from gbserver.storage.singleton_storage import get_storage_factory
 
 
@@ -277,10 +277,10 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         assert events[0].get("inputs", []) == []
         assert events[0].get("outputs", []) == []
         # The reconciler's in-memory count must match what the builder emits.
-        assert _expected_run_count(targetrun) == len(events)
+        assert expected_run_count(targetrun) == len(events)
 
-    def test_expected_run_count_matches_events_built(self):
-        """``_expected_run_count`` must equal the events the builder emits.
+    def testexpected_run_count_matches_events_built(self):
+        """``expected_run_count`` must equal the events the builder emits.
 
         The reconciler derives a target's expected run count from the in-memory
         ``StoredTargetRun`` (to avoid a storage read) while the sink emits one run
@@ -318,8 +318,8 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
             self.storage, targetrun, build
         )
 
-        assert _expected_run_count(targetrun) == 3
-        assert _expected_run_count(targetrun) == len(events)
+        assert expected_run_count(targetrun) == 3
+        assert expected_run_count(targetrun) == len(events)
 
     def test_filter_unrecorded_requires_full_run_count(self):
         """A partially-recorded target stays unrecorded until all its runs exist.

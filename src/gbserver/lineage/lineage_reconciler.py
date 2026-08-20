@@ -201,6 +201,7 @@ def select_recordable_targets(
     finished_after: datetime,
     build_id: Optional[str] = None,
     stop_at: Optional[tuple[str, datetime]] = None,
+    allowed_build_ids: Optional[set[str]] = None,
 ) -> list[StoredTargetRun]:
     """Select successful target runs whose lineage should be recorded.
 
@@ -250,8 +251,27 @@ def select_recordable_targets(
     moves forward it is never re-surfaced — lineage lost silently. Anchoring on a
     row instead lets the walk retreat to a known point however far back in time
     that is; because the query filters on ``status`` alone and never on
-    ``build_id``, sweeping that range also picks up the straggling targets of
-    *every other* build, which is what closes the gap for concurrent builds.
+    ``build_id``, sweeping that range also reaches the straggling targets of
+    *other* builds, which is what closes the gap for concurrent builds.
+
+    ``allowed_build_ids`` bounds *which* builds that sweep may record for. The
+    retreat above is by row identity, so its reach back in time is set by the
+    anchor build's oldest target and is unbounded in principle: on a deployment
+    with history, a walk anchored at a build that finished yesterday can page
+    back months and select every unrelated build's targets along the way. Left
+    unfiltered that is not merely slow — paired with ``filter_unrecorded``'s
+    fail-open (see ``reconcile_once``), one sink timeout turns the whole swept
+    range into a re-record storm. Passing a membership set keeps the retreat
+    (the anchor still bounds *how far* the walk goes) while restricting what it
+    yields to builds the caller is actually tracking.
+
+    Membership, not a time comparison, is the test on purpose: ``finished_at``
+    can place a late-committing row behind the caller's watermark (the paragraph
+    above), so "is this build newer than the mark" would drop exactly the rows
+    the anchored walk exists to recover. A build stays eligible because it is in
+    the set, however its timestamps land. ``None`` disables the filter and
+    restores the unfiltered sweep, which is what the build-scoped callers
+    (``build_id``) and one-shot backfills want.
 
     The anchor row is included in the result, mirroring the inclusive ``>=`` of
     the cutoff: re-reading it is a harmless idempotent no-op, and treating it as
@@ -334,6 +354,15 @@ def select_recordable_targets(
                         len(selected),
                     )
                     return selected
+                if (
+                    allowed_build_ids is not None
+                    and target.build_id not in allowed_build_ids
+                ):
+                    # Outside the tracked build set: skip the row but keep
+                    # walking. The anchor above is checked *before* this, so a
+                    # filtered-out anchor still stops the walk — dropping it here
+                    # would remove the bound and page to the end of the table.
+                    continue
                 selected.append(target)
                 continue
             # Sorted newest-finished-first: once we reach a target that finished
@@ -451,7 +480,7 @@ def get_oldest_successful_target(
         page_index += 1
 
 
-def _expected_run_count(target: StoredTargetRun) -> int:
+def expected_run_count(target: StoredTargetRun) -> int:
     """Number of lineage runs a fully-recorded ``target`` should have in a sink.
 
     Must mirror how ``WandBLineageStore._build_events_for_target`` emits events:
@@ -478,6 +507,7 @@ def reconcile_once(
     build_id: Optional[str] = None,
     watermark_build_id: Optional[str] = None,
     stop_at: Optional[tuple[str, datetime]] = None,
+    allowed_build_ids: Optional[set[str]] = None,
 ) -> int:
     """Reconcile admin-DB lineage into the store once (the central mechanism).
 
@@ -498,7 +528,7 @@ def reconcile_once(
       admin DB can feed W&B and other sinks independently. It never raises; on
       failure it returns the full candidate set, degrading to re-recording
       (harmless — recording is idempotent). It is given each candidate's expected
-      run count (``_expected_run_count``) so a target whose runs were only
+      run count (``expected_run_count``) so a target whose runs were only
       partially emitted on a prior crashed scan is reported unrecorded and
       re-recorded, rather than masked by its already-present runs.
 
@@ -563,6 +593,11 @@ def reconcile_once(
             straggling target in scope. The steady-state scan passes this (with
             ``finished_after=UTC_MIN``, since the anchor is then the real bound);
             the build-scoped verification sweep does not.
+        allowed_build_ids: Restrict which builds the walk may record for, as a
+            membership test — see ``select_recordable_targets``. The steady-state
+            scan passes the watcher's in-flight build set so an anchored retreat
+            cannot select unrelated history; ``None`` (the build-scoped sweep and
+            deliberate backfills) leaves the walk unfiltered.
 
     Returns:
         How many targets were newly recorded this pass. Where the watermark
@@ -582,6 +617,7 @@ def reconcile_once(
                 finished_after=finished_after,
                 build_id=build_id,
                 stop_at=stop_at,
+                allowed_build_ids=allowed_build_ids,
             )
         )
     )
@@ -671,11 +707,37 @@ def reconcile_once(
     # output_artifacts would give the wrong count; omit it and let it fall back to
     # the presence check (a rare case; re-recording is a harmless idempotent no-op).
     expected_counts = {
-        uuid: _expected_run_count(target)
+        uuid: expected_run_count(target)
         for uuid, target in by_uuid.items()
         if not target.skipped_for_prerun_target_id
     }
-    unrecorded = store.filter_unrecorded(set(by_uuid), expected_counts)
+    # Track whether the sink actually answered. A failed query fails open and
+    # returns every candidate, which reads downstream as "none of these are
+    # recorded" — so a single sink timeout over a wide candidate range becomes a
+    # full re-record of that range, aimed at the sink that just timed out. The
+    # re-records are harmless individually (recording is idempotent) but the
+    # volume is not, and the log line below would report them as a real verdict.
+    sink_query_failed = False
+
+    def _note_sink_failure(_exc: Exception) -> None:
+        nonlocal sink_query_failed
+        sink_query_failed = True
+
+    unrecorded = store.filter_unrecorded(
+        set(by_uuid), expected_counts, on_query_error=_note_sink_failure
+    )
+    if sink_query_failed:
+        # Say so explicitly: without this the line below claims "0 already
+        # recorded", which looks like a genuine backlog rather than an
+        # unanswered query. Recording still proceeds — idempotency keeps it
+        # correct, and skipping the pass entirely would stall lineage whenever
+        # the sink is briefly unreachable.
+        logger.warning(
+            "The lineage sink did not answer the recorded-state query for this "
+            "scan's %d candidate(s); treating all of them as unrecorded. Counts "
+            "below are a fail-open default, not the sink's verdict.",
+            len(by_uuid),
+        )
     # Log the selection *and* the sink's verdict on it, since "found candidates
     # but recorded none" (all already in the sink) and "found no candidates at
     # all" are very different states that otherwise look the same.

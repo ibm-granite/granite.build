@@ -31,8 +31,8 @@ import pytest
 
 from gbserver.lineage.lineage_reconciler import (
     UTC_MIN,
-    _expected_run_count,
     as_aware,
+    expected_run_count,
     get_most_recent_successful_target,
     get_oldest_successful_target,
     reconcile_once,
@@ -145,7 +145,10 @@ class _StubStore:
         self._recorded.add(target_id)
 
     def filter_unrecorded(
-        self, target_ids: set[str], expected_counts: dict[str, int] = None
+        self,
+        target_ids: set[str],
+        expected_counts: dict[str, int] = None,
+        on_query_error=None,
     ) -> set[str]:
         self.last_expected_counts = expected_counts
         return set(target_ids) - self._recorded
@@ -583,7 +586,7 @@ class TestReconcileOnce:
         # ...but the checkpoint stops at t1, the last target before the failure.
         assert advances == [("b1", _BASE)]
 
-    def test_passes_expected_run_counts_derived_from_outputs(self):
+    def test_passesexpected_run_counts_derived_from_outputs(self):
         store = _StubStore()
         # t1: two output-artifact names, the second holding two artifacts -> 3
         # runs. t2: no outputs -> the single "no-output" run.
@@ -622,10 +625,10 @@ class TestReconcileOnce:
 class TestExpectedRunCount:
     def test_counts_all_output_artifacts_across_lists(self):
         t = _target("b1", "t1", output_artifacts={"a": ["o1"], "b": ["o2", "o3"]})
-        assert _expected_run_count(t) == 3
+        assert expected_run_count(t) == 3
 
     def test_no_outputs_expects_one_run(self):
-        assert _expected_run_count(_target("b1", "t1")) == 1
+        assert expected_run_count(_target("b1", "t1")) == 1
 
 
 class TestRecordSelectedTargets:

@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import deque
-from typing import Any, Dict, List, Literal, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
 
 import wandb
 from huggingface_hub import dataset_info, model_info
@@ -827,6 +827,7 @@ class WandBLineageService(LineageService):
         self,
         target_ids: set[str],
         expected_counts: Optional[dict[str, int]] = None,
+        on_query_error: Optional[Callable[[Exception], None]] = None,
     ) -> set[str]:
         """Return the subset of ``target_ids`` not yet recorded in wandb.
 
@@ -906,6 +907,20 @@ class WandBLineageService(LineageService):
             Exception
         ) as e:  # noqa: BLE001 — best-effort; any failure re-records the candidates
             logger.error("Failed to filter unrecorded target ids from wandb: %s", e)
+            if on_query_error is not None:
+                # Tell the caller this set is a fail-open default, not a verdict
+                # from wandb. Reported before returning so a caller that must not
+                # act on an unanswered query (e.g. retiring a build) can tell the
+                # two apart. Kept inside the handler: the contract is that this
+                # method never raises, so a misbehaving callback must not turn a
+                # degraded query into one.
+                try:
+                    on_query_error(e)
+                except Exception:  # noqa: BLE001 — callback must not break the contract
+                    logger.exception(
+                        "on_query_error callback raised while reporting a "
+                        "filter_unrecorded failure; ignoring it."
+                    )
             return target_ids
 
     def search_lineage_by_tags(

@@ -39,6 +39,7 @@ from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_DROPPED_KEY,
 )
 from gbserver.lineage.lineage_watcher import LineageWatcher
+from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 
@@ -74,7 +75,9 @@ class _StubStore:
         self.calls.append((build_id, target_id))
         self._recorded.add(target_id)
 
-    def filter_unrecorded(self, target_ids: set, expected_counts=None) -> set:
+    def filter_unrecorded(
+        self, target_ids: set, expected_counts=None, on_query_error=None
+    ) -> set:
         return set(target_ids) - self._recorded
 
 
@@ -225,6 +228,95 @@ class TestLineageWatcher:
         watcher._reconcile()
 
         assert "t_b" in {c[1] for c in store.calls}
+
+    def test_history_behind_the_anchor_build_is_not_selected(self):
+        """The reported bug: an anchored scan must not reach unrelated history.
+
+        The anchor is the checkpoint build's *oldest* target, and the walk filters
+        on status alone, so before the allowlist a scan anchored at a recent build
+        selected every successful target finished after that anchor — on a real
+        deployment, months of unrelated builds (441 candidates reaching back ~10
+        months). They were masked whenever the sink answered "already recorded",
+        and became a re-record storm the moment it timed out.
+
+        Here `old-build` finished long before the anchor build and is not tracked,
+        so it must not be selected at all.
+        """
+        self._targets = [
+            _target("old-build", "t_old", _BASE - timedelta(days=300)),
+            _target("build-c", "t_c", _BASE),
+        ]
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE)
+        watcher._checkpoint_verified = True
+
+        watcher._reconcile()
+
+        recorded = {c[1] for c in store.calls}
+        assert "t_c" in recorded
+        assert "t_old" not in recorded
+
+    def test_sink_failure_does_not_retire_a_finished_build(self):
+        """An unanswered sink query must never confirm a build as recorded.
+
+        ``filter_unrecorded`` fails open — on error it returns every candidate,
+        which is indistinguishable from "none are recorded". Retirement is
+        irreversible for the process, so it must act only on a real answer: a
+        failing sink has to leave the build in the allowlist.
+        """
+        self._targets = [_target("build-c", "t_c", _BASE)]
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE)
+        watcher._checkpoint_verified = True
+        watcher._allowed_build_ids = {"build-c"}
+        watcher._allowlist_seeded = True
+
+        def _failing(target_ids, expected_counts=None, on_query_error=None):
+            if on_query_error is not None:
+                on_query_error(RuntimeError("wandb read timed out"))
+            return set(target_ids)
+
+        store.filter_unrecorded = _failing
+
+        watcher._retire_finished_builds(self.storage)
+
+        assert "build-c" in watcher._allowed_build_ids
+
+    def test_retirement_failure_does_not_abort_the_scan(self):
+        """A storage error during retirement must not break a completed scan.
+
+        Retirement runs *after* the pass has already recorded, and is only a
+        memory optimization: letting an error escape would abort a scan whose real
+        work is done. The build stays in the allowlist ("not confirmed") and the
+        scan still reports its recording as successful.
+        """
+        self._targets = [_target("build-c", "t_c", _BASE)]
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE)
+        watcher._checkpoint_verified = True
+        watcher._allowed_build_ids = {"build-c"}
+        watcher._allowlist_seeded = True
+
+        # A real finished build, so retirement gets past the build-status check and
+        # reaches the target re-selection below — the path that was unguarded.
+        self.storage.build_storage.get_by_uuid = lambda _uuid: StoredBuild(
+            uuid="build-c",
+            name="c",
+            space_name="s",
+            source_uri="file://x",
+            username="u",
+            status=Status.SUCCESS,
+        )
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("storage is down")
+
+        self.storage.target_storage.get_by_where.side_effect = _boom
+
+        # Must not raise.
+        watcher._retire_finished_builds(self.storage)
+
+        assert "build-c" in watcher._allowed_build_ids
 
     def test_staggered_targets_within_checkpoint_build_are_not_lost(self):
         """The checkpoint's build keeps its own earlier targets in scope.

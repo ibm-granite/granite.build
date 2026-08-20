@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN, is_public_github
 from gbserver.lineage.jobstats import ILineageStore
@@ -301,7 +301,7 @@ class WandBLineageStore(ILineageStore):
 
         # NOTE: the number of events emitted here (one per output artifact across
         # all output-artifact lists, or one "no-output" event below) must stay in
-        # lockstep with lineage_reconciler._expected_run_count, which derives the
+        # lockstep with lineage_reconciler.expected_run_count, which derives the
         # same count from the target in memory to detect partial records.
         for (
             target_artifact_name,
@@ -500,6 +500,7 @@ class WandBLineageStore(ILineageStore):
         self,
         target_ids: set[str],
         expected_counts: Optional[dict[str, int]] = None,
+        on_query_error: Optional[Callable[[Exception], None]] = None,
     ) -> set[str]:
         # Drop candidates whose "fully recorded" verdict is still within its TTL,
         # so a steady-state scan that re-selects the same target does not re-ask
@@ -528,7 +529,11 @@ class WandBLineageStore(ILineageStore):
         # target rather than mere presence (see ILineageStore.filter_unrecorded).
         # Never raises: returns the candidates unchanged on failure so the caller
         # re-records them (a harmless idempotent no-op).
-        unrecorded = self._service.filter_unrecorded(to_check, expected_counts)
+        # ``on_query_error`` is forwarded rather than handled here: this layer only
+        # caches verdicts, and the service is where the query can fail.
+        unrecorded = self._service.filter_unrecorded(
+            to_check, expected_counts, on_query_error=on_query_error
+        )
 
         # Cache only the positive verdicts, and only for targets we actually
         # asked about. A failed query returns its candidates unchanged, so those
