@@ -41,9 +41,11 @@ from fastapi import HTTPException
 
 from gbserver.api import builds as builds_module
 from gbserver.api.builds import (
+    BuildContinueRequest,
     BuildSubmitRequest,
     BuildValidateRequest,
     BuildValidation,
+    continue_build,
     submit_build,
     validate_build,
 )
@@ -51,7 +53,13 @@ from gbserver.api.utils import (
     confirm_space_write_access as _real_confirm_space_write_access,
 )
 from gbserver.api.utils import has_space_write_access as _real_has_space_write_access
+from gbserver.storage.stored_build import (
+    StoredBuild,
+    create_continuation_build,
+    get_retry_chain_members,
+)
 from gbserver.storage.stored_space import StoredSpace
+from gbserver.types.status import Status
 
 SPACE = "space-B"
 VICTIM = "victim_b"
@@ -227,10 +235,6 @@ def test_validate_build_allows_admin_impersonation_via_space_name():
 
 # ------------------------------------------------------------------ continue_build
 
-from gbserver.api.builds import BuildContinueRequest, continue_build
-from gbserver.storage.stored_build import StoredBuild
-from gbserver.types.status import Status
-
 
 def _fake_build_storage(builds: dict):
     """A build_storage mock backed by a {uuid: StoredBuild} dict that supports
@@ -245,7 +249,7 @@ def _fake_build_storage(builds: dict):
         return b
 
     return SimpleNamespace(
-        get_by_uuid=lambda uuid: builds.get(uuid),
+        get_by_uuid=builds.get,
         add=_add,
         update=_update,
     )
@@ -354,11 +358,6 @@ def test_repeated_continuations_linearize_into_one_chain():
     chain stays linear (A -> B -> C) rather than branching into multiple chains
     sharing a root. `gb build status --follow-retries` then shows every
     continuation in a single walk."""
-    from gbserver.storage.stored_build import (
-        create_continuation_build,
-        get_retry_chain_members,
-    )
-
     root = _prior_build(ATTACKER, status=Status.FAILED)
     builds = {root.uuid: root}
     bs = _fake_build_storage(builds)
