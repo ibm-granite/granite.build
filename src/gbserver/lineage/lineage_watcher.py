@@ -60,10 +60,11 @@ class LineageWatcher:
     idempotent recording means a duplicate watcher would waste I/O but not
     corrupt lineage.
 
-    Steady state uses a ``finished_at`` *time watermark*: each scan asks the
-    admin DB only for targets that finished at or after it, so per-scan work
-    stays bounded no matter how many builds have accumulated. The watermark lives
-    solely in the ``gb_kv_pairs`` checkpoint (see
+    Steady state keeps per-scan work bounded with a ``finished_at`` checkpoint,
+    but does not query straight from it: each scan bounds its walk at the
+    *anchor* row — the checkpoint build's oldest successful target — so a target
+    whose row surfaced behind the checkpoint is still reached (see
+    ``_reconcile``). The checkpoint lives solely in the ``gb_kv_pairs`` key (see
     ``lineage_reconciler.LINEAGE_WATCHER_CHECKPOINT_KEY``), rewritten after each
     individually-recorded target and re-read at the top of every scan — so a
     restart resumes from the last successfully-recorded target rather than
@@ -248,10 +249,10 @@ class LineageWatcher:
         # Failures are recorded and swallowed rather than aborting start(): the
         # checkpoint is already durable, so nothing is lost by continuing, and a
         # watcher that refused to start would record nothing at all. Note what
-        # each kind of failure costs, though. A target sitting at the watermark is
-        # re-surfaced by the very next scan (it falls inside the overlap window).
-        # A target further back in this build is NOT — the steady-state scan
-        # starts at the watermark and never looks behind it, so this start()-time
+        # each kind of failure costs, though. A target at or after the scan's
+        # anchor is re-surfaced by the very next scan. A target further back than
+        # the anchor is NOT — the steady-state scan stops at that row and never
+        # looks behind it, so this start()-time
         # sweep is its only path back, and a failure here defers it to the next
         # start(). That is the gap this call exists to close, so its failures are
         # worth reading in the log even though they are non-fatal.
@@ -307,10 +308,10 @@ class LineageWatcher:
         """Run one reconciliation scan over the admin DB.
 
         Delegates target selection and recording to ``reconcile_once`` (the
-        central mechanism), passing the ``finished_at`` watermark so steady-state
-        scans read only newly-finished targets.
+        central mechanism), bounding the walk at the anchor row derived from the
+        checkpoint so a scan reads only the targets above it.
 
-        The watermark is read from the ``gb_kv_pairs`` checkpoint on every scan
+        The checkpoint is read from ``gb_kv_pairs`` on every scan
         rather than cached in memory: the checkpoint is the single source of
         truth, and re-reading it means a key seeded (or corrected) while the
         watcher is running takes effect on the next scan instead of at the next
@@ -331,9 +332,9 @@ class LineageWatcher:
         if not self._checkpoint_verified:
             # A checkpoint seeded after start() still needs the verification
             # sweep, and only this retry can give it one: the steady-state scan
-            # below starts *at* the watermark and never looks behind it, so
-            # unrecorded targets earlier in the checkpoint's build would
-            # otherwise wait for a restart.
+            # below stops at the anchor row and never looks behind it, so
+            # unrecorded targets that finished before the checkpoint build's
+            # oldest one would otherwise wait for a restart.
             self._checkpoint_verified = self._verify_checkpoint(storage)
         watermark = self._checkpoint_watermark(storage)
         if watermark is None:
@@ -552,11 +553,10 @@ class LineageWatcher:
         watermark legitimately finished there (its row became visible late, or
         builds interleaved — see the anchor rationale in ``_reconcile``), and
         recording it must not drag the durable watermark back down with it.
-        Without this guard such a
-        target lowers the watermark, and if no newer target in the same pass
-        pushes it back up it stays lowered, re-reading that window on every
-        later scan. Recording still happens either way; only the watermark write
-        is suppressed.
+        Without this guard such a target lowers the watermark, and if no newer
+        target in the same pass pushes it back up it stays lowered, re-reading
+        that range on every later scan. Recording still happens either way; only
+        the watermark write is suppressed.
 
         The comparison is against the *durable* value rather than an in-process
         high-water mark so a restart cannot forget it and re-open the same
@@ -592,8 +592,8 @@ class LineageWatcher:
         if current is not None and finished_at <= current:
             logger.debug(
                 "Not moving the lineage checkpoint from %s back to %s for build "
-                "%s; the target finished within the overlap window and the "
-                "watermark is monotonic.",
+                "%s; the target finished behind the watermark and the watermark "
+                "is monotonic.",
                 current,
                 finished_at,
                 build_id,
@@ -628,7 +628,7 @@ class LineageWatcher:
         next scan, while a persistently failing target is dropped after
         ``_MAX_RECORD_ATTEMPTS`` (added to ``_dropped``, which ``_reconcile``
         passes as ``skip`` to ``reconcile_once``) so it stops being re-recorded —
-        it still falls within the watermark window each scan, so the skip set is
+        it still falls within the scan's anchored range each scan, so the skip set is
         what keeps it from wedging the scan.
 
         The drop is persisted to ``gb_kv_pairs``: giving up is permanent, and since

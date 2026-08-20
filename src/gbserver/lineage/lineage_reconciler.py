@@ -208,9 +208,11 @@ def select_recordable_targets(
     fully persisted in admin storage at that point. The successful-target set
     grows without bound over the platform's lifetime, so this never materializes
     all of it in steady state: targets are fetched newest-``finished_at``-first
-    and the walk stops as soon as it crosses ``finished_after``, so a
-    steady-state scan reads only the newly-finished rows, never the whole table,
-    regardless of how many builds have accumulated.
+    and the walk stops at a caller-supplied bound, so a scan reads only the rows
+    above it, never the whole table, regardless of how many builds have
+    accumulated. Two bounds exist, and exactly one applies per call:
+    ``finished_after`` (a timestamp) or ``stop_at`` (a row identity, which takes
+    over when given — see below for why the steady-state scan needs it).
 
     One caveat on that bound: rows with ``finished_at`` NULL (successful targets
     written before ``finished_at`` stamping existed) sort *first* under
@@ -227,9 +229,10 @@ def select_recordable_targets(
     operation, never a default. A caller that genuinely wants that (e.g. an
     explicit backfill command) passes ``UTC_MIN``.
 
-    The comparison is ``>=`` (not ``>``) so the boundary target is re-included
-    rather than dropped; idempotent recording makes the re-read harmless and the
-    caller's watermark advances past it. Targets with no ``finished_at`` are
+    Under ``finished_after`` the comparison is ``>=`` (not ``>``) so the boundary
+    target is re-included rather than dropped; idempotent recording makes the
+    re-read harmless and the caller's watermark advances past it. ``stop_at``
+    keeps its anchor row for the same reason. Targets with no ``finished_at`` are
     skipped (they are not yet complete) but do not stop the walk — a NULL row
     interleaved among finished ones must not truncate the scan.
 
@@ -459,16 +462,18 @@ def reconcile_once(
 ) -> int:
     """Reconcile admin-DB lineage into the store once (the central mechanism).
 
-    Selects successful target runs that finished at or after ``finished_after``,
-    asks the store which of those it has not yet recorded, and records each of
-    those through the single leaf.
+    Selects successful target runs above the scan bound (``stop_at``'s anchor row
+    when given, otherwise ``finished_after``), asks the store which of those it has
+    not yet recorded, and records each of those through the single leaf.
 
     Two independent mechanisms bound the work and keep it sink-neutral:
 
-    - ``finished_after`` is a *time watermark* on the target itself (not on any
-      sink), so a steady-state scan reads only newly-finished targets from the
-      admin DB regardless of how many builds have accumulated. It says nothing
-      about whether a given sink has recorded a target.
+    - The scan bound is on the target itself (not on any sink), so a scan reads
+      only the targets above it from the admin DB regardless of how many builds
+      have accumulated. It says nothing about whether a given sink has recorded a
+      target. ``finished_after`` bounds by timestamp; ``stop_at``, which the
+      steady-state scan passes instead, bounds by row identity so a target whose
+      row surfaced behind the watermark is still reached.
     - ``store.filter_unrecorded`` is the *per-sink* recorded-state check: each
       sink owns its own record of what it has already recorded, so the same
       admin DB can feed W&B and other sinks independently. It never raises; on
@@ -524,8 +529,8 @@ def reconcile_once(
             scan never looks behind its watermark.
         skip: Target uuids the caller has given up on (e.g. dropped after
             exhausting retries). These are excluded from recording so a
-            persistently failing target — which still falls within the watermark
-            window every scan — cannot wedge the scan. They do NOT fire
+            persistently failing target — which still falls within the scanned
+            range every scan — cannot wedge the scan. They do NOT fire
             ``on_checkpoint_advance`` themselves (only an actually-recorded
             target does that); the caller's in-memory dedup — e.g.
             ``LineageWatcher._dropped`` — is what keeps a skipped target from
@@ -576,6 +581,13 @@ def reconcile_once(
     # what makes a stuck watermark recognizable as stuck.
     if build_id is not None:
         scope_desc = f"for build {build_id}"
+    elif stop_at is not None:
+        # Anchored: finished_after is UTC_MIN and printing it reads as exactly the
+        # arbitrary epoch this description exists to avoid. Name the anchor row.
+        scope_desc = (
+            f"back to the oldest target of build {stop_at[0]} (finished "
+            f"{stop_at[1]})"
+        )
     elif watermark_build_id is not None:
         scope_desc = (
             f"at or after {finished_after} (the watermark from build "
@@ -606,7 +618,7 @@ def reconcile_once(
         )
     # No candidates → nothing to record and nothing to check. Skip the
     # per-sink filter_unrecorded query entirely so an idle scan (or one where
-    # only the watermark-overlap boundary targets are all skipped) does not fire
+    # only the anchor-row boundary targets are all skipped) does not fire
     # a backend query (e.g. a wandb api.runs call) that would return nothing.
     if not by_uuid:
         # Say so explicitly. This is the overwhelmingly common steady-state
@@ -671,7 +683,7 @@ def reconcile_once(
         # to accept.
         candidate_builds = {t.build_id for t in by_uuid.values()}
         if watermark_build_id is not None and candidate_builds == {watermark_build_id}:
-            reprocessed_note = " (the watermark's own build, within the overlap window)"
+            reprocessed_note = " (the watermark's own build, at the scan's anchor)"
         else:
             reprocessed_note = ""
         logger.info(
@@ -695,7 +707,7 @@ def reconcile_once(
     to_record = [t for t in targets if t.uuid in unrecorded]
     # Walk *every* candidate, not just the unrecorded ones, so an already-recorded
     # target still advances the watermark past itself. Otherwise it stays inside
-    # the window forever: each scan re-selects it, asks the sink about it, and
+    # the scanned range forever: each scan re-selects it, asks the sink about it, and
     # reports "already recorded" without the watermark ever clearing it — the
     # per-scan cost is permanent and the log line is indistinguishable from a
     # wedged watcher. Ordering is the `targets` order (oldest-first), which is
