@@ -3,13 +3,18 @@
 # (contrast byoc, a public-image step that brings its code at runtime).
 #
 # The exemplar payload is a small placeholder SHELL script (src/eval.sh), so the
-# image needs no Python/pip — a minimal Fedora base is enough. It lives on quay.io
-# to match the rest of this repo (the byoc default and the buildrunner test-data)
-# and to avoid Docker Hub's unauthenticated pull-rate limit. When eval is
-# implemented for real, base the image on a suitable runtime (e.g. a Python image)
+# image needs no Python/pip — a minimal base is enough. It MUST be Debian/Ubuntu
+# based: SkyPilot's docker runtime runs `apt-get` inside the container to install
+# its own dependencies, so a non-apt base (e.g. Fedora) fails cloud provisioning
+# with "apt-get: command not found" (return code 127). debian:*-slim ships bash,
+# which is all eval.sh needs. It is pulled from AWS's public Docker Hub mirror
+# (public.ecr.aws/docker/library) rather than docker.io directly, to avoid Docker
+# Hub's unauthenticated pull-rate limit on a hot path (CI). Swappable for another
+# mirror, e.g. mirror.gcr.io/library/debian. When eval is implemented for real,
+# base the image on a suitable Debian/Ubuntu runtime (e.g. a python:*-slim image)
 # and install the evaluation dependencies here.
-ARG FEDORA_VERSION=42
-FROM quay.io/fedora/fedora-minimal:${FEDORA_VERSION}
+ARG DEBIAN_VERSION=12
+FROM public.ecr.aws/docker/library/debian:${DEBIAN_VERSION}-slim
 
 # Bake the eval script into the image and make it executable. The generated
 # step.yaml run/command block invokes `bash /opt/eval/eval.sh`.
