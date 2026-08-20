@@ -134,6 +134,9 @@ When a target is skipped this way:
 This means a retry build only re-runs the targets that did not succeed in the original build,
 making retries as cheap as possible.
 
+Skipped targets are **hidden by default** in `gb build status` and `gb build monitor` output
+(they run no steps and produce no artifacts); pass `--show-skipped-targets` to include them.
+
 See [target-reuse.md](target-reuse.md) for the full architecture, hash correctness argument,
 and storage details.
 

@@ -94,6 +94,7 @@ def execution_status_plain_output(
     targets: List[Any],
     history: Any,
     show_events: bool,
+    show_skipped_targets: bool = False,
 ):
 
     def target_status_label(target_info: Any) -> str:
@@ -107,10 +108,28 @@ def execution_status_plain_output(
             return "⏩"
         return get_status_emoji(target_info["status"])
 
+    # A skipped target was reused from an earlier attempt (retry or continuation):
+    # it ran no steps and produced no artifacts, so hide it by default to keep the
+    # output short. --show-skipped-targets brings them back.
+    total_target_count = len(targets)
+    if not show_skipped_targets:
+        targets = {
+            name: info
+            for name, info in targets.items()
+            if not info.get("skipped_for_prerun_target_id")
+        }
+    hidden_skipped_count = total_target_count - len(targets)
+
     targets_overview = [
         f"\n\tTarget #{index + 1} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"
         for index, target in enumerate(targets)
     ]
+    if hidden_skipped_count > 0:
+        targets_overview.append(
+            f"\n\t({hidden_skipped_count} skipped target"
+            f"{'s' if hidden_skipped_count != 1 else ''} hidden; "
+            "use --show-skipped-targets to show)\n"
+        )
     source_pr = f"<{details['source_pr']}>" if details["source_pr"] else "-"
     retry_of = details.get("retry_of_build_ids") or []
     retried_by = details.get("retried_by_build_ids") or []
@@ -1799,6 +1818,14 @@ def list(
     default=True,
     help="Follow the build retry chain and show all targets across attempts (default: follow).",
 )
+@click.option(
+    "--show-skipped-targets",
+    is_flag=True,
+    default=False,
+    help="Show targets that were skipped because they already succeeded in an "
+    "earlier attempt (retry or continuation). Hidden by default since they run "
+    "no steps and produce no artifacts.",
+)
 @common_options
 def status(
     ctx,
@@ -1807,6 +1834,7 @@ def status(
     show_events,
     fetch_pr,
     follow_retries,
+    show_skipped_targets,
     skip_version_check,
     quiet,
 ):
@@ -1979,7 +2007,7 @@ def status(
         if details:
             if format == "plain":
                 status = execution_status_plain_output(
-                    details, targets, history, show_events
+                    details, targets, history, show_events, show_skipped_targets
                 )
             else:
                 if error:
@@ -2832,8 +2860,24 @@ def diff(ctx, build_id_1, build_id_2, space, format, skip_version_check, quiet):
     default=False,
     help="Fetch build PR events.",
 )
+@click.option(
+    "--show-skipped-targets",
+    is_flag=True,
+    default=False,
+    help="Show targets that were skipped because they already succeeded in an "
+    "earlier attempt (retry or continuation). Hidden by default since they run "
+    "no steps and produce no artifacts.",
+)
 @common_options
-def monitor(ctx, build_id, show_events, fetch_pr, skip_version_check, quiet):
+def monitor(
+    ctx,
+    build_id,
+    show_events,
+    fetch_pr,
+    show_skipped_targets,
+    skip_version_check,
+    quiet,
+):
     """
     Monitor a build execution
 
@@ -2944,6 +2988,7 @@ def monitor(ctx, build_id, show_events, fetch_pr, skip_version_check, quiet):
                 targets,
                 history,
                 show_events,
+                show_skipped_targets,
             )
 
             click.echo(f"{erase_sequence}{monitor_obj}")

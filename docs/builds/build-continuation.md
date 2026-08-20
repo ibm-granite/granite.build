@@ -68,6 +68,10 @@ the chain linear (`A → B → C`) rather than branching into several chains tha
 single `gb build status --follow-retries` therefore shows every attempt — original, auto-retries,
 and continuations — in one view.
 
+Skipped (reused) targets are **hidden by default** in `gb build status` and `gb build monitor`
+output — they run no steps and produce no artifacts, and hiding them keeps the output short. Pass
+`--show-skipped-targets` to include them.
+
 > **Note:** issuing two continuations of the *same finished tip* at the exact same moment can
 > race on the tip's forward link (last write wins), leaving one continuation reachable only via
 > its `retry_of_build_id` (the root) rather than the forward `--follow-retries` walk. This is a
