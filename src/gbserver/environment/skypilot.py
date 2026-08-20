@@ -766,20 +766,37 @@ class Skypilot(Environment):
         Reads the raw dict (NOT the :class:`ComputeConfig` model, whose defaults
         of 8 GPUs / 512G memory would over-size a bare command). Only emits keys
         that are explicitly and validly set, so the caller can layer this as the
-        lowest-precedence floor. Values are numeric — never the ``"1+"`` form
-        that crashes SkyPilot's LSF cloud.
+        lowest-precedence floor. Both ``cpus`` and ``memory`` are emitted as
+        SkyPilot minimums (``"{n}+"``) so catalog matching selects the smallest
+        instance with *at least* that much CPU/RAM — a bare number is an EXACT
+        match no cloud catalog satisfies for odd sizes ("Catalog does not contain
+        any instances satisfying the request: 1x AWS(mem=1.0)" / ``cpus=3``). The
+        ``"+"`` form crashes SkyPilot's LSF cloud, so on slurm/lsf ``cpus`` stays
+        a bare int (those schedulers match CPUs directly, not via a cloud
+        catalog) and ``memory`` is skipped entirely (below).
 
         :param compute_config: the step's ``config.compute_config`` dict.
         :param cloud: the normalized target cloud (lowercased first infra
             segment, e.g. ``"slurm"``, ``"lsf"``, ``"k8s"``).
-        :returns: a dict optionally containing ``cpus`` (int, when
-            ``num_cpus_per_node`` > 0) and ``memory`` (float GiB, when
-            ``total_memory_per_node`` parses).
+        :returns: a dict optionally containing ``cpus`` (a ``"{n}+"`` minimum on
+            cloud catalogs, or a bare int on slurm/lsf, when ``num_cpus_per_node``
+            > 0) and ``memory`` (a ``"{n}+"`` GiB-minimum string, when
+            ``total_memory_per_node`` parses and the cloud is not slurm/lsf).
         """
         resources: Dict = {}
         num_cpus = compute_config.get("num_cpus_per_node", 0)
         if isinstance(num_cpus, int) and num_cpus > 0:
-            resources["cpus"] = num_cpus
+            # Same exact-match trap as memory (below): a bare number is an EXACT
+            # request and no cloud catalog has an instance with, e.g., exactly 3
+            # vCPUs, so SkyPilot dies with "Catalog does not contain any
+            # instances satisfying the request". Emit a minimum ("{n}+") so it
+            # picks the smallest instance with at least that many vCPUs. slurm/lsf
+            # keep the bare int: the "+" form crashes the fork's LSF cloud, and
+            # those schedulers match CPUs directly, so an exact request is fine.
+            if cloud in _SSH_HPC_CLOUDS:
+                resources["cpus"] = num_cpus
+            else:
+                resources["cpus"] = f"{num_cpus}+"
         # SLURM/LSF (bare HPC schedulers) commonly don't track memory as a
         # consumable resource (RealMemory unset in slurm.conf), so a --memory
         # request fails at resource matching ("Catalog does not contain any
@@ -791,7 +808,15 @@ class Skypilot(Environment):
                 compute_config.get("total_memory_per_node", "")
             )
             if memory is not None:
-                resources["memory"] = memory
+                # Emit as a minimum ("{n}+"), not an exact float: an exact
+                # memory=1.0 matches no cloud instance type (SkyPilot dies with
+                # "Catalog does not contain any instances satisfying ...
+                # AWS(mem=1.0)"). Format without an exponent and strip the
+                # trailing ".0"/zeros (1.0 -> "1+", 0.5 -> "0.5+"); ":g" would
+                # switch large values to scientific notation (e.g. "1e+06+")
+                # which SkyPilot cannot parse. Safe here: slurm/lsf excluded.
+                mem_str = f"{memory:f}".rstrip("0").rstrip(".")
+                resources["memory"] = f"{mem_str}+"
         return resources
 
     async def launch_skypilot(
