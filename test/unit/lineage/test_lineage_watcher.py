@@ -240,6 +240,10 @@ class TestLineageWatcher:
         ]
         watcher, store = self._make_watcher()
         _seed(self.storage, "build-c", _BASE + timedelta(seconds=15))
+        # Skip the start()-time sweep: it re-scans the checkpoint's whole build
+        # with no lower bound, which would record t_early regardless of the
+        # anchor and mask exactly what this test is about.
+        watcher._checkpoint_verified = True
 
         watcher._reconcile()
 
