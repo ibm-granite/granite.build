@@ -444,16 +444,18 @@ ENV_FILES_GETENT_BATCH_MAX = int(
 #
 # Three states rather than a boolean, because this gate FAILS CLOSED (see
 # environment/bv_project_access.py) and its identity mapping assumes the BV
-# account name equals the granite.build login. If that assumption is wrong,
-# enforcing would deny every build — so a shadow state is the only safe way to
-# roll it out:
+# account name equals the granite.build login:
 #
-#   off      — no check at all (default; nothing changes)
+#   off      — no check at all
 #   shadow   — run the check, log the decision, ALLOW regardless
-#   enforce  — deny when the user has no project
+#   enforce  — deny when the user has no project (DEFAULT)
 #
-# Roll out off -> shadow -> enforce, reading the shadow logs before flipping.
-# This is a rollout control, not a per-user bypass.
+# Default is `enforce`: the gate is on, and every LSF/BlueVela build has to pass
+# it. Before flipping a fresh deployment straight to enforce, run under `shadow`
+# long enough to see sensible decisions for real users in the logs; that is what
+# validates the assumption above (BV account == granite.build login) without
+# risking a lockout. On an already-verified deployment there is nothing to warm
+# up and enforce is the right starting state.
 ENV_VAR_GBSERVER_BV_PROJECT_ACCESS_MODE = ENV_VAR_PREFIX + "_BV_PROJECT_ACCESS_MODE"
 BV_PROJECT_ACCESS_MODE_OFF = "off"
 BV_PROJECT_ACCESS_MODE_SHADOW = "shadow"
@@ -467,7 +469,7 @@ BV_PROJECT_ACCESS_MODES = (
 # the membership *lookup* — an unparseable value of our own rollout flag is a
 # config typo, and a typo must not silently start denying every build.
 BV_PROJECT_ACCESS_MODE = (
-    os.getenv(ENV_VAR_GBSERVER_BV_PROJECT_ACCESS_MODE, BV_PROJECT_ACCESS_MODE_OFF)
+    os.getenv(ENV_VAR_GBSERVER_BV_PROJECT_ACCESS_MODE, BV_PROJECT_ACCESS_MODE_ENFORCE)
     .strip()
     .lower()
 )

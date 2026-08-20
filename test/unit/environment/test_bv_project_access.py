@@ -41,6 +41,7 @@ from gbserver.environment import bv_project_access as bpa
 from gbserver.environment.bv_project_access import (
     BvProjectAccessDenied,
     confirm_any_project_membership,
+    confirm_any_project_membership_without_tunnel,
     has_any_project_membership,
     parse_group_names,
     project_groups,
@@ -312,3 +313,126 @@ async def test_an_unrecognized_mode_falls_back_to_off_not_enforce(monkeypatch):
     tunnel = _Tunnel(id_stdout=GROUPS_NO_PROJECT)
     await confirm_any_project_membership(tunnel, LOGIN)  # must not raise
     assert tunnel.commands == []
+
+
+# ---------------------------------------------------------------------------
+# Tunnel-less path (use_ssh=false) — the review finding this section closes.
+#
+# The gate CANNOT allow through this path — every one of its lookups is a keyed
+# getent/id over the tunnel it does not have — so `off` is the only mode that is
+# a plain no-op. `shadow` still logs, and `enforce` still denies, matching the
+# module's fail-closed rule.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_without_tunnel_off_is_a_noop(monkeypatch):
+    monkeypatch.setattr(bpa, "BV_PROJECT_ACCESS_MODE", "off")
+    await confirm_any_project_membership_without_tunnel(LOGIN)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_without_tunnel_enforce_denies_regardless_of_login(enforce):
+    """The whole point: an ssh-less deployment must NOT be a bypass. Even a login
+    that would pass with a tunnel is denied here, because the gate cannot verify
+    membership without one."""
+    with pytest.raises(BvProjectAccessDenied) as ei:
+        await confirm_any_project_membership_without_tunnel(LOGIN)
+    # Same scrubbed-message contract as the with-tunnel path — the reader is a
+    # user looking at their PR, not an operator.
+    for leak in ("getent", "id -Gn", "proj_", "POSIX", "group", "tunnel"):
+        assert leak not in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_without_tunnel_shadow_does_not_raise(shadow):
+    await confirm_any_project_membership_without_tunnel(LOGIN)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Traceback suppression (review finding #2)
+# ---------------------------------------------------------------------------
+
+
+def test_denial_hides_traceback_from_pr_comment():
+    """The scrubbed message reaches the PR; the stack frames must not.
+
+    Read by ``get_readable_error_message``: without this marker, the exception's
+    frames (``bv_project_access.py`` / ``confirm_any_project_membership``) end up
+    in the ``<details>`` block, leaking exactly the mechanism the message hides.
+    """
+    from gbserver.utils.unwrap_errors import get_readable_error_message
+
+    err = BvProjectAccessDenied("Access to a BlueVela project is required...")
+    assert getattr(err, "hide_traceback_from_pr", False) is True
+
+    body = get_readable_error_message(
+        err, err_stack="Traceback...\n  File bv_project_access.py, line 251, in ..."
+    )
+    assert "Access to a BlueVela project" in body
+    for leak in (
+        "bv_project_access.py",
+        "confirm_any_project_membership",
+        "<details>",
+        "Full Stack Trace",
+        "Traceback",
+    ):
+        assert leak not in body, f"PR body still leaks {leak!r}"
+
+
+def test_ordinary_exceptions_still_carry_a_traceback():
+    """The suppressor must be OPT-IN, not a blanket format change."""
+    from gbserver.utils.unwrap_errors import get_readable_error_message
+
+    err = RuntimeError("something else went wrong")
+    body = get_readable_error_message(err, err_stack="Traceback... some frames")
+    assert "Full Stack Trace" in body
+    assert "some frames" in body
+
+
+def test_hidden_traceback_survives_being_re_raised_from():
+    """`raise X from denial` must not smuggle the frames back in."""
+    from gbserver.utils.unwrap_errors import get_readable_error_message
+
+    denial = BvProjectAccessDenied("Access to a BlueVela project is required...")
+    try:
+        try:
+            raise denial
+        except BvProjectAccessDenied as inner:
+            raise RuntimeError("wrapped by something else") from inner
+    except RuntimeError as outer:
+        body = get_readable_error_message(outer, err_stack="Traceback... frames here")
+    assert "Full Stack Trace" not in body
+    assert "Traceback" not in body
+
+
+# ---------------------------------------------------------------------------
+# Default mode
+#
+# `BV_PROJECT_ACCESS_MODE` is baked at import time from an env var, so the
+# effective default is the one asserted here — with the env var unset, the gate
+# runs in enforce.
+# ---------------------------------------------------------------------------
+
+
+def test_default_mode_is_enforce(monkeypatch):
+    """With the env var unset, the gate runs in enforce — the gate is on.
+
+    Flipping this default is a security change, not a cosmetic one: an
+    operator who never touches the config must land on a *denying* mode, not
+    a permissive one. Explicit fixture teardown reloads constants.py back to
+    match the ambient env, so downstream tests can't be perturbed.
+    """
+    import importlib
+
+    from gbserver.types import constants as gbconstants
+
+    monkeypatch.delenv("GBSERVER_BV_PROJECT_ACCESS_MODE", raising=False)
+    reloaded = importlib.reload(gbconstants)
+    try:
+        assert reloaded.BV_PROJECT_ACCESS_MODE == "enforce", (
+            "the gate defaults ON — flipping this default is a security change; "
+            "'off' or 'shadow' must be selected explicitly by the operator"
+        )
+    finally:
+        importlib.reload(gbconstants)

@@ -49,14 +49,19 @@ Nothing here enumerates passwd or the group table. That mirrors
 has, and it keeps the check O(1) regardless of how many projects or users exist.
 
 FAILS CLOSED. Every inconclusive outcome denies: no passwd entry, no groups,
-non-zero rc, unparseable output, or a tunnel error. A gate that allowed on error
-would be bypassable exactly when the login nodes misbehave.
+non-zero rc, unparseable output, or a tunnel error. And no tunnel at all — a
+``use_ssh=false`` deployment routes through
+``confirm_any_project_membership_without_tunnel``, which cannot verify anything
+and therefore denies under ``enforce`` rather than silently allow. A gate that
+allowed on error, or on the absence of the very channel it needs, would be
+bypassable exactly when the login nodes misbehave.
 
-Which makes the rollout mode load-bearing, not a nicety: because the identity
-assumption above is unverified against a real login node, ``enforce`` could deny
-*every* build. ``shadow`` runs the check and logs what it would have done while
-allowing the build through, so the assumption can be validated on real traffic
-first. Default is ``off``. See ``BV_PROJECT_ACCESS_MODE`` in types/constants.py.
+Rollout mode. Default is ``enforce`` — the gate is on. ``shadow`` runs the check
+and logs what it would have done while allowing the build through, and ``off``
+turns the gate off entirely. Because ``enforce`` on an unverified deployment can
+lock out every legitimate user (the assumption above), the sequence for a fresh
+environment is ``shadow`` first until the logs show sensible decisions, THEN
+``enforce``. See ``BV_PROJECT_ACCESS_MODE`` in types/constants.py.
 """
 
 import re
@@ -92,6 +97,14 @@ class BvProjectAccessDenied(Exception):
     in POSIX groups, ``getent``, or granite.build's internals. Name the
     requirement and the remedy, never the mechanism.
     """
+
+    # Contract read by ``utils.unwrap_errors.get_readable_error_message``: the PR
+    # comment shows the message only, never the traceback. Otherwise the frames
+    # (``confirm_any_project_membership``, ``bv_project_access.py``) would leak
+    # exactly the mechanism the message above is written to hide, and the
+    # scrubbing tests here would guarantee something the reader never actually
+    # sees. Class-level rather than per-instance so every raise site inherits it.
+    hide_traceback_from_pr = True
 
 
 def parse_group_names(id_gn_stdout: str) -> List[str]:
@@ -215,6 +228,33 @@ async def has_any_project_membership(tunnel, login: str) -> Tuple[bool, str]:
     return True, f"{login!r} is in {len(projects)} project group(s)"
 
 
+def _dispatch_denial(mode: str, login: str, reason: str, extra: str = "") -> None:
+    """Log the denial per mode, then raise iff ``enforce``.
+
+    Extracted so ``confirm_any_project_membership`` and
+    ``confirm_any_project_membership_without_tunnel`` cannot drift on what the
+    log line and the user-facing message look like — both go through here.
+
+    ``extra`` carries optional context for the log only (e.g. the diagnostic BV
+    account email). It is never included in the exception message.
+    """
+    logger.warning(
+        "BV project gate [%s]: %s %r — %s%s",
+        mode,
+        "DENY" if mode == BV_PROJECT_ACCESS_MODE_ENFORCE else "would deny",
+        login,
+        reason,
+        f" ({extra})" if extra else "",
+    )
+    if mode == BV_PROJECT_ACCESS_MODE_SHADOW:
+        return
+    raise BvProjectAccessDenied(
+        f"Access to a BlueVela project is required to run here, and the account "
+        f"'{login}' does not currently have one. Ask the owner of the project "
+        f"you are working on to add you, then start this run again."
+    )
+
+
 async def confirm_any_project_membership(tunnel, login: str) -> None:
     """Enforce the gate for ``login`` according to the rollout mode.
 
@@ -227,37 +267,48 @@ async def confirm_any_project_membership(tunnel, login: str) -> None:
         return
 
     allowed, reason = await has_any_project_membership(tunnel, login)
-
-    # Resolved only for the log, and only when there is something to explain:
-    # on the allow path nobody needs it, and it costs a round trip.
-    account_email = None if allowed else await _bv_account_email(tunnel, login)
-
     if allowed:
         logger.info("BV project gate [%s]: allow %r — %s", mode, login, reason)
         return
 
-    logger.warning(
-        "BV project gate [%s]: %s %r — %s (BV account email: %s)",
-        mode,
-        "DENY" if mode == BV_PROJECT_ACCESS_MODE_ENFORCE else "would deny",
-        login,
-        reason,
-        account_email or "unknown",
+    # Resolved only for the log, and only when there is something to explain: on
+    # the allow path nobody needs it, and it costs a round trip. Never touched by
+    # the denial verdict — the account's existence is decided by ``id -Gn``, and
+    # a site whose GECOS carries no email must not thereby fail the gate.
+    account_email = await _bv_account_email(tunnel, login)
+    _dispatch_denial(
+        mode, login, reason, extra=f"BV account email: {account_email or 'unknown'}"
     )
 
-    if mode == BV_PROJECT_ACCESS_MODE_SHADOW:
-        return
 
-    raise BvProjectAccessDenied(
-        f"Access to a BlueVela project is required to run here, and the account "
-        f"'{login}' does not currently have one. Ask the owner of the project "
-        f"you are working on to add you, then start this run again."
+async def confirm_any_project_membership_without_tunnel(login: str) -> None:
+    """Enforce the gate when no SSH tunnel is available (``use_ssh=false``).
+
+    The gate cannot make a positive decision without the tunnel — every lookup
+    it does is a keyed ``getent``/``id`` over that connection. So the choice is
+    between denying and silently allowing everyone, and the whole module fails
+    closed: ``enforce`` denies, ``shadow`` logs, ``off`` no-ops.
+
+    Currently theoretical for BlueVela — every configured environment on this
+    path uses SSH — but a future ``use_ssh=false`` LSF deployment would
+    otherwise bypass the gate entirely, which is exactly the finding this
+    guard exists to close.
+    """
+    mode = resolve_mode()
+    if mode == BV_PROJECT_ACCESS_MODE_OFF:
+        return
+    _dispatch_denial(
+        mode,
+        login,
+        "cannot verify BV project membership: no SSH tunnel is available "
+        "(use_ssh=false on this environment)",
     )
 
 
 __all__ = [
     "BvProjectAccessDenied",
     "confirm_any_project_membership",
+    "confirm_any_project_membership_without_tunnel",
     "has_any_project_membership",
     "parse_group_names",
     "project_groups",
