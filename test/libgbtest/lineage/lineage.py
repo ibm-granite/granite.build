@@ -279,7 +279,7 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         # The reconciler's in-memory count must match what the builder emits.
         assert expected_run_count(targetrun) == len(events)
 
-    def testexpected_run_count_matches_events_built(self):
+    def test_expected_run_count_matches_events_built(self):
         """``expected_run_count`` must equal the events the builder emits.
 
         The reconciler derives a target's expected run count from the in-memory

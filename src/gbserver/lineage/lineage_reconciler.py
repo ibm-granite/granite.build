@@ -284,6 +284,12 @@ def select_recordable_targets(
     restores the unfiltered sweep, which is what the build-scoped callers
     (``build_id``) and one-shot backfills want.
 
+    The filter applies **only on the anchored path** (``stop_at`` given), and is
+    inert when it is not: without an anchor the walk is already bounded by the
+    ``finished_after`` cutoff, so the unbounded retreat this defends against
+    cannot arise, and the rows it would exclude are ones that sweep wants. Do not
+    read this parameter as unconditionally bounding the selection.
+
     The anchor row is included in the result, mirroring the inclusive ``>=`` of
     the cutoff: re-reading it is a harmless idempotent no-op, and treating it as
     already-handled would reintroduce a boundary to lose targets on. Matching is

@@ -586,7 +586,7 @@ class TestReconcileOnce:
         # ...but the checkpoint stops at t1, the last target before the failure.
         assert advances == [("b1", _BASE)]
 
-    def test_passesexpected_run_counts_derived_from_outputs(self):
+    def test_passes_expected_run_counts_derived_from_outputs(self):
         store = _StubStore()
         # t1: two output-artifact names, the second holding two artifacts -> 3
         # runs. t2: no outputs -> the single "no-output" run.
