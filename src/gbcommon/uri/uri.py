@@ -86,11 +86,28 @@ class URI(ABC):
 
     @staticmethod
     def _load_urihandlers() -> None:
+        """Discover and register every URI handler, rebuilding the registry.
+
+        Rebuilds ``URI.uri_handler_classes`` from scratch on each call: the
+        registry is cleared first so the method is idempotent and reload-safe.
+        Without the clear, the ``PluginRegistrar`` core-wins guard would keep a
+        stale prior registration and refuse to replace it — so a re-run after
+        ``importlib.reload(gbcommon.uri.<scheme>)`` (as the test conftest does)
+        would leave the registry pointing at the pre-reload class, distinct from
+        the module's current one. The in-tree scan repopulates built-ins with
+        their current classes; the plugin ``discover`` pass then adds external
+        handlers, with core-wins still protecting the freshly-registered
+        built-ins.
+        """
         from gbcommon.plugins import (
             GROUP_URI_HANDLERS,
             PluginRegistrar,
             keys_from_method,
         )
+
+        # Rebuild from scratch (in place, preserving any held reference to the
+        # dict) so a reload's new classes win over stale registrations.
+        URI.uri_handler_classes.clear()
 
         # Files each URI handler under the scheme(s) it advertises. Both the
         # in-tree scan and the plugin pass register through this one registrar.
