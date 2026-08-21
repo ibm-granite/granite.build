@@ -493,6 +493,17 @@ def init(
 )
 @click.option("--skip-validation", is_flag=True, help="Skip build contents validation.")
 @click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Resolve parameters and output the executable build.yaml WITHOUT submitting (offline in standalone; no auth/space needed). Without --save-build-file the resolved build.yaml is written verbatim to stdout (pipe-friendly); status messages go to stderr.",
+)
+@click.option(
+    "--save-build-file",
+    type=click.Path(dir_okay=False, writable=True),
+    help="With --dry-run, write the resolved build.yaml here instead of stdout (a '✅ wrote ...' note goes to stderr).",
+)
+@click.option(
     "--parameters-path",
     type=click.Path(exists=True, readable=True, dir_okay=False),
     help="Path to parameters.yaml file.",
@@ -527,6 +538,8 @@ def start(
     tag: tuple,
     tags: str,
     skip_validation,
+    dry_run,
+    save_build_file,
     parameters_path,
     verbose_validation,
     format,
@@ -561,6 +574,33 @@ def start(
                     sys.exit(1)  # Exit with a non-zero status
             case _:
                 pass
+
+    if dry_run:
+        # Offline: resolve parameters and emit the executable build.yaml without
+        # contacting the server (no version check, banner, auth, or space needed).
+        build_client = GBClient.Build(get_user_token())
+        resolved = build_client.build_start(
+            True,
+            filename,
+            space,
+            param,
+            skip_validation,
+            parameters_path,
+            targets,
+            description,
+            [],
+            callback=echo_callback,
+            validation_type=validation_type,
+            dry_run=True,
+            save_build_file=save_build_file,
+        )
+        if resolved is None:
+            ctx.exit(1)
+        if save_build_file:
+            click.echo(f"✅ wrote {save_build_file}", err=True)
+        else:
+            click.echo(resolved, nl=False)
+        return
 
     if not skip_version_check and not is_standalone():
         try:
@@ -2241,9 +2281,37 @@ def log(
     default=False,
     help="Output build file contents",
 )
+@click.option(
+    "--param",
+    multiple=True,
+    help="Build run parameter ('param_name=param_value'). Use this option again to provide multiple parameters.",
+)
+@click.option(
+    "--parameters-path",
+    type=click.Path(exists=True, readable=True, dir_okay=False),
+    help="Path to parameters.yaml file.",
+)
 @common_options
-def describe(ctx, build_id, filename, format, space, raw, skip_version_check, quiet):
-    """Describe targets steps, description of a build"""
+def describe(
+    ctx,
+    build_id,
+    filename,
+    format,
+    space,
+    raw,
+    param,
+    parameters_path,
+    skip_version_check,
+    quiet,
+):
+    """Describe targets steps, description of a build.
+
+    With --raw, prints the build file. Supply --param/--parameters-path to
+    resolve a parameterized ($${...}) build.yaml through the same engine
+    `gb build start` uses, e.g.:
+
+        gb build describe -f template/build.yaml --raw --param ENV=skypilot/aws
+    """
     if not skip_version_check:
         try:
             outdated_version = check_current_and_latest_versions()
@@ -2269,6 +2337,15 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
     if filename and build_id:
         click.echo(
             f"❌ build describe can not be run with both a build_id and a filename. Please select one of the two options",
+            err=True,
+        )
+        sys.exit(1)  # Exit with a non-zero status
+
+    if build_id and (param or parameters_path):
+        click.echo(
+            "❌ --param/--parameters-path cannot be combined with a build_id: a "
+            "stored build is already fully resolved (parameters were evaluated at "
+            "submit time). Pass a local -f build.yaml to render a parameterized template.",
             err=True,
         )
         sys.exit(1)  # Exit with a non-zero status
@@ -2329,6 +2406,8 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
                 build_id,
                 id_format,
                 space,
+                params=param,
+                parameters_path=parameters_path,
                 callback=echo_callback,
             )
             if build and build["build"]:
@@ -2430,6 +2509,8 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
                 build_id,
                 id_format,
                 space,
+                params=param,
+                parameters_path=parameters_path,
                 callback=echo_callback,
             )
             click.echo(yaml_str)

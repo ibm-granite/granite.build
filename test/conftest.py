@@ -304,6 +304,14 @@ def pytest_addoption(parser):
         metavar="PATH",
         help="Path to a buildtest.yaml file to run via the generic YAML runner test.",
     )
+    parser.addoption(
+        "--build-yaml",
+        action="store",
+        default=None,
+        metavar="PATH",
+        help="Override the build.yaml a buildtest uses (gbtest's `-f`); resolves "
+        "against CWD instead of the buildtest.yaml's directory.",
+    )
 
 
 def pytest_sessionstart(session):

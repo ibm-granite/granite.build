@@ -7,8 +7,12 @@ the bare launcher node — no custom image is built for this step.
 
 > **Developing or testing this step?** See `steps/byoc/skypilot/README.md` in the
 > granite.build repository for how the step is generated, tested, and published —
-> including the environment variables the SkyPilot **aws** integration test requires
-> (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, or `AWS_PROFILE`).
+> including the environment variables the SkyPilot **aws** integration test requires.
+> Those (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, or `AWS_PROFILE`) are only the
+> test **skip gate**; a real build gets its AWS creds from the space **secret manager**
+> via the `GB_AWS_ACCESS_KEY_ID` / `GB_AWS_SECRET_ACCESS_KEY` secret names declared in
+> the AWS `environment.yaml` (materialized into a `gb-skypilot` profile). See
+> `docs/environments/skypilot-aws.md` in the granite.build repository.
 
 ## Referencing the step
 

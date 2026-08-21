@@ -18,6 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 from fastapi import HTTPException
+from jinja2 import UndefinedError
 from pydantic import BaseModel
 from requests import HTTPError
 from requests.exceptions import ConnectionError
@@ -25,6 +26,7 @@ from requests.exceptions import ConnectionError
 from gbcli.utils.buildutil import (
     apply_parameters,
     get_yaml_diff,
+    parse_params,
     process_build_validation_response,
 )
 from gbcli.utils.cli_config import get_local_build_cache
@@ -277,6 +279,8 @@ def build_start(
     tags: list[str] = [],
     callback=None,
     validation_type: str = "static",
+    dry_run: bool = False,
+    save_build_file: Optional[str] = None,
 ) -> str:
 
     gbserver_build_update = gb_environment_config().feature_flags[
@@ -313,6 +317,46 @@ def build_start(
         return
 
     ignore_git_global_config()
+
+    # Build/branch name — derived up front because it needs neither auth nor a
+    # resolved space, so the offline --dry-run path below can run without them.
+    if filename:
+        filename_split = os.path.split(filename)[-1]
+        suffix = f".{filename_split.split('.', 1)[-1]}" if "." in filename_split else ""
+        build_name = remove_suffix(filename_split, suffix)
+    else:
+        build_name = os.path.split(os.getcwd())[-1]
+    branch_name = f"{build_name}-{generate_unique_id()}"
+
+    if dry_run:
+        # Offline resolution (issue #278): apply parameters and emit the
+        # executable build.yaml WITHOUT auth, space resolution, validation,
+        # archiving, or submission. Short-circuits before get_user/resolve_space
+        # so it works in CI with no credentials or reachable space.
+        experiment_folder = prepare_build_local_contents(
+            build_file_path, branch_name, filename
+        )
+        try:
+            _, resolved_path = parameters_helper(
+                quiet,
+                parameters_path,
+                build_file_path,
+                experiment_folder,
+                params,
+                callback,
+            )
+        except Exception as e:
+            if callback is not None:
+                callback(callback_event="clear", callback_args={})
+                callback(
+                    callback_event="error",
+                    callback_args={"reason": f"Error applying build parameters: {e}."},
+                )
+            return None
+        resolved_text = Path(resolved_path).read_text(encoding="utf-8")
+        if save_build_file:
+            Path(save_build_file).write_text(resolved_text, encoding="utf-8")
+        return resolved_text
 
     if is_standalone():
         creds = GBCredentials()
@@ -351,14 +395,6 @@ def build_start(
 
     if callback and not quiet:
         callback(callback_event="preparing_contents", callback_args={"steps": 1})
-
-    if filename:
-        filename_split = os.path.split(filename)[-1]
-        suffix = f".{filename_split.split('.', 1)[-1]}" if "." in filename_split else ""
-        build_name = remove_suffix(filename_split, suffix)
-    else:
-        build_name = os.path.split(os.getcwd())[-1]
-    branch_name = f"{build_name}-{generate_unique_id()}"
 
     experiment_folder = prepare_build_local_contents(
         build_file_path, branch_name, filename
@@ -1391,6 +1427,8 @@ def build_describe(
     build_id: Optional[str] = None,
     id_format: Optional[str] = None,
     space: Optional[str] = None,
+    params: Optional[List[str]] = None,
+    parameters_path: Optional[str] = None,
     callback=None,
 ) -> str:
     downloaded_build_file_path = False
@@ -1466,10 +1504,32 @@ def build_describe(
 
     try:
         if raw:
-            with open(build_yaml_path, "r", encoding="utf-8") as f:
-                # build_yaml_dict = yaml.safe_load(f)
-                file_str = f.read()
-            # return yaml.dump(build_yaml_dict, indent=2)
+            file_str = build_yaml_path.read_text(encoding="utf-8")
+            # When parameters are supplied, resolve the parameterized template
+            # through the same engine `gb build start` uses, so `gb` stays the
+            # single source of truth for rendering (issue #278). With no params
+            # this stays a verbatim dump of the (possibly parameterized) file.
+            # Only the local-file path is a template: a server-fetched build_id
+            # is already fully resolved (params were evaluated at submit time),
+            # so re-applying params there is meaningless and, under
+            # StrictUndefined, could spuriously fail on `$${...}`-looking text.
+            if (params or parameters_path) and not build_id:
+                params_file = (
+                    Path(parameters_path)
+                    if parameters_path
+                    else build_yaml_path.parent / BUILD_PARAMETERS_FILE
+                )
+                params_from_file = (
+                    get_params_from_file(str(params_file))
+                    if params_file.is_file()
+                    else {}
+                )
+                params_dict = parse_params(list(params or []), params_from_file)
+                with tempfile.TemporaryDirectory() as scratch:
+                    try:
+                        file_str = apply_parameters(file_str, [], params_dict, scratch)
+                    except UndefinedError as e:
+                        raise ValueError(f"missing parameter: {e.message}") from e
             return file_str
         else:
             targets = describe_build_yaml(

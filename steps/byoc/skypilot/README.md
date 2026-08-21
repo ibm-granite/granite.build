@@ -70,6 +70,30 @@ provisioned without credentials explicitly exported. Note this gate reads the
 because boto3/SkyPilot read it at launch, but it does *not* satisfy the skip gate
 unless `AWS_PROFILE` (or the key pair) is exported.
 
+#### Where the build's AWS creds actually come from (`GB_AWS_*`)
+
+The env vars above are only the **skip gate** — they decide whether the test runs
+on this host. They are **not** how the build authenticates to AWS. The AWS
+`environment.yaml`
+(`configurations/assets/environments/skypilot/aws/environment.yaml`) resolves the
+secret *names* `GB_AWS_ACCESS_KEY_ID` / `GB_AWS_SECRET_ACCESS_KEY` through the
+space **secret manager** and materializes them into a non-default `gb-skypilot`
+profile that SkyPilot then selects:
+
+```yaml
+aws_credentials:
+  - profile: gb-skypilot
+    aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+    aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+cloud_config: { workspaces: { default: { aws: { profile: gb-skypilot } } } }
+```
+
+Selecting an explicit profile **disables the ambient `AWS_*` env-var provider**, so
+provisioning uses the materialized profile, not your shell. Standalone: seed those
+secret names (base64) into `~/.granite.build/space_secrets/`; shared: the
+server-managed secret store supplies them. Full runbook:
+[docs/environments/skypilot-aws.md](../../../docs/environments/skypilot-aws.md).
+
 Also required for the launch itself to succeed (not part of the skip gate):
 
 - **`sky check aws` must report `AWS: enabled`** — SkyPilot uses boto3 to
