@@ -1,0 +1,170 @@
+# Copyright LLM.build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Unit tests for WandBLineageService run release on failure paths.
+
+Run ids here are deterministic (derived from the target uuid) and the watcher
+retries a failed target on its next scan with that same id. So a run left
+registered as in-flight in wandb's service process makes every retry fail with
+``ServerResponseError: run ID <id> is in use`` — a one-off failure becomes a
+permanent one. These tests assert both leak paths release the run: a failure
+inside ``wandb.init()``, and a failure after the run was opened.
+"""
+
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from gbserver.lineage.wandb_service import WandBLineageService
+
+
+def _service() -> WandBLineageService:
+    """Construct the service without running __init__ (no wandb.login)."""
+    service = WandBLineageService.__new__(WandBLineageService)
+    service._runs = {}
+    return service
+
+
+def _event(event_type: str = "START") -> dict:
+    return {
+        "run": {"runId": "run-1", "facets": {}},
+        "job": {"name": "job-1", "facets": {}, "namespace": "ns"},
+        "eventType": event_type,
+        "inputs": [],
+        "outputs": [],
+    }
+
+
+def _make_run() -> MagicMock:
+    run = MagicMock()
+    run.settings = SimpleNamespace(mode="online")
+    run.tags = []
+    run.config = MagicMock()
+    run.summary = {}
+    return run
+
+
+def test_init_failure_releases_partially_created_run():
+    """A run that init() created before raising is finished, not left in use.
+
+    This is the observed production loop: attempt 1 fails with CommError
+    ("previously created and deleted"), leaving the run registered; attempt 2
+    then fails with "run ID ... is in use" forever.
+    """
+    service = _service()
+    leaked = _make_run()
+
+    with (
+        patch.object(service, "_init_run", side_effect=RuntimeError("boom")),
+        patch("gbserver.lineage.wandb_service.wandb") as wandb_mod,
+    ):
+        wandb_mod.run = leaked
+        with pytest.raises(RuntimeError):
+            service._get_run("run-1", "job-1")
+
+    leaked.finish.assert_called_once()
+    # Nothing cached, so the retry does a fresh init rather than reusing a
+    # dead handle.
+    assert service._runs == {}
+
+
+def test_init_failure_with_no_partial_run_is_a_clean_reraise():
+    """When init() left nothing behind there is nothing to finish."""
+    service = _service()
+
+    with (
+        patch.object(service, "_init_run", side_effect=RuntimeError("boom")),
+        patch("gbserver.lineage.wandb_service.wandb") as wandb_mod,
+    ):
+        wandb_mod.run = None
+        with pytest.raises(RuntimeError):
+            service._get_run("run-1", "job-1")
+
+    assert service._runs == {}
+
+
+def test_init_failure_teardown_error_does_not_mask_original():
+    """A finish() error during cleanup must not replace the real exception."""
+    service = _service()
+    leaked = _make_run()
+    leaked.finish.side_effect = RuntimeError("teardown exploded")
+
+    with (
+        patch.object(service, "_init_run", side_effect=ValueError("original")),
+        patch("gbserver.lineage.wandb_service.wandb") as wandb_mod,
+    ):
+        wandb_mod.run = leaked
+        with pytest.raises(ValueError, match="original"):
+            service._get_run("run-1", "job-1")
+
+
+def test_mid_event_failure_releases_the_open_run():
+    """A failure after the run opened releases it before re-raising."""
+    service = _service()
+    run = _make_run()
+    service._runs["run-1"] = run
+
+    with (
+        patch.object(service, "_get_run", return_value=run),
+        patch.object(service, "_register_artifacts", side_effect=RuntimeError("boom")),
+    ):
+        with pytest.raises(RuntimeError):
+            service.emit_event(_event())
+
+    run.finish.assert_called_once()
+    assert service._runs == {}
+
+
+def test_terminal_event_is_not_released_twice():
+    """COMPLETE already finished the run; the failure path must not re-finish.
+
+    The logger.info after the terminal branch is patched to raise so the except
+    block runs with the run already finished and popped.
+    """
+    service = _service()
+    run = _make_run()
+
+    with (
+        patch.object(service, "_get_run", return_value=run),
+        patch.object(service, "_register_artifacts"),
+        patch(
+            "gbserver.lineage.wandb_service.logger.info",
+            side_effect=RuntimeError("boom"),
+        ),
+    ):
+        with pytest.raises(RuntimeError):
+            service.emit_event(_event("COMPLETE"))
+
+    # Exactly one finish(): the COMPLETE one, not a second from cleanup.
+    run.finish.assert_called_once_with()
+    assert service._runs == {}
+
+
+def test_key_error_before_run_opens_releases_nothing():
+    """A malformed event fails before any run exists."""
+    service = _service()
+
+    with patch.object(service, "_get_run") as get_run:
+        with pytest.raises(KeyError):
+            service.emit_event({"run": {}, "job": {}})
+        get_run.assert_not_called()
+
+    assert service._runs == {}
+
+
+def test_release_run_is_a_noop_for_unknown_id():
+    service = _service()
+    service._release_run("never-opened")
+    assert service._runs == {}

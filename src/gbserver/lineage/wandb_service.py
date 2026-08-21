@@ -77,7 +77,32 @@ class WandBLineageService(LineageService):
         if run_id in self._runs:
             return self._runs[run_id]
 
-        run = wandb.init(
+        try:
+            run = self._init_run(run_id, job_name)
+        except Exception:
+            # init() registers the run before it can fail, and the next scan
+            # retries this same deterministic id — which wandb then rejects as
+            # "run ID <id> is in use", making a transient error permanent. A late
+            # failure leaves the partial run on wandb.run, an early one nothing.
+            self._finish_quietly(getattr(wandb, "run", None), run_id)
+            raise
+
+        self._runs[run_id] = run
+        return run
+
+    @staticmethod
+    def _finish_quietly(run: Any, run_id: str) -> None:
+        """Finish a run, never letting a teardown error mask the real one."""
+        if run is None:
+            return
+        try:
+            run.finish(exit_code=1)
+        except Exception as cleanup_error:  # pragma: no cover - defensive
+            logger.warning("Failed to release wandb run %s: %s", run_id, cleanup_error)
+
+    def _init_run(self, run_id: str, job_name: str):
+        """Open (or resume) the wandb run backing this lineage event."""
+        return wandb.init(
             project=GBSERVER_WANDB_PROJECT,
             entity=GBSERVER_WANDB_ENTITY,
             id=run_id,
@@ -105,8 +130,13 @@ class WandBLineageService(LineageService):
             ),
         )
 
-        self._runs[run_id] = run
-        return run
+    def _release_run(self, run_id: str) -> None:
+        """Finish and forget a run so its deterministic id can be reused.
+
+        A no-op for an id with no open run, so error paths need not know whether
+        the run was ever opened or a terminal event already finished it.
+        """
+        self._finish_quietly(self._runs.pop(run_id, None), run_id)
 
     # wandb run modes in which a live backend IS available, so artifact
     # registration can proceed. Any other mode (offline/disabled/dryrun/...) is
@@ -162,6 +192,7 @@ class WandBLineageService(LineageService):
                         run.use_artifact(artifact)
 
     def emit_event(self, event: Dict) -> None:
+        run_id: Optional[str] = None
         try:
             run_id = event["run"]["runId"]
             job_name = event["job"]["name"]
@@ -245,6 +276,11 @@ class WandBLineageService(LineageService):
 
         except Exception as e:
             logger.error("Failed to process lineage event: %s", e)
+            # Free the id for the retry, as in _get_run. A terminal event already
+            # finished and popped the run, so this is a no-op there — not a
+            # second finish().
+            if run_id is not None:
+                self._release_run(run_id)
             raise
 
     def _get_run_lineage(self, run_id: str) -> Optional[Dict]:
