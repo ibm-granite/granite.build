@@ -362,6 +362,38 @@ def test_uri_noop_when_no_plugins(monkeypatch, uri_registry_snapshot):
     assert URI.uri_handler_classes == baseline
 
 
+def test_uri_loader_rebuilds_registry(monkeypatch, uri_registry_snapshot):
+    """The loader rebuilds the registry from scratch on every run: a stale entry
+    left over from a prior registration is replaced by the module's current
+    class, not kept by the core-wins guard.
+
+    This guards the reload path the test conftest relies on. After
+    ``importlib.reload(gbcommon.uri.git)`` the module's ``GitURI`` is a brand-new
+    class object; re-running ``_load_urihandlers`` must register that new object.
+    A loader that reused the registry would hit core-wins and keep the
+    pre-reload class, so ``URI.get_uri`` would hand back instances whose class
+    differs from ``gbcommon.uri.git.GitURI`` — defeating any ``monkeypatch`` that
+    targets the module attribute (the exact regression behind the git-base
+    resolver test cloning for real instead of using its patched clone).
+    """
+    import gbcommon.uri.git
+    from gbcommon.uri.uri import URI
+
+    # A distinct class standing in for a stale pre-reload registration.
+    class StaleGitURI(gbcommon.uri.git.GitURI):
+        pass
+
+    _patch_entry_points(monkeypatch, {})
+    schemes = gbcommon.uri.git.GitURI.get_supported_schemes()
+    for scheme in schemes:
+        URI.uri_handler_classes[scheme] = StaleGitURI
+
+    URI._load_urihandlers()
+
+    for scheme in schemes:
+        assert URI.uri_handler_classes[scheme] is gbcommon.uri.git.GitURI
+
+
 # ---------------------------------------------------------------------------
 # Environment loader
 # ---------------------------------------------------------------------------
