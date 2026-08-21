@@ -160,12 +160,20 @@ class TestRemapRelativeDest:
         assert _remap_relative_dest("./foo", "/wd") == "/wd/foo"
         assert _remap_relative_dest("sub/foo", "/wd") == "/wd/sub/foo"
 
-    def test_absolute_and_home_dests_unchanged(self):
+    def test_absolute_dest_unchanged(self):
         from gbserver.environment.skypilot import _remap_relative_dest
 
         assert _remap_relative_dest("/abs/foo", "/wd") == "/abs/foo"
-        assert _remap_relative_dest("~/foo", "/wd") == "~/foo"
-        assert _remap_relative_dest("~", "/wd") == "~"
+
+    @pytest.mark.parametrize("dst", ["~", "~/foo", "~/sub/dir"])
+    def test_home_dest_rejected(self, dst):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        # '~' is not expanded for destinations either: it would sidestep the
+        # single relative/absolute convention and land outside the per-run
+        # workdir, so reject it (mirroring the source-side guard).
+        with pytest.raises(ValueError, match="~"):
+            _remap_relative_dest(dst, "/wd")
 
     def test_noop_without_build_workdir(self):
         from gbserver.environment.skypilot import _remap_relative_dest
@@ -414,8 +422,9 @@ class TestLaunchSkypilot:
                 }
             },
         )
-        assert kwargs.get("cpus") == 2
-        assert kwargs.get("memory") == 1.0
+        # k8s (fixture default_cloud) is a cloud catalog, so cpus is a minimum.
+        assert kwargs.get("cpus") == "2+"
+        assert kwargs.get("memory") == "1+"
 
     @pytest.mark.asyncio
     async def test_launcher_resources_override_compute_config(self, skypilot_env):
@@ -432,8 +441,8 @@ class TestLaunchSkypilot:
             },
         )
         assert kwargs.get("cpus") == "4+"
-        # memory floor still applies (not overridden)
-        assert kwargs.get("memory") == 1.0
+        # memory floor still applies (not overridden), as a minimum
+        assert kwargs.get("memory") == "1+"
 
     @pytest.mark.asyncio
     async def test_no_compute_config_leaves_resources_unset(self, skypilot_env):
@@ -463,7 +472,7 @@ class TestLaunchSkypilot:
             },
         )
         assert kwargs.get("cpus") is None
-        assert kwargs.get("memory") == 1.0
+        assert kwargs.get("memory") == "1+"
 
     @pytest.mark.asyncio
     async def test_slurm_infra_drops_memory_floor(self, skypilot_env):
@@ -526,10 +535,12 @@ class TestSkypilotComputeConfigResources:
         from gbserver.environment.skypilot import Skypilot
 
         env = Skypilot(event_q=asyncio.Queue())
-        # cpus emitted only when > 0; memory parsed from the string.
+        # cpus emitted only when > 0; on a cloud catalog both cpus and memory are
+        # emitted as a SkyPilot minimum ("{n}+"), never an exact number (see
+        # test_cpus_floor_is_minimum_not_exact / test_memory_floor_is_minimum_not_exact).
         assert env._resources_from_compute_config(
             {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"}
-        ) == {"cpus": 3, "memory": 2.0}
+        ) == {"cpus": "3+", "memory": "2+"}
         # num_cpus_per_node <= 0 is skipped (cloud default); empty memory skipped.
         assert (
             env._resources_from_compute_config(
@@ -540,16 +551,59 @@ class TestSkypilotComputeConfigResources:
         # empty compute_config yields no floor.
         assert env._resources_from_compute_config({}) == {}
         # On slurm/lsf the memory floor is dropped (bare HPC schedulers often
-        # don't track memory as a consumable resource), but cpus is still emitted.
+        # don't track memory as a consumable resource), and cpus stays a bare
+        # int (the "+" form crashes the fork's LSF cloud).
         for hpc_cloud in ("slurm", "lsf"):
             assert env._resources_from_compute_config(
                 {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"},
                 cloud=hpc_cloud,
             ) == {"cpus": 3}
-        # Non-HPC clouds keep the memory floor.
+        # Non-HPC clouds keep both floors, each as a minimum.
         assert env._resources_from_compute_config(
-            {"total_memory_per_node": "2Gi"}, cloud="k8s"
-        ) == {"memory": 2.0}
+            {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"}, cloud="k8s"
+        ) == {"cpus": "3+", "memory": "2+"}
+
+    def test_cpus_floor_is_minimum_not_exact(self):
+        """The cloud cpus floor must be a SkyPilot minimum ("{n}+"), not an
+        exact number.
+
+        Regression: an exact ``cpus=3`` matches no cloud instance type (no AWS
+        type has exactly 3 vCPUs), so provisioning dies with the same "Catalog
+        does not contain any instances satisfying the request" failure the
+        memory floor hit. Emitting ``"3+"`` lets SkyPilot pick the smallest
+        instance with at least that many vCPUs. slurm/lsf keep the bare int (the
+        ``"+"`` form crashes the fork's LSF cloud).
+        """
+        from gbserver.environment.skypilot import Skypilot
+
+        env = Skypilot(event_q=asyncio.Queue())
+        assert env._resources_from_compute_config(
+            {"num_cpus_per_node": 3}, cloud="aws"
+        ) == {"cpus": "3+"}
+        assert env._resources_from_compute_config(
+            {"num_cpus_per_node": 3}, cloud="lsf"
+        ) == {"cpus": 3}
+
+    def test_memory_floor_is_minimum_not_exact(self):
+        """The cloud memory floor must be a SkyPilot minimum ("{n}+"), not an
+        exact number.
+
+        Regression: an exact ``memory=1.0`` matches no cloud instance type, so
+        provisioning dies with "Catalog does not contain any instances
+        satisfying the request: 1x AWS(mem=1.0)." Emitting ``"1+"`` lets
+        SkyPilot pick the smallest instance with at least that much RAM.
+        Fractional sizes format without a trailing ``.0`` (e.g. ``512Mi`` ->
+        ``"0.5+"``).
+        """
+        from gbserver.environment.skypilot import Skypilot
+
+        env = Skypilot(event_q=asyncio.Queue())
+        assert env._resources_from_compute_config(
+            {"total_memory_per_node": "1Gi"}, cloud="aws"
+        ) == {"memory": "1+"}
+        assert env._resources_from_compute_config(
+            {"total_memory_per_node": "512Mi"}, cloud="aws"
+        ) == {"memory": "0.5+"}
 
 
 class TestMonitorSkypilotMonitor:

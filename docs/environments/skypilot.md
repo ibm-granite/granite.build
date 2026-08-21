@@ -271,8 +271,10 @@ its shape:
 | Destination | Lands at | Scope / lifetime |
 |-------------|----------|------------------|
 | **relative** (`payload`, `./payload`, `sub/payload`) | `<per-run-workdir>/<dst>` — the run script's CWD | per-target-run, persistent, shared across the target's steps |
-| **`~/…`** | the container's private home (on containerized LSF, staged then copied inside the container) | per-launch, container-private, ephemeral |
 | **absolute** (`/proj/…`, `/tmp/…`) | that literal path (author's responsibility) | as-is |
+
+A **`~`/`~/…` destination is rejected** (like a `~` source): `~` is not expanded by the launcher, so
+`file_mounts` has a single destination model — relative, or absolute for a fixed location.
 
 **Relative in, relative out.** Because the `run` script's CWD is the per-run workdir, a **relative**
 destination puts the payload at exactly `./<dst>` — the same path, relative to the step, that the
@@ -288,9 +290,8 @@ config:
     ./payload/run-eval.sh   # CWD is the per-run workdir, so the mount is right here
 ```
 
-Use **`~/…`** when you deliberately want the payload private to a single launch (not shared with other
-steps in the target). Use an **absolute** path only when you must hit a fixed location. When
-`shared_workdir` is *not* set, relative destinations fall back to SkyPilot's default (`~/sky_workdir/…`).
+Use an **absolute** path only when you must hit a fixed location. When `shared_workdir` is *not* set,
+relative destinations fall back to SkyPilot's default (`~/sky_workdir/…`).
 
 #### `envs`, `post_launch_task`, `idle_minutes_to_autostop`
 
