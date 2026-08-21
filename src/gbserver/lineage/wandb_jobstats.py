@@ -536,6 +536,16 @@ class WandBLineageStore(ILineageStore):
             tid for tid in target_ids if (tid, counts.get(tid)) in self._recorded_until
         }
         to_check = target_ids - cached_recorded
+        if cached_recorded:
+            # Debug, not info: in steady state this fires every monitoring
+            # interval with the same targets, which is the cache working as
+            # intended rather than an event worth a line in the default log.
+            logger.debug(
+                "Skipping wandb dedup query for %d target(s) already known "
+                "recorded (cached): %s",
+                len(cached_recorded),
+                sorted(cached_recorded),
+            )
         if not to_check:
             return set()
 
@@ -575,8 +585,20 @@ class WandBLineageStore(ILineageStore):
         # change as soon as recording succeeds, and a stale negative would be
         # re-queried anyway.
         deadline = now + _RECORDED_CACHE_TTL_SECONDS
-        for tid in to_check - unrecorded:
+        newly_recorded = to_check - unrecorded
+        for tid in newly_recorded:
             self._recorded_until[(tid, counts.get(tid))] = deadline
+        if newly_recorded:
+            # Info: this is the transition -- wandb was asked and answered "already
+            # recorded", and the verdict is now cached for the TTL. Once per target
+            # per TTL, not once per scan.
+            logger.info(
+                "wandb already holds lineage for %d target(s); caching the "
+                "verdict for %ds: %s",
+                len(newly_recorded),
+                _RECORDED_CACHE_TTL_SECONDS,
+                sorted(newly_recorded),
+            )
         return unrecorded
 
     def _prune_recorded_cache(self, now: float) -> None:

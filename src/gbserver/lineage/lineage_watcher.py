@@ -17,7 +17,6 @@
 """Async lineage-recording agent driven by admin-DB reconciliation."""
 
 import threading
-import time
 from datetime import datetime
 from typing import Optional
 
@@ -55,12 +54,16 @@ class LineageWatcher:
     2. **Which targets.** Within a build, its successful targets with a
        ``finished_at`` (``reconcile_build``).
 
-    The checkpoint advances **contiguously** and only over builds that are both
-    finished and confirmed in the sink: the walk stops at the first build that is
-    still running, or finished but not fully recorded. Given A(finished),
-    B(running), C(finished) it lands on A and stays there — C's targets are still
-    recorded, they just do not move the mark. It never skips a live build, so no
-    build ever falls out of range while it still has lineage to produce.
+    The checkpoint advances one build per scan, and the gate is on the build it
+    *leaves*: the mark moves off a build only once that build is finished and its
+    lineage is confirmed in the sink. Where it lands is the next build by creation
+    order, whatever its state. Given A(finished), B(running), C(finished) the mark
+    steps onto B and stays there until B finishes and is confirmed — C's targets
+    are still recorded meanwhile, they just do not move the mark. So the mark reads
+    as "everything created strictly before this build is confirmed"; the build it
+    names may still be running, which is safe because the base stays in range and
+    is re-reconciled every scan. No build ever falls out of range while it still
+    has lineage to produce.
 
     That is also the one unbounded shape here: a permanently stuck build pins the
     cutoff, and the selected list grows with every newer build, all of which get
@@ -168,17 +171,43 @@ class LineageWatcher:
         )
 
     def _run(self) -> None:
-        """Main monitoring loop (runs in daemon thread)."""
+        """Main monitoring loop (runs in daemon thread).
+
+        Sleeps between scans only when a scan made no progress. Because the
+        checkpoint advances at most one build per scan
+        (see ``_advance_checkpoint``), a watcher with a backlog of N complete
+        builds would otherwise need N full intervals to catch up. A scan that
+        moved the mark means there is more to do right now, so the next one
+        starts immediately and the backlog drains at the speed of the work
+        rather than of the clock.
+
+        The loop still yields on every iteration: the wait is on ``stop_event``
+        rather than a bare sleep, so a stop() lands promptly during catch-up
+        instead of after the whole backlog. Progress is bounded by the builds
+        that exist and each step persists the mark, so this terminates -- the
+        first scan that cannot advance falls back to the interval.
+        """
         while not self.stop_event.is_set():
+            advanced = False
             try:
-                self._reconcile()
+                advanced = self._reconcile()
             except Exception:
+                # Treat a crashed scan as no progress: sleep before retrying
+                # rather than spinning on a reproducible failure.
                 logger.exception("LineageWatcher iteration failed")
 
-            time.sleep(self.monitoring_interval)
+            if advanced:
+                # Yield without waiting the interval, so stop() is still honored.
+                if self.stop_event.wait(0):
+                    return
+                continue
+            self.stop_event.wait(self.monitoring_interval)
 
-    def _reconcile(self) -> None:
+    def _reconcile(self) -> bool:
         """Run one reconciliation scan over the admin DB.
+
+        Returns whether the checkpoint advanced, i.e. whether this scan made
+        progress worth chasing immediately instead of sleeping the interval.
 
         Selects the checkpoint's build and everything created at or after it,
         reconciles each oldest-first, then advances the checkpoint contiguously
@@ -196,7 +225,7 @@ class LineageWatcher:
         """
         if self._store is None:
             logger.error("lineage store not initialized; start() must run first")
-            return
+            return False
         if self._recording_disabled:
             logger.critical(
                 "Lineage recording is disabled: the sink reported a failure no "
@@ -206,19 +235,35 @@ class LineageWatcher:
                 "watcher. Underlying error: %s",
                 self._disabled_reason,
             )
-            return
+            return False
+
+        # Heartbeat. An idle watcher is otherwise indistinguishable from a dead
+        # one: every path below returns without logging when there is nothing new,
+        # so a healthy scan over an up-to-date DB produced total silence. Logged
+        # before the reads so a scan that dies inside one still leaves a mark.
+        logger.info("Lineage scan: reading checkpoint and builds...")
 
         storage = get_admin_storage()
         checkpoint = self._read_checkpoint(storage)
         if checkpoint is None:
             # No checkpoint: recording is off until seeded. Return before selecting
             # builds or touching the sink.
-            return
+            return False
         anchor_build_id, anchor_created_time = checkpoint
 
         builds = select_builds_from_checkpoint(storage, anchor_created_time)
         if not builds:
-            return
+            logger.info(
+                "Lineage scan: no builds created at or after anchor %s; nothing to "
+                "record.",
+                anchor_build_id,
+            )
+            return False
+        logger.info(
+            "Lineage scan: %d build(s) selected from anchor %s.",
+            len(builds),
+            anchor_build_id,
+        )
 
         for build in builds:
             # A build already finished and confirmed cannot gain lineage, so skip
@@ -270,7 +315,10 @@ class LineageWatcher:
                         anchor_build_id,
                         failure,
                     )
-                return
+                # Not progress: the pass aborted and the mark stayed put. Sleeping
+                # before the retry is the point -- an immediate retry against a
+                # sink that just failed to answer is a hot loop.
+                return False
 
             if result.dropped:
                 # A build advanced past with knowingly-missing lineage. Logged at
@@ -289,51 +337,101 @@ class LineageWatcher:
             else:
                 self._complete_builds.discard(build.uuid)
 
-        self._advance_checkpoint(storage, anchor_build_id, builds)
+        advanced = self._advance_checkpoint(storage, anchor_build_id, builds)
+        if not advanced:
+            # The steady state once everything is recorded: the anchor is the
+            # newest build, so the mark has nowhere to step. Say so rather than
+            # returning in silence -- "held" is a healthy scan, and it reads
+            # identically to a stalled watcher without this line.
+            logger.info(
+                "Lineage scan: checkpoint held at %s; sleeping %.0fs.",
+                anchor_build_id,
+                self.monitoring_interval,
+            )
+        return advanced
 
     def _advance_checkpoint(
         self,
         storage: SingletonAdminStorage,
         anchor_build_id: str,
         builds: list[StoredBuild],
-    ) -> None:
-        """Move the checkpoint one build forward, if the next one is complete.
+    ) -> bool:
+        """Move the checkpoint to the build after the anchor, once the anchor is done.
 
-        One build per scan, deliberately. The mark walks the sequence step by step
-        — base -> next -> next — rather than jumping to the far end of a run of
-        already-complete builds. Both reach the same place eventually and neither
-        loses lineage (a build behind the mark was confirmed before the mark
-        passed it), but stepping keeps the durable mark closer to the work: a
-        process that dies mid-catch-up resumes one build back instead of redoing
-        the whole run.
+        Returns whether the mark moved. The caller uses that to decide between
+        stepping again immediately and sleeping the interval.
 
-        "Complete" is two conditions, and the *first* is what makes the walk safe:
-        a build still running must never be stepped over, because it can still
-        produce targets and the selection cutoff would then exclude it forever.
-        The second is that the sink has confirmed its lineage — a finished build
-        whose targets failed to record must not be passed either.
+        The condition is on the **anchor**, not on the build being moved to: the
+        mark leaves A only once A is finished and its lineage is confirmed in the
+        sink. Where it lands is simply the next build by creation order, whatever
+        its state — a running B becomes the new base, and the same condition then
+        governs the step off B. So the walk is A -> B -> C, one build per scan,
+        each step gated by the build it is leaving.
 
-        Note this bounds only the *mark*, not the recording: builds after an
-        unfinished one still have their lineage written on this same pass (see
-        ``_reconcile``). Only the checkpoint waits.
+        This is safe because the base stays in range: selection is "the checkpoint
+        build and everything created at or after it"
+        (``select_builds_from_checkpoint``), so a running base is re-reconciled
+        every scan and any target it produces later is still picked up. Nothing
+        falls out of the cutoff with lineage pending — the step off a build is what
+        requires that build to be finished and confirmed.
+
+        The mark therefore reads as "everything created strictly before this build
+        is confirmed in the sink"; the build it names may still be running.
+
+        Stepping one build per scan (rather than jumping to the far end of a run of
+        complete builds) keeps the durable mark close to the work: a process that
+        dies mid-catch-up resumes one build back instead of redoing the whole run.
+
+        Note this bounds only the *mark*, not the recording: builds after the base
+        still have their lineage written on this same pass (see ``_reconcile``).
+        Only the checkpoint waits.
 
         ``builds`` must be oldest-created-first, which is what
         ``select_builds_from_checkpoint`` returns.
         """
-        for build in builds:
-            if build.uuid == anchor_build_id:
-                # The anchor itself: already the mark, so it is not a candidate to
-                # move to. Skip rather than stop — the build to advance to is the
-                # one after it.
-                continue
-            if not build.status.is_finished():
-                return
-            if build.uuid not in self._complete_builds:
-                return
-            # First build past the anchor that is finished and confirmed. Take it
-            # and stop: the next scan takes the one after, and so on.
-            self._write_checkpoint(storage, build)
-            return
+        anchor_index = next(
+            (i for i, b in enumerate(builds) if b.uuid == anchor_build_id), None
+        )
+        anchor = builds[anchor_index] if anchor_index is not None else None
+        if anchor is None:
+            # No anchor row to gate on. Two very different reasons:
+            #
+            # The backfill sentinel names no build by construction, so it is never
+            # in the list. It resolves to a UTC_MIN cutoff, so leaving the mark on
+            # it re-selects the platform's whole history every scan -- it must be
+            # stepped off, and there is no anchor state to require. Move onto the
+            # oldest selected build unconditionally; the gate applies from there on.
+            #
+            # Otherwise the checkpoint names a build whose row is gone or
+            # unreadable. Nothing to reason about, and guessing could step over
+            # unrecorded lineage, so hold the mark and let an operator intervene.
+            if anchor_build_id != BACKFILL_BUILD_ID:
+                return False
+            return self._write_checkpoint(storage, builds[0])
+        # The gate: the mark may leave the anchor only once the anchor can no
+        # longer gain lineage and everything it has is in the sink. A running
+        # anchor, or one whose targets failed to record, holds the mark — stepping
+        # off it would put it behind the cutoff with lineage still missing and no
+        # later scan able to reach it.
+        if not anchor.status.is_finished():
+            return False
+        if anchor.uuid not in self._complete_builds:
+            return False
+        # Step to the build immediately after the anchor *in this order*, rather
+        # than to the first non-anchor entry. Builds created at virtually the same
+        # instant as the anchor have no defined order between them (see
+        # ``select_builds_from_checkpoint`` on the ``>=`` bound), so one can sort
+        # ahead of it; treating that as the destination would advance the mark past
+        # a build the new cutoff then excludes. Anything ahead of the anchor here
+        # is reconciled on this same pass either way -- it is only ineligible as a
+        # destination.
+        successors = builds[anchor_index + 1 :]
+        if not successors:
+            # The anchor is the newest build: complete, but nothing to move to yet.
+            return False
+        # Whatever its status: it becomes the new base and stays in range until it
+        # too is finished and confirmed.
+        return self._write_checkpoint(storage, successors[0])
 
     def _read_checkpoint_value(self, storage: SingletonAdminStorage) -> Optional[dict]:
         """Read the raw checkpoint value, or None when there is nothing usable.
@@ -456,8 +554,12 @@ class LineageWatcher:
 
     def _write_checkpoint(
         self, storage: SingletonAdminStorage, build: StoredBuild
-    ) -> None:
+    ) -> bool:
         """Persist ``build`` as the checkpoint anchor.
+
+        Returns whether the mark actually moved, which is what lets the loop
+        catch up without sleeping between steps. A swallowed failure below
+        returns False: the mark did not move, so there is no progress to chase.
 
         The timestamp is written verbatim from the build row rather than converted
         to UTC, so the checkpoint reads identically to the ``created_time`` it came
@@ -474,7 +576,7 @@ class LineageWatcher:
                 "anchor on.",
                 build.uuid,
             )
-            return
+            return False
         payload = {
             "build_id": build.uuid,
             "created_time": build.created_time.isoformat(),
@@ -488,12 +590,13 @@ class LineageWatcher:
                 "retried next scan.",
                 build.uuid,
             )
-            return
+            return False
         logger.info(
             "Lineage checkpoint advanced to build %s (created %s).",
             build.uuid,
             build.created_time,
         )
+        return True
 
     # pylint: disable=unused-argument  # build_id is part of the on_success contract
     def _on_record_success(self, build_id: str, target_id: str) -> None:

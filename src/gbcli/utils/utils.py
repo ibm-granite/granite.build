@@ -206,9 +206,20 @@ def generate_unique_id():
     return random_string
 
 
+def _parse_timestamp(date: str) -> datetime:
+    """Parse any timestamp spelling gbserver stores for a datetime column.
+
+    The same logical field reaches us in several forms: the JSON blob is
+    Pydantic-serialized ISO ("2026-08-21T10:00:00.123456+00:00" or a trailing
+    "Z"), while the indexed SQL column is SQLAlchemy's own DATETIME text
+    ("2026-08-21 10:00:00.123456+00:00" -- a space, no "T"). Accept all of
+    them rather than guessing a strptime pattern from the punctuation.
+    """
+    return datetime.fromisoformat(date.strip().replace("Z", "+00:00"))
+
+
 def humanize_iso_date(date: str) -> str:
-    format = "%Y-%m-%dT%H:%M:%S.%f%z" if "." in date else "%Y-%m-%dT%H:%M:%SZ"
-    parsed = datetime.strptime(date, format)
+    parsed = _parse_timestamp(date)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     time_interval = datetime.now(timezone.utc) - parsed
@@ -219,11 +230,7 @@ def humanize_iso_date(date: str) -> str:
 
 
 def datetime_to_string(date: str) -> str:
-    original_format = "%Y-%m-%dT%H:%M:%S.%f%z" if "." in date else "%Y-%m-%dT%H:%M:%S%z"
-    parsed_format = "%Y-%m-%d %H:%M:%S%z"
-    return datetime.strptime(date.replace("Z", "+0000"), original_format).strftime(
-        parsed_format
-    )
+    return _parse_timestamp(date).strftime("%Y-%m-%d %H:%M:%S%z")
 
 
 def epoch_to_iso_date(epoch):

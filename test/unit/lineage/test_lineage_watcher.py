@@ -325,12 +325,13 @@ class TestLineageWatcher:
 
     # ---- contiguous checkpoint advance ------------------------------------
 
-    def test_checkpoint_stays_at_a_running_build(self):
-        """A running build blocks the mark, but later builds still record.
+    def test_running_base_holds_the_mark_but_later_builds_still_record(self):
+        """The mark stops *on* a running build, and recording runs past it anyway.
 
+        A is complete, so the mark steps onto B; B is running, so it stays there.
         Recording and advancing are deliberately separate: C's lineage is written
-        immediately, while the mark waits so B cannot fall out of range while it can
-        still produce targets.
+        on this same pass, while the mark waits on B so B cannot fall out of range
+        while it can still produce targets.
         """
         watcher, store = self._make_watcher()
         _a, _b, _c = self._three_builds(middle_status=Status.RUNNING)
@@ -339,13 +340,18 @@ class TestLineageWatcher:
 
         recorded = {target_id for _build_id, target_id in store.calls}
         assert recorded == {"t-a", "t-b", "t-c"}
-        assert self._checkpoint_build() == "A"
+        assert self._checkpoint_build() == "B", "A is complete, so the mark leaves it"
 
-    def test_checkpoint_never_skips_a_non_finished_build(self):
-        """The advance stops at the first unfinished build, never jumping past it.
+        # B still runs, so a further scan must not step over it onto C.
+        watcher._reconcile()
+        assert self._checkpoint_build() == "B"
 
-        Jumping to C would move the cutoff beyond B, and since nothing sweeps behind
-        the anchor, B's remaining lineage would be lost for good.
+    def test_checkpoint_never_steps_off_a_non_finished_build(self):
+        """The mark never leaves a running build, never jumping past it to C.
+
+        This is the safety invariant of the walk. Moving the cutoff beyond B while
+        B can still produce targets would lose them for good: nothing sweeps behind
+        the anchor, so a target B emits after the mark passed it is unreachable.
         """
         watcher, _store = self._make_watcher()
         self._builds = [
@@ -354,11 +360,13 @@ class TestLineageWatcher:
             _build("C", _BASE + timedelta(minutes=2), Status.SUCCESS),
         ]
         self._targets = [_target("B", "t-b"), _target("C", "t-c")]
-        self._seed("A", _BASE)
+        self._seed("B", _BASE + timedelta(minutes=1))
 
-        watcher._reconcile()
+        # Many scans, so a slow drift past B would show up rather than hide.
+        for _ in range(5):
+            watcher._reconcile()
 
-        assert self._checkpoint_build() == "A"
+        assert self._checkpoint_build() == "B"
 
     def test_checkpoint_advances_one_build_per_pass(self):
         """The mark steps base -> next -> next, one build per scan.
@@ -369,15 +377,15 @@ class TestLineageWatcher:
         """
         watcher, _store = self._make_watcher()
         self._three_builds(middle_status=Status.RUNNING)
-        watcher._reconcile()
-        assert self._checkpoint_build() == "A", "a running build must hold the mark"
-
-        # B finishes, so the mark may now move -- but only to B this pass, even
-        # though C is finished and confirmed too.
-        self._builds[1].status = Status.SUCCESS
+        # A is complete, so the mark steps onto B -- and stops there, because B is
+        # running, even though C is finished and confirmed.
         watcher._reconcile()
         assert self._checkpoint_build() == "B"
+        watcher._reconcile()
+        assert self._checkpoint_build() == "B", "a running base must hold the mark"
 
+        # B finishes and its lineage is confirmed, so the mark may leave it.
+        self._builds[1].status = Status.SUCCESS
         watcher._reconcile()
         assert self._checkpoint_build() == "C"
 
@@ -385,18 +393,140 @@ class TestLineageWatcher:
         watcher._reconcile()
         assert self._checkpoint_build() == "C"
 
+    def test_loop_does_not_wait_the_interval_while_it_is_advancing(self):
+        """A scan that moved the mark is followed immediately by the next one.
+
+        This is the catch-up path: with one advance per scan, sleeping between
+        steps would stretch a backlog of N builds over N intervals.
+        """
+        watcher, _store = self._make_watcher()
+        watcher.monitoring_interval = 3600.0
+        waits: list[float] = []
+        # Three advances, then no more progress -- which must end the catch-up and
+        # fall back to the interval.
+        results = iter([True, True, True, False])
+
+        def _reconcile():
+            try:
+                return next(results)
+            except StopIteration:
+                watcher.stop_event.set()
+                return False
+
+        def _wait(timeout=None):
+            waits.append(timeout)
+            # Let the loop exit once it reaches the real interval wait.
+            if timeout == watcher.monitoring_interval:
+                watcher.stop_event.set()
+            return watcher.stop_event.is_set()
+
+        with (
+            patch.object(watcher, "_reconcile", side_effect=_reconcile),
+            patch.object(watcher.stop_event, "wait", side_effect=_wait),
+        ):
+            watcher._run()
+
+        assert waits[:3] == [0, 0, 0], "advancing scans must not wait the interval"
+        assert (
+            waits[3] == watcher.monitoring_interval
+        ), "the first scan with nothing to do falls back to the interval"
+
+    def test_loop_waits_the_interval_after_a_crashed_scan(self):
+        """A scan that raised is not progress: back off instead of hot-looping."""
+        watcher, _store = self._make_watcher()
+        watcher.monitoring_interval = 3600.0
+        waits: list[float] = []
+
+        def _wait(timeout=None):
+            waits.append(timeout)
+            watcher.stop_event.set()
+            return True
+
+        with (
+            patch.object(watcher, "_reconcile", side_effect=RuntimeError("boom")),
+            patch.object(watcher.stop_event, "wait", side_effect=_wait),
+        ):
+            watcher._run()
+
+        assert waits == [watcher.monitoring_interval]
+
+    def test_reconcile_reports_whether_the_mark_moved(self):
+        """The return value is what lets the loop catch up without sleeping.
+
+        One build per scan means a backlog of N builds needs N scans; if those
+        scans were spaced by the full monitoring interval, catching up would take
+        N intervals. ``_reconcile`` reporting "the mark moved" is what lets the
+        loop run the next scan immediately (see ``_run``).
+        """
+        watcher, _store = self._make_watcher()
+        self._three_builds(middle_status=Status.SUCCESS)
+
+        # Two advances available (A -> B -> C), then nothing left to move to.
+        assert watcher._reconcile() is True
+        assert watcher._reconcile() is True
+        assert watcher._reconcile() is False, "no advance left is not progress"
+
+    def test_a_blocked_advance_is_not_reported_as_progress(self):
+        """A running build holding the mark must not spin the loop.
+
+        The interval is the only thing pacing the watcher while it waits for a
+        build to finish, so "could not advance" has to read as no progress.
+        """
+        watcher, _store = self._make_watcher()
+        self._three_builds(middle_status=Status.RUNNING)
+
+        # The first scan does progress: A is complete, so the mark steps onto B.
+        assert watcher._reconcile() is True
+        # B is running, so there is nowhere to go. That must read as no progress,
+        # or the loop would spin instead of waiting for B to finish.
+        assert watcher._reconcile() is False
+
+    def test_advance_ignores_a_build_sorting_ahead_of_the_anchor(self):
+        """A same-instant build ordering before the anchor is not the destination.
+
+        ``created_time`` is stamped in Python, so two builds created in the same
+        instant have no defined order between them and one can sort ahead of the
+        anchor. Advancing onto it would move the mark *backwards* in the list and
+        put the anchor's successor behind the new cutoff.
+        """
+        watcher, _store = self._make_watcher()
+        # X shares A's timestamp and is returned before it; B is genuinely newer.
+        self._builds = [
+            _build("X", _BASE, Status.SUCCESS),
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("X", "t-x"), _target("A", "t-a"), _target("B", "t-b")]
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+
+        assert self._checkpoint_build() == "B", (
+            "the mark must step to the anchor's successor, not to a build "
+            "sorting ahead of it"
+        )
+
     def test_unconfirmed_finished_build_blocks_the_advance(self):
         """A finished build whose target failed to record does not move the mark.
 
-        Advancing past it would put it behind the cutoff with its lineage still
-        missing and no later scan able to reach it.
+        The gate is on the build being left: B is finished but its lineage never
+        reached the sink, so the mark stays on B. Stepping off would put it behind
+        the cutoff with its lineage still missing and no later scan able to reach
+        it -- the second half of the gate, alongside "still running".
         """
         watcher, _store = self._make_watcher(fail={"t-b"})
         self._three_builds(middle_status=Status.SUCCESS)
 
+        # A is complete, so the mark reaches B; B's target keeps failing, so it
+        # stays there rather than drifting onto C. Kept under
+        # ``_MAX_RECORD_ATTEMPTS`` scans: once the target is *dropped* the build
+        # counts as confirmed on purpose (a dropped target must not pin the mark
+        # forever), which is a different behaviour, covered elsewhere.
+        assert watcher._MAX_RECORD_ATTEMPTS > 2, "scan count below relies on this"
         watcher._reconcile()
-
-        assert self._checkpoint_build() == "A"
+        assert self._checkpoint_build() == "B"
+        watcher._reconcile()
+        assert self._checkpoint_build() == "B"
 
     def test_build_with_no_targets_still_advances_the_checkpoint(self):
         """A build that produced no recordable target is trivially complete.
