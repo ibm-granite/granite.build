@@ -105,7 +105,15 @@ class WandBLineageService(LineageService):
         run = getattr(wandb, "run", None)
         if run is None:
             return None
-        return run if getattr(run, "id", None) == run_id else None
+        try:
+            # ``Run.id`` is a decorated property, so reading it can raise more than
+            # AttributeError. This runs inside the caller's ``except`` block, ahead of
+            # a bare ``raise`` — letting anything escape here would mask the init
+            # error that is the real failure. Unreadable therefore means not-ours.
+            observed_id = run.id
+        except Exception:  # noqa: BLE001 — any failure to read the id means not-ours
+            return None
+        return run if observed_id == run_id else None
 
     @staticmethod
     def _finish_quietly(run: Any, run_id: str) -> None:

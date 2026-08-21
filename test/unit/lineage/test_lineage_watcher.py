@@ -393,6 +393,45 @@ class TestLineageWatcher:
 
         assert "build-c" not in watcher._allowed_build_ids
 
+    def test_refresh_queries_only_live_builds_server_side(self):
+        """The refresh must not read every build row to find the live ones.
+
+        ``get_by_where({})`` returns all builds ever, every scan, deserializing
+        months of history to find the few new-and-unfinished ones — partly
+        reinstating the full-table read the allowlist exists to avoid.
+
+        The stored form matters: ``BuildStorage._get_column_values`` persists
+        ``status.name`` (upper case) while ``Status`` is a ``StrEnum`` with lower-case
+        values, so querying with the members themselves silently matches nothing,
+        empties the allowlist and stops lineage for every new build.
+        """
+        watcher, _store = self._make_watcher()
+        watcher._allowlist_seeded = True
+        running = StoredBuild(
+            name="live", space_name="sp", source_uri="https://x", username="u"
+        )
+        running.status = Status.RUNNING
+        done = StoredBuild(
+            name="done", space_name="sp", source_uri="https://x", username="u"
+        )
+        done.status = Status.SUCCESS
+        self.storage.build_storage.get_by_where = MagicMock(
+            return_value=[running, done]
+        )
+
+        watcher._refresh_allowed_builds(self.storage)
+
+        (where,), _kwargs = self.storage.build_storage.get_by_where.call_args
+        assert where != {}, "the refresh must filter server-side, not read every row"
+        assert set(where) == {"status"}
+        # Exactly the complement of is_finished(), in the stored upper-case form.
+        assert set(where["status"]) == {s.name for s in Status if not s.is_finished()}
+        assert all(name.isupper() for name in where["status"])
+        # The filter must not cost the additions the refresh exists to make, and a
+        # build that finished between the query and the loop is still kept out.
+        assert running.uuid in watcher._allowed_build_ids
+        assert done.uuid not in watcher._allowed_build_ids
+
     def test_retirement_records_the_build_as_retired(self):
         """Retiring a build must mark it, not just drop it from the allowlist.
 

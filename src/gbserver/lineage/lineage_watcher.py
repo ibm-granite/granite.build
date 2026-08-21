@@ -36,9 +36,20 @@ from gbserver.lineage.lineage_reconciler import (
 from gbserver.lineage.lineage_seeding import BACKFILL_BUILD_ID
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
+from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# The statuses a build can hold while still live, as stored in the queryable
+# ``status`` column. Derived from ``is_finished()`` rather than listed by hand so a
+# new non-finished status cannot silently drop out of the allowlist refresh's query.
+#
+# ``BuildStorage._get_column_values`` stores ``status.name`` (upper case), while
+# ``Status`` is a ``StrEnum`` whose *values* are lower case — so the query must carry
+# the names. Passing the members themselves would match no row, silently emptying the
+# allowlist and stopping lineage for every new build.
+_LIVE_BUILD_STATUS_NAMES = sorted(s.name for s in Status if not s.is_finished())
 
 
 class LineageWatcher:
@@ -487,7 +498,13 @@ class LineageWatcher:
             # start bounding the scan by a set that has no floor behind it.
             return
         try:
-            live = storage.build_storage.get_by_where({})
+            # Filtered server-side: a dict ``where`` with a list value matches any one
+            # of them (an IN), so the read stays proportional to live concurrency
+            # instead of to all history. Reading every row and filtering here would
+            # partly reinstate the full-table scan this allowlist exists to avoid.
+            live = storage.build_storage.get_by_where(
+                {"status": _LIVE_BUILD_STATUS_NAMES}
+            )
         except (
             Exception
         ) as exc:  # noqa: BLE001 — a refresh failure must not stop the scan
@@ -505,8 +522,11 @@ class LineageWatcher:
         for build in live:
             if build.uuid in self._allowed_build_ids:
                 continue
-            # Also keeps retired builds out of this path without consulting
-            # _retired_build_ids: retirement requires is_finished().
+            # Redundant against the query above, kept as the authoritative check: a
+            # build can finish between the read and here, and this is what makes the
+            # rule hold regardless of how the rows were fetched. Also keeps retired
+            # builds out of this path without consulting _retired_build_ids, since
+            # retirement requires is_finished().
             if build.status.is_finished():
                 continue
             self._allowed_build_ids.add(build.uuid)
@@ -624,7 +644,9 @@ class LineageWatcher:
             candidates.append(build_id)
         for build_id in candidates:
             try:
-                confirmed, dropped = self._build_lineage_is_confirmed(storage, build_id)
+                confirmed, dropped, recordable = self._build_lineage_is_confirmed(
+                    storage, build_id
+                )
             except (
                 Exception
             ) as exc:  # noqa: BLE001 — retirement must never break the scan
@@ -663,18 +685,31 @@ class LineageWatcher:
                     LINEAGE_WATCHER_INCOMPLETE_KEY,
                     len(self._allowed_build_ids),
                 )
+            elif recordable == 0:
+                # No successful targets, so nothing was ever recordable and the sink
+                # was never asked. Saying its lineage "is recorded in the sink" would
+                # assert a recording that never happened — the usual reason to be
+                # here is a build that failed before any target succeeded.
+                logger.info(
+                    "Retired build %s from the lineage allowlist: finished with no "
+                    "successful targets, so it had no lineage to record. Allowlist "
+                    "now tracks %d build(s).",
+                    build_id,
+                    len(self._allowed_build_ids),
+                )
             else:
                 logger.info(
                     "Retired build %s from the lineage allowlist: finished, nothing "
-                    "pending, and its lineage is recorded in the sink. Allowlist now "
-                    "tracks %d build(s).",
+                    "pending, and its lineage for all %d target(s) is recorded in the "
+                    "sink. Allowlist now tracks %d build(s).",
                     build_id,
+                    recordable,
                     len(self._allowed_build_ids),
                 )
 
     def _build_lineage_is_confirmed(
         self, storage: SingletonAdminStorage, build_id: str
-    ) -> tuple[bool, set[str]]:
+    ) -> tuple[bool, set[str], int]:
         """Whether ``build_id`` has nothing pending and its lineage is in the sink.
 
         The last two of the three retirement conditions (the caller has already
@@ -682,13 +717,17 @@ class LineageWatcher:
         failure as "not confirmed" in one place: every path here either answers
         definitively or raises, and a raise must never mean "retire".
 
-        Returns ``(confirmed, dropped_target_ids)``. The second element is what
-        makes a retirement's completeness auditable: "confirmed" covers both
-        *recorded* and *deliberately dropped*, and only the caller can tell those
-        apart to record the gap. Empty means every target actually recorded.
+        Returns ``(confirmed, dropped_target_ids, recordable_count)``. The second
+        element is what makes a retirement's completeness auditable: "confirmed"
+        covers both *recorded* and *deliberately dropped*, and only the caller can
+        tell those apart to record the gap. Empty means every target actually
+        recorded. The third is how many targets were candidates at all, letting the
+        caller distinguish "everything recorded" from "there was nothing to record"
+        — a build with no successful targets is confirmed without the sink ever
+        being asked, so claiming its lineage landed there would be false.
         """
         if self._store is None:
-            return False, set()
+            return False, set(), 0
         # Re-select this build's successful targets to ask the sink about them.
         # Scoped to the one build and only reached for finished builds, so this is
         # not the unbounded walk `allowed_build_ids` exists to prevent.
@@ -697,7 +736,7 @@ class LineageWatcher:
         )
         if any(t.uuid in self._failed_attempts for t in targets):
             # Mid-retry: still owes work locally.
-            return False, set()
+            return False, set(), len(targets)
         dropped = {t.uuid for t in targets if t.uuid in self._dropped}
         pending = {t.uuid for t in targets if t.uuid not in self._dropped}
         if not pending:
@@ -705,7 +744,7 @@ class LineageWatcher:
             # deliberately dropped. Report the dropped ones so the caller can
             # record the gap — if `dropped` covers every target, this build's
             # lineage never landed at all.
-            return True, dropped
+            return True, dropped, len(targets)
         # A sink that fails to answer returns the full candidate set (fail-open),
         # which is indistinguishable from a real "none recorded" verdict.
         # Retirement is irreversible, so it must act only on a real answer: this
@@ -721,7 +760,7 @@ class LineageWatcher:
         unrecorded = self._store.filter_unrecorded(
             pending, expected, on_query_error=_note_failure
         )
-        return (not sink_failed and not unrecorded), dropped
+        return (not sink_failed and not unrecorded), dropped, len(targets)
 
     def _checkpoint_build_id(self, storage: SingletonAdminStorage) -> Optional[str]:
         """Return the checkpoint's ``build_id``, or ``None`` if unset/malformed.

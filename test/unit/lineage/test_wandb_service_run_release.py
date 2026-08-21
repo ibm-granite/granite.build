@@ -121,25 +121,54 @@ def test_init_failure_does_not_finish_an_unrelated_global_run():
     assert service._runs == {}
 
 
-def test_init_failure_ignores_a_global_run_with_no_readable_id():
+def _hide_id(run: MagicMock) -> None:
+    """Make the id missing entirely."""
+    del run.id
+
+
+def _break_id(run: MagicMock) -> None:
+    """Make reading the id raise, as a decorated property can.
+
+    Real wandb's ``Run.id`` is a property, so a read can fail with something other
+    than AttributeError — ``getattr(run, "id", None)`` only defaults on the latter.
+    """
+    type(run).id = property(
+        lambda _self: (_ for _ in ()).throw(AssertionError("id unavailable"))
+    )
+
+
+@pytest.mark.parametrize(
+    "make_unreadable", [_hide_id, _break_id], ids=["absent", "raises"]
+)
+def test_init_failure_ignores_a_global_run_with_no_readable_id(make_unreadable):
     """An unreadable id counts as not-ours: releasing the wrong run corrupts it.
 
     Failing to release ours only leaves the id in use until restart, so this is
-    the safer direction to fail in.
+    the safer direction to fail in. Unreadable covers both an id that is absent and
+    one whose read raises; the latter also must not escape, because this read happens
+    inside the init-failure handler ahead of the bare ``raise``, so an error here
+    would replace the init failure that is the real diagnostic.
     """
     service = _service()
-    anonymous = _make_run()
-    del anonymous.id
+    unreadable = _make_run()
+    make_unreadable(unreadable)
 
-    with (
-        patch.object(service, "_init_run", side_effect=RuntimeError("boom")),
-        patch("gbserver.lineage.wandb_service.wandb") as wandb_mod,
-    ):
-        wandb_mod.run = anonymous
-        with pytest.raises(RuntimeError):
-            service._get_run("run-1", "job-1")
+    try:
+        with (
+            patch.object(service, "_init_run", side_effect=RuntimeError("boom")),
+            patch("gbserver.lineage.wandb_service.wandb") as wandb_mod,
+        ):
+            wandb_mod.run = unreadable
+            # The original init error surfaces, not any error from the id read.
+            with pytest.raises(RuntimeError, match="boom"):
+                service._get_run("run-1", "job-1")
+    finally:
+        # Set on the type by _break_id, so it outlives this instance.
+        if "id" in vars(type(unreadable)):
+            del type(unreadable).id
 
-    anonymous.finish.assert_not_called()
+    unreadable.finish.assert_not_called()
+    assert service._runs == {}
 
 
 def test_init_failure_teardown_error_does_not_mask_original():
