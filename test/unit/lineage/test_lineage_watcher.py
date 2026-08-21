@@ -360,16 +360,29 @@ class TestLineageWatcher:
 
         assert self._checkpoint_build() == "A"
 
-    def test_checkpoint_advances_over_contiguous_finished_builds(self):
-        """Once the blocking build finishes, one pass walks the whole run."""
+    def test_checkpoint_advances_one_build_per_pass(self):
+        """The mark steps base -> next -> next, one build per scan.
+
+        Not a jump to the far end of an already-complete run: stepping keeps the
+        durable mark close to the work, so a process that dies mid-catch-up resumes
+        one build back instead of redoing the whole run.
+        """
         watcher, _store = self._make_watcher()
         self._three_builds(middle_status=Status.RUNNING)
         watcher._reconcile()
-        assert self._checkpoint_build() == "A"
+        assert self._checkpoint_build() == "A", "a running build must hold the mark"
 
+        # B finishes, so the mark may now move -- but only to B this pass, even
+        # though C is finished and confirmed too.
         self._builds[1].status = Status.SUCCESS
         watcher._reconcile()
+        assert self._checkpoint_build() == "B"
 
+        watcher._reconcile()
+        assert self._checkpoint_build() == "C"
+
+        # Nothing left to move to; the mark stays put rather than drifting.
+        watcher._reconcile()
         assert self._checkpoint_build() == "C"
 
     def test_unconfirmed_finished_build_blocks_the_advance(self):
@@ -444,7 +457,9 @@ class TestLineageWatcher:
 
         recorded = {target_id for _build_id, target_id in store.calls}
         assert recorded == {"t-a", "t-b", "t-c"}
-        assert self._checkpoint_build() == "C"
+        # All three recorded on the recovery pass, but the mark still advances one
+        # build at a time, so it lands on B rather than C.
+        assert self._checkpoint_build() == "B"
 
     def test_permanent_dedup_failure_disables_recording(self):
         """A failure no retry can clear switches recording off instead of looping.
@@ -604,6 +619,37 @@ class TestLineageWatcher:
         watcher._reconcile()
 
         assert ("A", "t-a") in store.calls
+
+    def test_backfill_anchor_is_replaced_by_a_real_build(self):
+        """The sentinel must be stepped off, not kept forever.
+
+        It resolves to a UTC_MIN cutoff, so a checkpoint left on it re-selects the
+        platform's whole history on every single scan. Advancing onto the first
+        complete build is what retires it. The sentinel names no build, so it is
+        never in the selected list -- the advance must not depend on finding it
+        there.
+        """
+        watcher, _store = self._make_watcher()
+        self._builds = [
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("A", "t-a"), _target("B", "t-b")]
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            {
+                "build_id": BACKFILL_BUILD_ID,
+                "created_time": datetime.min.replace(tzinfo=timezone.utc).isoformat(),
+                "version": LINEAGE_WATCHER_CHECKPOINT_VERSION,
+            },
+        )
+
+        watcher._reconcile()
+
+        assert self._checkpoint_build() == "A", (
+            "the backfill sentinel was not retired; every later scan would "
+            "re-select all history"
+        )
 
     def test_legacy_target_shaped_checkpoint_is_migrated(self):
         """A v1 value keeps its place and is rewritten build-shaped.

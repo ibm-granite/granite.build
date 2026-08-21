@@ -297,27 +297,43 @@ class LineageWatcher:
         anchor_build_id: str,
         builds: list[StoredBuild],
     ) -> None:
-        """Move the checkpoint over the leading run of complete builds.
+        """Move the checkpoint one build forward, if the next one is complete.
 
-        Contiguous by construction: the walk stops at the first build that is not
-        finished, or is finished but whose lineage the sink has not confirmed. A
-        build still running must never be stepped over — it can still produce
-        targets, and the selection cutoff would then exclude it permanently.
+        One build per scan, deliberately. The mark walks the sequence step by step
+        — base -> next -> next — rather than jumping to the far end of a run of
+        already-complete builds. Both reach the same place eventually and neither
+        loses lineage (a build behind the mark was confirmed before the mark
+        passed it), but stepping keeps the durable mark closer to the work: a
+        process that dies mid-catch-up resumes one build back instead of redoing
+        the whole run.
+
+        "Complete" is two conditions, and the *first* is what makes the walk safe:
+        a build still running must never be stepped over, because it can still
+        produce targets and the selection cutoff would then exclude it forever.
+        The second is that the sink has confirmed its lineage — a finished build
+        whose targets failed to record must not be passed either.
+
+        Note this bounds only the *mark*, not the recording: builds after an
+        unfinished one still have their lineage written on this same pass (see
+        ``_reconcile``). Only the checkpoint waits.
 
         ``builds`` must be oldest-created-first, which is what
         ``select_builds_from_checkpoint`` returns.
         """
-        new_anchor: Optional[StoredBuild] = None
         for build in builds:
+            if build.uuid == anchor_build_id:
+                # The anchor itself: already the mark, so it is not a candidate to
+                # move to. Skip rather than stop — the build to advance to is the
+                # one after it.
+                continue
             if not build.status.is_finished():
-                break
+                return
             if build.uuid not in self._complete_builds:
-                break
-            new_anchor = build
-
-        if new_anchor is None or new_anchor.uuid == anchor_build_id:
+                return
+            # First build past the anchor that is finished and confirmed. Take it
+            # and stop: the next scan takes the one after, and so on.
+            self._write_checkpoint(storage, build)
             return
-        self._write_checkpoint(storage, new_anchor)
 
     def _read_checkpoint_value(self, storage: SingletonAdminStorage) -> Optional[dict]:
         """Read the raw checkpoint value, or None when there is nothing usable.

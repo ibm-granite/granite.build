@@ -294,6 +294,79 @@ class TestSelectBuildsFromCheckpoint:
         assert [b.uuid for b in found] == ["a"]
 
 
+def _admin_storage_with_misordered_builds(builds: list[StoredBuild]) -> MagicMock:
+    """Stub whose build pages come back in a WRONG order, on purpose.
+
+    Reproduces what SQLite actually does to this column: it stores
+    DateTime(timezone=True) as TEXT and orders it as TEXT, and the column holds two
+    spellings ("2026-08-21 21:13:24.581351" from SQLAlchemy and
+    "2026-08-21T15:18:38.948Z" from older writers). ' ' sorts before 'T', so a
+    genuinely newer build can be returned *below* a much older one.
+
+    Returns the list exactly as given, so a test can hand over an order no correct
+    implementation may rely on.
+    """
+    storage = MagicMock()
+
+    def _get_by_where(where=None, query_control=None):
+        pagination = query_control.pagination
+        start = pagination.index * pagination.size
+        return builds[start : start + pagination.size]
+
+    storage.build_storage.get_by_where.side_effect = _get_by_where
+    return storage
+
+
+class TestBuildWalkDoesNotTrustTheOrdering:
+    """The walk must not stop early on the backend's ordering.
+
+    SQLite's text collation on this column interleaves rows whose real instants are
+    months apart, so an early return on "this row is behind the cutoff" can end the
+    walk before reaching genuinely newer builds -- reporting nothing to record while
+    real lineage sits unread. Silent data loss, not a slow scan.
+    """
+
+    def test_newer_build_after_an_older_one_is_still_found(self):
+        # Order deliberately wrong: the old row comes first, the new one after it.
+        old_build = _build("old", _BASE - timedelta(days=30))
+        new_build = _build("new", _BASE + timedelta(hours=1))
+        storage = _admin_storage_with_misordered_builds([old_build, new_build])
+
+        found = select_builds_from_checkpoint(storage, _BASE)
+
+        assert [b.uuid for b in found] == ["new"], (
+            "the walk stopped at the out-of-order old row and never reached the "
+            "newer build"
+        )
+
+    def test_result_is_sorted_by_real_instant_not_by_arrival(self):
+        """The caller's contiguous advance needs true chronological order."""
+        b_mid = _build("mid", _BASE + timedelta(minutes=2))
+        b_first = _build("first", _BASE)
+        b_last = _build("last", _BASE + timedelta(minutes=5))
+        storage = _admin_storage_with_misordered_builds([b_mid, b_first, b_last])
+
+        found = select_builds_from_checkpoint(storage, _BASE)
+
+        assert [b.uuid for b in found] == ["first", "mid", "last"]
+
+    def test_most_recent_build_is_the_true_maximum(self):
+        """Seeding must anchor at the real newest build, not the first row seen.
+
+        Anchoring at an arbitrary older build would silently re-drive history from
+        there.
+        """
+        storage = _admin_storage_with_misordered_builds(
+            [
+                _build("looks-first", _BASE),
+                _build("actually-newest", _BASE + timedelta(days=1)),
+                _build("older", _BASE - timedelta(days=1)),
+            ]
+        )
+
+        assert get_most_recent_build(storage).uuid == "actually-newest"
+
+
 class TestGetMostRecentBuild:
     def test_returns_the_newest_build(self):
         storage = _admin_storage_with_builds(

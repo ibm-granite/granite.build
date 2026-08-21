@@ -321,38 +321,69 @@ def select_builds_from_checkpoint(
                 # not truncate the scan.
                 continue
             if as_aware(build.created_time) < cutoff:
-                # Sorted newest-created-first, so everything past this row is
-                # older too.
-                logger.debug(
-                    "Lineage build walk stopped at build %s (created %s): older "
-                    "than the %s cutoff. Holding %d build(s).",
-                    build.uuid,
-                    build.created_time,
-                    cutoff,
-                    len(selected),
-                )
-                return sorted(selected, key=lambda b: as_aware(b.created_time))
+                # Behind the cutoff: skip the row, but keep walking. Deliberately
+                # NOT an early return, even though the query asks for
+                # newest-created-first and a trustworthy ordering would make
+                # everything past this row older too.
+                #
+                # The ordering cannot be trusted. SQLite stores
+                # DateTime(timezone=True) as TEXT and orders it as TEXT, and this
+                # column has been written in two different spellings over time:
+                # SQLAlchemy's own "YYYY-MM-DD HH:MM:SS.ffffff" and an ISO
+                # "YYYY-MM-DDTHH:MM:SS.mmmZ" form. ' ' (0x20) sorts before 'T'
+                # (0x54), so with both present the sort interleaves rows whose real
+                # instants are months apart -- a genuinely newer build can appear
+                # below an older one. An early return there stops the walk before
+                # reaching it and reports "nothing to record" while real builds sit
+                # unread, which is silent data loss rather than a slow scan.
+                #
+                # The cost is reading every page instead of stopping early. That is
+                # the right trade for a table with one row per build: correctness
+                # cannot rest on the backend's collation matching our comparison.
+                continue
             if build.uuid in skip:
                 continue
             selected.append(build)
         if len(page) < _BUILD_SCAN_PAGE_SIZE:
             break
         page_index += 1
+    # Sorted here, on aware instants, so the caller's contiguous walk is ordered by
+    # real time regardless of how the backend collated the text.
     return sorted(selected, key=lambda b: as_aware(b.created_time))
 
 
 def get_most_recent_build(storage: SingletonAdminStorage) -> Optional[StoredBuild]:
     """Return the newest build by ``created_time``, or None if there are none.
 
-    Used by seeding to anchor "start from the latest build". Reads only the first
-    page, since the query is already ordered newest-first; a NULL ``created_time``
-    row is skipped rather than returned, so the anchor always has a usable
+    Used by seeding to anchor "start from the latest build".
+
+    Pages through every build and takes the maximum by aware instant rather than
+    trusting the query's ordering to put the newest first. Same reason as
+    ``select_builds_from_checkpoint``: SQLite orders this column as TEXT and the
+    column holds two different spellings, so the first row of page 0 is not
+    reliably the newest. Getting this wrong would anchor the checkpoint at an
+    arbitrary older build and silently re-drive history from there.
+
+    A NULL ``created_time`` row is skipped, so the anchor always has a usable
     timestamp.
     """
-    for build in _builds_page(storage, 0):
-        if build.created_time is not None:
-            return build
-    return None
+    newest: Optional[StoredBuild] = None
+    page_index = 0
+    while True:
+        page = _builds_page(storage, page_index)
+        if not page:
+            break
+        for build in page:
+            if build.created_time is None:
+                continue
+            if newest is None or as_aware(build.created_time) > as_aware(
+                newest.created_time
+            ):
+                newest = build
+        if len(page) < _BUILD_SCAN_PAGE_SIZE:
+            break
+        page_index += 1
+    return newest
 
 
 def local_tzinfo() -> Optional[tzinfo]:
