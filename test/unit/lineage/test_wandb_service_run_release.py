@@ -47,12 +47,15 @@ def _event(event_type: str = "START") -> dict:
     }
 
 
-def _make_run() -> MagicMock:
+def _make_run(run_id: str = "run-1") -> MagicMock:
     run = MagicMock()
     run.settings = SimpleNamespace(mode="online")
     run.tags = []
     run.config = MagicMock()
     run.summary = {}
+    # A real run carries its id, and the init-failure path matches on it to tell
+    # *this* call's partial run from an unrelated one parked on wandb.run.
+    run.id = run_id
     return run
 
 
@@ -93,6 +96,50 @@ def test_init_failure_with_no_partial_run_is_a_clean_reraise():
             service._get_run("run-1", "job-1")
 
     assert service._runs == {}
+
+
+def test_init_failure_does_not_finish_an_unrelated_global_run():
+    """A run on wandb.run that is not ours must be left alone.
+
+    ``wandb.run`` is a module global. The cleanup used to finish whatever sat
+    there with ``exit_code=1``, so a failed init for one id would corrupt an
+    unrelated run that happened to be open — marking a healthy run failed. Only
+    the id we tried to open may be released.
+    """
+    service = _service()
+    stranger = _make_run("someone-elses-run")
+
+    with (
+        patch.object(service, "_init_run", side_effect=RuntimeError("boom")),
+        patch("gbserver.lineage.wandb_service.wandb") as wandb_mod,
+    ):
+        wandb_mod.run = stranger
+        with pytest.raises(RuntimeError):
+            service._get_run("run-1", "job-1")
+
+    stranger.finish.assert_not_called()
+    assert service._runs == {}
+
+
+def test_init_failure_ignores_a_global_run_with_no_readable_id():
+    """An unreadable id counts as not-ours: releasing the wrong run corrupts it.
+
+    Failing to release ours only leaves the id in use until restart, so this is
+    the safer direction to fail in.
+    """
+    service = _service()
+    anonymous = _make_run()
+    del anonymous.id
+
+    with (
+        patch.object(service, "_init_run", side_effect=RuntimeError("boom")),
+        patch("gbserver.lineage.wandb_service.wandb") as wandb_mod,
+    ):
+        wandb_mod.run = anonymous
+        with pytest.raises(RuntimeError):
+            service._get_run("run-1", "job-1")
+
+    anonymous.finish.assert_not_called()
 
 
 def test_init_failure_teardown_error_does_not_mask_original():

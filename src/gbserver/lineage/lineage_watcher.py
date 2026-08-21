@@ -25,6 +25,7 @@ from gbserver.lineage.jobstats import ILineageStore, get_lineage_store
 from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_CHECKPOINT_KEY,
     LINEAGE_WATCHER_DROPPED_KEY,
+    LINEAGE_WATCHER_INCOMPLETE_KEY,
     UTC_MIN,
     as_aware,
     expected_run_count,
@@ -43,95 +44,49 @@ logger = get_logger(__name__)
 class LineageWatcher:
     """Async background thread that reconciles lineage from the admin DB.
 
-    Runs a single background daemon thread that periodically calls
-    ``reconcile_once`` (see ``lineage_reconciler``), which scans the admin DB for
-    successful target runs and records their lineage into the configured store,
-    off the build's hot path.
+    A single daemon thread periodically calls ``reconcile_once`` (see
+    ``lineage_reconciler``), which scans the admin DB for successful target runs and
+    records their lineage into the configured store, off the build's hot path.
 
-    Reconciliation — not the event stream — is the authoritative mechanism: the
-    admin DB persists the complete lineage graph, so the full lineage is
-    recoverable by re-reading it alone. Because each scan re-derives the
-    recordable set from the DB, a target that succeeded while this process was
-    down is picked up on the next scan; there is no restart blind spot. Recording
-    is idempotent (deterministic runIds + resume="allow" + content-dedupe), so a
-    re-recorded target is a harmless backend no-op.
+    Reconciliation — not the event stream — is authoritative: the admin DB persists
+    the complete lineage graph, so full lineage is recoverable by re-reading it
+    alone. Each scan re-derives the recordable set from the DB, so a target that
+    succeeded while this process was down is picked up next scan; there is no restart
+    blind spot. Recording is idempotent (deterministic runIds + resume="allow" +
+    content-dedupe), making a re-record a harmless no-op.
 
-    Single-writer guarantee: the watcher is deployed as its own single-replica
-    ``lineage-watch`` command/pod (see ``command_lineage_watch.py`` and
-    ``dep-lineage-watcher.yaml``), so exactly one process reconciles lineage. It
-    must not be wired into any other entrypoint. Even if that were violated,
-    idempotent recording means a duplicate watcher would waste I/O but not
-    corrupt lineage.
+    Single-writer: deployed as its own single-replica ``lineage-watch`` command/pod
+    (see ``command_lineage_watch.py``, ``dep-lineage-watcher.yaml``), so exactly one
+    process reconciles lineage; it must not be wired into another entrypoint. Even
+    violated, idempotent recording means a duplicate wastes I/O without corrupting.
 
-    Steady state keeps per-scan work bounded with a ``finished_at`` checkpoint,
-    but does not query straight from it: each scan bounds its walk at the
-    *anchor* row — the checkpoint build's oldest successful target — so a target
-    whose row surfaced behind the checkpoint is still reached (see
-    ``_reconcile``). The checkpoint lives solely in the ``gb_kv_pairs`` key (see
-    ``lineage_reconciler.LINEAGE_WATCHER_CHECKPOINT_KEY``), rewritten after each
-    individually-recorded target and re-read at the top of every scan — so a
-    restart resumes from the last successfully-recorded target rather than
-    rescanning the whole admin DB, and a key seeded or corrected while the
-    watcher runs takes effect on the next scan.
+    How a scan is bounded, in two independent ways — each documented in full at
+    its own site:
 
-    The checkpoint is never created implicitly: with no checkpoint the watcher
-    records *nothing* and every scan is a no-op until the key is seeded
-    explicitly (see ``gbserver lineage-watch --base-build-id``). Choosing where
-    centralized recording begins — "from now", from a given build, or the full
-    history — is the operator's call, so a fresh deployment stays silent rather
-    than picking a starting point on its own. When the checkpoint does exist,
-    ``start()`` verifies its build against the store's own recorded-state
-    (``filter_unrecorded``, via a build-scoped ``reconcile_once``) and re-records
-    what is missing, closing any gap left by a crash between recording
-    and persisting the checkpoint (or vice versa). That sweep is scoped to one
-    build, though, so the general safety net is the scan's *anchor*: each scan
-    bounds its walk by the checkpoint build's oldest successful target rather than
-    by a timestamp, and because the query filters on status alone the sweep back to
-    that row re-surfaces the straggling targets of other builds, not just the
-    checkpoint's. Idempotent recording makes the re-reads harmless. See
-    ``_reconcile`` for why a row anchor and not a time window, and for the residual
-    gap it does not close.
+    - *How far back*: not the ``finished_at`` checkpoint directly but the *anchor* row
+      it names (the checkpoint build's oldest successful target), so a row that
+      surfaced behind the watermark is still reached. The checkpoint lives solely in
+      ``LINEAGE_WATCHER_CHECKPOINT_KEY``, rewritten per recorded target and re-read
+      each scan. Never created implicitly — an unseeded watcher records *nothing*,
+      leaving the operator to choose where recording begins (``--base-build-id``).
+      See ``_reconcile``, ``_verify_checkpoint``.
+    - *Which builds*: an in-memory allowlist floored at the checkpoint build. Without
+      it an anchor at a recent build still selects every older build's targets behind
+      it — hundreds of unrelated candidates per scan on a deployment with history, and
+      a re-record storm of that size the first time the sink fails to answer. See
+      ``_refresh_allowed_builds``, ``_admit_builds_in_anchored_range``,
+      ``_retire_finished_builds``.
 
-    That sweep is bounded by *which* builds it may record for, not only by how far
-    back it reaches: the watcher tracks an in-memory allowlist of builds — the
-    checkpoint build as a permanent floor, plus every build seen since or found
-    inside the anchored range — and the scan records only for those. Without it an
-    anchor at a recent build still selects every older build's targets behind it,
-    which on a deployment with history means hundreds of unrelated candidates per
-    scan, and a re-record storm of exactly that size the first time the sink fails
-    to answer. Builds older than the floor are ignored for the life of the
-    process. See ``_refresh_allowed_builds``,
-    ``_admit_builds_in_anchored_range`` and ``_retire_finished_builds``.
+    Which selected targets get recorded is decided per-sink by
+    ``store.filter_unrecorded``: the watermark is sink-neutral and each sink owns its
+    recorded-state, so one admin DB can feed W&B and other sinks independently.
 
-    Which of those newly-finished targets actually get recorded is decided
-    per-sink by ``store.filter_unrecorded`` (see ``reconcile_once``): the time
-    watermark is sink-neutral, and each sink owns its own recorded-state, so the
-    same admin DB can feed W&B and other sinks independently.
-
-    A target whose recording raises is retried on the next scan: the checkpoint
-    stops advancing at the failed target for the remainder of that pass (even
-    though newer targets in the same pass may still record), so the durable
-    watermark never moves past unrecorded lineage and the failed target is
-    re-surfaced by the next scan — including after a restart, which is what makes
-    retry survive process death rather than depending on in-memory state. A
-    target that keeps failing is dropped after ``_MAX_RECORD_ATTEMPTS`` (into
-    ``_dropped``, passed as ``skip``) so a persistent failure cannot wedge later
-    scans or hold the checkpoint back forever. That drop set is itself persisted
-    to ``gb_kv_pairs`` (``LINEAGE_WATCHER_DROPPED_KEY``) and reloaded by
-    ``start()``: because the checkpoint deliberately refuses to advance past an
-    unrecorded target, an in-memory-only drop set would let a dropped target
-    return after a restart, block the watermark, exhaust its attempts again, and
-    repeat on every restart — permanently wedging all newer lineage behind a
-    target that is never going to record. Dropping is a terminal decision, so it
-    is durable; the per-target attempt *counts* stay in memory, since a restart
-    may legitimately retry from zero.
-
-    One class of failure skips the retry budget entirely: a sink rejection that no
-    retry can clear, namely a run id the sink has seen created and deleted and
-    will not accept again. Run ids are deterministic (that is what makes
-    re-recording idempotent), so there is no new id to try and every attempt is a
-    guaranteed failure that also holds the checkpoint back. Such a target is
-    dropped on first sighting — see ``_is_permanent_sink_rejection``.
+    Failures retry on later scans and the checkpoint stops advancing at the failed
+    target, so the durable watermark never moves past unrecorded lineage, restarts
+    included. A target that keeps failing is dropped durably
+    (``LINEAGE_WATCHER_DROPPED_KEY``); one whose run id the sink permanently rejected
+    is dropped on first sighting, since deterministic ids leave no new id to try. See
+    ``_on_record_error``, ``_is_permanent_sink_rejection``.
     """
 
     # A target whose lineage recording keeps failing is retried this many times
@@ -164,52 +119,45 @@ class LineageWatcher:
         self.stop_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
         self._store: Optional[ILineageStore] = None
-        # Target uuids dropped after exhausting retries; skipped on later scans
-        # so a persistently failing target cannot wedge every scan. Loaded from
-        # (and persisted to) gb_kv_pairs, because the checkpoint refuses to advance
-        # past an unrecorded target: an in-memory-only drop set would let a
-        # dropped target return after a restart and block the watermark forever.
+        # Target uuids dropped after exhausting retries; skipped on later scans so a
+        # persistently failing target cannot wedge every scan. Persisted to
+        # gb_kv_pairs because the checkpoint refuses to advance past an unrecorded
+        # target: an in-memory-only drop set would let a dropped target return after a
+        # restart and block the watermark forever.
         self._dropped: set[str] = set()
-        # target_uuid -> attempts so far, for targets whose recording failed and
-        # should be retried on a subsequent scan.
+        # target_uuid -> attempts so far, for targets to retry on a later scan.
         self._failed_attempts: dict[str, int] = {}
         # Builds whose targets this watcher may record for: the checkpoint build
-        # (the floor) plus every build seen since, minus those retired by
-        # _retire_finished_builds. Passed to reconcile_once as
-        # `allowed_build_ids`, and the reason an anchored retreat cannot wander
-        # into unrelated history (see select_recordable_targets).
+        # (the floor) plus every build seen since, minus those retired. Passed to
+        # reconcile_once as `allowed_build_ids` — the reason an anchored retreat
+        # cannot wander into unrelated history.
         #
-        # Deliberately in-memory and NOT persisted: it is a working set, and the
-        # floor makes it reconstructible — a restart reseeds from the durable
-        # checkpoint and re-adds whatever is still live. Persisting it would add
-        # an unbounded value to gb_kv_pairs for no recoverable state.
-        #
-        # Safe across restarts only because the checkpoint never advances past an
-        # unrecorded target (see _on_checkpoint_advance and reconcile_once's
-        # contiguity rule). A mark that outran pending work would leave the
-        # regenerated set unable to reach it, since the walk starts at the floor.
+        # NOT persisted: a working set the floor makes reconstructible, so a restart
+        # reseeds from the checkpoint and re-adds whatever is live; persisting would
+        # add an unbounded gb_kv_pairs value for no recoverable state. Safe across
+        # restarts only because the checkpoint never advances past an unrecorded
+        # target — a mark that outran pending work would leave the regenerated set
+        # unable to reach it, since the walk starts at the floor.
         self._allowed_build_ids: set[str] = set()
-        # Whether the floor has been seeded into _allowed_build_ids. Seeding
-        # needs a checkpoint, which may not exist yet at start(), so like
-        # _checkpoint_verified this is retried at the top of each scan.
+        # Builds retired by _retire_finished_builds. Discarding from
+        # _allowed_build_ids is not enough: anchored-range admission keys off
+        # absence from that set, so a retired build would match its "not yet
+        # tracked" test and return on the next scan. In-memory like the allowlist
+        # — a restart re-derives it from the sink.
+        self._retired_build_ids: set[str] = set()
+        # Whether the floor has been seeded into _allowed_build_ids. Needs a
+        # checkpoint, which may not exist at start(), so retried each scan.
         self._allowlist_seeded = False
-        # Whether the start-up verification sweep has run against a checkpoint.
-        # It cannot run while the key is absent, so it stays pending and is
-        # retried at the top of each scan until a checkpoint is seeded — a
-        # watcher started before seeding must still get the sweep, otherwise the
-        # unrecorded targets behind the seeded watermark would have no path back
-        # until the next restart. Latches on the first True and is never cleared:
-        # the sweep repairs a crash gap in the checkpoint this process started
-        # from, which a later checkpoint does not reintroduce (see
-        # _verify_checkpoint).
+        # Whether the start-up verification sweep has run. It cannot run while the
+        # key is absent, so it is retried each scan until one is seeded — a watcher
+        # started before seeding must still get the sweep, or targets behind the
+        # seeded watermark have no path back until the next restart. Latches on the
+        # first True and is never cleared (see _verify_checkpoint).
         self._checkpoint_verified = False
-        # Whether the "no checkpoint yet" notice has been logged. The check runs
-        # every scan, so without this the message would repeat forever at the
-        # monitoring interval; it is a one-time operator notice, not a per-scan
-        # event. Reset once a checkpoint is seen — defensive only: nothing in the
-        # codebase deletes the key (seeding either keeps or overwrites it, see
-        # seed_if_absent), so the absent -> present -> absent cycle this reset
-        # covers is not a path any caller can currently drive.
+        # Whether the "no checkpoint yet" notice has been logged, so a one-time
+        # operator notice does not repeat every scan forever. Reset once a
+        # checkpoint is seen — defensive only: nothing deletes the key, so the
+        # absent -> present -> absent cycle is not currently reachable.
         self._missing_checkpoint_logged = False
 
     def start(self) -> None:
@@ -250,39 +198,60 @@ class LineageWatcher:
             LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": sorted(self._dropped)}
         )
 
+    def _record_incomplete_build(
+        self, storage: SingletonAdminStorage, build_id: str, dropped: set[str]
+    ) -> None:
+        """Record that ``build_id`` was retired with some lineage never recorded.
+
+        Retiring such a build is deliberate — a run deleted from wandb cannot be
+        regenerated, so retaining it would pin the build forever for lineage that can
+        never land. This adds the audit trail: the drop is already logged at ERROR,
+        but logs rotate and "was this build's lineage complete?" is asked long after.
+        Read back from ``LINEAGE_WATCHER_INCOMPLETE_KEY``.
+
+        Read-modify-write on one key, safe only because a single watcher thread
+        retires builds. Failures are swallowed — this runs inside retirement, itself
+        a post-scan optimization, so losing the entry must never abort a scan whose
+        recording succeeded; the original ERROR line remains either way.
+        """
+        try:
+            value = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_INCOMPLETE_KEY)
+            builds = dict((value or {}).get("builds", {}))
+            builds[build_id] = {
+                "target_ids": sorted(dropped),
+                "retired_at": datetime.now(timezone.utc).isoformat(),
+            }
+            storage.kv_pair_storage.set_value(
+                LINEAGE_WATCHER_INCOMPLETE_KEY, {"builds": builds}
+            )
+        except Exception as exc:  # noqa: BLE001 — audit write must not break a scan
+            logger.warning(
+                "Could not record build %s as having incomplete lineage (%s); its "
+                "%d dropped target(s) are still in the ERROR log above.",
+                build_id,
+                exc,
+                len(dropped),
+            )
+
     def _verify_checkpoint(self, storage: SingletonAdminStorage) -> bool:
         """Re-record any unrecorded target in the checkpoint's own build.
 
-        Runs once against the checkpoint: at ``start()`` when the key is already
-        seeded, otherwise at the first scan that finds one. Returns ``True`` when
-        the sweep is done with (including the malformed-checkpoint case, which no
-        amount of retrying fixes) and ``False`` while it is still pending because
-        no checkpoint exists yet.
+        Runs once: at ``start()`` when the key is already seeded, otherwise at the
+        first scan that finds one. ``True`` means done with (including the malformed
+        case, which retrying cannot fix), ``False`` still pending for want of a
+        checkpoint.
 
-        Once it returns ``True`` the caller latches ``_checkpoint_verified`` and
-        this never runs again for the process's lifetime — deliberately, and it is
-        not a recovery gap. The sweep exists to close a *crash* gap (below), which
-        is a property of the checkpoint the process started from, not something a
-        later checkpoint reintroduces: a ``--force-build-id`` overwrite resolves a
-        fresh anchor from a chosen build, so there is no interrupted
-        record-then-persist to repair, and re-sweeping would re-drive that build
-        for nothing. There is likewise no delete-then-reseed cycle to handle,
-        since no code path removes the key.
+        On ``True`` the caller latches ``_checkpoint_verified`` and this never runs
+        again — deliberately, not a recovery gap. It closes the gap left by a crash
+        between recording a target and persisting its checkpoint (or vice versa),
+        where the checkpoint may name a target whose lineage never reached the sink
+        and the scan, starting *at* that watermark, would not re-surface its build.
+        That is a property of the checkpoint this process started from: a
+        ``--force-build-id`` overwrite resolves a fresh anchor with nothing to
+        repair, and no code path deletes the key.
 
-        This closes the gap left by a crash between
-        recording a target and persisting its checkpoint (or vice versa): the
-        checkpoint may name a target whose lineage never reached the sink, and
-        the steady-state scan — which starts *at* that watermark — would not
-        re-surface everything in its build.
-
-        The checkpoint is never created here, or anywhere else implicitly. When
-        ``LINEAGE_WATCHER_CHECKPOINT_KEY`` is absent this defers (and so does
-        every scan) until the key is seeded explicitly (see
-        ``gbserver lineage-watch --base-build-id``). Auto-seeding it from the
-        newest successful target would silently pick a starting point for the
-        operator; deciding where centralized recording begins — "from now", from
-        a chosen build, or the full history — belongs to whoever seeds it, not to
-        whichever process happens to start first.
+        The checkpoint is never created here or anywhere else implicitly: when the
+        key is absent this defers, as does every scan (see the class docstring).
         """
         checkpoint = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
         if checkpoint is None:
@@ -313,27 +282,17 @@ class LineageWatcher:
             )
             return True
 
-        # Verify/re-record via reconcile_once — the same central selector the
-        # steady-state scan uses — scoped to the checkpoint's own build, so the
-        # per-sink filter_unrecorded check, expected-run-count derivation and
-        # prerun-skip handling are shared rather than reimplemented here.
+        # Via reconcile_once, scoped to the checkpoint's build, so
+        # filter_unrecorded, expected-run-count derivation and prerun-skip handling
+        # are shared rather than reimplemented.
         #
-        # Failures are recorded and swallowed rather than aborting start(): the
-        # checkpoint is already durable, so nothing is lost by continuing, and a
-        # watcher that refused to start would record nothing at all. Note what
-        # each kind of failure costs, though. A target at or after the scan's
-        # anchor is re-surfaced by the very next scan. A target further back than
-        # the anchor is NOT — the steady-state scan stops at that row and never
-        # looks behind it, so this start()-time
-        # sweep is its only path back, and a failure here defers it to the next
-        # start(). That is the gap this call exists to close, so its failures are
-        # worth reading in the log even though they are non-fatal.
-        #
-        # Failures route through the same ``_on_record_error`` bookkeeping the
-        # steady-state scan uses, not a log-only callback. A target that fails
-        # this sweep is one the sweep is the *only* path back for, so it must be
-        # able to exhaust ``_MAX_RECORD_ATTEMPTS`` and be dropped durably;
-        # otherwise a permanently-unrecordable target behind the watermark blocks
+        # Failures are swallowed rather than aborting start() (the checkpoint is
+        # already durable, and a watcher that refused to start would record
+        # nothing), but they cost differently: a target at or after the anchor is
+        # re-surfaced by the next scan, one further back is NOT, so this sweep is
+        # its only path back. They route through the same _on_record_error
+        # bookkeeping, not a log-only callback, so such a target can still exhaust
+        # _MAX_RECORD_ATTEMPTS and be dropped durably — otherwise it blocks
         # checkpoint advancement for this build on every restart, forever.
         def _on_error(build_id: str, target_id: str, exc: Exception) -> None:
             self._on_record_error(storage, build_id, target_id, exc)
@@ -379,61 +338,47 @@ class LineageWatcher:
     def _reconcile(self) -> None:
         """Run one reconciliation scan over the admin DB.
 
-        Delegates target selection and recording to ``reconcile_once`` (the
-        central mechanism), bounding the walk at the anchor row derived from the
-        checkpoint so a scan reads only the targets above it.
+        Delegates selection and recording to ``reconcile_once``, bounding the walk
+        at the anchor row derived from the checkpoint.
 
-        The checkpoint is read from ``gb_kv_pairs`` on every scan
-        rather than cached in memory: the checkpoint is the single source of
-        truth, and re-reading it means a key seeded (or corrected) while the
-        watcher is running takes effect on the next scan instead of at the next
-        restart. A missing key is a no-op — "record nothing" until it is seeded
-        — and must never fall back to scanning the whole admin DB, which would
-        turn an unseeded deployment into a full historical backfill.
+        The checkpoint is re-read every scan rather than cached: it is the single
+        source of truth, so a key seeded or corrected mid-run takes effect on the
+        next scan instead of the next restart. A missing key is a no-op — "record
+        nothing" until seeded — and must never fall back to scanning the whole admin
+        DB, which would turn an unseeded deployment into a full backfill.
 
-        Recording failures are routed to ``_on_record_error`` to drive the
-        bounded per-target retry. The checkpoint is persisted immediately after
-        each individually-recorded target (``_on_checkpoint_advance``) rather
-        than once at the end of the scan, so a mid-scan crash leaves it at the
-        last target actually recorded.
+        Failures route to ``_on_record_error`` for the bounded per-target retry. The
+        checkpoint is persisted after each individually-recorded target, not once at
+        the end, so a mid-scan crash leaves it at the last target recorded.
         """
         if self._store is None:
             logger.error("lineage store not initialized; start() must run first")
             return
         storage = get_admin_storage()
         if not self._checkpoint_verified:
-            # A checkpoint seeded after start() still needs the verification
-            # sweep, and only this retry can give it one: the steady-state scan
-            # below stops at the anchor row and never looks behind it, so
-            # unrecorded targets that finished before the checkpoint build's
-            # oldest one would otherwise wait for a restart.
+            # A checkpoint seeded after start() still needs the sweep, and only this
+            # retry can give it one: the scan below stops at the anchor row and never
+            # looks behind it, so targets that finished before the checkpoint build's
+            # oldest would otherwise wait for a restart.
             self._checkpoint_verified = self._verify_checkpoint(storage)
         watermark = self._checkpoint_watermark(storage)
         if watermark is None:
-            # No checkpoint: recording is deliberately off until the key is
-            # seeded. Return before querying targets or touching the sink.
+            # No checkpoint: recording is off until seeded. Return before querying
+            # targets or touching the sink.
             return
-        # Bound the walk by a *row*, not a timestamp. ``finished_at`` is stamped
-        # when the build event is created, not when its row is committed, so a row
-        # can become visible already carrying a timestamp behind an advanced
-        # watermark; a time cutoff excludes it from the query outright and the
-        # monotonic watermark never re-surfaces it. Anchoring on the checkpoint
-        # build's *oldest* successful target instead lets the walk retreat to a
-        # known row, and since the query never filters on build_id, that sweep
-        # also picks up the straggling targets of every concurrent build.
-        #
-        # The oldest rather than the checkpoint's own finished_at: the checkpoint
-        # names whichever target recorded last, so a build whose targets finished
-        # at staggered times would leave its earlier ones behind that row.
-        #
-        # The anchor can fail to resolve: a malformed checkpoint (no build_id), or
-        # a build whose successful targets are all gone or carry no finish time.
-        # There is then no row to aim at, so the scan falls back to the plain
-        # watermark cutoff — see below for what that costs.
+        # Bound the walk by a *row*, not a timestamp. finished_at is stamped when the
+        # build event is created, not when its row is committed, so a row can become
+        # visible already carrying a timestamp behind an advanced watermark; a time
+        # cutoff excludes it outright and the monotonic watermark never re-surfaces
+        # it. Anchoring on the checkpoint build's *oldest* successful target lets the
+        # walk retreat to a known row, and since the query never filters on build_id
+        # it also picks up concurrent builds' stragglers. The oldest, not the
+        # checkpoint's own finished_at: it names whichever target recorded last, so
+        # staggered finishes would leave earlier ones behind the row. It can fail to
+        # resolve, in which case the scan falls back to the watermark — see below.
         checkpoint_build_id = self._checkpoint_build_id(storage)
-        # Seed the allowlist floor from the checkpoint build before selecting, so
-        # the very first scan after a (re)start is already bounded. Seeding needs
-        # the checkpoint, so it is retried here rather than done once in start().
+        # Seed the floor before selecting, so the first scan after a (re)start is
+        # already bounded. Needs the checkpoint, so retried here, not in start().
         if not self._allowlist_seeded and checkpoint_build_id is not None:
             self._allowed_build_ids.add(checkpoint_build_id)
             self._allowlist_seeded = True
@@ -447,24 +392,20 @@ class LineageWatcher:
             oldest = get_oldest_successful_target(storage, build_id=checkpoint_build_id)
             if oldest is not None and oldest.finished_at is not None:
                 stop_at = (checkpoint_build_id, as_aware(oldest.finished_at))
-        # Order matters here. Admission needs the resolved anchor to know what
-        # "within range" means, and both must run before the filtered scan below:
-        # a build admitted after the scan would have its targets dropped on this
-        # pass and only picked up on the next one.
+        # Order matters: admission needs the resolved anchor to know what "within
+        # range" means, and both must run before the filtered scan — a build admitted
+        # after it would have its targets dropped until the next pass.
         self._admit_builds_in_anchored_range(storage, stop_at)
         self._refresh_allowed_builds(storage)
         # The anchor is the real bound, so the timestamp cutoff opens all the way
         # up; select_recordable_targets stops at the anchor row instead.
         #
-        # With no anchor the walk falls back to the watermark cutoff, which is
-        # inclusive of the boundary row (the selector compares `<`) but reaches no
-        # further back. A target that finished strictly behind the watermark is
-        # therefore out of reach on this scan, and stays so while the anchor cannot
-        # be resolved — the one case where this design is no better than the fixed
-        # window it replaced. Nothing is subtracted to soften it: without a row to
-        # aim at there is no principled width to pick, and inventing one is exactly
-        # what the old overlap did. Logged as a warning so it is visible instead of
-        # silent.
+        # With no anchor the walk falls back to the watermark cutoff: inclusive of the
+        # boundary row but reaching no further, so a target strictly behind it is out
+        # of reach while the anchor cannot be resolved — the one case this design is
+        # no better than the fixed window it replaced. Nothing is subtracted to soften
+        # it: without a row to aim at there is no principled width, and inventing one
+        # is what the old overlap did. Warned so it is visible.
         if stop_at is not None:
             finished_after = UTC_MIN
         else:
@@ -477,12 +418,10 @@ class LineageWatcher:
                 checkpoint_build_id,
                 watermark,
             )
-        # Stamped before the scan, not after: a target that finishes while the
-        # scan is running must stay in scope for the next one. Retiring the
-        # anchor to an after-the-fact timestamp would step over it.
-        # Aware, so it compares against the targets' own aware timestamps (see
-        # as_aware). UTC here because this is a sentinel stamped from the clock
-        # rather than a value read off a gb_targets row; utcnow() is deprecated.
+        # Stamped before the scan, not after: a target finishing mid-scan must stay in
+        # scope for the next one, and an after-the-fact stamp would step over it.
+        # Aware, to compare against the targets' own aware timestamps; UTC because
+        # this is a sentinel off the clock, not a gb_targets value.
         scan_started = datetime.now(timezone.utc)
         reconcile_once(
             self._store,
@@ -501,54 +440,45 @@ class LineageWatcher:
                 )
             ),
             skip=self._dropped,
-            # Log-only: names the build whose target set the watermark, so a
-            # steady-state line reads as "starting here because of that row"
-            # rather than as a bare epoch. This names the build for the log; the
-            # build's role in *selection* is carried by ``stop_at`` below, which
-            # bounds the walk at that build's oldest target.
+            # Log-only: names the build whose target set the watermark, so the line
+            # reads as "starting here because of that row" rather than a bare epoch.
+            # Its role in *selection* is carried by stop_at below.
             watermark_build_id=checkpoint_build_id,
             stop_at=stop_at,
-            # Bounds *which* builds the anchored retreat may record for. Only
-            # once seeded: an unseeded set is empty, and an empty membership
-            # filter selects nothing, which would silently stall recording
-            # rather than merely widening it. Unseeded means no checkpoint build
-            # resolved, in which case the scan is already on its fallback path.
+            # Bounds *which* builds the retreat may record for. Only once seeded: an
+            # empty membership filter selects nothing, silently stalling recording
+            # rather than merely widening it, and unseeded means no checkpoint build
+            # resolved — the scan is already on its fallback path.
             allowed_build_ids=(
                 self._allowed_build_ids if self._allowlist_seeded else None
             ),
         )
         # After the scan, never before: retirement asks the sink whether a build's
-        # lineage is recorded, and running it first would ask that question about
-        # targets this pass was about to record — retiring a build a moment before
-        # its own targets were written, and (because a retired build is not
-        # re-admitted from build state) dropping them.
+        # lineage is recorded, and running it first would ask about targets this pass
+        # had yet to write — retiring a build just before its own targets landed and,
+        # since a retired build is not re-admitted from build state, dropping them.
         self._retire_finished_builds(storage)
 
     def _refresh_allowed_builds(self, storage: SingletonAdminStorage) -> None:
         """Add builds that have appeared since the last refresh.
 
-        Purely additive: a build enters the set when first seen and leaves only
-        through ``_retire_finished_builds``, which runs *after* the scan rather
-        than from here — retiring before recording would ask the sink about
-        targets the pass had not written yet. Nothing is ever dropped for
-        being *old*, because "old" would have to be judged on ``finished_at``,
-        which can place a late-committing row behind the watermark — the very case
-        the anchored walk exists to recover (see ``select_recordable_targets``).
+        Purely additive: a build enters when first seen and leaves only through
+        ``_retire_finished_builds``, which runs *after* the scan — retiring first
+        would ask the sink about targets the pass had not written yet. Nothing is
+        dropped for being *old*: that would be judged on ``finished_at``, which can
+        place a late-committing row behind the watermark — the case the anchored walk
+        exists to recover.
 
-        Only builds that are not yet finished are added *here*. A build that was
-        already finished before this watcher ever saw it is either behind the
-        floor (deliberately out of scope) or already recorded, so adding it would
-        re-open the history the floor exists to exclude.
+        Only builds not yet finished are added *here*. One already finished before
+        this watcher saw it is either behind the floor (deliberately out of scope) or
+        already recorded, so adding it would re-open the history the floor excludes.
 
-        That rule alone is too narrow, though, and the gap is the one the anchored
-        walk exists for: a build concurrent with the floor can finish *inside* the
-        anchored range and be finished by the time any refresh runs — it is
-        neither the checkpoint build nor unfinished, so it would never be added,
-        and filtering would drop the very target the retreat reached back for. So
-        membership is also granted from below, by
-        ``_admit_builds_in_anchored_range``, which admits any build whose target
-        the walk actually surfaced at or after the anchor. This method covers
-        builds that are still live; that one covers builds that finished inside
+        That rule alone is too narrow: a build concurrent with the floor can finish
+        *inside* the anchored range and already be finished when a refresh runs —
+        neither the checkpoint build nor unfinished, so never added here, and
+        filtering would drop the very target the retreat reached back for.
+        ``_admit_builds_in_anchored_range`` grants membership from below for those.
+        This method covers builds still live; that one, builds that finished inside
         the window.
         """
         if not self._allowlist_seeded:
@@ -575,6 +505,8 @@ class LineageWatcher:
         for build in live:
             if build.uuid in self._allowed_build_ids:
                 continue
+            # Also keeps retired builds out of this path without consulting
+            # _retired_build_ids: retirement requires is_finished().
             if build.status.is_finished():
                 continue
             self._allowed_build_ids.add(build.uuid)
@@ -594,25 +526,24 @@ class LineageWatcher:
         """Admit every build whose targets lie within the anchored range.
 
         This is what keeps the allowlist from turning the anchored retreat into a
-        lineage-loss bug. The retreat exists because a target's row can become
-        visible carrying a ``finished_at`` behind the watermark, and because a
-        concurrent build can finish between two targets of the checkpoint's build.
-        Such a build is already finished by the time a refresh looks at build rows,
-        so ``_refresh_allowed_builds`` will not add it — and a membership filter
-        would then discard the target the walk retreated to collect.
+        lineage-loss bug. A concurrent build can finish between two targets of the
+        checkpoint's build and so be finished before any refresh sees it, meaning
+        ``_refresh_allowed_builds`` will not add it — and a membership filter would
+        then discard the target the walk retreated to collect.
 
         Admitting from the *swept range* rather than from build state closes that:
-        anything the unfiltered walk can still reach is in scope by definition, so
-        the filter only ever removes what lies outside the anchor. The range is
-        bounded by the same anchor the scan uses, so this is not a full-history
-        read — and it is exactly the range the scan was going to walk anyway.
-
-        Without an anchor there is no bounded range to admit from, so this is a
-        no-op and the scan runs on its fallback path.
+        whatever the walk can reach is in scope by definition, so the filter only
+        removes what lies outside the anchor. Bounded by the same anchor the scan
+        uses, so this is not a full-history read — it is the range the scan was
+        going to walk anyway. Without an anchor there is no bounded range, so this
+        is a no-op and the scan runs on its fallback path.
         """
         if stop_at is None or not self._allowlist_seeded:
             return
         try:
+            # stop_at is the bound, not finished_after: UTC_MIN opens the
+            # timestamp cutoff all the way up and the walk stops at the anchor
+            # row, same as the scan's own call. Not a full-history read.
             in_range = select_recordable_targets(
                 storage, finished_after=UTC_MIN, stop_at=stop_at
             )
@@ -630,10 +561,9 @@ class LineageWatcher:
             t.build_id
             for t in in_range
             if t.build_id not in self._allowed_build_ids
-            # A build retired earlier in this process is deliberately done: its
-            # lineage was confirmed in the sink, so re-admitting it here would
-            # undo retirement on every scan and pin it forever.
-            and t.uuid not in self._dropped
+            # A retired build is deliberately done; re-admitting would undo
+            # retirement every scan. Not _dropped: that holds *target* uuids.
+            and t.build_id not in self._retired_build_ids
         }
         if admitted:
             self._allowed_build_ids |= admitted
@@ -649,23 +579,25 @@ class LineageWatcher:
         """Drop builds that are finished, have nothing pending, and are recorded.
 
         Keeps the in-memory set proportional to real concurrency rather than to
-        the process's uptime. All three conditions are required, and each guards a
-        distinct way a build can still owe work:
+        uptime. All three conditions are required, each guarding a distinct way a
+        build can still owe work:
 
-        - ``status.is_finished()``: excludes ``RETRY_PENDING`` (a build queued for
-          a build-level retry is still going to produce targets) as well as
-          ``RUNNING``/``PENDING``.
-        - Nothing pending locally: no target of this build is mid-retry in
-          ``_failed_attempts``. Targets in ``_dropped`` do NOT count as pending —
-          they were given up on deliberately, and treating them as pending would
-          pin their build in the set forever.
-        - Recorded in the sink: local state cannot answer this. Only the sink
-          knows whether the runs actually landed, so this asks it.
+        - ``status.is_finished()``: excludes ``RETRY_PENDING`` (a build queued for a
+          build-level retry will still produce targets) and ``RUNNING``/``PENDING``.
+        - Nothing pending locally: no target mid-retry in ``_failed_attempts``.
+          Targets in ``_dropped`` do NOT count as pending — treating them so would
+          pin the build forever, and a run deleted from wandb cannot be regenerated
+          (its id derives from the target and the sink refuses a deleted id), so
+          that pin would never release. Retiring anyway is the deliberate choice;
+          the gap is recorded under ``LINEAGE_WATCHER_INCOMPLETE_KEY`` rather than
+          left to a rotating log, so completeness stays analyzable.
+        - Recorded in the sink: only the sink knows whether the runs landed.
 
-        Retirement is irreversible for this process: a retired build is not
-        re-added (``_refresh_allowed_builds`` skips finished builds), and the walk
-        will no longer select its targets. So every uncertain case must retain,
-        never retire — including a sink that fails to answer.
+        Retirement is irreversible here, and both admission paths are closed to keep
+        it so: ``_refresh_allowed_builds`` skips finished builds, and
+        ``_admit_builds_in_anchored_range`` (admitting from the swept range, so it
+        never sees that check) tests ``_retired_build_ids``. Every uncertain case must
+        retain, never retire — including a sink that fails to answer.
         """
         if self._store is None or not self._allowed_build_ids:
             return
@@ -692,7 +624,7 @@ class LineageWatcher:
             candidates.append(build_id)
         for build_id in candidates:
             try:
-                confirmed = self._build_lineage_is_confirmed(storage, build_id)
+                confirmed, dropped = self._build_lineage_is_confirmed(storage, build_id)
             except (
                 Exception
             ) as exc:  # noqa: BLE001 — retirement must never break the scan
@@ -709,27 +641,54 @@ class LineageWatcher:
                 continue
             if not confirmed:
                 continue
+            if dropped:
+                # Retired with lineage knowingly missing. Recorded before the
+                # discard so a crash between the two cannot lose the gap: a
+                # re-recorded entry is harmless, an unrecorded one is invisible.
+                self._record_incomplete_build(storage, build_id, dropped)
             self._allowed_build_ids.discard(build_id)
-            logger.info(
-                "Retired build %s from the lineage allowlist: finished, nothing "
-                "pending, and its lineage is recorded in the sink. Allowlist now "
-                "tracks %d build(s).",
-                build_id,
-                len(self._allowed_build_ids),
-            )
+            # Keeps _admit_builds_in_anchored_range from re-admitting it: that
+            # path admits from the swept range, so it never sees the
+            # finished-build check _refresh_allowed_builds applies.
+            self._retired_build_ids.add(build_id)
+            if dropped:
+                # Not "recorded in the sink": these targets never landed there.
+                logger.info(
+                    "Retired build %s from the lineage allowlist: finished and "
+                    "nothing pending, but %d target(s) were dropped, so its "
+                    "lineage in the sink is incomplete and will stay that way "
+                    "(recorded under %s). Allowlist now tracks %d build(s).",
+                    build_id,
+                    len(dropped),
+                    LINEAGE_WATCHER_INCOMPLETE_KEY,
+                    len(self._allowed_build_ids),
+                )
+            else:
+                logger.info(
+                    "Retired build %s from the lineage allowlist: finished, nothing "
+                    "pending, and its lineage is recorded in the sink. Allowlist now "
+                    "tracks %d build(s).",
+                    build_id,
+                    len(self._allowed_build_ids),
+                )
 
     def _build_lineage_is_confirmed(
         self, storage: SingletonAdminStorage, build_id: str
-    ) -> bool:
+    ) -> tuple[bool, set[str]]:
         """Whether ``build_id`` has nothing pending and its lineage is in the sink.
 
         The last two of the three retirement conditions (the caller has already
         checked that the build is finished). Split out so the caller can treat any
         failure as "not confirmed" in one place: every path here either answers
         definitively or raises, and a raise must never mean "retire".
+
+        Returns ``(confirmed, dropped_target_ids)``. The second element is what
+        makes a retirement's completeness auditable: "confirmed" covers both
+        *recorded* and *deliberately dropped*, and only the caller can tell those
+        apart to record the gap. Empty means every target actually recorded.
         """
         if self._store is None:
-            return False
+            return False, set()
         # Re-select this build's successful targets to ask the sink about them.
         # Scoped to the one build and only reached for finished builds, so this is
         # not the unbounded walk `allowed_build_ids` exists to prevent.
@@ -738,12 +697,15 @@ class LineageWatcher:
         )
         if any(t.uuid in self._failed_attempts for t in targets):
             # Mid-retry: still owes work locally.
-            return False
+            return False, set()
+        dropped = {t.uuid for t in targets if t.uuid in self._dropped}
         pending = {t.uuid for t in targets if t.uuid not in self._dropped}
         if not pending:
             # Nothing left to confirm: every target either recorded or was
-            # deliberately dropped.
-            return True
+            # deliberately dropped. Report the dropped ones so the caller can
+            # record the gap — if `dropped` covers every target, this build's
+            # lineage never landed at all.
+            return True, dropped
         # A sink that fails to answer returns the full candidate set (fail-open),
         # which is indistinguishable from a real "none recorded" verdict.
         # Retirement is irreversible, so it must act only on a real answer: this
@@ -759,7 +721,7 @@ class LineageWatcher:
         unrecorded = self._store.filter_unrecorded(
             pending, expected, on_query_error=_note_failure
         )
-        return not sink_failed and not unrecorded
+        return (not sink_failed and not unrecorded), dropped
 
     def _checkpoint_build_id(self, storage: SingletonAdminStorage) -> Optional[str]:
         """Return the checkpoint's ``build_id``, or ``None`` if unset/malformed.
@@ -786,25 +748,19 @@ class LineageWatcher:
         the same way: recording stays off until it is corrected, which is the
         safe direction — the alternative is raising out of every scan.
 
-        The parsed value is made aware, keeping whatever offset it carries. The
-        checkpoint holds ``finished_at`` as a plain string inside a JSON dict, so
-        it is backend-opaque and round-trips its offset on both SQLite and
-        Postgres; every writer persists it aware-ISO, which is why the naive case
-        is defensive rather than expected. Filling in the local offset for a naive
-        value is what lets the caller compare it against the targets' own
-        timestamps without a ``TypeError`` from mixing awareness. Note the offset
-        that gets filled in is the *local* one, so a caller testing for the
-        ``datetime.min`` backfill anchor must compare within the watermark's own
-        offset rather than against ``UTC_MIN`` (see ``_retire_backfill_anchor``).
-        The offset is not rewritten to UTC — aware values already compare as
-        instants, and rewriting made the key disagree textually with the
-        ``gb_targets`` row behind it (see ``_on_checkpoint_advance``).
+        The parsed value is made aware, keeping whatever offset it carries — the key
+        holds ``finished_at`` as a string in a JSON dict, so it is backend-opaque and
+        round-trips its offset on SQLite and Postgres alike, and since every writer
+        persists aware-ISO the naive case is defensive. Filling a missing offset lets
+        the caller compare against targets' own timestamps without a ``TypeError``;
+        the offset filled in is *local*, so a caller testing for the ``datetime.min``
+        anchor must compare within the watermark's own offset (see
+        ``_retire_backfill_anchor``). Not rewritten to UTC — see
+        ``_on_checkpoint_advance``.
 
-        ``OverflowError`` is still caught alongside the parse errors: it is
-        reachable from arithmetic on an extreme parsed value (the
-        ``--base-build-id all`` anchor is ``datetime.min``). Uncaught it would
-        escape to ``_run``'s blanket handler and fail every scan forever, the same
-        wedge this guard exists to prevent for unparseable values.
+        ``OverflowError`` is caught alongside the parse errors: reachable from
+        arithmetic on an extreme value (the ``all`` anchor is ``datetime.min``), and
+        uncaught it would escape to ``_run`` and fail every scan forever.
         """
         checkpoint = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
         if checkpoint is None:
@@ -838,34 +794,22 @@ class LineageWatcher:
     ) -> None:
         """Move a spent ``datetime.min`` backfill anchor up to the scan time.
 
-        ``--base-build-id all`` anchors the checkpoint at ``datetime.min`` so the first
-        scan walks the entire history. Normally the first recorded target
-        advances the checkpoint off that anchor via ``_on_checkpoint_advance``.
-        When the backfill records nothing, though — an empty DB, or one where
-        every candidate is in the drop set — nothing advances it, and *every*
-        subsequent scan re-walks the whole table at ``finished_after=datetime.min``
-        instead of reading only newly-finished rows.
+        ``--base-build-id all`` anchors the checkpoint at ``datetime.min`` so the
+        first scan walks all history, and normally the first recorded target advances
+        it off that anchor. When the backfill records nothing — empty DB, or every
+        candidate dropped — nothing advances it and every later scan re-walks the
+        whole table. Safe only under both conditions checked here:
 
-        Retiring the anchor is safe only under both conditions checked here:
-
-        - The watermark really is the backfill anchor. A normal watermark must
-          never be moved by anything but a recorded target, so this is scoped to
-          ``datetime.min`` and nothing else. Compared against ``datetime.min`` in
-          the watermark's *own* offset, not against ``UTC_MIN``: the anchor is
-          written as ``UTC_MIN.isoformat()``, but ``as_aware`` preserves whatever
-          offset the backend returned, and a backend that drops the offset
-          (SQLite does; Postgres ``timestamptz`` does not) hands back a naive
-          ``datetime.min`` that is then re-tagged *local*. That is the same
-          instant only when the reader sits at UTC, so a bare ``!= UTC_MIN`` would
-          leave the anchor in place on every non-UTC deployment and re-walk the
-          whole target table on every scan, forever.
-        - ``watermark_untouched``: the pass recorded nothing, failed nothing and
-          dropped nothing (see ``reconcile_once``). Any of those would mean
-          unrecorded lineage sits *behind* the new anchor, and the steady-state
-          scan never looks behind its watermark, so moving it would strand that
-          lineage permanently. A record in the same pass has already advanced the
-          checkpoint to the right place via ``_on_checkpoint_advance``; moving it
-          again to the scan time would step over every target after it.
+        - The watermark really is the anchor (a normal one moves only via a recorded
+          target). Compared in the watermark's *own* offset, not against ``UTC_MIN``:
+          a backend that drops the offset (SQLite does, Postgres ``timestamptz`` does
+          not) hands back a naive ``datetime.min`` re-tagged *local* — the same instant
+          only at UTC, so a bare ``!= UTC_MIN`` would leave the anchor in place on
+          every non-UTC deployment, re-walking the table forever.
+        - ``watermark_untouched``: the pass recorded, failed and dropped nothing.
+          Otherwise unrecorded lineage sits *behind* the new anchor, which the scan
+          never looks behind, stranding it. A record in the same pass has already
+          advanced the checkpoint; moving it again would step over later targets.
         """
         anchor = datetime.min.replace(tzinfo=watermark.tzinfo)
         if not watermark_untouched or watermark != anchor:
@@ -888,43 +832,26 @@ class LineageWatcher:
         never a target merely considered or one that failed to record. The next
         scan reads it back, so this write alone advances the watermark.
 
-        The watermark is monotonic: a target swept in behind the current
-        watermark legitimately finished there (its row became visible late, or
-        builds interleaved — see the anchor rationale in ``_reconcile``), and
-        recording it must not drag the durable watermark back down with it.
-        Without this guard such a target lowers the watermark, and if no newer
-        target in the same pass pushes it back up it stays lowered, re-reading
-        that range on every later scan. Recording still happens either way; only
-        the watermark write is suppressed.
+        The watermark is monotonic: a target swept in behind it legitimately finished
+        there (late-visible row, or interleaved builds) and must not drag the durable
+        value down, which would re-read that range on every later scan. Recording
+        still happens; only the watermark write is suppressed. Compared against the
+        *durable* value, not an in-process high-water mark, so a restart cannot forget
+        it; the ``datetime.min`` anchor sits below every real timestamp, so
+        ``_retire_backfill_anchor`` still advances off it.
 
-        The comparison is against the *durable* value rather than an in-process
-        high-water mark so a restart cannot forget it and re-open the same
-        regression. The ``datetime.min`` backfill anchor compares below every
-        real timestamp, so ``_retire_backfill_anchor`` still advances off it.
+        ``finished_at`` comes off a ``StoredTargetRun``, so in production it is aware
+        *local* (from ``BuildEvent.timestamp`` → ``get_time()``), not UTC. ``as_aware``
+        only fills a missing offset, so what is persisted is the ``gb_targets`` row's
+        timestamp verbatim — the checkpoint adopts that table's form and ``gb_targets``
+        is untouched. Rewriting to UTC would still compare correctly but made the key
+        disagree *textually* with its source row, unreadable in a log.
 
-        ``finished_at`` arrives straight off a ``StoredTargetRun`` (see
-        ``reconcile_once``), so it is timezone-*aware* in production: it is
-        stamped from ``BuildEvent.timestamp``, which defaults to
-        ``get_time()`` (``datetime.now().astimezone()``) — aware *local*, not
-        UTC. ``as_aware`` only fills in an offset when one is missing, which the
-        JSON-column read path does not produce, so the value persisted here is the
-        ``gb_targets`` row's own timestamp verbatim, in the same form that table
-        holds it. ``gb_targets`` is untouched by this; the checkpoint is what
-        adopts its form.
-
-        Rewriting the offset to UTC instead would still compare correctly — aware
-        datetimes compare as instants — but it made the checkpoint disagree
-        *textually* with the row it came from, so the same target read three hours
-        apart depending on whether it was loaded from ``gb_targets`` or
-        ``gb_kv_pairs``, which is unreadable in a log and in the key itself.
-
-        Ensuring awareness is still required: the watermark read back by
-        ``_checkpoint_watermark`` was once naive, and comparing the two raised
-        ``TypeError: can't compare offset-naive and offset-aware datetimes``.
-        That raise happens inside ``reconcile_once``'s per-target ``try``, so it
-        is misattributed to recording (which already succeeded), blocks the
-        checkpoint, and after ``_MAX_RECORD_ATTEMPTS`` scans lands the target in
-        the durable dropped set.
+        Ensuring awareness is still required: ``_checkpoint_watermark`` once returned
+        naive, and comparing raised ``TypeError: can't compare offset-naive and
+        offset-aware datetimes`` inside ``reconcile_once``'s per-target ``try`` —
+        misattributed to recording (already succeeded), blocking the checkpoint, and
+        after ``_MAX_RECORD_ATTEMPTS`` scans landing the target in the dropped set.
         """
         finished_at = as_aware(finished_at)
         current = self._checkpoint_watermark(storage)
@@ -970,23 +897,18 @@ class LineageWatcher:
         it still falls within the scan's anchored range each scan, so the skip set is
         what keeps it from wedging the scan.
 
-        The drop is persisted to ``gb_kv_pairs``: giving up is permanent, and since
-        the checkpoint never advances past an unrecorded target, a drop that was
-        forgotten on restart would block the watermark forever.
-
-        The attempt *counts* stay in memory on purpose — they are a
-        within-process backoff, and a restart legitimately re-tries a target from
-        zero (the failure may well have been the crash itself). Only the terminal
-        decision is durable.
+        The drop is persisted: giving up is permanent, and since the checkpoint never
+        advances past an unrecorded target, a drop forgotten on restart would block
+        the watermark forever. The attempt *counts* stay in memory — a within-process
+        backoff, and a restart legitimately retries from zero (the failure may have
+        been the crash itself). Only the terminal decision is durable.
         """
         if self._is_permanent_sink_rejection(exc):
-            # No number of retries can clear this, so spend none: retrying would
-            # be _MAX_RECORD_ATTEMPTS scans of guaranteed failures against the
-            # sink, and would hold the checkpoint at this target the whole time
-            # (it never advances past unrecorded lineage). Drop on the first
-            # sighting instead, and say plainly why — this is an operational
-            # condition (someone deleted runs in the sink), not a flaky write, and
-            # the operator's response is different.
+            # No retry can clear this, so spend none: it would be
+            # _MAX_RECORD_ATTEMPTS scans of guaranteed failures, holding the
+            # checkpoint at this target throughout. Drop on first sighting and say
+            # why — an operational condition (someone deleted runs in the sink),
+            # not a flaky write, and the operator's response differs.
             self._failed_attempts.pop(target_id, None)
             self._dropped.add(target_id)
             self._persist_dropped(storage)

@@ -84,11 +84,28 @@ class WandBLineageService(LineageService):
             # retries this same deterministic id — which wandb then rejects as
             # "run ID <id> is in use", making a transient error permanent. A late
             # failure leaves the partial run on wandb.run, an early one nothing.
-            self._finish_quietly(getattr(wandb, "run", None), run_id)
+            self._finish_quietly(self._partial_run_for(run_id), run_id)
             raise
 
         self._runs[run_id] = run
         return run
+
+    @staticmethod
+    def _partial_run_for(run_id: str) -> Any:
+        """The global wandb run, but only if it is the one opened for ``run_id``.
+
+        ``wandb.init`` publishes near the end of a successful init, so a *late*
+        init failure leaves this call's partial run on the module-global
+        ``wandb.run`` and it must be released. The global is shared, though: it
+        may hold an unrelated run, and finishing that would mark a healthy run
+        failed. An unreadable id counts as not-ours — releasing the wrong run
+        corrupts it, while failing to release ours only leaves the id in use
+        until restart.
+        """
+        run = getattr(wandb, "run", None)
+        if run is None:
+            return None
+        return run if getattr(run, "id", None) == run_id else None
 
     @staticmethod
     def _finish_quietly(run: Any, run_id: str) -> None:

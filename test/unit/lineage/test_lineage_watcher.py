@@ -37,6 +37,7 @@ import pytest
 from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_CHECKPOINT_KEY,
     LINEAGE_WATCHER_DROPPED_KEY,
+    LINEAGE_WATCHER_INCOMPLETE_KEY,
 )
 from gbserver.lineage.lineage_watcher import LineageWatcher
 from gbserver.storage.stored_build import StoredBuild
@@ -317,6 +318,229 @@ class TestLineageWatcher:
         watcher._retire_finished_builds(self.storage)
 
         assert "build-c" in watcher._allowed_build_ids
+
+    def test_admission_is_bounded_by_the_anchor_not_full_history(self):
+        """Admission must stop at the anchor row, not page the whole table.
+
+        ``_admit_builds_in_anchored_range`` passes ``finished_after=UTC_MIN``,
+        which on its own would mean "no lower bound" — a full historical read.
+        The actual bound is ``stop_at``, which takes over when given (see
+        ``select_recordable_targets``). This pins that: a build far behind the
+        anchor must not be admitted, however many scans run.
+
+        Asserted on the observable effect rather than on the call arguments, so
+        it stays true if the bound is expressed some other way.
+        """
+        self._targets = [
+            _target("ancient-build", "t_ancient", _BASE - timedelta(days=300)),
+            _target("build-c", "t_c", _BASE),
+        ]
+        watcher, _store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE)
+        watcher._checkpoint_verified = True
+        watcher._allowlist_seeded = True
+        watcher._allowed_build_ids = {"build-c"}
+
+        watcher._admit_builds_in_anchored_range(self.storage, ("build-c", _BASE))
+
+        # Behind the anchor, so the walk must never have reached it.
+        assert "ancient-build" not in watcher._allowed_build_ids
+
+    def test_admission_admits_a_build_that_finished_inside_the_anchor(self):
+        """The other half of the bound: in-range builds must still be admitted.
+
+        Guards against "fixing" the bound by narrowing it into uselessness — a
+        concurrent build that finished inside the anchored range is exactly what
+        this method exists to catch, since it is already finished by the time
+        ``_refresh_allowed_builds`` looks at build rows.
+        """
+        self._targets = [
+            _target("concurrent-build", "t_conc", _BASE + timedelta(seconds=5)),
+            _target("build-c", "t_c", _BASE),
+        ]
+        watcher, _store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE)
+        watcher._checkpoint_verified = True
+        watcher._allowlist_seeded = True
+        watcher._allowed_build_ids = {"build-c"}
+
+        watcher._admit_builds_in_anchored_range(self.storage, ("build-c", _BASE))
+
+        assert "concurrent-build" in watcher._allowed_build_ids
+
+    def test_retired_build_is_not_re_admitted_from_the_anchored_range(self):
+        """Retirement must survive the next scan's admission pass.
+
+        ``_admit_builds_in_anchored_range`` admits from the *swept range* rather
+        than from build state, so it never sees the finished-build check that
+        keeps ``_refresh_allowed_builds`` from re-adding a retired build. Its
+        guard originally tested ``t.uuid not in self._dropped`` — a target uuid
+        against the dropped-*targets* set, which never holds build ids — so the
+        guard could not fire and a retired build whose targets still sat inside
+        the anchor was re-admitted on every scan, undoing retirement.
+        """
+        self._targets = [_target("build-c", "t_c", _BASE)]
+        watcher, _store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE)
+        watcher._checkpoint_verified = True
+        watcher._allowlist_seeded = True
+        # Retired on an earlier scan: gone from the allowlist, recorded as retired.
+        watcher._allowed_build_ids = set()
+        watcher._retired_build_ids = {"build-c"}
+
+        # The anchor still spans build-c's target, so admission sees it.
+        watcher._admit_builds_in_anchored_range(self.storage, ("build-c", _BASE))
+
+        assert "build-c" not in watcher._allowed_build_ids
+
+    def test_retirement_records_the_build_as_retired(self):
+        """Retiring a build must mark it, not just drop it from the allowlist.
+
+        Discarding alone leaves nothing for admission to test against, which is
+        what let a retired build return on the next scan.
+        """
+        self._targets = [_target("build-c", "t_c", _BASE)]
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE)
+        watcher._checkpoint_verified = True
+        watcher._allowed_build_ids = {"build-c"}
+        watcher._allowlist_seeded = True
+
+        self.storage.build_storage.get_by_uuid = lambda _uuid: StoredBuild(
+            uuid="build-c",
+            name="c",
+            space_name="s",
+            source_uri="file://x",
+            username="u",
+            status=Status.SUCCESS,
+        )
+        # Nothing unrecorded left in the sink, so its lineage is confirmed.
+        store.filter_unrecorded = (
+            lambda target_ids, expected_counts=None, on_query_error=None: set()
+        )
+
+        watcher._retire_finished_builds(self.storage)
+
+        assert "build-c" not in watcher._allowed_build_ids
+        assert "build-c" in watcher._retired_build_ids
+
+    def _finished_build(self, build_id: str = "build-c") -> None:
+        """Make ``build_id`` read as a real finished build, so retirement gets
+        past the build-status check and reaches the confirmation path."""
+        self.storage.build_storage.get_by_uuid = lambda _uuid: StoredBuild(
+            uuid=build_id,
+            name="c",
+            space_name="s",
+            source_uri="file://x",
+            username="u",
+            status=Status.SUCCESS,
+        )
+
+    def test_retiring_with_dropped_targets_records_the_incomplete_build(self):
+        """A build retired with dropped lineage must leave a durable record.
+
+        Retiring it is deliberate: a run deleted from wandb cannot be regenerated,
+        so retaining the build would pin it forever for lineage that can never
+        land. But "confirmed" then covers *dropped* as well as *recorded*, so
+        without this key the build would look complete while its lineage is
+        absent — and the ERROR line explaining why rotates away.
+        """
+        self._targets = [_target("build-c", "t_c", _BASE)]
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE)
+        watcher._checkpoint_verified = True
+        watcher._allowed_build_ids = {"build-c"}
+        watcher._allowlist_seeded = True
+        # t_c was permanently rejected by the sink (deleted run), so it is dropped
+        # and never recorded — the whole build's lineage is therefore missing.
+        watcher._dropped = {"t_c"}
+        self._finished_build()
+        store.filter_unrecorded = (
+            lambda target_ids, expected_counts=None, on_query_error=None: set()
+        )
+
+        watcher._retire_finished_builds(self.storage)
+
+        assert "build-c" not in watcher._allowed_build_ids
+        recorded = self.storage.kv_pair_storage.get_value(
+            LINEAGE_WATCHER_INCOMPLETE_KEY
+        )
+        assert recorded["builds"]["build-c"]["target_ids"] == ["t_c"]
+        assert "retired_at" in recorded["builds"]["build-c"]
+
+    def test_retiring_a_fully_recorded_build_records_nothing_incomplete(self):
+        """The key must stay empty for the normal case.
+
+        Otherwise every retirement would look like a lineage gap and the record
+        would be useless for the question it exists to answer.
+        """
+        self._targets = [_target("build-c", "t_c", _BASE)]
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE)
+        watcher._checkpoint_verified = True
+        watcher._allowed_build_ids = {"build-c"}
+        watcher._allowlist_seeded = True
+        self._finished_build()
+        # Nothing dropped, and the sink confirms the target landed.
+        store.filter_unrecorded = (
+            lambda target_ids, expected_counts=None, on_query_error=None: set()
+        )
+
+        watcher._retire_finished_builds(self.storage)
+
+        assert "build-c" not in watcher._allowed_build_ids
+        assert (
+            self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_INCOMPLETE_KEY)
+            is None
+        )
+
+    def test_incomplete_record_accumulates_across_builds(self):
+        """Recording one build must not overwrite an earlier one.
+
+        The value is a single key holding a map, so this is a read-modify-write;
+        clobbering would silently lose every prior gap.
+        """
+        watcher, _store = self._make_watcher()
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_INCOMPLETE_KEY,
+            {"builds": {"older-build": {"target_ids": ["t_old"], "retired_at": "x"}}},
+        )
+
+        watcher._record_incomplete_build(self.storage, "build-c", {"t_c"})
+
+        builds = self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_INCOMPLETE_KEY)[
+            "builds"
+        ]
+        assert set(builds) == {"older-build", "build-c"}
+
+    def test_incomplete_record_failure_does_not_block_retirement(self):
+        """A failing audit write must not abort retirement or the scan.
+
+        Retirement runs after the pass has already recorded; losing the audit
+        entry is worse than nothing but far better than aborting a completed scan
+        (the ERROR line from the original drop still stands).
+        """
+        self._targets = [_target("build-c", "t_c", _BASE)]
+        watcher, store = self._make_watcher()
+        _seed(self.storage, "build-c", _BASE)
+        watcher._checkpoint_verified = True
+        watcher._allowed_build_ids = {"build-c"}
+        watcher._allowlist_seeded = True
+        watcher._dropped = {"t_c"}
+        self._finished_build()
+        store.filter_unrecorded = (
+            lambda target_ids, expected_counts=None, on_query_error=None: set()
+        )
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("kv store is down")
+
+        self.storage.kv_pair_storage.set_value = _boom
+
+        # Must not raise, and must still retire.
+        watcher._retire_finished_builds(self.storage)
+
+        assert "build-c" not in watcher._allowed_build_ids
 
     def test_staggered_targets_within_checkpoint_build_are_not_lost(self):
         """The checkpoint's build keeps its own earlier targets in scope.

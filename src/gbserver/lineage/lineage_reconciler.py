@@ -77,6 +77,17 @@ LINEAGE_WATCHER_CHECKPOINT_KEY = "lineage_store_latest_build_id"
 # {"target_ids": [str, ...]}.
 LINEAGE_WATCHER_DROPPED_KEY = "lineage_store_dropped_target_ids"
 
+# gb_kv_pairs key under which the LineageWatcher records builds it retired while
+# some of their targets had been dropped rather than recorded — so their lineage
+# in the sink is knowingly partial. Retiring them is deliberate: a run deleted
+# from wandb cannot be regenerated (run ids are derived from the target, and the
+# sink will not accept a deleted id again), so retaining the build would pin it
+# forever for lineage that can never land. Without this key the gap would live
+# only in a log line that rotates away; here it stays queryable, which is what
+# makes a build's completeness analyzable after the fact. Value shape:
+# {"builds": {<build_id>: {"target_ids": [str, ...], "retired_at": <ISO 8601>}}}.
+LINEAGE_WATCHER_INCOMPLETE_KEY = "lineage_store_incomplete_builds"
+
 # Column the reconciliation scan sorts/paginates successful targets by. A target
 # gets finished_at set when it succeeds, so it is the moment the target becomes
 # recordable — the correct watermark for "finished since I last scanned" (unlike
