@@ -110,8 +110,11 @@ def execution_status_plain_output(
 
     # A skipped target was reused from an earlier attempt (retry or continuation):
     # it ran no steps and produced no artifacts, so hide it by default to keep the
-    # output short. --show-skipped-targets brings them back.
+    # output short. --show-skipped-targets brings them back. Number targets by their
+    # position in the FULL list (captured before filtering) so hiding some does not
+    # renumber the rest — a displayed "Target #N" always matches the build's order.
     total_target_count = len(targets)
+    target_number = {name: idx + 1 for idx, name in enumerate(targets)}
     if not show_skipped_targets:
         targets = {
             name: info
@@ -121,8 +124,8 @@ def execution_status_plain_output(
     hidden_skipped_count = total_target_count - len(targets)
 
     targets_overview = [
-        f"\n\tTarget #{index + 1} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"
-        for index, target in enumerate(targets)
+        f"\n\tTarget #{target_number[target]} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"
+        for target in targets
     ]
     if hidden_skipped_count > 0:
         targets_overview.append(
@@ -156,7 +159,7 @@ def execution_status_plain_output(
     """
 
     target_outputs = []
-    for index, target in enumerate(targets):
+    for target in targets:
         input_artifacts_table = [
             [i["artifact_id"], i["uri"]] for i in targets[target]["input_artifacts"]
         ]
@@ -226,7 +229,7 @@ def execution_status_plain_output(
         target_output = f"""
 ---
 
-## Target #{index + 1} {target}
+## Target #{target_number[target]} {target}
 
 {target_status_emoji(targets[target])} **Status**: {status_line}{build_id_line}
 {sections}

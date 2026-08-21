@@ -364,15 +364,20 @@ def continue_build(
         request, username_on_target=prior.username, space_name=stored_space.name
     )
 
-    # A continuation spins up a fresh runner, so the prior build must not still be
-    # active — otherwise the continuation could race a live runner working the same
-    # chain. There is no runner-liveness table; the build status is the signal.
-    if not prior.status.is_finished():
+    # A continuation always extends (and its runner reuses targets from) the chain
+    # *tip* — the most recent attempt — regardless of which member was passed. So
+    # the "must be finished" guard has to apply to the tip, not to the passed-in
+    # member: continuing an old finished member while a newer attempt is still
+    # active would otherwise attach a fresh runner to a live tip. There is no
+    # runner-liveness table; the build status is the signal.
+    tip = get_retry_chain_members(build_storage, prior)[-1]
+    if not tip.status.is_finished():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Build {req.build_id} has status {prior.status}; only a finished "
-                "build (SUCCESS, FAILED, INVALID, or CANCELLED) can be continued"
+                f"Build chain (latest attempt {tip.uuid}) has status {tip.status}; "
+                "only a chain whose latest attempt is finished (SUCCESS, FAILED, "
+                "INVALID, or CANCELLED) can be continued"
             ),
         )
 
@@ -386,10 +391,17 @@ def continue_build(
 
     # retry_of_build_id is the resolved chain root (set server-side regardless of
     # which chain member was passed), so the client can report the canonical root.
-    assert continuation.retry_of_build_id is not None
+    # Guard explicitly (not via assert, which -O strips) since it feeds a required
+    # response field.
+    root_build_id = continuation.retry_of_build_id
+    if root_build_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="continuation build was created without a chain root link",
+        )
     return BuildContinueResponse(
         build_id=continuation.uuid,
-        root_build_id=continuation.retry_of_build_id,
+        root_build_id=root_build_id,
     )
 
 

@@ -293,16 +293,21 @@ def create_continuation_build(
     chain = get_retry_chain_members(build_storage, prior)
     root = chain[0]
     tip = chain[-1]
+    # Seed the continuation from the chain *tip* (the most recent attempt), not the
+    # arbitrary member that was passed: the continuation extends the tip, so its
+    # definition/targets should match the latest attempt. (Today every member
+    # shares the same build_archive, but sourcing from the tip keeps that true even
+    # if attempts ever diverge.)
     continuation = StoredBuild(
-        name=prior.name,
-        space_name=prior.space_name,
+        name=tip.name,
+        space_name=tip.space_name,
         source_uri="",
-        username=prior.username,
-        build_archive=prior.build_archive,
+        username=tip.username,
+        build_archive=tip.build_archive,
         status=Status.SUBMITTED,
-        targets=prior.targets,
-        description=prior.description,
-        tags=prior.tags,
+        targets=tip.targets,
+        description=tip.description,
+        tags=tip.tags,
         retry_of_build_id=root.uuid,
         retry_count=0,
     )

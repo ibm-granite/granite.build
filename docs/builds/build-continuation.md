@@ -43,7 +43,8 @@ dispatches a fresh runner for it, exactly like any other build. The new build:
 
 Because the continuation is an ordinary build, everything that already works for a build works
 for it: it retries its own remaining targets up to `max_retries`, cancellation spans the whole
-chain, and `gb build status` shows the skipped and re-run targets together.
+chain, and `gb build status --follow-retries` (the default) presents the whole chain as one view
+(reused targets are hidden unless you pass `--show-skipped-targets` — see below).
 
 ## The previous build must be finished
 
@@ -52,8 +53,9 @@ build that is `PENDING`, `RUNNING`, `RETRY_PENDING`, or `CANCEL_REQUESTED` still
 about to have) a runner working it. Continuing such a build is rejected (HTTP `409`). Only a
 finished build (`SUCCESS`, `FAILED`, `INVALID`, or `CANCELLED`) can be continued.
 
-Continuing a `SUCCESS` build is allowed and simply re-runs any targets that were not part of
-that build's successful set (or completes immediately if there is nothing left to do).
+Continuing a `SUCCESS` build is allowed: every target whose prior run still counts as reusable
+(same `target_hash`, all output artifacts still registered) is skipped, so a fully-successful
+build with unchanged artifacts finishes immediately with nothing to re-run.
 
 ## Continuing a build that was already retried
 

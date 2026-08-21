@@ -299,6 +299,26 @@ def test_continue_build_rejects_active_build_409():
     assert exc.value.status_code == 409
 
 
+def test_continue_build_rejects_when_chain_tip_still_active():
+    """The finished-check applies to the chain TIP, not the passed-in member:
+    continuing a finished root while a newer attempt is still RUNNING is a 409,
+    so a fresh runner is never attached to a live tip."""
+    root = _prior_build(ATTACKER, status=Status.FAILED)
+    tip = _prior_build(ATTACKER, status=Status.RUNNING)
+    tip.retry_of_build_id = root.uuid
+    root.retry_build_id = tip.uuid
+    with _patched_continue_storage({root.uuid: root, tip.uuid: tip}):
+        with pytest.raises(HTTPException) as exc:
+            # Pass the (finished) ROOT; the tip is still running.
+            continue_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                BuildContinueRequest(build_id=root.uuid),
+            )
+    assert exc.value.status_code == 409
+    # The 409 names the actual live attempt (the tip), not the passed-in build.
+    assert tip.uuid in exc.value.detail
+
+
 def test_continue_build_creates_linked_continuation():
     prior = _prior_build(ATTACKER, status=Status.FAILED)
     builds = {prior.uuid: prior}
@@ -327,13 +347,17 @@ def test_continue_build_creates_linked_continuation():
 
 
 def test_continue_build_accepts_mid_chain_member_and_links_to_root():
-    # root -> mid (any member may be continued; continuation links to the root
+    # root -> tip (any member may be continued; continuation links to the root
     # and the back-link lands on the chain tip, not the passed-in member).
     root = _prior_build(ATTACKER, status=Status.FAILED)
-    mid = _prior_build(ATTACKER, status=Status.FAILED)
-    mid.retry_of_build_id = root.uuid
-    root.retry_build_id = mid.uuid
-    builds = {root.uuid: root, mid.uuid: mid}
+    tip = _prior_build(ATTACKER, status=Status.FAILED)
+    tip.retry_of_build_id = root.uuid
+    root.retry_build_id = tip.uuid
+    # Give the tip a distinct definition to prove the continuation is seeded from
+    # the tip (latest attempt), not from the passed-in root.
+    tip.targets = ["tip-target"]
+    root.targets = ["root-target"]
+    builds = {root.uuid: root, tip.uuid: tip}
     with (
         _patched_continue_storage(builds),
         _real_authz(),
@@ -348,9 +372,11 @@ def test_continue_build_accepts_mid_chain_member_and_links_to_root():
     assert continuation.retry_of_build_id == root.uuid
     # The response reports the resolved root even though a mid-chain member was passed.
     assert resp.root_build_id == root.uuid
-    # Tip (mid) gets the back-link; root's existing link is untouched.
-    assert builds[mid.uuid].retry_build_id == resp.build_id
-    assert builds[root.uuid].retry_build_id == mid.uuid
+    # Definition is sourced from the tip (latest attempt), not the passed-in root.
+    assert continuation.targets == ["tip-target"]
+    # Tip gets the back-link; root's existing link is untouched.
+    assert builds[tip.uuid].retry_build_id == resp.build_id
+    assert builds[root.uuid].retry_build_id == tip.uuid
 
 
 def test_repeated_continuations_linearize_into_one_chain():

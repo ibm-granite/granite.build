@@ -97,3 +97,20 @@ def test_no_hint_when_no_skipped_targets():
     )
     assert "ran-target" in out
     assert "hidden" not in out
+
+
+def test_hiding_skipped_targets_preserves_original_numbering():
+    """Hiding a skipped target must not renumber the survivors: a "Target #N"
+    always reflects the build's real target order, so a visible target keeps its
+    original position even when earlier targets are hidden."""
+    # Order: #1 is skipped, #2 actually ran. Hiding #1 must leave the runner as #2.
+    targets = {
+        "skipped-first (u1)": _target(status="success", skipped_id="prior-u1"),
+        "ran-second (u2)": _target(status="success"),
+    }
+    out = execution_status_plain_output(
+        _DETAILS, targets, history=[], show_events=False
+    )
+    assert "Target #2 ran-second (u2)" in out
+    # It must NOT be renumbered to #1.
+    assert "Target #1 ran-second (u2)" not in out
