@@ -14,12 +14,15 @@
 
 """Unit tests for WandBLineageService run release on failure paths.
 
-Run ids here are deterministic (derived from the target uuid) and the watcher
-retries a failed target on its next scan with that same id. So a run left
-registered as in-flight in wandb's service process makes every retry fail with
-``ServerResponseError: run ID <id> is in use`` — a one-off failure becomes a
-permanent one. These tests assert both leak paths release the run: a failure
-inside ``wandb.init()``, and a failure after the run was opened.
+``self._runs`` holds the open wandb runs for this process, and the watcher is a
+long-lived daemon. A failure that leaves a run in there without finishing it leaks
+that run and its background sync thread for the life of the process; a partial run
+left on the module-global ``wandb.run`` would additionally be picked up by the next
+``wandb.init`` in the same process. These tests assert both leak paths release the
+run: a failure inside ``wandb.init()``, and a failure after the run was opened.
+
+Note this is *not* about reusing an id. Run ids are random uuids now, so a retry
+never presents the same id twice — the release still matters, for the leak.
 """
 
 from types import SimpleNamespace
@@ -244,3 +247,20 @@ def test_release_run_is_a_noop_for_unknown_id():
     service = _service()
     service._release_run("never-opened")
     assert service._runs == {}
+
+
+def test_init_uses_resume_never():
+    """``resume="never"`` so a reused id fails loudly instead of appending.
+
+    Run ids are random uuids, so a resume can never legitimately happen. Under
+    ``resume="allow"`` a uuid collision — or a bug that reused an id — would
+    silently append to an existing run, corrupting that run's lineage with no
+    error. "never" turns it into a visible failure.
+    """
+    service = _service()
+    with patch("gbserver.lineage.wandb_service.wandb") as wandb_mock:
+        wandb_mock.init.return_value = _make_run()
+        service._init_run("run-1", "job-1")
+
+    _args, kwargs = wandb_mock.init.call_args
+    assert kwargs["resume"] == "never"

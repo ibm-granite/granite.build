@@ -80,10 +80,11 @@ class WandBLineageService(LineageService):
         try:
             run = self._init_run(run_id, job_name)
         except Exception:
-            # init() registers the run before it can fail, and the next scan
-            # retries this same deterministic id — which wandb then rejects as
-            # "run ID <id> is in use", making a transient error permanent. A late
-            # failure leaves the partial run on wandb.run, an early one nothing.
+            # init() registers the run before it can fail, so a failure can leave a
+            # partial run behind: a late one on wandb.run, an early one nothing.
+            # Release it rather than leaking a live run and its sync thread for the
+            # life of this (daemon) process. Not about id reuse — ids are random
+            # now — but about not stranding an open run.
             self._finish_quietly(self._partial_run_for(run_id), run_id)
             raise
 
@@ -132,7 +133,12 @@ class WandBLineageService(LineageService):
             entity=GBSERVER_WANDB_ENTITY,
             id=run_id,
             name=job_name,
-            resume="allow",
+            # "never", not "allow": run ids are fresh random uuids
+            # (WandBLineageStore._build_events_for_target), so a resume can never
+            # legitimately happen. Under "allow" a uuid collision or a bug that
+            # reused an id would silently APPEND to an existing run; "never" turns
+            # that into a visible error instead of quiet lineage corruption.
+            resume="never",
             # These runs are lineage *events*, not training runs. wandb's default
             # code/git capture would snapshot the lineage-watcher process's own
             # working tree (the gbserver checkout) into every recorded target —
@@ -156,7 +162,13 @@ class WandBLineageService(LineageService):
         )
 
     def _release_run(self, run_id: str) -> None:
-        """Finish and forget a run so its deterministic id can be reused.
+        """Finish and forget a run so it does not leak into ``self._runs``.
+
+        Run ids are random now, so this is no longer about making an id reusable.
+        It still does real work within one process lifetime: ``self._runs`` holds
+        open wandb runs, and an event that fails partway through would otherwise
+        leave a live run and its background sync thread behind for as long as the
+        process lives -- and the lineage watcher is a long-lived daemon.
 
         A no-op for an id with no open run, so error paths need not know whether
         the run was ever opened or a terminal event already finished it.
@@ -897,9 +909,10 @@ class WandBLineageService(LineageService):
         rather than scanning the whole project. Each recorded run carries a
         ``target_id=<uuid>`` tag (see WandBLineageStore._build_events_for_target),
         so we derive which candidates are already recorded from that tag and
-        return the rest. We match on the tag rather than parsing run ids — a run
-        id is ``"<target_uuid>-<output_uuid>"`` and both halves contain hyphens,
-        making it ambiguous to split.
+        return the rest. The tag is the ONLY way to do this: run ids are random
+        uuids carrying no target information at all, so a run whose ``target_id``
+        tag is missing is invisible here and unreclaimable — which is why the
+        emitter must put that tag on every event it writes.
 
         A single target emits one run per output artifact (or one run when it has
         no outputs), so presence of *a* tagged run does not mean the target is
@@ -914,11 +927,21 @@ class WandBLineageService(LineageService):
         which keeps older fully-recorded runs (that predate this check) from
         being needlessly re-recorded.
 
-        This is an efficiency optimization only: it lets the recorder skip
-        re-emitting candidates wandb already has. Idempotent recording
-        (deterministic run ids + resume="allow") preserves correctness
-        regardless, so on any failure we return ``target_ids`` unchanged — the
-        caller then re-records the candidates, a harmless backend no-op.
+        This is a CORRECTNESS mechanism, not an optimization. Run ids are random
+        uuids, so re-recording a target wandb already has writes a second set of
+        runs rather than resuming the first — there is no idempotency underneath
+        to fall back on. Hence the failure mode is fail CLOSED: on any error this
+        returns an EMPTY set (record nothing) and reports the error through
+        ``on_query_error``, and the caller is expected to abort and retry rather
+        than treat the empty result as "all recorded".
+
+        One consequence of random ids worth knowing: a target whose emission
+        crashed partway through leaves runs that can never be completed, since the
+        missing ones would get fresh ids. Re-recording emits a full new set, so the
+        target ends up with more runs than ``expected_counts[tid]`` and passes the
+        check from then on. That is over-recording rather than under-recording, but
+        it does mean the count no longer detects a partial record the way it did
+        when ids were derived from the target.
         """
         if not target_ids:
             return set()
@@ -966,13 +989,15 @@ class WandBLineageService(LineageService):
             return target_ids - recorded
         except (
             Exception
-        ) as e:  # noqa: BLE001 — best-effort; any failure re-records the candidates
+        ) as e:  # noqa: BLE001 — best-effort; failure records nothing (fail closed)
             logger.error("Failed to filter unrecorded target ids from wandb: %s", e)
             if on_query_error is not None:
-                # Tell the caller this set is a fail-open default, not a verdict
-                # from wandb. Reported before returning so a caller that must not
-                # act on an unanswered query (e.g. retiring a build) can tell the
-                # two apart. Kept inside the handler: the contract is that this
+                # Tell the caller this empty set is a fail-CLOSED default, not a
+                # verdict that everything is already recorded. Both halves matter:
+                # the empty set alone would read as "nothing left to do" and let a
+                # caller advance its checkpoint over unprocessed work, so the
+                # callback is what makes the difference visible. Reported before
+                # returning, and kept inside the handler: the contract is that this
                 # method never raises, so a misbehaving callback must not turn a
                 # degraded query into one.
                 try:
@@ -982,7 +1007,11 @@ class WandBLineageService(LineageService):
                         "on_query_error callback raised while reporting a "
                         "filter_unrecorded failure; ignoring it."
                     )
-            return target_ids
+            # Fail CLOSED: return nothing to record. Run ids are random, so
+            # re-recording a target that wandb already has creates DUPLICATE runs
+            # instead of resuming the existing ones — an unanswered query must
+            # never be read as "not recorded". The caller retries next pass.
+            return set()
 
     def search_lineage_by_tags(
         self, tags: list, limit: int = 10, offset: int = 0

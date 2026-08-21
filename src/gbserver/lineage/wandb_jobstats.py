@@ -34,6 +34,7 @@ from gbserver.types.constants import (
 )
 from gbserver.types.status import Status
 from gbserver.utils.redaction import redact_sensitive, scrub_url_credentials
+from gbserver.utils.utils import get_uuid
 
 _LINEAGE_REPO_ORG = "ibm-granite" if is_public_github() else "granite-dot-build"
 LINEAGE_PRODUCER_URL = f"https://{DEFAULT_GH_DOMAIN}/{_LINEAGE_REPO_ORG}/granite.build"
@@ -335,10 +336,17 @@ class WandBLineageStore(ILineageStore):
                 # a single resumed run. Keeps counts aligned with the number
                 # of output artifacts. The job_id in job_details still points
                 # back to the logical target (targetrun.uuid).
-                job_id = base_event["run"]["facets"]["job_details"]["job_id"]
+                #
+                # The id is a fresh random uuid, not derived from the target and
+                # output uuids. Dedup is therefore carried entirely by the
+                # target_id tag in run.facets.tags (see LineageService.
+                # filter_unrecorded), which is why that tag must be present on
+                # EVERY emitted event: a run without it is invisible to the
+                # dedup query, cannot be counted toward expected_run_count, and
+                # is unreclaimable -- no later scan can find it or replace it.
                 event["run"] = {
                     **base_event["run"],
-                    "runId": f"{job_id}-{output_uuid}",
+                    "runId": get_uuid(),
                 }
                 _add_jobstats_mirror_fields(event)
                 target_events.append(event)
@@ -356,6 +364,13 @@ class WandBLineageStore(ILineageStore):
                 **base_event,
                 "inputs": inputs,
                 "outputs": [],
+                # Explicit random runId: inheriting base_event's would reuse
+                # targetrun.uuid, the deterministic id this design replaced, and
+                # a re-record would silently resume that one run instead of
+                # writing a new one. The target_id tag comes along in
+                # base_event["run"]["facets"]["tags"], keeping this event
+                # dedupable like the per-output ones.
+                "run": {**base_event["run"], "runId": get_uuid()},
             }
             _add_jobstats_mirror_fields(event)
             events_list.append(event)
@@ -527,20 +542,38 @@ class WandBLineageStore(ILineageStore):
         # Delegate to the service, which checks the candidates against wandb run
         # metadata. ``expected_counts`` lets it require a *full* set of runs per
         # target rather than mere presence (see ILineageStore.filter_unrecorded).
-        # Never raises: returns the candidates unchanged on failure so the caller
-        # re-records them (a harmless idempotent no-op).
-        # ``on_query_error`` is forwarded rather than handled here: this layer only
-        # caches verdicts, and the service is where the query can fail.
+        # Never raises: it fails CLOSED, returning an empty set and reporting the
+        # error through ``on_query_error``.
+        #
+        # The callback is wrapped rather than merely forwarded, because this layer
+        # must know whether the query was answered before it caches anything. A
+        # failed query now returns an EMPTY set, which is indistinguishable by
+        # value from "every candidate is already recorded" -- and caching that
+        # would turn one wandb outage into a TTL-long window in which real targets
+        # are skipped as recorded. The flag is the only thing separating the two.
+        query_failed = False
+
+        def _note_failure(exc: Exception) -> None:
+            nonlocal query_failed
+            query_failed = True
+            if on_query_error is not None:
+                on_query_error(exc)
+
         unrecorded = self._service.filter_unrecorded(
-            to_check, expected_counts, on_query_error=on_query_error
+            to_check, expected_counts, on_query_error=_note_failure
         )
 
-        # Cache only the positive verdicts, and only for targets we actually
-        # asked about. A failed query returns its candidates unchanged, so those
-        # land in `unrecorded` and are never cached — a wandb outage cannot be
-        # mistaken for "recorded". An unrecorded target is likewise not cached:
-        # its verdict is expected to change as soon as recording succeeds, and a
-        # stale negative would be re-queried anyway.
+        if query_failed:
+            # Cache nothing: there is no verdict to cache. Returning the empty set
+            # the service produced keeps this fail-closed -- the caller is expected
+            # to abort the pass (it heard about the failure through on_query_error)
+            # and retry, rather than read "nothing to record" as success.
+            return unrecorded
+
+        # Cache only the positive verdicts, and only for targets we actually asked
+        # about. An unrecorded target is not cached: its verdict is expected to
+        # change as soon as recording succeeds, and a stale negative would be
+        # re-queried anyway.
         deadline = now + _RECORDED_CACHE_TTL_SECONDS
         for tid in to_check - unrecorded:
             self._recorded_until[(tid, counts.get(tid))] = deadline

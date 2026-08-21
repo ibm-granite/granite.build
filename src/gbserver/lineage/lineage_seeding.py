@@ -18,7 +18,7 @@
 
 The watcher never creates its checkpoint implicitly: with no
 ``lineage_store_latest_build_id`` key it records nothing at all (see
-``lineage_watcher.LineageWatcher._verify_checkpoint``). Deciding where
+``lineage_watcher.LineageWatcher._read_checkpoint``). Deciding where
 centralized recording begins — "from now", from a chosen build, or the platform's
 whole history — belongs to an operator, not to whichever process starts first.
 
@@ -31,23 +31,23 @@ the whole history (anchor moved back).
 Three anchors, expressed as a single spec string (``from-latest``, ``all``, or a
 build id) so no invalid combination is representable.
 
-Both build-derived anchors land on a build's *oldest* completion, because the
-watermark is inclusive but forward-only: anchoring at a build's newest target
-would exclude that build's own earlier targets, and lose any concurrent build's
-targets in that window for good. They differ only in how the build is chosen —
-``from-latest`` takes the build of the most recent completion, a build id takes
-the one named. So "from now on" means from the start of the newest build, not
-from the middle of it.
+The anchor is a *build*, and the anchored build is recorded whole: the watcher
+selects it along with every build created at or after it, and reconciles each
+build's targets as a unit. There is therefore no way to start mid-build, and no
+need to reach for a build's oldest target to avoid doing so. The two
+build-derived anchors differ only in how the build is chosen — ``from-latest``
+takes the newest build, a build id takes the one named.
 """
 
 from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_CHECKPOINT_KEY,
+    LINEAGE_WATCHER_CHECKPOINT_VERSION,
     UTC_MIN,
     as_aware,
-    get_most_recent_successful_target,
-    get_oldest_successful_target,
+    get_most_recent_build,
 )
 from gbserver.storage.singleton_storage import SingletonAdminStorage
+from gbserver.storage.stored_build import StoredBuild
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -56,10 +56,10 @@ logger = get_logger(__name__)
 SEED_FROM_LATEST = "from-latest"
 SEED_ALL = "all"
 
-# Sentinel build_id for the `all` checkpoint. The watcher only reads the
-# checkpoint's build_id to re-verify that build at start(); a build id that
-# matches nothing simply finds no targets to verify, which is exactly right for a
-# backfill anchor that deliberately predates every real build.
+# Sentinel build_id for the `all` checkpoint. It names no real build, and the
+# watcher special-cases it: rather than reading a build row for its creation time,
+# it resolves the cutoff to UTC_MIN, which is exactly right for a backfill anchor
+# that deliberately predates every real build.
 BACKFILL_BUILD_ID = "__lineage_backfill__"
 
 
@@ -70,76 +70,56 @@ class LineageSeedError(Exception):
 def _build_checkpoint(storage: SingletonAdminStorage, spec: str) -> dict:
     """Build (but do not persist) the checkpoint value for ``spec``.
 
+    The anchor is a *build*, not a target. That is inherent to the build-scoped
+    scan: the watcher selects the anchor build and everything created at or after
+    it, and reconciles each build's targets whole — so there is no way to start
+    mid-build and no need to reach for a build's oldest target to avoid it.
+
     Args:
-        storage: Admin storage to resolve the anchor target against.
-        spec: ``"from-latest"`` (anchor at the oldest successful target of the
-            *newest* build), ``"all"`` (anchor at ``UTC_MIN``, i.e. the full
-            history), or a build id (anchor at that build's oldest successful
-            target). Either way the anchored build is recorded whole.
+        storage: Admin storage to resolve the anchor build against.
+        spec: ``"from-latest"`` (anchor at the newest build), ``"all"`` (anchor at
+            ``UTC_MIN``, i.e. the full history), or a build id.
 
     Returns:
-        ``{"build_id": str, "finished_at": <ISO 8601 str, aware UTC>}``.
+        ``{"build_id": str, "created_time": <ISO 8601 str, aware>, "version": int}``.
 
     Raises:
-        LineageSeedError: When the anchor resolves to no successful target — an
-            empty DB, or a build id that does not exist or never succeeded.
+        LineageSeedError: When the anchor resolves to no build — an empty DB, or a
+            build id that does not exist or carries no creation time.
     """
     if spec == SEED_ALL:
-        # UTC_MIN: older than any real finished_at, so nothing is excluded. Aware,
-        # matching every other watermark — a naive datetime.min would raise
-        # TypeError the moment it met an aware finished_at.
+        # UTC_MIN: older than any real created_time, so nothing is excluded. Aware,
+        # matching every other timestamp here — a naive datetime.min would raise
+        # TypeError the moment it met an aware created_time.
         return {
             "build_id": BACKFILL_BUILD_ID,
-            "finished_at": UTC_MIN.isoformat(),
+            "created_time": UTC_MIN.isoformat(),
+            "version": LINEAGE_WATCHER_CHECKPOINT_VERSION,
         }
 
     if spec == SEED_FROM_LATEST:
-        # Resolve the build in two steps: the most recent completion names the
-        # build to start from, but the anchor is then that build's *oldest*
-        # target — the same treatment a build id gets, with the build chosen
-        # automatically instead of by the operator.
-        #
-        # Anchoring directly at the newest completion would start recording
-        # mid-build: the watermark is inclusive but forward-only, so the rest of
-        # that build's already-finished targets would be skipped, while the
-        # checkpoint still names their build. "From now on" means from the start
-        # of the newest build, not from the middle of it.
-        latest = get_most_recent_successful_target(storage)
-        build_id = latest.build_id if latest is not None else None
-        target = (
-            get_oldest_successful_target(storage, build_id=build_id)
-            if build_id is not None
-            else None
-        )
+        build = get_most_recent_build(storage)
+        build_id = build.uuid if build is not None else None
     else:
-        # A specific build: anchor at that build's *oldest* target, not its
-        # newest. The watermark is inclusive but forward-only, so anchoring at the
-        # newest would silently exclude every earlier target of the very build the
-        # operator asked to record — and any concurrent build's targets in that
-        # window, which no later scan re-surfaces (see
-        # get_oldest_successful_target).
         build_id = spec
-        target = get_oldest_successful_target(storage, build_id=build_id)
-    # The selectors only return targets that have a finished_at, but their return
-    # type does not say so; check both so the anchor is provably non-null rather
-    # than assumed.
-    if target is None or target.finished_at is None:
+        found = storage.build_storage.get_by_uuid(build_id)
+        build = found if isinstance(found, StoredBuild) else None
+
+    if build is None or build.created_time is None:
         scope = f"build {build_id}" if build_id else "the admin DB"
         raise LineageSeedError(
-            f"No successful target with a finish time found in {scope}; "
+            f"No build with a creation time found for {scope}; "
             "nothing to anchor a checkpoint at."
         )
-    # Serialize as an aware timestamp keeping the target's own offset — the
-    # single format every writer of this key uses (see
-    # LineageWatcher._on_checkpoint_advance), and the same form the gb_targets
-    # row holds. `finished_at` is a DateTime(timezone=True) column, so Postgres
-    # hands it back aware while SQLite drops the offset; filling in the offset
-    # here means the stored string is one unambiguous instant either way and
-    # round-trips losslessly, instead of a naive value a reader has to guess the
-    # offset of.
+    # Serialize keeping the build's own offset. created_time is written by the
+    # storage layer via get_utc_time(), so it is aware UTC on Postgres, while
+    # SQLite's DateTime(timezone=True) column drops the offset on the way out;
+    # filling it in here means the stored string is one unambiguous instant either
+    # way instead of a naive value a reader has to guess the offset of.
     return {
-        "build_id": target.build_id,
-        "finished_at": as_aware(target.finished_at).isoformat(),
+        "build_id": build.uuid,
+        "created_time": as_aware(build.created_time).isoformat(),
+        "version": LINEAGE_WATCHER_CHECKPOINT_VERSION,
     }
 
 

@@ -63,9 +63,9 @@ logger = get_logger(__name__)
         "Seed the lineage checkpoint before the first scan, but only if it is "
         "not already set: 'from-latest' starts at the most recent build, 'all' "
         "walks the full history (expensive first scan), any other value is "
-        "treated as a build id. Either way the anchor is that build's oldest "
-        "completed target, so the build is recorded whole rather than from its "
-        "middle. Omit to use whatever is already in gb_kv_pairs "
+        "treated as a build id. The anchor is the build itself: it and every "
+        "build created after it are processed, so the anchored build is "
+        "recorded whole. Omit to use whatever is already in gb_kv_pairs "
         "(recording nothing while the key is absent). Never overwrites an "
         "existing checkpoint."
     ),
@@ -127,9 +127,9 @@ def cli(ctx: CliEnvironment, interval: float, base_build_id: str, force_build_id
         except LineageSeedError as exc:
             raise click.ClickException(str(exc)) from exc
     elif base_build_id:
-        # Seed-if-absent, before start(): the watcher's own _verify_checkpoint
-        # and first scan both read the key, so placing it here means the very
-        # first scan is already driven by it. A failure to resolve the anchor is
+        # Seed-if-absent, before start(): every scan re-reads the key, so placing
+        # it here means the very first scan is already driven by it. A failure to
+        # resolve the anchor is
         # fatal on purpose — the operator asked for a specific starting point,
         # and silently starting up with no checkpoint (recording nothing) would
         # look like a working watcher that never records.
