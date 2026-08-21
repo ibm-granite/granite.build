@@ -570,6 +570,60 @@ class TestLineageWatcher:
         # Dropped target is in the skip set so it stops wedging every scan.
         assert "target-p" in watcher._dropped
 
+    def test_deleted_run_is_dropped_without_retrying(self):
+        """A run id the sink deleted is unrecoverable, so it must not be retried.
+
+        wandb remembers a deleted run id and refuses it permanently. Run ids are
+        deterministic, so there is no new id to try: every retry is a guaranteed
+        failure that also pins the checkpoint at this target. It must drop on the
+        first sighting, not after the full attempt budget.
+        """
+        self._targets = [_target("build-d", "target-d", _BASE)]
+        watcher, store = self._make_watcher()
+        deleted_msg = (
+            "run 552f5de9-c0da-4bed-961d-d5b2624035d6-99237962-f197-469c-91c1-"
+            "e8c529bf9c5c was previously created and deleted; try a new run id"
+        )
+
+        def _raise_deleted(_storage, build_id, target_id):
+            raise RuntimeError(deleted_msg)
+
+        store.add_jobstats_for_build_target = _raise_deleted
+
+        watcher._reconcile()
+
+        # Dropped on the very first failure, with no retry budget spent.
+        assert "target-d" in watcher._dropped
+        assert watcher._failed_attempts == {}
+        assert self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY) == {
+            "target_ids": ["target-d"]
+        }
+
+    def test_deleted_run_is_detected_through_a_wrapped_exception(self):
+        """The rejection still counts when it arrives wrapped by another error.
+
+        The store re-raises from its own handlers, so the rejection can reach the
+        watcher as a ``__cause__``/``__context__`` rather than as the outermost
+        exception. Checking only the outer one would spend the whole retry budget.
+        """
+        inner = RuntimeError("run abc-def was previously created and deleted")
+        outer = RuntimeError("Failed to process lineage event")
+        outer.__cause__ = inner
+
+        assert LineageWatcher._is_permanent_sink_rejection(outer) is True
+
+    def test_transient_failure_still_gets_its_full_retry_budget(self):
+        """The drop-immediate path must not swallow ordinary retryable failures.
+
+        wandb raises the same exception type for transient network trouble, so a
+        false positive here would discard recoverable lineage without retrying.
+        """
+        exc = RuntimeError(
+            "HTTPSConnectionPool(...): Read timed out. (read timeout=19)"
+        )
+
+        assert LineageWatcher._is_permanent_sink_rejection(exc) is False
+
     def test_dropped_target_survives_restart_and_unblocks_checkpoint(self):
         """A permanently-dropped target must not come back after a restart.
 

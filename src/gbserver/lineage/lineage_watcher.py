@@ -125,12 +125,33 @@ class LineageWatcher:
     target that is never going to record. Dropping is a terminal decision, so it
     is durable; the per-target attempt *counts* stay in memory, since a restart
     may legitimately retry from zero.
+
+    One class of failure skips the retry budget entirely: a sink rejection that no
+    retry can clear, namely a run id the sink has seen created and deleted and
+    will not accept again. Run ids are deterministic (that is what makes
+    re-recording idempotent), so there is no new id to try and every attempt is a
+    guaranteed failure that also holds the checkpoint back. Such a target is
+    dropped on first sighting — see ``_is_permanent_sink_rejection``.
     """
 
     # A target whose lineage recording keeps failing is retried this many times
     # on subsequent scans before being dropped, so a transient failure (e.g. a
     # network blip) is recovered without a persistent failure wedging the scan.
     _MAX_RECORD_ATTEMPTS = 3
+
+    # Substring identifying a sink rejection that no retry can clear: the run id
+    # was created and then deleted in the sink, which remembers the id as deleted
+    # and refuses it permanently ("... was previously created and deleted; try a
+    # new run id"). Matched on the message rather than the exception type because
+    # wandb raises the same CommError for ordinary transient network failures,
+    # which MUST stay retryable — the type alone cannot separate them.
+    #
+    # The sink's advice ("try a new run id") is not actionable here: run ids are
+    # derived deterministically from the target and output uuids
+    # (WandBLineageStore._build_events_for_target), and that determinism is what
+    # makes re-recording idempotent. Changing it to dodge a deleted id would
+    # trade a bounded, visible gap for silent duplicate lineage everywhere else.
+    _PERMANENT_SINK_REJECTION = "previously created and deleted"
 
     def __init__(self, monitoring_interval: float = 30.0) -> None:
         """Initialize the LineageWatcher.
@@ -958,6 +979,30 @@ class LineageWatcher:
         zero (the failure may well have been the crash itself). Only the terminal
         decision is durable.
         """
+        if self._is_permanent_sink_rejection(exc):
+            # No number of retries can clear this, so spend none: retrying would
+            # be _MAX_RECORD_ATTEMPTS scans of guaranteed failures against the
+            # sink, and would hold the checkpoint at this target the whole time
+            # (it never advances past unrecorded lineage). Drop on the first
+            # sighting instead, and say plainly why — this is an operational
+            # condition (someone deleted runs in the sink), not a flaky write, and
+            # the operator's response is different.
+            self._failed_attempts.pop(target_id, None)
+            self._dropped.add(target_id)
+            self._persist_dropped(storage)
+            logger.error(
+                "The lineage sink permanently rejected the run id for target %s "
+                "in build %s: its run was created and then deleted in the sink, "
+                "which will not accept that id again. Run ids are derived "
+                "deterministically from the target, so no retry can succeed; "
+                "dropping this target's lineage without retrying. Its lineage "
+                "will stay absent from the sink unless the deleted run is "
+                "restored there. Underlying error: %s",
+                target_id,
+                build_id,
+                exc,
+            )
+            return
         attempts = self._failed_attempts.get(target_id, 0) + 1
         if attempts >= self._MAX_RECORD_ATTEMPTS:
             self._failed_attempts.pop(target_id, None)
@@ -983,6 +1028,30 @@ class LineageWatcher:
                 self._MAX_RECORD_ATTEMPTS,
                 exc,
             )
+
+    @classmethod
+    def _is_permanent_sink_rejection(cls, exc: Exception) -> bool:
+        """Whether ``exc`` is a sink rejection that retrying can never clear.
+
+        Walks the exception chain rather than checking only ``exc``: the failure
+        surfaces from the store's own ``except`` blocks, so the rejection can
+        arrive wrapped (``raise ... from`` sets ``__cause__``; a bare re-raise
+        inside a handler sets ``__context__``). Matching only the outermost
+        exception would miss it and spend the full retry budget.
+
+        Deliberately conservative — a false negative just means the target takes
+        the normal retry path (the pre-existing behavior), while a false positive
+        would drop a recoverable target's lineage without retrying. That is why
+        this matches a specific message rather than an exception type.
+        """
+        seen: set[int] = set()
+        current: Optional[BaseException] = exc
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if cls._PERMANENT_SINK_REJECTION in str(current):
+                return True
+            current = current.__cause__ or current.__context__
+        return False
 
     def stop(self, timeout: float = 5.0) -> None:
         """Signal the watcher thread to stop and wait for it to exit.
