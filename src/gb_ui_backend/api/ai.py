@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from gb_ui_backend.config import Config, get_config
 from gb_ui_backend.services.db_schema import GbdMeta, get_db
+from gb_ui_backend.services.request_identity import resolve_identity
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,10 +38,9 @@ def _rate_limit_analyze_logs(request: Request) -> None:
     X-User-Email header and client IP are fallbacks for running this app
     standalone, outside gbserver, where there's no AuthMiddleware at all.
     """
-    user = getattr(request.state, "data", {}).get("user")
-    identity = (
-        user.email if user is not None else request.headers.get("x-user-email")
-    ) or (request.client.host if request.client else "unknown")
+    identity = resolve_identity(
+        request, fallback=request.client.host if request.client else "unknown"
+    )
     now = time.monotonic()
     recent = [
         t
