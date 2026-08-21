@@ -128,17 +128,23 @@ gb build describe -f template/build.yaml --raw --param ENVIRONMENT=skypilot/aws 
 # 2. Generate the initial buildtest.yaml from the executable build.
 gbtest render exec-build.yaml -o buildtest.yaml
 
-# 3. Edit buildtest.yaml to confirm the verification values — replace every FIXME
-#    (step_count, jobstats_count). See "gbtest render" below.
+# 3. Edit buildtest.yaml to confirm the verification values — replace the
+#    step_count FIXME. See "gbtest render" below.
 
 # 4. Run it — -f points gbtest at the executable build.
 gbtest buildtest.yaml -f exec-build.yaml
 ```
 
-`gb build describe --raw` (or `gb build start --dry-run --save-build-file <file>`)
-is the entry point for parameter substitution — both reuse the same engine as
-`gb build start`, so `gb` stays the single source of truth; `gbtest` only
-*consumes* an executable `build.yaml`.
+`gb build describe --raw` (or `gb build start --dry-run`) is the entry point for
+parameter substitution — both reuse the same engine as `gb build start`, so `gb`
+stays the single source of truth; `gbtest` only *consumes* an executable
+`build.yaml`.
+
+Both write the resolved `build.yaml` verbatim to **stdout** (no banner, so
+`… > exec-build.yaml` is pipe-safe); status/confirmation messages go to
+**stderr**. `gb build start --dry-run --save-build-file <file>` writes the
+resolved build to `<file>` instead and prints only a `✅ wrote …` note (to
+stderr).
 
 ### `gbtest render`
 
@@ -147,16 +153,17 @@ a **skeleton** `buildtest.yaml` (to stdout, or to `-o`). It:
 
 - derives `input_artifact_count` / `output_artifact_count` from each target's
   declared inputs/outputs;
-- emits `FIXME` for the values it cannot determine statically — `step_count`
-  (environment-dependent) and `jobstats_count` — which you must replace;
+- emits a `FIXME` for `step_count`, the one value it cannot determine statically
+  (it is environment-dependent), which you must replace;
+- defaults `jobstats_count` to `-1` (skip) — jobstats are not asserted at run
+  time yet, so it is not forced to a value;
 - pre-sets `simulate_step_failure: false` (no step-retry testing) and
   `tests: [runner]` (no cancellation run).
 
-The `FIXME` placeholders **fail validation** if left unreplaced: loading the spec
+The `step_count` `FIXME` **fails validation** if left unreplaced: loading the spec
 (on any `gbtest` run) raises a clear error naming the field, so you cannot
 accidentally run a half-filled skeleton. Replace `step_count` with the observed
-step count (or `-1` to skip that assertion) and `jobstats_count` with the expected
-value.
+step count (or `-1` to skip that assertion).
 
 > `output_artifact_count` counts *declared* outputs; a declared output whose
 > command emits no `LLMB_ARTIFACT` marker will over-count — the first real run

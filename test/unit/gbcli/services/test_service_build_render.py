@@ -19,7 +19,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from click.testing import CliRunner
 
+from gbcli.commands.command_build import cli as build_cli
 from gbcli.services.service_build import build_describe, build_start
 
 _PARAM_BUILD = (
@@ -120,6 +122,26 @@ def test_describe_raw_missing_param_reports_error(tmp_path):
     assert result is None
     reasons = [a["reason"] for e, a in events if e == "error"]
     assert any("missing parameter" in r and "NOPE" in r for r in reasons)
+
+
+def test_describe_raw_rejects_param_with_build_id():
+    # A stored build_id is already fully resolved, so --param/--parameters-path
+    # must not be re-applied to it; the CLI rejects the combination outright
+    # rather than silently ignoring the params (PR #280 review, item #1).
+    runner = CliRunner()
+    result = runner.invoke(
+        build_cli,
+        [
+            "describe",
+            "00000000-0000-0000-0000-000000000000",
+            "--raw",
+            "--param",
+            "SUFFIX=1",
+            "--skip-version-check",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "cannot be combined with a build_id" in result.output
 
 
 # --- gb build start --dry-run --save-build-file (offline, no auth/space/submit) ---

@@ -1510,7 +1510,11 @@ def build_describe(
             # through the same engine `gb build start` uses, so `gb` stays the
             # single source of truth for rendering (issue #278). With no params
             # this stays a verbatim dump of the (possibly parameterized) file.
-            if params or parameters_path:
+            # Only the local-file path is a template: a server-fetched build_id
+            # is already fully resolved (params were evaluated at submit time),
+            # so re-applying params there is meaningless and, under
+            # StrictUndefined, could spuriously fail on `$${...}`-looking text.
+            if (params or parameters_path) and not build_id:
                 params_file = (
                     Path(parameters_path)
                     if parameters_path

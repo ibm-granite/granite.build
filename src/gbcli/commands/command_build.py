@@ -496,12 +496,12 @@ def init(
     "--dry-run",
     is_flag=True,
     default=False,
-    help="Resolve parameters and output the executable build.yaml WITHOUT submitting (offline; no auth/space needed). Pairs with --save-build-file.",
+    help="Resolve parameters and output the executable build.yaml WITHOUT submitting (offline in standalone; no auth/space needed). Without --save-build-file the resolved build.yaml is written verbatim to stdout (pipe-friendly); status messages go to stderr.",
 )
 @click.option(
     "--save-build-file",
     type=click.Path(dir_okay=False, writable=True),
-    help="With --dry-run, write the resolved build.yaml here (default: stdout).",
+    help="With --dry-run, write the resolved build.yaml here instead of stdout (a '✅ wrote ...' note goes to stderr).",
 )
 @click.option(
     "--parameters-path",
@@ -2337,6 +2337,15 @@ def describe(
     if filename and build_id:
         click.echo(
             f"❌ build describe can not be run with both a build_id and a filename. Please select one of the two options",
+            err=True,
+        )
+        sys.exit(1)  # Exit with a non-zero status
+
+    if build_id and (param or parameters_path):
+        click.echo(
+            "❌ --param/--parameters-path cannot be combined with a build_id: a "
+            "stored build is already fully resolved (parameters were evaluated at "
+            "submit time). Pass a local -f build.yaml to render a parameterized template.",
             err=True,
         )
         sys.exit(1)  # Exit with a non-zero status
