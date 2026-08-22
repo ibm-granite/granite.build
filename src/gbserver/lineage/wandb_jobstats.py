@@ -354,9 +354,29 @@ class WandBLineageStore(ILineageStore):
                 # deletions; see commit 5824ae99 and the extended note in
                 # WandBLineageService.filter_unrecorded, which also explains the
                 # partial-record trade-off this buys and why it is accepted.
+                #
+                # Tag the run with the output artifact it represents. base_event
+                # cannot carry this: its tags are shared by every event of the
+                # target, while output_uuid identifies just this one. Run ids are
+                # random and carry no output information, so without this tag the
+                # only way to find the run for a given output is to fetch the
+                # target's runs and inspect their outputs facet; with it the
+                # lookup is a tag filter like the target_id ones above.
+                #
+                # Additive only: it does not affect dedup. filter_unrecorded
+                # matches on "target_id=" tags and skips every other key, and
+                # tags serialize generically as "k=v"
+                # (WandBLineageService._process_event), so nothing else changes.
                 event["run"] = {
                     **base_event["run"],
                     "runId": get_uuid(),
+                    "facets": {
+                        **base_event["run"]["facets"],
+                        "tags": {
+                            **base_event["run"]["facets"]["tags"],
+                            "output_id": output_uuid,
+                        },
+                    },
                 }
                 _add_jobstats_mirror_fields(event)
                 target_events.append(event)
