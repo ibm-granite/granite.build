@@ -133,9 +133,10 @@ def _clear_dropped_targets(storage) -> None:
     is_flag=True,
     default=False,
     help=(
-        "Replace an existing checkpoint instead of keeping it. Moving the anchor "
-        "back re-drives lineage already recorded; moving it forward skips lineage "
-        "for good."
+        "Replace an existing checkpoint instead of keeping it. Requires --build-id: "
+        "it qualifies a seed and does nothing on its own. Moving the anchor back "
+        "re-drives lineage already recorded; moving it forward skips lineage for "
+        "good."
     ),
 )
 @click.option(
@@ -159,7 +160,9 @@ def _clear_dropped_targets(storage) -> None:
     default=False,
     help=(
         "Print the current checkpoint and dropped-target set, then exit without "
-        "writing anything."
+        "writing anything. Must be passed alone: combining it with --build-id, "
+        "--force or --clear-dropped-targets is an error rather than a silently "
+        "ignored write."
     ),
 )
 @pass_environment
@@ -173,13 +176,43 @@ def cli(
     """Seed the lineage checkpoint (gb_kv_pairs) without running the watcher."""
     storage = get_admin_storage()
 
+    if show and (clear_dropped_targets or build_id is not None or force):
+        # --show returned early, so a write flag passed alongside it was silently
+        # ignored and the command still exited 0 -- an operator or setup script
+        # reasonably reads that as "shown and done", while the targets stay skipped
+        # forever. Reject rather than guess an order, as lineage-watch does for its
+        # two mutually exclusive anchors.
+        conflicting = ", ".join(
+            flag
+            for flag, given in (
+                ("--build-id", build_id is not None),
+                ("--force", force),
+                ("--clear-dropped-targets", clear_dropped_targets),
+            )
+            if given
+        )
+        raise click.ClickException(
+            f"--show is read-only and cannot be combined with {conflicting}; run "
+            "them as separate commands."
+        )
+
     if show:
         existing = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
-        if existing is None:
-            click.echo(
-                f"No lineage checkpoint under {LINEAGE_WATCHER_CHECKPOINT_KEY}. "
-                "The watcher records nothing until one is seeded."
-            )
+        # `not existing`, not `is None`: _read_checkpoint_value treats an empty value
+        # as absent and records nothing, so testing identity here would report a {}
+        # row as a seeded checkpoint -- disagreeing with the watcher in exactly the
+        # case --show exists to diagnose.
+        if not existing:
+            if existing is None:
+                detail = f"No lineage checkpoint under {LINEAGE_WATCHER_CHECKPOINT_KEY}"
+            else:
+                # Distinguish "never seeded" from "seeded with something unusable":
+                # both record nothing, but only the second needs the row cleaned up.
+                detail = (
+                    f"No usable lineage checkpoint under "
+                    f"{LINEAGE_WATCHER_CHECKPOINT_KEY} (value: {json.dumps(existing)})"
+                )
+            click.echo(f"{detail}. The watcher records nothing until one is seeded.")
         else:
             click.echo(f"{LINEAGE_WATCHER_CHECKPOINT_KEY} = {json.dumps(existing)}")
         # Report the drop set too: a dropped target is skipped on every scan, so an
@@ -194,6 +227,15 @@ def cli(
         else:
             click.echo(f"{LINEAGE_WATCHER_DROPPED_KEY}: no targets dropped.")
         return
+
+    if force and build_id is None:
+        # --force only qualifies a seed (replace-if-present), so alone or with just
+        # --clear-dropped-targets it has nothing to act on. Saying so names the flag
+        # the operator actually typed, instead of letting it fall through to a
+        # "Nothing to do" message that lists every flag except that one.
+        raise click.ClickException(
+            "--force only applies when seeding; pass --build-id with it, or drop it."
+        )
 
     if clear_dropped_targets and build_id is None:
         # Clearing alone is a complete operation: the checkpoint is untouched, and

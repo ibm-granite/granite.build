@@ -94,10 +94,14 @@ class TestLineageInitCommand:
         assert "--force" in result.output, "say how to override it"
 
     def test_show_reports_the_current_checkpoint_without_writing(self):
-        """``--show`` is read-only: it must not call the seeding path at all."""
+        """``--show`` is read-only: it must not call the seeding path at all.
+
+        Called alone -- passing --build-id alongside it is now rejected outright
+        rather than silently ignored (see test_show_must_be_called_alone).
+        """
         self._stored[LINEAGE_WATCHER_CHECKPOINT_KEY] = _CHECKPOINT
         with patch(f"{MODULE}.seed_if_absent") as seed:
-            result = self._run("--build-id", "from-latest", "--show")
+            result = self._run("--show")
 
         assert result.exit_code == 0, result.output
         assert "b-1" in result.output
@@ -107,7 +111,7 @@ class TestLineageInitCommand:
     def test_show_says_so_when_nothing_is_seeded_yet(self):
         """The unseeded state is the one an operator is diagnosing; name it."""
         self._stored.clear()
-        result = self._run("--build-id", "from-latest", "--show")
+        result = self._run("--show")
 
         assert result.exit_code == 0, result.output
         assert "No lineage checkpoint" in result.output
@@ -203,6 +207,75 @@ class TestLineageInitCommand:
 
         assert result.exit_code != 0
         assert "target_ids" in result.output
+        self.storage.kv_pair_storage.set_value.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [
+            ["--clear-dropped-targets"],
+            ["--build-id", "b-1"],
+            ["--force", "--build-id", "b-1"],
+            ["--force"],
+            ["--clear-dropped-targets", "--build-id", "b-1"],
+        ],
+    )
+    def test_show_must_be_called_alone(self, extra_args):
+        """``--show`` is read-only, so a write flag beside it is an error.
+
+        It used to return early and exit 0 with the write silently dropped, which an
+        operator or setup script reads as "shown and done" while the state is
+        unchanged. The message names the offending flag rather than guessing an order.
+        """
+        self._stored[LINEAGE_WATCHER_DROPPED_KEY] = {"target_ids": ["t-1"]}
+        with patch(f"{MODULE}.seed_if_absent") as seed:
+            result = self._run("--show", *extra_args)
+
+        assert result.exit_code != 0
+        assert "--show is read-only" in result.output
+        for flag in (a for a in extra_args if a.startswith("--")):
+            assert flag in result.output, f"{flag} was not named in: {result.output}"
+        seed.assert_not_called()
+        self.storage.kv_pair_storage.set_value.assert_not_called()
+
+    def test_show_alone_still_works(self):
+        """The guard must not break the read-only path it protects."""
+        self._stored[LINEAGE_WATCHER_CHECKPOINT_KEY] = _CHECKPOINT
+        result = self._run("--show")
+
+        assert result.exit_code == 0, result.output
+        assert "b-1" in result.output
+        self.storage.kv_pair_storage.set_value.assert_not_called()
+
+    @pytest.mark.parametrize("stored", [{}, [], ""])
+    def test_show_reports_an_empty_checkpoint_as_unusable(self, stored):
+        """An empty value records nothing, so --show must not call it seeded.
+
+        ``_read_checkpoint_value`` tests ``if not value``, so reporting presence with
+        ``is None`` here would disagree with the watcher in the one case the flag
+        exists to diagnose.
+        """
+        self._stored[LINEAGE_WATCHER_CHECKPOINT_KEY] = stored
+        result = self._run("--show")
+
+        assert result.exit_code == 0, result.output
+        assert "No usable lineage checkpoint" in result.output
+        assert "records nothing until one is seeded" in result.output
+
+    @pytest.mark.parametrize(
+        "args", [["--force"], ["--force", "--clear-dropped-targets"]]
+    )
+    def test_force_without_a_build_id_names_force(self, args):
+        """--force only qualifies a seed, so alone it must say so.
+
+        It previously fell through to "Nothing to do", which lists every other flag
+        but never the one the operator actually typed.
+        """
+        self._stored[LINEAGE_WATCHER_DROPPED_KEY] = {"target_ids": ["t-1"]}
+        result = self._run(*args)
+
+        assert result.exit_code != 0
+        assert "--force only applies when seeding" in result.output
+        # The clear must not have happened either: --force was rejected first.
         self.storage.kv_pair_storage.set_value.assert_not_called()
 
     def test_clearing_dropped_targets_leaves_the_checkpoint_alone(self):

@@ -454,13 +454,23 @@ class LineageWatcher:
                 # how the bug surfaced (lineage recorded only after a service
                 # restart).
                 #
-                # Finished: the build will never gain a target, so the emptiness is
-                # final and the confirmation is honest -- it is cached above. It has
-                # to be: _advance_checkpoint requires the anchor in this set, so
+                # Finished: the emptiness is treated as final and cached above. It
+                # has to be: _advance_checkpoint requires the anchor in this set, so
                 # discarding a finished build here would wedge the mark on it
                 # forever and block every newer build's lineage behind it. That
                 # includes every FAILED build, which select_builds_from_checkpoint
                 # does not filter out and which therefore does become an anchor.
+                #
+                # "Finished" is very nearly "will never gain a target", but not
+                # quite: finalize_build_status (buildrunner/build_utils.py) re-runs
+                # entity finalization precisely because targets can be stored
+                # concurrently with a previous finalization call -- a target row can
+                # still appear after the build row reads terminal. When that happens
+                # the skip gate below never re-reads this build, and the checkpoint
+                # advances past it, losing that lineage until a restart. That is the
+                # accepted side of the trade: the alternative wedges the mark on
+                # every finished build with no recordable targets, which is the
+                # common case, not the race.
                 self._complete_builds.discard(build.uuid)
 
         advanced = self._advance_checkpoint(storage, anchor_build_id, builds)
