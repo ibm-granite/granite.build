@@ -983,10 +983,11 @@ def build_list(
             "build_id": b.get("uuid", ""),
             "name": b.get("name", ""),
             "user": b.get("username", ""),
-            # No padding needed: humanize_iso_date parses every spelling
-            # gbserver emits (ISO with/without microseconds or offset, and
-            # SQLAlchemy's space-separated column form).
-            "start_time": b.get("created_time", ""),
+            "start_time": (
+                b.get("created_time", "") + ".000000Z"
+                if len(b.get("created_time", "")) == 19
+                else b.get("created_time", "")
+            ),
             "status": (
                 str(b.get("status", "")).capitalize()
                 if b.get("status", "") != ""
