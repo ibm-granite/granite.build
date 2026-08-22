@@ -121,18 +121,6 @@ _BUILD_SCAN_PAGE_SIZE = 200
 # would make every log line and hand-seeded value a lie.
 LINEAGE_WATCHER_CHECKPOINT_VERSION = 2
 
-# Build statuses that count as finished, by NAME. The storage layer writes
-# `item.status.name` into the status column (build_storage._get_column_values),
-# while Status is a StrEnum whose *value* is lowercase -- so comparing or
-# filtering with Status.SUCCESS ("success") silently matches nothing against a
-# column holding "SUCCESS". Derived from is_finished() rather than listed by hand
-# so a newly added finished status cannot quietly fall out of the set.
-#
-# is_finished() excludes RETRY_PENDING, which is correct here: a build queued for
-# a retry can still produce targets, so the checkpoint must not advance past it.
-_FINISHED_BUILD_STATUS_NAMES = sorted(s.name for s in Status if s.is_finished())
-
-
 # Substrings identifying a dedup-query failure that no retry can clear: the sink
 # is reachable but will never answer this query as configured (bad project or
 # entity, invalid or unauthorized credentials). Recording is switched off rather
@@ -179,20 +167,6 @@ def is_permanent_sink_failure(exc: BaseException) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
-
-
-_PASSTHROUGH_FACET_KEYS = ("job_input_params", "execution_stats")
-_JOB_DETAIL_KEYS = (
-    "job_id",
-    "job_type",
-    "category",
-    "job_status",
-    "job_started_at",
-    "job_completed_at",
-    "release_id",
-    "owner",
-    "job_output_stats",
-)
 
 
 def record_target_lineage(
@@ -582,7 +556,23 @@ def reconcile_build(
         # never record, which is what the durable dropped set exists to prevent.
         return ReconcileResult(all_confirmed=True, dropped=skipped)
 
-    expected = {t.uuid: expected_run_count(t) for t in targets if t.uuid in candidates}
+    # Expected run count per candidate, so ``filter_unrecorded`` can tell a
+    # fully-recorded target from one whose runs were only partially emitted by a
+    # prior crashed scan. Derived in memory from the already-loaded targets — no
+    # extra storage read.
+    #
+    # A skipped-for-prerun target is omitted: it records the *original* target's
+    # outputs (see WandBJobStats.create_jobstats_for_target, which swaps in the
+    # original before building events), so its own output_artifacts would give the
+    # wrong count. Omitting it falls back to the presence check (>=1), which is
+    # the conservative direction: a too-high count would report the target
+    # unrecorded on every scan and, since run ids are random, write a fresh
+    # duplicate run set each time while pinning the checkpoint forever.
+    expected = {
+        t.uuid: expected_run_count(t)
+        for t in targets
+        if t.uuid in candidates and not t.skipped_for_prerun_target_id
+    }
 
     failure: Optional[Exception] = None
 

@@ -550,6 +550,66 @@ class TestReconcileBuild:
 
         assert store.last_expected_counts == {"t1": 2, "t2": 1}
 
+    def test_prerun_skipped_target_is_omitted_from_expected_counts(self):
+        """A skipped-for-prerun target must fall back to the presence check.
+
+        Such a target records the *original* target's outputs (WandBJobStats.
+        create_jobstats_for_target swaps the original in before building events),
+        so a count derived from its own output_artifacts describes different
+        artifacts than the ones actually emitted. Omitting it from
+        expected_counts is what makes filter_unrecorded fall back to >=1; a
+        wrong count in the too-high direction would report the target unrecorded
+        on every scan and, since run ids are random, write a fresh duplicate run
+        set each time while the build never became all_confirmed.
+
+        't2' here is the shape that would break: one output of its own against an
+        original that emits more, so it must be absent from the dict rather than
+        present with a 1.
+        """
+        storage = _admin_storage_with(
+            [
+                _target(
+                    "b1",
+                    "t1",
+                    finished_at=_BASE,
+                    output_artifacts={"a": ["o1", "o2"]},
+                ),
+                _target(
+                    "b1",
+                    "t2",
+                    finished_at=_BASE,
+                    output_artifacts={"a": ["o3"]},
+                    skipped_for_prerun_target_id="original-target",
+                ),
+            ]
+        )
+        store = _StubStore()
+
+        reconcile_build(store, storage, build_id="b1")
+
+        assert store.last_expected_counts == {"t1": 2}
+
+    def test_prerun_skipped_target_is_still_recorded(self):
+        """Omitting it from the counts must not exclude it from recording."""
+        storage = _admin_storage_with(
+            [
+                _target(
+                    "b1",
+                    "t2",
+                    finished_at=_BASE,
+                    output_artifacts={"a": ["o3"]},
+                    skipped_for_prerun_target_id="original-target",
+                ),
+            ]
+        )
+        store = _StubStore()
+
+        result = reconcile_build(store, storage, build_id="b1")
+
+        assert store.recorded_calls == [("b1", "t2")]
+        assert result.newly_recorded == 1
+        assert result.all_confirmed
+
     # ---- fail-closed dedup -----------------------------------------------
 
     def test_dedup_failure_records_nothing(self):
