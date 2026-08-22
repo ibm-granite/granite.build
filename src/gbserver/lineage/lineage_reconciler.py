@@ -509,6 +509,19 @@ class ReconcileResult:
             can classify it as permanent or transient.
         dropped: Targets skipped because they are in the caller's permanent-drop
             set. Present so the caller can log the resulting known gap.
+        had_no_targets: The build had no recordable target at all this pass. It is
+            reported ``all_confirmed`` so the checkpoint can still pass a finished
+            build that genuinely produces no lineage, but the confirmation rests on
+            an *empty* set -- the sink was never asked anything. The caller must not
+            cache that as "this build is done, stop re-reading its targets".
+
+            The build row and its target rows are separate, non-transactional
+            writes, and a scan lands at an arbitrary point between them: a build
+            read while still RUNNING has no target rows yet. Its targets are
+            persisted before it reaches SUCCESS (buildrunner drains one FIFO with a
+            single consumer, and finalize_build_status commits children before the
+            parent), so they are there on a later scan -- but only if the caller
+            still looks.
     """
 
     newly_recorded: int = 0
@@ -516,6 +529,7 @@ class ReconcileResult:
     dedup_query_failed: bool = False
     query_failure: Optional[Exception] = None
     dropped: set[str] = field(default_factory=set)
+    had_no_targets: bool = False
 
 
 def reconcile_build(
@@ -564,7 +578,14 @@ def reconcile_build(
     if not targets:
         # No recordable target: nothing to write and nothing outstanding, so the
         # build is trivially confirmed and the checkpoint may pass it.
-        return ReconcileResult(all_confirmed=True)
+        #
+        # Flagged as empty, though, because this confirmation is not a sink answer:
+        # with no target to ask about, filter_unrecorded was never called. A build
+        # read while still RUNNING lands here (its target rows are written before it
+        # reaches SUCCESS, but this scan ran before that). If the caller caches this
+        # as complete, its finished-and-complete skip gate stops re-reading the
+        # targets and the lineage is never recorded.
+        return ReconcileResult(all_confirmed=True, had_no_targets=True)
 
     skipped = {t.uuid for t in targets if t.uuid in dropped}
     candidates = {t.uuid for t in targets if t.uuid not in dropped}

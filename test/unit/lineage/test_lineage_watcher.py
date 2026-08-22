@@ -346,6 +346,47 @@ class TestLineageWatcher:
         watcher._reconcile()
         assert self._checkpoint_build() == "B"
 
+    def test_targets_appearing_after_an_empty_scan_are_still_recorded(self):
+        """A build scanned while it had no targets must be re-read once it has them.
+
+        The real sequence from production: the watcher selects a build that is still
+        RUNNING and has no gb_targets rows yet. That pass has nothing to record, so
+        it reports all_confirmed -- a finished build with genuinely no lineage must
+        not pin the checkpoint. But the confirmation rests on an empty set; the sink
+        was never asked about anything.
+
+        Caching that as complete is the bug: the skip gate is "cached complete AND
+        finished", and when the build then succeeds and its target appears, both
+        halves hold and the build is skipped without ever re-reading its targets.
+        The lineage was recorded only after a service restart, which is the one
+        thing that clears the in-memory set.
+        """
+        watcher, store = self._make_watcher()
+        build = _build("B1", _BASE, Status.RUNNING)
+        self._builds = [build]
+        self._targets = []
+        self._seed("B1", _BASE)
+
+        watcher._reconcile()
+        assert store.calls == [], "nothing to record while the build has no targets"
+        assert "B1" not in watcher._complete_builds, (
+            "an empty pass must not be cached as complete: the sink was never asked "
+            "about any target, so there is nothing to skip re-reading later"
+        )
+
+        # By the time the build reads SUCCESS its target rows are already persisted
+        # (buildrunner finalizes children before the parent), so a later scan sees
+        # both -- provided the build was not cached as complete by the empty pass.
+        build.status = Status.SUCCESS
+        self._targets = [_target("B1", "t-b1")]
+
+        watcher._reconcile()
+        recorded = {target_id for _build_id, target_id in store.calls}
+        assert recorded == {"t-b1"}, (
+            "the target that appeared after the empty scan must be recorded without "
+            "needing a restart to clear the completed-build cache"
+        )
+
     def test_checkpoint_never_steps_off_a_non_finished_build(self):
         """The mark never leaves a running build, never jumping past it to C.
 

@@ -375,9 +375,17 @@ class LineageWatcher:
                     ", ".join(sorted(result.dropped)),
                 )
 
-            if result.all_confirmed:
+            if result.all_confirmed and not result.had_no_targets:
                 self._complete_builds.add(build.uuid)
             else:
+                # An empty pass is deliberately NOT cached, even though it reports
+                # all_confirmed so the checkpoint can pass a finished build with no
+                # lineage of its own. Caching it would set the skip gate below on a
+                # build whose targets do not exist yet: a build selected while
+                # RUNNING has none, and when it finishes and its targets appear the
+                # gate ("cached complete AND finished") would skip re-reading them
+                # forever. Only a restart cleared this set, which is exactly how the
+                # bug surfaced -- the lineage recorded only after a service restart.
                 self._complete_builds.discard(build.uuid)
 
         advanced = self._advance_checkpoint(storage, anchor_build_id, builds)
