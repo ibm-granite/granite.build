@@ -450,8 +450,10 @@ class LineageWatcher:
         anchor_index = next(
             (i for i, b in enumerate(builds) if b.uuid == anchor_build_id), None
         )
-        anchor = builds[anchor_index] if anchor_index is not None else None
-        if anchor is None:
+        # Branch on the index rather than on a separate `anchor is None` check: the
+        # two are equivalent at runtime, but narrowing the index here is what lets
+        # the successor slice below use it as an int without a second guard.
+        if anchor_index is None:
             # No anchor row to gate on. Two very different reasons:
             #
             # The backfill sentinel names no build by construction, so it is never
@@ -466,6 +468,7 @@ class LineageWatcher:
             if anchor_build_id != BACKFILL_BUILD_ID:
                 return False
             return self._write_checkpoint(storage, builds[0])
+        anchor = builds[anchor_index]
         # The gate: the mark may leave the anchor only once the anchor can no
         # longer gain lineage and everything it has is in the sink. A running
         # anchor, or one whose targets failed to record, holds the mark — stepping
