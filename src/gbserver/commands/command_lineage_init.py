@@ -86,12 +86,10 @@ def _clear_dropped_targets(storage) -> None:
     Writes an empty list rather than deleting the key, so the shape stays what
     ``LineageWatcher._load_dropped`` expects on its next start.
 
-    Stop the watcher before calling this. ``_dropped`` is loaded once in ``start()``,
-    not per scan (unlike the checkpoint, which is re-read every scan), and
-    ``_persist_dropped`` writes the whole in-memory set. So a running watcher not
-    only misses the clear -- the next target it drops persists its stale full set,
-    resurrecting every id cleared here, and a later restart reloads them. Clearing
-    is only durable while the watcher is down.
+    A running watcher picks this up on its next scan: ``_load_dropped`` re-reads the
+    row every scan (like the checkpoint) and treats it as authoritative, so no
+    restart is needed and the clear cannot be undone by the watcher rewriting a stale
+    in-memory set.
     """
     target_ids = _read_dropped_target_ids(storage)
     if not target_ids:
@@ -105,9 +103,7 @@ def _clear_dropped_targets(storage) -> None:
     summary = (
         f"Cleared {len(target_ids)} dropped target(s) from "
         f"{LINEAGE_WATCHER_DROPPED_KEY}: {', '.join(sorted(target_ids))}. "
-        "This only sticks while the watcher is stopped: a running watcher loads the "
-        "drop set once at start() and rewrites its whole in-memory set on the next "
-        "drop, which would restore what was just cleared."
+        "A running watcher retries them on its next scan; no restart needed."
     )
     storage.kv_pair_storage.set_value(LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": []})
     click.echo(summary)
@@ -145,11 +141,9 @@ def _clear_dropped_targets(storage) -> None:
     default=False,
     help=(
         "Clear the set of TARGET ids the watcher permanently gave up on (after "
-        "exhausting its record attempts) so they are retried. Stop the watcher "
-        "first: it loads the drop set once at start() (unlike the checkpoint, "
-        "re-read every scan) and rewrites the whole set on its next drop, which "
-        "would restore what was cleared. Moving the anchor back does "
-        "NOT clear them, which is why this exists -- the drop decision is durable "
+        "exhausting its record attempts) so they are retried. A running watcher "
+        "picks this up on its next scan, no restart needed. Moving the anchor back "
+        "does NOT clear them, which is why this exists -- the drop decision is durable "
         "on purpose, and a dropped target is otherwise skipped forever. Only "
         "useful once whatever made recording fail is fixed."
     ),
@@ -238,9 +232,8 @@ def cli(
         )
 
     if clear_dropped_targets and build_id is None:
-        # Clearing alone is a complete operation: the checkpoint is untouched, and
-        # the watcher retries the targets once it is (re)started -- it reads the drop
-        # set only in start(), so a running watcher would not pick this up.
+        # Clearing alone is a complete operation: the checkpoint is untouched, and a
+        # running watcher retries the targets on its next scan.
         _clear_dropped_targets(storage)
         return
 

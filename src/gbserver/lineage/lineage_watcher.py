@@ -113,6 +113,13 @@ class LineageWatcher:
         # unrecorded lineage: an in-memory-only drop set would let a dropped target
         # return after a restart and block the checkpoint forever.
         self._dropped: set[str] = set()
+        # Drops this process decided but could not persist (_persist_dropped is
+        # non-raising, so a kv failure leaves the decision in memory only). Tracked
+        # separately because _load_dropped re-reads the durable row every scan and
+        # takes it as authoritative: without this, an unpersisted drop would be
+        # dropped from the set on the next scan and the target re-recorded forever,
+        # while a *persisted* id must follow the row so an operator's clear lands.
+        self._dropped_unpersisted: set[str] = set()
         # target_uuid -> attempts so far, for targets to retry on a later scan.
         self._failed_attempts: dict[str, int] = {}
         # Builds whose lineage the sink has confirmed complete this process. Two
@@ -145,8 +152,12 @@ class LineageWatcher:
 
         self._store = get_lineage_store()
         storage = get_admin_storage()
-        # Load the durable drop set before the first scan, so a target already
-        # given up on stays skipped instead of blocking the checkpoint again.
+        # Load the durable drop set up front so a target already given up on stays
+        # skipped from the first scan. _reconcile re-reads it every scan too; this
+        # only makes the state correct before the thread is running, and resets it
+        # when start() runs again on an instance a previous stop() left populated.
+        self._dropped = set()
+        self._dropped_unpersisted = set()
         self._load_dropped(storage)
         self.worker_thread = threading.Thread(
             target=self._run, name="lineage-watcher", daemon=True
@@ -155,7 +166,7 @@ class LineageWatcher:
         logger.info("LineageWatcher started")
 
     def _load_dropped(self, storage: SingletonAdminStorage) -> None:
-        """Load the durable set of permanently-given-up-on target uuids.
+        """Re-read the durable set of permanently-given-up-on target uuids.
 
         A dropped target is one that failed ``_MAX_RECORD_ATTEMPTS`` times; the
         decision to stop trying is permanent, so it must outlive the process.
@@ -164,55 +175,66 @@ class LineageWatcher:
         exhaust its attempts again, and repeat every restart — wedging all newer
         lineage behind it.
 
-        A read failure or an unusable shape is logged and treated as an empty set:
-        raising here would abort ``start()`` and leave the watcher not running at
-        all, which records nothing rather than slightly too much. Empty is not
-        harmless though -- it is exactly the wedge described above -- so it is
-        logged at ERROR with the offending value, not swallowed. The row is left as
-        it is for an operator to inspect; the next ``_persist_dropped`` overwrites
-        it, which is why the value goes in the log while it still exists.
+        Called before every scan, not once in ``start()``, for the same reason the
+        checkpoint is: the row is the single source of truth, so an operator who
+        clears it with ``lineage-init --clear-dropped-targets`` has the targets
+        retried on the next scan instead of having to restart the service. Loading
+        once also made the clear *unsafe* rather than merely slow -- the next drop
+        persisted the whole stale in-memory set, restoring every id just cleared.
+
+        The row is authoritative, plus any drop this process could not persist. A
+        plain union would never let a clear through (the cleared ids are still in
+        memory); a plain assignment would resurrect a drop whose persist failed
+        (``_persist_dropped`` is deliberately non-raising), re-recording a hopeless
+        target every scan. Taking the row and adding back only
+        ``_dropped_unpersisted`` gets both: the clear lands, the unpersisted drop
+        survives.
+
+        A read failure or an unusable shape is logged and leaves the in-memory set
+        as it is: raising would abort ``start()`` (no watcher at all) or, per scan,
+        kill the loop. Keeping the current set is the conservative direction -- it
+        skips what this process already knows is hopeless rather than retrying it --
+        and it is logged at ERROR with the offending value, not swallowed. The row is
+        left for an operator to inspect; the next ``_persist_dropped`` overwrites it,
+        which is why the value goes in the log while it still exists.
         """
         try:
             value = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
         except Exception:
-            # Clear explicitly rather than just returning: start() can run again on a
-            # live instance after stop(), where _dropped still holds the previous
-            # set, and the log below would then be describing a state we had not set.
-            self._dropped = set()
             logger.exception(
-                "Failed to read the lineage drop set from %s; starting with an "
-                "empty set. Targets already given up on will be retried and may "
-                "exhaust their attempts again.",
+                "Failed to read the lineage drop set from %s; keeping the current "
+                "in-memory set (%d target(s)) for this scan.",
                 LINEAGE_WATCHER_DROPPED_KEY,
+                len(self._dropped),
             )
             return
 
-        if not value:
-            return
+        if value is None:
+            # No row at all: never seeded, or cleared by deleting it rather than
+            # emptying it. Treated the same as an empty set -- honouring that is the
+            # point of re-reading -- while unpersisted drops are added back below.
+            value = {}
 
         target_ids = value.get("target_ids", []) if isinstance(value, dict) else None
         # Element types matter as much as the container's: a mixed list loads fine
         # here but makes ``_persist_dropped``'s sorted() raise on the next drop, and
         # that unwinds through reconcile_build (on_error is called outside its
-        # try/except) into _run, failing every scan forever. Empty is the fallback
-        # this guard is for; a wedged watcher is not.
+        # try/except) into _run, failing every scan forever.
         if isinstance(target_ids, list) and not all(
             isinstance(t, str) for t in target_ids
         ):
             target_ids = None
         if not isinstance(target_ids, list):
-            self._dropped = set()
             logger.error(
-                "Lineage drop set under %s is unusable (%r); starting with an empty "
-                "set. Expected {'target_ids': [...]}. Targets already given up on "
-                "will be retried and may exhaust their attempts again, holding the "
-                "checkpoint behind them.",
+                "Lineage drop set under %s is unusable (%r); keeping the current "
+                "in-memory set (%d target(s)). Expected {'target_ids': [...]}.",
                 LINEAGE_WATCHER_DROPPED_KEY,
                 value,
+                len(self._dropped),
             )
             return
 
-        self._dropped = set(target_ids)
+        self._dropped = set(target_ids) | self._dropped_unpersisted
 
     def _persist_dropped(self, storage: SingletonAdminStorage) -> None:
         """Persist the drop set so the decision survives a restart.
@@ -222,18 +244,27 @@ class LineageWatcher:
         exception here would unwind into ``_run`` and fail the whole scan -- and then
         every later scan the same way. Losing durability for one drop only costs a
         re-attempt after a restart; losing the scan loop stops all lineage.
+
+        On failure the set is remembered in ``_dropped_unpersisted`` so the next
+        ``_load_dropped`` -- which treats the durable row as authoritative -- adds it
+        back instead of resurrecting the target. A success clears that, handing those
+        ids over to the row, where an operator's clear can then reach them.
         """
         try:
             storage.kv_pair_storage.set_value(
                 LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": sorted(self._dropped)}
             )
         except Exception:
+            self._dropped_unpersisted |= self._dropped
             logger.exception(
                 "Failed to persist the lineage drop set to %s; the in-memory set "
                 "still applies for this process, but the drop decision will not "
                 "survive a restart.",
                 LINEAGE_WATCHER_DROPPED_KEY,
             )
+            return
+
+        self._dropped_unpersisted.clear()
 
     def _run(self) -> None:
         """Main monitoring loop (runs in daemon thread).
@@ -309,6 +340,10 @@ class LineageWatcher:
         logger.info("Lineage scan: reading checkpoint and builds...")
 
         storage = get_admin_storage()
+        # Re-read the drop set every scan, like the checkpoint below: it is the
+        # single source of truth, so `lineage-init --clear-dropped-targets` retries
+        # those targets on the next scan rather than requiring a service restart.
+        self._load_dropped(storage)
         checkpoint = self._read_checkpoint(storage)
         if checkpoint is None:
             # No checkpoint: recording is off until seeded. Return before selecting

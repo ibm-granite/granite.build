@@ -854,6 +854,87 @@ class TestLineageWatcher:
         assert "t-a" in watcher._dropped
         assert self._checkpoint_build() == "A"
 
+    def test_clearing_the_row_retries_the_target_without_a_restart(self):
+        """The point of re-reading every scan: `lineage-init --clear` needs no restart.
+
+        Previously _dropped was loaded once in start(), so a cleared row was invisible
+        to a live watcher -- and worse, the next drop persisted the whole stale set,
+        undoing the operator's clear.
+        """
+        watcher, store = self._make_watcher(fail={"t-1"})
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-1")]
+        self._seed("A", _BASE)
+        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS):
+            watcher._reconcile()
+        assert "t-1" in watcher._dropped
+
+        # What the CLI writes, on the same live instance.
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": []}
+        )
+        store._fail = set()
+        watcher._reconcile()
+
+        assert "t-1" not in watcher._dropped, "the clear must take effect on this scan"
+        assert "t-1" in store._recorded, "the target must actually be retried"
+
+    def test_the_watcher_does_not_undo_a_clear_on_its_next_drop(self):
+        """A later drop must persist only what is still dropped, not a stale set."""
+        watcher, store = self._make_watcher(fail={"t-1", "t-2"})
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-1"), _target("A", "t-2")]
+        self._seed("A", _BASE)
+        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS):
+            watcher._reconcile()
+        assert watcher._dropped == {"t-1", "t-2"}
+
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": []}
+        )
+        # t-2 keeps failing and gets re-dropped; t-1 must not come back with it.
+        store._fail = {"t-2"}
+        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS + 1):
+            watcher._reconcile()
+
+        persisted = self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
+        assert "t-1" not in persisted["target_ids"], "the clear was undone"
+
+    def test_an_unpersisted_drop_survives_the_next_scans_reload(self):
+        """A drop whose persist failed must not be resurrected by the reload.
+
+        _persist_dropped is non-raising, so the decision can exist only in memory;
+        treating the row as authoritative without adding those back would re-record a
+        hopeless target on every scan.
+        """
+        watcher, _store = self._make_watcher()
+        watcher._dropped = {"t-9"}
+        failing = MagicMock()
+        failing.kv_pair_storage.set_value.side_effect = RuntimeError("kv down")
+        watcher._persist_dropped(failing)
+        assert watcher._dropped_unpersisted == {"t-9"}
+
+        # The durable row never got it, but the reload must not drop it.
+        watcher._load_dropped(self.storage)
+
+        assert "t-9" in watcher._dropped
+
+    def test_a_successful_persist_hands_ids_over_to_the_row(self):
+        """After a good persist the ids live in the row, so a clear can reach them."""
+        watcher, _store = self._make_watcher()
+        watcher._dropped = {"t-9"}
+        watcher._dropped_unpersisted = {"t-9"}
+        watcher._persist_dropped(self.storage)
+
+        assert watcher._dropped_unpersisted == set()
+
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": []}
+        )
+        watcher._load_dropped(self.storage)
+
+        assert watcher._dropped == set(), "a persisted id must follow the row"
+
     def test_dropped_target_survives_a_restart(self):
         """The drop decision is durable, so a restart does not resurrect it."""
         watcher, _store = self._make_watcher(fail={"t-1"})
@@ -961,21 +1042,46 @@ class TestLineageWatcher:
         assert fresh._dropped == set()
 
     @pytest.mark.parametrize("bad_value", ["oops", {"target_ids": ["t-9", 7]}])
-    def test_reloading_over_a_stale_set_clears_it(self, bad_value):
-        """A failed reload must not silently keep the previous set.
+    def test_an_unusable_row_keeps_the_current_set(self, bad_value):
+        """A bad row must not retry what this process knows is hopeless.
 
-        ``start()`` can run again on a live instance after ``stop()``, where
-        ``_dropped`` still holds the old set -- so the "starting with an empty set"
-        log has to describe what actually happened.
+        _load_dropped now runs every scan, so "clear on failure" would re-record a
+        dropped target on every pass for as long as the row stays corrupt. Keeping
+        the in-memory set is the conservative direction.
         """
         self.storage.kv_pair_storage.set_value(LINEAGE_WATCHER_DROPPED_KEY, bad_value)
 
         fresh = LineageWatcher()
         fresh._store = _StubStore()
-        fresh._dropped = {"stale-1"}
+        fresh._dropped = {"t-known"}
         fresh._load_dropped(self.storage)
 
-        assert fresh._dropped == set()
+        assert fresh._dropped == {"t-known"}
+
+    def test_starting_resets_a_set_left_by_a_previous_run(self):
+        """start() re-reads from scratch, so a stale instance does not leak state."""
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": ["t-row"]}
+        )
+
+        fresh = LineageWatcher()
+        fresh._dropped = {"t-stale"}
+        fresh._dropped_unpersisted = {"t-stale"}
+        with (
+            patch(
+                "gbserver.lineage.lineage_watcher.get_lineage_store",
+                return_value=_StubStore(),
+            ),
+            patch(
+                "gbserver.lineage.lineage_watcher.get_admin_storage",
+                return_value=self.storage,
+            ),
+            patch.object(LineageWatcher, "_run"),
+        ):
+            fresh.start()
+            fresh.stop_event.set()
+
+        assert fresh._dropped == {"t-row"}, "the stale set must not survive start()"
 
     # ---- checkpoint value handling ---------------------------------------
 

@@ -155,10 +155,9 @@ class TestLineageInitCommand:
             LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": []}
         )
         assert "t-1" in result.output and "t-2" in result.output
-        assert "stopped" in result.output, (
-            "a running watcher loads the drop set once at start() and rewrites the "
-            "whole set on its next drop, restoring what was just cleared -- the "
-            "operator must be told to stop it first, not merely to restart later"
+        assert "next scan" in result.output, (
+            "the watcher re-reads the drop set every scan, so the operator should be "
+            "told the clear applies without a restart"
         )
 
     @pytest.mark.parametrize(
