@@ -28,6 +28,7 @@ deliberately.
 """
 
 import json
+from typing import Optional
 
 import click
 
@@ -162,7 +163,7 @@ def _clear_dropped_targets(storage) -> None:
 @pass_environment
 def cli(
     ctx: CliEnvironment,
-    build_id: str,
+    build_id: Optional[str],
     force: bool,
     clear_dropped_targets: bool,
     show: bool,

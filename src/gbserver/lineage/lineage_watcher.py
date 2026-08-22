@@ -472,13 +472,15 @@ class LineageWatcher:
                 )
 
             if result.all_confirmed and (
-                not result.had_no_targets or build.status.is_finished()
+                not result.sink_unqueried or build.status.is_finished()
             ):
                 self._complete_builds.add(build.uuid)
             else:
-                # An empty pass is cached only once the build is finished, and the
-                # build state is what separates the two reasons a pass can come back
-                # empty.
+                # A confirmation the sink was never asked for is cached only once the
+                # build is finished, and the build state is what separates the two
+                # reasons such a pass can come back with an empty candidate set.
+                # Either reason reaches here: no target rows at all, or target rows
+                # that are all in the durable drop set.
                 #
                 # Still RUNNING: the targets do not exist *yet*. The build row and
                 # its target rows are separate, non-transactional writes, so a scan

@@ -685,6 +685,65 @@ class TestLineageWatcher:
 
         assert {target_id for _build_id, target_id in store.calls} == {"t-a"}
 
+    def test_running_build_with_only_dropped_targets_is_not_cached_as_complete(self):
+        """The sibling of the bug above, on the all-targets-dropped path.
+
+        A RUNNING build whose only targets so far are all in the durable drop set
+        also confirms without a sink answer: every target is filtered out of
+        `candidates`, so filter_unrecorded is never called. That pass used to report
+        all_confirmed without flagging itself unqueried, so it was cached complete
+        and the skip gate ("cached complete AND finished") then swallowed the
+        non-dropped target that arrived before the build finished -- the same
+        restart-only recovery as the empty case.
+        """
+        watcher, store = self._make_watcher()
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": ["t-dropped"]}
+        )
+        self._builds = [_build("A", _BASE, Status.RUNNING)]
+        self._targets = [_target("A", "t-dropped")]
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+        assert store.calls == [], "the only target is permanently dropped"
+        assert "A" not in watcher._complete_builds, (
+            "an all-dropped pass on a RUNNING build asked the sink nothing, so it "
+            "must not arm the skip gate against targets still to come"
+        )
+
+        # A gains a target that is *not* dropped, then finishes: the next scan must
+        # re-read its targets rather than skip the build.
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-dropped"), _target("A", "t-live")]
+
+        watcher._reconcile()
+
+        assert {target_id for _build_id, target_id in store.calls} == {"t-live"}
+
+    def test_finished_build_with_only_dropped_targets_is_cached_as_complete(self):
+        """The other half: a *finished* all-dropped build must still be cached.
+
+        _advance_checkpoint requires the anchor in _complete_builds, so refusing to
+        cache this build pins the mark on it forever and blocks every newer build's
+        lineage -- exactly what the durable drop set exists to prevent. Flagging the
+        pass unqueried must not cost that.
+        """
+        watcher, _store = self._make_watcher()
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": ["t-dropped"]}
+        )
+        self._builds = [
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("A", "t-dropped"), _target("B", "t-b")]
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+
+        assert "A" in watcher._complete_builds
+        assert self._checkpoint_build() == "B", "the mark must not wedge on A"
+
     # ---- fail-closed dedup ------------------------------------------------
 
     def test_dedup_failure_aborts_the_pass_and_records_nothing(self):

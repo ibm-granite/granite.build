@@ -509,19 +509,22 @@ class ReconcileResult:
             can classify it as permanent or transient.
         dropped: Targets skipped because they are in the caller's permanent-drop
             set. Present so the caller can log the resulting known gap.
-        had_no_targets: The build had no recordable target at all this pass. It is
-            reported ``all_confirmed`` so the checkpoint can still pass a finished
-            build that genuinely produces no lineage, but the confirmation rests on
-            an *empty* set -- the sink was never asked anything. The caller must not
-            cache that as "this build is done, stop re-reading its targets".
+        sink_unqueried: ``all_confirmed`` was reached without asking the sink
+            anything -- ``filter_unrecorded`` was never called, because there was no
+            candidate to ask about. Two passes end that way: no recordable target at
+            all, and every recordable target in the caller's permanent-drop set. Both
+            are reported ``all_confirmed`` so the checkpoint can still pass a finished
+            build, but the confirmation rests on an *empty* candidate set rather than
+            a sink answer. The caller must not cache that as "this build is done,
+            stop re-reading its targets" while the build can still gain one.
 
             The build row and its target rows are separate, non-transactional
             writes, and a scan lands at an arbitrary point between them: a build
-            read while still RUNNING has no target rows yet. Its targets are
-            persisted before it reaches SUCCESS (buildrunner drains one FIFO with a
-            single consumer, and finalize_build_status commits children before the
-            parent), so they are there on a later scan -- but only if the caller
-            still looks.
+            read while still RUNNING has no target rows yet, or only ones that
+            happen to be dropped. Its targets are persisted before it reaches
+            SUCCESS (buildrunner drains one FIFO with a single consumer, and
+            finalize_build_status commits children before the parent), so they are
+            there on a later scan -- but only if the caller still looks.
     """
 
     newly_recorded: int = 0
@@ -529,7 +532,7 @@ class ReconcileResult:
     dedup_query_failed: bool = False
     query_failure: Optional[Exception] = None
     dropped: set[str] = field(default_factory=set)
-    had_no_targets: bool = False
+    sink_unqueried: bool = False
 
 
 def reconcile_build(
@@ -579,13 +582,13 @@ def reconcile_build(
         # No recordable target: nothing to write and nothing outstanding, so the
         # build is trivially confirmed and the checkpoint may pass it.
         #
-        # Flagged as empty, though, because this confirmation is not a sink answer:
+        # Flagged unqueried, though, because this confirmation is not a sink answer:
         # with no target to ask about, filter_unrecorded was never called. A build
         # read while still RUNNING lands here (its target rows are written before it
         # reaches SUCCESS, but this scan ran before that). If the caller caches this
         # as complete, its finished-and-complete skip gate stops re-reading the
         # targets and the lineage is never recorded.
-        return ReconcileResult(all_confirmed=True, had_no_targets=True)
+        return ReconcileResult(all_confirmed=True, sink_unqueried=True)
 
     skipped = {t.uuid for t in targets if t.uuid in dropped}
     candidates = {t.uuid for t in targets if t.uuid not in dropped}
@@ -593,7 +596,14 @@ def reconcile_build(
         # Every target is permanently dropped. Confirmed *with a known gap*: the
         # alternative is pinning the checkpoint forever behind targets that will
         # never record, which is what the durable dropped set exists to prevent.
-        return ReconcileResult(all_confirmed=True, dropped=skipped)
+        #
+        # Unqueried for the same reason as the no-target case above: every target
+        # was filtered out of `candidates`, so filter_unrecorded was never called
+        # and this confirmation is not a sink answer either. A RUNNING build whose
+        # only targets so far happen to all be dropped lands here, and the ones
+        # written between this scan and its terminal status are still to come --
+        # so the caller must not cache it as done while it can still gain them.
+        return ReconcileResult(all_confirmed=True, dropped=skipped, sink_unqueried=True)
 
     # Expected run count per candidate, so ``filter_unrecorded`` can tell a
     # fully-recorded target from one whose runs were only partially emitted by a
