@@ -869,6 +869,114 @@ class TestLineageWatcher:
 
         assert "t-1" in fresh._dropped
 
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            "oops",
+            ["t-1"],
+            7,
+            {"target_ids": "t-1"},
+            {"target_ids": 3},
+            # These pass a container-only check but make _persist_dropped's sorted()
+            # raise on the next drop, which unwinds into _run and fails every scan.
+            {"target_ids": ["t-1", 7]},
+            {"target_ids": [1, 2]},
+            {"target_ids": [None]},
+        ],
+    )
+    def test_an_unusable_drop_set_starts_empty_instead_of_raising(self, bad_value):
+        """A corrupt row must not abort start(): a dead watcher records nothing.
+
+        Empty is the only readable fallback, but it is the wedge the drop set
+        exists to prevent, so it is logged at ERROR rather than swallowed.
+        """
+        self.storage.kv_pair_storage.set_value(LINEAGE_WATCHER_DROPPED_KEY, bad_value)
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._load_dropped(self.storage)
+
+        assert fresh._dropped == set()
+
+    def test_an_unusable_drop_set_is_left_on_disk_for_inspection(self):
+        """Loading never rewrites the bad row -- the operator still needs to see it."""
+        self.storage.kv_pair_storage.set_value(LINEAGE_WATCHER_DROPPED_KEY, "oops")
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._load_dropped(self.storage)
+
+        assert (
+            self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
+            == "oops"
+        )
+
+    def test_persisting_after_a_corrupt_load_does_not_raise(self):
+        """The load fallback must leave a persistable set, or the watcher wedges.
+
+        A mixed list loaded as-is makes ``_persist_dropped``'s sorted() raise on the
+        next drop; ``on_error`` runs outside ``reconcile_build``'s try/except, so that
+        unwinds into ``_run`` and fails every scan from then on -- worse than the
+        empty-set fallback the guard chooses.
+        """
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": ["t-1", 7]}
+        )
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._load_dropped(self.storage)
+        fresh._dropped.add("t-2")
+        fresh._persist_dropped(self.storage)
+
+        assert self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY) == {
+            "target_ids": ["t-2"]
+        }
+
+    def test_a_failing_persist_never_escapes_to_abort_the_scan(self):
+        """Durability is best-effort; the scan loop is not.
+
+        ``_on_record_error`` persists from inside ``reconcile_build``, so a raise here
+        would kill the iteration and every one after it.
+        """
+        storage = MagicMock()
+        storage.kv_pair_storage.set_value.side_effect = RuntimeError("kv down")
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._dropped = {"t-1"}
+        fresh._persist_dropped(storage)
+
+        assert fresh._dropped == {"t-1"}
+
+    def test_a_failing_drop_set_read_starts_empty_instead_of_raising(self):
+        """A storage error is treated the same as a corrupt shape."""
+        storage = MagicMock()
+        storage.kv_pair_storage.get_value.side_effect = RuntimeError("kv down")
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._load_dropped(storage)
+
+        assert fresh._dropped == set()
+
+    @pytest.mark.parametrize("bad_value", ["oops", {"target_ids": ["t-9", 7]}])
+    def test_reloading_over_a_stale_set_clears_it(self, bad_value):
+        """A failed reload must not silently keep the previous set.
+
+        ``start()`` can run again on a live instance after ``stop()``, where
+        ``_dropped`` still holds the old set -- so the "starting with an empty set"
+        log has to describe what actually happened.
+        """
+        self.storage.kv_pair_storage.set_value(LINEAGE_WATCHER_DROPPED_KEY, bad_value)
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._dropped = {"stale-1"}
+        fresh._load_dropped(self.storage)
+
+        assert fresh._dropped == set()
+
     # ---- checkpoint value handling ---------------------------------------
 
     def test_backfill_anchor_records_everything(self):

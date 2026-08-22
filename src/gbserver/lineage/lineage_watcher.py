@@ -163,16 +163,77 @@ class LineageWatcher:
         checkpoint (which never advances past a build with unrecorded lineage),
         exhaust its attempts again, and repeat every restart — wedging all newer
         lineage behind it.
+
+        A read failure or an unusable shape is logged and treated as an empty set:
+        raising here would abort ``start()`` and leave the watcher not running at
+        all, which records nothing rather than slightly too much. Empty is not
+        harmless though -- it is exactly the wedge described above -- so it is
+        logged at ERROR with the offending value, not swallowed. The row is left as
+        it is for an operator to inspect; the next ``_persist_dropped`` overwrites
+        it, which is why the value goes in the log while it still exists.
         """
-        value = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
-        if value:
-            self._dropped = set(value.get("target_ids", []))
+        try:
+            value = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
+        except Exception:
+            # Clear explicitly rather than just returning: start() can run again on a
+            # live instance after stop(), where _dropped still holds the previous
+            # set, and the log below would then be describing a state we had not set.
+            self._dropped = set()
+            logger.exception(
+                "Failed to read the lineage drop set from %s; starting with an "
+                "empty set. Targets already given up on will be retried and may "
+                "exhaust their attempts again.",
+                LINEAGE_WATCHER_DROPPED_KEY,
+            )
+            return
+
+        if not value:
+            return
+
+        target_ids = value.get("target_ids", []) if isinstance(value, dict) else None
+        # Element types matter as much as the container's: a mixed list loads fine
+        # here but makes ``_persist_dropped``'s sorted() raise on the next drop, and
+        # that unwinds through reconcile_build (on_error is called outside its
+        # try/except) into _run, failing every scan forever. Empty is the fallback
+        # this guard is for; a wedged watcher is not.
+        if isinstance(target_ids, list) and not all(
+            isinstance(t, str) for t in target_ids
+        ):
+            target_ids = None
+        if not isinstance(target_ids, list):
+            self._dropped = set()
+            logger.error(
+                "Lineage drop set under %s is unusable (%r); starting with an empty "
+                "set. Expected {'target_ids': [...]}. Targets already given up on "
+                "will be retried and may exhaust their attempts again, holding the "
+                "checkpoint behind them.",
+                LINEAGE_WATCHER_DROPPED_KEY,
+                value,
+            )
+            return
+
+        self._dropped = set(target_ids)
 
     def _persist_dropped(self, storage: SingletonAdminStorage) -> None:
-        """Persist the drop set so the decision survives a restart."""
-        storage.kv_pair_storage.set_value(
-            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": sorted(self._dropped)}
-        )
+        """Persist the drop set so the decision survives a restart.
+
+        Never raises. ``_on_record_error`` calls this from inside ``reconcile_build``,
+        where ``on_error`` runs outside the try/except guarding the record call, so an
+        exception here would unwind into ``_run`` and fail the whole scan -- and then
+        every later scan the same way. Losing durability for one drop only costs a
+        re-attempt after a restart; losing the scan loop stops all lineage.
+        """
+        try:
+            storage.kv_pair_storage.set_value(
+                LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": sorted(self._dropped)}
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist the lineage drop set to %s; the in-memory set "
+                "still applies for this process, but the drop decision will not "
+                "survive a restart.",
+                LINEAGE_WATCHER_DROPPED_KEY,
+            )
 
     def _run(self) -> None:
         """Main monitoring loop (runs in daemon thread).

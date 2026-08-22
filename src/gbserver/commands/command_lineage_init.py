@@ -43,29 +43,74 @@ from gbserver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _read_dropped_target_ids(storage) -> list:
+    """Read the durable drop set's target ids, rejecting an unusable shape clearly.
+
+    ``get_value`` returns whatever is in ``gb_kv_pairs``, so a hand-corrupted row
+    (a string, a list) would otherwise fail on ``.get`` with a bare AttributeError
+    traceback. ``--show`` is exactly the command an operator reaches for when they
+    suspect the state is malformed, so it has to report that rather than crash on it.
+    """
+    value = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
+    if not value:
+        return []
+    if not isinstance(value, dict):
+        raise click.ClickException(
+            f"{LINEAGE_WATCHER_DROPPED_KEY} holds {type(value).__name__}, not an "
+            f"object: {value!r}. Expected {{'target_ids': [...]}}; fix or delete the "
+            "row in gb_kv_pairs."
+        )
+    target_ids = value.get("target_ids", [])
+    if not isinstance(target_ids, list):
+        raise click.ClickException(
+            f"{LINEAGE_WATCHER_DROPPED_KEY} has a non-list 'target_ids' "
+            f"({type(target_ids).__name__}): {target_ids!r}. Fix or delete the row "
+            "in gb_kv_pairs."
+        )
+    # Element types matter, not just the container: both callers ``sorted()`` and
+    # ``join()`` these, which raise TypeError on a mixed or non-string list. Letting
+    # that through would defeat the whole point of this helper.
+    bad = [t for t in target_ids if not isinstance(t, str)]
+    if bad:
+        raise click.ClickException(
+            f"{LINEAGE_WATCHER_DROPPED_KEY} has non-string target id(s) in "
+            f"'target_ids': {bad!r}. Expected a list of uuid strings; fix or delete "
+            "the row in gb_kv_pairs."
+        )
+    return target_ids
+
+
 def _clear_dropped_targets(storage) -> None:
     """Empty the durable dropped-*target* set so those targets are retried.
 
     Writes an empty list rather than deleting the key, so the shape stays what
     ``LineageWatcher._load_dropped`` expects on its next start.
 
-    A running watcher does NOT see this immediately: ``_dropped`` is loaded once in
-    ``start()``, not per scan (unlike the checkpoint, which is re-read every scan).
-    So this takes effect on the watcher's next restart, and the caller is told so
-    rather than left to wonder why the targets are still skipped.
+    Stop the watcher before calling this. ``_dropped`` is loaded once in ``start()``,
+    not per scan (unlike the checkpoint, which is re-read every scan), and
+    ``_persist_dropped`` writes the whole in-memory set. So a running watcher not
+    only misses the clear -- the next target it drops persists its stale full set,
+    resurrecting every id cleared here, and a later restart reloads them. Clearing
+    is only durable while the watcher is down.
     """
-    existing = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
-    target_ids = (existing or {}).get("target_ids", [])
+    target_ids = _read_dropped_target_ids(storage)
     if not target_ids:
         click.echo(f"{LINEAGE_WATCHER_DROPPED_KEY}: nothing to clear.")
         return
-    storage.kv_pair_storage.set_value(LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": []})
-    click.echo(
+    # Format before writing. These two lines used to be the other way round, so any
+    # formatting error (a non-string id reaching sorted()/join()) exited non-zero
+    # having already wiped the durable set -- the same mutate-on-failure bug the
+    # deferred clear in cli() exists to avoid. Building the string first keeps the
+    # write the last thing that can happen.
+    summary = (
         f"Cleared {len(target_ids)} dropped target(s) from "
         f"{LINEAGE_WATCHER_DROPPED_KEY}: {', '.join(sorted(target_ids))}. "
-        "Restart the lineage watcher for this to take effect -- it loads the drop "
-        "set once at start(), not on every scan."
+        "This only sticks while the watcher is stopped: a running watcher loads the "
+        "drop set once at start() and rewrites its whole in-memory set on the next "
+        "drop, which would restore what was just cleared."
     )
+    storage.kv_pair_storage.set_value(LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": []})
+    click.echo(summary)
 
 
 @click.command()
@@ -99,9 +144,10 @@ def _clear_dropped_targets(storage) -> None:
     default=False,
     help=(
         "Clear the set of TARGET ids the watcher permanently gave up on (after "
-        "exhausting its record attempts) so they are retried. Requires a watcher "
-        "restart to take effect: the drop set is loaded once at start(), unlike "
-        "the checkpoint, which is re-read every scan. Moving the anchor back does "
+        "exhausting its record attempts) so they are retried. Stop the watcher "
+        "first: it loads the drop set once at start() (unlike the checkpoint, "
+        "re-read every scan) and rewrites the whole set on its next drop, which "
+        "would restore what was cleared. Moving the anchor back does "
         "NOT clear them, which is why this exists -- the drop decision is durable "
         "on purpose, and a dropped target is otherwise skipped forever. Only "
         "useful once whatever made recording fail is fixed."
@@ -139,8 +185,7 @@ def cli(
         # Report the drop set too: a dropped target is skipped on every scan, so an
         # operator asking "why is this target's lineage missing?" needs to see it
         # next to the checkpoint rather than querying gb_kv_pairs by hand.
-        dropped = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
-        target_ids = (dropped or {}).get("target_ids", [])
+        target_ids = _read_dropped_target_ids(storage)
         if target_ids:
             click.echo(
                 f"{LINEAGE_WATCHER_DROPPED_KEY}: {len(target_ids)} target(s) "
@@ -151,8 +196,9 @@ def cli(
         return
 
     if clear_dropped_targets and build_id is None:
-        # Clearing alone is a complete operation: the checkpoint is untouched
-        # and the watcher retries the targets on its next scan.
+        # Clearing alone is a complete operation: the checkpoint is untouched, and
+        # the watcher retries the targets once it is (re)started -- it reads the drop
+        # set only in start(), so a running watcher would not pick this up.
         _clear_dropped_targets(storage)
         return
 

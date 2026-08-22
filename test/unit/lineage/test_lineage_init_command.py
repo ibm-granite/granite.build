@@ -151,10 +151,59 @@ class TestLineageInitCommand:
             LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": []}
         )
         assert "t-1" in result.output and "t-2" in result.output
-        assert "Restart" in result.output, (
-            "the drop set is loaded once at start(), so a running watcher keeps "
-            "skipping these targets until restarted -- the operator must be told"
+        assert "stopped" in result.output, (
+            "a running watcher loads the drop set once at start() and rewrites the "
+            "whole set on its next drop, restoring what was just cleared -- the "
+            "operator must be told to stop it first, not merely to restart later"
         )
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            "oops",
+            ["t-1"],
+            7,
+            {"target_ids": "t-1"},
+            # Mixed and non-string elements pass a container-only shape check but
+            # blow up in sorted()/join() -- and for --clear-dropped-targets that
+            # used to happen *after* the row was wiped.
+            {"target_ids": ["t-1", 7]},
+            {"target_ids": [1, 2]},
+            {"target_ids": [None]},
+        ],
+    )
+    @pytest.mark.parametrize("flag", ["--show", "--clear-dropped-targets"])
+    def test_a_malformed_drop_set_is_reported_not_a_traceback(self, bad_value, flag):
+        """A corrupt drop set exits as a ClickException, never an uncaught error.
+
+        ``--show`` is what an operator runs when they suspect the state is broken,
+        so crashing on the bad state it exists to report is the wrong failure mode.
+        Asserting on SystemExit (what Click raises for a ClickException) rather than
+        merely "not AttributeError" is deliberate: the first version of this guard
+        checked the container shape only, and a mixed list still died in sorted().
+        """
+        self._stored[LINEAGE_WATCHER_DROPPED_KEY] = bad_value
+        result = self._run(flag)
+
+        assert result.exit_code != 0
+        assert isinstance(result.exception, SystemExit), result.exception
+        assert LINEAGE_WATCHER_DROPPED_KEY in result.output
+        assert "gb_kv_pairs" in result.output
+        # The row must survive: a clear that fails must not have wiped it first.
+        self.storage.kv_pair_storage.set_value.assert_not_called()
+
+    def test_a_non_list_target_ids_is_reported_not_a_traceback(self):
+        """The right shape with a wrong inner type is caught too.
+
+        ``{"target_ids": "t-1"}`` survives the dict check but would silently
+        iterate as characters, clearing a set the operator never saw listed.
+        """
+        self._stored[LINEAGE_WATCHER_DROPPED_KEY] = {"target_ids": "t-1"}
+        result = self._run("--show")
+
+        assert result.exit_code != 0
+        assert "target_ids" in result.output
+        self.storage.kv_pair_storage.set_value.assert_not_called()
 
     def test_clearing_dropped_targets_leaves_the_checkpoint_alone(self):
         """Clearing is a complete operation on its own; --build-id stays optional."""
@@ -163,7 +212,9 @@ class TestLineageInitCommand:
             result = self._run("--clear-dropped-targets")
 
         assert result.exit_code == 0, result.output
-        seed.assert_not_called(), "no anchor was requested, so none may be written"
+        # Plain call, not `assert x, "msg"` -- that parses as a tuple and the message
+        # can never surface. assert_not_called() raises on its own.
+        seed.assert_not_called()
 
     def test_clearing_an_empty_drop_set_is_a_no_op(self):
         """Nothing to clear must not write, so a scripted run stays harmless."""
