@@ -123,6 +123,10 @@ class LineageWatcher:
         #
         # NOT persisted: after a restart the first scan re-asks the sink for the
         # whole range, which is correct and merely more expensive that once.
+        #
+        # Bounded, not append-only: every scan prunes it to the builds still in the
+        # selection range (see ``_reconcile``), so it tracks the live window rather
+        # than every build ever confirmed.
         self._complete_builds: set[str] = set()
         # Set when the sink reports a failure no retry can clear. Recording stops
         # rather than looping in silence; the process stays alive and says so at
@@ -282,13 +286,32 @@ class LineageWatcher:
             #      re-reconciled.)
             #   2. Lineage already in the sink is not deleted out from under us.
             #
-            # If either stops holding -- a target added to a finished build, or a
-            # retention policy pruning wandb runs -- a build cached complete here
-            # keeps the checkpoint advancing over lineage that is missing or
-            # stale, and nothing detects it. The bound on that is process
-            # lifetime: _complete_builds is in-memory (see __init__), so a restart
-            # re-asks the sink for whatever is still in range. Recording is not
-            # affected either way, only the decision to skip re-reading.
+            # Invariant 1 holds by design but is NOT enforced: the buildrunner
+            # drops post-finish events on a *cached* StoredBuild status
+            # (buildrunner.__process_event), refreshed only when the runner itself
+            # writes a status and otherwise re-read at most once per its
+            # monitoring_interval. A terminal status written from outside -- an
+            # external cancel, or a concurrent stop_and_fail() from another thread
+            # -- leaves that cache stale for up to one interval, and a target event
+            # arriving in that window still inserts a gb_targets row. Enforcing it
+            # would mean a status read from storage next to the insert; that
+            # belongs in the buildrunner, not here.
+            #
+            # Note what the confirmation in _complete_builds does and does not
+            # claim. It is a real sink query, not a status inference: the uuid is
+            # added only after filter_unrecorded answered for every candidate and
+            # every needed write succeeded. But it is accurate as of *that pass's*
+            # target read. A target inserted after select_recordable_targets
+            # returned was never in `candidates`, so the sink was never asked about
+            # it, and this gate then skips the build without re-reading it.
+            #
+            # If either invariant stops holding -- a target added to a finished
+            # build, or a retention policy pruning wandb runs -- a build cached
+            # complete here keeps the checkpoint advancing over lineage that is
+            # missing or stale, and nothing detects it. The bound on that is
+            # process lifetime: _complete_builds is in-memory (see __init__), so a
+            # restart re-asks the sink for whatever is still in range. Recording is
+            # not affected either way, only the decision to skip re-reading.
             if build.uuid in self._complete_builds and build.status.is_finished():
                 continue
 
@@ -358,6 +381,13 @@ class LineageWatcher:
                 self._complete_builds.discard(build.uuid)
 
         advanced = self._advance_checkpoint(storage, anchor_build_id, builds)
+        # Drop confirmations for builds this scan no longer selects. Selection is
+        # ">= the anchor", so a build older than the anchor is never read again and
+        # its entry can only be dead weight -- otherwise the set grows by one uuid
+        # per build ever confirmed and is cleared only by a restart. Intersecting
+        # against *this* scan's list is the safe cut: it contains every build the
+        # cutoff still reaches, including the one just advanced onto.
+        self._complete_builds &= {b.uuid for b in builds}
         if not advanced:
             # The steady state once everything is recorded: the anchor is the
             # newest build, so the mark has nowhere to step. Say so rather than

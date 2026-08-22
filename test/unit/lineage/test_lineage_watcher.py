@@ -393,6 +393,32 @@ class TestLineageWatcher:
         watcher._reconcile()
         assert self._checkpoint_build() == "C"
 
+    def test_confirmations_are_pruned_to_the_builds_still_in_range(self):
+        """The confirmed-build set tracks the live window, not every build ever seen.
+
+        Selection is ">= the anchor", so once the mark has moved past a build that
+        build is never read again and its confirmation is dead weight. Without the
+        prune the set grows by one uuid per build ever confirmed and is cleared only
+        by a restart -- a slow leak in a long-lived daemon.
+        """
+        watcher, _store = self._make_watcher()
+        self._three_builds(middle_status=Status.SUCCESS)
+
+        watcher._reconcile()
+        assert self._checkpoint_build() == "B"
+        # A was confirmed this pass and is still selected (it is the anchor), so it
+        # is kept -- the prune must not drop the build the mark just left until the
+        # cutoff actually excludes it.
+        assert watcher._complete_builds == {"A", "B", "C"}
+
+        watcher._reconcile()
+        assert self._checkpoint_build() == "C"
+        # Now the cutoff is B, so A can never be selected again and is dropped.
+        assert watcher._complete_builds == {"B", "C"}
+
+        watcher._reconcile()
+        assert watcher._complete_builds == {"C"}, "only the live window survives"
+
     def test_loop_does_not_wait_the_interval_while_it_is_advancing(self):
         """A scan that moved the mark is followed immediately by the next one.
 
