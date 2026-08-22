@@ -613,6 +613,78 @@ class TestLineageWatcher:
 
         assert self._checkpoint_build() == "B"
 
+    def test_finished_no_target_anchor_does_not_wedge_the_checkpoint(self):
+        """The anchor itself has no targets: the mark must still step off it.
+
+        The previous test seeds an anchor that *has* a target, so the advance is
+        gated on a build that gets cached either way -- the no-target build is
+        only the destination and never the anchor. Here the empty build is the
+        anchor, which is the case that wedges: it is finished, so it will never
+        gain a target, but _advance_checkpoint requires the anchor in
+        _complete_builds. Refusing to cache it pins the mark on it forever and
+        blocks every newer build's lineage behind it.
+        """
+        watcher, store = self._make_watcher()
+        self._builds = [
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("B", "t-b")]
+        self._seed("A", _BASE)
+
+        # Two scans: the first advances off the empty anchor A, the second must
+        # then advance off B. A single scan passes even when wedged, because the
+        # first pass is the one that reads A while it is still the anchor.
+        watcher._reconcile()
+        assert self._checkpoint_build() == "B", "the mark wedged on empty anchor A"
+
+        watcher._reconcile()
+
+        assert {target_id for _build_id, target_id in store.calls} == {"t-b"}
+
+    def test_failed_anchor_with_no_targets_does_not_wedge_the_checkpoint(self):
+        """A FAILED build is the common shape of a finished build with no lineage.
+
+        ``select_builds_from_checkpoint`` has no status filter, so a FAILED build
+        does become an anchor -- and it records nothing by definition. If that
+        wedged the mark, one failed build would stop lineage for the platform.
+        """
+        watcher, _store = self._make_watcher()
+        self._builds = [
+            _build("A", _BASE, Status.FAILED),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("B", "t-b")]
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+
+        assert self._checkpoint_build() == "B"
+
+    def test_running_build_with_no_targets_is_not_cached_as_complete(self):
+        """The original bug: an empty pass on a RUNNING build must not be cached.
+
+        Caching it arms the skip gate ("cached complete AND finished") on a build
+        whose targets are written moments later, so they are never re-read and the
+        lineage appears only after a restart. Finished-and-empty is cached;
+        running-and-empty is not, and the build state is the whole distinction.
+        """
+        watcher, store = self._make_watcher()
+        self._builds = [_build("A", _BASE, Status.RUNNING)]
+        self._targets = []
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+        assert "A" not in watcher._complete_builds
+
+        # A finishes and its targets land: the next scan must re-read them.
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-a")]
+
+        watcher._reconcile()
+
+        assert {target_id for _build_id, target_id in store.calls} == {"t-a"}
+
     # ---- fail-closed dedup ------------------------------------------------
 
     def test_dedup_failure_aborts_the_pass_and_records_nothing(self):

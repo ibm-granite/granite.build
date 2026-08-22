@@ -375,17 +375,31 @@ class LineageWatcher:
                     ", ".join(sorted(result.dropped)),
                 )
 
-            if result.all_confirmed and not result.had_no_targets:
+            if result.all_confirmed and (
+                not result.had_no_targets or build.status.is_finished()
+            ):
                 self._complete_builds.add(build.uuid)
             else:
-                # An empty pass is deliberately NOT cached, even though it reports
-                # all_confirmed so the checkpoint can pass a finished build with no
-                # lineage of its own. Caching it would set the skip gate below on a
-                # build whose targets do not exist yet: a build selected while
-                # RUNNING has none, and when it finishes and its targets appear the
-                # gate ("cached complete AND finished") would skip re-reading them
-                # forever. Only a restart cleared this set, which is exactly how the
-                # bug surfaced -- the lineage recorded only after a service restart.
+                # An empty pass is cached only once the build is finished, and the
+                # build state is what separates the two reasons a pass can come back
+                # empty.
+                #
+                # Still RUNNING: the targets do not exist *yet*. The build row and
+                # its target rows are separate, non-transactional writes, so a scan
+                # lands between them and reads none. Caching that would arm the skip
+                # gate below ("cached complete AND finished") on a build whose
+                # targets appear moments later, and it would then skip re-reading
+                # them forever -- only a restart cleared this set, which is exactly
+                # how the bug surfaced (lineage recorded only after a service
+                # restart).
+                #
+                # Finished: the build will never gain a target, so the emptiness is
+                # final and the confirmation is honest -- it is cached above. It has
+                # to be: _advance_checkpoint requires the anchor in this set, so
+                # discarding a finished build here would wedge the mark on it
+                # forever and block every newer build's lineage behind it. That
+                # includes every FAILED build, which select_builds_from_checkpoint
+                # does not filter out and which therefore does become an anchor.
                 self._complete_builds.discard(build.uuid)
 
         advanced = self._advance_checkpoint(storage, anchor_build_id, builds)
