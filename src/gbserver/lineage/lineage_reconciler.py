@@ -254,22 +254,40 @@ def select_builds_from_checkpoint(
     recovers them -- it replaces the separate start-up verification sweep the
     target-anchored design needed.
 
-    Two caveats on the bound, both inherited from how ``created_time`` is stored:
+    Three caveats on the bound, all inherited from how ``created_time`` is stored:
 
-    - It is stamped in Python by ``BaseItemStorage.add()`` just *before* the
-      insert commits, so two builds created concurrently can become visible in a
-      different order than their timestamps imply. A build whose ``created_time``
-      is fractionally behind the anchor's can therefore appear only after the
-      checkpoint advanced, and this walk will not reach it -- permanently, since
-      nothing sweeps behind the anchor. The window is milliseconds and the anchor
-      itself is included, so in practice this only affects a build created at
-      virtually the same instant as the anchor. Accepted deliberately in exchange
-      for an exact cutoff with no re-processed overlap window.
+    - It is a Python-side clock read in ``BaseItemStorage.__add_items``, which
+      overwrites whatever the model's ``default_factory`` put there. It lands
+      after validation, schema init and the uniqueness check, and the insert then
+      runs in its own transaction doing nothing but the INSERT -- so
+      stamp-to-visibility is short (a model_dump, a log line and one round trip),
+      but not zero. Build creation is not serialized: ``submit_build`` is a sync
+      endpoint, so submissions overlap in the threadpool, and
+      ``GBSERVER_REST_SERVER_WORKERS`` above 1 adds cross-process concurrency
+      with no shared lock. Two builds created concurrently can therefore become
+      visible in a different order than their timestamps imply, and a build whose
+      ``created_time`` is fractionally behind the anchor's can appear only after
+      the checkpoint advanced -- permanently missed, since nothing sweeps behind
+      the anchor. Accepted deliberately in exchange for an exact cutoff with no
+      re-processed overlap window: the window is a few milliseconds wide and the
+      anchor itself is included, so it takes a build created at virtually the same
+      instant as the anchor. Note the single-replica *watcher* deployment does not
+      shrink this -- the race is on the creation side.
+    - The stamp is per ``add()`` call, not per row: a batched add gives every row
+      one identical ``t``. Build submission always adds one build, but it does
+      mean ``created_time`` is not unique and cannot order two builds against each
+      other. ``_advance_checkpoint`` handles that by stepping to the successor *in
+      this list's order* rather than to the first non-anchor row.
     - SQLite stores ``DateTime(timezone=True)`` as text and drops the offset, so
       ``ORDER BY created_time`` is a string sort there. Every writer goes through
       ``get_utc_time()``, so all rows share one offset and the text sort is
       correct -- but a row written with a differently-formatted timestamp (e.g. by
-      a seeding script) can sort wrongly and truncate this walk early.
+      a seeding script) can sort wrongly and truncate this walk early. A second
+      source of the same disagreement: ``__fill_missing_times`` substitutes
+      ``BEGINNING_OF_TIME`` when the *JSON blob* lacks the field, so a
+      pre-migration row can read far-past in Python while its physical column
+      sorts elsewhere. Both are why the walk reads every page and re-sorts on
+      aware instants below.
 
     Args:
         storage: Admin storage to read builds from.
