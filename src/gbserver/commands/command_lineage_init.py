@@ -150,12 +150,11 @@ def cli(
             click.echo(f"{LINEAGE_WATCHER_DROPPED_KEY}: no targets dropped.")
         return
 
-    if clear_dropped_targets:
+    if clear_dropped_targets and build_id is None:
+        # Clearing alone is a complete operation: the checkpoint is untouched
+        # and the watcher retries the targets on its next scan.
         _clear_dropped_targets(storage)
-        if build_id is None:
-            # Clearing alone is a complete operation: the checkpoint is untouched
-            # and the watcher retries the targets on its next scan.
-            return
+        return
 
     if build_id is None:
         raise click.ClickException(
@@ -177,6 +176,12 @@ def cli(
         wrote = seed_if_absent(storage, build_id, force=force)
     except LineageSeedError as exc:
         raise click.ClickException(str(exc)) from exc
+
+    # Clear only after the seed lands. The two writes are separate kv_pairs calls
+    # with no shared transaction, so clearing first meant a failed seed still
+    # wiped the durable drop set -- a "failed" run that silently mutated state.
+    if clear_dropped_targets:
+        _clear_dropped_targets(storage)
 
     value = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
     if wrote:

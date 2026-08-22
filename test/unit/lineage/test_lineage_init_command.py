@@ -187,6 +187,24 @@ class TestLineageInitCommand:
         seed.assert_called_once_with(self.storage, "b-2", force=True)
         assert "Cleared 1 dropped target" in result.output
 
+    def test_a_failed_seed_leaves_the_drop_set_intact(self):
+        """A non-zero exit must not have mutated durable state.
+
+        The clear and the seed are separate kv_pairs writes with no shared
+        transaction, so clearing first meant a failed seed still wiped the drop
+        set -- targets silently un-dropped by a run that reported failure, with
+        nothing to roll it back. Clearing happens only after the seed lands.
+        """
+        self._stored[LINEAGE_WATCHER_DROPPED_KEY] = {"target_ids": ["t-1"]}
+        with patch(
+            f"{MODULE}.seed_if_absent", side_effect=LineageSeedError("no such build")
+        ):
+            result = self._run("--build-id", "b-nope", "--clear-dropped-targets")
+
+        assert result.exit_code != 0
+        assert "no such build" in result.output
+        self.storage.kv_pair_storage.set_value.assert_not_called()
+
     def test_show_reports_dropped_targets(self):
         """A dropped target is skipped every scan; --show must surface it."""
         self._stored[LINEAGE_WATCHER_CHECKPOINT_KEY] = _CHECKPOINT
