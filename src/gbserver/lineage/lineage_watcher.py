@@ -269,6 +269,26 @@ class LineageWatcher:
             # A build already finished and confirmed cannot gain lineage, so skip
             # the per-build target read entirely. This is what keeps a pinned
             # cutoff from re-reading every newer build's targets each scan.
+            #
+            # Deliberately never re-verified: this is a cache of a past verdict,
+            # not a live query, and by design a build confirmed once is not
+            # checked against the sink again. That rests on two invariants of the
+            # platform, both intended and neither enforced here:
+            #
+            #   1. Once a build is finished, no new target appears for it. So a
+            #      confirmed build's recordable set cannot grow. (is_finished()
+            #      excludes RETRY_PENDING, which is the one state that can still
+            #      produce targets -- such a build fails this gate and is
+            #      re-reconciled.)
+            #   2. Lineage already in the sink is not deleted out from under us.
+            #
+            # If either stops holding -- a target added to a finished build, or a
+            # retention policy pruning wandb runs -- a build cached complete here
+            # keeps the checkpoint advancing over lineage that is missing or
+            # stale, and nothing detects it. The bound on that is process
+            # lifetime: _complete_builds is in-memory (see __init__), so a restart
+            # re-asks the sink for whatever is still in range. Recording is not
+            # affected either way, only the decision to skip re-reading.
             if build.uuid in self._complete_builds and build.status.is_finished():
                 continue
 
@@ -415,6 +435,14 @@ class LineageWatcher:
         # later scan able to reach it.
         if not anchor.status.is_finished():
             return False
+        # Two distinct questions, both required. is_finished() above is build
+        # state from the admin DB ("did it stop running?"); this is sink state
+        # ("did its lineage arrive?"). Replacing this with another status check
+        # would advance the mark on a finished build whose lineage never reached
+        # the sink -- and since advancing moves it out of the selection range,
+        # that lineage would be unreachable by any later scan. The cache is read
+        # rather than re-queried on purpose; see the invariants noted at the
+        # equivalent skip in _reconcile.
         if anchor.uuid not in self._complete_builds:
             return False
         # Step to the build immediately after the anchor *in this order*, rather

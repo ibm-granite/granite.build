@@ -935,13 +935,47 @@ class WandBLineageService(LineageService):
         ``on_query_error``, and the caller is expected to abort and retry rather
         than treat the empty result as "all recorded".
 
-        One consequence of random ids worth knowing: a target whose emission
-        crashed partway through leaves runs that can never be completed, since the
-        missing ones would get fresh ids. Re-recording emits a full new set, so the
-        target ends up with more runs than ``expected_counts[tid]`` and passes the
-        check from then on. That is over-recording rather than under-recording, but
-        it does mean the count no longer detects a partial record the way it did
-        when ids were derived from the target.
+        One consequence of random ids, ACCEPTED and deliberately not fixed here:
+        a target whose emission crashed partway through leaves runs that can never
+        be completed, since the missing ones would get fresh ids. Re-recording
+        emits a full new set, so the target ends up with more runs than
+        ``expected_counts[tid]`` and the ``>=`` above passes from then on.
+
+        What that actually costs is small: the re-record DOES write every output,
+        so the lineage is complete and correct -- what remains is duplicate runs in
+        the wandb UI. The count being inflated would mask a *further* partial
+        emission of the same target, but that needs a second mid-emission crash on
+        a target whose count is already inflated: a target is only reconciled once
+        it is SUCCESS with a finished_at, and a finished target gains no new
+        outputs (output_artifacts accumulates during the run, see
+        buildrunner.__merge_output_artifacts, and the whole set lives in the one
+        StoredTargetRun row), so expected_run_count is stable. A double race, not
+        an operational failure mode.
+
+        Do not "fix" this by making run ids deterministic again (a hash of target
+        uuid / artifact name / index, or any content-derived scheme). That is where
+        this code came from, and it fails far worse: wandb does not allow a DELETED
+        run to be recreated under its original id, so once a run is deleted -- which
+        happened, intentionally -- a derived id recomputes to that tombstoned id
+        forever and the target becomes permanently unrecordable. Commit 5824ae99
+        could only stop the futile retries, not record the lineage. Random ids
+        remove that failure by construction: a fresh uuid has never been seen, so
+        it can never have been deleted. Bounded over-recording is the strictly
+        better trade, and it holds without depending on nobody ever deleting a run.
+
+        Nor does a hybrid work (derive the id, fall back to a random one when wandb
+        rejects it as deleted): the fallback run is itself unaddressable, so the
+        next scan recomputes the same rejected hash and emits *another* random run
+        for that output, growing duplicates without bound instead of once.
+
+        Tightening ``>=`` to ``==`` is also wrong: a target with extra runs would
+        then read unrecorded on every scan and re-emit a duplicate set each time.
+
+        If this ever does need closing, the missing state is LOCAL, not in the id:
+        record which outputs have already been emitted on the granite.build side
+        (output_artifacts already says which are expected) instead of inferring it
+        by counting what reached the sink. That leaves ids random and deletions
+        harmless.
         """
         if not target_ids:
             return set()

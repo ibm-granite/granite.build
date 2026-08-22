@@ -344,6 +344,16 @@ class WandBLineageStore(ILineageStore):
                 # EVERY emitted event: a run without it is invisible to the
                 # dedup query, cannot be counted toward expected_run_count, and
                 # is unreclaimable -- no later scan can find it or replace it.
+                #
+                # Random is REQUIRED here, not incidental. Deriving the id from
+                # the target/output (the scheme this replaced) means a run
+                # DELETED in wandb can never be re-created: wandb refuses a
+                # deleted run's id, and a derived id recomputes to that same
+                # tombstoned value on every later scan, so the target becomes
+                # permanently unrecordable. That happened with intentional
+                # deletions; see commit 5824ae99 and the extended note in
+                # WandBLineageService.filter_unrecorded, which also explains the
+                # partial-record trade-off this buys and why it is accepted.
                 event["run"] = {
                     **base_event["run"],
                     "runId": get_uuid(),
