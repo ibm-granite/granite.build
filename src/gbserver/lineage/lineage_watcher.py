@@ -498,16 +498,39 @@ class LineageWatcher:
                 # includes every FAILED build, which select_builds_from_checkpoint
                 # does not filter out and which therefore does become an anchor.
                 #
-                # "Finished" is very nearly "will never gain a target", but not
-                # quite: finalize_build_status (buildrunner/build_utils.py) re-runs
-                # entity finalization precisely because targets can be stored
-                # concurrently with a previous finalization call -- a target row can
-                # still appear after the build row reads terminal. When that happens
-                # the skip gate below never re-reads this build, and the checkpoint
-                # advances past it, losing that lineage until a restart. That is the
-                # accepted side of the trade: the alternative wedges the mark on
-                # every finished build with no recordable targets, which is the
-                # common case, not the race.
+                # "Finished" is very nearly "will never gain a *recordable* target",
+                # and the gap is narrower than the bare build/target write ordering
+                # suggests. Two things close most of it:
+                #
+                #   - finalize_build_status (buildrunner/build_utils.py) finalizes
+                #     targets before it writes the build's terminal status, and
+                #     writes that status only when the build is not already
+                #     finished. So on the ordinary path the targets are committed
+                #     first, by construction rather than by luck.
+                #   - select_recordable_targets asks for status==SUCCESS with a
+                #     non-NULL finished_at, so a merely-present row is not enough to
+                #     lose. Notably the re-run entity finalization does NOT
+                #     manufacture one: _finalize_target_or_step_status leaves a
+                #     PENDING target PENDING when the build succeeded (it logs a
+                #     warning and treats it as a platform bug), so it never
+                #     back-fills a target into SUCCESS behind us.
+                #
+                # What remains is a genuine target event -- carrying its own SUCCESS
+                # and finished_at -- drained from the buildrunner's FIFO after a
+                # terminal status was written from *outside* that flow: an external
+                # cancel, or a concurrent stop_and_fail() landing on a cached
+                # StoredBuild status (see the skip gate's note on that stale
+                # window). When that happens the skip gate never re-reads this build
+                # and the checkpoint advances past it, losing that lineage until a
+                # restart clears this in-memory set.
+                #
+                # That is the accepted side of the trade, and the asymmetry is what
+                # settles it: the loss is rare and bounded by process lifetime,
+                # while the alternative wedges the mark on every finished build with
+                # no recordable targets -- the common case, not the race. If it ever
+                # needs closing, the cheap fix lives here (age out this set, or
+                # withhold caching when the terminal status did not come from the
+                # runner) rather than in a status re-read next to the target insert.
                 self._complete_builds.discard(build.uuid)
 
         advanced = self._advance_checkpoint(storage, anchor_build_id, builds)
