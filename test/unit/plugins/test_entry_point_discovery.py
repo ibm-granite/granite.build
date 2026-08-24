@@ -815,3 +815,103 @@ def test_retry_strategy_plugin_collision_core_wins(
     RetryStrategy._load_retry_strategies()
     assert RetryStrategy.strategy_types["AnyFailure"] is not ShadowStrategy
     assert "already registered" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# PluginRegistrar.discover_objects (object-valued registries, e.g. the CLI)
+# ---------------------------------------------------------------------------
+
+
+def test_registrar_discover_objects_files_by_name(monkeypatch):
+    """discover_objects routes loaded objects (not classes) through add()."""
+    marker = object()
+    eps = _make_entry_points(monkeypatch, {"thing": ("thing", marker)})
+    _patch_entry_points(monkeypatch, {"g": eps})
+
+    reg: dict = {}
+    registrar = plugins.PluginRegistrar(reg, "thing", plugins.keys_by_name)
+    registrar.discover_objects("g")
+    assert reg["thing"] is marker
+
+
+def test_registrar_add_non_class_value_and_collision(caplog):
+    """add() files a non-class value and logs a collision without needing __name__."""
+    first = object()
+    second = object()
+    reg: dict = {}
+    registrar = plugins.PluginRegistrar(reg, "thing", plugins.keys_by_name)
+    registrar.add(first, "x")
+    registrar.add(second, "x")  # collision: core (first) wins
+    assert reg["x"] is first
+    assert "already registered" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# CLI commands
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cli_command_registry_snapshot():
+    from gbcli.cli import GraniteBuildCLI
+
+    saved = dict(GraniteBuildCLI.command_types)
+    yield GraniteBuildCLI
+    GraniteBuildCLI.command_types.clear()
+    GraniteBuildCLI.command_types.update(saved)
+
+
+def test_cli_plugin_command_registered_by_name(
+    monkeypatch, cli_command_registry_snapshot
+):
+    """A plugin command is filed under its entry-point name and resolves to its
+    click command object."""
+    import click
+
+    @click.command("dummy")
+    def dummy_cmd():
+        pass
+
+    eps = _make_entry_points(monkeypatch, {"dummy": ("dummy_cmd", dummy_cmd)})
+    _patch_entry_points(monkeypatch, {plugins.GROUP_CLI_PLUGINS: eps})
+
+    cli_command_registry_snapshot._load_commands()
+    assert "dummy" in cli_command_registry_snapshot.command_types
+    # get_command resolves the registered value to the click command object.
+    resolved = cli_command_registry_snapshot().get_command(None, "dummy")
+    assert resolved is dummy_cmd
+
+
+def test_cli_plugin_collision_core_wins(
+    monkeypatch, caplog, cli_command_registry_snapshot
+):
+    """A plugin cannot shadow an in-tree command (core-wins).
+
+    Asserts against the classmethod loader / registry directly rather than
+    constructing ``GraniteBuildCLI`` (whose __init__ reconfigures logging, which
+    would detach the handler caplog relies on)."""
+    import click
+
+    @click.command("build")
+    def shadow_build():
+        pass
+
+    eps = _make_entry_points(monkeypatch, {"build": ("shadow_build", shadow_build)})
+    _patch_entry_points(monkeypatch, {plugins.GROUP_CLI_PLUGINS: eps})
+
+    cli_command_registry_snapshot._load_commands()
+    # The in-tree build loader was registered first, so the plugin is refused.
+    assert cli_command_registry_snapshot.command_types["build"] is not shadow_build
+    assert "already registered" in caplog.text
+
+
+def test_cli_noop_when_no_plugins(monkeypatch, cli_command_registry_snapshot):
+    """With no plugin installed, only in-tree commands are listed."""
+    _patch_entry_points(monkeypatch, {})
+    cli_command_registry_snapshot._load_commands()
+    names = sorted(
+        n for n in cli_command_registry_snapshot.command_types if n != "dataset"
+    )
+    assert "build" in names
+    assert "version" in names
+    assert "dataset" not in names  # hidden built-in stays hidden

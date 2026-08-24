@@ -241,8 +241,8 @@ class PluginRegistrar:
                     "%s %r already registered to %s; ignoring %s",
                     self.label,
                     _key_label(key),
-                    existing.__name__,
-                    cls.__name__,
+                    _value_label(existing),
+                    _value_label(cls),
                 )
                 continue
             self.registry[key] = cls
@@ -251,7 +251,7 @@ class PluginRegistrar:
                 "%s: %s produced no keys and was not registered; "
                 "check that its key derivation is implemented",
                 self.label,
-                getattr(cls, "__name__", cls),
+                _value_label(cls),
             )
 
     def discover(self, group: str, base_class: Type) -> None:
@@ -272,7 +272,29 @@ class PluginRegistrar:
                 logger.error(
                     "Error registering plugin %s=%s (group %s): %s",
                     name,
-                    getattr(cls, "__name__", cls),
+                    _value_label(cls),
+                    group,
+                    e,
+                )
+
+    def discover_objects(self, group: str) -> None:
+        """Run an entry-point plugin pass for ``group`` where the value is an object.
+
+        The counterpart to :meth:`discover` for subsystems whose registry value
+        is not a class subclassing a common base but an object keyed by name —
+        the CLI, for instance, registers ``click`` command objects. It routes
+        each loaded object through :meth:`add` under the entry-point ``name`` and
+        applies the same core-wins rule and per-entry guard as :meth:`discover`.
+        Use it with a name-deriving ``keys_of`` (e.g. :func:`keys_by_name`).
+        """
+        for name, obj in iter_entry_point_objects(group):
+            try:
+                self.add(obj, name)
+            except Exception as e:
+                logger.error(
+                    "Error registering plugin %s=%s (group %s): %s",
+                    name,
+                    _value_label(obj),
                     group,
                     e,
                 )
@@ -285,6 +307,16 @@ def _key_label(key: Hashable) -> Any:
     URI *class*; show its name rather than its ``repr``.
     """
     return getattr(key, "__name__", key)
+
+
+def _value_label(value: Any) -> Any:
+    """Human-readable form of a registry *value* for log messages.
+
+    Values are usually classes (``__name__``), but some subsystems file other
+    objects — a ``click`` command has ``name`` instead, and a thunk may have
+    neither — so fall back through both before ``repr``.
+    """
+    return getattr(value, "__name__", None) or getattr(value, "name", None) or value
 
 
 def rebuild_registry(
