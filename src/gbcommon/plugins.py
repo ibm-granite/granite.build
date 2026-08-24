@@ -36,7 +36,17 @@ loaders already use.
 
 from collections.abc import Hashable
 from importlib.metadata import EntryPoint, entry_points
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    MutableMapping,
+    Optional,
+    Tuple,
+    Type,
+)
 
 from gbserver.utils.logger import get_logger
 
@@ -196,11 +206,16 @@ class PluginRegistrar:
 
     def __init__(
         self,
-        registry: Dict[Hashable, Type],
+        registry: MutableMapping[Any, Type],
         label: str,
         keys_of: KeysOf,
     ) -> None:
         """``registry`` is the subsystem's own dict; mutated in place.
+
+        Typed ``MutableMapping[Any, Type]`` rather than ``Dict[Hashable, Type]``
+        so a subsystem can pass its own concretely-keyed registry (e.g.
+        ``Dict[str, Type]`` or the asset store's ``Dict[type, Type]``) without a
+        variance error — ``dict`` is invariant in its key type.
 
         ``label`` names the key in log messages (e.g. ``"URI scheme"``).
         ``keys_of(cls, name)`` yields the registry keys ``cls`` belongs under.
@@ -272,13 +287,59 @@ def _key_label(key: Hashable) -> Any:
     return getattr(key, "__name__", key)
 
 
+def rebuild_registry(
+    registry: MutableMapping[Any, Any], populate: Callable[[], None]
+) -> None:
+    """Clear ``registry`` in place, then repopulate it via ``populate``.
+
+    The single reset-and-rebuild contract shared by every subsystem loader, so
+    the reload-safety fix does not have to be re-derived per subsystem.
+
+    The clear is **in place** (``dict.clear()``), never a rebind to a fresh
+    ``{}``: the registries are long-lived ``ClassVar`` dicts and callers may hold
+    a reference to the dict object, so rebinding would strand those references on
+    the old, now-stale dict.
+
+    Rebuilding from scratch (rather than adding on top of whatever is already
+    there) is what makes a loader idempotent and reload-safe. Without it, a
+    re-run after ``importlib.reload`` of a subsystem module leaves the registry
+    pointing at the pre-reload class: the reloaded module defines a *new* class
+    object, but :meth:`PluginRegistrar.add`'s core-wins guard
+    (``existing is not cls``) sees the key already bound to the stale class and
+    refuses to replace it. Clearing first lets the in-tree scan re-file the
+    current classes, and the plugin ``discover`` pass then adds on top with
+    core-wins protecting the freshly-registered built-ins.
+
+    ``populate`` does the subsystem's in-tree scan (``registrar.add(...)``)
+    followed by its ``registrar.discover(group, base_class)`` plugin pass.
+    """
+    registry.clear()
+    populate()
+
+
 # ---------------------------------------------------------------------------
-# Ready-made ``keys_of`` callbacks for the common key-derivation shapes.
+# Ready-made ``keys_of`` callbacks — the two supported key-derivation shapes.
 #
-# A subsystem picks one of these when constructing its PluginRegistrar instead
-# of re-spelling the same lambda. They cover the two ways a key is derived:
-# from the discovered *name* (module name in-tree / entry-point name), or by
-# asking the class itself via one of its methods.
+# There are exactly two ways a subsystem derives a registry key, and every
+# subsystem uses one of them:
+#
+# * ``keys_by_name`` — the key **is the name** (the module name in-tree, the
+#   entry-point name for a plugin). This is the industry-standard entry-point
+#   convention (cf. the Python packaging guide and OpenStack stevedore, where
+#   the entry-point name, owned by the plugin author, is the lookup key). Use it
+#   whenever an implementation is selected by a name a user writes in config
+#   (environment ``type``, secret-manager ``type``, auth provider, retry
+#   strategy ``type``).
+#
+# * ``keys_from_method`` — the class **advertises its capability keys** by
+#   answering a method. Use it when the key is a capability the class dispatches
+#   on rather than a chosen name, and one class may own several keys: URI
+#   handlers key on the scheme(s) they serve (``git``, ``git+ssh``) and asset
+#   stores on the URI class(es) they back. The resolver looks up by that
+#   capability, not by plugin name, so name-as-key does not apply here.
+#
+# A subsystem picks one when constructing its PluginRegistrar instead of
+# re-spelling the same lambda.
 # ---------------------------------------------------------------------------
 
 
@@ -289,21 +350,22 @@ def _require_name(name: Optional[str]) -> str:
     return name
 
 
-def keys_by_name_lower(_cls: Type, name: Optional[str]) -> Iterable[Hashable]:
-    """Key = the name, lowercased. (secret managers)"""
-    return (_require_name(name).lower(),)
+def keys_by_name(_cls: Type, name: Optional[str]) -> Iterable[Hashable]:
+    """Keys = the name lowercased *and* the name exactly as declared.
 
-
-def keys_by_name_cased(_cls: Type, name: Optional[str]) -> Iterable[Hashable]:
-    """Keys = the name lowercased *and* the name exactly as declared. (environments)
-
-    The declared name is preserved verbatim so a plugin's own casing stays
-    reachable: an entry point ``AWSBatch`` registers under both ``awsbatch`` and
-    ``AWSBatch``, so a build referencing ``type: AWSBatch`` resolves. (An earlier
-    version used ``str.capitalize()``, which lowercases every character after the
-    first and left internal capitals unreachable.) In-tree names are already a
-    single ``str.capitalize()`` (module ``k8s`` -> ``K8s``), so this keeps the
+    The canonical name-as-key helper for every name-keyed subsystem (secret
+    managers, environments, auth providers, retry strategies). The declared name
+    is preserved verbatim so a plugin's own casing stays reachable: an entry
+    point ``AWSBatch`` registers under both ``awsbatch`` and ``AWSBatch``, so a
+    build referencing ``type: AWSBatch`` resolves. (An earlier version used
+    ``str.capitalize()``, which lowercases every character after the first and
+    left internal capitals unreachable.) In-tree names are already a single
+    ``str.capitalize()`` (module ``k8s`` -> ``K8s``), so this keeps the
     historical ``{k8s, K8s}`` keys unchanged while no longer mangling plugins.
+
+    Filing both the lowercased and verbatim forms is a superset of a
+    lowercase-only key: a caller that lowercases before lookup is unaffected,
+    and one that passes the declared casing now also resolves.
     """
     resolved = _require_name(name)
     lowered = resolved.lower()
@@ -312,7 +374,7 @@ def keys_by_name_cased(_cls: Type, name: Optional[str]) -> Iterable[Hashable]:
 
 
 def keys_from_method(method_name: str) -> KeysOf:
-    """Build a ``keys_of`` that asks the class for its keys via ``method_name``.
+    """Build a ``keys_of`` that asks the class for its capability keys via ``method_name``.
 
     Used when the registration keys come from the class rather than its name —
     e.g. ``get_supported_schemes`` (URI) or ``get_supported_uri_classes``

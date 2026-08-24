@@ -198,15 +198,15 @@ def test_registrar_reregister_same_class_is_quiet(caplog):
 
 
 def test_keys_of_helpers():
-    assert list(plugins.keys_by_name_lower(_Good, "Foo")) == ["foo"]
-    # An in-tree name is already capitalized (module k8s -> "K8s"), giving the
-    # historical {lower, cased} pair.
-    assert list(plugins.keys_by_name_cased(_Good, "K8s")) == ["k8s", "K8s"]
+    # The single canonical name-as-key helper: {lower, verbatim}, deduped.
+    # An in-tree name is already capitalized (module k8s -> "K8s").
+    assert list(plugins.keys_by_name(_Good, "K8s")) == ["k8s", "K8s"]
     # An already-lowercase name files exactly one key, not a duplicate pair.
-    assert list(plugins.keys_by_name_cased(_Good, "foo")) == ["foo"]
+    assert list(plugins.keys_by_name(_Good, "foo")) == ["foo"]
+    assert list(plugins.keys_by_name(_Good, "Foo")) == ["foo", "Foo"]
     # A plugin's internal capitals survive verbatim so `type: AWSBatch` resolves
     # (the old str.capitalize() would have mangled this to "Awsbatch").
-    assert list(plugins.keys_by_name_cased(_Good, "AWSBatch")) == [
+    assert list(plugins.keys_by_name(_Good, "AWSBatch")) == [
         "awsbatch",
         "AWSBatch",
     ]
@@ -447,22 +447,27 @@ def test_environment_plugin_lowercase_name_single_key(
 def test_environment_plugin_collision_core_wins(
     monkeypatch, caplog, env_registry_snapshot
 ):
+    """A plugin declaring an existing built-in's key cannot shadow it.
+
+    The loader rebuilds the registry from scratch each call (in-tree scan first,
+    plugin ``discover`` last), so we let the plugin collide with a genuine
+    in-tree environment. ``bash`` is the one built-in guaranteed present under
+    any dependency set (the local executor has no optional dependency), so the
+    test stays hermetic in standalone CI without pre-seeding — which the rebuild
+    would clear anyway.
+    """
     from gbserver.environment.environment import Environment
 
-    # Seed a known core type ourselves rather than depending on a specific
-    # built-in (e.g. "k8s" is only registered when its optional dependency is
-    # installed, which is not the case in the standalone CI env). This keeps the
-    # test hermetic under any dependency set and under parallel execution.
-    CoreEnv = type("CoreEnv", (Environment,), {})
-    Environment.environment_types["seeded"] = CoreEnv
-    Environment.environment_types["Seeded"] = CoreEnv
+    class ShadowBash(Environment):
+        pass
 
-    ShadowEnv = type("ShadowEnv", (Environment,), {})
-    eps = _make_entry_points(monkeypatch, {"seeded": ("ShadowEnv", ShadowEnv)})
+    eps = _make_entry_points(monkeypatch, {"bash": ("ShadowBash", ShadowBash)})
     _patch_entry_points(monkeypatch, {plugins.GROUP_ENVIRONMENTS: eps})
 
     Environment._load_environment_types()
-    assert Environment.environment_types["seeded"] is CoreEnv  # core kept
+    # The in-tree Bash class was registered first, so the plugin is refused.
+    assert Environment.environment_types["bash"] is not ShadowBash
+    assert Environment.environment_types["bash"].__name__ == "Bash"
     assert "already registered" in caplog.text
 
 
@@ -497,9 +502,8 @@ def test_assetstore_plugin_collision_core_wins(
     eps = _make_entry_points(monkeypatch, {"shadow": ("ShadowStore", ShadowStore)})
     _patch_entry_points(monkeypatch, {plugins.GROUP_ASSET_STORES: eps})
 
-    # Force the loader past its len-guard by clearing, then re-populating via
-    # the in-tree pass + the plugin pass in a single call.
-    Assetstore.assetstore_types.clear()
+    # The loader rebuilds the registry from scratch each call (clear + in-tree
+    # scan + plugin pass), so no manual clear is needed to re-exercise it.
     Assetstore._load_assetstore_types()
     assert Assetstore.assetstore_types[HfURI] is core_hf_store
     assert "already registered" in caplog.text
@@ -560,3 +564,110 @@ def test_secret_manager_plugin_routed_by_base_class(monkeypatch):
     )
     # The Space-family dummy is filtered out of the User-family registry.
     assert "dummy" not in registry
+
+
+# ---------------------------------------------------------------------------
+# Shared reset/rebuild lifecycle: rebuild_registry
+#
+# The four loaders above route their reset through this one contract. These
+# tests pin the contract itself and its reload-safety for each newly-converted
+# loader (URI's is test_uri_loader_rebuilds_registry above).
+# ---------------------------------------------------------------------------
+
+
+def test_rebuild_registry_clears_in_place():
+    """The registry is cleared IN PLACE (not rebound) and refilled by populate.
+
+    In place matters: callers (and ClassVar consumers) may hold a reference to
+    the dict object, so the same object must survive the rebuild.
+    """
+    registry = {"stale": object()}
+    identity = id(registry)
+    marker = object()
+
+    def populate():
+        registry["fresh"] = marker
+
+    plugins.rebuild_registry(registry, populate)
+
+    assert id(registry) == identity  # same object, not rebound
+    assert "stale" not in registry  # cleared
+    assert registry["fresh"] is marker  # repopulated
+
+
+def test_environment_loader_rebuilds_registry(monkeypatch, env_registry_snapshot):
+    """A stale registration is replaced by the loader's fresh in-tree class,
+    rather than kept by the core-wins guard (the PR #289 class of bug — the
+    environment loader previously never cleared)."""
+    from gbserver.environment.environment import Environment
+
+    class StaleEnv(Environment):
+        pass
+
+    _patch_entry_points(monkeypatch, {})
+    Environment.environment_types["stale-key"] = StaleEnv
+
+    Environment._load_environment_types()
+
+    # The stale key is gone (the loader rebuilt from scratch), and a real
+    # in-tree environment resolves to the module's current class.
+    assert "stale-key" not in Environment.environment_types
+
+
+def test_assetstore_loader_rebuilds_registry(monkeypatch, assetstore_registry_snapshot):
+    """The assetstore loader rebuilds from scratch each call (was a len()-guarded
+    no-op before), so a stale entry left in the registry is dropped."""
+    from gbcommon.uri.hf import HfURI
+    from gbserver.asset.assetstore import Assetstore
+
+    core_hf_store = Assetstore.assetstore_types[HfURI]
+
+    class StaleStore(Assetstore):
+        @classmethod
+        def get_supported_uri_classes(cls):
+            return [HfURI]
+
+    _patch_entry_points(monkeypatch, {})
+    Assetstore.assetstore_types[HfURI] = StaleStore
+
+    Assetstore._load_assetstore_types()
+
+    # The in-tree scan re-files HfURI's real core store, replacing the stale one.
+    assert Assetstore.assetstore_types[HfURI] is core_hf_store
+
+
+def test_secret_manager_loader_force_rebuilds(monkeypatch):
+    """The secret-manager loader keeps a populated-registry no-op for the API hot
+    path, but force=True rebuilds in place — replacing a stale entry."""
+    from gbserver.spacesecretmanager import spacesecretmanager as sm_module
+    from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
+    from gbserver.utils import secretmanager_discovery
+
+    class StaleSM(SpaceSecretManager):
+        pass
+
+    _patch_entry_points(monkeypatch, {})
+    registry: dict = {"local": StaleSM}
+
+    # Without force, an already-populated registry is left untouched (hot path).
+    secretmanager_discovery.discover_secret_managers(
+        package_file=sm_module.__file__,
+        package_name="gbserver.spacesecretmanager",
+        base_class=SpaceSecretManager,
+        registry=registry,
+    )
+    assert registry["local"] is StaleSM  # no-op, stale entry kept
+
+    # With force, the registry is rebuilt in place: the stale "local" is replaced
+    # by the real in-tree class and the same dict object is reused.
+    identity = id(registry)
+    secretmanager_discovery.discover_secret_managers(
+        package_file=sm_module.__file__,
+        package_name="gbserver.spacesecretmanager",
+        base_class=SpaceSecretManager,
+        registry=registry,
+        force=True,
+    )
+    assert id(registry) == identity
+    assert "local" in registry
+    assert registry["local"] is not StaleSM
