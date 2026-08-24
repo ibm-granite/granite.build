@@ -48,7 +48,6 @@ simulate_step_failure: true            # inject one environment failure to exerc
 space_uri: null                   # if set, takes precedence over the space's
                                   #   git_repo_uri in the gb_spaces table
                                   #   (relative file:// or filesystem paths resolve against this YAML's dir)
-skip_target_names: []             # targets expected to be skipped on a 2nd run
 tests:                            # which test methods to run (see below)
   - runner
   - runner_cancellation
@@ -66,7 +65,6 @@ tests:                            # which test methods to run (see below)
 | `timeout_minutes`      | int             | `30`                               | Wall-clock cap for the build. |
 | `simulate_step_failure`     | bool            | `true`                             | If `true`, signals the environment to inject one simulated failure to exercise the retry path. |
 | `space_uri`            | str \| null     | `null`                             | When set, takes precedence over the `git_repo_uri` recorded for `space_name` in the `gb_spaces` table — the BuildRunner resolves `space://` URIs from this value instead of cloning the registered git repo. Relative `file://` URIs and bare relative filesystem paths resolve against this YAML's directory. PR creation and verification are skipped automatically (no GitHub repo). |
-| `skip_target_names`    | list[str]       | `[]`                               | Targets expected to be skipped on a second run (used with retry/two-build flows). |
 | `tests`                | list[str]       | `["runner", "runner_cancellation"]` | Which test methods opt in for this spec. Unknown values fail at load time. |
 
 `ExpectedTarget` fields (all required):

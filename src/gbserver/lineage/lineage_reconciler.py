@@ -608,19 +608,13 @@ def reconcile_build(
     # Expected run count per candidate, so ``filter_unrecorded`` can tell a
     # fully-recorded target from one whose runs were only partially emitted by a
     # prior crashed scan. Derived in memory from the already-loaded targets — no
-    # extra storage read.
-    #
-    # A skipped-for-prerun target is omitted: it records the *original* target's
-    # outputs (see WandBJobStats.create_jobstats_for_target, which swaps in the
-    # original before building events), so its own output_artifacts would give the
-    # wrong count. Omitting it falls back to the presence check (>=1), which is
-    # the conservative direction: a too-high count would report the target
-    # unrecorded on every scan and, since run ids are random, write a fresh
-    # duplicate run set each time while pinning the checkpoint forever.
+    # extra storage read. Every candidate is a real run whose own output_artifacts
+    # give the correct count (there is no skip concept: an in-place retry keeps
+    # both the FAILED and the SUCCESS run in one build).
     expected = {
         t.uuid: expected_run_count(t)
         for t in targets
-        if t.uuid in candidates and not t.skipped_for_prerun_target_id
+        if t.uuid in candidates
     }
 
     failure: Optional[Exception] = None

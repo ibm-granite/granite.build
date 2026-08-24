@@ -44,7 +44,7 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.space_storage import IStoredSpaceStorage
-from gbserver.storage.stored_build import StoredBuild, get_retry_chain_members
+from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -158,15 +158,8 @@ class BuildStatus(BaseModel):
     target_runs: list[TargetRecord]
 
 
-class BuildChainMember(BaseModel):
-    build: StoredBuild
-    target_runs: list[TargetRecord]
-
-
 class BuildStatusResponse(BaseModel):
     status: BuildStatus
-    # Populated (root-first) only when the request sets follow_retries=true.
-    retry_chain: Optional[list[BuildChainMember]] = None
 
 
 class CancelBuildResponse(BaseModel):
@@ -451,9 +444,7 @@ def __build_target_records(
 
 
 @builds_api.get("/{build_id}/status", response_model=BuildStatusResponse)
-def get_build_status(
-    request: Request, build_id: str, follow_retries: bool = False
-) -> BuildStatusResponse:
+def get_build_status(request: Request, build_id: str) -> BuildStatusResponse:
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
@@ -466,29 +457,13 @@ def get_build_status(
     build_status = BuildStatus(
         build=build, target_runs=__build_target_records(storage, build_id)
     )
-    resp = BuildStatusResponse(status=build_status)
-    if follow_retries:
-        members = get_retry_chain_members(storage.build_storage, build)
-        chain = []
-        for member in members:
-            if member.uuid == build_id:
-                # Reuse the records already assembled for the queried build
-                # instead of re-querying its targets/steps/artifacts.
-                records = build_status.target_runs
-            else:
-                member.build_archive = ""
-                records = __build_target_records(storage, member.uuid)
-            chain.append(BuildChainMember(build=member, target_runs=records))
-        resp.retry_chain = chain
-    return resp
+    return BuildStatusResponse(status=build_status)
 
 
 @builds_api.get("/{build_id}/status2", response_model=BuildStatusResponse)
-def get_build_status2(
-    request: Request, build_id: str, follow_retries: bool = False
-) -> BuildStatusResponse:
+def get_build_status2(request: Request, build_id: str) -> BuildStatusResponse:
     # Retained as a backward-compatible alias of the primary /status endpoint.
-    return get_build_status(request, build_id, follow_retries)
+    return get_build_status(request, build_id)
 
 
 @builds_api.get("/{build_id}/events")
@@ -559,58 +534,38 @@ async def cancel_build(build_id: str, request: Request) -> CancelBuildResponse:
     return response
 
 
-def _find_active_chain_member(
-    build_storage: IStoredBuildStorage, build: StoredBuild
-) -> Optional[StoredBuild]:
-    """Return the single non-finished member of ``build``'s retry chain, if any.
-
-    A retry chain is linear, so at most one member is in flight at a time.
-    """
-    for member in get_retry_chain_members(build_storage, build):
-        if not member.status.is_finished():
-            return member
-    return None
-
-
 def request_cancellation(
     build_storage: IStoredBuildStorage, build: StoredBuild
 ) -> StoredBuild:
-    """Apply a cancellation request to a build, routing into its retry chain.
+    """Apply a cancellation request to a build.
 
-    If the targeted build itself is in flight, it is set to CANCEL_REQUESTED (or
-    CANCELLED for SUBMITTED/PENDING). If the targeted build is already finished
-    (e.g. a FAILED original) but its retry chain still has an active member, the
-    request is routed to that active member instead — so cancelling a failed build
-    cancels the retry that is actually running.
+    With in-place retry there is a single build id across attempts: an in-flight
+    (possibly retrying) build is RUNNING or RETRY_PENDING and is set to
+    CANCEL_REQUESTED; a SUBMITTED/PENDING build is set to CANCELLED. A finished
+    build (SUCCESS/FAILED/CANCELLED — including a FAILED build whose retries are
+    exhausted) is not cancellable.
 
     Args:
         build_storage: storage used to read/update builds.
         build: the build the cancellation was requested for.
 
     Returns:
-        The build whose status was updated (the active chain member when routed),
-        or the unchanged build if no update was needed.
+        The build whose status was updated, or the unchanged build if no update
+        was needed.
 
     Raises:
-        HTTPException: 412 if nothing in the chain is cancellable; 409 if the
-            status changed concurrently.
+        HTTPException: 412 if the build is not cancellable; 409 if the status
+            changed concurrently.
     """
     current_status = build.status
     if not current_status.is_cancellable():
-        # The build itself is finished (e.g. a FAILED original). Allow cancelling
-        # it only if its retry chain still has an active member, and set
-        # CANCEL_REQUESTED on THIS build — a durable signal on a build that is not
-        # being re-run (so it can't be clobbered by a concurrent FAILED update).
-        # The runner detects it chain-wide and cancels the whole chain.
-        if _find_active_chain_member(build_storage, build) is None:
-            raise HTTPException(
-                status_code=status.HTTP_412_PRECONDITION_FAILED,
-                detail=f"Build {build.uuid} has status {current_status} and therefore can not be canceled.",
-            )
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail=f"Build {build.uuid} has status {current_status} and therefore can not be canceled.",
+        )
+    # RETRY_PENDING is treated like RUNNING: an in-flight build the runner must stop.
+    if current_status in (Status.RUNNING, Status.RETRY_PENDING):
         target_status: Optional[Status] = Status.CANCEL_REQUESTED
-    # RETRY is treated like RUNNING: an in-flight build the runner must stop.
-    elif current_status in (Status.RUNNING, Status.RETRY_PENDING):
-        target_status = Status.CANCEL_REQUESTED
     elif current_status in (Status.SUBMITTED, Status.PENDING):
         target_status = Status.CANCELLED
     else:  # CANCEL_REQUESTED (already requested) or anything else: no update

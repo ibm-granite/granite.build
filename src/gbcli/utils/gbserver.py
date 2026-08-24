@@ -189,7 +189,7 @@ def get_artifact_body(
 
 
 def get_build_status_with_targets_runs(
-    user_token: str, build_id: str, gbserver_api: str, follow_retries: bool = False
+    user_token: str, build_id: str, gbserver_api: str
 ) -> Any:
     build_url = f"{gbserver_api}{build_id}/status"
 
@@ -198,7 +198,7 @@ def get_build_status_with_targets_runs(
         url=build_url,
         http_method="get",
         body=None,
-        params={"follow_retries": str(follow_retries).lower()},
+        params=None,
     )
 
 

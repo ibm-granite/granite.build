@@ -67,7 +67,7 @@ def _target(
     status: Status = Status.SUCCESS,
     finished_at: datetime = None,
     output_artifacts: dict[str, list[str]] = None,
-    skipped_for_prerun_target_id: str = "",
+    retry_of_target_id: str = "",
 ) -> StoredTargetRun:
     return StoredTargetRun(
         uuid=uuid,
@@ -76,7 +76,7 @@ def _target(
         status=status,
         finished_at=finished_at,
         output_artifacts=output_artifacts or {},
-        skipped_for_prerun_target_id=skipped_for_prerun_target_id,
+        retry_of_target_id=retry_of_target_id,
     )
 
 
@@ -550,21 +550,14 @@ class TestReconcileBuild:
 
         assert store.last_expected_counts == {"t1": 2, "t2": 1}
 
-    def test_prerun_skipped_target_is_omitted_from_expected_counts(self):
-        """A skipped-for-prerun target must fall back to the presence check.
+    def test_retried_target_counts_from_its_own_outputs(self):
+        """A re-run (retry) target is a real SUCCESS run counted by its own outputs.
 
-        Such a target records the *original* target's outputs (WandBJobStats.
-        create_jobstats_for_target swaps the original in before building events),
-        so a count derived from its own output_artifacts describes different
-        artifacts than the ones actually emitted. Omitting it from
-        expected_counts is what makes filter_unrecorded fall back to >=1; a
-        wrong count in the too-high direction would report the target unrecorded
-        on every scan and, since run ids are random, write a fresh duplicate run
-        set each time while the build never became all_confirmed.
-
-        't2' here is the shape that would break: one output of its own against an
-        original that emits more, so it must be absent from the dict rather than
-        present with a 1.
+        In-place retry keeps both the FAILED and the SUCCESS run in one build;
+        there is no skip/swap concept, so a retried target's expected count comes
+        directly from its own ``output_artifacts`` like any other run. 't2' below
+        retried a prior failed run (``retry_of_target_id``) and produced one output,
+        so it must contribute a count of 1 — no different from a first-attempt run.
         """
         storage = _admin_storage_with(
             [
@@ -579,7 +572,7 @@ class TestReconcileBuild:
                     "t2",
                     finished_at=_BASE,
                     output_artifacts={"a": ["o3"]},
-                    skipped_for_prerun_target_id="original-target",
+                    retry_of_target_id="t2-failed",
                 ),
             ]
         )
@@ -587,10 +580,10 @@ class TestReconcileBuild:
 
         reconcile_build(store, storage, build_id="b1")
 
-        assert store.last_expected_counts == {"t1": 2}
+        assert store.last_expected_counts == {"t1": 2, "t2": 1}
 
-    def test_prerun_skipped_target_is_still_recorded(self):
-        """Omitting it from the counts must not exclude it from recording."""
+    def test_retried_target_is_recorded(self):
+        """A retried SUCCESS target records its lineage like any other run."""
         storage = _admin_storage_with(
             [
                 _target(
@@ -598,7 +591,7 @@ class TestReconcileBuild:
                     "t2",
                     finished_at=_BASE,
                     output_artifacts={"a": ["o3"]},
-                    skipped_for_prerun_target_id="original-target",
+                    retry_of_target_id="t2-failed",
                 ),
             ]
         )

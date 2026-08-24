@@ -173,8 +173,6 @@ class BuildTestSpecification(BaseModel):
     """If set, overrides the space's git_repo_uri so the BuildRunner resolves space:// URIs
     from this local path instead of cloning from GitHub.  PR creation and verification are
     automatically skipped when this is set (no GitHub repo available)."""
-    skip_target_names: list[str] = []
-    """Target names expected to be skipped on a second run (used by _run_two_builds_sequential)."""
     tests: list[str] = ["runner", "runner_cancellation"]
     """Which test methods on AbstractYamlBuildRunnerTest run for this spec.
     Each value <key> maps to a method test_<key> on the base class.  Default
@@ -605,38 +603,6 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
         finally:
             disable_failure_simulation()
-
-    def _run_two_builds_sequential(
-        self: Self,
-        tested_class: ClassTestedEnum,
-        test_spec: BuildTestSpecification,
-        second_run_spec: BuildTestSpecification,
-    ) -> None:
-        """
-        Runs the build twice to verify target-skip behaviour:
-        1. First run: all targets execute normally and register their output artifacts.
-        2. Second run: uses second_run_spec's build_yaml and targets; targets in
-           skip_target_names are expected to be skipped because their target_hash already
-           exists in gb_targets from the first run. Exercises downstream binding
-           propagation from a skipped target.
-
-        The artifact registry is NOT cleared between runs so first-run output artifacts
-        remain visible to the second run's skip check.
-        """
-        assert (
-            tested_class == ClassTestedEnum.TEST_BUILDRUNNER
-        ), "_run_two_builds_sequential only supports TEST_BUILDRUNNER"
-
-        # First run: run normally, verify expectations.
-        self._run_build_test(tested_class=tested_class, test_spec=test_spec)
-
-        # Second run: the first run stored a target_hash in gb_targets; the BuildRunner's
-        # target_already_run_fn will find it and skip matching targets.
-        # Output artifacts from the first run remain in the registry for the second run's skip check.
-        self._run_build_test(
-            tested_class=tested_class,
-            test_spec=second_run_spec,
-        )
 
     def _verify_build_cancellations(self: Self, build_ids: list[str]) -> None:
         for build_id in build_ids:
@@ -1083,7 +1049,6 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             assert isinstance(target, StoredTargetRun)
             target_dict[target.name] = target
 
-        skip_set = set(test_spec.skip_target_names)
         expected_targets = test_spec.target_expectations
         for index in range(0, len(expected_targets)):
             expected_target = expected_targets[index]
@@ -1092,14 +1057,9 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 build_id,
                 f"Did not find expected target named {expected_target.target_name}",
             )
-            if expected_target.target_name in skip_set:
-                self._verify_skipped_target_and_steps(
-                    build_id, target, [Status.SUCCESS], expected_target
-                )
-            else:
-                self._verify_unskipped_target_and_steps(
-                    build_id, target, [Status.SUCCESS], expected_target
-                )
+            self._verify_target_and_steps(
+                build_id, target, [Status.SUCCESS], expected_target
+            )
 
         # Do this after in case there are extra targets
         assert len(target_list) == len(expected_targets), self._failed_build_msg(
@@ -1134,34 +1094,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 uri.exists()
             ), f"URI {artifact.uri} does not exist in artifact storage"
 
-    def _verify_skipped_target_and_steps(
-        self: Self,
-        build_id: str,
-        built_target: StoredTargetRun,
-        status_list: list[Status],
-        expected: ExpectedTarget,
-    ):
-        self._verify_target_status(build_id, built_target, status_list)
-        assert len(built_target.input_artifacts) == 0, self._failed_build_msg(
-            build_id,
-            f"Skipped target '{built_target.name}' should have 0 input artifacts but has {len(built_target.input_artifacts)}",
-        )
-        assert len(built_target.output_artifacts) == 0, self._failed_build_msg(
-            build_id,
-            f"Skipped target '{built_target.name}' should have 0 output artifacts but has {len(built_target.output_artifacts)}",
-        )
-        step_list = self.storage.step_storage.get_by_where(
-            {"target_id": built_target.uuid}
-        )
-        assert len(step_list) == 0, self._failed_build_msg(
-            build_id,
-            f"Skipped target '{built_target.name}' should have 0 steps but has {len(step_list)}",
-        )
-        # Lineage record count is no longer asserted: recording now happens
-        # asynchronously in the out-of-band lineage-watch process, so the count
-        # is not a synchronous product of the build. See _verify_lineage.
-
-    def _verify_unskipped_target_and_steps(
+    def _verify_target_and_steps(
         self: Self,
         build_id: str,
         built_target: StoredTargetRun,

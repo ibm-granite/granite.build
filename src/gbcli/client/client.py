@@ -770,7 +770,6 @@ class GBClient:
             show_events: bool,
             fetch_pr: bool,
             result_format: str,
-            follow_retries: bool = True,
             callback=None,
         ) -> str | List[Any]:
             return build_status(
@@ -781,7 +780,6 @@ class GBClient:
                 show_events,
                 fetch_pr,
                 result_format,
-                follow_retries=follow_retries,
                 callback=callback,
             )
 

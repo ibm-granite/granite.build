@@ -97,14 +97,9 @@ def execution_status_plain_output(
 ):
 
     def target_status_label(target_info: Any) -> str:
-        # A target reused from a previous attempt is presented as "Skipped".
-        if target_info.get("skipped_for_prerun_target_id"):
-            return "SKIPPED"
         return str(target_info["status"]).upper()
 
     def target_status_emoji(target_info: Any) -> str:
-        if target_info.get("skipped_for_prerun_target_id"):
-            return "⏩"
         return get_status_emoji(target_info["status"])
 
     targets_overview = [
@@ -112,16 +107,6 @@ def execution_status_plain_output(
         for index, target in enumerate(targets)
     ]
     source_pr = f"<{details['source_pr']}>" if details["source_pr"] else "-"
-    retry_of = details.get("retry_of_build_ids") or []
-    retried_by = details.get("retried_by_build_ids") or []
-    retry_of_line = (
-        f"\n- **Retry of Original Build(s)**: {', '.join(retry_of)}" if retry_of else ""
-    )
-    retried_by_line = (
-        f"\n- **Retried by Subsequent Build(s)**: {', '.join(retried_by)}"
-        if retried_by
-        else ""
-    )
     details_output = f"""
 # Build {details['build_id']}
 
@@ -131,7 +116,7 @@ def execution_status_plain_output(
 - **Started**: {datetime_to_string(details['started_at'])}
 - **Updated**: {datetime_to_string(details['updated_at'])}
 - **Status page**: <{WEB_UI_URL}/builds/{details['build_id']}>
-- **Build PR**: {source_pr}{retry_of_line}{retried_by_line}
+- **Build PR**: {source_pr}
 - **Targets**
 {"".join(targets_overview)}
     """
@@ -173,26 +158,16 @@ def execution_status_plain_output(
             tablefmt="github",
         )
 
-        prerun_target_id = targets[target].get("skipped_for_prerun_target_id")
-        status_line = (
-            f"Skipped for previously ran target {prerun_target_id}"
-            if prerun_target_id
-            else str(targets[target]["status"]).upper()
-        )
-        # Targets that ran in a different attempt (a prior or subsequent build in
-        # the retry chain) note which build they belong to.
-        target_build_id = targets[target].get("build_id", "")
-        build_id_line = (
-            f"\n\n**Build ID**: {target_build_id}"
-            if target_build_id and target_build_id != details["build_id"]
+        status_line = str(targets[target]["status"]).upper()
+        # A re-run FAILED target that later succeeds produces a new SUCCESS run
+        # linked back to the failed one; surface that linkage as a note.
+        retry_of_target_id = targets[target].get("retry_of_target_id", "")
+        retry_of_line = (
+            f"\n\n**Retry of failed run**: {retry_of_target_id}"
+            if retry_of_target_id
             else ""
         )
-        # A skipped target was reused from a previous attempt: it ran no steps and
-        # produced no artifacts of its own, so those sections are omitted.
-        if prerun_target_id:
-            sections = ""
-        else:
-            sections = f"""
+        sections = f"""
 ### ⚙️  Steps
 
 {steps_output if len(targets[target]["steps"]) > 0 else ""}
@@ -209,7 +184,7 @@ def execution_status_plain_output(
 
 ## Target #{index + 1} {target}
 
-{target_status_emoji(targets[target])} **Status**: {status_line}{build_id_line}
+{target_status_emoji(targets[target])} **Status**: {status_line}{retry_of_line}
 {sections}
         """
 
@@ -1693,12 +1668,6 @@ def list(
     default=False,
     help="Fetch build PR events.",
 )
-@click.option(
-    "--follow-retries/--no-follow-retries",
-    "follow_retries",
-    default=True,
-    help="Follow the build retry chain and show all targets across attempts (default: follow).",
-)
 @common_options
 def status(
     ctx,
@@ -1706,7 +1675,6 @@ def status(
     format,
     show_events,
     fetch_pr,
-    follow_retries,
     skip_version_check,
     quiet,
 ):
@@ -1771,7 +1739,6 @@ def status(
                 show_events,
                 fetch_pr,
                 format,
-                follow_retries=follow_retries,
                 callback=echo_callback_error,
             )
         else:
@@ -1872,7 +1839,6 @@ def status(
                     show_events,
                     fetch_pr,
                     format,
-                    follow_retries=follow_retries,
                     callback=update_bar,
                 )
 

@@ -26,10 +26,11 @@ class StoredTargetRun(BaseStoredItem):
     finished_at: Optional[datetime] = None
 
     target_hash: str = ""
-    """SHA-256 hex of the target definition. Set only on non-skipped successful runs."""
+    """SHA-256 hex of the target definition. Set only on successful runs."""
 
-    skipped_for_prerun_target_id: str = ""
-    """UUID of the original StoredTargetRun whose target_hash caused this run to be skipped."""
+    retry_of_target_id: str = ""
+    """UUID of the prior FAILED StoredTargetRun in the same build that this run
+    retried; empty if this run is not a retry."""
 
     def __init__(self: Self, **kwargs):
         super().__init__(**kwargs)

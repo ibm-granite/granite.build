@@ -129,7 +129,7 @@ class Build(BuildEntity):
         targets: Optional[List[str]] = None,
         allow_partial_builds: bool = False,
         target_already_run_fn: Optional[
-            Callable[[str], Optional[tuple[str, dict[str, list[str]]]]]
+            Callable[[str], Optional[dict[str, list[str]]]]
         ] = None,
         **kwargs,
     ) -> None:
@@ -148,7 +148,7 @@ class Build(BuildEntity):
         self.targets = {}
         self.allow_partial_builds = allow_partial_builds
         self.target_already_run_fn: Optional[
-            Callable[[str], Optional[tuple[str, dict[str, list[str]]]]]
+            Callable[[str], Optional[dict[str, list[str]]]]
         ] = target_already_run_fn
         logger.info(
             "build %s self.event_q: %s %s",

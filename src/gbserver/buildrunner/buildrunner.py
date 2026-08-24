@@ -57,7 +57,7 @@ from gbserver.storage.artifact_registration import (
     ArtifactRegistrationStatus,
 )
 from gbserver.storage.singleton_storage import get_admin_storage
-from gbserver.storage.stored_build import StoredBuild, get_retry_chain_members
+from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -158,13 +158,6 @@ class BuildRunner(AbstractBuildRunner):
             build, _BUILD_EVENT_SOURCE_NAME
         )  # To be recreated later.
         self.event_storage = get_admin_storage().event_storage
-        # In-memory list of the uuids of every build in this retry chain. The
-        # runner creates the whole chain, so membership is tracked here rather than
-        # walked from the DB on the hot cancellation-check path. Seeded in
-        # start_and_wait and appended in __prepare_retry; guarded by a lock since
-        # __cancel_build_run may run on the BuildWatcher thread via stop().
-        self._retry_chain_build_ids: List[str] = []
-        self._retry_chain_lock = threading.Lock()
         # Serializes status transitions (__update_stored_build_status). The build
         # runs on the worker thread while stop()/stop_and_fail() run on another
         # thread; without this, the worker's natural finalize (e.g. a concurrent
@@ -230,13 +223,6 @@ class BuildRunner(AbstractBuildRunner):
                 raise ValueError("Storage of build failed without error.")
             logger.info("Build successfuly stored build: %s", build_id)
 
-        # Seed the in-memory retry-chain id list once (one DB walk, not on the hot
-        # path). Covers a runner resumed onto an already-existing chain; for a
-        # fresh build this is just [build_id] and grows via __prepare_retry.
-        for member in get_retry_chain_members(
-            self.storage.build_storage, self.stored_build
-        ):
-            self.__track_retry_chain_build(member.uuid)
         try:
             buildrunner_resume: bool = self.enable_resume and self.__should_resume()
 
@@ -268,11 +254,10 @@ class BuildRunner(AbstractBuildRunner):
                         buildrunner_resume,
                     )
 
-                # Stop the chain if a cancellation was requested for any member of
-                # the retry chain (e.g. the FAILED original). This runs after every
-                # attempt regardless of how it finished — including the exception
-                # path that bypasses the worker task — so the whole chain is marked
-                # CANCELLED and no further retry is created.
+                # Stop if a cancellation was requested for this build. This runs
+                # after every attempt regardless of how it finished — including the
+                # exception path that bypasses the worker task — so the build is
+                # marked CANCELLED and no further retry is created.
                 if self.__is_build_cancelled():
                     self.__cancel_build_run()
                     break
@@ -291,11 +276,11 @@ class BuildRunner(AbstractBuildRunner):
                 retry_build = self.__prepare_retry()
                 if retry_build is None:
                     break
+                # In-place retry: same build id, re-read to pick up the bumped
+                # retry_count and RETRY_PENDING status. The message logger is keyed
+                # on the build id, so it need not be recreated.
                 self.stored_build = retry_build
                 self.stop_event.clear()
-                self.build_message_logger = get_message_logger(
-                    retry_build, _BUILD_EVENT_SOURCE_NAME
-                )
                 buildrunner_resume = False
 
         except Exception as e:
@@ -309,84 +294,65 @@ class BuildRunner(AbstractBuildRunner):
         """
         return self.stored_build.status == Status.RUNNING
 
-    def __track_retry_chain_build(self: Self, build_id: str) -> None:
-        """Append a build id to the in-memory retry-chain list (thread-safe, deduped).
-
-        Args:
-            build_id: UUID of a build belonging to this runner's retry chain.
-        """
-        with self._retry_chain_lock:
-            if build_id not in self._retry_chain_build_ids:
-                self._retry_chain_build_ids.append(build_id)
-
     def __prepare_retry(self: Self) -> Optional[StoredBuild]:
-        """If the finished build is eligible for retry, create, store, and return a new PENDING build.
+        """If the finished build is eligible for retry, reset it in place for another attempt.
 
-        Returns the new retry build ready to run, or None if no retry should occur.
+        The build keeps its same uuid: retry_count is bumped, the status is moved
+        to RETRY_PENDING, and the failure_reason is cleared. No new StoredBuild is
+        created.
+
+        Returns the same (re-read) build ready to re-run, or None if no retry
+        should occur.
         """
         latest = self.storage.build_storage.get_by_uuid(self.stored_build.uuid)
         if latest is None or not isinstance(latest, StoredBuild):
             return None
         if not self._should_retry(latest):
             return None
-        retry_build = StoredBuild(
-            name=latest.name,
-            space_name=latest.space_name,
-            source_uri="",
-            username=latest.username,
-            build_archive=latest.build_archive,
-            # RETRY (not PENDING): this build is run by the in-process retry loop
-            # below; a distinct status keeps the BuildWatcher (which polls PENDING)
-            # from dispatching a duplicate runner for it. See Status.RETRY_PENDING.
-            status=Status.RETRY_PENDING,
-            targets=latest.targets,
-            description=latest.description,
-            tags=latest.tags,
-            retry_of_build_id=(
-                latest.retry_of_build_id
-                if latest.retry_of_build_id is not None
-                else latest.uuid
-            ),
-            retry_count=latest.retry_count + 1,
-        )
-        self.storage.build_storage.add(retry_build)
-        latest.retry_build_id = retry_build.uuid
-        self.storage.build_storage.update(latest)
-        # Track the new chain member in memory so cancellation checks and the
-        # mark-all in __cancel_build_run never have to walk the DB for membership.
-        self.__track_retry_chain_build(retry_build.uuid)
-        logger.info(
-            "Build %s failed; retrying as build %s (attempt %d of %d)",
+        # RETRY_PENDING (not PENDING): this build is re-run by the in-process retry
+        # loop below; a distinct status keeps the BuildWatcher (which polls PENDING)
+        # from dispatching a duplicate runner for it. See Status.RETRY_PENDING.
+        self.storage.build_storage.update_fields(
             latest.uuid,
-            retry_build.uuid,
-            retry_build.retry_count,
-            latest.get_build_config().retries.max_retries,
+            {
+                "retry_count": latest.retry_count + 1,
+                "status": Status.RETRY_PENDING,
+                "failure_reason": "",
+            },
         )
-        return retry_build
+        refreshed = self.storage.build_storage.get_by_uuid(latest.uuid)
+        if not isinstance(refreshed, StoredBuild):
+            return None
+        logger.info(
+            "Build %s failed; retrying in place (attempt %d of %d)",
+            refreshed.uuid,
+            refreshed.retry_count,
+            refreshed.get_build_config().retries.max_retries,
+        )
+        return refreshed
 
     def __comment_on_original_pr(self: Self) -> None:
-        """Post a comment on the original failed build's PR linking to this retry build's PR."""
-        original = self.storage.build_storage.get_by_uuid(
-            self.stored_build.retry_of_build_id
-        )
-        if not isinstance(original, StoredBuild) or not original.source_uri:
+        """Post a retry-attempt comment on this build's own PR.
+
+        With in-place retry there is no separate "original" build; the build keeps
+        its uuid and source_uri across attempts, so the comment is posted on its
+        own PR.
+        """
+        if not self.stored_build.source_uri:
             return
-        owner, repo, pr_id = original.get_pr_info()
+        owner, repo, pr_id = self.stored_build.get_pr_info()
         if not pr_id:
             return
         try:
             myapi = MyGHApi(token=self.gh_token, owner=owner, repo=repo)
-            build_config = original.get_build_config()
+            build_config = self.stored_build.get_build_config()
             body = (
                 f"Build failed (attempt {self.stored_build.retry_count} of "
-                f"{build_config.retries.max_retries}). "
-                f"Automatically retrying: {self.stored_build.source_uri}"
+                f"{build_config.retries.max_retries}). Automatically retrying."
             )
             myapi.update_issue_comment(body=body, pr_id=pr_id)
         except Exception as e:
-            logger.warning(
-                "Failed to post retry comment on original PR %s: %s", pr_id, e
-            )
+            logger.warning("Failed to post retry comment on PR %s: %s", pr_id, e)
 
     def __get_targets_to_resume(self) -> Optional[List[str]]:
         """
@@ -520,7 +486,7 @@ class BuildRunner(AbstractBuildRunner):
                 force_fetch=force_fetch,
                 target_already_run_fn=(
                     self.__is_target_already_run
-                    if self.stored_build.retry_of_build_id
+                    if self.stored_build.retry_count > 0
                     and self.stored_build.get_build_config().retries.target_reuse_enabled
                     else None
                 ),
@@ -631,7 +597,7 @@ class BuildRunner(AbstractBuildRunner):
                 "Build update succeeded.  Build status is now %s",
                 self.stored_build.status,
             )
-            if self.stored_build.retry_of_build_id and self.stored_build.source_uri:
+            if self.stored_build.retry_count and self.stored_build.source_uri:
                 self.__comment_on_original_pr()
         else:
             _build_result = self.storage.build_storage.get_by_uuid(
@@ -674,24 +640,19 @@ class BuildRunner(AbstractBuildRunner):
         return space
 
     def __is_build_cancelled(self) -> bool:
-        """Return True if a cancellation was requested for any build in this chain.
+        """Return True if a cancellation was requested for this build.
 
-        A cancellation can be requested on any chain member (e.g. the FAILED
-        original), so all members are checked. Membership comes from the in-memory
-        ``_retry_chain_build_ids`` (no DB walk); only the per-build *status* is read
-        from storage, since cancellation is set externally. Callers on the hot path
-        (the worker loop) rate-limit how often they invoke this.
+        Only the build's *status* is read from storage, since cancellation is set
+        externally. Callers on the hot path (the worker loop) rate-limit how often
+        they invoke this.
         """
-        with self._retry_chain_lock:
-            build_ids = list(self._retry_chain_build_ids)
         try:
-            for build_id in build_ids:
-                build = self.storage.build_storage.get_by_uuid(build_id)
-                if isinstance(build, StoredBuild) and build.status in (
-                    Status.CANCEL_REQUESTED,
-                    Status.CANCELLED,
-                ):
-                    return True
+            build = self.storage.build_storage.get_by_uuid(self.stored_build.uuid)
+            if isinstance(build, StoredBuild) and build.status in (
+                Status.CANCEL_REQUESTED,
+                Status.CANCELLED,
+            ):
+                return True
         except Exception as e:
             logger.warning(
                 "Exception checking if build %s is cancelled: %s. Assuming not cancelled.",
@@ -754,8 +715,8 @@ class BuildRunner(AbstractBuildRunner):
                     raise e
             finally:
                 # Check for cancellation, but at most once per monitoring_interval
-                # so a build emitting events rapidly doesn't read the chain's
-                # statuses from storage on every iteration.
+                # so a build emitting events rapidly doesn't read the build's
+                # status from storage on every iteration.
                 now = time.time()
                 if now - last_cancel_check_time >= self.monitoring_interval:
                     last_cancel_check_time = now
@@ -809,11 +770,11 @@ class BuildRunner(AbstractBuildRunner):
             logger.error("Could not stop build %s", self.stored_build.uuid)
 
     def __cancel_build_run(self: Self, update_status: bool = True) -> None:
-        """Cancel the in-progress build_run and mark the whole retry chain CANCELLED.
+        """Cancel the in-progress build_run and mark this build CANCELLED.
 
-        Marking every build in the retry chain (not just the current one) means a
-        cancellation requested on any member — including the FAILED original —
-        cancels the active retry running here and stops the chain.
+        With in-place retry there is a single build id across attempts, so a
+        cancellation requested on it cancels the active (possibly retrying) run and
+        marks the one build CANCELLED.
         """
 
         self.stop_event.set()
@@ -835,32 +796,9 @@ class BuildRunner(AbstractBuildRunner):
         if not update_status:
             return
 
-        # Distinguish a real cancellation (a cancel was requested for some chain
-        # member) from a cleanup stop() of a build that already finished (e.g. the
-        # test harness / BuildWatcher shutdown calls stop() after SUCCESS). Compute
-        # this BEFORE changing any status below.
-        cancellation_requested = self.__is_build_cancelled()
-
         # Cancel the current build if it is still in flight (stop() semantics).
         if not self.stored_build.status.is_finished():
             self.__update_stored_build_status(Status.CANCELLED)
-
-        # On a real cancellation, force every other build in the retry chain to
-        # CANCELLED, using the in-memory chain id list (no DB walk). update_fields
-        # is unconditional (unlike finalize_build_status, which skips a build in a
-        # different finished state), so an attempt that just failed is still
-        # flipped to CANCELLED. A SUCCESS build is never overwritten, and when no
-        # cancellation was requested nothing in the chain is touched.
-        if cancellation_requested:
-            with self._retry_chain_lock:
-                build_ids = list(self._retry_chain_build_ids)
-            for build_id in build_ids:
-                self.storage.build_storage.update_fields(
-                    build_id,
-                    {"status": Status.CANCELLED},
-                    should_update=lambda item: item.status
-                    not in (Status.CANCELLED, Status.SUCCESS),
-                )
 
     def __process_workload_status_event(self: Self, event: BuildEvent) -> None:
         payload = event.payload
@@ -1063,29 +1001,25 @@ Build ID    : {build_id}
                 uri=normalized_uri, space_name=stored_build.space_name
             )
             if existing is not None:
-                # Confirm the artifact really originates from a build in this retry chain
-                # (a retried step re-emits within the same build; a build retry re-emits
-                # from an ancestor build).
+                # Confirm the artifact really originates from this build. With
+                # in-place retry the same URI can be re-emitted within one build by
+                # a retried step or a re-run target, but never by another build.
                 assert isinstance(existing, ArtifactRegistration)
-                if (
-                    existing.created_by_build_id
-                    not in self.__get_retry_chain_build_ids()
-                ):
+                if existing.created_by_build_id != self.stored_build.uuid:
                     raise ValueError(
-                        "Same artifact URI found in space %s for another build in this space that is not in this retry chain: %s",
-                        existing.space_name,
-                        existing.uri,
+                        "Same artifact URI found in space %s for another build in "
+                        "this space: %s" % (existing.space_name, existing.uri)
                     )
-                if existing.created_by_build_id == build_id:
-                    logger.info(
-                        "Reusing artifact (%s) from retried step", existing.uuid
+                logger.info("Reusing artifact (%s) from earlier run", existing.uuid)
+                # Re-associate the artifact to the run that just (re-)produced it,
+                # so it points at the successful target run rather than a prior
+                # failed/reused one.
+                if target_id and existing.created_by_target_id != target_id:
+                    _reassoc = self.storage.artifact_registry.update_fields(
+                        existing.uuid, {"created_by_target_id": target_id}
                     )
-                else:
-                    logger.info(
-                        "Reusing artifact (%s) from retried build (%s)",
-                        existing.uuid,
-                        existing.created_by_build_id,
-                    )
+                    if isinstance(_reassoc, ArtifactRegistration):
+                        existing = _reassoc
                 artifact = existing
             else:
                 artifact = ArtifactRegistration(
@@ -1276,8 +1210,34 @@ Download : {download_msg}
             )
             logger.info("set output artifacts to %s", stored_target.output_artifacts)
 
+        # Link a re-run to the prior FAILED run of the same target in this build,
+        # so the build reads as an honest FAILED->SUCCESS history in one build id.
+        stored_target.retry_of_target_id = self.__find_prior_failed_target_run(
+            build_id=build_id, target_name=target_name
+        )
         self.storage.target_storage.add(stored_target)
         return stored_target
+
+    def __find_prior_failed_target_run(
+        self: Self, build_id: str, target_name: str
+    ) -> str:
+        """Return the uuid of a prior FAILED run of ``target_name`` in ``build_id``.
+
+        Args:
+            build_id: the build being run (same id across in-place retries).
+            target_name: the target whose earlier failed run should be linked.
+
+        Returns:
+            The prior FAILED StoredTargetRun's uuid, or "" if none exists.
+        """
+        prior = self.storage.target_storage.get_by_where(
+            {
+                "build_id": build_id,
+                "name": target_name,
+                "status": Status.FAILED.name,
+            }
+        )
+        return prior[0].uuid if prior else ""
 
     def __update_stored_target_run(
         self: Self,
@@ -1310,41 +1270,29 @@ Download : {download_msg}
             stored_target_run.target_hash = event.run_metadata.target_hash
         self.storage.target_storage.update(stored_target_run)
 
-    def __get_retry_chain_build_ids(self: Self) -> list[str]:
-        """Return all build UUIDs in the retry chain of the current build, from the current
-        build back to the original (root) build, by following retry_of_build_id links.
-        """
-        build_ids = [self.stored_build.uuid]
-        current_id = self.stored_build.retry_of_build_id
-        while current_id:
-            build_ids.append(current_id)
-            ancestor = self.storage.build_storage.get_by_uuid(current_id)
-            if not isinstance(ancestor, StoredBuild):
-                break
-            current_id = ancestor.retry_of_build_id
-        return build_ids
-
     def __is_target_already_run(
         self: Self,
         target_hash: str,
-    ) -> Optional[tuple[str, dict[str, list[str]]]]:
-        """Return (target_uuid, resolved_outputs) if a prior successful run with the same
-        target_hash exists within the current retry chain and all its output artifacts are
-        fully registered, otherwise None. Only searches within the retry chain so that
-        targets from unrelated builds are never skipped."""
-        chain_build_ids = self.__get_retry_chain_build_ids()
+    ) -> Optional[dict[str, list[str]]]:
+        """Return the target's resolved_outputs if a prior successful run with the
+        same target_hash already exists in *this* build and all its output
+        artifacts are fully registered; otherwise None.
+
+        Searches only the current build (a re-run reuses the same build id), so a
+        target that already succeeded on an earlier attempt is not re-run.
+        """
         results = self.storage.target_storage.get_by_where(
             {
                 "target_hash": target_hash,
                 "status": Status.SUCCESS.name,
-                "build_id": chain_build_ids,
+                "build_id": self.stored_build.uuid,
             }
         )
         if not results:
             return None
         stored_target = results[0]
         logger.info(
-            "Found previously run target %s from a retried/previous build %s",
+            "Found previously run target %s in build %s",
             stored_target.uuid,
             stored_target.build_id,
         )
@@ -1372,7 +1320,7 @@ Download : {download_msg}
                 uris.append(artifact.uri)
             if uris:
                 resolved_outputs[binding_id] = uris
-        return (stored_target.uuid, resolved_outputs)
+        return resolved_outputs
 
     def __get_target_input_ids_from_event(
         self: Self,
@@ -1653,11 +1601,6 @@ Download : {download_msg}
                 event=event,
                 input_artifacts=input_artifacts,
             )
-        if run_info.skipped_for_prerun_target_id:
-            stored_target_run.skipped_for_prerun_target_id = (
-                run_info.skipped_for_prerun_target_id
-            )
-            self.storage.target_storage.update(stored_target_run)
         if payload.status == Status.SUCCESS:
             # Lineage is now recorded via DB reconciliation, not from gb_events.
             pass
