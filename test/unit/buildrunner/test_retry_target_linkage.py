@@ -44,11 +44,18 @@ _TARGET = "targetB"
 _ENV_URI = "space://environments/bash"
 
 
-def _make_runner() -> BuildRunner:
-    """A BuildRunner with mocked storage, bypassing __init__."""
+def _make_runner(retry_count: int = 0) -> BuildRunner:
+    """A BuildRunner with mocked storage, bypassing __init__.
+
+    Args:
+        retry_count: the stored build's retry_count. The prior-failed-run lookup
+            in __create_and_store_target_run is gated on retry_count > 0 (a first
+            attempt cannot have a prior FAILED run), so linkage tests must set it.
+    """
     runner = object.__new__(BuildRunner)
     runner.storage = MagicMock()
     runner.build_run = SimpleNamespace()  # only a non-None sentinel is needed
+    runner.stored_build = SimpleNamespace(retry_count=retry_count)
     return runner
 
 
@@ -143,7 +150,9 @@ class TestCreateAndStoreTargetRunLinkage:
         return SimpleNamespace(config=object(), targets={_TARGET: target})
 
     def test_success_run_links_back_to_prior_failed_run(self):
-        runner = _make_runner()
+        # retry_count > 0: the build has already retried, so the prior-failed-run
+        # lookup runs and the new SUCCESS run links back to it.
+        runner = _make_runner(retry_count=1)
         runner.storage.target_storage.get_by_where.return_value = [
             _failed_run("failed-run-1")
         ]
@@ -167,6 +176,8 @@ class TestCreateAndStoreTargetRunLinkage:
         runner.storage.target_storage.add.assert_called_once_with(created)
 
     def test_first_run_has_no_linkage(self):
+        # retry_count == 0 (first attempt): the lookup is gated out entirely, so
+        # retry_of_target_id stays "" without querying storage.
         runner = _make_runner()
         runner.storage.target_storage.get_by_where.return_value = []
 
