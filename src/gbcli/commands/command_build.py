@@ -1211,9 +1211,7 @@ def continue_build_cmd(ctx, build_id, format, skip_version_check, quiet):
             continued_build_id = result["build_id"]
             details_page = f"{WEB_UI_URL}/builds/{continued_build_id}"
             if not quiet:
-                click.echo(
-                    f"✅ Continuing build {continued_build_id}: {details_page}"
-                )
+                click.echo(f"✅ Continuing build {continued_build_id}: {details_page}")
                 click.echo(f"""To get the build status:
 ```
 gb build status {continued_build_id}
