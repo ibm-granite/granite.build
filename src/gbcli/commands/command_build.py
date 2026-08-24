@@ -1250,16 +1250,17 @@ def continue_build_cmd(ctx, build_id, format, skip_version_check, quiet):
             new_build_id = result["build_id"]
             # The server resolves the chain root from whichever member was passed.
             root_build_id = result.get("root_build_id")
-            # Resolved uuid of the continued build (a passed URL is resolved to a
-            # uuid in the service layer); use it — not the raw argument — so the
-            # root comparison and JSON never see a URL.
-            continued_from = result.get("continued_from", build_id)
+            # Resolved uuid of the continued build (service resolves any URL). Fall
+            # back to None, never the raw build_id (which may be a URL), so a URL
+            # can't leak into the uuid-only JSON/comparison.
+            continued_from = result.get("continued_from")
             details_page = f"{WEB_UI_URL}/builds/{new_build_id}"
             if not quiet:
+                continued_label = continued_from or build_id
                 click.echo(
-                    f"✅ Continuing build {continued_from} as new build: {details_page}"
+                    f"✅ Continuing build {continued_label} as new build: {details_page}"
                 )
-                if root_build_id and root_build_id != continued_from:
+                if root_build_id and continued_from and root_build_id != continued_from:
                     click.echo(f"   (continues build chain rooted at {root_build_id})")
                 click.echo(f"""To get the build status of the whole chain:
 ```

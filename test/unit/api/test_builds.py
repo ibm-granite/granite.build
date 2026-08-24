@@ -423,6 +423,66 @@ def test_create_continuation_build_uses_passed_chain_without_rewalking():
     assert builds[tip.uuid].retry_build_id == cont.uuid
 
 
+def test_create_continuation_build_rejects_chain_missing_prior():
+    """create_continuation_build must refuse to link off a chain that does not
+    contain `prior`. This guards get_retry_chain_members' `members or [build]`
+    fallback (root row unreadable) and a stale/mismatched passed-in chain, either
+    of which would otherwise link to the wrong root and orphan the chain tail."""
+    root = _prior_build(ATTACKER, status=Status.FAILED)
+    mid = _prior_build(ATTACKER, status=Status.FAILED)
+    mid.retry_of_build_id = root.uuid
+    root.retry_build_id = mid.uuid
+    bs = _fake_build_storage({root.uuid: root, mid.uuid: mid})
+    # A chain that does not contain `mid` (e.g. resolved before mid was linked, or
+    # the fallback returned just [root]).
+    with pytest.raises(ValueError, match="does not contain"):
+        create_continuation_build(bs, mid, chain=[root])
+    # The valid mid is untouched — no back-link overwritten.
+    assert root.retry_build_id == mid.uuid
+
+
+def test_create_continuation_build_rewalk_fallback_does_not_corrupt_chain():
+    """If get_retry_chain_members can only see `prior` (root row unreadable, so it
+    hits `members or [build]`), the guard fires rather than silently treating a
+    mid-chain member as its own root and overwriting its forward link."""
+    root = _prior_build(ATTACKER, status=Status.FAILED)
+    mid = _prior_build(ATTACKER, status=Status.FAILED)
+    mid.retry_of_build_id = root.uuid
+    root.retry_build_id = mid.uuid
+    # Only `mid` is readable; the root read fails, so get_retry_chain_members
+    # returns [mid] via its fallback — mid would wrongly be its own root/tip.
+    bs = _fake_build_storage({mid.uuid: mid})
+    with pytest.raises(ValueError, match="does not contain|could not be resolved"):
+        create_continuation_build(bs, mid)
+    # mid's forward link is NOT clobbered (it never pointed anywhere, and stays so).
+    assert mid.retry_build_id is None
+
+
+def test_continue_build_authorizes_tip_space_not_just_prior():
+    """Authz is checked against the tip's space/user (what the continuation runs
+    as), not only the passed-in member. A caller authorized on the passed-in
+    build's space but NOT the tip's is rejected with the not-found 404."""
+    # prior (passed-in) is in SPACE and owned by the caller; the tip diverges to a
+    # different owner the caller has no access to.
+    prior = _prior_build(ATTACKER, status=Status.FAILED)
+    tip = _prior_build(VICTIM, status=Status.FAILED)
+    tip.retry_of_build_id = prior.uuid
+    prior.retry_build_id = tip.uuid
+    with (
+        _patched_continue_storage({prior.uuid: prior, tip.uuid: tip}),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            continue_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                BuildContinueRequest(build_id=prior.uuid),
+            )
+    # Same 404 as every other "you may not see this" path — no oracle.
+    assert exc.value.status_code == 404
+
+
 def test_chain_walk_includes_intermediate_members_from_any_member():
     """get_retry_chain_members must return EVERY member of a flat-to-root chain
     (root -> mid -> tip), not just [self, root], regardless of which member it is

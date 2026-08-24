@@ -96,3 +96,45 @@ def test_build_continue_returns_none_on_server_error():
         )
 
     assert result is None
+
+
+def test_build_continue_unresolvable_url_returns_none_not_exception():
+    """get_build_id_from_url returns None when a URL matches no build; build_continue
+    must guard the deref and return None (surfacing the intended error) instead of
+    raising a raw IndexError/TypeError — even with callback=None (no early exit)."""
+    calls = []
+
+    def _capture(callback_event, callback_args):
+        calls.append((callback_event, callback_args))
+
+    with (
+        patch.object(service_build, "get_build_id_from_url", return_value=None),
+        patch.object(service_build, "make_gbserver_call") as server_call,
+    ):
+        result = service_build.build_continue(
+            github_token="tok",
+            build_id=BUILD_URL,
+            id_format="url",
+            callback=_capture,
+        )
+
+    assert result is None
+    # Never reached the server call — bailed out at the unresolved URL.
+    server_call.assert_not_called()
+    # Surfaced the intended error event rather than a raw exception.
+    assert any(event == "error" for event, _ in calls)
+
+
+def test_build_continue_unresolvable_url_none_callback_no_crash():
+    """The deref guard must also hold with callback=None (a programmatic caller):
+    it returns None rather than raising."""
+    with (
+        patch.object(service_build, "get_build_id_from_url", return_value=None),
+        patch.object(service_build, "make_gbserver_call") as server_call,
+    ):
+        result = service_build.build_continue(
+            github_token="tok", build_id=BUILD_URL, id_format="url", callback=None
+        )
+
+    assert result is None
+    server_call.assert_not_called()

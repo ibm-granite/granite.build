@@ -521,7 +521,18 @@ def build_continue(
     passed URL never leaks into uuid-valued output or a uuid-vs-URL comparison.
     """
     if id_format == "url":
+        # get_build_id_from_url returns None when the URL matches no build; guard
+        # the deref so it surfaces the error message, not a raw IndexError/TypeError.
         build_id_from_url = get_build_id_from_url(github_token, build_id, callback)
+        if not build_id_from_url:
+            if callback is not None:
+                callback(
+                    callback_event="error",
+                    callback_args={
+                        "reason": f"No build found for URL {build_id}.",
+                    },
+                )
+            return None
         build_id = build_id_from_url[0]["uuid"]
 
     if callback is not None:

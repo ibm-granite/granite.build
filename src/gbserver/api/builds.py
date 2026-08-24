@@ -344,12 +344,11 @@ def continue_build(
     build_storage: IStoredBuildStorage = storage.build_storage
     space_storage: IStoredSpaceStorage = storage.space_storage
 
-    # Authorize before disclosing anything about the prior build — including
-    # whether it exists. Reading the build is unavoidable (authz is scoped to its
-    # space), but every "you may not see this build" path (missing build, missing
-    # space, no write access) must return the SAME 404: otherwise a caller lacking
-    # access could tell a real build id (401) from a nonexistent one (404) and
-    # enumerate ids across spaces they cannot reach.
+    # Every "you may not see this build" path (missing build, missing space, no
+    # write access) must return the SAME 404: otherwise a caller lacking access
+    # could tell a real build id (401) from a nonexistent one (404) and enumerate
+    # ids across spaces they cannot reach. Authorize before disclosing the build's
+    # existence or (below) its liveness.
     not_found = HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Build {req.build_id} not found",
@@ -358,26 +357,31 @@ def continue_build(
     if not isinstance(prior, StoredBuild):
         raise not_found
 
-    stored_space = space_storage.get_by_name(prior.space_name)
-    if stored_space is None:
-        raise not_found
-    has_access, _ = has_space_write_access(
-        request, username_on_target=prior.username, space_name=stored_space.name
-    )
-    if not has_access:
-        raise not_found
-
-    # A continuation always extends (and its runner reuses targets from) the chain
-    # *tip* — the most recent attempt — regardless of which member was passed. So
-    # the "must be finished" guard has to apply to the tip, not to the passed-in
-    # member: continuing an old finished member while a newer attempt is still
-    # active would otherwise attach a fresh runner to a live tip. There is no
-    # runner-liveness table; the build status is the signal.
-    #
-    # Resolve the chain once and hand it to create_continuation_build: each member
-    # is an unindexed point read, so re-walking there would double the reads.
+    # A continuation always extends the chain *tip* (the most recent attempt) and
+    # is seeded from it (space/user/build_archive), regardless of which member was
+    # passed. Resolve the chain once here — each member is an unindexed point read,
+    # so re-walking inside create_continuation_build would double the reads.
     chain = get_retry_chain_members(build_storage, prior)
     tip = chain[-1]
+
+    # Authorize against BOTH the passed-in build and the tip: the tip is what the
+    # continuation runs as (its space/user/secrets), so checking only `prior` while
+    # seeding from `tip` would, if members ever diverge, run under an unchecked
+    # space/user. Today every member shares these fields, so it's one real check.
+    for build in {prior.uuid: prior, tip.uuid: tip}.values():
+        stored_space = space_storage.get_by_name(build.space_name)
+        if stored_space is None:
+            raise not_found
+        has_access, _ = has_space_write_access(
+            request, username_on_target=build.username, space_name=stored_space.name
+        )
+        if not has_access:
+            raise not_found
+
+    # The "must be finished" guard applies to the tip, not the passed-in member:
+    # continuing an old finished member while a newer attempt is still active would
+    # otherwise attach a fresh runner to a live tip. There is no runner-liveness
+    # table; the build status is the signal.
     if not tip.status.is_finished():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -388,7 +392,15 @@ def continue_build(
             ),
         )
 
-    continuation = create_continuation_build(build_storage, prior, chain=chain)
+    try:
+        continuation = create_continuation_build(build_storage, prior, chain=chain)
+    except ValueError as e:
+        # create_continuation_build refuses to link off an untrustworthy chain
+        # (e.g. the root row became unreadable mid-request) — a consistency failure.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Build {req.build_id} cannot be continued: {e}",
+        ) from e
     logger.info(
         "created continuation build %s from build %s (chain root %s)",
         continuation.uuid,

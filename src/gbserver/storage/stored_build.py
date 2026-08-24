@@ -298,7 +298,23 @@ def create_continuation_build(
     """
     if chain is None:
         chain = get_retry_chain_members(build_storage, prior)
+    # This is the single linkage authority, so fail loudly rather than corrupt the
+    # chain when it can't be trusted: a passed-in chain missing ``prior``, or
+    # get_retry_chain_members' `members or [build]` fallback returning just [prior]
+    # when the root row was unreadable (a mid-chain member wrongly treated as its
+    # own root would link off the wrong root and orphan the tail).
+    if not chain or prior.uuid not in {member.uuid for member in chain}:
+        raise ValueError(
+            f"cannot continue build {prior.uuid}: its retry chain could not be "
+            "resolved (chain does not contain the build)"
+        )
     root = chain[0]
+    if prior.retry_of_build_id and root.uuid != prior.retry_of_build_id:
+        raise ValueError(
+            f"cannot continue build {prior.uuid}: its retry chain could not be "
+            f"resolved (chain root {root.uuid} does not match the build's "
+            f"recorded root {prior.retry_of_build_id})"
+        )
     tip = chain[-1]
     # Seed the continuation from the chain *tip* (the most recent attempt), not the
     # arbitrary member that was passed: the continuation extends the tip, so its
