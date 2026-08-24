@@ -50,7 +50,6 @@ from gbserver.api.builds import (
     submit_build,
     validate_build,
 )
-from gbserver.types.status import Status
 from gbserver.api.utils import (
     confirm_space_write_access as _real_confirm_space_write_access,
 )

@@ -970,7 +970,9 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                         case Status.FAILED | Status.CANCELLED | Status.INVALID:
                             # And fail the is_success assert below
                             break
-                        case Status.CANCEL_REQUESTED if Status.CANCELLED not in statuses:
+                        case Status.CANCEL_REQUESTED if (
+                            Status.CANCELLED not in statuses
+                        ):
                             # Unexpected cancellation — fail fast instead of looping until timeout
                             break
                         case _:
@@ -1224,7 +1226,8 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             )
         else:
             assert len(step_list) == expected.step_count, self._failed_build_msg(
-                build_id, f"step count! actual: {len(step_list)} expected: {expected.step_count}"
+                build_id,
+                f"step count! actual: {len(step_list)} expected: {expected.step_count}",
             )
         self._verify_steplist_status(build_id, step_list, status_list)
 
