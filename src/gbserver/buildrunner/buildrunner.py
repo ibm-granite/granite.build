@@ -31,7 +31,7 @@ from asyncio import Event, Queue
 from base64 import b64decode
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional, Self, Union
+from typing import Callable, Optional, Self, Union
 
 from gbcommon.uri.git import GitURI
 from gbcommon.uri.uri import URI
@@ -109,7 +109,6 @@ class BuildRunner(AbstractBuildRunner):
     # Additional Constructor parameters
     space_uri: Optional[str]
     create_pr: bool
-    enable_resume: bool = False
 
     # object managing a running build
     build_run: Optional[BuildRun]
@@ -130,7 +129,6 @@ class BuildRunner(AbstractBuildRunner):
         monitoring_interval: int = 5,
         gh_api_endpoint: str = DEFAULT_GH_API_ENDPOINT,
         create_pr: bool = True,
-        enable_resume: bool = False,
         dry_run: bool = False,
     ) -> None:
         super().__init__(
@@ -143,7 +141,6 @@ class BuildRunner(AbstractBuildRunner):
         )
         self.space_uri = space_uri
         self.create_pr = create_pr
-        self.enable_resume = enable_resume
         self.build_run = None
         self.stop_event = threading.Event()
         # Set by the public stop()/stop_and_fail() entrypoints to signal an
@@ -224,8 +221,6 @@ class BuildRunner(AbstractBuildRunner):
             logger.info("Build successfuly stored build: %s", build_id)
 
         try:
-            buildrunner_resume: bool = self.enable_resume and self.__should_resume()
-
             while True:
                 if self.stored_build.status == Status.FAILED:
                     logger.info(
@@ -233,25 +228,16 @@ class BuildRunner(AbstractBuildRunner):
                         self.stored_build.uuid,
                     )
                 else:
-                    if buildrunner_resume:
-                        logger.info(
-                            "Build %s is already RUNNING; RESUMING instead of starting a new run",
-                            self.stored_build.uuid,
-                        )
-                    else:
-                        logger.info(
-                            "Starting new build run for build %s",
-                            self.stored_build.uuid,
-                        )
-
-                    asyncio.run(
-                        self.__async_run_build(buildrunner_resume=buildrunner_resume)
+                    logger.info(
+                        "Starting new build run for build %s",
+                        self.stored_build.uuid,
                     )
 
+                    asyncio.run(self.__async_run_build())
+
                     logger.info(
-                        "Build run completed (build_id=%s, resume=%s)",
+                        "Build run completed (build_id=%s)",
                         self.stored_build.uuid,
-                        buildrunner_resume,
                     )
 
                 # Stop if a cancellation was requested for this build. This runs
@@ -277,7 +263,7 @@ class BuildRunner(AbstractBuildRunner):
                 if retry_build is None:
                     break
                 # In-place retry: same build id, re-read to pick up the bumped
-                # retry_count and RETRY_PENDING status. The message logger is keyed
+                # retry_count and RUNNING status. The message logger is keyed
                 # on the build id, so it need not be recreated.
                 self.stored_build = retry_build
                 # Notify on the build's PR that an automatic retry is starting.
@@ -287,24 +273,16 @@ class BuildRunner(AbstractBuildRunner):
                 # case where the first attempt failed before a PR was created.)
                 self.__add_retry_comment_to_pr()
                 self.stop_event.clear()
-                buildrunner_resume = False
 
         except Exception as e:
             logger.error("build execution failed for build ID %s", build_id)
             raise e
 
-    def __should_resume(self) -> bool:
-        """
-        Return True if this build looks like it was already started
-        by a previous build-runner instance.
-        """
-        return self.stored_build.status == Status.RUNNING
-
     def __prepare_retry(self: Self) -> Optional[StoredBuild]:
         """If the finished build is eligible for retry, reset it in place for another attempt.
 
         The build keeps its same uuid: retry_count is bumped, the status is moved
-        to RETRY_PENDING, and the failure_reason is cleared. No new StoredBuild is
+        to RUNNING, and the failure_reason is cleared. No new StoredBuild is
         created.
 
         Returns the same (re-read) build ready to re-run, or None if no retry
@@ -315,19 +293,20 @@ class BuildRunner(AbstractBuildRunner):
             return None
         if not self._should_retry(latest):
             return None
-        # RETRY_PENDING (not PENDING): this build is re-run by the in-process retry
-        # loop below; a distinct status keeps the BuildWatcher (which polls PENDING)
-        # from dispatching a duplicate runner for it. See Status.RETRY_PENDING.
+        # RUNNING (not PENDING): this build is re-run in place by the in-process
+        # retry loop below, so it is genuinely in flight. A non-PENDING status also
+        # keeps the BuildWatcher (which polls SUBMITTED/PENDING) from dispatching a
+        # duplicate runner for it.
         #
         # Guard the flip on the build still being FAILED: a cancel arriving in the
         # brief FAILED window (see api.builds.request_cancellation) sets the build to
-        # CANCELLED, and we must not overwrite that terminal state with RETRY_PENDING.
+        # CANCELLED, and we must not overwrite that terminal state with RUNNING.
         # If the guard rejects the update, honor the cancel by not retrying.
         refreshed = self.storage.build_storage.update_fields(
             latest.uuid,
             {
                 "retry_count": latest.retry_count + 1,
-                "status": Status.RETRY_PENDING,
+                "status": Status.RUNNING,
                 "failure_reason": "",
             },
             should_update=lambda item: item.status == Status.FAILED,
@@ -372,69 +351,15 @@ class BuildRunner(AbstractBuildRunner):
         except Exception as e:
             logger.warning("Failed to post retry comment on PR %s: %s", pr_id, e)
 
-    def __get_targets_to_resume(self) -> Optional[List[str]]:
-        """
-        Returns the targets that are not yet completed and should be started/resumed.
-
-        If any target is FAILED or INVALID, the build should be FAILED and NOT RESUMED.
-        """
-        target_runs = self.storage.target_storage.get_by_where(
-            {"build_id": self.stored_build.uuid}
-        )
-
-        # Get the already failed targets from storage to not resume them again
-        failed_targets = {
-            tr.name
-            for tr in target_runs
-            if tr.status in (Status.FAILED, Status.INVALID)
-        }
-
-        if failed_targets:
-            logger.error(
-                "Build %s cannot be resumed: targets already FAILED/INVALID: %s",
-                self.stored_build.uuid,
-                sorted(failed_targets),
-            )
-
-            # Mark build failed
-            if not self.stored_build.status.is_finished():
-                self.__update_stored_build_status(
-                    status=Status.FAILED,
-                    failure_reason=(
-                        "Cannot resume build; failed targets detected: "
-                        + ", ".join(sorted(failed_targets))
-                    ),
-                )
-
-            raise RuntimeError(
-                f"Build {self.stored_build.uuid} has failed targets; resume aborted"
-            )
-
-        # Fetch the successful targets to NOT resume them again
-        completed_targets = {
-            tr.name for tr in target_runs if tr.status == Status.SUCCESS
-        }
-
-        if not self.stored_build.targets:
-            return None
-
-        resumable = [t for t in self.stored_build.targets if t not in completed_targets]
-
-        logger.info(
-            "Resuming build %s with targets: %s",
-            self.stored_build.uuid,
-            resumable,
-        )
-
-        return resumable
-
-    async def __async_run_build(self, buildrunner_resume: bool) -> None:
-        """Starts or Resumes the build depending on the buildrunner_resume flag."""
+    async def __async_run_build(self) -> None:
+        """Run the build: set up the workspace, extract the archive, and run all
+        targets (targets already succeeded in this build are skipped by
+        target_already_run_fn, not by resuming a prior runner)."""
 
         stored_build = self.stored_build
         build_id = stored_build.uuid
 
-        logger.info("Running build %s in resume=%s", build_id, buildrunner_resume)
+        logger.info("Running build %s", build_id)
 
         event_q: Queue[Event] = Queue()
 
@@ -453,45 +378,15 @@ class BuildRunner(AbstractBuildRunner):
                 )
                 return
 
-            targets = stored_build.targets  # default: re-run all targets of the build
-            force_fetch = True  # default: set to force fetch
+            workspace_dir = self.workspace_dir / WORKSPACE_BUILDS_DIR
+            workspace_dir.mkdir(mode=DEFAULT_DIR_PERMS, parents=True, exist_ok=True)
 
-            if not buildrunner_resume:
+            if not self.__setup(space):  # type: ignore[arg-type]
+                return  # Log messages were issued.
 
-                workspace_dir = self.workspace_dir / WORKSPACE_BUILDS_DIR
-                workspace_dir.mkdir(mode=DEFAULT_DIR_PERMS, parents=True, exist_ok=True)
-
-                if not self.__setup(space):  # type: ignore[arg-type]
-                    return  # Log messages were issued.
-
-                build_dir = Path(tempfile.mkdtemp()) / build_id
-                build_archive_bytes = stored_build.load_from_build_archive()
-                extract_archive(build_archive_bytes, build_dir)
-
-                force_fetch = True
-                targets = stored_build.targets
-
-            else:
-                # RESUME
-                # Resume an already-running build after a build-runner restarts.
-                # - Do NOT recreate build artifacts
-                # - Do NOT re-run setup
-
-                workspace_dir = Path(self.workspace_dir)
-                if not workspace_dir.exists():
-                    raise RuntimeError(
-                        f"Cannot resume build {build_id}: workspace_dir missing: {workspace_dir}"
-                    )
-
-                # not triggering  __setup() again
-
-                build_dir = (
-                    None  # DO NOT recreate build dir again - will get in workspace dir
-                )
-                force_fetch = False  # DO NOT refetch
-
-                # Fetch the targets which has not COMPLETED - target-level resume in a build
-                targets = self.__get_targets_to_resume()
+            build_dir = Path(tempfile.mkdtemp()) / build_id
+            build_archive_bytes = stored_build.load_from_build_archive()
+            extract_archive(build_archive_bytes, build_dir)
 
             build = Build(
                 build_dir=build_dir,
@@ -500,8 +395,8 @@ class BuildRunner(AbstractBuildRunner):
                 username=stored_build.username,
                 workspace_dir=workspace_dir,
                 event_q=event_q,
-                targets=targets,  # check which targets have finished (status == PENDING && RUNNING)
-                force_fetch=force_fetch,
+                targets=stored_build.targets,  # re-run all targets of the build
+                force_fetch=True,
                 target_already_run_fn=(
                     self.__is_target_already_run
                     if self.stored_build.get_build_config().retries.target_reuse_enabled
@@ -510,16 +405,13 @@ class BuildRunner(AbstractBuildRunner):
                 ),
             )
 
-            if not buildrunner_resume:
-                if build.val_errors and not build.val_errors.is_valid(
-                    check_warnings=True
-                ):
-                    self.build_message_logger.warning(str(build.val_errors))
+            if build.val_errors and not build.val_errors.is_valid(check_warnings=True):
+                self.build_message_logger.warning(str(build.val_errors))
 
-                lineage_body = STARTING_BUILD_MESSAGE.format(
-                    build_status_link=get_build_status_link(build_id)
-                )
-                self.build_message_logger.info(lineage_body)
+            lineage_body = STARTING_BUILD_MESSAGE.format(
+                build_status_link=get_build_status_link(build_id)
+            )
+            self.build_message_logger.info(lineage_body)
 
             build_run = BuildRun(build=build, event_q=event_q)
             assert build_run.id == build_id
@@ -543,11 +435,7 @@ class BuildRunner(AbstractBuildRunner):
             self.stop_event.set()
             await event_monitoring_task
 
-            logger.info(
-                "Build %s finished (buildrunner_resume=%s)",
-                build_id,
-                buildrunner_resume,
-            )
+            logger.info("Build %s finished", build_id)
 
         except Exception as e:
             err_stack = traceback.format_exc()
@@ -600,13 +488,16 @@ class BuildRunner(AbstractBuildRunner):
         )
 
         # Persist the build status and PR link, if any.
-        # Don't update if status is other than PENDING
+        # Don't update unless the build is still in a pre-PR state we own:
+        # PENDING for a first run, RUNNING for a build-level retry run whose first
+        # attempt failed before its PR was created (the retry loop set it RUNNING).
+        # On the success path `updates` carries only source_uri, so this never
+        # moves a RUNNING build backward.
         update = self.storage.build_storage.update_fields(
             self.stored_build.uuid,
             updates,
-            # PENDING for a first run, RETRY for a build-level retry run.
             should_update=lambda item: item.status
-            in (Status.PENDING, Status.RETRY_PENDING),
+            in (Status.PENDING, Status.RUNNING),
         )
         if update is not None:  # Build had pending status, all good.
             self.stored_build = update
@@ -627,11 +518,11 @@ class BuildRunner(AbstractBuildRunner):
             logger.warning(
                 "Build update failed.  Likely as the status was not %s/%s (currently %s).",
                 Status.PENDING,
-                Status.RETRY_PENDING,
+                Status.RUNNING,
                 self.stored_build.status,
             )
             push_failed_status_update_metric(
-                self.stored_build.uuid, [Status.PENDING, Status.RETRY_PENDING]
+                self.stored_build.uuid, [Status.PENDING, Status.RUNNING]
             )
         return success
 
@@ -1491,8 +1382,9 @@ Download : {download_msg}
             )
 
         # Update the build status as the last thing so JobStats and PR are updated before declaring the build complete - tests expect this.
-        # RETRY is included so a build-level retry run can transition RETRY->RUNNING/FAILED.
-        valid_status_values = [Status.PENDING, Status.RUNNING, Status.RETRY_PENDING]
+        # RUNNING is included so a build-level retry run (set RUNNING in place by the
+        # retry loop) can transition RUNNING->RUNNING/SUCCESS/FAILED.
+        valid_status_values = [Status.PENDING, Status.RUNNING]
         valid_status = lambda item: item.status in valid_status_values
         updated = self.__update_stored_build_status(
             status, failure_reason=failure_reason, unfinished_should_update=valid_status

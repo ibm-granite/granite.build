@@ -124,7 +124,7 @@ class TestBuildRunnerRestartBash(AbstractBuildTest):
         # exactly as POST /builds/continue does. In production the BuildWatcher then
         # flips SUBMITTED -> PENDING before dispatching a runner; here we drive the
         # runner directly, so make that same transition first (the runner only
-        # advances a build whose status is PENDING/RUNNING/RETRY_PENDING).
+        # advances a build whose status is PENDING/RUNNING).
         reopened = reopen_finished_build(self.storage.build_storage, original_stored)
         assert isinstance(reopened, StoredBuild)
         # Same build id — no new build created.

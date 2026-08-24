@@ -233,7 +233,7 @@ def test_validate_build_allows_admin_impersonation_via_space_name():
 # --- request_cancellation: FAILED-with-retries window (regression) ------------
 #
 # After an attempt fails, the build sits in FAILED until the retry loop flips it
-# to RETRY_PENDING. A cancel landing in that window must be honored (set to
+# back to RUNNING. A cancel landing in that window must be honored (set to
 # CANCELLED) rather than rejected as "already finished". See
 # gbserver.api.builds.request_cancellation.
 
@@ -278,19 +278,20 @@ def test_cancel_failed_without_retries_rejected_412():
     assert exc.value.status_code == 412
 
 
-def test_cancel_failed_with_retries_races_retry_pending_409():
-    # The runner flipped FAILED -> RETRY_PENDING before the cancel's write, so the
-    # should_update guard rejects the CANCELLED write and the client gets a 409.
+def test_cancel_failed_with_retries_races_running_409():
+    # The runner flipped FAILED -> RUNNING (re-running the retry in place) before
+    # the cancel's write, so the should_update guard rejects the CANCELLED write
+    # and the client gets a 409.
     build = _cancel_build(Status.FAILED, has_retries=True)
-    storage = _FakeBuildStorage(stored_status=Status.RETRY_PENDING)
+    storage = _FakeBuildStorage(stored_status=Status.RUNNING)
     with pytest.raises(HTTPException) as exc:
         request_cancellation(storage, build)  # type: ignore[arg-type]
     assert exc.value.status_code == 409
 
 
-def test_cancel_retry_pending_sets_cancel_requested():
-    build = _cancel_build(Status.RETRY_PENDING, has_retries=True)
-    storage = _FakeBuildStorage(stored_status=Status.RETRY_PENDING)
+def test_cancel_running_sets_cancel_requested():
+    build = _cancel_build(Status.RUNNING, has_retries=True)
+    storage = _FakeBuildStorage(stored_status=Status.RUNNING)
     result = request_cancellation(storage, build)  # type: ignore[arg-type]
     assert result.status == Status.CANCEL_REQUESTED
 

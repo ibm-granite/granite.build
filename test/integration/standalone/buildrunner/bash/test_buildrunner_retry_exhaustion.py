@@ -23,12 +23,12 @@ all on the *same* build record — and then stop, leaving one FAILED build whose
 
 This must run through the *BuildWatcher* (not a directly-driven BuildRunner): the
 bug being guarded against is that ``BuildRunner.__prepare_retry`` could leave the
-build in a status the watcher re-dispatches. Retries are staged as
-``RETRY_PENDING`` (never ``PENDING``) precisely so the watcher — which polls
-``PENDING`` only — does not launch a *second* runner for the build the in-process
-retry loop is already running. A second runner would race the first and push
-``retry_count`` past ``max_retries``. Driving the build directly via a BuildRunner
-would never expose this, because no watcher is polling.
+build in a status the watcher re-dispatches. Retries are re-run in place as
+``RUNNING`` (never ``PENDING``) precisely so the watcher — which polls
+``SUBMITTED``/``PENDING`` only — does not launch a *second* runner for the build
+the in-process retry loop is already running. A second runner would race the first
+and push ``retry_count`` past ``max_retries``. Driving the build directly via a
+BuildRunner would never expose this, because no watcher is polling.
 
 The build runs in the local Bash environment, so no Docker/cluster is required.
 """
@@ -51,14 +51,13 @@ from gbserver.types.status import Status
 pytestmark = pytest.mark.standalone
 
 # Statuses that mean the build is still in flight; it has "settled" only once it
-# is in none of these. RETRY_PENDING is in-flight: the in-process loop is about to
-# re-run the same build.
+# is in none of these. A retry re-runs the same build in place as RUNNING, so
+# RUNNING already covers the between-attempts window.
 _IN_FLIGHT = {
     Status.SUBMITTED,
     Status.PENDING,
     Status.RUNNING,
     Status.CANCEL_REQUESTED,
-    Status.RETRY_PENDING,
 }
 
 
@@ -148,8 +147,8 @@ class TestBuildWatcherRetryExhaustion(AbstractBuildTest):
         max_retries``, is in a terminal state, and is no longer in flight.
 
         Keying on the exhausting attempt is required to avoid a race: between a
-        build's ``RUNNING -> FAILED`` finalization and the next retry being staged
-        as ``RETRY_PENDING`` there is a brief window where the build looks
+        build's ``RUNNING -> FAILED`` finalization and the next retry being re-run
+        in place as ``RUNNING`` there is a brief window where the build looks
         terminal. A plain "not in flight" heuristic can return during that window —
         before the last retry runs — and the subsequent ``watcher.stop()`` then
         tears down the BuildRunner mid-retry, cancelling the pending attempt.

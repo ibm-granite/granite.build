@@ -51,7 +51,7 @@ cancels the in-flight continuation.
 ## The build must be finished and not `SUCCESS`
 
 A restart spins up a **fresh** runner, so the build must not still be active — a build that
-is `PENDING`, `RUNNING`, `RETRY_PENDING`, or `CANCEL_REQUESTED` still has (or is about to have) a
+is `PENDING`, `RUNNING`, or `CANCEL_REQUESTED` still has (or is about to have) a
 runner working it. Restarting such a build is rejected (HTTP `409`).
 
 A build that finished with status `SUCCESS` is **also** rejected (HTTP `409`): every target

@@ -313,13 +313,6 @@ def run_build_handling_signals(build_runner: BuildRunner) -> None:
     help="Create a PR for the build during setup.",
 )
 @click.option(
-    "--enable-resume",
-    "enable_resume",
-    is_flag=True,
-    default=False,
-    help="Allow resuming an already RUNNING build instead of failing or restarting it.",
-)
-@click.option(
     "--dry-run",
     "dry_run",
     is_flag=True,
@@ -343,7 +336,6 @@ def cli(
     monitoring_interval: int,
     gh_api_endpoint: str,
     create_pr: bool,
-    enable_resume: bool,
     dry_run: bool = False,
 ):
     """Start build in build storage or loaded from a specified directory"""
@@ -421,7 +413,6 @@ def cli(
         workspace_dir=workspace_dir,
         space_uri=space_config_uri,
         create_pr=create_pr,  # space_name is ignored if providing a space_uri
-        enable_resume=enable_resume,
         dry_run=dry_run,
     )
     # Runs on a background thread so SIGINT/SIGTERM can cancel/fail the build.

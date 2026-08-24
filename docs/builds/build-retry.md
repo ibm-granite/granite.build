@@ -35,14 +35,14 @@ from scratch on every retry, even if they succeeded in an earlier attempt.
 When a build finishes with status `FAILED` and `retry_count < retries.max_retries`, gbserver:
 
 1. Bumps `retry_count` on the same build to `retry_count + 1`.
-2. Sets the build's status to `RETRY_PENDING` and clears its `failure_reason`.
+2. Sets the build's status back to `RUNNING` and clears its `failure_reason`.
 3. Re-runs the same build immediately in the same `BuildRunner` session, keeping the same
    build id, `build_archive`, targets, tags, and PR.
 
-The build is moved to `RETRY_PENDING` rather than `PENDING` on purpose: the `BuildWatcher` only
-dispatches `PENDING` builds, so a distinct status keeps it from launching a *second* runner for a
-retry that the in-process loop is already running. The `RETRY_PENDING` build transitions to
-`RUNNING` as it executes, just like any other in-flight build.
+The build is re-run in place as `RUNNING` rather than moved back to `PENDING` on purpose: the
+retry loop re-runs it in the same thread, so it is genuinely in flight, and the `BuildWatcher`
+only dispatches `SUBMITTED`/`PENDING` builds — a `RUNNING` status therefore keeps it from
+launching a *second* runner for a retry the in-process loop is already running.
 
 Retries are only triggered for the `FAILED` status. Builds that end with `CANCELLED` or
 `INVALID` are never retried.
@@ -71,8 +71,8 @@ build. There is no chain to walk.
 
 How a cancellation request is handled (`POST /builds/{id}/cancel`):
 
-- If the build is **in flight** (`RUNNING` or `RETRY_PENDING`, i.e. an attempt is running or
-  about to be re-run), it is set to `CANCEL_REQUESTED`.
+- If the build is **in flight** (`RUNNING`, i.e. an attempt is running or is being re-run in
+  place for a retry), it is set to `CANCEL_REQUESTED`.
 - If the build has **not started yet** (`SUBMITTED` or `PENDING`), it is set directly to
   `CANCELLED`.
 - If the build is **already finished** (`SUCCESS`, `FAILED` with retries exhausted, or

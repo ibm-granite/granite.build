@@ -47,7 +47,6 @@ _IN_FLIGHT = {
     Status.PENDING,
     Status.RUNNING,
     Status.CANCEL_REQUESTED,
-    Status.RETRY_PENDING,
 }
 
 
@@ -104,20 +103,19 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
         """request_cancellation maps each build status to the right outcome.
 
         In-place retry keeps one build id, so cancellation is decided purely by
-        the build's current status: an in-flight (RUNNING/RETRY_PENDING) build
-        becomes CANCEL_REQUESTED for the runner to act on; a not-yet-started
-        (SUBMITTED/PENDING) build is cancelled outright; a finished build (a FAILED
-        build with retries exhausted, or SUCCESS/CANCELLED) is not cancellable.
+        the build's current status: an in-flight RUNNING build (including one the
+        retry loop re-ran in place) becomes CANCEL_REQUESTED for the runner to act
+        on; a not-yet-started (SUBMITTED/PENDING) build is cancelled outright; a
+        finished build (a FAILED build with retries exhausted, or SUCCESS/CANCELLED)
+        is not cancellable.
         """
-        # In-flight: RUNNING and the transient RETRY_PENDING both defer to the
-        # runner via CANCEL_REQUESTED.
-        for in_flight in (Status.RUNNING, Status.RETRY_PENDING):
-            build = self._make_build(in_flight, 1)
-            self.storage.build_storage.add(build)
-            updated = request_cancellation(self.storage.build_storage, build)
-            assert (
-                updated.status == Status.CANCEL_REQUESTED
-            ), f"{in_flight} should route to CANCEL_REQUESTED, got {updated.status}"
+        # In-flight: RUNNING defers to the runner via CANCEL_REQUESTED.
+        build = self._make_build(Status.RUNNING, 1)
+        self.storage.build_storage.add(build)
+        updated = request_cancellation(self.storage.build_storage, build)
+        assert (
+            updated.status == Status.CANCEL_REQUESTED
+        ), f"RUNNING should route to CANCEL_REQUESTED, got {updated.status}"
 
         # Not yet started: cancelled outright.
         for pre_run in (Status.SUBMITTED, Status.PENDING):
