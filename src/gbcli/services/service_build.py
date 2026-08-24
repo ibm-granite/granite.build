@@ -52,7 +52,6 @@ from gbcli.utils.gbconstants import (
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gbserver import (
     cancel_build,
-    continue_build,
     get_build,
     get_build_events,
     get_build_lineage,
@@ -60,6 +59,7 @@ from gbcli.utils.gbserver import (
     get_builds,
     get_builds_count,
     make_gbserver_call,
+    restart_build,
     submit_build,
     update_build_gserver,
     validate_build,
@@ -501,23 +501,23 @@ def build_start(
     return gbserver_build["build_id"]
 
 
-def build_continue(
+def build_restart(
     github_token: str,
     build_id: str,
     id_format: Optional[str] = None,
     callback=None,
 ) -> Optional[dict]:
-    """Continue a previously-executed build.
+    """Restart a previously-executed build.
 
     Unlike build_start there is no local build folder to zip: the build
     definition, space, and targets already live on the build. Only the build's id
-    (or URL) is needed. Continuation reuses the same build id, so the server's
-    ``build_id`` equals the continued build.
+    (or URL) is needed. A restart reuses the same build id, so the server's
+    ``build_id`` equals the restarted build.
 
-    Returns the server response dict augmented with ``continued_from`` — the
-    resolved uuid of the build that was continued (``build_id`` after any URL is
+    Returns the server response dict augmented with ``restarted_from`` — the
+    resolved uuid of the build that was restarted (``build_id`` after any URL is
     resolved to a uuid) — or None on a server/connection error. Callers report
-    ``continued_from`` rather than the raw identifier so a passed URL never leaks
+    ``restarted_from`` rather than the raw identifier so a passed URL never leaks
     into uuid-valued output.
     """
     if id_format == "url":
@@ -537,12 +537,12 @@ def build_continue(
 
     if callback is not None:
         callback(
-            callback_event="continuing_build",
+            callback_event="restarting_build",
             callback_args={"steps": 1, "build_id": build_id},
         )
 
     gbserver_build = make_gbserver_call(
-        lambda: continue_build(build_id, github_token, GBSERVER_BUILD_API),
+        lambda: restart_build(build_id, github_token, GBSERVER_BUILD_API),
         callback,
     )
 
@@ -551,13 +551,13 @@ def build_continue(
 
     if callback is not None:
         callback(
-            callback_event="continued_build",
+            callback_event="restarted_build",
             callback_args={"steps": 100, "build_id": gbserver_build["build_id"]},
         )
 
     # Report the resolved uuid, not the raw argument: build_id is now the uuid even
     # when a URL was passed, so a URL never sneaks into uuid-valued output.
-    gbserver_build["continued_from"] = build_id
+    gbserver_build["restarted_from"] = build_id
     return gbserver_build
 
 

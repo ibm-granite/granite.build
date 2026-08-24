@@ -17,7 +17,7 @@
 """Build continuation with target reuse, in the local Bash environment.
 
 Mirrors the build-level retry test (``test_buildrunner_retry.py``) but exercises
-``gb build continue`` semantics: a *finished* build is continued by a *fresh*
+``gb build restart`` semantics: a *finished* build is continued by a *fresh*
 BuildRunner rather than by the original runner's in-process retry loop.
 
 Option A — continuation reuses the SAME build id. There is no retry chain and no
@@ -63,9 +63,9 @@ pytestmark = pytest.mark.standalone
 logger = get_logger(__name__)
 
 
-@pytest.mark.xdist_group(name="buildrunner_bash_continue")
-class TestBuildRunnerContinueBash(AbstractBuildTest):
-    """Verifies build continuation and target reuse in the local Bash environment."""
+@pytest.mark.xdist_group(name="buildrunner_bash_restart")
+class TestBuildRunnerRestartBash(AbstractBuildTest):
+    """Verifies build restart (continuation) and target reuse in the local Bash environment."""
 
     def setup_method(self, method):
         # Run in-process via the local Bash environment — no cluster login.
@@ -77,7 +77,7 @@ class TestBuildRunnerContinueBash(AbstractBuildTest):
             get_test_data_dir_for(__file__) / "continue" / "buildtest.yaml"
         )
 
-    def test_buildrunner_continue_reuses_succeeded_target(self: Self):
+    def test_buildrunner_restart_reuses_succeeded_target(self: Self):
         spec = self._get_spec()
         space = self._check_and_setup_space(spec)
         timeout_seconds = spec.timeout_minutes * 60

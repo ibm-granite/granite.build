@@ -1310,7 +1310,7 @@ Download : {download_msg}
 
         This gates target reuse, covering both re-execution paths uniformly:
         an automatic in-place retry (``retry_count`` bumped) and a
-        ``gb build continue`` (fresh runner, ``retry_count`` reset to 0). A
+        ``gb build restart`` (fresh runner, ``retry_count`` reset to 0). A
         build's first execution has no prior runs, so reuse stays off and every
         target runs. The per-target hash match still happens in
         ``__is_target_already_run``; this is only the cheap "are we re-running?"

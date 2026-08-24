@@ -1,19 +1,20 @@
-# Build Continuation
+# Build Restart
 
-Build continuation re-runs a previously-executed build in a **fresh** build runner,
+`gb build restart` re-runs a previously-executed build in a **fresh** build runner,
 **reusing targets that already succeeded** and re-running the rest. Use it to pick a build
 back up from where it left off after a failure or interruption — without re-running work
-that already completed.
+that already completed. (The build is *continued* in place rather than run from scratch.)
 
 ```shell
-gb build continue <BUILD_ID>
+gb build restart <BUILD_ID>
 ```
 
 `<BUILD_ID>` may be a build id or a build URL. No local build folder is required — the build
 definition, space, and targets are taken from the build being continued.
 
-The name is inspired by `curl -C` (resuming a partial download). It is distinct from
-[build-level retry](build-retry.md) and from step-level retry.
+Despite the `restart` verb, the build is **continued** in place, not run from scratch: targets
+that already succeeded are reused. It is distinct from [build-level retry](build-retry.md) and
+from step-level retry.
 
 ## When to use it
 
@@ -28,7 +29,7 @@ already succeeded, in place.
 
 ## Behaviour
 
-`gb build continue <BUILD_ID>` **re-opens the same build** — the build keeps its id. The
+`gb build restart <BUILD_ID>` **re-opens the same build** — the build keeps its id. The
 finished build is flipped back to `SUBMITTED` and submitted through the ordinary build path, so
 the BuildWatcher dispatches a fresh runner for it, exactly like any other build. On re-open the
 build:
@@ -60,7 +61,7 @@ build with unchanged artifacts finishes immediately with nothing to re-run.
 
 | | Build-level retry | Build continuation |
 |---|---|---|
-| Trigger | build ends `FAILED` and `retry_count < max_retries` | explicit `gb build continue` |
+| Trigger | build ends `FAILED` and `retry_count < max_retries` | explicit `gb build restart` |
 | Runner | same, in-process retry loop | a **fresh** runner |
 | Applies to | only a `FAILED` build | **any** finished build |
 | Build id | same build, reused | same build, reused |

@@ -39,7 +39,6 @@ from gbcli.services.service_auth import (
 )
 from gbcli.services.service_build import (
     build_cancel,
-    build_continue,
     build_describe,
     build_diff,
     build_init,
@@ -48,6 +47,7 @@ from gbcli.services.service_build import (
     build_log,
     build_monitor,
     build_notification,
+    build_restart,
     build_start,
     build_status,
     build_validate,
@@ -692,13 +692,13 @@ class GBClient:
                 self.github_token, build_id, id_format, space, callback=callback
             )
 
-        def build_continue(
+        def build_restart(
             self,
             build_id: str,
             id_format: Optional[str] = None,
             callback=None,
         ) -> Optional[dict]:
-            return build_continue(
+            return build_restart(
                 self.github_token, build_id, id_format, callback=callback
             )
 

@@ -161,7 +161,7 @@ end, try the [demos](../demos/README.md).
 
 - [Retry overview](retry.md) — how build- and step-level retry fit together.
 - [Build retry](build-retry.md) — re-run a failed build as a new attempt.
-- [Build continuation](build-continuation.md) — continue any finished build in a fresh runner, skipping succeeded targets.
+- [Build restart](build-restart.md) — restart any finished build in a fresh runner, skipping succeeded targets.
 - [Step retry](step-retry-configuration.md) — re-launch a single step on a transient error.
 - [Target reuse](target-reuse.md) — skip unchanged targets across builds.
 - [Lineage tracking](lineage.md) — record build/target/artifact provenance.

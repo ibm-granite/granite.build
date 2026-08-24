@@ -362,12 +362,12 @@ def cancel_build(build_id: str, token: str, gbserver_api: str) -> Any:
     )
 
 
-def continue_build(build_id: str, token: str, gbserver_api: str) -> Any:
-    continue_build_url = f"{gbserver_api}continue"
+def restart_build(build_id: str, token: str, gbserver_api: str) -> Any:
+    restart_build_url = f"{gbserver_api}restart"
 
     return gb_server_request(
         user_token=token,
-        url=continue_build_url,
+        url=restart_build_url,
         http_method="post",
         body={"build_id": build_id},
         params=None,

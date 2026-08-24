@@ -41,12 +41,12 @@ from fastapi import HTTPException
 
 from gbserver.api import builds as builds_module
 from gbserver.api.builds import (
-    BuildContinueRequest,
+    BuildRestartRequest,
     BuildSubmitRequest,
     BuildValidateRequest,
     BuildValidation,
-    continue_build,
     request_cancellation,
+    restart_build,
     submit_build,
     validate_build,
 )
@@ -295,17 +295,17 @@ def test_cancel_retry_pending_sets_cancel_requested():
     assert result.status == Status.CANCEL_REQUESTED
 
 
-# ------------------------------------------------------------------ continue_build
+# ------------------------------------------------------------------ restart_build
 #
-# Option A: a continuation reuses the SAME build id. continue_build re-opens a
+# Option A: a restart reuses the SAME build id. restart_build re-opens a
 # finished build in place (status -> SUBMITTED, retry_count reset) so the
 # BuildWatcher re-dispatches it onto a fresh runner. There is no retry chain and
 # no new build id.
 
 
-def _continue_build_storage(builds: dict):
+def _restart_build_storage(builds: dict):
     """A build_storage mock backed by a {uuid: StoredBuild} dict, supporting the
-    get_by_uuid / update_fields surface continue_build + reopen_finished_build
+    get_by_uuid / update_fields surface restart_build + reopen_finished_build
     use. update_fields honors the should_update guard against the build as it
     currently exists in storage (so a race can be simulated by pre-seeding a
     non-finished status)."""
@@ -323,13 +323,13 @@ def _continue_build_storage(builds: dict):
     return SimpleNamespace(get_by_uuid=builds.get, update_fields=_update_fields)
 
 
-def _patched_continue_storage(builds: dict):
+def _patched_restart_storage(builds: dict):
     space = StoredSpace(name=SPACE, git_repo_uri="")
     fake_storage = SimpleNamespace(
         space_storage=SimpleNamespace(
             get_by_name=lambda name: space if name == SPACE else None
         ),
-        build_storage=_continue_build_storage(builds),
+        build_storage=_restart_build_storage(builds),
     )
     return patch.object(builds_module, "get_admin_storage", return_value=fake_storage)
 
@@ -347,39 +347,39 @@ def _prior_build(username: str, status: Status = Status.FAILED) -> StoredBuild:
     )
 
 
-def test_continue_build_missing_build_returns_404():
-    with _patched_continue_storage({}):
+def test_restart_build_missing_build_returns_404():
+    with _patched_restart_storage({}):
         with pytest.raises(HTTPException) as exc:
-            continue_build(
+            restart_build(
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-                BuildContinueRequest(build_id="does-not-exist"),
+                BuildRestartRequest(build_id="does-not-exist"),
             )
     assert exc.value.status_code == 404
 
 
-def test_continue_build_rejects_active_build_409():
+def test_restart_build_rejects_active_build_409():
     prior = _prior_build(ATTACKER, status=Status.RUNNING)
-    with _patched_continue_storage({prior.uuid: prior}):
+    with _patched_restart_storage({prior.uuid: prior}):
         with pytest.raises(HTTPException) as exc:
-            continue_build(
+            restart_build(
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-                BuildContinueRequest(build_id=prior.uuid),
+                BuildRestartRequest(build_id=prior.uuid),
             )
     assert exc.value.status_code == 409
 
 
-def test_continue_build_reopens_same_build_in_place():
+def test_restart_build_reopens_same_build_in_place():
     prior = _prior_build(ATTACKER, status=Status.FAILED)
     builds = {prior.uuid: prior}
     with (
-        _patched_continue_storage(builds),
+        _patched_restart_storage(builds),
         _real_authz(),
         patch("gbserver.api.utils.is_super_admin", return_value=False),
         patch("gbserver.api.utils.is_space_admin", return_value=False),
     ):
-        resp = continue_build(
+        resp = restart_build(
             _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-            BuildContinueRequest(build_id=prior.uuid),
+            BuildRestartRequest(build_id=prior.uuid),
         )
     # Same build id — no new build created.
     assert resp.build_id == prior.uuid
@@ -392,7 +392,7 @@ def test_continue_build_reopens_same_build_in_place():
     assert reopened.targets == prior.targets
 
 
-def test_continue_build_reopen_race_returns_409():
+def test_restart_build_reopen_race_returns_409():
     # The build read as FAILED, but a concurrent writer flipped it to RUNNING
     # before the guarded flip's write, so the should_update guard rejects it and
     # the client gets a 409 rather than a fresh runner attaching to a live build.
@@ -422,47 +422,47 @@ def test_continue_build_reopen_race_returns_409():
         patch("gbserver.api.utils.is_space_admin", return_value=False),
     ):
         with pytest.raises(HTTPException) as exc:
-            continue_build(
+            restart_build(
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-                BuildContinueRequest(build_id=prior.uuid),
+                BuildRestartRequest(build_id=prior.uuid),
             )
     assert exc.value.status_code == 409
 
 
-def test_continue_build_rejects_forged_username_as_404():
+def test_restart_build_rejects_forged_username_as_404():
     """An unauthorized caller gets 404, identical to a nonexistent build — not a
     401/409 that would confirm the id is real or leak its liveness. Collapsing
     them removes the id oracle across spaces the caller cannot reach."""
     prior = _prior_build(VICTIM, status=Status.FAILED)
     with (
-        _patched_continue_storage({prior.uuid: prior}),
+        _patched_restart_storage({prior.uuid: prior}),
         _real_authz(),
         patch("gbserver.api.utils.is_super_admin", return_value=False),
         patch("gbserver.api.utils.is_space_admin", return_value=False),
     ):
         with pytest.raises(HTTPException) as exc:
-            continue_build(
+            restart_build(
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-                BuildContinueRequest(build_id=prior.uuid),
+                BuildRestartRequest(build_id=prior.uuid),
             )
     assert exc.value.status_code == 404
     assert exc.value.detail == f"Build {prior.uuid} not found"
 
 
-def test_continue_build_authz_precedes_status_disclosure():
+def test_restart_build_authz_precedes_status_disclosure():
     """An unauthorized caller must not learn a build's liveness: authz is enforced
-    BEFORE the is_finished() 409, so continuing another user's *active* build
+    BEFORE the is_finished() 409, so restarting another user's *active* build
     returns the not-found 404, not a 409 that would leak that it is live."""
     prior = _prior_build(VICTIM, status=Status.RUNNING)
     with (
-        _patched_continue_storage({prior.uuid: prior}),
+        _patched_restart_storage({prior.uuid: prior}),
         _real_authz(),
         patch("gbserver.api.utils.is_super_admin", return_value=False),
         patch("gbserver.api.utils.is_space_admin", return_value=False),
     ):
         with pytest.raises(HTTPException) as exc:
-            continue_build(
+            restart_build(
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-                BuildContinueRequest(build_id=prior.uuid),
+                BuildRestartRequest(build_id=prior.uuid),
             )
     assert exc.value.status_code == 404

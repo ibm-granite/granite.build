@@ -1136,7 +1136,7 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
         ctx.exit(1)  # Exit with a non-zero status
 
 
-@cli.command("continue")
+@cli.command("restart")
 @click.pass_context
 @click.argument("build_id", required=True)
 @click.option(
@@ -1147,9 +1147,9 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
     help="Output format: simple (default), json",
 )
 @common_options
-def continue_build_cmd(ctx, build_id, format, skip_version_check, quiet):
+def restart_build_cmd(ctx, build_id, format, skip_version_check, quiet):
     """
-    Continue a previously-executed build
+    Restart a previously-executed build
 
     Provide build ID or URL. The same build is re-opened and a fresh build runner
     re-runs it, skipping targets that already succeeded and re-running the rest.
@@ -1184,7 +1184,7 @@ def continue_build_cmd(ctx, build_id, format, skip_version_check, quiet):
         sys.exit(1)
 
     if not quiet:
-        click.echo(f"🏁 {PROJECT_NAME} build continue")
+        click.echo(f"🏁 {PROJECT_NAME} build restart")
 
     build_client = GBClient.Build(get_user_token())
 
@@ -1193,7 +1193,7 @@ def continue_build_cmd(ctx, build_id, format, skip_version_check, quiet):
             case "error":
                 reason = callback_args.get("reason", "")
                 click.echo(
-                    f"\n❌ Build can't be continued at this moment... Reason: {reason}",
+                    f"\n❌ Build can't be restarted at this moment... Reason: {reason}",
                     err=True,
                 )
                 sys.exit(1)  # Exit with a non-zero status
@@ -1201,23 +1201,23 @@ def continue_build_cmd(ctx, build_id, format, skip_version_check, quiet):
                 pass
 
     try:
-        result = build_client.build_continue(
+        result = build_client.build_restart(
             build_id, id_format, callback=echo_callback
         )
 
         if result:
-            # Continuation reuses the same build id, so the server returns the same
-            # uuid that was continued.
-            continued_build_id = result["build_id"]
-            details_page = f"{WEB_UI_URL}/builds/{continued_build_id}"
+            # Restart reuses the same build id, so the server returns the same
+            # uuid that was restarted.
+            restarted_build_id = result["build_id"]
+            details_page = f"{WEB_UI_URL}/builds/{restarted_build_id}"
             if not quiet:
-                click.echo(f"✅ Continuing build {continued_build_id}: {details_page}")
+                click.echo(f"✅ Restarting build {restarted_build_id}: {details_page}")
                 click.echo(f"""To get the build status:
 ```
-gb build status {continued_build_id}
+gb build status {restarted_build_id}
 ```""")
             if format == "json":
-                click.echo(json.dumps({"build_id": continued_build_id}))
+                click.echo(json.dumps({"build_id": restarted_build_id}))
 
     except Exception as e:
         click.echo(str_exc_chain(e), err=True)

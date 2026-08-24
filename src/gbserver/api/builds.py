@@ -92,16 +92,16 @@ class BuildSubmitRequest(BaseModel):
         return self
 
 
-class BuildContinueRequest(BaseModel):
+class BuildRestartRequest(BaseModel):
     """
-    A build continuation request.
+    A build restart request.
 
-    Continues a previously-executed build: the **same** build is re-opened and a
+    Restarts a previously-executed build: the **same** build is re-opened and a
     fresh build runner re-runs it, skipping targets that already succeeded and
     re-running the rest. The build definition, space, and targets are already on
     the build, so only its id is required.
 
-        build_id: uuid of the finished build to continue.
+        build_id: uuid of the finished build to restart.
     """
 
     build_id: str
@@ -119,11 +119,11 @@ class BuildSubmitResponse(BaseModel):
     build_id: str
 
 
-class BuildContinueResponse(BaseModel):
-    """Response to a build continuation.
+class BuildRestartResponse(BaseModel):
+    """Response to a build restart.
 
-    build_id: uuid of the continued build. Continuation reuses the same build id,
-        so this equals the requested build_id.
+    build_id: uuid of the restarted build. Restart reuses the same build id, so
+        this equals the requested build_id.
     """
 
     build_id: str
@@ -315,16 +315,16 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
     )
 
 
-@builds_api.post("/continue")
-def continue_build(
-    request: Request, req: BuildContinueRequest
-) -> BuildContinueResponse:
-    """Continue a previously-executed build in a fresh runner.
+@builds_api.post("/restart")
+def restart_build(
+    request: Request, req: BuildRestartRequest
+) -> BuildRestartResponse:
+    """Restart a previously-executed build in a fresh runner.
 
     Re-opens the **same** build (reusing its build id) by flipping its finished
     status back to SUBMITTED, so the BuildWatcher re-dispatches it onto a fresh
     runner that skips targets which already succeeded and re-runs the rest. The
-    build must be finished — continuing a build that is still active (there may be
+    build must be finished — restarting a build that is still active (there may be
     a live runner) is rejected.
     """
     storage = get_admin_storage()
@@ -354,7 +354,7 @@ def continue_build(
     if not has_access:
         raise not_found
 
-    # Only a finished build can be continued: re-opening a build with a live runner
+    # Only a finished build can be restarted: re-opening a build with a live runner
     # would attach a second runner to it. There is no runner-liveness table; the
     # build status is the signal.
     if not build.status.is_finished():
@@ -362,26 +362,26 @@ def continue_build(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"Build {build.uuid} has status {build.status}; only a finished "
-                "build (SUCCESS, FAILED, INVALID, or CANCELLED) can be continued"
+                "build (SUCCESS, FAILED, INVALID, or CANCELLED) can be restarted"
             ),
         )
 
     # Atomic guarded flip finished -> SUBMITTED; None means the build stopped being
-    # finished between the check above and the write (a concurrent continue or a
+    # finished between the check above and the write (a concurrent restart or a
     # runner that just picked it up) — reject rather than double-dispatch.
     reopened = reopen_finished_build(build_storage, build)
     if reopened is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Build {build.uuid} cannot be continued: its status changed "
+                f"Build {build.uuid} cannot be restarted: its status changed "
                 "concurrently"
             ),
         )
     logger.info(
-        "re-opened build %s for continuation (was %s)", build.uuid, build.status
+        "re-opened build %s for restart (was %s)", build.uuid, build.status
     )
-    return BuildContinueResponse(build_id=reopened.uuid)
+    return BuildRestartResponse(build_id=reopened.uuid)
 
 
 @builds_api.post("/validate")
