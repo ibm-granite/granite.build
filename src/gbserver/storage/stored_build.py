@@ -185,6 +185,33 @@ class StoredBuild(BaseStoredItem, TaggedItem):
         self.build_config_cache[checksum] = build_config
         return build_config
 
+    def has_retries_remaining(self: Self) -> bool:
+        """Return True if this build is still eligible for another automatic retry.
+
+        True when the build config specifies a positive ``max_retries`` and fewer
+        retries have been attempted so far than that limit. This is independent of
+        the build's current status — callers combine it with a status check as
+        needed (e.g. the retry loop only retries a FAILED build). Reading the build
+        config can fail (e.g. a missing/corrupt archive); any such failure is
+        treated conservatively as "no retries remaining".
+
+        Returns:
+            bool: whether another retry attempt is permitted.
+        """
+        try:
+            build_config = self.get_build_config()
+        except Exception as e:
+            logger.warning(
+                "Could not read build config for build %s, treating as no retries "
+                "remaining: %s",
+                self.uuid,
+                e,
+            )
+            return False
+        if build_config.retries.max_retries <= 0:
+            return False
+        return self.retry_count < build_config.retries.max_retries
+
     def __hash__(self) -> int:
         """Make StoredBuild hashable using all fields."""
         return hash(

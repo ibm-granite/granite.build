@@ -44,9 +44,11 @@ from gbserver.api.builds import (
     BuildSubmitRequest,
     BuildValidateRequest,
     BuildValidation,
+    request_cancellation,
     submit_build,
     validate_build,
 )
+from gbserver.types.status import Status
 from gbserver.api.utils import (
     confirm_space_write_access as _real_confirm_space_write_access,
 )
@@ -223,3 +225,68 @@ def test_validate_build_allows_admin_impersonation_via_space_name():
             _validate_req(VICTIM, space_name=SPACE),
         )
     assert resp.status_code == 200
+
+
+# --- request_cancellation: FAILED-with-retries window (regression) ------------
+#
+# After an attempt fails, the build sits in FAILED until the retry loop flips it
+# to RETRY_PENDING. A cancel landing in that window must be honored (set to
+# CANCELLED) rather than rejected as "already finished". See
+# gbserver.api.builds.request_cancellation.
+
+
+def _cancel_build(status: Status, has_retries: bool, uuid: str = "build-1"):
+    """A minimal stand-in for StoredBuild exposing only what request_cancellation
+    reads: uuid, status, and has_retries_remaining()."""
+    return SimpleNamespace(
+        uuid=uuid,
+        status=status,
+        has_retries_remaining=lambda: has_retries,
+    )
+
+
+class _FakeBuildStorage:
+    """Fake IStoredBuildStorage whose update_fields honors the should_update guard
+    against the build as it currently exists in storage (stored_status)."""
+
+    def __init__(self, stored_status: Status):
+        self._stored_status = stored_status
+
+    def update_fields(self, uuid, fields, should_update=None):
+        # Emulate the atomic guard: check against the live stored status.
+        current = SimpleNamespace(status=self._stored_status)
+        if should_update is not None and not should_update(current):
+            return None
+        return SimpleNamespace(uuid=uuid, status=fields["status"])
+
+
+def test_cancel_failed_with_retries_sets_cancelled():
+    build = _cancel_build(Status.FAILED, has_retries=True)
+    storage = _FakeBuildStorage(stored_status=Status.FAILED)
+    result = request_cancellation(storage, build)  # type: ignore[arg-type]
+    assert result.status == Status.CANCELLED
+
+
+def test_cancel_failed_without_retries_rejected_412():
+    build = _cancel_build(Status.FAILED, has_retries=False)
+    storage = _FakeBuildStorage(stored_status=Status.FAILED)
+    with pytest.raises(HTTPException) as exc:
+        request_cancellation(storage, build)  # type: ignore[arg-type]
+    assert exc.value.status_code == 412
+
+
+def test_cancel_failed_with_retries_races_retry_pending_409():
+    # The runner flipped FAILED -> RETRY_PENDING before the cancel's write, so the
+    # should_update guard rejects the CANCELLED write and the client gets a 409.
+    build = _cancel_build(Status.FAILED, has_retries=True)
+    storage = _FakeBuildStorage(stored_status=Status.RETRY_PENDING)
+    with pytest.raises(HTTPException) as exc:
+        request_cancellation(storage, build)  # type: ignore[arg-type]
+    assert exc.value.status_code == 409
+
+
+def test_cancel_retry_pending_sets_cancel_requested():
+    build = _cancel_build(Status.RETRY_PENDING, has_retries=True)
+    storage = _FakeBuildStorage(stored_status=Status.RETRY_PENDING)
+    result = request_cancellation(storage, build)  # type: ignore[arg-type]
+    assert result.status == Status.CANCEL_REQUESTED

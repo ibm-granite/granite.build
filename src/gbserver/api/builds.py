@@ -541,9 +541,10 @@ def request_cancellation(
 
     With in-place retry there is a single build id across attempts: an in-flight
     (possibly retrying) build is RUNNING or RETRY_PENDING and is set to
-    CANCEL_REQUESTED; a SUBMITTED/PENDING build is set to CANCELLED. A finished
-    build (SUCCESS/FAILED/CANCELLED — including a FAILED build whose retries are
-    exhausted) is not cancellable.
+    CANCEL_REQUESTED; a SUBMITTED/PENDING build is set to CANCELLED. A build that
+    is FAILED but still has retries remaining sits in a brief pre-retry window and
+    is set directly to CANCELLED. A genuinely finished build (SUCCESS/CANCELLED, or
+    a FAILED build whose retries are exhausted) is not cancellable.
 
     Args:
         build_storage: storage used to read/update builds.
@@ -558,7 +559,14 @@ def request_cancellation(
             changed concurrently.
     """
     current_status = build.status
-    if not current_status.is_cancellable():
+    # A build sits in FAILED for a short window between a failed attempt and the
+    # retry loop flipping it to RETRY_PENDING. If it still has retries remaining it
+    # is effectively in-flight, so a cancel landing in that window must be honored
+    # rather than rejected as "already finished".
+    failed_but_retrying = (
+        current_status == Status.FAILED and build.has_retries_remaining()
+    )
+    if not current_status.is_cancellable() and not failed_but_retrying:
         raise HTTPException(
             status_code=status.HTTP_412_PRECONDITION_FAILED,
             detail=f"Build {build.uuid} has status {current_status} and therefore can not be canceled.",
@@ -567,6 +575,13 @@ def request_cancellation(
     if current_status in (Status.RUNNING, Status.RETRY_PENDING):
         target_status: Optional[Status] = Status.CANCEL_REQUESTED
     elif current_status in (Status.SUBMITTED, Status.PENDING):
+        target_status = Status.CANCELLED
+    elif failed_but_retrying:
+        # The failed attempt already tore down; there is no running work to stop.
+        # Marking it CANCELLED both records the cancel and prevents the pending
+        # retry (the runner's _should_retry only retries a FAILED build). The
+        # should_update guard below yields 409 if the runner already advanced it to
+        # RETRY_PENDING, prompting the client to retry into the CANCEL_REQUESTED path.
         target_status = Status.CANCELLED
     else:  # CANCEL_REQUESTED (already requested) or anything else: no update
         target_status = None

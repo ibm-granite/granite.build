@@ -318,16 +318,28 @@ class BuildRunner(AbstractBuildRunner):
         # RETRY_PENDING (not PENDING): this build is re-run by the in-process retry
         # loop below; a distinct status keeps the BuildWatcher (which polls PENDING)
         # from dispatching a duplicate runner for it. See Status.RETRY_PENDING.
-        self.storage.build_storage.update_fields(
+        #
+        # Guard the flip on the build still being FAILED: a cancel arriving in the
+        # brief FAILED window (see api.builds.request_cancellation) sets the build to
+        # CANCELLED, and we must not overwrite that terminal state with RETRY_PENDING.
+        # If the guard rejects the update, honor the cancel by not retrying.
+        refreshed = self.storage.build_storage.update_fields(
             latest.uuid,
             {
                 "retry_count": latest.retry_count + 1,
                 "status": Status.RETRY_PENDING,
                 "failure_reason": "",
             },
+            should_update=lambda item: item.status == Status.FAILED,
         )
-        refreshed = self.storage.build_storage.get_by_uuid(latest.uuid)
-        if not isinstance(refreshed, StoredBuild):
+        if refreshed is None:
+            # The guard rejected the flip: the build is no longer FAILED, which in
+            # practice means a cancel landed in the FAILED window and set it to
+            # CANCELLED. Honor that by not retrying.
+            logger.info(
+                "Build %s no longer FAILED (likely cancelled); skipping retry",
+                latest.uuid,
+            )
             return None
         logger.info(
             "Build %s failed; retrying in place (attempt %d of %d)",
@@ -1085,18 +1097,7 @@ Download : {download_msg}
         """
         if stored_build.status != Status.FAILED:
             return False
-        try:
-            build_config = stored_build.get_build_config()
-        except Exception as e:
-            logger.warning(
-                "Could not read build config for build %s, skipping retry: %s",
-                stored_build.uuid,
-                e,
-            )
-            return False
-        if build_config.retries.max_retries <= 0:
-            return False
-        return stored_build.retry_count < build_config.retries.max_retries
+        return stored_build.has_retries_remaining()
 
     @staticmethod
     def _get_normalized_uri(uri_str: str) -> str:
