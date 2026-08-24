@@ -751,3 +751,67 @@ def test_auth_provider_build_list_multi_order(
     assert [p.provider_name for p in providers] == ["ibmid", "github"]
 
 
+# ---------------------------------------------------------------------------
+# Resilience strategies
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def retry_strategy_registry_snapshot():
+    from gbserver.resilience.retry_handler import RetryStrategy
+
+    saved = dict(RetryStrategy.strategy_types)
+    yield RetryStrategy
+    RetryStrategy.strategy_types.clear()
+    RetryStrategy.strategy_types.update(saved)
+
+
+def test_retry_strategy_plugin_registered_by_name(
+    monkeypatch, retry_strategy_registry_snapshot
+):
+    """A plugin strategy is discovered and looked up by its config ``type`` name."""
+    from gbserver.resilience.retry_handler import RetryStrategy
+
+    class DummyStrategy(RetryStrategy):
+        def should_retry(self, event):
+            return False
+
+    eps = _make_entry_points(monkeypatch, {"Dummy": ("DummyStrategy", DummyStrategy)})
+    _patch_entry_points(monkeypatch, {plugins.GROUP_RESILIENCE_STRATEGIES: eps})
+
+    RetryStrategy._load_retry_strategies()
+    # Reachable under the verbatim config type and its lowercase alias.
+    assert RetryStrategy.strategy_types["Dummy"] is DummyStrategy
+    assert RetryStrategy.strategy_types["dummy"] is DummyStrategy
+
+
+def test_retry_strategy_builtin_types_present(
+    monkeypatch, retry_strategy_registry_snapshot
+):
+    """The in-tree config types are registered under their verbatim names."""
+    from gbserver.resilience.retry_handler import RetryStrategy
+
+    _patch_entry_points(monkeypatch, {})
+    RetryStrategy._load_retry_strategies()
+    assert "UnhealthyInsufficientPods" in RetryStrategy.strategy_types
+    assert "AnyFailure" in RetryStrategy.strategy_types
+
+
+def test_retry_strategy_plugin_collision_core_wins(
+    monkeypatch, caplog, retry_strategy_registry_snapshot
+):
+    """A plugin cannot shadow a built-in strategy type (core-wins)."""
+    from gbserver.resilience.retry_handler import RetryStrategy
+
+    class ShadowStrategy(RetryStrategy):
+        def should_retry(self, event):
+            return False
+
+    eps = _make_entry_points(
+        monkeypatch, {"AnyFailure": ("ShadowStrategy", ShadowStrategy)}
+    )
+    _patch_entry_points(monkeypatch, {plugins.GROUP_RESILIENCE_STRATEGIES: eps})
+
+    RetryStrategy._load_retry_strategies()
+    assert RetryStrategy.strategy_types["AnyFailure"] is not ShadowStrategy
+    assert "already registered" in caplog.text

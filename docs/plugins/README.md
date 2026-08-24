@@ -73,17 +73,26 @@ listed base class and provide the listed key.
 |---|---|---|
 | `gbserver.uri_handlers` | `gbcommon.uri.uri.URI` | the scheme(s) returned by `get_supported_schemes()` |
 | `gbserver.asset_stores` | `gbserver.asset.assetstore.Assetstore` | the URI class(es) returned by `get_supported_uri_classes()` |
-| `gbserver.environments` | `gbserver.environment.environment.Environment` | the **entry-point name** (registered under both `name.lower()` and the name exactly as declared) |
-| `gbserver.secret_managers` | `SpaceSecretManager` **or** `UserSecretManager` | the **entry-point name** (lowercased). One group feeds both families; each class is routed to the family whose base class it subclasses |
+| `gbserver.environments` | `gbserver.environment.environment.Environment` | the **entry-point name** (the environment `type`) |
+| `gbserver.secret_managers` | `SpaceSecretManager` **or** `UserSecretManager` | the **entry-point name** (the secret-manager `type`). One group feeds both families; each class is routed to the family whose base class it subclasses |
+| `gbserver.auth_providers` | `gbserver.api.auth_providers.AuthProvider` | the **entry-point name** (the provider name, matching `provider_name`) |
+| `gbserver.resilience_strategies` | `gbserver.resilience.retry_handler.RetryStrategy` | the **entry-point name** (the strategy config `type`) |
 
-For the URI and asset-store groups the entry-point *name* is cosmetic — the registration key comes from
-the class's own method, so name your entry point whatever reads well. For the environment and
-secret-manager groups the entry-point *name* is the registration key.
+There are exactly two key-derivation shapes, and every group uses one of them:
 
-> **Name-keyed groups are case-normalized.** Environments register under both `name.lower()` and the
-> entry-point name exactly as you declared it; secret managers under `name.lower()`. Because the declared
-> name is preserved verbatim, an entry-point name with internal capitals (e.g. `AWSBatch`) is reachable
-> both as `awsbatch` and as `AWSBatch`, so a build referencing `type: AWSBatch` resolves as written.
+- **Name-keyed** (`gbserver.environments`, `gbserver.secret_managers`, `gbserver.auth_providers`,
+  `gbserver.resilience_strategies`): the entry-point *name* — which you own as the plugin author — is the
+  registration key, following the standard entry-point convention. Choose the name a user will write in
+  config to select your implementation.
+- **Capability-keyed** (`gbserver.uri_handlers`, `gbserver.asset_stores`): the class advertises its key(s)
+  by answering a method, because one class legitimately owns several keys (a URI handler serving both
+  `git` and `git+ssh`) and the resolver dispatches by that capability rather than by a chosen name. Here
+  the entry-point *name* is cosmetic — name it whatever reads well.
+
+> **Name-keyed groups are case-normalized.** A name-keyed plugin registers under both `name.lower()` and
+> the entry-point name exactly as you declared it. Because the declared name is preserved verbatim, an
+> entry-point name with internal capitals (e.g. `AWSBatch`) is reachable both as `awsbatch` and as
+> `AWSBatch`, so a build referencing `type: AWSBatch` resolves as written.
 
 ## Reserved groups (wired in later releases)
 
@@ -93,8 +102,6 @@ separately.
 
 | Group | Purpose |
 |---|---|
-| `gbserver.auth_providers` | Additional authentication providers (`AuthProvider` subclasses) |
-| `gbserver.resilience_strategies` | Additional retry / resilience strategies (`RetryStrategy` subclasses) |
 | `gbserver.builtin_steps` | Additional built-in step directories contributed as step search roots |
 | `gbcli.plugins` | Additional `gbcli` subcommands (a module exposing a `cli` click command) |
 
