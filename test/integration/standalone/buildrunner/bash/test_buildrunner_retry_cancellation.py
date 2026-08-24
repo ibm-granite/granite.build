@@ -115,18 +115,18 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
             build = self._make_build(in_flight, 1)
             self.storage.build_storage.add(build)
             updated = request_cancellation(self.storage.build_storage, build)
-            assert updated.status == Status.CANCEL_REQUESTED, (
-                f"{in_flight} should route to CANCEL_REQUESTED, got {updated.status}"
-            )
+            assert (
+                updated.status == Status.CANCEL_REQUESTED
+            ), f"{in_flight} should route to CANCEL_REQUESTED, got {updated.status}"
 
         # Not yet started: cancelled outright.
         for pre_run in (Status.SUBMITTED, Status.PENDING):
             build = self._make_build(pre_run, 0)
             self.storage.build_storage.add(build)
             updated = request_cancellation(self.storage.build_storage, build)
-            assert updated.status == Status.CANCELLED, (
-                f"{pre_run} should route to CANCELLED, got {updated.status}"
-            )
+            assert (
+                updated.status == Status.CANCELLED
+            ), f"{pre_run} should route to CANCELLED, got {updated.status}"
 
         # Finished (retries exhausted / already done): not cancellable -> 412.
         for finished in (Status.FAILED, Status.SUCCESS, Status.CANCELLED):
@@ -172,18 +172,18 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
             thread.join(timeout=60)
 
         builds = self.storage.build_storage.get_by_uuid(None) or []
-        assert len(builds) == 1, (
-            f"In-place retry must reuse one build id, found {len(builds)} builds"
-        )
+        assert (
+            len(builds) == 1
+        ), f"In-place retry must reuse one build id, found {len(builds)} builds"
         build = builds[0]
         assert build.uuid == build_id
-        assert build.status == Status.CANCELLED, (
-            f"Build should be CANCELLED after cancellation, got {build.status}"
-        )
+        assert (
+            build.status == Status.CANCELLED
+        ), f"Build should be CANCELLED after cancellation, got {build.status}"
         # Cancellation stopped it well short of exhausting max_retries (5).
-        assert build.retry_count < 5, (
-            f"Build kept retrying after cancellation: retry_count={build.retry_count}"
-        )
+        assert (
+            build.retry_count < 5
+        ), f"Build kept retrying after cancellation: retry_count={build.retry_count}"
 
     def _wait_for_active_retry(self, build_id: str, timeout_seconds: float) -> None:
         """Block until the build has retried at least once and is in flight."""
@@ -191,7 +191,11 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
         while time() - start <= timeout_seconds:
             builds = self.storage.build_storage.get_by_uuid(None) or []
             build = next((b for b in builds if b.uuid == build_id), None)
-            if build is not None and build.retry_count >= 1 and build.status in _IN_FLIGHT:
+            if (
+                build is not None
+                and build.retry_count >= 1
+                and build.status in _IN_FLIGHT
+            ):
                 return
             sleep(1)
         assert False, f"No active retry appeared within {timeout_seconds}s."

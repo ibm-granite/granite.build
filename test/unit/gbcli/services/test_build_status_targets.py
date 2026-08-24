@@ -57,7 +57,9 @@ def _runs():
     # re-run and succeeded, so its SUCCESS run links back to the FAILED run via
     # retry_of_target_id. Returned out of order to exercise the start-time sort.
     return [
-        _target_run("targetB", "tB2", "success", "2020-01-01T00:02:00Z", retry_of="tB1"),
+        _target_run(
+            "targetB", "tB2", "success", "2020-01-01T00:02:00Z", retry_of="tB1"
+        ),
         _target_run("targetB", "tB1", "failed", "2020-01-01T00:01:00Z"),
         _target_run("targetA", "tA1", "success", "2020-01-01T00:00:00Z"),
     ]

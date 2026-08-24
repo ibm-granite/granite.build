@@ -114,9 +114,7 @@ class TestBuildRunnerRetryBash(AbstractBuildTest):
         # typed) against the expectation. The SUCCESS run owns the one env_output
         # artifact; the FAILED run owns none (a copy with output_artifact_count=0).
         expected = self._expected_target(spec, "flaky-target")
-        self._verify_target_and_steps(
-            build_id, success_run, [Status.SUCCESS], expected
-        )
+        self._verify_target_and_steps(build_id, success_run, [Status.SUCCESS], expected)
         self._verify_target_and_steps(
             build_id,
             failed_run,
@@ -155,19 +153,19 @@ class TestBuildRunnerRetryBash(AbstractBuildTest):
             f"{[(a.uri, a.created_by_target_id) for a in artifacts]}",
         )
         artifact = artifacts[0]
-        assert artifact.created_by_target_id == success_run.uuid, (
-            self._failed_build_msg(
-                build_id,
-                f"env_output should be attributed to the SUCCESS run "
-                f"({success_run.uuid}), but created_by_target_id is "
-                f"{artifact.created_by_target_id} (FAILED run is {failed_run.uuid})",
-            )
+        assert (
+            artifact.created_by_target_id == success_run.uuid
+        ), self._failed_build_msg(
+            build_id,
+            f"env_output should be attributed to the SUCCESS run "
+            f"({success_run.uuid}), but created_by_target_id is "
+            f"{artifact.created_by_target_id} (FAILED run is {failed_run.uuid})",
         )
-        assert artifact.status == ArtifactRegistrationStatus.SUCCESS, (
-            self._failed_build_msg(
-                build_id,
-                f"env_output should be SUCCESS, got {artifact.status}",
-            )
+        assert (
+            artifact.status == ArtifactRegistrationStatus.SUCCESS
+        ), self._failed_build_msg(
+            build_id,
+            f"env_output should be SUCCESS, got {artifact.status}",
         )
 
     def _assert_single_success_build(self: Self, build_id: str) -> None:
@@ -207,23 +205,23 @@ class TestBuildRunnerRetryBash(AbstractBuildTest):
             f"Expected exactly two target runs (FAILED + SUCCESS), got "
             f"{[(r.name, r.status) for r in runs]}",
         )
-        assert Status.FAILED in by_status and Status.SUCCESS in by_status, (
-            self._failed_build_msg(
-                build_id,
-                f"Expected one FAILED and one SUCCESS run, got {list(by_status)}",
-            )
+        assert (
+            Status.FAILED in by_status and Status.SUCCESS in by_status
+        ), self._failed_build_msg(
+            build_id,
+            f"Expected one FAILED and one SUCCESS run, got {list(by_status)}",
         )
         failed_run = by_status[Status.FAILED]
         success_run = by_status[Status.SUCCESS]
         # Same target, re-run in place.
         assert success_run.name == failed_run.name
         # The SUCCESS run links back to the FAILED run it retried.
-        assert success_run.retry_of_target_id == failed_run.uuid, (
-            self._failed_build_msg(
-                build_id,
-                f"SUCCESS run retry_of_target_id ({success_run.retry_of_target_id}) "
-                f"should point to the FAILED run ({failed_run.uuid})",
-            )
+        assert (
+            success_run.retry_of_target_id == failed_run.uuid
+        ), self._failed_build_msg(
+            build_id,
+            f"SUCCESS run retry_of_target_id ({success_run.retry_of_target_id}) "
+            f"should point to the FAILED run ({failed_run.uuid})",
         )
         # The original FAILED run is not itself a retry of anything.
         assert failed_run.retry_of_target_id == "", self._failed_build_msg(

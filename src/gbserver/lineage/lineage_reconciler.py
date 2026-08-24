@@ -611,11 +611,7 @@ def reconcile_build(
     # extra storage read. Every candidate is a real run whose own output_artifacts
     # give the correct count (there is no skip concept: an in-place retry keeps
     # both the FAILED and the SUCCESS run in one build).
-    expected = {
-        t.uuid: expected_run_count(t)
-        for t in targets
-        if t.uuid in candidates
-    }
+    expected = {t.uuid: expected_run_count(t) for t in targets if t.uuid in candidates}
 
     failure: Optional[Exception] = None
 

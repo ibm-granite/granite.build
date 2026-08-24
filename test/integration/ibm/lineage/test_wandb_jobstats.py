@@ -327,9 +327,7 @@ class TestWandBLineageStore:
         assert (
             events_list[0]["run"]["facets"]["job_details"]["job_id"] == "retried-target"
         )
-        assert (
-            events_list[0]["run"]["facets"]["tags"]["target_id"] == "retried-target"
-        )
+        assert events_list[0]["run"]["facets"]["tags"]["target_id"] == "retried-target"
         assert events_list[0]["outputs"][0]["facets"]["artifact_id"] == "out-1"
         assert "model" in events_dict
 

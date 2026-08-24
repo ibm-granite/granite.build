@@ -130,9 +130,9 @@ class TestBuildWatcherRetryExhaustion(AbstractBuildTest):
         )
         build = builds[0]
         assert build.uuid == build_id
-        assert build.status == Status.FAILED, (
-            f"Build should end FAILED after exhausting retries, got {build.status}"
-        )
+        assert (
+            build.status == Status.FAILED
+        ), f"Build should end FAILED after exhausting retries, got {build.status}"
         assert build.retry_count == max_retries, (
             f"Build should have retried exactly {max_retries} times, but "
             f"retry_count={build.retry_count}. A higher value indicates the "
