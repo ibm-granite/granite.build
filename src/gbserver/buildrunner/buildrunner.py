@@ -280,6 +280,12 @@ class BuildRunner(AbstractBuildRunner):
                 # retry_count and RETRY_PENDING status. The message logger is keyed
                 # on the build id, so it need not be recreated.
                 self.stored_build = retry_build
+                # Notify on the build's PR that an automatic retry is starting.
+                # This must happen here: on the re-run __setup short-circuits
+                # (source_uri is already set from the first attempt) and so never
+                # reaches its own comment call. (That call still covers the rare
+                # case where the first attempt failed before a PR was created.)
+                self.__add_retry_comment_to_pr()
                 self.stop_event.clear()
                 buildrunner_resume = False
 
@@ -331,7 +337,7 @@ class BuildRunner(AbstractBuildRunner):
         )
         return refreshed
 
-    def __comment_on_original_pr(self: Self) -> None:
+    def __add_retry_comment_to_pr(self: Self) -> None:
         """Post a retry-attempt comment on this build's own PR.
 
         With in-place retry there is no separate "original" build; the build keeps
@@ -598,7 +604,7 @@ class BuildRunner(AbstractBuildRunner):
                 self.stored_build.status,
             )
             if self.stored_build.retry_count and self.stored_build.source_uri:
-                self.__comment_on_original_pr()
+                self.__add_retry_comment_to_pr()
         else:
             _build_result = self.storage.build_storage.get_by_uuid(
                 self.stored_build.uuid
