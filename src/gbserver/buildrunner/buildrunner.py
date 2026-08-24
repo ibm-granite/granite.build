@@ -29,7 +29,7 @@ import time
 import traceback
 from asyncio import Event, Queue
 from base64 import b64decode
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, Self, Union
 
@@ -94,6 +94,10 @@ logger = get_logger(__name__)
 # How many times the monitoring interval between checks for cancellation
 _CANCEL_CHECK_MONITORING_INTERVAL_MULTIPLIER = 5
 _BUILD_EVENT_SOURCE_NAME = "build-runner"
+# Timezone-aware epoch used to order runs by a timestamp that may be unset.
+# get_time() stamps finished_at as tz-aware, so the fallback must be tz-aware too
+# or max() raises "can't compare offset-naive and offset-aware datetimes".
+_SORT_EPOCH = datetime.fromtimestamp(0, tz=timezone.utc)
 
 
 def build_from_build_run(build_run: BuildRun) -> Build:
@@ -1158,9 +1162,10 @@ Download : {download_msg}
         )
         if not prior:
             return ""
-        # A terminal FAILED run always has finished_at stamped; fall back to
-        # datetime.min so a (defensively handled) unset value never wins.
-        latest = max(prior, key=lambda run: run.finished_at or datetime.min)
+        # A terminal FAILED run always has finished_at stamped; fall back to the
+        # tz-aware _SORT_EPOCH so a (defensively handled) unset value never wins
+        # and never mixes naive/aware datetimes in the comparison.
+        latest = max(prior, key=lambda run: run.finished_at or _SORT_EPOCH)
         return latest.uuid
 
     def __update_stored_target_run(

@@ -24,7 +24,7 @@ runs). These tests exercise that lookup and its wiring directly, with the build
 structure mocked.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -111,6 +111,24 @@ class TestFindPriorFailedTargetRun:
         )
 
         assert result == "failed-run-2"
+
+    def test_links_latest_when_a_failed_run_has_no_finished_at(self):
+        # In production finished_at is tz-aware (get_time()). A defensively
+        # unset value falls back to the tz-aware _SORT_EPOCH; mixing it with an
+        # aware finished_at must not raise "can't compare offset-naive and
+        # offset-aware datetimes", and the run with a real finished_at wins.
+        runner = _make_runner()
+        aware = datetime(2026, 6, 17, 12, 5, 0, tzinfo=timezone.utc)
+        runner.storage.target_storage.get_by_where.return_value = [
+            _failed_run("failed-run-no-ts", finished_at=None),
+            _failed_run("failed-run-aware", finished_at=aware),
+        ]
+
+        result = runner._BuildRunner__find_prior_failed_target_run(
+            build_id=_BUILD_ID, target_name=_TARGET
+        )
+
+        assert result == "failed-run-aware"
 
     def test_returns_empty_when_no_prior_failed_run(self):
         runner = _make_runner()
