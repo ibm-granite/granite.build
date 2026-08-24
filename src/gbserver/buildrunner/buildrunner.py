@@ -1311,18 +1311,23 @@ Download : {download_msg}
         self.storage.target_storage.update(stored_target_run)
 
     def __get_retry_chain_build_ids(self: Self) -> list[str]:
-        """Return all build UUIDs in the retry chain of the current build, from the current
-        build back to the original (root) build, by following retry_of_build_id links.
+        """Return the UUIDs of *every* build in the current build's retry chain.
+
+        Uses the forward walk (``get_retry_chain_members``: resolve root via
+        ``retry_of_build_id``, then follow ``retry_build_id`` through every member)
+        so the result includes intermediate attempts, not just the current build
+        and the root. This matters because ``retry_of_build_id`` is flat-to-root
+        (every retry/continuation points at the original), so a naive backward
+        walk would yield only ``[self, root]`` and miss any member in between —
+        causing target reuse to re-run a target that first succeeded in an
+        intermediate attempt.
         """
-        build_ids = [self.stored_build.uuid]
-        current_id = self.stored_build.retry_of_build_id
-        while current_id:
-            build_ids.append(current_id)
-            ancestor = self.storage.build_storage.get_by_uuid(current_id)
-            if not isinstance(ancestor, StoredBuild):
-                break
-            current_id = ancestor.retry_of_build_id
-        return build_ids
+        return [
+            member.uuid
+            for member in get_retry_chain_members(
+                self.storage.build_storage, self.stored_build
+            )
+        ]
 
     def __is_target_already_run(
         self: Self,

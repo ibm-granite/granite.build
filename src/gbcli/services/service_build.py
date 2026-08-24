@@ -52,6 +52,7 @@ from gbcli.utils.gbconstants import (
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gbserver import (
     cancel_build,
+    continue_build,
     get_build,
     get_build_events,
     get_build_lineage,
@@ -498,6 +499,67 @@ def build_start(
         )
 
     return gbserver_build["build_id"]
+
+
+def build_continue(
+    github_token: str,
+    build_id: str,
+    id_format: Optional[str] = None,
+    callback=None,
+) -> Optional[dict]:
+    """Continue a previously-executed build.
+
+    Unlike build_start there is no local build folder to zip: the server sources
+    the build definition, space, and targets from the prior build. Only the prior
+    build's id (or URL) is needed.
+
+    Returns the server response dict augmented with ``continued_from`` — the
+    resolved uuid of the build that was continued (``build_id`` after any URL is
+    resolved to a uuid), alongside the server's ``build_id`` (new continuation)
+    and ``root_build_id`` (resolved chain root) — or None on a server/connection
+    error. Callers report ``continued_from`` rather than the raw identifier so a
+    passed URL never leaks into uuid-valued output or a uuid-vs-URL comparison.
+    """
+    if id_format == "url":
+        # get_build_id_from_url returns None when the URL matches no build; guard
+        # the deref so it surfaces the error message, not a raw IndexError/TypeError.
+        build_id_from_url = get_build_id_from_url(github_token, build_id, callback)
+        if not build_id_from_url:
+            if callback is not None:
+                callback(
+                    callback_event="error",
+                    callback_args={
+                        "reason": f"No build found for URL {build_id}.",
+                    },
+                )
+            return None
+        build_id = build_id_from_url[0]["uuid"]
+
+    if callback is not None:
+        callback(
+            callback_event="continuing_build",
+            callback_args={"steps": 1, "build_id": build_id},
+        )
+
+    gbserver_build = make_gbserver_call(
+        lambda: continue_build(build_id, github_token, GBSERVER_BUILD_API),
+        callback,
+    )
+
+    if not gbserver_build:
+        return None
+
+    if callback is not None:
+        callback(
+            callback_event="continued_build",
+            callback_args={"steps": 100, "build_id": gbserver_build["build_id"]},
+        )
+
+    # Report the resolved uuid, not the raw argument: build_id is now the uuid even
+    # when a URL was passed, so the CLI can compare it against root_build_id and
+    # emit it in JSON without a URL sneaking in.
+    gbserver_build["continued_from"] = build_id
+    return gbserver_build
 
 
 def build_validate(
