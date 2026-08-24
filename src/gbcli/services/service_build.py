@@ -509,16 +509,16 @@ def build_continue(
 ) -> Optional[dict]:
     """Continue a previously-executed build.
 
-    Unlike build_start there is no local build folder to zip: the server sources
-    the build definition, space, and targets from the prior build. Only the prior
-    build's id (or URL) is needed.
+    Unlike build_start there is no local build folder to zip: the build
+    definition, space, and targets already live on the build. Only the build's id
+    (or URL) is needed. Continuation reuses the same build id, so the server's
+    ``build_id`` equals the continued build.
 
     Returns the server response dict augmented with ``continued_from`` — the
     resolved uuid of the build that was continued (``build_id`` after any URL is
-    resolved to a uuid), alongside the server's ``build_id`` (new continuation)
-    and ``root_build_id`` (resolved chain root) — or None on a server/connection
-    error. Callers report ``continued_from`` rather than the raw identifier so a
-    passed URL never leaks into uuid-valued output or a uuid-vs-URL comparison.
+    resolved to a uuid) — or None on a server/connection error. Callers report
+    ``continued_from`` rather than the raw identifier so a passed URL never leaks
+    into uuid-valued output.
     """
     if id_format == "url":
         # get_build_id_from_url returns None when the URL matches no build; guard
@@ -556,8 +556,7 @@ def build_continue(
         )
 
     # Report the resolved uuid, not the raw argument: build_id is now the uuid even
-    # when a URL was passed, so the CLI can compare it against root_build_id and
-    # emit it in JSON without a URL sneaking in.
+    # when a URL was passed, so a URL never sneaks into uuid-valued output.
     gbserver_build["continued_from"] = build_id
     return gbserver_build
 

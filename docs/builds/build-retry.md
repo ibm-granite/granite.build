@@ -140,9 +140,6 @@ When a target is reused this way, no new target run is written: its existing SUC
 from that run's output artifacts. Only the targets that did not yet succeed are re-run, making
 retries as cheap as possible.
 
-Skipped targets are **hidden by default** in `gb build status` and `gb build monitor` output
-(they run no steps and produce no artifacts); pass `--show-skipped-targets` to include them.
-
 See [target-reuse.md](target-reuse.md) for the full architecture, hash correctness argument,
 and storage details.
 

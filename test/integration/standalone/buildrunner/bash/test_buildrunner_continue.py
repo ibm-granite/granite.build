@@ -20,21 +20,24 @@ Mirrors the build-level retry test (``test_buildrunner_retry.py``) but exercises
 ``gb build continue`` semantics: a *finished* build is continued by a *fresh*
 BuildRunner rather than by the original runner's in-process retry loop.
 
+Option A — continuation reuses the SAME build id. There is no retry chain and no
+skip record: continuing re-opens the finished build in place and re-dispatches it
+onto a new runner, which reuses the target that already succeeded (it is not
+re-run) rather than recording a separate skipped run.
+
 Flow:
   1. Run a build whose single target succeeds (``command: exit 0``) to SUCCESS.
-  2. Mark that build FAILED (so it is a plausible continuation candidate;
-     continuation accepts any finished build), leaving its target/steps SUCCESS
-     so they can be reused.
-  3. Create a continuation via ``create_continuation_build`` (the same helper the
-     ``POST /builds/continue`` endpoint uses) — a fresh build linked to the prior
-     via ``retry_of_build_id`` with ``retry_count`` reset to 0 — and run it in a
-     *new* BuildRunner. Because the target already succeeded in the chain, the
-     continuation SKIPS it (``skipped_for_prerun_target_id`` points back to the
-     original target). The continuation build completes SUCCESS.
+  2. Mark that build FAILED (a plausible continuation candidate; continuation
+     accepts any finished build), leaving its target/steps SUCCESS so they can be
+     reused.
+  3. Continue it via ``reopen_finished_build`` (the same helper the
+     ``POST /builds/continue`` endpoint uses) — the SAME build flips to SUBMITTED
+     with ``retry_count`` reset to 0 — and run it in a *new* BuildRunner. Because
+     the target already succeeded in this build, the continuation REUSES it (no
+     re-run, no new record) and completes SUCCESS.
 
-The continuation linkage (``retry_of_build_id`` / ``retry_build_id`` /
-``retry_count``) and the target-skip are verified across gb_builds and
-gb_targets.
+The in-place re-open (same id, ``retry_count`` reset) and the single-record target
+reuse are verified across gb_builds and gb_targets.
 """
 
 from typing import Self
@@ -50,7 +53,7 @@ from libgbtest.buildrunner.utils import ExceptionRaisingThread
 from libgbtest.constants import GBTEST_USER_NAME
 
 from gbserver.buildrunner.buildrunner import BuildRunner
-from gbserver.storage.stored_build import StoredBuild, create_continuation_build
+from gbserver.storage.stored_build import StoredBuild, reopen_finished_build
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
@@ -74,7 +77,7 @@ class TestBuildRunnerContinueBash(AbstractBuildTest):
             get_test_data_dir_for(__file__) / "continue" / "buildtest.yaml"
         )
 
-    def test_buildrunner_continue_skips_succeeded_target(self: Self):
+    def test_buildrunner_continue_reuses_succeeded_target(self: Self):
         spec = self._get_spec()
         space = self._check_and_setup_space(spec)
         timeout_seconds = spec.timeout_minutes * 60
@@ -98,84 +101,85 @@ class TestBuildRunnerContinueBash(AbstractBuildTest):
             space_uri=spec.space_uri,
         )
 
+        # Record the target runs produced by the first attempt; continuation must
+        # reuse (not duplicate) these.
+        targets_after_first = self.storage.target_storage.get_by_where(
+            {"build_id": original_id}
+        )
+        assert len(targets_after_first) > 0, self._failed_build_msg(
+            original_id, "Expected targets in the first attempt"
+        )
+        original_target_ids = {t.uuid for t in targets_after_first}
+
         # --- Phase 2: mark the successful build FAILED (a finished build to
         # continue). Targets/steps/artifacts are left SUCCESS so they are reused
-        # (skipped) by the continuation. ---
+        # by the continuation. ---
         original_stored = self.storage.build_storage.get_by_uuid(original_id)
         assert isinstance(original_stored, StoredBuild)
         original_stored.status = Status.FAILED
         self.storage.build_storage.update(original_stored)
 
-        # --- Phase 3: create the continuation (fresh build, fresh runner) ---
-        # create_continuation_build stores the continuation as SUBMITTED, exactly
-        # as POST /builds/continue does. In production the BuildWatcher then flips
-        # SUBMITTED -> PENDING before dispatching a runner; here we drive the runner
-        # directly, so make that same transition first (the runner only advances a
-        # build whose status is PENDING/RUNNING/RETRY_PENDING).
-        continuation = create_continuation_build(
-            self.storage.build_storage, original_stored
-        )
-        continuation_id = continuation.uuid
-        assert continuation_id != original_id
-        assert continuation.status == Status.SUBMITTED
-        continuation.status = Status.PENDING
-        self.storage.build_storage.update(continuation)
+        # --- Phase 3: continue the SAME build (in place, fresh runner) ---
+        # reopen_finished_build flips the build to SUBMITTED with retry_count reset,
+        # exactly as POST /builds/continue does. In production the BuildWatcher then
+        # flips SUBMITTED -> PENDING before dispatching a runner; here we drive the
+        # runner directly, so make that same transition first (the runner only
+        # advances a build whose status is PENDING/RUNNING/RETRY_PENDING).
+        reopened = reopen_finished_build(self.storage.build_storage, original_stored)
+        assert isinstance(reopened, StoredBuild)
+        # Same build id — no new build created.
+        assert reopened.uuid == original_id
+        assert reopened.status == Status.SUBMITTED
+        # max_retries is counted fresh for a continuation.
+        assert reopened.retry_count == 0
+        reopened.status = Status.PENDING
+        self.storage.build_storage.update(reopened)
 
-        runner2 = BuildRunner(continuation, space_uri=spec.space_uri, create_pr=False)
+        runner2 = BuildRunner(reopened, space_uri=spec.space_uri, create_pr=False)
         runner_thread = ExceptionRaisingThread(
             name="Run continuation build", target=runner2.start_and_wait, args=()
         )
         runner_thread.start()
         try:
-            self._wait_for_build_status(
-                continuation_id, [Status.SUCCESS], timeout_seconds
-            )
+            self._wait_for_build_status(original_id, [Status.SUCCESS], timeout_seconds)
         finally:
             runner_thread.join(timeout=60)
 
-        # --- gb_builds: verify continuation linkage ---
-        original = self.storage.build_storage.get_by_uuid(original_id)
-        assert isinstance(original, StoredBuild)
-        assert original.retry_build_id == continuation_id, self._failed_build_msg(
-            original_id, "Original build should point to the continuation"
+        # --- gb_builds: same build, back to SUCCESS, budget still reset ---
+        # Continuation re-opens the finished build in place, so storage must still
+        # hold exactly ONE build record — the continuation must not fork a new one.
+        all_builds = self.storage.build_storage.get_by_uuid(None) or []
+        assert len(all_builds) == 1, self._failed_build_msg(
+            original_id,
+            f"Continuation must reuse one build id, found {len(all_builds)} builds",
         )
-        assert original.retry_of_build_id is None, self._failed_build_msg(
-            original_id, "Original build should not have a retry_of_build_id"
-        )
-
-        cont = self.storage.build_storage.get_by_uuid(continuation_id)
+        cont = self.storage.build_storage.get_by_uuid(original_id)
         assert isinstance(cont, StoredBuild)
-        assert cont.retry_of_build_id == original_id, self._failed_build_msg(
-            continuation_id, "Continuation should point back to the prior chain root"
+        assert cont.status == Status.SUCCESS, self._failed_build_msg(
+            original_id, f"Expected continuation to reach SUCCESS, got {cont.status}"
         )
-        # max_retries is counted fresh for a continuation.
         assert cont.retry_count == 0, self._failed_build_msg(
-            continuation_id, f"Expected retry_count=0, got {cont.retry_count}"
+            original_id, f"Expected retry_count=0, got {cont.retry_count}"
         )
 
-        # --- gb_targets: every original target was skipped in the continuation ---
-        original_targets = self.storage.target_storage.get_by_where(
-            {"build_id": original_id}
-        )
-        assert len(original_targets) > 0, self._failed_build_msg(
-            original_id, "Expected targets in original build"
-        )
-        for original_target in original_targets:
+        # --- gb_targets: each target that already succeeded is reused, not
+        # duplicated — the same SUCCESS run persists and no new run is written. ---
+        for original_target in targets_after_first:
             assert isinstance(original_target, StoredTargetRun)
-            cont_targets = self.storage.target_storage.get_by_where(
-                {"build_id": continuation_id, "name": original_target.name}
+            reused = self.storage.target_storage.get_by_where(
+                {"build_id": original_id, "name": original_target.name}
             )
-            assert len(cont_targets) == 1, self._failed_build_msg(
-                continuation_id,
-                f"Expected exactly one continuation target named '{original_target.name}'",
+            assert len(reused) == 1, self._failed_build_msg(
+                original_id,
+                f"Expected exactly one target run named '{original_target.name}' "
+                f"after continuation (reuse must not duplicate it), got {len(reused)}",
             )
-            cont_target = cont_targets[0]
-            assert isinstance(cont_target, StoredTargetRun)
-            assert (
-                cont_target.skipped_for_prerun_target_id == original_target.uuid
-            ), self._failed_build_msg(
-                continuation_id,
-                f"Continuation target '{original_target.name}' "
-                f"skipped_for_prerun_target_id ({cont_target.skipped_for_prerun_target_id}) "
-                f"does not point to the original target ({original_target.uuid})",
+            reused_target = reused[0]
+            assert isinstance(reused_target, StoredTargetRun)
+            # It is the very same record produced by the first attempt.
+            assert reused_target.uuid in original_target_ids, self._failed_build_msg(
+                original_id,
+                f"Target '{original_target.name}' was re-created on continuation "
+                f"instead of reusing the original SUCCESS run",
             )
+            assert reused_target.status == Status.SUCCESS

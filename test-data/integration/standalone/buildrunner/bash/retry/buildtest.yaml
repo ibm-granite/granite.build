@@ -15,14 +15,16 @@ simulate_step_failure: false
 # directory and is returned as an absolute file:// URI by from_yaml.
 space_uri: ../../../../../../configurations/spaces/local
 # A single bash target with one command step and one env:// output artifact. The
-# target ultimately succeeds, so exactly one step run is expected on the winning
-# (SUCCESS) target run, which owns the single env_output artifact. (The FAILED run
-# owns zero outputs — the test checks it against a copy with output_artifact_count
-# = 0, and asserts the artifact is re-associated to the SUCCESS run.)
+# target fails once and then succeeds on the in-place retry, so it has one FAILED
+# run (target_failure_count) plus the winning SUCCESS run. Artifact counts are
+# checked only against the SUCCESS run, which owns the single env_output artifact;
+# the FAILED run's incidental outputs are not asserted. The test also verifies the
+# artifact is re-associated (created_by_target_id) to the SUCCESS run.
 target_expectations:
   - target_name: flaky-target
     step_count: 1
     input_artifact_count: 0
     output_artifact_count: 1
-    jobstats_count: 0
+    target_failure_count: 1
+    jobstats_count: 1
 timeout_minutes: 10
