@@ -265,7 +265,9 @@ def get_retry_chain_members(
 
 
 def create_continuation_build(
-    build_storage: "IStoredBuildStorage", prior: StoredBuild
+    build_storage: "IStoredBuildStorage",
+    prior: StoredBuild,
+    chain: Optional[List[StoredBuild]] = None,
 ) -> StoredBuild:
     """Create, store, and return a new build that continues ``prior``.
 
@@ -289,8 +291,13 @@ def create_continuation_build(
     This helper is the single place that decides how a continuation links to its
     predecessor. If build-retry ever switches to reusing a single/shared build id,
     this is the one function that changes.
+
+    ``chain`` may be passed by a caller that already resolved ``prior``'s chain
+    (each member is an unindexed point read, so re-walking is not free); when
+    omitted it is walked here. It must be the full chain of ``prior`` root-first.
     """
-    chain = get_retry_chain_members(build_storage, prior)
+    if chain is None:
+        chain = get_retry_chain_members(build_storage, prior)
     root = chain[0]
     tip = chain[-1]
     # Seed the continuation from the chain *tip* (the most recent attempt), not the

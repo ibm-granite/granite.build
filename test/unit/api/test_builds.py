@@ -402,6 +402,27 @@ def test_repeated_continuations_linearize_into_one_chain():
     assert c.retry_of_build_id == root.uuid
 
 
+def test_create_continuation_build_uses_passed_chain_without_rewalking():
+    """When the caller (the /continue endpoint) has already resolved the chain, it
+    passes it in and create_continuation_build must NOT walk it again — each member
+    is an unindexed point read, so re-walking would double the reads."""
+    root = _prior_build(ATTACKER, status=Status.FAILED)
+    tip = _prior_build(ATTACKER, status=Status.FAILED)
+    tip.retry_of_build_id = root.uuid
+    root.retry_build_id = tip.uuid
+    builds = {root.uuid: root, tip.uuid: tip}
+    bs = _fake_build_storage(builds)
+    chain = get_retry_chain_members(bs, root)
+
+    with patch("gbserver.storage.stored_build.get_retry_chain_members") as walk:
+        cont = create_continuation_build(bs, root, chain=chain)
+
+    walk.assert_not_called()
+    # Same linkage as the walk-it-yourself path: linked to root, back-link on tip.
+    assert cont.retry_of_build_id == root.uuid
+    assert builds[tip.uuid].retry_build_id == cont.uuid
+
+
 def test_chain_walk_includes_intermediate_members_from_any_member():
     """get_retry_chain_members must return EVERY member of a flat-to-root chain
     (root -> mid -> tip), not just [self, root], regardless of which member it is
@@ -426,7 +447,11 @@ def test_chain_walk_includes_intermediate_members_from_any_member():
         assert mid.uuid in chain
 
 
-def test_continue_build_rejects_forged_username():
+def test_continue_build_rejects_forged_username_as_404():
+    """An unauthorized caller gets 404, identical to a nonexistent build — not a
+    401 that would confirm the id is real. Collapsing the two removes the id
+    oracle: a caller without space access cannot tell a build id they may not
+    reach from one that does not exist, so cannot enumerate ids across spaces."""
     prior = _prior_build(VICTIM, status=Status.FAILED)
     with (
         _patched_continue_storage({prior.uuid: prior}),
@@ -439,13 +464,15 @@ def test_continue_build_rejects_forged_username():
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
                 BuildContinueRequest(build_id=prior.uuid),
             )
-    assert exc.value.status_code == 401
+    assert exc.value.status_code == 404
+    # Same detail as the missing-build 404, so the two are indistinguishable.
+    assert exc.value.detail == f"Build {prior.uuid} not found"
 
 
 def test_continue_build_authz_precedes_status_disclosure():
-    """An unauthorized caller must not learn a prior build's liveness: authz
-    (401) is enforced BEFORE the is_finished() 409, so continuing another user's
-    *active* build returns 401, not 409."""
+    """An unauthorized caller must not learn a prior build's liveness: authz is
+    enforced BEFORE the is_finished() 409, so continuing another user's *active*
+    build returns the not-found 404, not a 409 that would leak that it is live."""
     prior = _prior_build(VICTIM, status=Status.RUNNING)
     with (
         _patched_continue_storage({prior.uuid: prior}),
@@ -458,4 +485,4 @@ def test_continue_build_authz_precedes_status_disclosure():
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
                 BuildContinueRequest(build_id=prior.uuid),
             )
-    assert exc.value.status_code == 401
+    assert exc.value.status_code == 404

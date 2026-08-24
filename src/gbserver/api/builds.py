@@ -34,6 +34,7 @@ from gbserver.api.utils import (
     confirm_space_write_access,
     get_query_control,
     get_row_filter,
+    has_space_write_access,
     is_space_admin,
     is_super_admin,
     split_tags,
@@ -343,26 +344,28 @@ def continue_build(
     build_storage: IStoredBuildStorage = storage.build_storage
     space_storage: IStoredSpaceStorage = storage.space_storage
 
+    # Authorize before disclosing anything about the prior build — including
+    # whether it exists. Reading the build is unavoidable (authz is scoped to its
+    # space), but every "you may not see this build" path (missing build, missing
+    # space, no write access) must return the SAME 404: otherwise a caller lacking
+    # access could tell a real build id (401) from a nonexistent one (404) and
+    # enumerate ids across spaces they cannot reach.
+    not_found = HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Build {req.build_id} not found",
+    )
     prior = build_storage.get_by_uuid(req.build_id)
     if not isinstance(prior, StoredBuild):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Build {req.build_id} not found",
-        )
+        raise not_found
 
-    # Authorize BEFORE disclosing the prior build's status: the build runs under
-    # its space and identity, so gate the caller the same way submit_build does.
-    # Doing this ahead of the is_finished() check keeps the 409 (which leaks the
-    # build's liveness) from reaching a caller who lacks write access.
     stored_space = space_storage.get_by_name(prior.space_name)
     if stored_space is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Space {prior.space_name} not found in space storage",
-        )
-    confirm_space_write_access(
+        raise not_found
+    has_access, _ = has_space_write_access(
         request, username_on_target=prior.username, space_name=stored_space.name
     )
+    if not has_access:
+        raise not_found
 
     # A continuation always extends (and its runner reuses targets from) the chain
     # *tip* — the most recent attempt — regardless of which member was passed. So
@@ -370,7 +373,11 @@ def continue_build(
     # member: continuing an old finished member while a newer attempt is still
     # active would otherwise attach a fresh runner to a live tip. There is no
     # runner-liveness table; the build status is the signal.
-    tip = get_retry_chain_members(build_storage, prior)[-1]
+    #
+    # Resolve the chain once and hand it to create_continuation_build: each member
+    # is an unindexed point read, so re-walking there would double the reads.
+    chain = get_retry_chain_members(build_storage, prior)
+    tip = chain[-1]
     if not tip.status.is_finished():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -381,7 +388,7 @@ def continue_build(
             ),
         )
 
-    continuation = create_continuation_build(build_storage, prior)
+    continuation = create_continuation_build(build_storage, prior, chain=chain)
     logger.info(
         "created continuation build %s from build %s (chain root %s)",
         continuation.uuid,

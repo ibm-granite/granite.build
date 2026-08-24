@@ -513,9 +513,12 @@ def build_continue(
     the build definition, space, and targets from the prior build. Only the prior
     build's id (or URL) is needed.
 
-    Returns the server response dict ``{"build_id", "root_build_id"}`` — the new
-    continuation build's id and the resolved chain root it links to — or None on
-    a server/connection error.
+    Returns the server response dict augmented with ``continued_from`` — the
+    resolved uuid of the build that was continued (``build_id`` after any URL is
+    resolved to a uuid), alongside the server's ``build_id`` (new continuation)
+    and ``root_build_id`` (resolved chain root) — or None on a server/connection
+    error. Callers report ``continued_from`` rather than the raw identifier so a
+    passed URL never leaks into uuid-valued output or a uuid-vs-URL comparison.
     """
     if id_format == "url":
         build_id_from_url = get_build_id_from_url(github_token, build_id, callback)
@@ -541,6 +544,10 @@ def build_continue(
             callback_args={"steps": 100, "build_id": gbserver_build["build_id"]},
         )
 
+    # Report the resolved uuid, not the raw argument: build_id is now the uuid even
+    # when a URL was passed, so the CLI can compare it against root_build_id and
+    # emit it in JSON without a URL sneaking in.
+    gbserver_build["continued_from"] = build_id
     return gbserver_build
 
 
