@@ -496,8 +496,7 @@ class BuildRunner(AbstractBuildRunner):
         update = self.storage.build_storage.update_fields(
             self.stored_build.uuid,
             updates,
-            should_update=lambda item: item.status
-            in (Status.PENDING, Status.RUNNING),
+            should_update=lambda item: item.status in (Status.PENDING, Status.RUNNING),
         )
         if update is not None:  # Build had pending status, all good.
             self.stored_build = update

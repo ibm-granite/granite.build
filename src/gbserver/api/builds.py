@@ -316,9 +316,7 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
 
 
 @builds_api.post("/restart")
-def restart_build(
-    request: Request, req: BuildRestartRequest
-) -> BuildRestartResponse:
+def restart_build(request: Request, req: BuildRestartRequest) -> BuildRestartResponse:
     """Restart a previously-executed build in a fresh runner.
 
     Re-opens the **same** build (reusing its build id) by flipping its finished
@@ -391,9 +389,7 @@ def restart_build(
                 "concurrently"
             ),
         )
-    logger.info(
-        "re-opened build %s for restart (was %s)", build.uuid, build.status
-    )
+    logger.info("re-opened build %s for restart (was %s)", build.uuid, build.status)
     return BuildRestartResponse(build_id=reopened.uuid)
 
 

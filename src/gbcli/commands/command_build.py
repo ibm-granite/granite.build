@@ -1201,9 +1201,7 @@ def restart_build_cmd(ctx, build_id, format, skip_version_check, quiet):
                 pass
 
     try:
-        result = build_client.build_restart(
-            build_id, id_format, callback=echo_callback
-        )
+        result = build_client.build_restart(build_id, id_format, callback=echo_callback)
 
         if result:
             # Restart reuses the same build id, so the server returns the same
