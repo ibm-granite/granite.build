@@ -392,6 +392,28 @@ def test_restart_build_reopens_same_build_in_place():
     assert reopened.targets == prior.targets
 
 
+def test_restart_build_rejects_succeeded_build_409():
+    """A fully-succeeded build has nothing to restart (every target already
+    succeeded), so it is rejected with 409 and left untouched — even for an
+    authorized owner. This is the SUCCESS carve-out on top of is_finished()."""
+    prior = _prior_build(ATTACKER, status=Status.SUCCESS)
+    builds = {prior.uuid: prior}
+    with (
+        _patched_restart_storage(builds),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            restart_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                BuildRestartRequest(build_id=prior.uuid),
+            )
+    assert exc.value.status_code == 409
+    # Not re-opened: the build stays SUCCESS, no flip to SUBMITTED.
+    assert builds[prior.uuid].status == Status.SUCCESS
+
+
 def test_restart_build_reopen_race_returns_409():
     # The build read as FAILED, but a concurrent writer flipped it to RUNNING
     # before the guarded flip's write, so the should_update guard rejects it and

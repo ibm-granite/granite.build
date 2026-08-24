@@ -259,36 +259,42 @@ class StoredBuild(BaseStoredItem, TaggedItem):
 def reopen_finished_build(
     build_storage: "IStoredBuildStorage", build: StoredBuild
 ) -> Optional[StoredBuild]:
-    """Re-open a finished build in place so it can be continued.
+    """Re-open a finished, non-SUCCESS build in place so it can be restarted.
 
-    A continuation reuses the **same** build id: the finished build is flipped
+    A restart reuses the **same** build id: the finished build is flipped
     back to ``SUBMITTED`` so the BuildWatcher re-dispatches it through the ordinary
     submission path onto a fresh runner (the watcher's status-scoped, garbage-
     collected seen-set treats the re-``SUBMITTED`` id as newly unseen). The retry
     budget is reset (``retry_count -> 0``) so the build.yaml ``max_retries`` is
-    counted fresh for the continuation, and any prior ``failure_reason`` is
-    cleared.
+    counted fresh for the restart, and any prior ``failure_reason`` is cleared.
+
+    A build that finished with status ``SUCCESS`` is **not** re-openable: every
+    target already succeeded, so a restart would reuse them all and do no work.
+    Only a finished build that did not fully succeed (``FAILED``, ``INVALID``, or
+    ``CANCELLED``) can be restarted.
 
     Target reuse is driven by the build's existing SUCCESS target runs (see
     ``BuildRunner.__is_target_already_run``), not by ``retry_count``, so targets
     that already succeeded are skipped and only the failed/unfinished ones re-run.
 
-    The flip is atomically guarded on the build still being finished, so a
-    continuation racing an already-live runner (or a second concurrent continue)
-    is rejected rather than attaching a fresh runner to a live build.
+    The flip is atomically guarded on the build still being finished-and-not-
+    SUCCESS, so a restart racing an already-live runner, a second concurrent
+    restart, or a run that just succeeded is rejected rather than attaching a
+    fresh runner or re-opening a completed build.
 
     Args:
         build_storage: storage used to atomically update the build.
-        build: the finished build to continue (its status must satisfy
-            ``is_finished()``).
+        build: the finished build to restart (its status must satisfy
+            ``is_finished()`` and must not be ``SUCCESS``).
 
     Returns:
         The re-opened ``StoredBuild``, or ``None`` if the guard rejected the flip
-        because the build was no longer finished (a concurrent writer won the
-        race).
+        because the build was no longer finished, or had become ``SUCCESS`` (a
+        concurrent writer won the race).
     """
     return build_storage.update_fields(
         build.uuid,
         {"status": Status.SUBMITTED, "retry_count": 0, "failure_reason": ""},
-        should_update=lambda item: item.status.is_finished(),
+        should_update=lambda item: item.status.is_finished()
+        and item.status != Status.SUCCESS,
     )

@@ -362,7 +362,20 @@ def restart_build(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"Build {build.uuid} has status {build.status}; only a finished "
-                "build (SUCCESS, FAILED, INVALID, or CANCELLED) can be restarted"
+                "build (FAILED, INVALID, or CANCELLED) can be restarted"
+            ),
+        )
+
+    # A fully-succeeded build has nothing to restart: every target already
+    # succeeded, so target reuse would skip all of them and the fresh runner would
+    # do no work. Reject it rather than re-open a completed build. (reopen's atomic
+    # guard also rejects SUCCESS, covering a build that succeeds after this check.)
+    if build.status == Status.SUCCESS:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Build {build.uuid} already succeeded; a SUCCESS build cannot be "
+                "restarted (all targets have already completed)"
             ),
         )
 

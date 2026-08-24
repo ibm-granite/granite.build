@@ -19,8 +19,10 @@ from step-level retry.
 ## When to use it
 
 A build can fail for many reasons — a build-definition error, a transient cluster problem, a
-cancelled run. Continuation does not care *why* the previous build stopped: any **finished**
-build can be continued. It just continues from where the run left off.
+cancelled run. Restart does not care *why* the previous build stopped: any **finished build that
+did not fully succeed** can be restarted. It just continues from where the run left off. A build
+that finished with status `SUCCESS` has nothing left to run and cannot be restarted (see
+[The build must be finished and not `SUCCESS`](#the-build-must-be-finished-and-not-success)).
 
 Continuation differs from re-initializing a fresh build with
 `gb build init --from-build <ID>` followed by `gb build start`: that path creates a brand-new,
@@ -46,16 +48,17 @@ Because the continuation is an ordinary build, everything that already works for
 for it: it retries its own remaining targets up to `max_retries`, and cancellation by build id
 cancels the in-flight continuation.
 
-## The build must be finished
+## The build must be finished and not `SUCCESS`
 
-A continuation spins up a **fresh** runner, so the build must not still be active — a build that
+A restart spins up a **fresh** runner, so the build must not still be active — a build that
 is `PENDING`, `RUNNING`, `RETRY_PENDING`, or `CANCEL_REQUESTED` still has (or is about to have) a
-runner working it. Continuing such a build is rejected (HTTP `409`). Only a finished build
-(`SUCCESS`, `FAILED`, `INVALID`, or `CANCELLED`) can be continued.
+runner working it. Restarting such a build is rejected (HTTP `409`).
 
-Continuing a `SUCCESS` build is allowed: every target whose prior run still counts as reusable
-(same `target_hash`, all output artifacts still registered) is reused, so a fully-successful
-build with unchanged artifacts finishes immediately with nothing to re-run.
+A build that finished with status `SUCCESS` is **also** rejected (HTTP `409`): every target
+already succeeded, so target reuse would skip all of them and the fresh runner would do no work.
+Only a finished build that did not fully succeed — `FAILED`, `INVALID`, or `CANCELLED` — can be
+restarted. This is enforced atomically in `reopen_finished_build`, so a build that succeeds
+concurrently with the restart request is rejected rather than needlessly re-opened.
 
 ## Relationship to retry
 
@@ -63,7 +66,7 @@ build with unchanged artifacts finishes immediately with nothing to re-run.
 |---|---|---|
 | Trigger | build ends `FAILED` and `retry_count < max_retries` | explicit `gb build restart` |
 | Runner | same, in-process retry loop | a **fresh** runner |
-| Applies to | only a `FAILED` build | **any** finished build |
+| Applies to | only a `FAILED` build | any finished build **except `SUCCESS`** |
 | Build id | same build, reused | same build, reused |
 | `max_retries` | consumed as `retry_count` climbs | **reset**: counted fresh |
 | Target reuse | yes, within the build | yes, within the build |
