@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -175,6 +176,19 @@ class TestBuildSkypilotMounts:
                 source_base_dir=None,
             )
         assert file_mounts == {"/remote/in": "/work/run1/scripts/run.sh"}
+
+    def test_escaping_source_rejected_with_source_base_dir(self):
+        """A '..'-escaping source is rejected even when source_base_dir is set."""
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        with patch("gbserver.environment.skypilot.sky", MagicMock()):
+            with pytest.raises(ValueError, match="escape"):
+                _build_skypilot_mounts(
+                    {"/remote/in": "../secret"},
+                    "/work/run1",
+                    None,
+                    source_base_dir="/repo",
+                )
 
 
 class TestRemapRelativeDest:
@@ -418,8 +432,6 @@ class TestLaunchSkypilot:
         """For the built-in command step, a relative file_mounts SOURCE resolves
         against the gbserver working dir (cwd), not targetsteprun_asset_dir."""
         monkeypatch.chdir(tmp_path)
-        from pathlib import Path
-
         cwd = str(Path.cwd())  # normalize macOS /private symlink after chdir
         mock_sky = MagicMock()
         mock_sky.Resources = MagicMock(return_value=MagicMock())
