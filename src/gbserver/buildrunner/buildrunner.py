@@ -1203,6 +1203,18 @@ Download : {download_msg}
             # target_hash intentionally omitted — written only on SUCCESS via UPDATE
         )
         if status is not None:
+            # A run whose first reported status is already terminal (e.g. a target
+            # that fails immediately) is created here and never passes through
+            # __update_stored_target_run, so apply the started_at/finished_at
+            # transition rules now against the pre-transition (PENDING) status —
+            # otherwise finished_at is never stamped and retry linkage cannot order
+            # multiple failed attempts. Mirrors the step-run status handler.
+            self._apply_run_timestamps(
+                stored_run=stored_target,
+                new_status=status,
+                timestamp=event.timestamp,
+                run_label="target",
+            )
             stored_target.status = status
         if input_artifacts is None:
             input_artifacts = self.__get_target_input_ids_from_event(
@@ -1227,14 +1239,20 @@ Download : {download_msg}
     def __find_prior_failed_target_run(
         self: Self, build_id: str, target_name: str
     ) -> str:
-        """Return the uuid of a prior FAILED run of ``target_name`` in ``build_id``.
+        """Return the uuid of the most-recent FAILED run of ``target_name`` in ``build_id``.
+
+        With ``max_retries >= 2`` a target may fail more than once before it
+        succeeds, so several FAILED runs can coexist in the same build. The new
+        SUCCESS run should link to the *latest* failed attempt, so pick the run
+        with the greatest ``finished_at`` (get_by_where's ordering is undefined,
+        so we order explicitly here rather than trusting the provider).
 
         Args:
             build_id: the build being run (same id across in-place retries).
             target_name: the target whose earlier failed run should be linked.
 
         Returns:
-            The prior FAILED StoredTargetRun's uuid, or "" if none exists.
+            The most-recent FAILED StoredTargetRun's uuid, or "" if none exists.
         """
         prior = self.storage.target_storage.get_by_where(
             {
@@ -1243,7 +1261,12 @@ Download : {download_msg}
                 "status": Status.FAILED.name,
             }
         )
-        return prior[0].uuid if prior else ""
+        if not prior:
+            return ""
+        # A terminal FAILED run always has finished_at stamped; fall back to
+        # datetime.min so a (defensively handled) unset value never wins.
+        latest = max(prior, key=lambda run: run.finished_at or datetime.min)
+        return latest.uuid
 
     def __update_stored_target_run(
         self: Self,

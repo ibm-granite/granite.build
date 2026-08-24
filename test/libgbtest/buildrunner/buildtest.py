@@ -1102,6 +1102,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         expected: ExpectedTarget,
     ):
         self._verify_target_status(build_id, built_target, status_list)
+        self._verify_run_timestamps(build_id, built_target)
 
         # Check the number of input and output artifacts
         assert (
@@ -1299,6 +1300,33 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             f"Status of target {target.name} is {target.status} but one of {status_list} was expected",
         )
         self._verify_target_steps(build_id, target.uuid, status_list)
+
+    def _verify_run_timestamps(
+        self: Self, build_id: str, target: StoredTargetRun
+    ) -> None:
+        """Assert a finished target run recorded both of its timestamps sanely.
+
+        A target that ran to a terminal status (SUCCESS or FAILED) must have both
+        ``started_at`` (stamped on first entry into RUNNING) and ``finished_at``
+        (stamped on first entry into a terminal status), and cannot have finished
+        before it started. Guards against the class of bug where a run reaches a
+        terminal status without its timestamps being stamped (e.g. a run created
+        directly terminal, or swept to terminal by build finalization).
+
+        :param build_id: id of the build under test (for failure messages).
+        :param target: the terminal target run to check.
+        """
+        assert target.started_at is not None, self._failed_build_msg(
+            build_id, f"target {target.name} has no started_at timestamp"
+        )
+        assert target.finished_at is not None, self._failed_build_msg(
+            build_id, f"target {target.name} has no finished_at timestamp"
+        )
+        assert target.finished_at >= target.started_at, self._failed_build_msg(
+            build_id,
+            f"target {target.name} finished_at ({target.finished_at}) is before "
+            f"started_at ({target.started_at})",
+        )
 
     def _verify_target_steps(
         self: Self, build_id: str, target_id, status_list: list[Status]

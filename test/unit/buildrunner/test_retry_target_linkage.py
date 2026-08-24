@@ -52,14 +52,21 @@ def _make_runner() -> BuildRunner:
     return runner
 
 
-def _failed_run(uuid: str) -> StoredTargetRun:
-    """A prior FAILED run of the target in this build."""
+def _failed_run(uuid: str, finished_at: datetime | None = None) -> StoredTargetRun:
+    """A prior FAILED run of the target in this build.
+
+    Args:
+        uuid: the run's uuid.
+        finished_at: when the run reached its terminal FAILED status; used to
+            order multiple failed attempts (latest wins).
+    """
     return StoredTargetRun(
         uuid=uuid,
         build_id=_BUILD_ID,
         environment_uri=_ENV_URI,
         name=_TARGET,
         status=Status.FAILED,
+        finished_at=finished_at,
     )
 
 
@@ -81,6 +88,22 @@ class TestFindPriorFailedTargetRun:
         runner.storage.target_storage.get_by_where.assert_called_once_with(
             {"build_id": _BUILD_ID, "name": _TARGET, "status": Status.FAILED.name}
         )
+
+    def test_links_to_most_recent_failed_run_with_multiple_failures(self):
+        # With max_retries >= 2 a target can fail more than once; get_by_where's
+        # ordering is undefined, so return the runs oldest-last to prove the
+        # lookup orders by finished_at rather than trusting list position.
+        runner = _make_runner()
+        runner.storage.target_storage.get_by_where.return_value = [
+            _failed_run("failed-run-1", finished_at=datetime(2026, 6, 17, 12, 0, 0)),
+            _failed_run("failed-run-2", finished_at=datetime(2026, 6, 17, 12, 5, 0)),
+        ][::-1]
+
+        result = runner._BuildRunner__find_prior_failed_target_run(
+            build_id=_BUILD_ID, target_name=_TARGET
+        )
+
+        assert result == "failed-run-2"
 
     def test_returns_empty_when_no_prior_failed_run(self):
         runner = _make_runner()
