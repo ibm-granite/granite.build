@@ -21,7 +21,7 @@ Abstract interface for lineage storage and singleton accessor.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.singleton_storage import SingletonAdminStorage
@@ -85,6 +85,7 @@ class ILineageStore(ABC):
         self,
         target_ids: set[str],
         expected_counts: Optional[dict[str, int]] = None,
+        on_query_error: Optional[Callable[[Exception], None]] = None,
     ) -> set[str]:
         """Return the subset of ``target_ids`` not yet recorded in *this* store.
 
@@ -100,6 +101,18 @@ class ILineageStore(ABC):
         — idempotent recording preserves correctness regardless — so
         implementations must never raise; on failure they return ``target_ids``
         unchanged, degrading to re-recording the candidates (harmless).
+
+        That degradation is *safe* but not *free*, and it is indistinguishable
+        from a genuine "none of these are recorded" answer. A caller that swept a
+        wide candidate range and hit a sink timeout would re-record the entire
+        range — turning one failed query into a write storm against the sink that
+        just failed. Worse, a caller deciding something irreversible (e.g.
+        retiring a build from a tracking set once its lineage is confirmed) must
+        not read a failure as a verdict at all. ``on_query_error`` exists for
+        that: when provided, implementations invoke it with the exception before
+        returning the fail-open set, so the caller can tell "the sink says these
+        are unrecorded" from "the sink did not answer". Callers that do not care
+        omit it and keep the historical behavior.
 
         ``expected_counts`` maps a target uuid to the number of records the sink
         should hold for a *fully* recorded target (one W&B run per output

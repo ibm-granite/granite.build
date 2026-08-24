@@ -1,6 +1,6 @@
 import os
 
-import integration.ibm.storage.sql.test_sql_status_storage as HIDE_FROM_PYTEST
+import integration.ibm.storage.sql.test_sql_kv_pair_storage as HIDE_FROM_PYTEST
 import pytest
 
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
@@ -10,7 +10,7 @@ from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
     os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
     reason="Don't want to run this in CICD.",
 )
-class TestSqliteStatusStorage(HIDE_FROM_PYTEST.TestSQLStatusStorage):
+class TestSqliteKeyValuePairStorage(HIDE_FROM_PYTEST.TestSQLKeyValuePairStorage):
 
     @classmethod
     def _get_storage_factory(cls):
@@ -21,7 +21,9 @@ class TestSqliteStatusStorage(HIDE_FROM_PYTEST.TestSQLStatusStorage):
     os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
     reason="Don't want to run this in CICD.",
 )
-class TestSqliteStatusValueMethods(HIDE_FROM_PYTEST.TestSQLStatusValueMethods):
+class TestSqliteKeyValuePairValueMethods(
+    HIDE_FROM_PYTEST.TestSQLKeyValuePairValueMethods
+):
 
     @classmethod
     def _get_storage_factory(cls):

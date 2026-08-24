@@ -25,6 +25,7 @@ _INVALID_YAML = (
     or os.environ.get("HAS_GB_CLUSTER_ACCESS", "True").lower() == "false",
     reason="Can't run this since it is configured as not having G.B cluster access",
 )
+@extended_testing_only
 class AbstractTestBuildWatcher(AbstractBuildTest):
 
     def _get_build_count(self) -> int:
@@ -66,8 +67,9 @@ class TestBuildWatcherInvalidBuild(AbstractTestBuildWatcher):
     def _get_build_count(self) -> int:
         return 1
 
-    # No need to run this for an invalid build (and cancel test does not support invalid builds).
-    @pytest.mark.skip
+    @pytest.mark.skip(
+        reason="No need to run this for an invalid build (and cancel test does not support invalid builds)."
+    )
     def test_build_watcher_cancel(self):
         pass
 

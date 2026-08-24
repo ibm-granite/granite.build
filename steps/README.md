@@ -8,6 +8,11 @@ Subdirectories contain step implementations (`eval`, `byoc`, etc.), each with
 per-compute-environment subdirectories (`skypilot`, `lsf`, `k8s`, ...). For
 example, `steps/eval/skypilot` holds the eval step's SkyPilot implementation.
 
+> **Audience:** step *developers* authoring and publishing step implementations.
+> If you are instead *using* steps in a `build.yaml` (referencing, configuring, or
+> picking a built-in step), see the user-facing guide:
+> [docs/steps/README.md](../docs/steps/README.md).
+
 ## Source of truth: `steps/` vs. `configurations/`
 
 Think of the two trees as **source vs. release**: `steps/` is a source-like
@@ -53,17 +58,20 @@ editing the released asset in place.
 ### What promotion does — and what the framework is *for*
 
 Promotion is deliberately narrow. `make publish-step` (and the `make space` render it
-builds on) does four things and no more:
+builds on) does five things and no more:
 
 1. **Renders one token.** `step-template.yaml` → `step.yaml` substituting only the
    literal `${IMAGE_REF}` (empty for public-image steps); all runtime Jinja `{{ … }}`
    and shell `${VAR}` pass through verbatim.
 2. **Copies `src/`** into the released step.
-3. **Copies the per-cluster build tests** into `test/steps/<name>/<env>/<cluster>/`
+3. **Publishes `USAGE.md` as `README.md`** beside the released `step.yaml`, so the
+   step ships user docs (the authoring `README.md` is dev-oriented and is *not*
+   published).
+4. **Copies the per-cluster build tests** into `test/steps/<name>/<env>/<cluster>/`
    and their fixtures into `test-data/steps/…`, **rewriting each `buildtest.yaml`'s
    `space_uri`** so the *same* test file resolves in both modes (see
    [Two test modes](#two-test-modes)).
-4. **Freezes the image tag** for custom-image steps — the per-commit `IMAGE_REF`
+5. **Freezes the image tag** for custom-image steps — the per-commit `IMAGE_REF`
    (default tag = git short SHA) that you can't reasonably hand-maintain.
 
 It is **not** a one-to-many generator and **not** parameterized templating: one source
@@ -107,6 +115,15 @@ The minimum a step/environment directory needs for `make` to render it:
 * **`Makefile`** — a thin file that sets a couple of variables (notably `STEP_NAME`)
   and includes the shared [`common.mk`](common.mk). It exposes the conventional
   targets below.
+* **`USAGE.md`** — the **user-facing** doc: how to reference, configure (the
+  `config` contract), and wire the step's inputs/outputs in a `build.yaml`, with a
+  worked example. `make publish-step` copies it to `README.md` **beside the published
+  `step.yaml`** (see the publish sections below), so the released step in
+  `configurations/` ships user docs. Because that copy lands several levels deep in a
+  different subtree, `USAGE.md` must be **self-contained**: only co-located links that
+  survive the copy (e.g. `src/<file>`, which is published next to `step.yaml`) and
+  in-file `#anchors`; reference framework/repo docs by plain-text path, not a relative
+  link that would rot at the published depth.
 
 ### Optional
 
@@ -131,10 +148,13 @@ Present or absent depending on what the step needs:
   `build.yaml`/`buildtest.yaml` in `test-data/slurm/` or `test-data/docker/`).
   Kept beside the step rather than in the repo's parallel `test/` ↔ `test-data/`
   tree, so the step is self-contained.
-* **`README.md`** — documents that step's function, its `config` contract, and its
-  inputs/outputs (see [`byoc/skypilot`](byoc/skypilot/README.md) and
-  [`eval/skypilot`](eval/skypilot/README.md) for the two step-type examples).
-  Conventional for every step, though not needed to build or render one.
+* **`README.md`** — the **development-oriented** doc: how the step is
+  generated/built/published, its test modes, drift, and framework framing, plus a
+  prominent pointer to `USAGE.md` (see [`byoc/skypilot`](byoc/skypilot/README.md) and
+  [`eval/skypilot`](eval/skypilot/README.md) for the two step-type examples). Unlike
+  `USAGE.md`, this authoring README is **not** published — `publish-step` ships
+  `USAGE.md` as the released step's `README.md` instead. Conventional for every step,
+  though not needed to build or render one.
 
 ### Generated
 
@@ -176,7 +196,8 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   bundled `src/`. Cheap and offline; it does *not* rebuild/push.
 * **`publish-step`** — promote the step into the repo's committed assets tree
   (`configurations/assets/environments/<env>/steps/<step-name>/`, rendered exactly as
-  `space` renders `step.yaml` + bundled `src/`) **and** copy the step's per-cluster
+  `space` renders `step.yaml` + bundled `src/`, plus `USAGE.md` copied there as
+  `README.md`) **and** copy the step's per-cluster
   build tests into the top-level `test/steps/<step-name>/<env>/<cluster>/` tree, with
   their fixtures in the parallel `test-data/steps/<step-name>/<env>/<cluster>/` tree
   (mirroring the repo's `test/` ↔ `test-data/` convention) and each copied
@@ -286,7 +307,7 @@ sed "s#\${IMAGE_REF}#$ref#g" step-template.yaml > $(SPACE_DIR)/steps/<step-name>
 Because only the literal `${IMAGE_REF}` is replaced, everything else passes through
 untouched — importantly, the **runtime Jinja** `{{ ... }}` (resolved later by the
 build, e.g. `{{ config.eval_config.model_path }}`) and shell expansions like
-`${GB_BUILD_WORKDIR}` / `$(hostname)` inside `run:`/`setup:` blocks. (The image ref
+`${HOME}` / `$(hostname)` inside `run:`/`setup:` blocks. (The image ref
 is escaped first so a value containing `#`, `&`, or `\` can't corrupt the
 substitution.) This is factored into the `render-step-template` helper in
 [`common.mk`](common.mk), shared by both targets.
@@ -340,6 +361,62 @@ Two worked examples, one per step type, each in a per-cluster subdir:
 Both submit their `build.yaml` through the buildtest framework; for ad-hoc runs,
 submit a `build.yaml` via the `gbserver` MCP tools (see the `run-gbserver` and
 `create-step` skills).
+
+## Emitting data from a step (stdout markers)
+
+A step's only channel back to the server is its **stdout**, which the builtin
+monitors (`bash`, `docker`, `skypilot`) parse into build events. Two general
+step-framework hooks are recognised — print either at the start of a line from the
+step's `run:` block:
+
+* **Register an output artifact** — bind a produced path (or `mem://` state) to a
+  named build output:
+
+  ```sh
+  echo "LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>"
+  ```
+
+* **Record step metadata** — push a runtime-generated key/value that is merged into
+  the step's `StoredStepRun.metadata` and surfaced in build lineage (secret-*named*
+  keys are redacted, and `userinfo@` credentials in any URL-shaped value are scrubbed,
+  before emission). Use it for values only known on the remote node
+  at runtime — the byoc step records the resolved git commit with it:
+
+  ```sh
+  COMMIT_SHA="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$COMMIT_SHA" ] && echo "LLMB_STEP_METADATA_KEY:commit_hash LLMB_STEP_METADATA_VALUE:$COMMIT_SHA"
+  ```
+
+  Metadata is kept separate from the step's declared `config` (the rendered
+  `build.yaml` input) so step-produced data never mutates the configuration. The hook
+  is monitor-level, so any step running under a builtin monitor gets it for free; a
+  build test can assert the persisted values via `expected_steps` in its
+  `buildtest.yaml` (see [Two test modes](#two-test-modes)).
+
+### Metadata coverage and rollout
+
+The *parse* side (the monitor markers above) is universal — every step under a
+builtin monitor can emit either marker. The *emit* side, however, is **opt-in per
+step**: a step records metadata only if its own `run:` block prints the marker.
+
+- **Where it is authored.** The emit line lives in the step's **authored source**
+  (`steps/<step>/<env>/step-template.yaml`). `make publish-step` renders that source
+  into the released `configurations/assets/.../steps/<step>/step.yaml`, so the *same*
+  line appears in both files. That pair is [source vs. release](#source-of-truth-steps-vs-configurations),
+  **not** a duplicate hand-edit — only the `step-template.yaml` copy is edited; the
+  asset copy is regenerated. Never hand-edit the emitted marker in the asset tree.
+- **Current coverage.** Only [`byoc/skypilot`](byoc/skypilot/step-template.yaml)
+  emits metadata today (a `commit_hash` recording the resolved git commit). Every
+  other step emits nothing — the absence is expected, not a bug.
+- **Asset-only steps cannot inherit it.** The ~30+ steps that exist *only* under
+  `configurations/assets/.../steps/*` (no `steps/` source, so no `step-template.yaml`)
+  have no template to carry the line. Adding metadata to one means either authoring
+  its own emit line, or first migrating the step into `steps/` so it gains a source of
+  truth. There is no central switch that turns metadata on for all steps at once.
+- **Intended rollout.** Extend emission step-by-step as each step gains a value worth
+  recording in lineage, preferring migration into `steps/` first. This mostly becomes
+  moot once every step is sourced under `steps/`; until then, treat each step's emit
+  line as its own small change.
 
 ## Two test modes
 
@@ -400,11 +477,11 @@ only.
 ## Generated artifacts and drift
 
 `make publish-step` writes **three committed trees derived from the step's source** under
-`steps/<step>/<env>/` (its `step-template.yaml`, `src/`, and per-cluster
+`steps/<step>/<env>/` (its `step-template.yaml`, `src/`, `USAGE.md`, and per-cluster
 `test/`+`test-data/`):
 
 1. the assets step — `configurations/assets/environments/<env>/steps/<name>/`
-   (`step.yaml` + bundled `src/`);
+   (`step.yaml` + bundled `src/` + `README.md` copied from `USAGE.md`);
 2. the Mode-2 tests — `test/steps/<name>/<env>/<cluster>/`;
 3. their fixtures — `test-data/steps/<name>/<env>/<cluster>/`.
 

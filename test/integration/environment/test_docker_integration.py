@@ -6,17 +6,28 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.ibm
+# pytestmark = pytest.mark.ibm
 
 pytestmark = pytest.mark.docker_required
 
 
 def _docker_available():
-    """Check if Docker/Podman daemon is accessible."""
+    """Check if Docker/Podman daemon is accessible.
+
+    Reuses the Docker environment's own connection logic, which discovers the
+    Podman socket via ``podman machine inspect`` when ``DOCKER_HOST`` is unset.
+    This keeps the skip decision consistent with what ``launch_docker`` will do
+    at runtime, so the test doesn't un-skip and then fail while connecting.
+
+    Returns:
+        bool: True if a Docker/Podman daemon responds to ping, else False.
+    """
     try:
         import docker
 
-        client = docker.from_env()
+        from gbserver.environment.docker import _connect_docker_client
+
+        client = _connect_docker_client(docker)
         client.ping()
         return True
     except Exception:

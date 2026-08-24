@@ -660,6 +660,8 @@ class GBClient:
             tags: list[str] = [],
             callback=None,
             validation_type: str = "static",
+            dry_run: bool = False,
+            save_build_file: Optional[str] = None,
         ) -> str:
             return build_start(
                 self.github_token,
@@ -674,6 +676,8 @@ class GBClient:
                 tags=tags,
                 callback=callback,
                 validation_type=validation_type,
+                dry_run=dry_run,
+                save_build_file=save_build_file,
             )
 
         def build_cancel(
@@ -789,6 +793,8 @@ class GBClient:
             build_id: Optional[str] = None,
             id_format: Optional[str] = None,
             space: Optional[str] = None,
+            params: Optional[List[str]] = None,
+            parameters_path: Optional[str] = None,
             callback=None,
         ) -> List[Any]:
             return build_describe(
@@ -799,6 +805,8 @@ class GBClient:
                 build_id,
                 id_format,
                 space,
+                params=params,
+                parameters_path=parameters_path,
                 callback=callback,
             )
 

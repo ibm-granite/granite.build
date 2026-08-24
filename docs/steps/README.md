@@ -22,7 +22,7 @@ steps:
 
 | Scheme | Example | Description |
 |--------|---------|-------------|
-| `space://steps/<name>` | `space://steps/hfpull` | Resolves to a step registered in the active space. |
+| `space://steps/<name>` | `space://steps/command` | Resolves to a step registered in the active space. |
 | `file://<path>` | `file://./my-step` | Local directory containing a `step.yaml`. |
 | `git+ssh://<repo>#subdirectory=<path>` | `git+ssh://github.com/org/repo.git#subdirectory=steps/custom` | Step from a Git repository. |
 
@@ -30,17 +30,18 @@ If `step_uri` is omitted, the built-in `gbstep` step is used.
 
 ## Built-in steps
 
-These steps ship with gbserver in `src/gbserver/builtins/steps/`:
+These steps ship with gbserver in `src/gbserver/builtins/steps/`. Steps intended for
+direct reference from a `build.yaml` have a focused reference page (linked below).
 
-| Step | Description |
-|------|-------------|
-| `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. |
-| `hfpull` | Pull a model or dataset from HuggingFace Hub. |
-| `hfpush` | Push artifacts to HuggingFace Hub. |
-| `s3pull` | Pull files from an S3-compatible object store. |
-| `s3push` | Push files to an S3-compatible object store. |
-| `cosrclone` | Transfer files using rclone (supports COS, S3, and many backends). |
-| `command` | Run a shell command (available on the Bash, Docker, and Skypilot environments). On Docker/Skypilot set `command_config.image` to run it inside a container image (BYOI); leave the image empty to run on the bare node. |
+| Step | Description | Environments | Reference |
+|------|-------------|--------------|-----------|
+| `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. | All (Bash, Docker, K8s, LSF, RunPod, Skypilot, Skypilot-managed) | — |
+| `command` | Run a shell command; its exit status is the step's status. Docker/Skypilot can run it inside a container image via `command_config.image` (BYOI); Bash always runs on the bare node. | Bash, Docker, Skypilot | [`command`](command.md) |
+
+> The data-staging utility steps `hfpull`/`hfpush` (HuggingFace), `s3pull`/`s3push`
+> (S3-compatible stores), and `cosrclone` (rclone-based transfers) are wired in
+> automatically to move a target's declared inputs/outputs and are **not** intended
+> to be referenced directly from a `build.yaml`, so they are not documented here.
 
 ## Bash example steps
 
@@ -133,6 +134,7 @@ Three approaches for running custom code:
 
 ## See also
 
+- [Step Implementation Framework](../../steps/README.md) — how step implementations are authored, rendered, and published from the `steps/` source tree (for step *developers*, complementing this user-facing guide)
 - [Monitoring and artifact events](monitoring-and-artifact-events.md) — how a step captures its outputs by parsing workload logs
 - [bash environment](../environments/bash.md) — how bash steps execute (inputs, config, outputs)
 - [Templates](../templates/README.md) — reusable build.yaml patterns

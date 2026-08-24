@@ -24,7 +24,7 @@ missing), exercising the SkyPilot launcher's relative-source resolution against
 the step.yaml dir on the AWS path.
 
 Runs BARE (empty ``command_config.image``): file_mounts land in the VM run
-workdir (``${GB_BUILD_WORKDIR}``), which is the run command's CWD, so
+workdir, which is the run command's CWD, so
 ``./payload`` is reachable directly — no container indirection (bluevela used
 enroot to also exercise in-container visibility).
 

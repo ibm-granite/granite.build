@@ -22,19 +22,20 @@ environment_configs:
           # Copy the `payload/` directory that ships next to THIS step.yaml onto
           # the cluster. The source is relative, so the Skypilot launcher resolves
           # it against the step.yaml's own directory (the per-run asset dir) — this
-          # is the behavior under test. The destination is a fixed remote path,
-          # which the run command below reads back to confirm the copy landed.
+          # is the behavior under test. The destination is also relative, so it
+          # lands under the step's working directory (the run CWD); the run command
+          # below reads it back from there to confirm the copy landed.
           file_mounts:
-            ~/gb-filemount-payload: payload
+            payload: payload
           run: |
             set -euo pipefail
             # Verify file_mounts copied the step-relative payload dir to the
-            # destination declared above. `set -e` + `test` fail the step (=>
-            # build FAILED) if the dir/file is absent.
+            # matching relative path in the run CWD. `set -e` + `test` fail the
+            # step (=> build FAILED) if the dir/file is absent.
             echo "verifying file_mounts copied the step-relative payload dir..."
-            test -d ~/gb-filemount-payload
-            test -f ~/gb-filemount-payload/marker.txt
-            echo "payload marker: $(cat ~/gb-filemount-payload/marker.txt)"
+            test -d ./payload
+            test -f ./payload/marker.txt
+            echo "payload marker: $(cat ./payload/marker.txt)"
             # Build-supplied command (emits the artifact markers, mirroring the
             # builtin command step).
             {{ config.command_config.command }}

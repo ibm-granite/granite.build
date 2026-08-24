@@ -15,8 +15,8 @@
 # limitations under the License.
 
 """
-Base storage interface and implementation for the generic gb_status key-value
-store.
+Base storage interface and implementation for the generic gb_kv_pairs
+key-value store.
 """
 
 from typing import Any, Dict, Optional
@@ -26,14 +26,14 @@ from gbserver.storage.storage import (
     BaseItemStorage,
     IItemStorage,
 )
-from gbserver.storage.stored_status import StoredStatus
-from gbserver.types.constants import GB_STATUS_TABLE_NAME
+from gbserver.storage.stored_kv_pair import StoredKeyValuePair
+from gbserver.types.constants import GB_KV_PAIRS_TABLE_NAME
 
 
-class IStatusStorage(IItemStorage[StoredStatus]):
-    """Interface for the generic key/JSON-value status storage."""
+class IKeyValuePairStorage(IItemStorage[StoredKeyValuePair]):
+    """Interface for the generic key/JSON-value storage."""
 
-    def get_by_key(self, key: str) -> Optional[StoredStatus]:
+    def get_by_key(self, key: str) -> Optional[StoredKeyValuePair]:
         """Look up the unique row stored under ``key``, or None if not set.
 
         Raises:
@@ -50,28 +50,30 @@ class IStatusStorage(IItemStorage[StoredStatus]):
         raise NotImplementedError
 
 
-class BaseStatusStorage(BaseItemStorage[StoredStatus], IStatusStorage):
-    """Base storage implementation for the generic gb_status key-value store."""
+class BaseKeyValuePairStorage(
+    BaseItemStorage[StoredKeyValuePair], IKeyValuePairStorage
+):
+    """Base storage implementation for the generic gb_kv_pairs key-value store."""
 
     def __init__(self, **kwargs) -> None:
-        kwargs["item_class"] = StoredStatus
+        kwargs["item_class"] = StoredKeyValuePair
         if kwargs.get("table_name") is None:
-            kwargs["table_name"] = GB_STATUS_TABLE_NAME
+            kwargs["table_name"] = GB_KV_PAIRS_TABLE_NAME
         super().__init__(**kwargs)
 
-    def _get_column_values(self, item: StoredStatus) -> dict:
+    def _get_column_values(self, item: StoredKeyValuePair) -> dict:
         # `key` must be a real column: it is the lookup identity (see
-        # get_by_key) and what SQLStatusStorage's index and unique constraint
-        # attach to.
+        # get_by_key) and what SQLKeyValuePairStorage's index and unique
+        # constraint attach to.
         json = {"key": item.key, CREATED_TIME_FIELD_NAME: item.created_time}
         return json
 
     @classmethod
-    def _get_sample_item(cls) -> StoredStatus:
+    def _get_sample_item(cls) -> StoredKeyValuePair:
         """Return a sample item for use by BaseItemStorage to initialize schema."""
-        return StoredStatus(key="sample-status-key", value={"sample": "value"})
+        return StoredKeyValuePair(key="sample-status-key", value={"sample": "value"})
 
-    def get_by_key(self, key: str) -> Optional[StoredStatus]:
+    def get_by_key(self, key: str) -> Optional[StoredKeyValuePair]:
         """Look up the unique row stored under ``key``, or None if not set."""
         return self._get_by_single_field(  # type: ignore[return-value]
             column_name="key", column_value=key, allow_multiple=False
@@ -90,13 +92,13 @@ class BaseStatusStorage(BaseItemStorage[StoredStatus], IStatusStorage):
         # same key.
         existing = self.get_by_key(key)
         if existing is None:
-            self.add(StoredStatus(key=key, value=value))
+            self.add(StoredKeyValuePair(key=key, value=value))
             return
         # created_time means "when the key was first set", so carry the stored
         # value forward explicitly. update() would also preserve it by popping
         # the field, but relying on that made the invariant a side effect that
         # any future add()-based upsert would silently reset.
-        item = StoredStatus(
+        item = StoredKeyValuePair(
             uuid=existing.uuid,
             key=key,
             value=value,

@@ -47,8 +47,8 @@ variables:                        # Optional. Template values exposed to build.y
 `base_uris` is the search path for `space://` URIs. When a target uses
 `environment_uri: space://environments/skypilot/kubernetes` or a step is `space://steps/hfpull`, the
 resolver walks the `base_uris` chain (plus the active environment's own directory) to find the matching
-asset. The full three-tier resolution algorithm — env-co-located lookup, env-class matching, and
-env-agnostic fallback — is documented in
+asset. The full resolution algorithm — space-root priority (a step the space itself ships wins),
+env-co-located lookup, env-class matching, and env-agnostic fallback — is documented in
 [step-resolution.md](../environments/step-resolution.md).
 
 #### Worked example: how a space references environments and asset stores
@@ -72,9 +72,20 @@ So a build running in this space resolves, for example:
 - `environment_uri: space://environments/skypilot/kubernetes` → `configurations/assets/environments/skypilot/kubernetes/` (the space's `DEFAULT_ENVIRONMENT` variable);
 - an [asset store](../asset-stores/README.md) reference like `space://assetstores/hf` → [`configurations/assets/assetstores/hf/`](../../configurations/assets/assetstores/).
 
-**`base_uris` is optional.** The space's own directory (the one containing `space.yaml`) is always
-searched first, ahead of any `base_uris`. So a **self-contained** space can drop the `environments/`,
-`assetstores/`, and `steps/` directories right next to its `space.yaml` and omit `base_uris` entirely:
+**The space's own directory wins.** The directory containing `space.yaml` is always searched first,
+ahead of any `base_uris` — it is `base_uris[0]` in the resolver. This holds for **all three** asset
+kinds: an `environments/<name>`, `assetstores/<name>`, or `steps/<name>` the space itself ships
+**overrides** any copy inherited through the rest of the `base_uris` chain (e.g. a shared
+`configurations/assets` tree). So a space can develop and test its own environment, asset store, or
+step locally and have it take effect before — or instead of — the published/inherited version. (Steps
+need an extra rule to guarantee this because their env-co-located lookup would otherwise reach into the
+inherited tree first; see [step-resolution.md](../environments/step-resolution.md#space-root-steps-highest-priority).
+Environments and asset stores have no such lookup, so the space-first `base_uris` order already decides
+them.)
+
+**`base_uris` is optional.** Because the space's own directory is always searched, a **self-contained**
+space can drop the `environments/`, `assetstores/`, and `steps/` directories right next to its
+`space.yaml` and omit `base_uris` entirely:
 
 ```
 my-space/

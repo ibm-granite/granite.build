@@ -4,11 +4,11 @@ from libgbtest.storage.storage import AbstractStorageTest, AbstractStorageTestSu
 from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbserver.storage.storage import BaseItemStorage, BaseStoredItem
-from gbserver.storage.stored_status import StoredStatus
+from gbserver.storage.stored_kv_pair import StoredKeyValuePair
 from gbserver.utils.utils import get_uuid
 
 
-class StatusStorageTestSupport(AbstractStorageTestSupport):
+class KeyValuePairStorageTestSupport(AbstractStorageTestSupport):
 
     def __init__(self):
         super().__init__(sort_column="key")
@@ -19,20 +19,20 @@ class StatusStorageTestSupport(AbstractStorageTestSupport):
         # calls this twice with the same index expecting two distinct items.
         # Zero-padded so ascending string order matches ascending index order,
         # for test_sorting's use of _get_ascending_sorted_test_items().
-        return StoredStatus(
+        return StoredKeyValuePair(
             key=f"status-key-{index:04d}-{get_uuid()}",
             value={"index": index},
         )
 
 
-class BaseStatusStorageTest(AbstractStorageTest):
+class BaseKeyValuePairStorageTest(AbstractStorageTest):
 
     @classmethod
     def _get_test_config(cls) -> AbstractStorageTestSupport:
-        return StatusStorageTestSupport()
+        return KeyValuePairStorageTestSupport()
 
     def _get_tested_storage(self) -> BaseItemStorage:
-        return self.storage.status_storage
+        return self.storage.kv_pair_storage
 
     def _get_where_search_columns(
         self, storage: BaseItemStorage, item: BaseStoredItem
@@ -41,7 +41,7 @@ class BaseStatusStorageTest(AbstractStorageTest):
         # `key` is uniquely indexed, so it can never match the multiple
         # same-index items the shared where tests insert. Removing it leaves no
         # searchable column at all (created_time is dropped by the base), so
-        # those tests skip themselves — gb_status is an opaque key/JSON store
+        # those tests skip themselves — gb_kv_pairs is an opaque key/JSON store
         # with no business columns to filter by, by design.
         del columns["key"]
         return columns
@@ -82,31 +82,31 @@ class BaseStatusStorageTest(AbstractStorageTest):
         assert storage.count(where={"key": "no-such-key"}) == 0
 
 
-class TestStatusValueMethods(AbstractSingletonStorageUsingTest):
+class TestKeyValuePairValueMethods(AbstractSingletonStorageUsingTest):
     """Tests for the get_value()/set_value() convenience methods."""
 
     def test_get_value_missing_key_returns_none(self: Self) -> None:
-        assert self.storage.status_storage.get_value("no-such-key") is None
+        assert self.storage.kv_pair_storage.get_value("no-such-key") is None
 
     def test_set_then_get_value(self: Self) -> None:
-        self.storage.status_storage.set_value("k1", {"build_id": "b1"})
-        assert self.storage.status_storage.get_value("k1") == {"build_id": "b1"}
+        self.storage.kv_pair_storage.set_value("k1", {"build_id": "b1"})
+        assert self.storage.kv_pair_storage.get_value("k1") == {"build_id": "b1"}
 
     def test_set_value_upserts_existing_key(self: Self) -> None:
-        self.storage.status_storage.set_value("k1", {"build_id": "b1"})
-        self.storage.status_storage.set_value("k1", {"build_id": "b2"})
-        assert self.storage.status_storage.get_value("k1") == {"build_id": "b2"}
+        self.storage.kv_pair_storage.set_value("k1", {"build_id": "b1"})
+        self.storage.kv_pair_storage.set_value("k1", {"build_id": "b2"})
+        assert self.storage.kv_pair_storage.get_value("k1") == {"build_id": "b2"}
 
     def test_set_value_upsert_does_not_create_a_second_row(self: Self) -> None:
         """The upsert resolves `key` to the existing row rather than adding."""
-        storage = self.storage.status_storage
+        storage = self.storage.kv_pair_storage
         storage.set_value("k1", {"build_id": "b1"})
         storage.set_value("k1", {"build_id": "b2"})
         assert storage.count(where={"key": "k1"}) == 1
 
     def test_uuid_is_a_generated_identifier_not_the_key(self: Self) -> None:
         """`uuid` no longer doubles as the lookup key."""
-        storage = self.storage.status_storage
+        storage = self.storage.kv_pair_storage
         storage.set_value("k1", {"build_id": "b1"})
         item = storage.get_by_key("k1")
         assert item is not None
@@ -115,7 +115,7 @@ class TestStatusValueMethods(AbstractSingletonStorageUsingTest):
 
     def test_set_value_preserves_created_time_across_updates(self: Self) -> None:
         """created_time means "when the key was first set"."""
-        storage = self.storage.status_storage
+        storage = self.storage.kv_pair_storage
         storage.set_value("k1", {"build_id": "b1"})
         first = storage.get_by_key("k1")
         assert first is not None

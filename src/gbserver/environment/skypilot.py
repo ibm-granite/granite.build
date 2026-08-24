@@ -279,6 +279,27 @@ def _escapes_parent(rel_path: str) -> bool:
     return rel == ".." or rel.startswith(".." + os.sep)
 
 
+def _reject_home_prefixed(path: str, role: str) -> None:
+    """Reject a ``~``/``~/``-prefixed ``file_mounts`` path.
+
+    This launcher never expands ``~``: a ``~`` *source* would resolve to a literal
+    ``~`` directory under the step dir, and a ``~`` *destination* would sidestep
+    the single relative/absolute destination convention (it lands outside the
+    per-run workdir and, on containerized LSF, outside the container). Both roles
+    reject it so ``file_mounts`` has one consistent path model. Shared by the
+    source and destination guards.
+
+    :param path: the source or destination path from a ``file_mounts`` entry.
+    :param role: ``"source"`` or ``"destination"`` — named in the error message.
+    :raises ValueError: if ``path`` equals ``~`` or begins with ``~/``.
+    """
+    if path == "~" or path.startswith("~/"):
+        raise ValueError(
+            f"file_mounts {role} {path!r} uses '~', which is not expanded; "
+            f"use a relative or absolute path instead"
+        )
+
+
 def _resolve_local_mount_source(source: str, asset_dir: Union[Path, str, None]) -> str:
     """Resolve a ``file_mounts`` local source against the step's asset dir.
 
@@ -308,12 +329,7 @@ def _resolve_local_mount_source(source: str, asset_dir: Union[Path, str, None]) 
         return source
     if os.path.isabs(source):
         return source  # absolute host path — author's explicit choice
-    if source == "~" or source.startswith("~/"):
-        raise ValueError(
-            f"file_mounts source {source!r} uses '~', which is not expanded "
-            f"for sources; use an absolute path or one relative to the step "
-            f"directory"
-        )
+    _reject_home_prefixed(source, "source")
     if _escapes_parent(source):
         raise ValueError(
             f"file_mounts source {source!r} uses '..' to escape the step "
@@ -332,19 +348,6 @@ def _resolve_local_mount_source(source: str, asset_dir: Union[Path, str, None]) 
     return str(base / source)
 
 
-def _is_remappable_relative(dst: str) -> bool:
-    """Return whether ``dst`` is a plain relative ``file_mounts`` destination.
-
-    Absolute paths and ``~``/``~/``-prefixed paths opt out of the per-run-workdir
-    remap (they are the author's explicit location); everything else is treated
-    as relative to the build workdir.
-
-    :param dst: a ``file_mounts`` destination key.
-    :returns: ``True`` if the destination should be remapped, else ``False``.
-    """
-    return not (os.path.isabs(dst) or dst == "~" or dst.startswith("~/"))
-
-
 def _remap_relative_dest(dst: str, build_workdir: Optional[str]) -> str:
     """Map a relative ``file_mounts`` destination into the per-run workdir.
 
@@ -360,25 +363,29 @@ def _remap_relative_dest(dst: str, build_workdir: Optional[str]) -> str:
     ``sky/provision/lsf`` runner hook), so no container staging or copy-back is
     needed.
 
-    Absolute and ``~``-prefixed destinations pass through unchanged (author's
-    explicit choice). When ``build_workdir`` is unset (envs without
-    ``shared_workdir``) a relative destination is likewise returned unchanged,
-    preserving SkyPilot's own ``~/sky_workdir/`` rewrite.
+    Absolute destinations pass through unchanged (the author's explicit fixed
+    location). When ``build_workdir`` is unset (envs without ``shared_workdir``) a
+    relative destination is likewise returned unchanged, preserving SkyPilot's own
+    ``~/sky_workdir/`` rewrite.
 
-    A relative destination that uses ``..`` to climb out of its target directory
-    (e.g. ``../foo``) is always rejected — whether or not a remap applies — so it
-    can neither escape the per-run workdir nor SkyPilot's default rewrite. This
-    is an authoring guard, not a security boundary; the step author controls the
-    destination.
+    A ``~``/``~/``-prefixed destination is rejected, mirroring the source guard in
+    :func:`_resolve_local_mount_source`: ``~`` is never expanded by this launcher,
+    so ``file_mounts`` has a single destination convention — relative, or absolute
+    for a fixed location. A relative destination that uses ``..`` to climb out of
+    its target directory (e.g. ``../foo``) is likewise rejected — whether or not a
+    remap applies — so it can leave neither the per-run workdir nor SkyPilot's
+    default rewrite. These are authoring guards, not a security boundary; the step
+    author controls the destination.
 
     :param dst: the destination key from the raw ``file_mounts`` mapping.
     :param build_workdir: absolute per-run workdir, or ``None`` to disable remap.
     :returns: the (possibly rewritten) destination path.
-    :raises ValueError: if a relative ``dst`` escapes its target directory via
-        ``..`` traversal.
+    :raises ValueError: if ``dst`` is ``~``/``~/``-prefixed, or a relative ``dst``
+        escapes its target directory via ``..`` traversal.
     """
-    if not _is_remappable_relative(dst):
-        return dst  # absolute / ~-prefixed: author's explicit location
+    _reject_home_prefixed(dst, "destination")
+    if os.path.isabs(dst):
+        return dst  # absolute: author's explicit fixed location, left as-is
     # Reject ``..`` escapes regardless of whether a build_workdir remap follows,
     # so the destination can leave neither the per-run workdir nor SkyPilot's
     # default rewrite.
@@ -391,6 +398,44 @@ def _remap_relative_dest(dst: str, build_workdir: Optional[str]) -> str:
     if not build_workdir:
         return dst  # no shared workdir: leave to SkyPilot's default handling
     return os.path.normpath(os.path.join(build_workdir, dst))
+
+
+def _get_cli_prefix(build_workdir: Optional[str]) -> str:
+    """Build the shell snippet prepended to each step's setup and run scripts.
+
+    The snippet always leads with ``set -eu`` so any failure in the prefix aborts
+    before the step body runs, rather than silently executing the body in a wrong
+    or unexpected state. The prefix is prepended ahead of each body's own
+    ``set -eu``, so without this the body's flags would not yet be in effect while
+    the prefix runs.
+
+    When a ``build_workdir`` was provisioned (the env configures
+    ``shared_workdir``), the snippet also emits ``mkdir -p`` + ``cd
+    "$GB_BUILD_WORKDIR"`` so both the ``setup`` and ``run`` scripts start in that
+    per-run workdir. Making the launcher own the ``cd`` lets step authors write
+    outputs with relative paths and stay agnostic about where the step runs: they
+    never need to reference ``$GB_BUILD_WORKDIR`` themselves. With ``set -eu`` in
+    front, a failing ``mkdir``/``cd`` (or an unset ``$GB_BUILD_WORKDIR``) aborts
+    fast instead of leaving the body running in the wrong directory.
+
+    When no ``build_workdir`` is set (envs without ``shared_workdir``), no ``cd``
+    is emitted — only ``set -eu``. SkyPilot then runs the scripts in its own
+    default working directory (``~/sky_workdir``), which is exactly where its
+    relative ``file_mounts`` rewrite places payloads (see ``_remap_relative_dest``,
+    which leaves relative destinations untouched in this case). Injecting a ``cd``
+    elsewhere (e.g. ``$HOME``) would move the CWD away from the mounted payloads,
+    so relative-in/relative-out steps would fail to find them; not cd'ing keeps
+    the run CWD aligned with the mount location.
+
+    :param build_workdir: the provisioned per-run workdir path, or ``None`` when
+        no ``shared_workdir`` is configured (no ``cd`` is emitted).
+    :returns: a shell snippet terminated by a trailing newline; always at least
+        ``set -eu``, plus ``mkdir``/``cd`` when a ``build_workdir`` is set.
+    """
+    prefix = "set -eu\n"
+    if build_workdir:
+        prefix += 'mkdir -p "$GB_BUILD_WORKDIR"\ncd "$GB_BUILD_WORKDIR"\n'
+    return prefix
 
 
 def _build_skypilot_mounts(
@@ -728,20 +773,37 @@ class Skypilot(Environment):
         Reads the raw dict (NOT the :class:`ComputeConfig` model, whose defaults
         of 8 GPUs / 512G memory would over-size a bare command). Only emits keys
         that are explicitly and validly set, so the caller can layer this as the
-        lowest-precedence floor. Values are numeric — never the ``"1+"`` form
-        that crashes SkyPilot's LSF cloud.
+        lowest-precedence floor. Both ``cpus`` and ``memory`` are emitted as
+        SkyPilot minimums (``"{n}+"``) so catalog matching selects the smallest
+        instance with *at least* that much CPU/RAM — a bare number is an EXACT
+        match no cloud catalog satisfies for odd sizes ("Catalog does not contain
+        any instances satisfying the request: 1x AWS(mem=1.0)" / ``cpus=3``). The
+        ``"+"`` form crashes SkyPilot's LSF cloud, so on slurm/lsf ``cpus`` stays
+        a bare int (those schedulers match CPUs directly, not via a cloud
+        catalog) and ``memory`` is skipped entirely (below).
 
         :param compute_config: the step's ``config.compute_config`` dict.
         :param cloud: the normalized target cloud (lowercased first infra
             segment, e.g. ``"slurm"``, ``"lsf"``, ``"k8s"``).
-        :returns: a dict optionally containing ``cpus`` (int, when
-            ``num_cpus_per_node`` > 0) and ``memory`` (float GiB, when
-            ``total_memory_per_node`` parses).
+        :returns: a dict optionally containing ``cpus`` (a ``"{n}+"`` minimum on
+            cloud catalogs, or a bare int on slurm/lsf, when ``num_cpus_per_node``
+            > 0) and ``memory`` (a ``"{n}+"`` GiB-minimum string, when
+            ``total_memory_per_node`` parses and the cloud is not slurm/lsf).
         """
         resources: Dict = {}
         num_cpus = compute_config.get("num_cpus_per_node", 0)
         if isinstance(num_cpus, int) and num_cpus > 0:
-            resources["cpus"] = num_cpus
+            # Same exact-match trap as memory (below): a bare number is an EXACT
+            # request and no cloud catalog has an instance with, e.g., exactly 3
+            # vCPUs, so SkyPilot dies with "Catalog does not contain any
+            # instances satisfying the request". Emit a minimum ("{n}+") so it
+            # picks the smallest instance with at least that many vCPUs. slurm/lsf
+            # keep the bare int: the "+" form crashes the fork's LSF cloud, and
+            # those schedulers match CPUs directly, so an exact request is fine.
+            if cloud in _SSH_HPC_CLOUDS:
+                resources["cpus"] = num_cpus
+            else:
+                resources["cpus"] = f"{num_cpus}+"
         # SLURM/LSF (bare HPC schedulers) commonly don't track memory as a
         # consumable resource (RealMemory unset in slurm.conf), so a --memory
         # request fails at resource matching ("Catalog does not contain any
@@ -753,7 +815,15 @@ class Skypilot(Environment):
                 compute_config.get("total_memory_per_node", "")
             )
             if memory is not None:
-                resources["memory"] = memory
+                # Emit as a minimum ("{n}+"), not an exact float: an exact
+                # memory=1.0 matches no cloud instance type (SkyPilot dies with
+                # "Catalog does not contain any instances satisfying ...
+                # AWS(mem=1.0)"). Format without an exponent and strip the
+                # trailing ".0"/zeros (1.0 -> "1+", 0.5 -> "0.5+"); ":g" would
+                # switch large values to scientific notation (e.g. "1e+06+")
+                # which SkyPilot cannot parse. Safe here: slurm/lsf excluded.
+                mem_str = f"{memory:f}".rstrip("0").rstrip(".")
+                resources["memory"] = f"{mem_str}+"
         return resources
 
     async def launch_skypilot(
@@ -880,6 +950,14 @@ class Skypilot(Environment):
                 **self._resources_from_compute_config(
                     compute_config, cloud=cloud_group
                 ),
+                # override_res is passed VERBATIM to sky.Resources. On cloud
+                # catalogs (aws/gcp/azure/k8s) an explicit resources.cpus/memory
+                # must therefore use the "N+" minimum form (e.g. cpus: "3+"); a
+                # bare int is an EXACT request no catalog satisfies ("Catalog does
+                # not contain any instances satisfying ..."). The compute_config
+                # floor above converts for you, but this free-form passthrough of
+                # SkyPilot's own resources spec does not. (slurm/lsf match CPUs
+                # directly, so a bare int is fine there.)
                 **override_res,
             }
 
@@ -1012,13 +1090,18 @@ class Skypilot(Environment):
                     build_workdir,
                 )
 
-            run_script = launcher_config.get("run", "")
-            if build_workdir:
-                run_script = (
-                    'mkdir -p "$GB_BUILD_WORKDIR"\n'
-                    'cd "$GB_BUILD_WORKDIR"\n'
-                    f"{run_script}"
-                )
+            # The prefix always leads with `set -eu` (fail fast). When a per-run
+            # workdir was provisioned, it also prepends a `cd` into it to both
+            # setup and run so step scripts start in a known directory and can use
+            # relative paths without referencing $GB_BUILD_WORKDIR. With no
+            # shared_workdir, _get_cli_prefix emits only `set -eu` (no cd), so the
+            # scripts stay in SkyPilot's default ~/sky_workdir, where relative
+            # file_mounts land. Only prefix setup when there is a setup script, so
+            # steps without one don't acquire a spurious setup phase.
+            cli_prefix = _get_cli_prefix(build_workdir)
+            run_script = cli_prefix + launcher_config.get("run", "")
+            if setup_script:
+                setup_script = cli_prefix + setup_script
 
             # Build sky.Task
             task = sky.Task(

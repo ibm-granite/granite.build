@@ -16,14 +16,18 @@ GB_ENVIRONMENT_LOWER ?= dev
 GIT_COMMIT ?= $(shell git rev-parse HEAD)
 GIT_DIRTY  = $(shell test -n "`git status --porcelain`" && echo "dirty-" || echo "")
 IMAGE_NAME = gbserver
-IMAGE_TAG  ?= ${GIT_DIRTY}commit-${GIT_COMMIT}
+# Set the GBSERVER_IMAGE_TAG env var to override this (e.g. to point tests at an
+# existing registry image); otherwise default to the local git-derived tag.
+IMAGE_TAG  ?= $(if $(GBSERVER_IMAGE_TAG),$(GBSERVER_IMAGE_TAG),${GIT_DIRTY}commit-${GIT_COMMIT})
 IMAGE_NAME_AND_TAG = ${IMAGE_NAME}:${IMAGE_TAG}
 
 OC_LOGIN_SERVER_URI ?= https://c100-e.us-south.containers.cloud.ibm.com:30049
 
 SIDECAR_IMAGE_NAME = gb-sidecar-monitoring
 # SIDECAR_IMAGE_TAG ?= 0.4.12
-SIDECAR_IMAGE_TAG ?= ${GIT_DIRTY}commit-${GIT_COMMIT}
+# Set the GBSERVER_SIDECAR_MONITORING_IMAGE_TAG env var to override this; otherwise
+# default to the local git-derived tag.
+SIDECAR_IMAGE_TAG ?= $(if $(GBSERVER_SIDECAR_MONITORING_IMAGE_TAG),$(GBSERVER_SIDECAR_MONITORING_IMAGE_TAG),${GIT_DIRTY}commit-${GIT_COMMIT})
 SIDECAR_IMAGE_NAME_AND_TAG = ${SIDECAR_IMAGE_NAME}:${SIDECAR_IMAGE_TAG}
 
 DEV_IMAGE_REGISTRY = us.icr.io/cil15-shared-registry/gb-dev
@@ -133,9 +137,60 @@ start-docker:
 		exit 1; \
 	fi
 
+# NATS (JetStream) test server used by the messaging integration tests.
+NATS_TEST_CONTAINER ?= gb-nats-test
+NATS_TEST_PORT ?= 4222
+
+# Start a containerised nats-server with JetStream for the messaging
+# integration tests. Idempotent (removes any prior container) and blocks until
+# the port accepts connections so the tests do not race the daemon coming up.
+.PHONY: start-nats
+start-nats: start-docker
+	@echo "Starting NATS (JetStream) test server '${NATS_TEST_CONTAINER}'..."
+	@${DOCKER} rm -f ${NATS_TEST_CONTAINER} >/dev/null 2>&1 || true
+	@# No --rm: a crashed container must survive so the readiness-timeout path below
+	@# can still read its logs. Cleanup is handled by the rm -f above on the next run
+	@# and by the stop-nats target.
+	@${DOCKER} run -d --name ${NATS_TEST_CONTAINER} \
+		-p ${NATS_TEST_PORT}:4222 nats:latest -js >/dev/null
+	@echo "Waiting for NATS on localhost:${NATS_TEST_PORT}..."
+	@for i in $$(seq 1 30); do \
+		if $(PYTHON) -c "import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(s.connect_ex(('localhost', ${NATS_TEST_PORT})))" 2>/dev/null; then \
+			echo "NATS is ready."; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "ERROR: NATS did not become ready on port ${NATS_TEST_PORT}." >&2; \
+	${DOCKER} logs ${NATS_TEST_CONTAINER} >&2 2>/dev/null || true; \
+	exit 1
+
+# Stop and remove the NATS test server started by start-nats.
+.PHONY: stop-nats
+stop-nats:
+	@${DOCKER} rm -f ${NATS_TEST_CONTAINER} >/dev/null 2>&1 || true
+
 .PHONY: check-git-status-clean
 check-git-status-clean:
 	@if [[ -z "${ALLOW_DIRTY}" ]] ; then if [[ -n "${GIT_DIRTY}" ]] ; then echo 'Please make sure the git status is clean or set ALLOW_DIRTY.' && exit 1 ; fi fi
+
+# Fail if either resolved image tag reflects an uncommitted (dirty) git tree, since the
+# matching image was likely never built/pushed to the registry. Bypass with ALLOW_DIRTY.
+#
+# This is a prerequisite only of the live test entrypoints that run cluster/
+# BuildRunnerJob builds pulling the tagged image (extended-tests, ibm-extended-tests,
+# test-pr, test-merge). It is deliberately NOT on the shared .test / py-test targets:
+# mock/unit suites reached through them never pull an image, so a dirty tag is
+# irrelevant there and the guard would only block the edit -> test -> commit loop.
+.PHONY: check-image-tag-not-dirty
+check-image-tag-not-dirty:
+	@if [[ -z "${ALLOW_DIRTY}" ]] ; then \
+		for _t in "$(IMAGE_TAG)" "$(SIDECAR_IMAGE_TAG)" ; do \
+			if [[ "$$_t" == *dirty* ]] ; then \
+				echo "Image tag '$$_t' reflects a dirty git tree; the matching image may not exist in the registry. Commit your changes, set GBSERVER_IMAGE_TAG / GBSERVER_SIDECAR_MONITORING_IMAGE_TAG to an existing tag (see 'make info'), or set ALLOW_DIRTY to override." && exit 1 ; \
+			fi ; \
+		done ; \
+	fi
 
 .PHONY: check-container-registry-login
 check-container-registry-login:
@@ -252,15 +307,52 @@ extended-tests-setup:
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
 .PHONY: extended-tests
-extended-tests:
+extended-tests: check-image-tag-not-dirty
 	export GB_ENVIRONMENT=STANDALONE &&			\
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
 
+.PHONY: ibm-quick-tests-setup
+ibm-quick-tests-setup:
+	$(MAKE) venv
+
+# Mock most of HF since the action does not have the HF_TOKEN secret on PRs
+# secret_manager tests require IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL env var, which SPS is not providing or so it seems
+.PHONY: ibm-quick-tests
+ibm-quick-tests: check_ibm_sps_api_key
+	export GB_ENVIRONMENT=STAGING &&			\
+	$(MAKE) GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
+		GBTEST_MODE=mock				\
+		PYTEST_MARKERS="ibm and not extended" 	\
+		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
+		.test
+
+.PHONY: ibm-extended-tests-setup
+ibm-extended-tests-setup: start-nats
+	$(MAKE) venv
+
+.PHONY: ibm-extended-tests
+ibm-extended-tests: check_ibm_sps_api_key check-image-tag-not-dirty
+	export GB_ENVIRONMENT=STAGING &&			\
+	$(MAKE) GBTEST_MODE=live				\
+		PYTEST_MARKERS="ibm" 			\
+		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
+		.test
+
+# This key provides access secrets that will be installed in the environment before running the IBM tests.
+.PHONY: check_ibm_sps_api_key
+check_ibm_sps_api_key:
+	@if [ -z "$$GBTEST_SPS_IBMCLOUD_API_KEY" ]; then \
+	    echo The GBTEST_SPS_IBMCLOUD_API_KEY env var must be set to enable access to IBM-specific configuration to run the tests. ;	\
+	    echo See https://github.ibm.com/granite-dot-build/gb-ibmdev-docs/blob/main/docs/getting-started/dev-environment-setup.md for how to acquire a key.;\
+	    exit 1;	\
+	fi;		\
+	echo The GBTEST_SPS_IBMCLOUD_API_KEY env var is present for IBM tests. 
+
 .PHONY: test-pr
-test-pr:
+test-pr: check-image-tag-not-dirty
 	# NOTE: #92 switched this target to GBTEST_MODE=mock, but the full PR suite is
 	# not green under mock yet (some tests need an admin GitHub token and the
 	# IBM-backed secret manager). Revert to live for now; making test-pr pass under
@@ -276,7 +368,7 @@ cicd-merge-test:
 	$(MAKE) test-merge 
 
 .PHONY: test-merge
-test-merge:
+test-merge: check-image-tag-not-dirty
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="$(MERGE_PYTEST_MARKERS)" 	\
 		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
@@ -307,7 +399,7 @@ check_hf_token:
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
 		args=(--durations=20 $(PYTEST_COV) --junitxml=report.xml) && \
-		args+=(--max-worker-restart=0 -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE}) && \
+		args+=(--max-worker-restart=3 -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE}) && \
 		args+=(-rs $(PYTEST_CAPTURE)) && \
 		args+=(-m '$(PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
 		pytest "$${args[@]}" $(PYTEST_TEST_TARGETS) && \

@@ -14,31 +14,51 @@
 
 """Unit tests for the admin-DB lineage reconciliation (the central mechanism).
 
-These tests use an in-memory stub admin storage and a stub lineage store, so
-they run in CI without a cluster, PostgreSQL, or wandb credentials. They verify
-that reconciliation selects successful targets from the admin DB by a
-``finished_at`` time watermark and records each through the single leaf, that the
-watermark is required (a full-history backfill must be asked for explicitly, with
-``datetime.min``, rather than being what an omitted argument means), that
-steady-state scans read only newly-finished targets, and that the per-sink
-``filter_unrecorded`` check decides what each sink actually records.
+These tests use an in-memory stub admin storage and a stub lineage store, so they
+run in CI without a cluster, PostgreSQL, or wandb credentials.
+
+They verify the two nested selections — builds from the checkpoint forward
+(``select_builds_from_checkpoint``) and one build's successful targets
+(``select_recordable_targets``) — that ``reconcile_build`` records the unrecorded
+ones through the single leaf and reports per-build confirmation, and that a failed
+dedup query fails CLOSED: nothing recorded, the failure surfaced, and the build
+never reported confirmed.
 """
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import pytest
+
 from gbserver.lineage.lineage_reconciler import (
-    _expected_run_count,
-    get_most_recent_successful_target,
-    reconcile_once,
+    UTC_MIN,
+    as_aware,
+    expected_run_count,
+    get_most_recent_build,
+    is_permanent_sink_failure,
+    reconcile_build,
     record_selected_targets,
     record_target_lineage,
+    select_builds_from_checkpoint,
     select_recordable_targets,
 )
+from gbserver.lineage.lineage_seeding import (
+    BACKFILL_BUILD_ID,
+    SEED_ALL,
+    SEED_FROM_LATEST,
+    LineageSeedError,
+    _build_checkpoint,
+)
+from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 
-_BASE = datetime(2026, 1, 1, 0, 0, 0)
+# Aware UTC, matching what a real finished_at/created_time carries. A naive value
+# here would be read as *local* (see as_aware) and shift every expectation by the
+# test machine's UTC offset.
+_BASE = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+_SCAN_PAGE_SIZE = 200
 
 
 def _target(
@@ -60,17 +80,35 @@ def _target(
     )
 
 
-_SCAN_PAGE_SIZE = 200
+def _build(
+    uuid: str, created_time: datetime = _BASE, status: Status = Status.SUCCESS
+) -> StoredBuild:
+    """A StoredBuild with a pinned uuid/created_time/status.
+
+    ``created_time`` is non-nullable on the model (it has a default_factory), so
+    there is deliberately no "no creation time" case here: such a build cannot be
+    constructed. The reconciler's None-guards are defensive against a row arriving
+    by some other path, not a state a test can reach.
+    """
+    build = StoredBuild(
+        name=f"build-{uuid}",
+        space_name="sp",
+        source_uri="https://x",
+        username="u",
+    )
+    build.uuid = uuid
+    build.created_time = created_time
+    build.status = status
+    return build
 
 
 def _admin_storage_with(targets: list[StoredTargetRun]) -> MagicMock:
-    """Stub admin storage whose target_storage pages SUCCESS targets.
+    """Stub admin storage whose target_storage pages one build's SUCCESS targets.
 
-    Asserts the reconciler queries by SUCCESS status (rather than scanning all
-    targets) and honors the newest-``finished_at``-first pagination contract, so
-    both the selection filter and the bounded-scan behavior are pinned. Returns
-    targets sorted by ``finished_at`` descending (None sorts last) to mimic the
-    server-side ordering.
+    Asserts the reconciler filters server-side by SUCCESS *and* by build id — the
+    selection is build-scoped now, so a query without a build_id would be reading
+    unrelated history — and that it honors the newest-``finished_at``-first
+    pagination contract.
     """
     storage = MagicMock()
     successful = sorted(
@@ -80,7 +118,9 @@ def _admin_storage_with(targets: list[StoredTargetRun]) -> MagicMock:
     )
 
     def _get_by_where(where, query_control=None):
-        assert where == {"status": Status.SUCCESS.name}
+        assert where.get("status") == Status.SUCCESS.name
+        assert "build_id" in where, "target selection must be scoped to one build"
+        matching = [t for t in successful if t.build_id == where["build_id"]]
         assert query_control is not None
         pagination = query_control.pagination
         assert pagination is not None and pagination.size == _SCAN_PAGE_SIZE
@@ -88,7 +128,7 @@ def _admin_storage_with(targets: list[StoredTargetRun]) -> MagicMock:
         assert query_control.sort_orders[0].column == "finished_at"
         assert query_control.sort_orders[0].ascending is False
         start = pagination.index * pagination.size
-        return successful[start : start + pagination.size]
+        return matching[start : start + pagination.size]
 
     storage.target_storage.get_by_where.side_effect = _get_by_where
     return storage
@@ -98,8 +138,8 @@ def _admin_storage_returning(pages: list[list[StoredTargetRun]]) -> MagicMock:
     """Stub admin storage that returns exactly the given pages, order preserved.
 
     Unlike ``_admin_storage_with`` this does not re-sort, so a test can hand the
-    reconciler NULL-``finished_at`` rows interleaved among finished ones to prove
-    the scan is not truncated by an out-of-contract ordering.
+    scan NULL-``finished_at`` rows interleaved among finished ones to prove the
+    walk is not truncated by an out-of-contract ordering.
     """
     storage = MagicMock()
 
@@ -111,12 +151,43 @@ def _admin_storage_returning(pages: list[list[StoredTargetRun]]) -> MagicMock:
     return storage
 
 
+def _admin_storage_with_builds(builds: list[StoredBuild]) -> MagicMock:
+    """Stub admin storage whose build_storage pages builds newest-created-first."""
+    storage = MagicMock()
+    ordered = sorted(
+        builds,
+        key=lambda b: (b.created_time is not None, b.created_time or _BASE),
+        reverse=True,
+    )
+
+    def _get_by_where(where=None, query_control=None):
+        assert query_control is not None
+        assert query_control.sort_orders
+        assert query_control.sort_orders[0].column == "created_time"
+        assert query_control.sort_orders[0].ascending is False
+        pagination = query_control.pagination
+        start = pagination.index * pagination.size
+        return ordered[start : start + pagination.size]
+
+    storage.build_storage.get_by_where.side_effect = _get_by_where
+    storage.build_storage.get_by_uuid.side_effect = lambda uuid: next(
+        (b for b in builds if b.uuid == uuid), None
+    )
+    return storage
+
+
 class _StubStore:
     """Lineage store stub: records into a set, tracks calls, dedupes per-sink."""
 
-    def __init__(self, already_recorded: set[str] = None, fail: set[str] = None):
+    def __init__(
+        self,
+        already_recorded: set[str] = None,
+        fail: set[str] = None,
+        query_error: Exception = None,
+    ):
         self._recorded = set(already_recorded or set())
         self._fail = set(fail or set())
+        self.query_error = query_error
         self.recorded_calls: list[tuple[str, str]] = []
         # Captures the expected_counts the reconciler passed on the last call, so
         # tests can assert it derived per-target run counts from the targets.
@@ -129,359 +200,508 @@ class _StubStore:
         self._recorded.add(target_id)
 
     def filter_unrecorded(
-        self, target_ids: set[str], expected_counts: dict[str, int] = None
+        self,
+        target_ids: set[str],
+        expected_counts: dict[str, int] = None,
+        on_query_error=None,
     ) -> set[str]:
         self.last_expected_counts = expected_counts
+        if self.query_error is not None:
+            # Mirrors the real store: fail CLOSED and report through the callback.
+            if on_query_error is not None:
+                on_query_error(self.query_error)
+            return set()
         return set(target_ids) - self._recorded
+
+
+class TestSelectBuildsFromCheckpoint:
+    def test_includes_the_anchor_and_newer_builds(self):
+        """The cutoff is inclusive, so the anchor build is re-selected.
+
+        A pass that crashed partway through the anchor left targets unrecorded, and
+        re-selecting it every scan is what recovers them.
+        """
+        storage = _admin_storage_with_builds(
+            [
+                _build("old", _BASE - timedelta(hours=1)),
+                _build("anchor", _BASE),
+                _build("newer", _BASE + timedelta(hours=1)),
+            ]
+        )
+
+        found = select_builds_from_checkpoint(storage, _BASE)
+
+        assert [b.uuid for b in found] == ["anchor", "newer"]
+
+    def test_returns_oldest_created_first(self):
+        """Processing order is oldest-first, which the contiguous advance needs.
+
+        The query itself pages newest-first (to stop at the cutoff); reversing it
+        here is what lets the caller stop at the first unfinished build.
+        """
+        storage = _admin_storage_with_builds(
+            [
+                _build("c", _BASE + timedelta(minutes=2)),
+                _build("a", _BASE),
+                _build("b", _BASE + timedelta(minutes=1)),
+            ]
+        )
+
+        found = select_builds_from_checkpoint(storage, _BASE)
+
+        assert [b.uuid for b in found] == ["a", "b", "c"]
+
+    def test_excludes_requested_ids(self):
+        storage = _admin_storage_with_builds(
+            [_build("a", _BASE), _build("b", _BASE + timedelta(minutes=1))]
+        )
+
+        found = select_builds_from_checkpoint(storage, _BASE, exclude_ids={"a"})
+
+        assert [b.uuid for b in found] == ["b"]
+
+    def test_utc_min_cutoff_reaches_all_history(self):
+        """The backfill anchor selects everything, however old."""
+        storage = _admin_storage_with_builds(
+            [_build("ancient", _BASE - timedelta(days=365)), _build("a", _BASE)]
+        )
+
+        found = select_builds_from_checkpoint(storage, UTC_MIN)
+
+        assert [b.uuid for b in found] == ["ancient", "a"]
+
+    def test_pages_past_a_full_first_page(self):
+        """The walk keeps paging while rows stay at or above the cutoff."""
+        builds = [
+            _build(f"b{i}", _BASE + timedelta(seconds=i))
+            for i in range(_SCAN_PAGE_SIZE + 5)
+        ]
+        storage = _admin_storage_with_builds(builds)
+
+        found = select_builds_from_checkpoint(storage, _BASE)
+
+        assert len(found) == _SCAN_PAGE_SIZE + 5
+
+    def test_mixed_offsets_compare_as_instants(self):
+        """Two aware timestamps compare as instants regardless of their offsets."""
+        offset = timezone(timedelta(hours=-5))
+        # Same instant as _BASE, written with a different offset.
+        same_instant = datetime(2025, 12, 31, 19, 0, 0, tzinfo=offset)
+        storage = _admin_storage_with_builds([_build("a", same_instant)])
+
+        found = select_builds_from_checkpoint(storage, _BASE)
+
+        assert [b.uuid for b in found] == ["a"]
+
+
+def _admin_storage_with_misordered_builds(builds: list[StoredBuild]) -> MagicMock:
+    """Stub whose build pages come back in a WRONG order, on purpose.
+
+    Reproduces what SQLite actually does to this column: it stores
+    DateTime(timezone=True) as TEXT and orders it as TEXT, and the column holds two
+    spellings ("2026-08-21 21:13:24.581351" from SQLAlchemy and
+    "2026-08-21T15:18:38.948Z" from older writers). ' ' sorts before 'T', so a
+    genuinely newer build can be returned *below* a much older one.
+
+    Returns the list exactly as given, so a test can hand over an order no correct
+    implementation may rely on.
+    """
+    storage = MagicMock()
+
+    def _get_by_where(where=None, query_control=None):
+        pagination = query_control.pagination
+        start = pagination.index * pagination.size
+        return builds[start : start + pagination.size]
+
+    storage.build_storage.get_by_where.side_effect = _get_by_where
+    return storage
+
+
+class TestBuildWalkDoesNotTrustTheOrdering:
+    """The walk must not stop early on the backend's ordering.
+
+    SQLite's text collation on this column interleaves rows whose real instants are
+    months apart, so an early return on "this row is behind the cutoff" can end the
+    walk before reaching genuinely newer builds -- reporting nothing to record while
+    real lineage sits unread. Silent data loss, not a slow scan.
+    """
+
+    def test_newer_build_after_an_older_one_is_still_found(self):
+        # Order deliberately wrong: the old row comes first, the new one after it.
+        old_build = _build("old", _BASE - timedelta(days=30))
+        new_build = _build("new", _BASE + timedelta(hours=1))
+        storage = _admin_storage_with_misordered_builds([old_build, new_build])
+
+        found = select_builds_from_checkpoint(storage, _BASE)
+
+        assert [b.uuid for b in found] == ["new"], (
+            "the walk stopped at the out-of-order old row and never reached the "
+            "newer build"
+        )
+
+    def test_result_is_sorted_by_real_instant_not_by_arrival(self):
+        """The caller's contiguous advance needs true chronological order."""
+        b_mid = _build("mid", _BASE + timedelta(minutes=2))
+        b_first = _build("first", _BASE)
+        b_last = _build("last", _BASE + timedelta(minutes=5))
+        storage = _admin_storage_with_misordered_builds([b_mid, b_first, b_last])
+
+        found = select_builds_from_checkpoint(storage, _BASE)
+
+        assert [b.uuid for b in found] == ["first", "mid", "last"]
+
+    def test_most_recent_build_is_the_true_maximum(self):
+        """Seeding must anchor at the real newest build, not the first row seen.
+
+        Anchoring at an arbitrary older build would silently re-drive history from
+        there.
+        """
+        storage = _admin_storage_with_misordered_builds(
+            [
+                _build("looks-first", _BASE),
+                _build("actually-newest", _BASE + timedelta(days=1)),
+                _build("older", _BASE - timedelta(days=1)),
+            ]
+        )
+
+        assert get_most_recent_build(storage).uuid == "actually-newest"
+
+
+class TestGetMostRecentBuild:
+    def test_returns_the_newest_build(self):
+        storage = _admin_storage_with_builds(
+            [_build("a", _BASE), _build("b", _BASE + timedelta(minutes=1))]
+        )
+
+        assert get_most_recent_build(storage).uuid == "b"
+
+    def test_returns_none_on_an_empty_db(self):
+        assert get_most_recent_build(_admin_storage_with_builds([])) is None
 
 
 class TestSelectRecordableTargets:
     def test_selects_only_successful_targets(self):
         storage = _admin_storage_with(
             [
-                _target("b1", "t1", Status.SUCCESS, _BASE),
-                _target("b1", "t2", Status.SUCCESS, _BASE + timedelta(seconds=1)),
+                _target("b1", "t1", finished_at=_BASE),
+                _target("b1", "t2", status=Status.FAILED, finished_at=_BASE),
             ]
         )
-        selected = select_recordable_targets(storage, finished_after=_BASE)
-        assert {t.uuid for t in selected} == {"t1", "t2"}
 
-    def test_watermark_selects_only_newly_finished(self):
-        t1 = _target("b1", "t1", finished_at=_BASE)
-        t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=10))
-        t3 = _target("b1", "t3", finished_at=_BASE + timedelta(seconds=20))
-        storage = _admin_storage_with([t1, t2, t3])
+        found = select_recordable_targets(storage, build_id="b1")
 
-        selected = select_recordable_targets(
-            storage, finished_after=_BASE + timedelta(seconds=5)
+        assert [t.uuid for t in found] == ["t1"]
+
+    def test_scoped_to_one_build(self):
+        """Only the named build's targets, so no unrelated history is recorded."""
+        storage = _admin_storage_with(
+            [
+                _target("b1", "t1", finished_at=_BASE),
+                _target("b2", "t2", finished_at=_BASE),
+            ]
         )
-        # t1 finished before the watermark; only t2 and t3 are selected.
-        assert {t.uuid for t in selected} == {"t2", "t3"}
 
-    def test_watermark_boundary_is_inclusive(self):
-        t1 = _target("b1", "t1", finished_at=_BASE)
-        storage = _admin_storage_with([t1])
-        selected = select_recordable_targets(storage, finished_after=_BASE)
-        assert {t.uuid for t in selected} == {"t1"}
+        found = select_recordable_targets(storage, build_id="b1")
 
-    def test_interleaved_null_finished_at_does_not_truncate_scan(self):
-        # A NULL-finished_at row appearing before a still-recordable finished one
-        # (out-of-contract ordering) must be skipped, not treated as a watermark
-        # crossing that ends the walk.
-        t_new = _target("b1", "t_new", finished_at=_BASE + timedelta(seconds=20))
-        t_null = _target("b1", "t_null", finished_at=None)
-        t_recordable = _target(
-            "b1", "t_recordable", finished_at=_BASE + timedelta(seconds=10)
+        assert [t.uuid for t in found] == ["t1"]
+
+    def test_null_finished_at_is_skipped_not_a_stop(self):
+        """A NULL row is not yet complete, but must not truncate the page walk."""
+        storage = _admin_storage_returning(
+            [
+                [
+                    _target("b1", "t-null", finished_at=None),
+                    _target("b1", "t1", finished_at=_BASE),
+                ]
+            ]
         )
-        storage = _admin_storage_returning([[t_new, t_null, t_recordable]])
 
-        selected = select_recordable_targets(
-            storage, finished_after=_BASE + timedelta(seconds=5)
+        found = select_recordable_targets(storage, build_id="b1")
+
+        assert [t.uuid for t in found] == ["t1"]
+
+    def test_pages_past_a_full_first_page(self):
+        page = [
+            _target("b1", f"t{i}", finished_at=_BASE + timedelta(seconds=i))
+            for i in range(_SCAN_PAGE_SIZE)
+        ]
+        storage = _admin_storage_returning(
+            [page, [_target("b1", "tail", finished_at=_BASE)]]
         )
-        # t_null is skipped; t_recordable is still newer than the watermark and
-        # must not be dropped by an early return on the NULL row.
-        assert {t.uuid for t in selected} == {"t_new", "t_recordable"}
 
-    def test_tz_aware_finished_at_does_not_break_watermark_compare(self):
-        # A storage backend may hand finished_at back timezone-aware even though
-        # it was written naive. Comparing a naive watermark against an aware
-        # finished_at (or vice versa) would raise TypeError and abort the scan;
-        # both sides are normalized to naive UTC so the walk still works. Here
-        # _BASE is treated as UTC, so the aware value one hour later in UTC (=
-        # _BASE + 1h) is newer than the watermark and must be selected.
-        aware = (_BASE + timedelta(hours=1)).replace(tzinfo=timezone.utc)
-        t_aware = _target("b1", "t_aware", finished_at=aware)
-        older = _target("b1", "t_older", finished_at=_BASE - timedelta(seconds=10))
-        storage = _admin_storage_returning([[t_aware, older]])
+        found = select_recordable_targets(storage, build_id="b1")
 
-        selected = select_recordable_targets(storage, finished_after=_BASE)
-        assert {t.uuid for t in selected} == {"t_aware"}
-
-    def test_overflowing_aware_finished_at_does_not_abort_scan(self):
-        # The --base-build-id all anchor is datetime.min itself, and a backend may
-        # hand it back aware with a positive UTC offset. Shifting that to UTC overflows
-        # datetime.min, which would raise OverflowError out of the whole scan
-        # (through reconcile_once and start()) rather than merely comparing wrong.
-        # It must be clamped to the bound instead, leaving the walk intact.
-        overflowing = datetime.min.replace(tzinfo=timezone(timedelta(hours=5)))
-        t_min = _target("b1", "t_min", finished_at=overflowing)
-        t_new = _target("b1", "t_new", finished_at=_BASE + timedelta(seconds=10))
-        storage = _admin_storage_returning([[t_new, t_min]])
-
-        selected = select_recordable_targets(storage, finished_after=_BASE)
-        # t_min clamps to datetime.min, which is older than the watermark, so it
-        # ends the walk — but t_new, read before it, is still selected.
-        assert {t.uuid for t in selected} == {"t_new"}
-
-    def test_overflowing_aware_watermark_does_not_abort_scan(self):
-        # Same overflow on the cutoff side: a datetime.min watermark read back
-        # aware must clamp to datetime.min (selecting everything, per
-        # --base-build-id all) rather than raising out of the scan.
-        cutoff = datetime.min.replace(tzinfo=timezone(timedelta(hours=5)))
-        t1 = _target("b1", "t1", finished_at=_BASE)
-        storage = _admin_storage_with([t1])
-
-        selected = select_recordable_targets(storage, finished_after=cutoff)
-        assert {t.uuid for t in selected} == {"t1"}
+        assert len(found) == _SCAN_PAGE_SIZE + 1
 
 
-class TestGetMostRecentSuccessfulTarget:
-    """Seeding anchor lookup — must survive a pre-``finished_at`` NULL backlog."""
+class TestReconcileBuild:
+    def test_records_each_unrecorded_target(self):
+        storage = _admin_storage_with(
+            [
+                _target("b1", "t1", finished_at=_BASE),
+                _target("b1", "t2", finished_at=_BASE + timedelta(minutes=1)),
+            ]
+        )
+        store = _StubStore()
 
-    def test_pages_past_a_full_first_page_of_nulls(self):
-        # finished_at stamping was added after rows already existed, so real
-        # deployments hold SUCCESS targets with finished_at NULL — and PostgreSQL
-        # sorts NULLs FIRST under DESC (the sort is a bare desc(), no NULLS LAST).
-        # Reading only page 0 would return None here, making `--base-build-id`
-        # raise LineageSeedError on exactly the deployments that have history to
-        # anchor against — a crashloop, since --base-build-id is meant to stay in
-        # the pod spec.
-        nulls = [_target("b1", f"t_null_{i}") for i in range(_SCAN_PAGE_SIZE)]
-        anchor = _target("b2", "t_anchor", finished_at=_BASE)
-        storage = _admin_storage_returning([nulls, [anchor]])
+        result = reconcile_build(store, storage, build_id="b1")
 
-        found = get_most_recent_successful_target(storage)
-        assert found is not None and found.uuid == "t_anchor"
+        assert set(store.recorded_calls) == {("b1", "t1"), ("b1", "t2")}
+        assert result.newly_recorded == 2
+        assert result.all_confirmed is True
 
-    def test_stops_at_a_short_page_of_nulls(self):
-        # A short page is the last one: no non-NULL row exists, so this must
-        # return None rather than paging forever.
-        storage = _admin_storage_returning([[_target("b1", "t_null")]])
-        assert get_most_recent_successful_target(storage) is None
-        assert storage.target_storage.get_by_where.call_count == 1
+    def test_already_recorded_targets_are_skipped(self):
+        """Dedup is the only thing preventing duplicates with random run ids."""
+        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        store = _StubStore(already_recorded={"t1"})
+
+        result = reconcile_build(store, storage, build_id="b1")
+
+        assert store.recorded_calls == []
+        assert result.newly_recorded == 0
+        assert result.all_confirmed is True
+
+    def test_build_with_no_targets_is_trivially_confirmed(self):
+        """Otherwise the checkpoint would pin behind a build with no lineage."""
+        storage = _admin_storage_with([])
+        store = _StubStore()
+
+        result = reconcile_build(store, storage, build_id="b1")
+
+        assert result.all_confirmed is True
+        assert result.newly_recorded == 0
+
+    def test_failure_does_not_abort_the_build_but_blocks_confirmation(self):
+        """A failing target must not stop its siblings, nor be reported confirmed.
+
+        Reporting confirmed would let the checkpoint advance past a build whose
+        lineage is still missing, and nothing sweeps behind the mark.
+        """
+        storage = _admin_storage_with(
+            [
+                _target("b1", "t1", finished_at=_BASE),
+                _target("b1", "t2", finished_at=_BASE + timedelta(minutes=1)),
+            ]
+        )
+        store = _StubStore(fail={"t1"})
+
+        result = reconcile_build(store, storage, build_id="b1")
+
+        assert ("b1", "t2") in store.recorded_calls
+        assert result.all_confirmed is False
+
+    def test_on_error_callback_receives_the_failure(self):
+        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        store = _StubStore(fail={"t1"})
+        seen: list[tuple[str, str, Exception]] = []
+
+        reconcile_build(
+            store,
+            storage,
+            build_id="b1",
+            on_error=lambda b, t, e: seen.append((b, t, e)),
+        )
+
+        assert len(seen) == 1
+        assert seen[0][0] == "b1" and seen[0][1] == "t1"
+
+    def test_on_success_callback_fires_per_recorded_target(self):
+        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        store = _StubStore()
+        seen: list[tuple[str, str]] = []
+
+        reconcile_build(
+            store, storage, build_id="b1", on_success=lambda b, t: seen.append((b, t))
+        )
+
+        assert seen == [("b1", "t1")]
+
+    def test_skipped_targets_are_reported_as_a_known_gap(self):
+        """A dropped target confirms the build *with* a gap the caller can log.
+
+        Holding the mark instead would wedge every newer build behind lineage that
+        will never land — what the durable drop set exists to prevent.
+        """
+        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        store = _StubStore()
+
+        result = reconcile_build(store, storage, build_id="b1", skip={"t1"})
+
+        assert store.recorded_calls == []
+        assert result.dropped == {"t1"}
+        assert result.all_confirmed is True
+
+    def test_passes_expected_run_counts_derived_from_outputs(self):
+        """The dedup count must match how many runs the sink will emit."""
+        storage = _admin_storage_with(
+            [
+                _target(
+                    "b1",
+                    "t1",
+                    finished_at=_BASE,
+                    output_artifacts={"a": ["o1", "o2"]},
+                ),
+                _target("b1", "t2", finished_at=_BASE),
+            ]
+        )
+        store = _StubStore()
+
+        reconcile_build(store, storage, build_id="b1")
+
+        assert store.last_expected_counts == {"t1": 2, "t2": 1}
+
+    def test_prerun_skipped_target_is_omitted_from_expected_counts(self):
+        """A skipped-for-prerun target must fall back to the presence check.
+
+        Such a target records the *original* target's outputs (WandBJobStats.
+        create_jobstats_for_target swaps the original in before building events),
+        so a count derived from its own output_artifacts describes different
+        artifacts than the ones actually emitted. Omitting it from
+        expected_counts is what makes filter_unrecorded fall back to >=1; a
+        wrong count in the too-high direction would report the target unrecorded
+        on every scan and, since run ids are random, write a fresh duplicate run
+        set each time while the build never became all_confirmed.
+
+        't2' here is the shape that would break: one output of its own against an
+        original that emits more, so it must be absent from the dict rather than
+        present with a 1.
+        """
+        storage = _admin_storage_with(
+            [
+                _target(
+                    "b1",
+                    "t1",
+                    finished_at=_BASE,
+                    output_artifacts={"a": ["o1", "o2"]},
+                ),
+                _target(
+                    "b1",
+                    "t2",
+                    finished_at=_BASE,
+                    output_artifacts={"a": ["o3"]},
+                    skipped_for_prerun_target_id="original-target",
+                ),
+            ]
+        )
+        store = _StubStore()
+
+        reconcile_build(store, storage, build_id="b1")
+
+        assert store.last_expected_counts == {"t1": 2}
+
+    def test_prerun_skipped_target_is_still_recorded(self):
+        """Omitting it from the counts must not exclude it from recording."""
+        storage = _admin_storage_with(
+            [
+                _target(
+                    "b1",
+                    "t2",
+                    finished_at=_BASE,
+                    output_artifacts={"a": ["o3"]},
+                    skipped_for_prerun_target_id="original-target",
+                ),
+            ]
+        )
+        store = _StubStore()
+
+        result = reconcile_build(store, storage, build_id="b1")
+
+        assert store.recorded_calls == [("b1", "t2")]
+        assert result.newly_recorded == 1
+        assert result.all_confirmed
+
+    # ---- fail-closed dedup -----------------------------------------------
+
+    def test_dedup_failure_records_nothing(self):
+        """Writing on an unanswered query would duplicate runs, not resume them."""
+        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        store = _StubStore(query_error=RuntimeError("timeout"))
+
+        result = reconcile_build(store, storage, build_id="b1")
+
+        assert store.recorded_calls == []
+        assert result.newly_recorded == 0
+
+    def test_dedup_failure_is_reported_and_not_confirmed(self):
+        """An empty candidate set must never be read as "all recorded".
+
+        ``all_confirmed`` staying False is what stops the caller advancing its
+        checkpoint over work that was never done.
+        """
+        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        failure = RuntimeError("timeout")
+        store = _StubStore(query_error=failure)
+
+        result = reconcile_build(store, storage, build_id="b1")
+
+        assert result.dedup_query_failed is True
+        assert result.query_failure is failure
+        assert result.all_confirmed is False
+
+
+class TestIsPermanentSinkFailure:
+    def test_auth_failure_is_permanent(self):
+        assert is_permanent_sink_failure(RuntimeError("permission denied")) is True
+
+    def test_missing_project_is_permanent(self):
+        assert (
+            is_permanent_sink_failure(RuntimeError("could not find project x")) is True
+        )
+
+    def test_network_failure_is_transient(self):
+        assert is_permanent_sink_failure(RuntimeError("connection timed out")) is False
+
+    def test_unknown_message_is_transient(self):
+        """The default is transient — the safe direction.
+
+        Retrying a permanent failure only costs queries; treating a transient one as
+        permanent would switch recording off over a network blip.
+        """
+        assert is_permanent_sink_failure(RuntimeError("something odd")) is False
+
+    def test_same_type_classifies_differently_by_message(self):
+        """The exception *type* cannot separate these.
+
+        wandb raises the same error class for a permanent refusal and for an
+        ordinary network blip, which is why this matches on the message.
+        """
+
+        class CommError(Exception):
+            pass
+
+        assert is_permanent_sink_failure(CommError("unauthorized")) is True
+        assert is_permanent_sink_failure(CommError("connection reset")) is False
+
+    def test_wrapped_cause_is_inspected(self):
+        """The real cause usually arrives wrapped by the sink's own handling."""
+        try:
+            try:
+                raise RuntimeError("invalid api key")
+            except RuntimeError as inner:
+                raise ValueError("recording failed") from inner
+        except ValueError as outer:
+            assert is_permanent_sink_failure(outer) is True
 
 
 class TestRecordTargetLineage:
     def test_leaf_calls_store_with_ids(self):
         store = MagicMock()
         storage = MagicMock()
+
         record_target_lineage(store, storage, build_id="b1", target_id="t1")
+
         store.add_jobstats_for_build_target.assert_called_once_with(
             storage, build_id="b1", target_id="t1"
         )
 
 
-class TestReconcileOnce:
-    def test_records_each_successful_target(self):
-        store = _StubStore()
-        storage = _admin_storage_with(
-            [
-                _target("b1", "t1", finished_at=_BASE),
-                _target("b1", "t2", finished_at=_BASE + timedelta(seconds=1)),
-            ]
-        )
-
-        recorded = reconcile_once(store, storage, finished_after=_BASE)
-
-        assert recorded == 2
-        # Recorded oldest-finished-first.
-        assert [c[1] for c in store.recorded_calls] == ["t1", "t2"]
-
-    def test_already_recorded_targets_are_skipped(self):
-        store = _StubStore(already_recorded={"t1"})
-        storage = _admin_storage_with(
-            [
-                _target("b1", "t1", finished_at=_BASE),
-                _target("b1", "t2", finished_at=_BASE + timedelta(seconds=1)),
-            ]
-        )
-
-        reconcile_once(store, storage, finished_after=_BASE)
-
-        # Only the not-yet-recorded target is recorded this pass.
-        assert store.recorded_calls == [("b1", "t2")]
-
-    def test_backfill_pages_through_all_targets(self):
-        """``datetime.min`` is the deliberate full-history backfill.
-
-        There is no longer an implicit "no watermark" mode — a caller that wants
-        every successful target ever must ask for it — and the walk must page
-        past the first page to deliver it.
-        """
-        store = _StubStore()
-        targets = [
-            _target("b1", f"t{i}", finished_at=_BASE + timedelta(seconds=i))
-            for i in range(_SCAN_PAGE_SIZE + 5)
-        ]
-        storage = _admin_storage_with(targets)
-
-        reconcile_once(store, storage, finished_after=datetime.min)
-        assert {c[1] for c in store.recorded_calls} == {t.uuid for t in targets}
-
-    def test_steady_state_stops_at_watermark(self):
-        store = _StubStore()
-        targets = [
-            _target("b1", f"t{i}", finished_at=_BASE + timedelta(seconds=i))
-            for i in range(_SCAN_PAGE_SIZE + 5)
-        ]
-        storage = _admin_storage_with(targets)
-
-        # Watermark just below the newest few: only those newer are recorded,
-        # and the walk stops before reading the whole table.
-        watermark = _BASE + timedelta(seconds=_SCAN_PAGE_SIZE + 2)
-        reconcile_once(store, storage, finished_after=watermark)
-
-        recorded = {c[1] for c in store.recorded_calls}
-        assert recorded == {
-            f"t{i}"
-            for i in range(_SCAN_PAGE_SIZE + 5)
-            if _BASE + timedelta(seconds=i) >= watermark
-        }
-        # get_by_where was called only once (single partial page), not paged
-        # through the whole table.
-        assert storage.target_storage.get_by_where.call_count == 1
-
-    def test_failure_does_not_abort_scan_and_target_retried_next_scan(self):
-        store = _StubStore(fail={"t1"})
-        storage = _admin_storage_with(
-            [
-                _target("b1", "t1", finished_at=_BASE),
-                _target("b1", "t2", finished_at=_BASE + timedelta(seconds=1)),
-            ]
-        )
-
-        reconcile_once(store, storage, finished_after=_BASE)
-        # Scan continued past the failure and recorded t2.
-        assert ("b1", "t2") in store.recorded_calls
-        assert ("b1", "t1") not in store.recorded_calls
-
-        # Next scan: t1 no longer fails and is retried (still unrecorded).
-        store._fail = set()
-        reconcile_once(store, storage, finished_after=_BASE)
-        assert ("b1", "t1") in store.recorded_calls
-
-    def test_on_error_callback_invoked_on_failure(self):
-        store = _StubStore(fail={"t1"})
-        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
-        errors = []
-
-        reconcile_once(
-            store,
-            storage,
-            finished_after=_BASE,
-            on_error=lambda b, t, e: errors.append((b, t, str(e))),
-        )
-
-        assert ("b1", "t1") not in store.recorded_calls
-        assert errors == [("b1", "t1", "boom")]
-
-    def test_skip_set_excludes_targets_and_does_not_advance_watermark(self):
-        store = _StubStore()
-        t1 = _target("b1", "t1", finished_at=_BASE)
-        t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=5))
-        storage = _admin_storage_with([t1, t2])
-
-        advances = []
-        reconcile_once(
-            store,
-            storage,
-            finished_after=_BASE,
-            skip={"t2"},
-            on_checkpoint_advance=lambda build_id, finished_at: advances.append(
-                (build_id, finished_at)
-            ),
-        )
-
-        # t2 is skipped (dropped), t1 still recorded.
-        assert store.recorded_calls == [("b1", "t1")]
-        # The checkpoint only advances over the actually-recorded target; a
-        # skipped target must not carry it past t1.
-        assert advances == [("b1", _BASE)]
-
-    def test_on_checkpoint_advance_fires_per_target_oldest_first(self):
-        store = _StubStore()
-        t1 = _target("b1", "t1", finished_at=_BASE)
-        t2 = _target("b2", "t2", finished_at=_BASE + timedelta(seconds=5))
-        storage = _admin_storage_with([t1, t2])
-        advances = []
-
-        reconcile_once(
-            store,
-            storage,
-            finished_after=_BASE,
-            on_checkpoint_advance=lambda build_id, finished_at: advances.append(
-                (build_id, finished_at)
-            ),
-        )
-
-        assert advances == [
-            ("b1", _BASE),
-            ("b2", _BASE + timedelta(seconds=5)),
-        ]
-
-    def test_on_checkpoint_advance_stops_at_failed_target(self):
-        """The checkpoint must not advance past a target that failed to record.
-
-        t2 fails while t3 (newer) still records — a failure does not abort the
-        scan. But the checkpoint may only cover the *contiguous* oldest-first run
-        of recorded targets: advancing to t3 would durably move the watermark
-        past t2's unrecorded lineage, so the next scan would not re-surface t2 and
-        a restart (retry state is in-memory only) would drop it permanently.
-        """
-        store = _StubStore(fail={"t2"})
-        t1 = _target("b1", "t1", finished_at=_BASE)
-        t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=5))
-        t3 = _target("b1", "t3", finished_at=_BASE + timedelta(seconds=10))
-        storage = _admin_storage_with([t1, t2, t3])
-        advances = []
-
-        reconcile_once(
-            store,
-            storage,
-            finished_after=_BASE,
-            on_checkpoint_advance=lambda build_id, finished_at: advances.append(
-                (build_id, finished_at)
-            ),
-        )
-
-        # t3 is still recorded (the scan does not abort)...
-        assert ("b1", "t3") in store.recorded_calls
-        # ...but the checkpoint stops at t1, the last target before the failure.
-        assert advances == [("b1", _BASE)]
-
-    def test_passes_expected_run_counts_derived_from_outputs(self):
-        store = _StubStore()
-        # t1: two output-artifact names, the second holding two artifacts -> 3
-        # runs. t2: no outputs -> the single "no-output" run.
-        t1 = _target(
-            "b1",
-            "t1",
-            finished_at=_BASE,
-            output_artifacts={"a": ["o1"], "b": ["o2", "o3"]},
-        )
-        t2 = _target("b1", "t2", finished_at=_BASE + timedelta(seconds=1))
-        storage = _admin_storage_with([t1, t2])
-
-        reconcile_once(store, storage, finished_after=_BASE)
-
-        assert store.last_expected_counts == {"t1": 3, "t2": 1}
-
-    def test_skipped_for_prerun_target_omitted_from_expected_counts(self):
-        store = _StubStore()
-        # A skipped-for-prerun target records the *original* target's outputs, so
-        # its own output_artifacts give the wrong count; it must be omitted and
-        # fall back to the presence check.
-        t1 = _target(
-            "b1",
-            "t1",
-            finished_at=_BASE,
-            output_artifacts={"a": ["o1"]},
-            skipped_for_prerun_target_id="orig",
-        )
-        storage = _admin_storage_with([t1])
-
-        reconcile_once(store, storage, finished_after=_BASE)
-
-        assert store.last_expected_counts == {}
-
-
 class TestExpectedRunCount:
     def test_counts_all_output_artifacts_across_lists(self):
         t = _target("b1", "t1", output_artifacts={"a": ["o1"], "b": ["o2", "o3"]})
-        assert _expected_run_count(t) == 3
+        assert expected_run_count(t) == 3
 
     def test_no_outputs_expects_one_run(self):
-        assert _expected_run_count(_target("b1", "t1")) == 1
+        assert expected_run_count(_target("b1", "t1")) == 1
 
 
 class TestRecordSelectedTargets:
@@ -499,3 +719,43 @@ class TestRecordSelectedTargets:
         store.add_jobstats_for_build_target.assert_any_call(
             storage, build_id="b2", target_id="t2"
         )
+
+
+class TestSeedAnchors:
+    """Where ``lineage-watch --base-build-id`` places the checkpoint."""
+
+    def test_all_anchors_at_utc_min(self):
+        checkpoint = _build_checkpoint(_admin_storage_with_builds([]), SEED_ALL)
+
+        assert checkpoint["build_id"] == BACKFILL_BUILD_ID
+        assert checkpoint["created_time"] == UTC_MIN.isoformat()
+
+    def test_from_latest_anchors_at_the_newest_build(self):
+        """The anchored build is recorded whole, so no oldest-target step is needed."""
+        storage = _admin_storage_with_builds(
+            [_build("a", _BASE), _build("b", _BASE + timedelta(minutes=1))]
+        )
+
+        checkpoint = _build_checkpoint(storage, SEED_FROM_LATEST)
+
+        assert checkpoint["build_id"] == "b"
+        assert checkpoint["created_time"] == (_BASE + timedelta(minutes=1)).isoformat()
+
+    def test_build_id_anchors_at_that_build(self):
+        storage = _admin_storage_with_builds(
+            [_build("a", _BASE), _build("b", _BASE + timedelta(minutes=1))]
+        )
+
+        checkpoint = _build_checkpoint(storage, "a")
+
+        assert checkpoint["build_id"] == "a"
+        assert checkpoint["created_time"] == _BASE.isoformat()
+
+    def test_from_latest_on_an_empty_db_raises(self):
+        """Better to fail loudly than to seed an anchor that means "everything"."""
+        with pytest.raises(LineageSeedError):
+            _build_checkpoint(_admin_storage_with_builds([]), SEED_FROM_LATEST)
+
+    def test_unknown_build_id_raises(self):
+        with pytest.raises(LineageSeedError):
+            _build_checkpoint(_admin_storage_with_builds([_build("a", _BASE)]), "gone")

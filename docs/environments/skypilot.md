@@ -90,9 +90,11 @@ admin provisions — gbserver does not create or mount it. When set, `shared_wor
 
 - is the default base for gbserver-managed caches (currently the HF asset cache);
 - is exported to every step's `run` as `GB_SHARED_WORKDIR`;
-- gets a per-target-run subdir `${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/`, exported as
-  `GB_BUILD_WORKDIR` and set as the **initial CWD** of the `run` command. It is created lazily before
-  the first step and `rm -rf`'d at target-run teardown; retries get a fresh dir.
+- gets a per-target-run subdir `${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/` that is the
+  **initial CWD** of both the `setup` and `run` scripts (with no `shared_workdir` both phases instead
+  share SkyPilot's default `~/sky_workdir` — either way the two phases start in the same directory). It
+  is created lazily before the first step and `rm -rf`'d at target-run teardown; retries get a fresh
+  dir.
 
 When unset, gbserver-managed caches fall back to `~/.cache/gbserver/<store>` on the worker, which only
 works when consecutive steps land on the same machine. Example paths per backend: `slurm: /shared`
@@ -146,8 +148,8 @@ environment_configs:
           # ---- sky.Task ----
           setup: |                # Optional. Run once at cluster bring-up (cached across reuse).
             pip install foo bar
-          run: |                  # Required. The actual job each launch. CWD is GB_BUILD_WORKDIR when
-            echo "LLMB_ARTIFACT_ID:my_out LLMB_ARTIFACT_PATH:/tmp/out.json"   # shared_workdir is set.
+          run: |                  # Required. The actual job each launch. CWD is the per-run workdir
+            echo "LLMB_ARTIFACT_ID:my_out LLMB_ARTIFACT_PATH:/tmp/out.json"   # (or $HOME).
           envs:                   # Optional. Extra env vars. Merged AFTER env-level secrets and
             FOO: bar              # BEFORE config.launcher_config.envs. GB_* vars are auto-injected.
           file_mounts:            # Optional. Two forms (see "file_mounts" below):
@@ -199,15 +201,28 @@ it runs via Docker on the provisioned EC2 host.
 
 `run` is the job body executed on every launch; `setup` runs once at cluster bring-up and is cached
 across cluster reuse (put `pip install`/downloads here, not in `run`). Both are shell scripts and are
-Jinja-templated against the step `config` — reference build inputs with `{{ config.<key> }}`. To fail
-the step on any error, start `run` with `set -euo pipefail`.
+Jinja-templated against the step `config` — reference build inputs with `{{ config.<key> }}`. Both
+bodies run under `set -eu` (see **Failure semantics** below).
 
+- **Failure semantics (`set -eu`):** the launcher prepends `set -eu` to every `run` and `setup` body,
+  so a non-zero exit *anywhere* aborts the step and referencing an unset variable errors out — a body
+  need not add its own `set -eu`. This also governs the raw command a step interpolates: the
+  [`command`](../steps/command.md) step runs `{{ config.command_config.command }}` verbatim, so
+  `python train.py; echo done` never reaches `echo done` if `train.py` exits non-zero, and
+  `deploy.sh $OPTIONAL_FLAG` fails under `set -u` when `OPTIONAL_FLAG` is unset. Guard optional
+  variables with `${VAR:-}` and append `|| true` where a non-zero exit is acceptable. `pipefail` is
+  *not* enabled by default (it would change pipeline semantics for every step); add `set -o pipefail`
+  yourself if a failing command *within a pipeline* should fail the step.
 - **Artifacts:** emit a line matching `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>` (or
   `... LLMB_ARTIFACT_STATE:<value>` for an in-memory value) and the monitor registers it as the step's
   output binding. The marker need not be at column 0 — retrieved SkyPilot logs prefix stdout lines.
-- **Working directory:** when the env defines `shared_workdir`, `run` starts in `GB_BUILD_WORKDIR`
-  (a per-target-run subdir), so relative output paths are isolated per run. See the auto-injected env
-  vars below.
+- **Working directory:** `setup` and `run` always start in the **same** directory, so a relative path
+  one phase writes (e.g. a repo `setup` clones) is read at the same place by the other. When the env
+  defines `shared_workdir`, that directory is a per-target-run workdir, so relative output paths are
+  isolated per run; without `shared_workdir` both phases run in SkyPilot's default `~/sky_workdir`
+  (where relative `file_mounts` also land — see [file_mounts](#file_mounts)). The shared CWD is
+  guaranteed by SkyPilot, which wraps both scripts with the same prologue that `cd`s into it. Prefer
+  relative paths — steps need not know where they run.
 
 #### `resources`
 
@@ -250,16 +265,18 @@ source instead. A **relative source that uses `..` to climb out of the `step.yam
 `../other`) is likewise rejected, keeping sources confined to the step's own assets.
 
 **Destination path resolution — the destination *shape* decides where the payload lands.** When the
-environment defines `shared_workdir` (so `$GB_BUILD_WORKDIR` exists), the destination key is routed by
+environment defines `shared_workdir` (so a per-run workdir exists), the destination key is routed by
 its shape:
 
 | Destination | Lands at | Scope / lifetime |
 |-------------|----------|------------------|
-| **relative** (`payload`, `./payload`, `sub/payload`) | `$GB_BUILD_WORKDIR/<dst>` — the run script's CWD | per-target-run, persistent, shared across the target's steps |
-| **`~/…`** | the container's private home (on containerized LSF, staged then copied inside the container) | per-launch, container-private, ephemeral |
+| **relative** (`payload`, `./payload`, `sub/payload`) | `<per-run-workdir>/<dst>` — the run script's CWD | per-target-run, persistent, shared across the target's steps |
 | **absolute** (`/proj/…`, `/tmp/…`) | that literal path (author's responsibility) | as-is |
 
-**Relative in, relative out.** Because the `run` script's CWD is `$GB_BUILD_WORKDIR`, a **relative**
+A **`~`/`~/…` destination is rejected** (like a `~` source): `~` is not expanded by the launcher, so
+`file_mounts` has a single destination model — relative, or absolute for a fixed location.
+
+**Relative in, relative out.** Because the `run` script's CWD is the per-run workdir, a **relative**
 destination puts the payload at exactly `./<dst>` — the same path, relative to the step, that the
 source occupies next to your `step.yaml`. On shared-FS backends (bluevela `/proj`) that path is also
 visible **inside** the step container. This is the simplest option and gives implicit per-target
@@ -268,14 +285,13 @@ isolation:
 ```yaml
 config:
   file_mounts:
-    payload: payload        # <step.yaml dir>/payload  →  $GB_BUILD_WORKDIR/payload
+    payload: payload        # <step.yaml dir>/payload  →  <per-run-workdir>/payload
   run: |
-    ./payload/run-eval.sh   # CWD is $GB_BUILD_WORKDIR, so the mount is right here
+    ./payload/run-eval.sh   # CWD is the per-run workdir, so the mount is right here
 ```
 
-Use **`~/…`** when you deliberately want the payload private to a single launch (not shared with other
-steps in the target). Use an **absolute** path only when you must hit a fixed location. When
-`shared_workdir` is *not* set, relative destinations fall back to SkyPilot's default (`~/sky_workdir/…`).
+Use an **absolute** path only when you must hit a fixed location. When `shared_workdir` is *not* set,
+relative destinations fall back to SkyPilot's default (`~/sky_workdir/…`).
 
 #### `envs`, `post_launch_task`, `idle_minutes_to_autostop`
 
@@ -296,7 +312,6 @@ Added on top of (and overriding) anything in `envs`:
 | `GB_TARGETRUN_ID` | The enclosing target run id, when present. |
 | `GB_BUILD_ID` | The build id, when present. |
 | `GB_SHARED_WORKDIR` | The env-level `shared_workdir` path, when set. |
-| `GB_BUILD_WORKDIR` | Per-target-run subdir under `shared_workdir`, when set (also the run's initial CWD). |
 | `<env secrets>` | All secrets resolved from the env's `secret_refs`, merged before launcher `envs`. |
 
 ### `skypilot_monitor` config

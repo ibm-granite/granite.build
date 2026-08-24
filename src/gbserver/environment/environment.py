@@ -94,6 +94,26 @@ logger = get_logger(__name__)
 
 BINDING_KEY = "binding"
 
+# ANSI escape sequences (colour codes, cursor moves, etc.). Some environments'
+# retrieved logs colourise their line prefixes — SkyPilot, for example, wraps its
+# `(name, pid=N)` worker prefix in a cyan SGR sequence (`\x1b[36m(...)\x1b[0m`).
+# Left in place these would (a) defeat a `^`-anchored line_regex, since the line no
+# longer starts with the marker, and (b) leak into a captured field value (e.g. a
+# trailing reset folded onto a commit hash). We strip them once, centrally, in
+# get_events_from_log_line so every monitor sees clean text and no per-environment
+# regex has to account for ANSI — the handling is uniform across all environments.
+# Pattern covers both CSI sequences (`\x1b[...<final>`) and two-char escapes.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences (colour codes, cursor moves) from a log line.
+
+    :param text: a raw log line that may carry terminal escape sequences.
+    :returns: the line with all ANSI escape sequences removed.
+    """
+    return _ANSI_ESCAPE_RE.sub("", text)
+
 
 class EventFieldRegexLogParserConfig(Config):
     """Details of a single field in the event payload."""
@@ -1353,6 +1373,18 @@ class Environment(ABC):
 
     @classmethod
     def _load_environment_types(cls: Type[Self]) -> None:
+        from gbcommon.plugins import (
+            GROUP_ENVIRONMENTS,
+            PluginRegistrar,
+            keys_by_name_cased,
+        )
+
+        # Files each environment under both cased forms of its name (module name
+        # in-tree, entry-point name for plugins), mirroring the historical
+        # behavior. Both passes register through this one registrar.
+        registrar = PluginRegistrar(
+            cls.environment_types, "Environment type", keys_by_name_cased
+        )
         package_dir = os.path.dirname(__file__)
 
         for filename in os.listdir(package_dir):
@@ -1374,10 +1406,7 @@ class Environment(ABC):
                         if isinstance(handler_class, type) and issubclass(
                             handler_class, cls
                         ):
-                            cls.environment_types[environment_type_name.lower()] = (
-                                handler_class
-                            )
-                            cls.environment_types[environment_type_name] = handler_class
+                            registrar.add(handler_class, environment_type_name)
                         else:
                             logger.warning(
                                 "Ignoring %s since it is not a subclass of Environment class",
@@ -1401,6 +1430,11 @@ class Environment(ABC):
                         environment_type_name,
                         e,
                     )
+
+        # Discover environments shipped by separately-installed plugin packages.
+        # Runs after the in-tree scan so the core-wins rule protects built-ins.
+        # The entry-point *name* is the type key (e.g. ``k8s``).
+        registrar.discover(GROUP_ENVIRONMENTS, cls)
 
     async def _read_stream_and_create_event_all(
         self: Self,
@@ -1471,6 +1505,12 @@ class Environment(ABC):
         the events will be plain dicts instead of BuildEvent
         to allow sending over the network.
         """
+        # Normalise away terminal colour codes before any rule runs, so anchored
+        # markers still match and captured values never absorb a stray escape. Done
+        # once here rather than per-monitor, keeping ANSI handling uniform across all
+        # environments (SkyPilot's retrieved logs colourise their line prefix; bash
+        # and docker stream raw stdout and are unaffected).
+        log_line = _strip_ansi(log_line)
         logger.debug("Running get_events_from_log_line for line: %s", log_line)
         if event_q is None:
             event_q = asyncio.Queue()

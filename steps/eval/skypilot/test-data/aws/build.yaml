@@ -4,8 +4,7 @@
 # image from its registry by the reference frozen into the step's image_id
 # (docker:${IMAGE_REF}), so the image must be PUBLISHED to a pullable registry
 # first (`make image publish-image REGISTRY=...`) — the committed quay.io/your-org
-# default will not pull. (Contrast the local Docker environment, whose
-# pull_policy=if-not-present used a locally built image with no publish.)
+# default will not pull.
 #
 # HF-free: the placeholder eval.sh writes results.json without downloading a
 # model, and the single output is an env:// artifact (a no-op push that just

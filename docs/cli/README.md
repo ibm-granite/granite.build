@@ -6,7 +6,7 @@ Granite.Build ships three CLIs:
 |-----|-------------|--------------|
 | [`gb`](gb-cli-reference.md) | Build authors / users | A thin client over gbserver's REST API (`/api/v1`) — submit and monitor builds, manage artifacts, spaces, secrets, steps, and templates. |
 | [`gbserver`](gbserver-cli-reference.md) | Operators | The server side — run the REST API, the build/PR watchers, the build runner, the all-in-one standalone server, and admin tasks. |
-| [`gbtest`](gbtest-cli-reference.md) | Build authors / CI | Run a `buildtest.yaml` through the YAML-driven build-test harness (assertions over a build's targets, steps, and artifacts). |
+| [`gbtest`](gbtest-cli-reference.md) | Build authors / CI | Run a `buildtest.yaml` through the YAML-driven build-test harness (assertions over a build's targets, steps, and artifacts); also `gbtest render` a skeleton `buildtest.yaml` from an executable `build.yaml`. |
 
 ## How they relate
 

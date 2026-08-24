@@ -50,7 +50,7 @@ if not _can_import("kubernetes_asyncio"):
     collect_ignore.append("unit/resilience/test_k8s_retry.py")
     collect_ignore.append("unit/monitoring/test_appwrapper_monitor.py")
     collect_ignore.append("unit/environment/test_cleanup_retry.py")
-    collect_ignore.append("integration/ibm/environment/test_k8s_raycluster_cleanup.py")
+    collect_ignore.append("integration/environment/test_k8s_raycluster_cleanup.py")
 
 if not _can_import("asyncssh"):
     collect_ignore.append("integration/ibm/utils/test_ssh_tunnel.py")
@@ -303,6 +303,14 @@ def pytest_addoption(parser):
         default=None,
         metavar="PATH",
         help="Path to a buildtest.yaml file to run via the generic YAML runner test.",
+    )
+    parser.addoption(
+        "--build-yaml",
+        action="store",
+        default=None,
+        metavar="PATH",
+        help="Override the build.yaml a buildtest uses (gbtest's `-f`); resolves "
+        "against CWD instead of the buildtest.yaml's directory.",
     )
 
 

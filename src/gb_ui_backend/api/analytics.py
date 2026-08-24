@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gb_ui_backend.config import Config, get_config
 from gb_ui_backend.services.db_schema import GbdBuild, GbdMeta, get_db, get_optional_db
 from gb_ui_backend.services.gbserver_source import get_gbserver_source
+from gb_ui_backend.services.request_identity import resolve_identity
 
 TREND_SENTINEL_BUILD_ID = uuid_module.UUID("00000000-0000-0000-0000-000000000000")
 
@@ -341,22 +342,10 @@ class SaveTrendRequest(BaseModel):
 
 
 def get_current_author(request: Request) -> str:
-    """Derive the caller's identity from gbserver's AuthMiddleware.
-
-    These routes are mounted directly on gbserver's own app, so
-    AuthMiddleware's `request.state.data["user"]` is already the trusted
-    identity for this request. The X-User-Email header is a fallback for
-    running this app standalone, outside gbserver, where there's no
-    AuthMiddleware at all; "standalone" is the final fallback for
-    apikey/localhost mode, which has no per-user identity.
-
-    This must never be trusted from a client-supplied field, since it's
-    used to scope/authorize saved-analysis ownership.
-    """
-    user = getattr(request.state, "data", {}).get("user")
-    if user is not None:
-        return user.email
-    return request.headers.get("x-user-email") or "standalone"
+    """Derive the caller's identity — see resolve_identity(). Used as a
+    FastAPI dependency to scope/authorize saved-analysis ownership, so this
+    must never be trusted from a client-supplied field."""
+    return resolve_identity(request)
 
 
 class TrendHistoryItem(BaseModel):

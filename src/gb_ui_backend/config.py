@@ -16,6 +16,24 @@ from gbcommon.types.gbenvconfig import parse_boolean
 ANALYTICS_DB_FILENAME = "dashboard-analytics.db"
 
 
+def has_anthropic_chat_config() -> bool:
+    # ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are deliberately not GB_UI_-
+    # prefixed — they're the standard Anthropic SDK credentials, read
+    # directly from os.environ by the `anthropic` package itself. Either one
+    # authenticates (API key for the direct Anthropic API, auth token for an
+    # internal gateway/proxy). Shared by Config.chat_enabled and
+    # tool_loop_backend.py's _build_provider() — both need the identical
+    # check, one to report whether chat is configured at all, the other to
+    # actually gate which provider gets constructed.
+    return bool(os.environ.get("ANTHROPIC_API_KEY")) or bool(
+        os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    )
+
+
+def has_openai_compat_chat_config(config: "Config") -> bool:
+    return bool(config.resolved_chat_llm_base_url and config.resolved_chat_llm_api_key)
+
+
 class Config(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="GB_UI_",
@@ -87,6 +105,59 @@ class Config(BaseSettings):
     # Set to false to disable the AI analysis daemon without removing LLM credentials
     ai_analysis_enabled: bool = Field(default=True)
 
+    # Chat assistant — a hand-rolled agentic tool-calling loop that calls
+    # gbmcp's tools on the user's behalf, against either Claude directly or
+    # any OpenAI-compatible model API (RITS, Ollama, etc.).
+    chat_backend: str = Field(
+        default="tool_loop",
+        description="Which ChatAgentBackend implementation to use (see services/chat_agents/).",
+    )
+    # Deliberately backend-agnostic: this is a raw model identifier string
+    # handed to whichever ChatAgentBackend is active. Its meaning (and
+    # default, if unset) is entirely up to that backend/provider — for
+    # tool_loop_backend.py's AnthropicProvider, it's an Anthropic model ID;
+    # for its OpenAICompatProvider, it's an LLMClient-style model spec
+    # (plain Ollama tag, or RITS's "slug:full/name" form).
+    chat_model: str | None = Field(
+        default=None,
+        description="Model identifier passed to the active chat backend. Meaning is backend-specific.",
+    )
+    # Separate from AI Analysis's llm_base_url/llm_api_key by default (the
+    # interactive agent may warrant a different/bigger model than the bulk
+    # classification daemon), but falls back to them via the resolved_*
+    # properties below so a single-model deployment doesn't need to
+    # configure the same RITS/Ollama endpoint twice.
+    chat_llm_base_url: str = Field(default="")
+    chat_llm_api_key: str = Field(default="")
+
+    # Explicit provider selection — see tool_loop_backend.py's _build_provider().
+    # None (unset/blank) auto-detects: the OpenAI-compatible endpoint wins if
+    # configured (the natural default for a self-hosted deployment — no
+    # external API key, no request data leaving it), falling back to
+    # Anthropic only if that's all that's configured. Setting this always
+    # overrides auto-detection, and errors loudly if the selected provider's
+    # own credentials aren't actually configured, rather than silently
+    # falling through to the other one.
+    chat_provider: str | None = Field(
+        default=None,
+        description="'openai_compatible' or 'anthropic' — overrides auto-detection when both are configured.",
+    )
+
+    @field_validator("chat_provider", mode="before")
+    @classmethod
+    def _parse_chat_provider(cls, v: object) -> object:
+        if isinstance(v, str):
+            if v.strip() == "":
+                return (
+                    None  # blank/unset k8s ConfigMap idiom — fall back to auto-detect
+                )
+            if v.strip() not in ("openai_compatible", "anthropic"):
+                raise ValueError(
+                    f"GB_UI_CHAT_PROVIDER must be 'openai_compatible' or 'anthropic', got {v!r}"
+                )
+            return v.strip()
+        return v
+
     # Master on/off for the whole analytics subsystem, read from GB_UI_ANALYTICS_ENABLED.
     # Tri-state: None (unset) → auto-detect off the presence of compiled UI assets
     # (see analytics_is_enabled); explicit true/false wins. Lets a deployed, API-only
@@ -118,6 +189,23 @@ class Config(BaseSettings):
     @property
     def db_enabled(self) -> bool:
         return bool(self.database_url)
+
+    @property
+    def resolved_chat_llm_base_url(self) -> str:
+        return self.chat_llm_base_url or self.llm_base_url
+
+    @property
+    def resolved_chat_llm_api_key(self) -> str:
+        return self.chat_llm_api_key or self.llm_api_key
+
+    @property
+    def chat_enabled(self) -> bool:
+        # If neither Anthropic credential is set, any configured
+        # OpenAI-compatible endpoint (RITS, Ollama, ...) also enables chat —
+        # see tool_loop_backend.py's _build_provider() for the actual
+        # provider-selection precedence (GB_UI_CHAT_PROVIDER if set, else
+        # OpenAI-compatible wins auto-detection, falling back to Anthropic).
+        return has_anthropic_chat_config() or has_openai_compat_chat_config(self)
 
 
 class GitHubConfig(BaseSettings):

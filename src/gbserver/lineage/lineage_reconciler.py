@@ -26,41 +26,67 @@ admin DB alone.
 This module makes that reconstruction the *central* recording mechanism, rather
 than driving recording off the (in-memory, restart-blind) event stream:
 
-- ``record_target_lineage`` is the single idempotent leaf: "record this one
-  (build, target)". Everything that records lineage goes through it — the
-  reconciliation scan below, and (later) a manual/CLI selector for pushing
-  selected build lineage to the store, with no rework.
-- ``reconcile_once`` is the central selector: it scans the admin DB for
-  successful target runs and feeds each through the leaf.
+- ``record_target_lineage`` is the single leaf: "record this one (build,
+  target)". Everything that records lineage goes through it — the reconciliation
+  scan below, and (later) a manual/CLI selector for pushing selected build
+  lineage to the store, with no rework.
+- Selection is *build-scoped* and runs in two steps:
+  ``select_builds_from_checkpoint`` picks the checkpoint's build and everything
+  created at or after it, and ``reconcile_build`` reconciles one of those builds
+  by reading its successful targets and feeding the unrecorded ones through the
+  leaf. The build is the unit of iteration and of checkpoint advancement.
 
-Idempotency is what makes a full rescan safe: the underlying store records with
-deterministic runIds + ``resume="allow"`` + content-dedupe, so re-recording an
-already-recorded target is harmless. Because the scan re-derives the recordable
-set from the DB on every pass, a target that succeeded while the recorder was
-down is picked up on the next scan — there is no restart blind spot.
+What makes a rescan safe is the sink's dedup query, *not* idempotent writes. Run
+ids are random uuids, so re-recording a target the sink already has writes a
+second set of runs rather than resuming the first — dedup is the only thing
+preventing duplicates, and it identifies a run solely by its ``target_id`` tag.
+That is why ``ILineageStore.filter_unrecorded`` fails CLOSED (an unanswered query
+records nothing and the pass aborts) and why every emitted event must carry that
+tag. Because selection re-derives the recordable set from the DB on every pass, a
+target that succeeded while the recorder was down is picked up on the next scan —
+there is no restart blind spot.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, tzinfo
 from typing import Callable, Iterable, Optional
 
 from gbserver.lineage.jobstats import ILineageStore
 from gbserver.storage.singleton_storage import SingletonAdminStorage
-from gbserver.storage.storage import Pagination, QueryControl, SortOrder
+from gbserver.storage.storage import (
+    CREATED_TIME_FIELD_NAME,
+    Pagination,
+    QueryControl,
+    SortOrder,
+)
+from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# gb_status key under which the LineageWatcher persists its checkpoint, so a
-# restart resumes from the last successfully-recorded target instead of
-# rescanning the whole admin DB. Value shape: {"build_id": str, "finished_at":
-# <ISO 8601 str>}.
+# Aware equivalent of datetime.min, used as the backfill anchor. Every timestamp
+# in the watermark comparison is aware (see as_aware), so the anchor must be too
+# — a naive datetime.min compared against an aware instant raises TypeError. The
+# offset is UTC only because the anchor is a sentinel with no source row of its
+# own; it compares below every real finished_at whatever their offsets.
+UTC_MIN = datetime.min.replace(tzinfo=timezone.utc)
+
+# gb_kv_pairs key under which the LineageWatcher persists its checkpoint, so a
+# restart resumes from the last fully-recorded build instead of rescanning the
+# whole admin DB. Value shape (v2): {"build_id": str, "created_time": <ISO 8601
+# str>, "version": 2}.
+#
+# The key name is unchanged from the v1 (target-shaped) checkpoint because
+# operators have it in pod specs and runbooks; the *value* migrates in place, see
+# LineageWatcher._read_checkpoint.
 LINEAGE_WATCHER_CHECKPOINT_KEY = "lineage_store_latest_build_id"
 
-# gb_status key under which the LineageWatcher persists the target uuids it has
+# gb_kv_pairs key under which the LineageWatcher persists the target uuids it has
 # permanently given up on (after _MAX_RECORD_ATTEMPTS failed attempts). This must
 # be durable, not in-memory: the checkpoint deliberately refuses to advance past
 # an unrecorded target, so a dropped target that came back after a restart would
@@ -81,6 +107,66 @@ _FINISHED_AT_FIELD = "finished_at"
 # targets (typically a partial first page); the page size just bounds how many
 # rows a single query materializes when catching up a backlog.
 _SCAN_PAGE_SIZE = 200
+
+# Builds fetched per admin-DB page by select_builds_from_checkpoint. The walk
+# sorts newest-created-first and stops at the anchor's created_time, so a
+# steady-state scan reads only builds at or after the checkpoint; the page size
+# just bounds how many rows one query materializes while catching up.
+_BUILD_SCAN_PAGE_SIZE = 200
+
+# Version stamped into the checkpoint value. v1 was target-shaped
+# ({"build_id", "finished_at"}, a *target*'s finish time); v2 is build-shaped
+# ({"build_id", "created_time", "version"}). The field name had to change with
+# the ordering key: keeping "finished_at" while storing a build's creation time
+# would make every log line and hand-seeded value a lie.
+LINEAGE_WATCHER_CHECKPOINT_VERSION = 2
+
+# Substrings identifying a dedup-query failure that no retry can clear: the sink
+# is reachable but will never answer this query as configured (bad project or
+# entity, invalid or unauthorized credentials). Recording is switched off rather
+# than retried, because retrying forever would leave the watcher aborting every
+# pass in silence with the checkpoint pinned.
+#
+# Matched on the message rather than the exception type, for the same reason the
+# deleted-run rejection is: wandb raises CommError for ordinary transient network
+# failures AND for permanent refusals, so the type alone cannot separate them
+# (production logs show every one of them arriving as
+# wandb.errors.errors.CommError).
+#
+# Kept SHORT and loose on purpose. A substring that is too specific stops
+# matching the moment wandb rewords its error, and the failure then reads as
+# transient — which is the safe direction, but silently loses the classification.
+# Add to this list only causes an operator must fix; anything unrecognized is
+# treated as transient by is_permanent_sink_failure below.
+_PERMANENT_SINK_FAILURES = (
+    "permission denied",
+    "unauthorized",
+    "invalid api key",
+    "could not find project",
+    "does not exist",
+    "not a member of",
+)
+
+
+def is_permanent_sink_failure(exc: BaseException) -> bool:
+    """Whether a dedup-query failure is permanent (operator must intervene).
+
+    Default is False — "transient" — for anything unrecognized. That is the safe
+    direction: retrying a permanent failure only costs queries, while treating a
+    transient one as permanent would switch recording off over a network blip.
+
+    Walks the exception chain because the real cause often arrives wrapped by
+    wandb's own error handling, the same way the deleted-run rejection did.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = str(current).lower()
+        if any(marker in message for marker in _PERMANENT_SINK_FAILURES):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def record_target_lineage(
@@ -133,98 +219,254 @@ def _successful_targets_page(
     return [t for t in targets if isinstance(t, StoredTargetRun)]
 
 
-def as_utc_naive(value: datetime) -> datetime:
-    """Normalize a ``finished_at`` to naive UTC for safe comparison.
+def _builds_page(storage: SingletonAdminStorage, page_index: int) -> list[StoredBuild]:
+    """Fetch one newest-created-first page of builds.
 
-    ``finished_at`` values are written naive (``datetime.now()`` / event
-    timestamps), but a storage backend or DB driver may hand some rows back
-    timezone-aware. Comparing a naive and an aware ``datetime`` raises
-    ``TypeError``, which would abort the whole scan. Coercing both sides to
-    naive UTC before comparing keeps the watermark walk robust regardless of
-    which awareness the read path yields; naive values are assumed UTC.
+    Ordered by ``created_time`` descending so the caller can walk down from the
+    newest build and stop once it passes its lower bound, rather than
+    materializing every build the platform has ever run.
+    """
+    query_control = QueryControl(
+        pagination=Pagination(index=page_index, size=_BUILD_SCAN_PAGE_SIZE),
+        sort_orders=[SortOrder(column=CREATED_TIME_FIELD_NAME, ascending=False)],
+    )
+    builds = storage.build_storage.get_by_where(None, query_control=query_control)
+    return [b for b in builds if isinstance(b, StoredBuild)]
 
-    Shifting to UTC can itself raise ``OverflowError``, when the shift would
-    carry the value outside ``datetime.min``/``datetime.max`` — reachable here
-    because the ``--base-build-id all`` backfill anchor *is* ``datetime.min``, and a
-    backend may hand it back aware with a positive UTC offset. That would abort
-    the whole scan, so it is clamped to the bound it overflowed past instead. The
-    clamp cannot distort an ordering decision: an overflow means the true UTC
-    instant lies beyond the bound, and the bound is already older (or newer) than
-    every representable ``finished_at``, so every comparison against it yields
-    the same answer the unrepresentable value would have.
+
+def select_builds_from_checkpoint(
+    storage: SingletonAdminStorage,
+    anchor_created_time: datetime,
+    exclude_ids: Optional[set[str]] = None,
+) -> list[StoredBuild]:
+    """Select the checkpoint's build and every build created at or after it.
+
+    Two different orders are at work here, and conflating them is the easy
+    mistake. The *query* pages newest-created-first, purely so the walk can stop
+    at the anchor instead of reading the whole table. The *return* is
+    oldest-created-first, because that is the order the caller must process in:
+    the checkpoint advances contiguously and has to stop at the first unfinished
+    build, which cannot be determined walking backwards.
+
+    The bound is ``>=``, not ``>``, so the anchor build is itself included. That
+    is deliberate: a pass that crashed partway through the anchor build leaves
+    some of its targets unrecorded, and re-selecting it every scan is what
+    recovers them -- it replaces the separate start-up verification sweep the
+    target-anchored design needed.
+
+    Three caveats on the bound, all inherited from how ``created_time`` is stored:
+
+    - It is a Python-side clock read in ``BaseItemStorage.__add_items``, which
+      overwrites whatever the model's ``default_factory`` put there. It lands
+      after validation, schema init and the uniqueness check, and the insert then
+      runs in its own transaction doing nothing but the INSERT -- so
+      stamp-to-visibility is short (a model_dump, a log line and one round trip),
+      but not zero. Build creation is not serialized: ``submit_build`` is a sync
+      endpoint, so submissions overlap in the threadpool, and
+      ``GBSERVER_REST_SERVER_WORKERS`` above 1 adds cross-process concurrency
+      with no shared lock. Two builds created concurrently can therefore become
+      visible in a different order than their timestamps imply, and a build whose
+      ``created_time`` is fractionally behind the anchor's can appear only after
+      the checkpoint advanced -- permanently missed, since nothing sweeps behind
+      the anchor. Accepted deliberately in exchange for an exact cutoff with no
+      re-processed overlap window: the window is a few milliseconds wide and the
+      anchor itself is included, so it takes a build created at virtually the same
+      instant as the anchor. Note the single-replica *watcher* deployment does not
+      shrink this -- the race is on the creation side.
+    - The stamp is per ``add()`` call, not per row: a batched add gives every row
+      one identical ``t``. Build submission always adds one build, but it does
+      mean ``created_time`` is not unique and cannot order two builds against each
+      other. ``_advance_checkpoint`` handles that by stepping to the successor *in
+      this list's order* rather than to the first non-anchor row.
+    - SQLite stores ``DateTime(timezone=True)`` as text and drops the offset, so
+      ``ORDER BY created_time`` is a string sort there. Every writer goes through
+      ``get_utc_time()``, so all rows share one offset and the text sort is
+      correct -- but a row written with a differently-formatted timestamp (e.g. by
+      a seeding script) can sort wrongly and truncate this walk early. A second
+      source of the same disagreement: ``__fill_missing_times`` substitutes
+      ``BEGINNING_OF_TIME`` when the *JSON blob* lacks the field, so a
+      pre-migration row can read far-past in Python while its physical column
+      sorts elsewhere. Both are why the walk reads every page and re-sorts on
+      aware instants below.
+
+    Args:
+        storage: Admin storage to read builds from.
+        anchor_created_time: ``created_time`` of the checkpoint build; builds at or
+            after this instant are selected.
+        exclude_ids: Build ids to leave out of the result entirely.
+
+    Returns:
+        The selected builds, oldest-created first.
+    """
+    skip = exclude_ids or set()
+    cutoff = as_aware(anchor_created_time)
+    selected: list[StoredBuild] = []
+    page_index = 0
+    while True:
+        page = _builds_page(storage, page_index)
+        if not page:
+            break
+        for build in page:
+            if build.created_time is None:
+                # No creation time to place it against the cutoff. Skip the row
+                # but keep walking: like a NULL finished_at among targets, it must
+                # not truncate the scan.
+                continue
+            if as_aware(build.created_time) < cutoff:
+                # Behind the cutoff: skip the row, but keep walking. Deliberately
+                # NOT an early return, even though the query asks for
+                # newest-created-first and a trustworthy ordering would make
+                # everything past this row older too.
+                #
+                # The ordering cannot be trusted. SQLite stores
+                # DateTime(timezone=True) as TEXT and orders it as TEXT, and this
+                # column has been written in two different spellings over time:
+                # SQLAlchemy's own "YYYY-MM-DD HH:MM:SS.ffffff" and an ISO
+                # "YYYY-MM-DDTHH:MM:SS.mmmZ" form. ' ' (0x20) sorts before 'T'
+                # (0x54), so with both present the sort interleaves rows whose real
+                # instants are months apart -- a genuinely newer build can appear
+                # below an older one. An early return there stops the walk before
+                # reaching it and reports "nothing to record" while real builds sit
+                # unread, which is silent data loss rather than a slow scan.
+                #
+                # The cost is reading every page instead of stopping early. That is
+                # the right trade for a table with one row per build: correctness
+                # cannot rest on the backend's collation matching our comparison.
+                continue
+            if build.uuid in skip:
+                continue
+            selected.append(build)
+        if len(page) < _BUILD_SCAN_PAGE_SIZE:
+            break
+        page_index += 1
+    # Sorted here, on aware instants, so the caller's contiguous walk is ordered by
+    # real time regardless of how the backend collated the text.
+    return sorted(selected, key=lambda b: as_aware(b.created_time))
+
+
+def get_most_recent_build(storage: SingletonAdminStorage) -> Optional[StoredBuild]:
+    """Return the newest build by ``created_time``, or None if there are none.
+
+    Used by seeding to anchor "start from the latest build".
+
+    Pages through every build and takes the maximum by aware instant rather than
+    trusting the query's ordering to put the newest first. Same reason as
+    ``select_builds_from_checkpoint``: SQLite orders this column as TEXT and the
+    column holds two different spellings, so the first row of page 0 is not
+    reliably the newest. Getting this wrong would anchor the checkpoint at an
+    arbitrary older build and silently re-drive history from there.
+
+    A NULL ``created_time`` row is skipped, so the anchor always has a usable
+    timestamp.
+    """
+    newest: Optional[StoredBuild] = None
+    page_index = 0
+    while True:
+        page = _builds_page(storage, page_index)
+        if not page:
+            break
+        for build in page:
+            if build.created_time is None:
+                continue
+            if newest is None or as_aware(build.created_time) > as_aware(
+                newest.created_time
+            ):
+                newest = build
+        if len(page) < _BUILD_SCAN_PAGE_SIZE:
+            break
+        page_index += 1
+    return newest
+
+
+def local_tzinfo() -> Optional[tzinfo]:
+    """Return the local UTC offset, used to interpret naive ``finished_at`` values.
+
+    Split out so the assumption has one home and the tests can pin it: a naive
+    timestamp in this data is local, not UTC (see ``as_aware``).
+    """
+    return datetime.now().astimezone().tzinfo
+
+
+def as_aware(value: datetime) -> datetime:
+    """Ensure a ``finished_at`` is timezone-aware, preserving its own offset.
+
+    Every timestamp is made aware before any comparison, so the watermark walk
+    compares *instants* rather than wall-clock readings. Mixing the two is what
+    this exists to prevent: comparing a naive and an aware ``datetime`` raises
+    ``TypeError``, and — more insidiously — treating a naive local reading as UTC
+    silently shifts it by the local offset, which can put a target on the wrong
+    side of the watermark and truncate the scan.
+
+    The offset is deliberately *not* rewritten to UTC. Two aware datetimes
+    compare as instants regardless of their offsets, so converting buys nothing
+    for the comparison — while it does make the value written to ``gb_kv_pairs``
+    disagree textually with the ``gb_targets`` row it came from, which is exactly
+    the confusion that made the same target read three hours apart depending on
+    which table it was loaded from. Keeping the offset means the checkpoint holds
+    the target's own timestamp verbatim (see ``get_time()``, aware local).
+
+    A naive value is interpreted as **local**, not UTC. ``finished_at`` originates
+    from ``utils.get_time()`` (``datetime.now().astimezone()``), which is aware
+    local, so the offset to put back is the local one. Assuming UTC here would
+    re-introduce exactly the skew described above.
+
+    Note where the offset *can* be lost, because it is not this path. A
+    ``StoredTargetRun`` is reconstructed from the JSON column, whose ISO string
+    carries the offset and round-trips losslessly on **both** SQLite and
+    Postgres — so ``finished_at`` arrives aware either way and the naive branch
+    below is defensive rather than routinely taken. The backend that drops an
+    offset is SQLite's typed ``DateTime(timezone=True)`` column, which stores
+    wall-clock text; that only affects the ``ORDER BY finished_at`` sort (see
+    ``select_recordable_targets``), not the value read back here.
+
+    Two caveats on the naive branch, for whoever does reach it. It is exact only
+    when the reader shares the writer's offset — true for a single-timezone
+    deployment, a best-effort guess otherwise. And ``local_tzinfo()`` reports the
+    offset in effect *now*, not the one in effect when the row was written, so
+    across a DST transition the interpreted instant shifts by an hour and a
+    target can land on the wrong side of the watermark. Keeping ``finished_at``
+    aware at rest is what removes both guesses; until then this is the closest
+    correct reading of a naive value.
     """
     if value.tzinfo is None:
-        return value
-    try:
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
-    except OverflowError:
-        # Overflow is only reachable within one UTC offset (<24h) of a bound, so
-        # the sign of the offset says which bound was crossed: a positive offset
-        # shifts backwards past datetime.min, a negative one forwards past max.
-        offset = value.utcoffset()
-        if offset is not None and offset > timedelta(0):
-            return datetime.min
-        return datetime.max
+        value = value.replace(tzinfo=local_tzinfo())
+    return value
 
 
 def select_recordable_targets(
     storage: SingletonAdminStorage,
-    finished_after: datetime,
-    build_id: Optional[str] = None,
+    build_id: str,
 ) -> list[StoredTargetRun]:
-    """Select successful target runs whose lineage should be recorded.
+    """Select one build's successful target runs whose lineage should be recorded.
 
     A target is recordable once it has completed successfully; its lineage is
-    fully persisted in admin storage at that point. The successful-target set
-    grows without bound over the platform's lifetime, so this never materializes
-    all of it in steady state: targets are fetched newest-``finished_at``-first
-    and the walk stops as soon as it crosses ``finished_after``, so a
-    steady-state scan reads only the newly-finished rows, never the whole table,
-    regardless of how many builds have accumulated.
+    fully persisted in admin storage at that point. Scoped to a single build,
+    which is the unit the watcher iterates: builds are selected first (see
+    ``select_builds_from_checkpoint``) and their targets read per build, so there
+    is no unbounded walk over the whole successful-target set and therefore no
+    need for a timestamp watermark or a row anchor here.
 
-    One caveat on that bound: rows with ``finished_at`` NULL (successful targets
-    written before ``finished_at`` stamping existed) sort *first* under
-    PostgreSQL's ``DESC``, so the walk pages through that backlog before reaching
-    any real timestamp. It is bounded and correct — NULLs are skipped, never
-    treated as a stopping point — but a deployment with a large pre-stamping
-    backlog re-reads it on every scan. Pushing an ``IS NOT NULL`` filter
-    server-side would remove it; the storage layer's ``where`` currently supports
-    only equality/IN, so that needs a storage-layer change.
+    Targets with no ``finished_at`` are skipped: a successful target is expected
+    to carry the instant it finished, and one without it is not yet complete. That
+    is a skip, never an early stop -- NULL rows can be interleaved rather than
+    sorted last.
 
-    ``finished_after`` is required rather than defaulting to "no lower bound".
-    An omitted watermark would silently page through every successful target the
-    platform has ever run — a full historical backfill — which is a deliberate
-    operation, never a default. A caller that genuinely wants that (e.g. an
-    explicit backfill command) passes ``datetime.min``.
-
-    The comparison is ``>=`` (not ``>``) so the boundary target is re-included
-    rather than dropped; idempotent recording makes the re-read harmless and the
-    caller's watermark advances past it. Targets with no ``finished_at`` are
-    skipped (they are not yet complete) but do not stop the walk — a NULL row
-    interleaved among finished ones must not truncate the scan.
-
-    ``build_id`` restricts the selection to a single build, for callers that
-    want the same selection semantics over one build rather than the whole DB
-    (e.g. verifying a checkpoint's own build on startup).
+    Args:
+        storage: Admin storage to read targets from.
+        build_id: Build whose successful targets to select.
 
     Returns:
-        The selected successful target runs, newest-finished first.
+        The build's recordable target runs, newest-finished first.
     """
     selected: list[StoredTargetRun] = []
     page_index = 0
-    cutoff = as_utc_naive(finished_after)
     while True:
         page = _successful_targets_page(storage, page_index, build_id=build_id)
+        if not page:
+            break
         for target in page:
             if target.finished_at is None:
-                # Not yet finished. NULL finished_at rows may be interleaved
-                # rather than sorted last, so this is a skip-and-continue — never
-                # an early return.
                 continue
-            # Sorted newest-finished-first: once we reach a target that finished
-            # before the watermark, every later one is older too — stop early.
-            if as_utc_naive(target.finished_at) < cutoff:
-                return selected
             selected.append(target)
         if len(page) < _SCAN_PAGE_SIZE:
             break
@@ -232,45 +474,7 @@ def select_recordable_targets(
     return selected
 
 
-def get_most_recent_successful_target(
-    storage: SingletonAdminStorage,
-    build_id: Optional[str] = None,
-) -> Optional[StoredTargetRun]:
-    """Return the single newest-finished successful target, or ``None``.
-
-    Used by ``lineage_seeding`` (``gbserver lineage-watch --base-build-id``) to
-    place the LineageWatcher's checkpoint: a single-page, newest-first query
-    rather than the full ``select_recordable_targets`` walk, since only the first
-    result is needed.
-    Targets with no ``finished_at`` are skipped, mirroring
-    ``select_recordable_targets``.
-
-    ``build_id`` restricts the search to one build, so a caller can anchor the
-    checkpoint at a chosen build rather than at whatever finished most recently.
-
-    This pages rather than reading only the first page. ``finished_at`` stamping
-    was added after rows were already being written, so a real deployment holds
-    successful targets with ``finished_at`` NULL — and PostgreSQL sorts NULLs
-    *first* under ``DESC`` (the sort is a bare ``desc()``, with no
-    ``NULLS LAST``). A single-page read would therefore return ``None`` whenever
-    the NULL backlog fills the first page, making ``--base-build-id`` raise
-    ``LineageSeedError`` on exactly the deployments that have history to anchor
-    against — and since ``--base-build-id`` is meant to live permanently in the
-    pod spec, that is a crashloop rather than a one-off error.
-    """
-    page_index = 0
-    while True:
-        page = _successful_targets_page(storage, page_index, build_id=build_id)
-        for target in page:
-            if target.finished_at is not None:
-                return target
-        # A short (or empty) page is the last one: no non-NULL row exists.
-        if len(page) < _SCAN_PAGE_SIZE:
-            return None
-        page_index += 1
-
-
-def _expected_run_count(target: StoredTargetRun) -> int:
+def expected_run_count(target: StoredTargetRun) -> int:
     """Number of lineage runs a fully-recorded ``target`` should have in a sink.
 
     Must mirror how ``WandBLineageStore._build_events_for_target`` emits events:
@@ -285,199 +489,190 @@ def _expected_run_count(target: StoredTargetRun) -> int:
     return n if n > 0 else 1
 
 
-def reconcile_once(
+@dataclass
+class ReconcileResult:
+    """Outcome of reconciling one build's lineage into the sink.
+
+    A value rather than a set of callbacks: the watcher's checkpoint now advances
+    per *build*, and "was this build fully confirmed?" is the question it has to
+    answer -- which no per-target callback expresses well.
+
+    Attributes:
+        newly_recorded: How many targets this pass actually wrote.
+        all_confirmed: Every recordable target of the build is either recorded now,
+            already in the sink, or permanently dropped. This is what makes the
+            build eligible for the checkpoint to advance past it.
+        dedup_query_failed: The sink could not answer whether targets were already
+            recorded. Nothing was written; the caller must abort the pass rather
+            than read an empty candidate set as "nothing to do".
+        query_failure: The exception behind ``dedup_query_failed``, so the caller
+            can classify it as permanent or transient.
+        dropped: Targets skipped because they are in the caller's permanent-drop
+            set. Present so the caller can log the resulting known gap.
+        sink_unqueried: ``all_confirmed`` was reached without asking the sink
+            anything -- ``filter_unrecorded`` was never called, because there was no
+            candidate to ask about. Two passes end that way: no recordable target at
+            all, and every recordable target in the caller's permanent-drop set. Both
+            are reported ``all_confirmed`` so the checkpoint can still pass a finished
+            build, but the confirmation rests on an *empty* candidate set rather than
+            a sink answer. The caller must not cache that as "this build is done,
+            stop re-reading its targets" while the build can still gain one.
+
+            The build row and its target rows are separate, non-transactional
+            writes, and a scan lands at an arbitrary point between them: a build
+            read while still RUNNING has no target rows yet, or only ones that
+            happen to be dropped. Its targets are persisted before it reaches
+            SUCCESS (buildrunner drains one FIFO with a single consumer, and
+            finalize_build_status commits children before the parent), so they are
+            there on a later scan -- but only if the caller still looks.
+    """
+
+    newly_recorded: int = 0
+    all_confirmed: bool = False
+    dedup_query_failed: bool = False
+    query_failure: Optional[Exception] = None
+    dropped: set[str] = field(default_factory=set)
+    sink_unqueried: bool = False
+
+
+def reconcile_build(
     store: ILineageStore,
     storage: SingletonAdminStorage,
-    finished_after: datetime,
+    build_id: str,
     on_error: Optional[Callable[[str, str, Exception], None]] = None,
     on_success: Optional[Callable[[str, str], None]] = None,
-    on_checkpoint_advance: Optional[Callable[[str, datetime], None]] = None,
-    on_scan_complete: Optional[Callable[[bool], None]] = None,
     skip: Optional[set[str]] = None,
-    build_id: Optional[str] = None,
-) -> int:
-    """Reconcile admin-DB lineage into the store once (the central mechanism).
+) -> ReconcileResult:
+    """Reconcile one build's lineage into the store (the central mechanism).
 
-    Selects successful target runs that finished at or after ``finished_after``,
-    asks the store which of those it has not yet recorded, and records each of
-    those through the single leaf.
+    Selects the build's successful targets, asks the store which of them it has
+    not yet recorded, and records each of those through the single leaf. Scoped to
+    one build because that is the watcher's unit of iteration and of checkpoint
+    advancement.
 
-    Two independent mechanisms bound the work and keep it sink-neutral:
+    Sink-neutral: which targets to write comes from
+    ``ILineageStore.filter_unrecorded``, so a store that already has a target says
+    so and nothing is re-emitted. That matters more than it used to -- run ids are
+    random now, so re-recording a target the sink already has writes duplicate runs
+    instead of resuming the existing ones. There is no idempotency underneath, and
+    the dedup query is the only thing standing between a re-selected target and a
+    duplicate.
 
-    - ``finished_after`` is a *time watermark* on the target itself (not on any
-      sink), so a steady-state scan reads only newly-finished targets from the
-      admin DB regardless of how many builds have accumulated. It says nothing
-      about whether a given sink has recorded a target.
-    - ``store.filter_unrecorded`` is the *per-sink* recorded-state check: each
-      sink owns its own record of what it has already recorded, so the same
-      admin DB can feed W&B and other sinks independently. It never raises; on
-      failure it returns the full candidate set, degrading to re-recording
-      (harmless — recording is idempotent). It is given each candidate's expected
-      run count (``_expected_run_count``) so a target whose runs were only
-      partially emitted on a prior crashed scan is reported unrecorded and
-      re-recorded, rather than masked by its already-present runs.
+    Hence the failure contract. ``filter_unrecorded`` fails CLOSED: it returns an
+    empty set on error, which by value is indistinguishable from "everything is
+    already recorded". This function therefore reports the failure explicitly in
+    ``ReconcileResult.dedup_query_failed`` and records nothing, and the caller must
+    abort rather than treat the empty set as success.
 
     Args:
         store: The lineage store to record into.
-        storage: Admin storage to reconcile from.
-        finished_after: Only consider targets that finished at or after this
-            time. Required: an implicit "no lower bound" would make a full
-            historical backfill the default. Pass ``datetime.min`` to request
-            one deliberately.
-        on_error: Optional callback ``(build_id, target_id, exc)`` invoked when
-            recording a single target raises, so the caller can queue a retry.
-            When omitted, a failure is logged and the target is simply retried on
-            the next scan.
-        on_success: Optional callback ``(build_id, target_id)`` invoked when a
-            target records successfully, so the caller can clear any retry state
-            it was tracking for that target (a target that failed a prior scan
-            and then succeeds is only reported here — it drops out of the
-            unrecorded set, so ``on_error`` is never called for it again).
-        on_checkpoint_advance: Optional callback ``(build_id, finished_at)``
-            invoked immediately after each individual target records
-            successfully (oldest-``finished_at``-first). Lets the caller persist
-            a checkpoint per-target rather than once per batch, so a crash
-            mid-scan leaves a durable checkpoint at the last target actually
-            recorded — not at the newest one merely considered, and not stuck at
-            the pre-scan watermark until the whole batch finishes.
-
-            It stops firing for the rest of the pass as soon as one target
-            fails, so the checkpoint only ever advances over a *contiguous*
-            oldest-first run of recorded targets. Otherwise a target that failed
-            mid-batch would be passed by the newer targets that succeed after
-            it, durably advancing the checkpoint beyond a target that was never
-            recorded — retry would then rest solely on the caller's in-memory
-            state and a restart would drop it permanently.
-        on_scan_complete: Optional callback ``(watermark_untouched)`` invoked once
-            when the pass finishes. ``True`` means the pass completed having left
-            the watermark exactly where it found it *and* with no unrecorded
-            lineage behind it: nothing recorded (so no ``on_checkpoint_advance``
-            fired), nothing failed, and nothing dropped via ``skip``. That is the
-            only condition under which a caller may move its watermark on its own
-            — notably to retire a ``datetime.min`` backfill anchor that would
-            otherwise re-walk the whole table on every scan.
-
-            ``newly_recorded == 0`` alone does NOT imply it: the count is also 0
-            when every candidate failed or was skipped, and moving the watermark
-            then would strand that lineage permanently, since the steady-state
-            scan never looks behind its watermark.
-        skip: Target uuids the caller has given up on (e.g. dropped after
-            exhausting retries). These are excluded from recording so a
-            persistently failing target — which still falls within the watermark
-            window every scan — cannot wedge the scan. They do NOT fire
-            ``on_checkpoint_advance`` themselves (only an actually-recorded
-            target does that); the caller's in-memory dedup — e.g.
-            ``LineageWatcher._dropped`` — is what keeps a skipped target from
-            being reconsidered forever, independent of the checkpoint.
-        build_id: Restrict the pass to a single build. Used by the watcher's
-            start-time checkpoint verification, which needs exactly this
-            selection/filter/record behaviour over the checkpoint's own build.
+        storage: Admin storage to read targets and lineage from.
+        build_id: Build to reconcile.
+        on_error: Called as ``(build_id, target_id, exc)`` when recording a target
+            raises. The scan continues to the build's other targets.
+        on_success: Called as ``(build_id, target_id)`` after a target records.
+        skip: Target uuids to leave alone permanently (the caller's dropped set).
 
     Returns:
-        How many targets were newly recorded this pass. Where the watermark
-        reached is reported through ``on_checkpoint_advance``, per-target, as
-        each one records: that is the only granularity a caller can persist
-        safely, so there is no coarser end-of-scan watermark to return.
+        A ``ReconcileResult`` describing what happened for this build.
     """
-    # Selection is newest-finished-first (bounds the DB walk: it can stop as
-    # soon as it crosses the watermark). Recording order is the reverse —
-    # oldest-first — so finished_at advances monotonically as each target
-    # records, letting a checkpoint be persisted safely after every single
-    # target rather than only once at the end of the batch.
-    targets = list(
-        reversed(
-            select_recordable_targets(
-                storage, finished_after=finished_after, build_id=build_id
-            )
-        )
-    )
+    dropped = skip or set()
+    targets = select_recordable_targets(storage, build_id=build_id)
+    if not targets:
+        # No recordable target: nothing to write and nothing outstanding, so the
+        # build is trivially confirmed and the checkpoint may pass it.
+        #
+        # Flagged unqueried, though, because this confirmation is not a sink answer:
+        # with no target to ask about, filter_unrecorded was never called. A build
+        # read while still RUNNING lands here (its target rows are written before it
+        # reaches SUCCESS, but this scan ran before that). If the caller caches this
+        # as complete, its finished-and-complete skip gate stops re-reading the
+        # targets and the lineage is never recorded.
+        return ReconcileResult(all_confirmed=True, sink_unqueried=True)
 
-    skip = skip or set()
-    by_uuid = {t.uuid: t for t in targets if t.uuid not in skip}
-    # No candidates → nothing to record and nothing to check. Skip the
-    # per-sink filter_unrecorded query entirely so an idle scan (or one where
-    # only the watermark-overlap boundary targets are all skipped) does not fire
-    # a backend query (e.g. a wandb api.runs call) that would return nothing.
-    if not by_uuid:
-        # A pass with nothing to do — report it so a caller anchored at
-        # datetime.min can retire the backfill anchor instead of re-walking the
-        # whole table on every scan. But it is only *clean* if there were no
-        # candidates at all: when `targets` is non-empty, every one of them was
-        # dropped via `skip`, i.e. lineage that will never be recorded is being
-        # left behind, and the anchor must stay put.
-        if on_scan_complete is not None:
-            on_scan_complete(not targets)
-        return 0
-    # Expected run count per candidate, so the sink can tell a fully-recorded
-    # target from one whose runs were only partially emitted on a prior crashed
-    # scan (see ILineageStore.filter_unrecorded). Derived in memory from the
-    # already-loaded targets — no extra storage read. A skipped-for-prerun target
-    # records the *original* target's outputs, not its own, so its in-memory
-    # output_artifacts would give the wrong count; omit it and let it fall back to
-    # the presence check (a rare case; re-recording is a harmless idempotent no-op).
-    expected_counts = {
-        uuid: _expected_run_count(target)
-        for uuid, target in by_uuid.items()
-        if not target.skipped_for_prerun_target_id
+    skipped = {t.uuid for t in targets if t.uuid in dropped}
+    candidates = {t.uuid for t in targets if t.uuid not in dropped}
+    if not candidates:
+        # Every target is permanently dropped. Confirmed *with a known gap*: the
+        # alternative is pinning the checkpoint forever behind targets that will
+        # never record, which is what the durable dropped set exists to prevent.
+        #
+        # Unqueried for the same reason as the no-target case above: every target
+        # was filtered out of `candidates`, so filter_unrecorded was never called
+        # and this confirmation is not a sink answer either. A RUNNING build whose
+        # only targets so far happen to all be dropped lands here, and the ones
+        # written between this scan and its terminal status are still to come --
+        # so the caller must not cache it as done while it can still gain them.
+        return ReconcileResult(all_confirmed=True, dropped=skipped, sink_unqueried=True)
+
+    # Expected run count per candidate, so ``filter_unrecorded`` can tell a
+    # fully-recorded target from one whose runs were only partially emitted by a
+    # prior crashed scan. Derived in memory from the already-loaded targets — no
+    # extra storage read.
+    #
+    # A skipped-for-prerun target is omitted: it records the *original* target's
+    # outputs (see WandBJobStats.create_jobstats_for_target, which swaps in the
+    # original before building events), so its own output_artifacts would give the
+    # wrong count. Omitting it falls back to the presence check (>=1), which is
+    # the conservative direction: a too-high count would report the target
+    # unrecorded on every scan and, since run ids are random, write a fresh
+    # duplicate run set each time while pinning the checkpoint forever.
+    expected = {
+        t.uuid: expected_run_count(t)
+        for t in targets
+        if t.uuid in candidates and not t.skipped_for_prerun_target_id
     }
-    unrecorded = store.filter_unrecorded(set(by_uuid), expected_counts)
 
-    newly_recorded = 0
-    # Set once a target in this pass fails to record. From that point on the
-    # checkpoint must not advance any further, even though newer targets keep
-    # recording successfully: advancing past the failed target would durably
-    # move the watermark beyond lineage that was never written, and the next
-    # scan would no longer re-surface it.
-    checkpoint_blocked = False
-    # Iterate in oldest-first order (the `targets` order), not the (unordered)
-    # `unrecorded` set, so the checkpoint advances monotonically.
+    failure: Optional[Exception] = None
+
+    def _note_failure(exc: Exception) -> None:
+        nonlocal failure
+        failure = exc
+
+    unrecorded = store.filter_unrecorded(
+        candidates, expected, on_query_error=_note_failure
+    )
+    if failure is not None:
+        logger.error(
+            "Lineage dedup query failed for build %s; recording nothing for it: %s",
+            build_id,
+            failure,
+        )
+        return ReconcileResult(dedup_query_failed=True, query_failure=failure)
+
+    recorded = 0
+    all_confirmed = True
     for target in targets:
         if target.uuid not in unrecorded:
             continue
         try:
             record_target_lineage(
-                store, storage, build_id=target.build_id, target_id=target.uuid
+                store, storage, build_id=build_id, target_id=target.uuid
             )
-            newly_recorded += 1
-            if target.finished_at is None:
-                # Unreachable via select_recordable_targets, which skips NULL
-                # finished_at rows. Guarded anyway because the failure mode is
-                # silent: with no timestamp there is nothing to advance the
-                # watermark to, and merely *not* advancing would let the next
-                # target advance past this one. Block instead, so a future
-                # caller that bypasses the selector cannot move the checkpoint
-                # beyond a target the watermark can no longer re-surface.
-                checkpoint_blocked = True
-            elif not checkpoint_blocked and on_checkpoint_advance is not None:
-                on_checkpoint_advance(target.build_id, target.finished_at)
-            if on_success is not None:
-                on_success(target.build_id, target.uuid)
-        except Exception as exc:  # noqa: BLE001 - reconciliation must not abort
-            # Freeze the checkpoint here: later targets in this pass may still
-            # record, but the watermark must not move past this one or the next
-            # scan will not re-surface it (and a restart would lose it entirely,
-            # since retry state is only in memory).
-            checkpoint_blocked = True
+        except Exception as exc:  # noqa: BLE001 — one target must not end the pass
+            logger.warning(
+                "Failed to record lineage for target %s of build %s: %s",
+                target.uuid,
+                build_id,
+                exc,
+            )
+            all_confirmed = False
             if on_error is not None:
-                on_error(target.build_id, target.uuid, exc)
-            else:
-                logger.warning(
-                    "Failed to record lineage for target %s in build %s; "
-                    "will retry on next scan: %s",
-                    target.uuid,
-                    target.build_id,
-                    exc,
-                )
+                on_error(build_id, target.uuid, exc)
+            continue
+        recorded += 1
+        if on_success is not None:
+            on_success(build_id, target.uuid)
 
-    if newly_recorded:
-        logger.info("Reconciled lineage for %d target(s)", newly_recorded)
-    if on_scan_complete is not None:
-        # "Left the watermark alone": nothing recorded (so no per-target advance
-        # fired) and nothing blocked. Either a record or a block means the
-        # watermark is already where this pass wants it, and a caller must not
-        # move it further.
-        on_scan_complete(newly_recorded == 0 and not checkpoint_blocked)
-    return newly_recorded
+    if recorded:
+        logger.info(
+            "Recorded lineage for %d target(s) of build %s.", recorded, build_id
+        )
+    return ReconcileResult(
+        newly_recorded=recorded,
+        all_confirmed=all_confirmed,
+        dropped=skipped,
+    )
 
 
 def record_selected_targets(

@@ -11,17 +11,20 @@ config:
     # choice (rendered by Jinja from the build.yaml), not a custom image built by
     # this step's Makefile.
     image: "quay.io/fedora/fedora-minimal:42"
-    # Public git repository cloned into the build workdir during `setup`.
+    # Public git repository cloned into the step's working directory during `setup`.
     repo: ""
     # Optional branch, tag, or commit to check out after cloning.
     ref: ""
-    # Subdirectory (under the build workdir) the repo is cloned into.
+    # Subdirectory (under the step's working directory) the repo is cloned into.
     workdir: "code"
-    # Command executed by `run`, from inside the cloned repo directory.
+    # Command executed by `run`, from the step's working directory (the workdir
+    # root — the same directory setup runs in). cd into the cloned repo yourself
+    # if needed, e.g. "cd code && python main.py".
     command: ""
     # Optional bash command run during `setup`, after the repo is cloned, from
-    # $GB_BUILD_WORKDIR (the workdir root — cd into the repo yourself if needed,
-    # e.g. "cd code && pip install -r requirements.txt"). Empty => skipped.
+    # the step's working directory (the workdir root — cd into the repo yourself
+    # if needed, e.g. "cd code && pip install -r requirements.txt"). Empty =>
+    # skipped.
     setup_command: ""
 
 environment_configs:
@@ -39,17 +42,19 @@ environment_configs:
           # Cloud-agnostic: the build supplies cpus/memory/accelerators via
           # config.launcher_config.resources.
           resources: {}
-          # Optional helper assets shipped alongside the step. A relative dest is
-          # remapped under $GB_BUILD_WORKDIR, so these land at
-          # $GB_BUILD_WORKDIR/src on the cluster.
+          # Optional helper assets shipped alongside the step. A relative dest
+          # lands at ./src, relative to the step's working directory (the same
+          # directory setup and run start in).
           file_mounts:
             src: src
-          # setup runs once at cluster bring-up: fetch the code.
+          # setup runs once at cluster bring-up: fetch the code. setup starts in
+          # the step's working directory, so a relative CODE_DIR clones under it
+          # without the step needing to know its absolute path.
           setup: |
             set -eu
             REPO="{{ config.byoc_config.repo }}"
             REF="{{ config.byoc_config.ref }}"
-            CODE_DIR="${GB_BUILD_WORKDIR:-$HOME}/{{ config.byoc_config.workdir }}"
+            CODE_DIR="{{ config.byoc_config.workdir }}"
             if [ -z "$REPO" ]; then
               echo "byoc: config.byoc_config.repo is empty; nothing to clone" >&2
               exit 1
@@ -68,20 +73,32 @@ environment_configs:
             # fails the build, just as a failed clone does.
             SETUP_ENABLED="{{ 'yes' if config.byoc_config.setup_command else '' }}"
             if [ -n "$SETUP_ENABLED" ]; then
-              cd "${GB_BUILD_WORKDIR:-$HOME}"
+              # Still in setup's working directory, so the command runs relative
+              # to it — e.g. "cd code && pip install ...".
               echo "byoc: running setup_command in $(pwd)"
               {{ config.byoc_config.setup_command }}
             fi
-          # run executes the user-defined command from inside the cloned repo.
-          # File-mounted helpers are available at $GB_BUILD_WORKDIR/src.
+          # run executes the user-defined command from the step's working
+          # directory — the same directory setup starts in. The command cd's into
+          # the cloned repo itself if it needs to; CODE_DIR is relative and
+          # file-mounted helpers are available at ./src.
           run: |
             set -eu
-            CODE_DIR="${GB_BUILD_WORKDIR:-$HOME}/{{ config.byoc_config.workdir }}"
-            cd "$CODE_DIR"
+            CODE_DIR="{{ config.byoc_config.workdir }}"
+            # Record the resolved commit as step metadata so build lineage captures
+            # exactly which commit was built (build.yaml may pin only a branch/tag,
+            # or nothing). Defensive: never fail the build for lineage metadata,
+            # even though set -eu is in effect. `-C` reads the repo without cd'ing.
+            COMMIT_SHA="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
+            [ -n "$COMMIT_SHA" ] && echo "LLMB_STEP_METADATA_KEY:commit_hash LLMB_STEP_METADATA_VALUE:$COMMIT_SHA"
             echo "byoc: running command in $(pwd)"
             {{ config.byoc_config.command }}
-            # To register an output artifact, print (at the start of a line):
-            #   echo "LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>"
+            # Markers the skypilot monitor captures (print at the start of a line):
+            #   register an output artifact:
+            #     echo "LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>"
+            #   record step metadata (merged into StoredStepRun.metadata, surfaced
+            #   in lineage):
+            #     echo "LLMB_STEP_METADATA_KEY:<key> LLMB_STEP_METADATA_VALUE:<value>"
     monitors:
       # Standard artifact/status convention from the shipped monitor library.
       skypilot_monitor:
