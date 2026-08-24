@@ -1089,5 +1089,24 @@ GBSERVER_EVENT_SUBSCRIBE_TTL: int = int(
     os.getenv(ENV_VAR_GBSERVER_EVENT_SUBSCRIBE_TTL, "60")
 )
 
+# In-memory Space cache (rest-server). Amortizes per-request Space construction
+# (repo pull + space.yaml parse + secret sync) and bounds the /tmp checkout leak
+# that construction causes. The TTL doubles as the staleness bound: on expiry the
+# Space is rebuilt with a fresh (forced) pull so a long-running server picks up
+# remote space.yaml changes. Named "space cache" to avoid confusion with the
+# unrelated `gb space list --refresh` client-side profile cache.
+ENV_VAR_GBSERVER_SPACE_CACHE_TTL = ENV_VAR_PREFIX + "_SPACE_CACHE_TTL"
+GBSERVER_SPACE_CACHE_TTL: float = float(
+    os.getenv(ENV_VAR_GBSERVER_SPACE_CACHE_TTL, "300")
+)
+
+# Kill switch: when disabled, get_cached_space builds a fresh Space per call and
+# still registers its temp dir for atexit cleanup (so disabling never reintroduces
+# the leak). Lets ops turn the cache off in prod without a rollback.
+ENV_VAR_GBSERVER_SPACE_CACHE_ENABLED = ENV_VAR_PREFIX + "_SPACE_CACHE_ENABLED"
+GBSERVER_SPACE_CACHE_ENABLED: bool = getenv_boolean(
+    ENV_VAR_GBSERVER_SPACE_CACHE_ENABLED, True
+)
+
 # Tags that begin with this are only editable via the super admin
 SYSTEM_TAG_PREFIX = "sys-"

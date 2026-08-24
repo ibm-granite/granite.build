@@ -163,6 +163,14 @@ _NO_OP_VALIDATION = patch.object(
     return_value=MagicMock(is_valid=lambda: True, model_dump=lambda: {}),
 )
 
+# validate_build now resolves a Space (via the in-memory cache) before handing it
+# to validate_build_archive. These identity/access-control tests are not about
+# Space construction, so stub it out — the fake space_uris here aren't pullable.
+_NO_OP_SPACE = patch(
+    "gbserver.api.builds.get_cached_space",
+    return_value=MagicMock(),
+)
+
 
 def _validate_req(username: str, space_name: str = "", space_uri: str = ""):
     return BuildValidateRequest(
@@ -212,6 +220,7 @@ def test_validate_build_allows_self_validation_via_space_uri():
         _patched_storage(),
         patch("gbserver.api.utils.is_super_admin", return_value=False),
         _NO_OP_VALIDATION,
+        _NO_OP_SPACE,
     ):
         resp = validate_build(
             _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
@@ -225,6 +234,7 @@ def test_validate_build_allows_admin_impersonation_via_space_name():
         _patched_storage(),
         _real_authz(),
         _NO_OP_VALIDATION,
+        _NO_OP_SPACE,
         patch("gbserver.api.utils.is_super_admin", return_value=True),
         patch("gbserver.api.utils.is_space_admin", return_value=True),
     ):

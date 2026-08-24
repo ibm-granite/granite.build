@@ -24,6 +24,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, model_validator
 
+from gbcommon.uri.git import GitURI
 from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import (
     ListAppendOrSet,
@@ -36,6 +37,7 @@ from gbserver.api.utils import (
     is_super_admin,
     split_tags,
 )
+from gbserver.build.space_cache import get_cached_space
 from gbserver.buildrunner.validation import BuildValidation
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
 from gbserver.storage.artifact_registration import ArtifactRegistration
@@ -437,6 +439,13 @@ def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
         confirm_space_write_access(
             request, username_on_target=req.username, space_name=stored_space.name
         )
+        # Resolve the space-config URI the same way validate_build_archive does
+        # for a space name (buildrunner/validation.py), then serve a cached Space
+        # so this hot per-request path doesn't rebuild (and leak a checkout) each
+        # time. The cache's TTL refreshes a stale definition on a forced pull.
+        effective_space_uri = GitURI.get_gb_space_config_uri(
+            uri=stored_space.git_repo_uri
+        )
     else:
         # space_uri bypasses space storage entirely (validate_build_archive
         # builds a Space directly from the URI), so there is no stored space
@@ -448,13 +457,21 @@ def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"User {user_id} cannot validate a build as {req.username}",
             )
+        # Raw space_uri is used verbatim (no get_gb_space_config_uri transform —
+        # that only applies to bare repo URIs resolved from storage).
+        effective_space_uri = req.space_uri
+
+    # Build (or reuse) the Space here and hand the object to validate_build_archive
+    # via its prebuilt-Space branch, so the shared runner path (which passes a
+    # space name) is untouched and keeps constructing Space() directly.
+    space = get_cached_space(effective_space_uri, req.username)
 
     errors = BuildValidation.validate_build_archive(
         build_archive=req.build_archive,
         username=req.username,
         targets=req.targets,
-        space_or_name=req.space_name,
-        space_uri=req.space_uri,
+        space_or_name=space,
+        space_uri="",
         validation_type=req.validation_type,
     )
     status_code = (
