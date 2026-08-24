@@ -502,9 +502,9 @@ def test_assetstore_plugin_collision_core_wins(
     eps = _make_entry_points(monkeypatch, {"shadow": ("ShadowStore", ShadowStore)})
     _patch_entry_points(monkeypatch, {plugins.GROUP_ASSET_STORES: eps})
 
-    # The loader rebuilds the registry from scratch each call (clear + in-tree
-    # scan + plugin pass), so no manual clear is needed to re-exercise it.
-    Assetstore._load_assetstore_types()
+    # force=True re-exercises the loader (clear + in-tree scan + plugin pass)
+    # even though the registry is already populated from import.
+    Assetstore._load_assetstore_types(force=True)
     assert Assetstore.assetstore_types[HfURI] is core_hf_store
     assert "already registered" in caplog.text
 
@@ -614,9 +614,9 @@ def test_environment_loader_rebuilds_registry(monkeypatch, env_registry_snapshot
     assert "stale-key" not in Environment.environment_types
 
 
-def test_assetstore_loader_rebuilds_registry(monkeypatch, assetstore_registry_snapshot):
-    """The assetstore loader rebuilds from scratch each call (was a len()-guarded
-    no-op before), so a stale entry left in the registry is dropped."""
+def test_assetstore_loader_force_rebuilds(monkeypatch, assetstore_registry_snapshot):
+    """A forced rebuild clears in place, so a stale entry left in the populated
+    registry is dropped and the in-tree class re-filed (reload-safe)."""
     from gbcommon.uri.hf import HfURI
     from gbserver.asset.assetstore import Assetstore
 
@@ -630,7 +630,7 @@ def test_assetstore_loader_rebuilds_registry(monkeypatch, assetstore_registry_sn
     _patch_entry_points(monkeypatch, {})
     Assetstore.assetstore_types[HfURI] = StaleStore
 
-    Assetstore._load_assetstore_types()
+    Assetstore._load_assetstore_types(force=True)
 
     # The in-tree scan re-files HfURI's real core store, replacing the stale one.
     assert Assetstore.assetstore_types[HfURI] is core_hf_store
@@ -683,6 +683,9 @@ def auth_provider_registry_snapshot():
     from gbserver.api import auth_providers
 
     saved = dict(auth_providers.provider_types)
+    # Start empty so the (load-once-guarded) loader rebuilds under the test's
+    # patched entry points, then restore the real registry on teardown.
+    auth_providers.provider_types.clear()
     yield auth_providers
     auth_providers.provider_types.clear()
     auth_providers.provider_types.update(saved)
@@ -856,6 +859,9 @@ def cli_command_registry_snapshot():
     from gbcli.cli import GraniteBuildCLI
 
     saved = dict(GraniteBuildCLI.command_types)
+    # Start empty so the (load-once-guarded) loader rebuilds under the test's
+    # patched entry points, then restore on teardown.
+    GraniteBuildCLI.command_types.clear()
     yield GraniteBuildCLI
     GraniteBuildCLI.command_types.clear()
     GraniteBuildCLI.command_types.update(saved)
@@ -952,3 +958,33 @@ def test_auth_build_list_skips_unregistered_name(
     # Falls back to github rather than raising KeyError mid-request.
     providers = ap.build_provider_list("broken")
     assert [p.provider_name for p in providers] == ["github"]
+
+
+def test_cli_non_command_plugin_rejected(
+    monkeypatch, caplog, cli_command_registry_snapshot
+):
+    """A gbcli.plugins entry point that is not a click command is skipped with a
+    warning, never filed (so _resolve_command can't later invoke it)."""
+
+    def not_a_command():
+        return "should-never-be-invoked"
+
+    eps = _make_entry_points(monkeypatch, {"weird": ("not_a_command", not_a_command)})
+    _patch_entry_points(monkeypatch, {plugins.GROUP_CLI_PLUGINS: eps})
+
+    cli_command_registry_snapshot._load_commands(force=True)
+    assert "weird" not in cli_command_registry_snapshot.command_types
+    assert "not a valid" in caplog.text
+
+
+def test_discover_objects_predicate_skips_and_warns(monkeypatch, caplog):
+    """discover_objects filters out objects failing the predicate, with a warning."""
+    good, bad = object(), object()
+    eps = _make_entry_points(monkeypatch, {"good": ("good", good), "bad": ("bad", bad)})
+    _patch_entry_points(monkeypatch, {"g": eps})
+
+    reg: dict = {}
+    registrar = plugins.PluginRegistrar(reg, "thing", plugins.keys_by_name)
+    registrar.discover_objects("g", predicate=lambda o: o is good)
+    assert reg == {"good": good}
+    assert "not a valid" in caplog.text

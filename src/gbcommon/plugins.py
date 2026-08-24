@@ -277,7 +277,9 @@ class PluginRegistrar:
                     e,
                 )
 
-    def discover_objects(self, group: str) -> None:
+    def discover_objects(
+        self, group: str, predicate: Optional[Callable[[Any], bool]] = None
+    ) -> None:
         """Run an entry-point plugin pass for ``group`` where the value is an object.
 
         The counterpart to :meth:`discover` for subsystems whose registry value
@@ -286,8 +288,25 @@ class PluginRegistrar:
         each loaded object through :meth:`add` under the entry-point ``name`` and
         applies the same core-wins rule and per-entry guard as :meth:`discover`.
         Use it with a name-deriving ``keys_of`` (e.g. :func:`keys_by_name`).
+
+        ``predicate`` optionally validates each loaded object before it is filed.
+        An object that fails it is skipped with a WARNING — the object-valued
+        analogue of :func:`iter_entry_point_classes`' subclass check, so a plugin
+        that points its entry point at the wrong kind of object (e.g. a function
+        where a ``click`` command is required) is rejected rather than filed and
+        mis-handled downstream.
         """
         for name, obj in iter_entry_point_objects(group):
+            if predicate is not None and not predicate(obj):
+                logger.warning(
+                    "Ignoring plugin entry point %s=%s (group %s): "
+                    "not a valid %s implementation",
+                    name,
+                    _value_label(obj),
+                    group,
+                    self.label,
+                )
+                continue
             try:
                 self.add(obj, name)
             except Exception as e:

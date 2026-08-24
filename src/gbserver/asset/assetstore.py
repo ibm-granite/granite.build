@@ -132,15 +132,18 @@ class Assetstore(ABC):
         return assetstore
 
     @classmethod
-    def _load_assetstore_types(cls):
-        """Discover and register every asset store, rebuilding the registry.
+    def _load_assetstore_types(cls, force: bool = False):
+        """Discover and register every asset store.
 
-        Rebuilds ``cls.assetstore_types`` from scratch on each call via the
-        shared :func:`~gbcommon.plugins.rebuild_registry` contract, so the method
-        is idempotent and reload-safe (see that helper for why clearing first
-        matters). Invoked once at package import; the entry-point group is cached
-        so re-running is cheap.
+        A **no-op once the registry is populated** (the built-in and installed
+        plugin set is fixed for the process); pass ``force=True`` to rebuild
+        (tests that reload modules). When it does (re)build it goes through the
+        shared :func:`~gbcommon.plugins.rebuild_registry` contract, so it is
+        reload-safe (see that helper for why clearing first matters). This keeps
+        the loader's cheap-path guard consistent with the secret-manager loader.
         """
+        if cls.assetstore_types and not force:
+            return
         from gbcommon.plugins import (
             GROUP_ASSET_STORES,
             PluginRegistrar,

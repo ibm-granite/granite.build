@@ -294,12 +294,18 @@ _AUTH_MODES = {
 }
 
 
-def _load_auth_providers() -> None:
+def _load_auth_providers(force: bool = False) -> None:
     """(Re)build ``provider_types`` from the built-ins and any plugins.
 
-    Uses the shared reset-and-rebuild contract, so the registry is reload-safe
+    ``build_provider_list`` is on the per-request auth path, so this is a
+    **no-op once the registry is populated** — the built-ins and the installed
+    plugin set do not change under a running server. Pass ``force=True`` to
+    rebuild anyway (tests that reload modules). When it does (re)build it goes
+    through the shared reset-and-rebuild contract, so the registry is reload-safe
     and a plugin can only *add* a provider, never shadow a built-in (core-wins).
     """
+    if provider_types and not force:
+        return
     from gbcommon.plugins import (
         GROUP_AUTH_PROVIDERS,
         PluginRegistrar,

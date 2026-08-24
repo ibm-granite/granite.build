@@ -53,6 +53,25 @@ def _intree_command_loader(name: str) -> Callable[[], click.Command]:
     return load
 
 
+_gb_environment_warned = False
+
+
+def _warn_gb_environment_once() -> None:
+    """Warn (at most once per process) when GB_ENVIRONMENT is non-default.
+
+    click calls ``get_command`` repeatedly while rendering a single invocation
+    (once per listed command for ``--help``), so warning inline there would
+    print the same line a dozen times; gate it on a module-level flag.
+    """
+    global _gb_environment_warned
+    if _gb_environment_warned:
+        return
+    env = gb_environment()
+    if env != GB_ENVIRONMENT_DEFAULT:
+        click.echo(f"Warning: GB_ENVIRONMENT is set to {env}", err=True)
+    _gb_environment_warned = True
+
+
 def _resolve_command(value: "CommandSource") -> click.Command:
     """Return the click command for a registry value.
 
@@ -88,7 +107,7 @@ class GraniteBuildCLI(click.Group):
         configure_logging(level="WARNING")
 
     @classmethod
-    def _load_commands(cls) -> None:
+    def _load_commands(cls, force: bool = False) -> None:
         """(Re)build ``command_types`` from the in-tree modules and any plugins.
 
         Keys are discovered by scanning the ``commands`` directory (so dropping
@@ -96,7 +115,15 @@ class GraniteBuildCLI(click.Group):
         enumerating the ``gbcli.plugins`` entry-point group. Uses the shared
         reset-and-rebuild contract; a plugin can only *add* a command, never
         shadow a built-in (core-wins).
+
+        A **no-op once the registry is populated** so the repeated
+        ``get_command`` / ``list_commands`` calls click makes while rendering a
+        single invocation don't each re-scan the directory; pass ``force=True``
+        to rebuild (tests). The command set is fixed for the life of a ``gb``
+        process, so building once is correct.
         """
+        if cls.command_types and not force:
+            return
         from gbcommon.plugins import (
             GROUP_CLI_PLUGINS,
             PluginRegistrar,
@@ -117,8 +144,14 @@ class GraniteBuildCLI(click.Group):
                     registrar.add(_intree_command_loader(name), name)
             # Plugin commands resolve directly to a click command object (not a
             # thunk); the registry therefore holds a mix of thunks (in-tree) and
-            # command objects (plugins), which _resolve_command normalizes.
-            registrar.discover_objects(GROUP_CLI_PLUGINS)
+            # command objects (plugins), which _resolve_command normalizes. The
+            # predicate rejects an entry point that points at something other than
+            # a click command, so _resolve_command never mistakes a non-command
+            # for a thunk and calls it.
+            registrar.discover_objects(
+                GROUP_CLI_PLUGINS,
+                predicate=lambda obj: isinstance(obj, click.Command),
+            )
 
         rebuild_registry(cls.command_types, populate)
 
@@ -139,9 +172,7 @@ class GraniteBuildCLI(click.Group):
         loader = self.command_types.get(name)
         if loader is None:
             return None
-        env = gb_environment()
-        if env != GB_ENVIRONMENT_DEFAULT:
-            click.echo(f"Warning: GB_ENVIRONMENT is set to {env}", err=True)
+        _warn_gb_environment_once()
         try:
             return _resolve_command(loader)
         except ImportError as e:
