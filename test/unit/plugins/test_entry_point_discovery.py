@@ -671,3 +671,83 @@ def test_secret_manager_loader_force_rebuilds(monkeypatch):
     assert id(registry) == identity
     assert "local" in registry
     assert registry["local"] is not StaleSM
+
+
+# ---------------------------------------------------------------------------
+# Auth providers
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def auth_provider_registry_snapshot():
+    from gbserver.api import auth_providers
+
+    saved = dict(auth_providers.provider_types)
+    yield auth_providers
+    auth_providers.provider_types.clear()
+    auth_providers.provider_types.update(saved)
+
+
+def test_auth_provider_plugin_registered_by_name(
+    monkeypatch, auth_provider_registry_snapshot
+):
+    """A plugin provider is filed under its entry-point name (lower + verbatim)."""
+    from gbserver.api.auth_providers import AuthProvider
+
+    class DummyProvider(AuthProvider):
+        @property
+        def provider_name(self):
+            return "dummy"
+
+        def identify_token(self, token):
+            return False
+
+        def validate_token(self, token):
+            return (None, "nope")
+
+    eps = _make_entry_points(monkeypatch, {"dummy": ("DummyProvider", DummyProvider)})
+    _patch_entry_points(monkeypatch, {plugins.GROUP_AUTH_PROVIDERS: eps})
+
+    auth_provider_registry_snapshot._load_auth_providers()
+    assert auth_provider_registry_snapshot.provider_types["dummy"] is DummyProvider
+
+
+def test_auth_provider_plugin_collision_core_wins(
+    monkeypatch, caplog, auth_provider_registry_snapshot
+):
+    """A plugin cannot shadow a built-in provider (core-wins)."""
+    from gbserver.api.auth_providers import AuthProvider
+
+    class ShadowGitHub(AuthProvider):
+        @property
+        def provider_name(self):
+            return "github"
+
+        def identify_token(self, token):
+            return False
+
+        def validate_token(self, token):
+            return (None, "nope")
+
+    eps = _make_entry_points(monkeypatch, {"github": ("ShadowGitHub", ShadowGitHub)})
+    _patch_entry_points(monkeypatch, {plugins.GROUP_AUTH_PROVIDERS: eps})
+
+    auth_provider_registry_snapshot._load_auth_providers()
+    # The in-tree GitHubAuthProvider was registered first, so the plugin is refused.
+    assert auth_provider_registry_snapshot.provider_types["github"].__name__ == (
+        "GitHubAuthProvider"
+    )
+    assert "already registered" in caplog.text
+
+
+def test_auth_provider_build_list_multi_order(
+    monkeypatch, auth_provider_registry_snapshot
+):
+    """build_provider_list preserves the JWT-before-opaque order for 'multi'."""
+    monkeypatch.setenv("GBSERVER_IBMID_CLIENT_ID", "test-id")
+    _patch_entry_points(monkeypatch, {})
+
+    providers = auth_provider_registry_snapshot.build_provider_list("multi")
+    assert [p.provider_name for p in providers] == ["ibmid", "github"]
+
+

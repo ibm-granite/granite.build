@@ -254,36 +254,102 @@ class IBMidAuthProvider(AuthProvider):
 
 # ---------------------------------------------------------------------------
 # Provider registry
+#
+# ``provider_types`` maps a provider name to its class. Both the in-tree
+# built-ins and any entry-point plugins (group ``gbserver.auth_providers``) are
+# filed through the shared ``PluginRegistrar`` under the ``keys_by_name`` rule,
+# exactly like the other name-keyed subsystems. The registry drives the *class
+# lookup*; ordering and per-provider construction stay in ``build_provider_list``
+# (see below), because an ``auth_mode`` selects an ordered *set* of providers and
+# some (IBMid) need constructor arguments.
 # ---------------------------------------------------------------------------
 
+# Provider name -> class. Populated by ``_load_auth_providers`` (in-tree scan +
+# entry-point plugin pass), keyed under both lowercased and verbatim names.
+provider_types: dict = {}
 
-def build_provider_list(auth_mode: str) -> List[AuthProvider]:
-    """Build the list of active providers based on *auth_mode*.
+# The built-in providers, registered by their public name. Kept as an explicit
+# list rather than a directory scan: both live in this module.
+_BUILTIN_PROVIDERS = [
+    ("github", GitHubAuthProvider),
+    ("ibmid", IBMidAuthProvider),
+]
 
-    Provider order matters: JWT-based providers are checked first so that
-    ``identify_token`` can distinguish token formats before falling through
-    to the opaque-token provider (GitHub).
+# auth_mode -> ordered provider names. Order matters: JWT-based providers are
+# listed first so ``identify_token`` can claim JWT-shaped tokens before the
+# opaque-token provider (GitHub) sees them. Ordering lives here, never in
+# ``provider_types`` iteration order, so registration order carries no auth
+# semantics.
+_AUTH_MODES = {
+    "github": ["github"],
+    "ibmid": ["ibmid"],
+    "multi": ["ibmid", "github"],
+}
+
+
+def _load_auth_providers() -> None:
+    """(Re)build ``provider_types`` from the built-ins and any plugins.
+
+    Uses the shared reset-and-rebuild contract, so the registry is reload-safe
+    and a plugin can only *add* a provider, never shadow a built-in (core-wins).
     """
-    from gbserver.types.constants import (
-        GBSERVER_IBMID_CLIENT_ID,
-        GBSERVER_IBMID_ISSUER,
-        GBSERVER_IBMID_JWKS_URI,
+    from gbcommon.plugins import (
+        GROUP_AUTH_PROVIDERS,
+        PluginRegistrar,
+        keys_by_name,
+        rebuild_registry,
     )
 
-    def _make_ibmid():
-        return IBMidAuthProvider(
+    registrar = PluginRegistrar(provider_types, "Auth provider", keys_by_name)
+
+    def populate() -> None:
+        for name, cls in _BUILTIN_PROVIDERS:
+            registrar.add(cls, name)
+        registrar.discover(GROUP_AUTH_PROVIDERS, AuthProvider)
+
+    rebuild_registry(provider_types, populate)
+
+
+def _make_provider(name: str) -> AuthProvider:
+    """Instantiate the registered provider *name*, supplying its constructor args.
+
+    Construction is kept out of the registry (which holds classes): IBMid needs
+    its issuer/JWKS/client-id from configuration, and other providers may need
+    their own arguments. Plugin providers with no special arguments construct
+    with defaults.
+    """
+    cls = provider_types[name]
+    if name == "ibmid":
+        from gbserver.types.constants import (
+            GBSERVER_IBMID_CLIENT_ID,
+            GBSERVER_IBMID_ISSUER,
+            GBSERVER_IBMID_JWKS_URI,
+        )
+
+        return cls(
             issuer=GBSERVER_IBMID_ISSUER,
             jwks_uri=GBSERVER_IBMID_JWKS_URI,
             client_id=GBSERVER_IBMID_CLIENT_ID,
         )
+    return cls()
 
-    if auth_mode == "github":
-        return [GitHubAuthProvider()]
-    if auth_mode == "ibmid":
-        return [_make_ibmid()]
-    if auth_mode == "multi":
-        return [_make_ibmid(), GitHubAuthProvider()]
 
-    # Unknown mode – default to GitHub for backward compatibility
-    logger.warning("Unknown GBSERVER_AUTH_MODE '%s', falling back to github", auth_mode)
-    return [GitHubAuthProvider()]
+def build_provider_list(auth_mode: str) -> List[AuthProvider]:
+    """Build the ordered list of active providers for *auth_mode*.
+
+    Provider order matters: JWT-based providers are checked first so that
+    ``identify_token`` can distinguish token formats before falling through
+    to the opaque-token provider (GitHub). The ordering comes from
+    :data:`_AUTH_MODES`; the class for each name comes from the registry.
+    """
+    _load_auth_providers()
+
+    names = _AUTH_MODES.get(auth_mode)
+    if names is None:
+        # Unknown mode – default to GitHub for backward compatibility.
+        logger.warning(
+            "Unknown GBSERVER_AUTH_MODE '%s', falling back to github", auth_mode
+        )
+        names = ["github"]
+
+    return [_make_provider(name) for name in names]
