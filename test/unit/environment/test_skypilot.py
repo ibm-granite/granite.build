@@ -149,6 +149,33 @@ class TestBuildSkypilotMounts:
             )
         assert file_mounts == {"/proj/gbtest/builds/b1/payload": "/work/run1/payload"}
 
+    def test_source_base_dir_overrides_asset_dir_for_sources(self):
+        """When source_base_dir is given, relative SOURCES resolve against it
+        (not asset_dir); destinations still use asset_dir/build_workdir."""
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        with patch("gbserver.environment.skypilot.sky", MagicMock()):
+            file_mounts, _ = _build_skypilot_mounts(
+                {"/remote/in": "samples/data/x"},
+                "/work/run1",
+                None,
+                source_base_dir="/repo",
+            )
+        assert file_mounts == {"/remote/in": "/repo/samples/data/x"}
+
+    def test_source_base_dir_none_falls_back_to_asset_dir(self):
+        """source_base_dir=None keeps today's behavior (resolve vs asset_dir)."""
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        with patch("gbserver.environment.skypilot.sky", MagicMock()):
+            file_mounts, _ = _build_skypilot_mounts(
+                {"/remote/in": "scripts/run.sh"},
+                "/work/run1",
+                None,
+                source_base_dir=None,
+            )
+        assert file_mounts == {"/remote/in": "/work/run1/scripts/run.sh"}
+
 
 class TestRemapRelativeDest:
     """_remap_relative_dest: only relative dsts move under the build workdir."""
@@ -382,6 +409,44 @@ class TestLaunchSkypilot:
         assert (
             skypilot_env._launch_kwargs[launch_id]["targetsteprun_asset_dir"]
             == "/work/run-xyz"
+        )
+
+    @pytest.mark.asyncio
+    async def test_launch_builtin_command_step_resolves_source_against_cwd(
+        self, skypilot_env, monkeypatch, tmp_path
+    ):
+        """For the built-in command step, a relative file_mounts SOURCE resolves
+        against the gbserver working dir (cwd), not targetsteprun_asset_dir."""
+        monkeypatch.chdir(tmp_path)
+        from pathlib import Path
+
+        cwd = str(Path.cwd())  # normalize macOS /private symlink after chdir
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        task = MagicMock()
+        mock_sky.Task = MagicMock(return_value=task)
+        mock_sky.launch = MagicMock(return_value="req-cmd")
+        mock_sky.stream_and_get = MagicMock(return_value=(9, MagicMock()))
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            launch_id = "test-launch-cmd"
+            skypilot_env._get_launch_ready_event(launch_id)
+            await skypilot_env.launch_skypilot(
+                launch_id=launch_id,
+                targetsteprun_asset_dir="/work/run-xyz",
+                launcher_config={
+                    "run": "echo hi",
+                    "file_mounts": {"/remote/in": "samples/data/x"},
+                },
+                config={},
+                run_metadata={"targetstep_uri": "space://steps/command"},
+            )
+
+        task.set_file_mounts.assert_called_once_with(
+            {"/remote/in": f"{cwd}/samples/data/x"}
         )
 
     async def _launch_and_capture_resources(
