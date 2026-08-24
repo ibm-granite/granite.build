@@ -314,9 +314,15 @@ def _value_label(value: Any) -> Any:
 
     Values are usually classes (``__name__``), but some subsystems file other
     objects — a ``click`` command has ``name`` instead, and a thunk may have
-    neither — so fall back through both before ``repr``.
+    neither — so fall back through both before ``repr``. Uses ``is not None``
+    rather than truthiness so a present-but-empty label (e.g. ``name=""``) is
+    kept as-is instead of being treated as missing.
     """
-    return getattr(value, "__name__", None) or getattr(value, "name", None) or value
+    for attr in ("__name__", "name"):
+        label = getattr(value, attr, None)
+        if label is not None:
+            return label
+    return value
 
 
 def rebuild_registry(

@@ -11,7 +11,7 @@ CONTEXT_SETTINGS = dict(auto_envvar_prefix="GBCLI")
 
 # A registry value: either a lazy thunk that imports and returns an in-tree
 # command, or a plugin's already-loaded click command object.
-CommandSource = Union[Callable[[], click.BaseCommand], click.BaseCommand]
+CommandSource = Union[Callable[[], click.Command], click.Command]
 
 
 class Environment:
@@ -39,7 +39,7 @@ hidden_names = [
 ]
 
 
-def _intree_command_loader(name: str) -> Callable[[], click.BaseCommand]:
+def _intree_command_loader(name: str) -> Callable[[], click.Command]:
     """Build a thunk that imports the in-tree ``command_<name>`` module's ``cli``.
 
     Registered as the registry *value* so building the registry only records the
@@ -47,20 +47,20 @@ def _intree_command_loader(name: str) -> Callable[[], click.BaseCommand]:
     first resolution in ``get_command``, exactly as before.
     """
 
-    def load() -> click.BaseCommand:
+    def load() -> click.Command:
         return __import__(f"gbcli.commands.command_{name}", None, None, ["cli"]).cli
 
     return load
 
 
-def _resolve_command(value: "CommandSource") -> click.BaseCommand:
+def _resolve_command(value: "CommandSource") -> click.Command:
     """Return the click command for a registry value.
 
     In-tree values are lazy thunks (``() -> command``) that import their module
     on demand; plugin values are the already-loaded command object. A command is
     itself callable, so discriminate on type rather than callability.
     """
-    if isinstance(value, click.BaseCommand):
+    if isinstance(value, click.Command):
         return value
     return value()
 
@@ -115,17 +115,22 @@ class GraniteBuildCLI(click.Group):
                 ):
                     name = filename[8:-3]
                     registrar.add(_intree_command_loader(name), name)
-            # Plugin commands resolve directly to a click command object; wrap
-            # each in a thunk so every registry value is uniformly ``() -> cmd``.
+            # Plugin commands resolve directly to a click command object (not a
+            # thunk); the registry therefore holds a mix of thunks (in-tree) and
+            # command objects (plugins), which _resolve_command normalizes.
             registrar.discover_objects(GROUP_CLI_PLUGINS)
 
         rebuild_registry(cls.command_types, populate)
 
     def list_commands(self, ctx):
         self._load_commands()
-        # A plugin could file a name that collides with a hidden built-in; keep
-        # list_commands and get_command consistent by hiding it in both.
-        return sorted(n for n in self.command_types if n not in hidden_names)
+        # command_types may hold a name under both its lowercase and verbatim
+        # forms (keys_by_name files both, e.g. a plugin command `MyCmd` under
+        # `mycmd` and `MyCmd`), so list each command once under its canonical
+        # lowercase name. Both keys still resolve in get_command. Also hide any
+        # name shadowing a hidden built-in, to stay consistent with get_command.
+        names = {n.lower() for n in self.command_types}
+        return sorted(n for n in names if n not in hidden_names)
 
     def get_command(self, ctx, name):
         self._load_commands()

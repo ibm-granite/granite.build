@@ -915,3 +915,40 @@ def test_cli_noop_when_no_plugins(monkeypatch, cli_command_registry_snapshot):
     assert "build" in names
     assert "version" in names
     assert "dataset" not in names  # hidden built-in stays hidden
+
+
+def test_cli_mixed_case_plugin_listed_once(monkeypatch, cli_command_registry_snapshot):
+    """A mixed-case plugin command name is filed under both cases but listed once.
+
+    keys_by_name files `MyCmd` under both `mycmd` and `MyCmd`; list_commands must
+    show a single canonical entry, while get_command still resolves either form.
+    """
+    import click
+
+    @click.command("MyCmd")
+    def mycmd():
+        pass
+
+    eps = _make_entry_points(monkeypatch, {"MyCmd": ("mycmd", mycmd)})
+    _patch_entry_points(monkeypatch, {plugins.GROUP_CLI_PLUGINS: eps})
+
+    cli = cli_command_registry_snapshot()
+    listed = cli.list_commands(None)
+    assert listed.count("mycmd") == 1
+    assert "MyCmd" not in listed  # not shown twice under the verbatim key
+    assert cli.get_command(None, "MyCmd") is mycmd
+    assert cli.get_command(None, "mycmd") is mycmd
+
+
+def test_auth_build_list_skips_unregistered_name(
+    monkeypatch, auth_provider_registry_snapshot
+):
+    """A mode naming an unregistered provider degrades gracefully, not KeyError."""
+    _patch_entry_points(monkeypatch, {})
+    ap = auth_provider_registry_snapshot
+    # Force a mode that references a name absent from the registry.
+    monkeypatch.setitem(ap._AUTH_MODES, "broken", ["nonexistent"])
+
+    # Falls back to github rather than raising KeyError mid-request.
+    providers = ap.build_provider_list("broken")
+    assert [p.provider_name for p in providers] == ["github"]

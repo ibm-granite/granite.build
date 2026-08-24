@@ -280,6 +280,13 @@ _BUILTIN_PROVIDERS = [
 # opaque-token provider (GitHub) sees them. Ordering lives here, never in
 # ``provider_types`` iteration order, so registration order carries no auth
 # semantics.
+#
+# NOTE: this map is intentionally hardcoded to the built-in modes for now. A
+# plugin AuthProvider is discovered into ``provider_types`` but is not yet
+# selectable, because no ``auth_mode`` references it. Making plugin providers
+# reachable (e.g. letting GBSERVER_AUTH_MODE name providers directly) is a
+# deliberate follow-up; the registry lookup below is already provider-name
+# driven, so that extension needs no change here.
 _AUTH_MODES = {
     "github": ["github"],
     "ibmid": ["ibmid"],
@@ -310,15 +317,21 @@ def _load_auth_providers() -> None:
     rebuild_registry(provider_types, populate)
 
 
-def _make_provider(name: str) -> AuthProvider:
+def _make_provider(name: str) -> Optional[AuthProvider]:
     """Instantiate the registered provider *name*, supplying its constructor args.
 
     Construction is kept out of the registry (which holds classes): IBMid needs
     its issuer/JWKS/client-id from configuration, and other providers may need
     their own arguments. Plugin providers with no special arguments construct
     with defaults.
+
+    Returns ``None`` (with a warning) if *name* is not in the registry, so a
+    misconfigured mode degrades gracefully rather than raising mid-request.
     """
-    cls = provider_types[name]
+    cls = provider_types.get(name)
+    if cls is None:
+        logger.warning("Auth provider '%s' is not registered; skipping", name)
+        return None
     if name == "ibmid":
         from gbserver.types.constants import (
             GBSERVER_IBMID_CLIENT_ID,
@@ -352,4 +365,12 @@ def build_provider_list(auth_mode: str) -> List[AuthProvider]:
         )
         names = ["github"]
 
-    return [_make_provider(name) for name in names]
+    providers = [p for p in (_make_provider(name) for name in names) if p is not None]
+    if not providers:
+        # Every configured name was unregistered; fall back so auth still works.
+        logger.warning(
+            "No auth providers could be built for mode '%s'; falling back to github",
+            auth_mode,
+        )
+        providers = [GitHubAuthProvider()]
+    return providers
