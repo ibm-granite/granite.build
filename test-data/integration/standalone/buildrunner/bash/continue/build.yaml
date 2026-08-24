@@ -1,0 +1,24 @@
+granite.build:
+  name: bash-continue-skip-test
+  # Build continuation: a finished build is continued in a FRESH runner. Because
+  # the single target already succeeded earlier in the same (continuation) chain,
+  # the continuation SKIPS it via skipped_for_prerun_target_id — the same
+  # target-reuse machinery build-level retry uses, triggered purely by the
+  # continuation's retry_of_build_id link.
+  #
+  # max_retries is intentionally 0: continuation does not require a retry budget,
+  # and the continuation build re-runs remaining targets exactly once by default.
+  targets:
+    succeed-target:
+      allow_unknown: true
+      environment_uri: space://environments/bash
+      steps:
+        # The general-purpose `command` bash step runs an arbitrary shell command.
+        # `exit 0` SUCCEEDS the target, leaving a reusable SUCCESS target run that
+        # the continuation can skip via skipped_for_prerun_target_id.
+        - step_uri: space://steps/command
+          config:
+            command_config:
+              command: "exit 0"
+            compute_config:
+              num_nodes: 1

@@ -34,6 +34,7 @@ from gbserver.api.utils import (
     confirm_space_write_access,
     get_query_control,
     get_row_filter,
+    has_space_write_access,
     is_space_admin,
     is_super_admin,
     split_tags,
@@ -44,7 +45,7 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.space_storage import IStoredSpaceStorage
-from gbserver.storage.stored_build import StoredBuild
+from gbserver.storage.stored_build import StoredBuild, reopen_finished_build
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -91,8 +92,39 @@ class BuildSubmitRequest(BaseModel):
         return self
 
 
+class BuildContinueRequest(BaseModel):
+    """
+    A build continuation request.
+
+    Continues a previously-executed build: the **same** build is re-opened and a
+    fresh build runner re-runs it, skipping targets that already succeeded and
+    re-running the rest. The build definition, space, and targets are already on
+    the build, so only its id is required.
+
+        build_id: uuid of the finished build to continue.
+    """
+
+    build_id: str
+
+    @model_validator(mode="after")
+    def validate_build_id(self: Self) -> Self:
+        if self.build_id == "":
+            raise ValueError("build_id cannot be empty")
+        return self
+
+
 class BuildSubmitResponse(BaseModel):
     """Response to a build submission."""
+
+    build_id: str
+
+
+class BuildContinueResponse(BaseModel):
+    """Response to a build continuation.
+
+    build_id: uuid of the continued build. Continuation reuses the same build id,
+        so this equals the requested build_id.
+    """
 
     build_id: str
 
@@ -281,6 +313,75 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
     return BuildSubmitResponse(
         build_id=stored_build.uuid,
     )
+
+
+@builds_api.post("/continue")
+def continue_build(
+    request: Request, req: BuildContinueRequest
+) -> BuildContinueResponse:
+    """Continue a previously-executed build in a fresh runner.
+
+    Re-opens the **same** build (reusing its build id) by flipping its finished
+    status back to SUBMITTED, so the BuildWatcher re-dispatches it onto a fresh
+    runner that skips targets which already succeeded and re-runs the rest. The
+    build must be finished — continuing a build that is still active (there may be
+    a live runner) is rejected.
+    """
+    storage = get_admin_storage()
+    build_storage: IStoredBuildStorage = storage.build_storage
+    space_storage: IStoredSpaceStorage = storage.space_storage
+
+    # Every "you may not see this build" path (missing build, missing space, no
+    # write access) must return the SAME 404: otherwise a caller lacking access
+    # could tell a real build id (401) from a nonexistent one (404) and enumerate
+    # ids across spaces they cannot reach. Authorize before disclosing the build's
+    # existence or (below) its liveness.
+    not_found = HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Build {req.build_id} not found",
+    )
+    build = build_storage.get_by_uuid(req.build_id)
+    if not isinstance(build, StoredBuild):
+        raise not_found
+
+    # Authorize before disclosing the build's liveness (the is_finished 409 below).
+    stored_space = space_storage.get_by_name(build.space_name)
+    if stored_space is None:
+        raise not_found
+    has_access, _ = has_space_write_access(
+        request, username_on_target=build.username, space_name=stored_space.name
+    )
+    if not has_access:
+        raise not_found
+
+    # Only a finished build can be continued: re-opening a build with a live runner
+    # would attach a second runner to it. There is no runner-liveness table; the
+    # build status is the signal.
+    if not build.status.is_finished():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Build {build.uuid} has status {build.status}; only a finished "
+                "build (SUCCESS, FAILED, INVALID, or CANCELLED) can be continued"
+            ),
+        )
+
+    # Atomic guarded flip finished -> SUBMITTED; None means the build stopped being
+    # finished between the check above and the write (a concurrent continue or a
+    # runner that just picked it up) — reject rather than double-dispatch.
+    reopened = reopen_finished_build(build_storage, build)
+    if reopened is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Build {build.uuid} cannot be continued: its status changed "
+                "concurrently"
+            ),
+        )
+    logger.info(
+        "re-opened build %s for continuation (was %s)", build.uuid, build.status
+    )
+    return BuildContinueResponse(build_id=reopened.uuid)
 
 
 @builds_api.post("/validate")

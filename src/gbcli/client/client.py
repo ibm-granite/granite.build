@@ -39,6 +39,7 @@ from gbcli.services.service_auth import (
 )
 from gbcli.services.service_build import (
     build_cancel,
+    build_continue,
     build_describe,
     build_diff,
     build_init,
@@ -689,6 +690,16 @@ class GBClient:
         ) -> Any:
             return build_cancel(
                 self.github_token, build_id, id_format, space, callback=callback
+            )
+
+        def build_continue(
+            self,
+            build_id: str,
+            id_format: Optional[str] = None,
+            callback=None,
+        ) -> Optional[dict]:
+            return build_continue(
+                self.github_token, build_id, id_format, callback=callback
             )
 
         def build_lineage(self, build_id: str, id_format: str, callback=None):

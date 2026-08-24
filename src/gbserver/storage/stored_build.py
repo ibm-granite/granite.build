@@ -23,12 +23,17 @@ import shutil
 import tempfile
 from base64 import b64decode, b64encode
 from pathlib import Path
-from typing import Dict, List, Optional, Self, Tuple, Type
+from typing import TYPE_CHECKING, Dict, List, Optional, Self, Tuple, Type
 from urllib.parse import urlparse
 
 from pydantic import Field
 
 from gbserver.storage.storage import BaseStoredItem, TaggedItem
+
+if TYPE_CHECKING:
+    # Imported for typing only — build_storage imports StoredBuild, so a runtime
+    # import here would be circular.
+    from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.types.buildconfig import BUILD_FILENAME, BuildConfig
 from gbserver.types.status import Status
 from gbserver.utils import archive
@@ -249,3 +254,41 @@ class StoredBuild(BaseStoredItem, TaggedItem):
             and self.created_time == other.created_time
             and self.updated_time == other.updated_time
         )
+
+
+def reopen_finished_build(
+    build_storage: "IStoredBuildStorage", build: StoredBuild
+) -> Optional[StoredBuild]:
+    """Re-open a finished build in place so it can be continued.
+
+    A continuation reuses the **same** build id: the finished build is flipped
+    back to ``SUBMITTED`` so the BuildWatcher re-dispatches it through the ordinary
+    submission path onto a fresh runner (the watcher's status-scoped, garbage-
+    collected seen-set treats the re-``SUBMITTED`` id as newly unseen). The retry
+    budget is reset (``retry_count -> 0``) so the build.yaml ``max_retries`` is
+    counted fresh for the continuation, and any prior ``failure_reason`` is
+    cleared.
+
+    Target reuse is driven by the build's existing SUCCESS target runs (see
+    ``BuildRunner.__is_target_already_run``), not by ``retry_count``, so targets
+    that already succeeded are skipped and only the failed/unfinished ones re-run.
+
+    The flip is atomically guarded on the build still being finished, so a
+    continuation racing an already-live runner (or a second concurrent continue)
+    is rejected rather than attaching a fresh runner to a live build.
+
+    Args:
+        build_storage: storage used to atomically update the build.
+        build: the finished build to continue (its status must satisfy
+            ``is_finished()``).
+
+    Returns:
+        The re-opened ``StoredBuild``, or ``None`` if the guard rejected the flip
+        because the build was no longer finished (a concurrent writer won the
+        race).
+    """
+    return build_storage.update_fields(
+        build.uuid,
+        {"status": Status.SUBMITTED, "retry_count": 0, "failure_reason": ""},
+        should_update=lambda item: item.status.is_finished(),
+    )

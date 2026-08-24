@@ -504,8 +504,8 @@ class BuildRunner(AbstractBuildRunner):
                 force_fetch=force_fetch,
                 target_already_run_fn=(
                     self.__is_target_already_run
-                    if self.stored_build.retry_count > 0
-                    and self.stored_build.get_build_config().retries.target_reuse_enabled
+                    if self.stored_build.get_build_config().retries.target_reuse_enabled
+                    and self.__has_reusable_prior_runs()
                     else None
                 ),
             )
@@ -1299,6 +1299,26 @@ Download : {download_msg}
         if event.run_metadata.target_hash and payload.status == Status.SUCCESS:
             stored_target_run.target_hash = event.run_metadata.target_hash
         self.storage.target_storage.update(stored_target_run)
+
+    def __has_reusable_prior_runs(self: Self) -> bool:
+        """Return True if this build already has SUCCESS target runs from an
+        earlier attempt whose outputs a re-execution can reuse.
+
+        This gates target reuse, covering both re-execution paths uniformly:
+        an automatic in-place retry (``retry_count`` bumped) and a
+        ``gb build continue`` (fresh runner, ``retry_count`` reset to 0). A
+        build's first execution has no prior runs, so reuse stays off and every
+        target runs. The per-target hash match still happens in
+        ``__is_target_already_run``; this is only the cheap "are we re-running?"
+        gate.
+
+        Returns:
+            bool: whether the current build has at least one prior SUCCESS run.
+        """
+        prior = self.storage.target_storage.get_by_where(
+            {"build_id": self.stored_build.uuid, "status": Status.SUCCESS.name}
+        )
+        return bool(prior)
 
     def __is_target_already_run(
         self: Self,

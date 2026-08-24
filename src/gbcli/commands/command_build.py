@@ -102,9 +102,15 @@ def execution_status_plain_output(
     def target_status_emoji(target_info: Any) -> str:
         return get_status_emoji(target_info["status"])
 
+    # Retries reuse the same build id, so every target run reported here is a real
+    # FAILED or SUCCESS run (a target that already succeeded keeps its single
+    # SUCCESS run and is not re-recorded). Number targets by their position in the
+    # build's target order.
+    target_number = {name: idx + 1 for idx, name in enumerate(targets)}
+
     targets_overview = [
-        f"\n\tTarget #{index + 1} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"
-        for index, target in enumerate(targets)
+        f"\n\tTarget #{target_number[target]} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"
+        for target in targets
     ]
     source_pr = f"<{details['source_pr']}>" if details["source_pr"] else "-"
     details_output = f"""
@@ -122,7 +128,7 @@ def execution_status_plain_output(
     """
 
     target_outputs = []
-    for index, target in enumerate(targets):
+    for target in targets:
         input_artifacts_table = [
             [i["artifact_id"], i["uri"]] for i in targets[target]["input_artifacts"]
         ]
@@ -182,7 +188,7 @@ def execution_status_plain_output(
         target_output = f"""
 ---
 
-## Target #{index + 1} {target}
+## Target #{target_number[target]} {target}
 
 {target_status_emoji(targets[target])} **Status**: {status_line}{retry_of_line}
 {sections}
@@ -1124,6 +1130,96 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
                 )
             if format == "json":
                 click.echo(json.dumps({"uuid": build["canceled"]["uuid"]}))
+
+    except Exception as e:
+        click.echo(str_exc_chain(e), err=True)
+        ctx.exit(1)  # Exit with a non-zero status
+
+
+@cli.command("continue")
+@click.pass_context
+@click.argument("build_id", required=True)
+@click.option(
+    "--format",
+    "format",
+    default="simple",
+    type=click.Choice(["simple", "json"], case_sensitive=True),
+    help="Output format: simple (default), json",
+)
+@common_options
+def continue_build_cmd(ctx, build_id, format, skip_version_check, quiet):
+    """
+    Continue a previously-executed build
+
+    Provide build ID or URL. The same build is re-opened and a fresh build runner
+    re-runs it, skipping targets that already succeeded and re-running the rest.
+    The build must be finished (not currently running). No local build folder is
+    required — the build definition is already on the build.
+    """
+    if format == "json":
+        quiet = True
+    if not skip_version_check:
+        try:
+            outdated_version = check_current_and_latest_versions()
+        except Exception as e:
+            click.echo(f"❌ {str(e)}.", err=True)
+            ctx.exit(1)  # Exit with a non-zero status
+        if outdated_version:
+            click.echo(outdated_version, err=True)
+            ctx.exit(1)  # Exit with a non-zero status
+
+    id_format = parse_build_identifier(build_id)
+    if id_format not in ["uuid", "url"]:
+        click.echo(
+            f"❌ Build identifier formatted incorrectly. Please try again with valid build ID or URL.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if id_format == "uuid" and len(build_id) < 36:
+        click.echo(
+            f"❌ Build ID formatted incorrectly. Please try again with a valid build ID.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if not quiet:
+        click.echo(f"🏁 {PROJECT_NAME} build continue")
+
+    build_client = GBClient.Build(get_user_token())
+
+    def echo_callback(callback_event: str, callback_args: Dict):
+        match callback_event:
+            case "error":
+                reason = callback_args.get("reason", "")
+                click.echo(
+                    f"\n❌ Build can't be continued at this moment... Reason: {reason}",
+                    err=True,
+                )
+                sys.exit(1)  # Exit with a non-zero status
+            case _:
+                pass
+
+    try:
+        result = build_client.build_continue(
+            build_id, id_format, callback=echo_callback
+        )
+
+        if result:
+            # Continuation reuses the same build id, so the server returns the same
+            # uuid that was continued.
+            continued_build_id = result["build_id"]
+            details_page = f"{WEB_UI_URL}/builds/{continued_build_id}"
+            if not quiet:
+                click.echo(
+                    f"✅ Continuing build {continued_build_id}: {details_page}"
+                )
+                click.echo(f"""To get the build status:
+```
+gb build status {continued_build_id}
+```""")
+            if format == "json":
+                click.echo(json.dumps({"build_id": continued_build_id}))
 
     except Exception as e:
         click.echo(str_exc_chain(e), err=True)
@@ -2699,7 +2795,14 @@ def diff(ctx, build_id_1, build_id_2, space, format, skip_version_check, quiet):
     help="Fetch build PR events.",
 )
 @common_options
-def monitor(ctx, build_id, show_events, fetch_pr, skip_version_check, quiet):
+def monitor(
+    ctx,
+    build_id,
+    show_events,
+    fetch_pr,
+    skip_version_check,
+    quiet,
+):
     """
     Monitor a build execution
 
