@@ -1231,9 +1231,13 @@ Download : {download_msg}
 
         # Link a re-run to the prior FAILED run of the same target in this build,
         # so the build reads as an honest FAILED->SUCCESS history in one build id.
-        stored_target.retry_of_target_id = self.__find_prior_failed_target_run(
-            build_id=build_id, target_name=target_name
-        )
+        # Only a build that has already retried (retry_count > 0) can have a prior
+        # FAILED run, so skip the lookup query entirely on the common first-attempt
+        # path (retry_of_target_id stays "").
+        if self.stored_build.retry_count > 0:
+            stored_target.retry_of_target_id = self.__find_prior_failed_target_run(
+                build_id=build_id, target_name=target_name
+            )
         self.storage.target_storage.add(stored_target)
         return stored_target
 
