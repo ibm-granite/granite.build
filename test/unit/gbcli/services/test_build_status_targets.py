@@ -78,9 +78,13 @@ def test_plain_sorts_oldest_to_newest_by_start():
     retried = targets["targetB (tB2)"]
     assert retried["retry_of_target_id"] == "tB1"
     assert retried["build_id"] == _BUILD_ID
+    # Each run carries its plain logical-target name (used to number targets so a
+    # FAILED run and its SUCCESS retry share one number rather than two).
+    assert retried["name"] == "targetB"
     failed = targets["targetB (tB1)"]
     assert failed["retry_of_target_id"] == ""
     assert failed["build_id"] == _BUILD_ID
+    assert failed["name"] == "targetB"
 
 
 def test_json_carries_retry_link_and_build_id():

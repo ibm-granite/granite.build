@@ -89,6 +89,33 @@ def get_status_emoji(status: str) -> str:
             return ""
 
 
+def _number_logical_targets(targets: Any) -> dict:
+    """Map each target-run key to a number shared by all runs of one target.
+
+    In-place retry keeps every run on the one build id, so ``targets`` is keyed by
+    "name (uuid)" and a target that FAILED then re-ran to SUCCESS contributes two
+    keys. Numbering the keys directly (``enumerate``) would give the failed run and
+    its retry different numbers and shift every later target as runs accumulate.
+    Numbering by the logical target name instead keeps a target's runs on one
+    number, assigned in the order each target first appears.
+
+    Args:
+        targets: the ordered target-run mapping from ``process_target_runs`` —
+            keyed by "name (uuid)", each value carrying its plain ``name``.
+
+    Returns:
+        A dict from each target-run key to its 1-based logical target number.
+    """
+    logical_numbers: dict = {}
+    key_to_number: dict = {}
+    for key in targets:
+        name = targets[key]["name"]
+        if name not in logical_numbers:
+            logical_numbers[name] = len(logical_numbers) + 1
+        key_to_number[key] = logical_numbers[name]
+    return key_to_number
+
+
 def execution_status_plain_output(
     details: Any,
     targets: List[Any],
@@ -102,11 +129,7 @@ def execution_status_plain_output(
     def target_status_emoji(target_info: Any) -> str:
         return get_status_emoji(target_info["status"])
 
-    # Retries reuse the same build id, so every target run reported here is a real
-    # FAILED or SUCCESS run (a target that already succeeded keeps its single
-    # SUCCESS run and is not re-recorded). Number targets by their position in the
-    # build's target order.
-    target_number = {name: idx + 1 for idx, name in enumerate(targets)}
+    target_number = _number_logical_targets(targets)
 
     targets_overview = [
         f"\n\tTarget #{target_number[target]} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"

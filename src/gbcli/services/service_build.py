@@ -2042,6 +2042,7 @@ def process_target_runs(target_runs: List[Any]) -> Dict[str, Any]:
             )
 
         targets[f"{target['name']} ({target['uuid']})"] = {
+            "name": target["name"],
             "status": target["status"],
             "build_id": target.get("build_id", ""),
             "retry_of_target_id": target.get("retry_of_target_id", ""),
