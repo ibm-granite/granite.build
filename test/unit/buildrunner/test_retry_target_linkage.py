@@ -48,9 +48,10 @@ def _make_runner(retry_count: int = 0) -> BuildRunner:
     """A BuildRunner with mocked storage, bypassing __init__.
 
     Args:
-        retry_count: the stored build's retry_count. The prior-failed-run lookup
-            in __create_and_store_target_run is gated on retry_count > 0 (a first
-            attempt cannot have a prior FAILED run), so linkage tests must set it.
+        retry_count: the stored build's retry_count. Linkage in
+            __create_and_store_target_run must NOT depend on retry_count (a restart
+            resets it to 0 yet leaves prior FAILED runs), so this is set on the mock
+            to guard against a retry_count gate being re-introduced.
     """
     runner = object.__new__(BuildRunner)
     runner.storage = MagicMock()
@@ -168,9 +169,11 @@ class TestCreateAndStoreTargetRunLinkage:
         return SimpleNamespace(config=object(), targets={_TARGET: target})
 
     def test_success_run_links_back_to_prior_failed_run(self):
-        # retry_count > 0: the build has already retried, so the prior-failed-run
-        # lookup runs and the new SUCCESS run links back to it.
-        runner = _make_runner(retry_count=1)
+        # retry_count == 0 deliberately: a restart reuses the build id and resets
+        # retry_count to 0 while leaving pre-restart FAILED runs in place, so
+        # linkage must NOT be gated on retry_count. A prior FAILED run exists, so
+        # the new SUCCESS run links back to it regardless of retry_count.
+        runner = _make_runner(retry_count=0)
         runner.storage.target_storage.get_by_where.return_value = [
             _failed_run("failed-run-1")
         ]
@@ -194,8 +197,8 @@ class TestCreateAndStoreTargetRunLinkage:
         runner.storage.target_storage.add.assert_called_once_with(created)
 
     def test_first_run_has_no_linkage(self):
-        # retry_count == 0 (first attempt): the lookup is gated out entirely, so
-        # retry_of_target_id stays "" without querying storage.
+        # Genuine first attempt: the lookup runs but finds no prior FAILED run,
+        # so retry_of_target_id stays "".
         runner = _make_runner()
         runner.storage.target_storage.get_by_where.return_value = []
 
