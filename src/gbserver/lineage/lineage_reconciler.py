@@ -451,6 +451,11 @@ def select_recordable_targets(
     is a skip, never an early stop -- NULL rows can be interleaved rather than
     sorted last.
 
+    Targets with no output artifacts are also skipped: the standalone UI reads
+    target nodes straight from admin storage regardless of artifacts (see
+    ``__build_target_records`` in ``api/builds.py``), so wandb no longer needs to
+    carry a run for an artifact-less target just to make it appear as a node.
+
     Args:
         storage: Admin storage to read targets from.
         build_id: Build whose successful targets to select.
@@ -467,6 +472,8 @@ def select_recordable_targets(
         for target in page:
             if target.finished_at is None:
                 continue
+            if not any(target.output_artifacts.values()):
+                continue
             selected.append(target)
         if len(page) < _SCAN_PAGE_SIZE:
             break
@@ -478,15 +485,15 @@ def expected_run_count(target: StoredTargetRun) -> int:
     """Number of lineage runs a fully-recorded ``target`` should have in a sink.
 
     Must mirror how ``WandBLineageStore._build_events_for_target`` emits events:
-    one run per output artifact (summed across every output-artifact list), or a
-    single "no-output" run when the target produced no outputs. Inputs do not add
-    runs — they are attached to each output's run — so only outputs are counted.
-    This is derived from the in-memory ``StoredTargetRun`` (already loaded by the
-    scan) to avoid any extra storage read. Keep this in lockstep with
+    one run per output artifact, summed across every output-artifact list. Inputs
+    do not add runs — they are attached to each output's run — so only outputs are
+    counted. Only called for targets with at least one output artifact;
+    ``select_recordable_targets`` excludes artifact-less targets entirely. This is
+    derived from the in-memory ``StoredTargetRun`` (already loaded by the scan) to
+    avoid any extra storage read. Keep this in lockstep with
     ``_build_events_for_target``; the count-vs-events coherence test guards drift.
     """
-    n = sum(len(uuids) for uuids in target.output_artifacts.values())
-    return n if n > 0 else 1
+    return sum(len(uuids) for uuids in target.output_artifacts.values())
 
 
 @dataclass

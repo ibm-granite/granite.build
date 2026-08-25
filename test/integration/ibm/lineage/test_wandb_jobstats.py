@@ -275,6 +275,10 @@ class TestWandBLineageStore:
         assert events_list[0]["outputs"][0]["name"] == "model"
 
     def test_create_jobstats_for_target_no_outputs(self):
+        """A target with no output artifacts emits nothing: the standalone UI
+        shows target nodes from admin storage regardless of artifacts, so wandb no
+        longer needs a run just to make an artifact-less target appear as a node.
+        """
         input_art = _make_artifact("in-1", "data", "s3://b/data")
         build = _make_build()
         target = _make_target(
@@ -287,10 +291,8 @@ class TestWandBLineageStore:
             storage, target, build
         )
 
-        assert len(events_list) == 1
-        assert "no-output" in events_dict
-        assert events_list[0]["outputs"] == []
-        assert len(events_list[0]["inputs"]) == 1
+        assert events_list == []
+        assert events_dict == {}
 
     def test_create_jobstats_for_target_skipped(self):
         input_art = _make_artifact("in-1", "data", "s3://b/data")
