@@ -22,7 +22,8 @@ import { getArtifact } from '@/api/gbserver'
 import { getBuildArchiveFiles } from '@/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@/components/LineageGraph/Graph'
 import { getSubgraph } from '@/components/LineageGraph/diagramUtilities'
-import StepDetailsPanel from './StepDetailsPanel'
+import StepDetailsPanel, { stepDrawerSummary } from './StepDetailsPanel'
+import { BuildStatusBadge } from '@/components/BuildStatusBadge'
 
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending'])
 
@@ -563,35 +564,52 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
         )}
       </div>
 
+      {/* A drawer, not a modal: no overlay, so the graph behind stays visible
+          and clickable and picking another target just re-points the drawer. */}
       {stepDetailTarget && (
-        <>
-          <div
-            className={styles.stepSidePanelOverlay}
-            onClick={() => setStepDetailTarget(null)}
-          />
-          <div className={styles.stepSidePanel} role="dialog" aria-label={`Step details — ${stepDetailTarget}`}>
-            <div className={styles.stepSidePanelHeader}>
-              <div>
-                <div className={styles.stepSidePanelLabel}>Lineage</div>
-                <h4 className={styles.stepSidePanelHeading}>Step details — {stepDetailTarget}</h4>
-              </div>
-              <IconButton
-                kind="ghost"
-                label="Close"
-                onClick={() => setStepDetailTarget(null)}
-              >
-                <Close />
-              </IconButton>
-            </div>
-            <div className={styles.stepSidePanelBody}>
-              <StepDetailsPanel
-                targetName={stepDetailTarget}
-                target={buildStatus?.targets?.[stepDetailTarget]}
-                sourceUri={build?.source_uri}
-              />
-            </div>
-          </div>
-        </>
+        <div
+          className={styles.stepSidePanel}
+          role="dialog"
+          aria-label={`Step details — ${stepDetailTarget}`}
+        >
+          {(() => {
+            const target = buildStatus?.targets?.[stepDetailTarget]
+            const { status, subtitle, summary } = stepDrawerSummary(target)
+            return (
+              <>
+                <div className={styles.stepSidePanelHeader}>
+                  <div className={styles.stepSidePanelIdentity}>
+                    <h4 className={styles.stepSidePanelHeading}>{stepDetailTarget}</h4>
+                    <div className={styles.stepSidePanelSubtitle}>{subtitle}</div>
+                    {status && (
+                      <div className={styles.stepSidePanelStatus}>
+                        <BuildStatusBadge status={status} />
+                      </div>
+                    )}
+                    {summary && (
+                      <div className={styles.stepSidePanelSummary}>{summary}</div>
+                    )}
+                  </div>
+                  <IconButton
+                    kind="ghost"
+                    label="Close"
+                    onClick={() => setStepDetailTarget(null)}
+                  >
+                    <Close />
+                  </IconButton>
+                </div>
+                <div className={styles.stepSidePanelBody}>
+                  <StepDetailsPanel
+                    targetName={stepDetailTarget}
+                    target={target}
+                    sourceUri={build?.source_uri}
+                    buildId={build?.uuid}
+                  />
+                </div>
+              </>
+            )
+          })()}
+        </div>
       )}
 
       {artifactNavNode?.hfUrl ? (

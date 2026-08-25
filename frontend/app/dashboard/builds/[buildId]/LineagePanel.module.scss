@@ -85,19 +85,13 @@
 
 /* ── Step details side panel ─────────────────────────────────────────────── */
 
-.stepSidePanelOverlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 100;
-}
-
 .stepSidePanel {
   position: absolute;
   top: 0;
   right: 0;
   bottom: 0;
-  width: 32rem;
+  /* 33rem ≈ 528px, inside the 480–560px target. */
+  width: 33rem;
   max-width: 90%;
   background: var(--cds-layer-01);
   border-left: 1px solid var(--cds-border-subtle-01);
@@ -118,22 +112,43 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1rem 1rem 0.75rem 1.5rem;
+  padding: 1.25rem 1rem 1rem 1.5rem;
   border-bottom: 1px solid var(--cds-border-subtle-01);
   flex-shrink: 0;
 }
 
-.stepSidePanelLabel {
-  font-size: 0.75rem;
-  color: var(--cds-text-secondary);
-  margin-bottom: 0.25rem;
+.stepSidePanelIdentity {
+  min-width: 0;
 }
 
 .stepSidePanelHeading {
-  font-size: 1rem;
+  font-size: 1.25rem;
   font-weight: 600;
+  line-height: 1.25;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.stepSidePanelSubtitle {
+  margin-top: 0.125rem;
+  font-family: var(--cds-code-01-font-family, monospace);
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* The one prominent status in the drawer — per-step badges only appear when a
+   target has more than one step. */
+.stepSidePanelStatus {
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.stepSidePanelSummary {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary);
 }
 
 .stepSidePanelBody {
@@ -147,29 +162,26 @@
 .stepPanel {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-}
-
-.stepPanelSource {
-  padding-bottom: 0.75rem;
-  border-bottom: 1px solid var(--cds-border-subtle-01);
+  gap: 2rem;
 }
 
 .stepList {
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 2rem;
   margin: 0;
   padding: 0;
 }
 
+/* Cards are borderless now — sections carry the hierarchy, so a box around
+   each step would be a second competing frame. */
 .stepCard {
-  border: 1px solid var(--cds-border-subtle-01);
-  background: var(--cds-layer-01);
-  padding: 0.75rem 1rem;
-  // Lets the params <pre> inside actually shrink to the card and scroll,
-  // instead of forcing the card wider than the modal.
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  // Lets the <pre> children actually shrink to the drawer and scroll,
+  // instead of forcing the card wider than it.
   min-width: 0;
 }
 
@@ -178,7 +190,157 @@
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+}
+
+/* ── Sections ────────────────────────────────────────────────────────────── */
+
+.stepSection {
+  min-width: 0;
+}
+
+.stepSectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
   margin-bottom: 0.5rem;
+}
+
+.stepSectionTitle {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cds-text-secondary);
+}
+
+/* A block nested inside a section. Indented with a rule on the left so it reads
+   as subordinate to the uppercase section label above it. */
+/* Styled as a peer of the "Advanced / Raw parameters" disclosure at the foot of
+   the card: a top rule and a plain secondary-text summary, no indent. */
+.stepSubsection {
+  margin-top: 1rem;
+  border-top: 1px solid var(--cds-border-subtle-01);
+  padding-top: 0.75rem;
+}
+
+.stepSubsectionLabel {
+  margin-bottom: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary);
+}
+
+/* The clickable variant, for the <summary> of an expandable subsection. */
+.stepSubsectionSummary {
+  composes: stepSubsectionLabel;
+  cursor: pointer;
+  list-style: revert;
+
+  &:hover {
+    color: var(--cds-text-primary);
+  }
+}
+
+.stepCopyButton {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: var(--cds-link-primary);
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+/* ── Execution summary ───────────────────────────────────────────────────── */
+
+/* Two bordered cells side by side. Duration is intentionally not here — the
+   drawer header already states it. */
+.stepExecution {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.stepExecutionCell {
+  min-width: 0;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--cds-border-subtle-01);
+  background: var(--cds-layer-02);
+}
+
+.stepExecutionLabel {
+  font-size: 0.6875rem;
+  color: var(--cds-text-secondary);
+}
+
+.stepExecutionValue {
+  margin: 0.125rem 0 0;
+  font-family: var(--cds-code-01-font-family, monospace);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Command block ───────────────────────────────────────────────────────── */
+
+/* Commands are multi-line shell scripts. Wrap rather than scroll horizontally
+   so the whole script is readable without dragging. */
+.stepCommand {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  max-height: 20rem;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+  background: var(--cds-layer-02);
+  border-left: 2px solid var(--cds-border-strong-01);
+  font-family: var(--cds-code-01-font-family, monospace);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+/* Copy trails the command block, right-aligned. */
+.stepCommandActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.375rem;
+}
+
+/* ── Configuration subgroups ─────────────────────────────────────────────── */
+
+.stepConfigGroup {
+  &:not(:first-child) {
+    margin-top: 0.875rem;
+  }
+}
+
+.stepConfigGroupLabel {
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+/* ── Advanced / raw parameters ───────────────────────────────────────────── */
+
+/* The Command subsection is styled to match; both share these rules so the two
+   disclosures cannot drift apart. */
+.stepRaw {
+  composes: stepSubsection;
+}
+
+.stepRawSummary {
+  composes: stepSubsectionSummary;
+
+  &:hover {
+    color: var(--cds-text-primary);
+  }
 }
 
 .stepCardName {
@@ -208,7 +370,11 @@
 
 /* Status messages arrive as multi-line markdown; keep their line breaks. */
 .stepMessage {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
   white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .stepMuted {
