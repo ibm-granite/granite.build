@@ -113,7 +113,7 @@ granite.build:
       environment_uri: space://environments/skypilot/aws
       outputs:
         model:
-          uri: lh://prod/myspace/models/shared/byoc-pretrain-{{ run_metadata.targetsteprun_id | short_hash }}/1
+          uri: hf://huggingface.co/my-org/byoc-pretrain-{{ run_metadata.targetsteprun_id | short_hash }}
       steps:
         - step_uri: space://steps/byoc
           config:
@@ -134,9 +134,9 @@ granite.build:
           binding: pretrain.model   # <upstream-target>.<output-id>
       outputs:
         checkpoints:
-          uri: lh://prod/myspace/models/shared/byoc-out-{{ run_metadata.targetsteprun_id | short_hash }}/1
+          uri: hf://huggingface.co/my-org/byoc-out-{{ run_metadata.targetsteprun_id | short_hash }}
         report:
-          uri: lh://prod/myspace/reports/shared/byoc-report-{{ run_metadata.targetsteprun_id | short_hash }}/1
+          uri: hf://huggingface.co/datasets/my-org/byoc-report-{{ run_metadata.targetsteprun_id | short_hash }}
       steps:
         - step_uri: space://steps/byoc
           config:
