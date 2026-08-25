@@ -473,7 +473,7 @@ def select_recordable_targets(
             if target.finished_at is None:
                 continue
             if not any(target.output_artifacts.values()):
-                logger.debug(
+                logger.info(
                     "Skipping wandb lineage recording for target %s (build %s): "
                     "no output artifacts.",
                     target.uuid,
