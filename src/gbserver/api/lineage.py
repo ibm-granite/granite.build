@@ -108,9 +108,13 @@ def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse
 
     Every target of the build gets an entry, but a target with neither input nor
     output artifacts contributes an empty dict: it has no lineage events to
-    report. This endpoint reaches ``create_jobstats_for_target`` directly, without
-    going through ``select_recordable_targets``, so the builder's own
-    artifact-less check is what produces that -- not a filter here.
+    report. The one carve-out is a prerun-skipped target (non-empty
+    ``skipped_for_prerun_target_id``), which still contributes a
+    ``{"no-output": [...]}`` entry even with neither -- mirroring the exemption in
+    ``select_recordable_targets``. This endpoint reaches
+    ``create_jobstats_for_target`` directly, without going through
+    ``select_recordable_targets``, so the builder's own artifact-less check is what
+    produces that -- not a filter here.
     """
     storage = get_admin_storage()
 
@@ -149,7 +153,8 @@ def get_target_jobstats(request: Request, target_id: str) -> TargetJobStatsRespo
     """Get JobStats for a target run, grouped by output artifact name.
 
     ``jobstats`` is empty for a target with neither input nor output artifacts --
-    it has no lineage events. See ``get_build_jobstats``.
+    it has no lineage events -- unless the target was prerun-skipped, which still
+    yields a ``{"no-output": [...]}`` entry. See ``get_build_jobstats``.
     """
     storage = get_admin_storage()
 
