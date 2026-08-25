@@ -15,17 +15,16 @@ targets:
 target_expectations:
   # env:// moves no bytes (no push/pull steps queued), unlike the aws s3://
   # fixture — so step_count is 1 per target (just the command step), matching the
-  # sibling mem:// 2target fixture. The counts below are a first estimate and MUST
-  # be calibrated against the first successful real-cluster run. Under standalone's
-  # NoopLineageStore jobstats_count may not be asserted; keep it accurate once
-  # observed.
+  # sibling mem:// 2target fixture. Confirmed against a real Docker SLURM run:
+  # tokenize and validate landed on different sky clusters (different nodes) and
+  # the cross-node env:///shared handoff worked — both targets SUCCESS, 1 passed.
   - target_name: tokenize
-    step_count: 1              # CALIBRATE
+    step_count: 1
     input_artifact_count: 0
     output_artifact_count: 1
     jobstats_count: 1
   - target_name: validate
-    step_count: 1              # CALIBRATE
+    step_count: 1
     input_artifact_count: 1
     output_artifact_count: 1
     jobstats_count: 1
