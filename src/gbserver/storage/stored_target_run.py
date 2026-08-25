@@ -62,6 +62,30 @@ def _finished_key(target: "StoredTargetRun") -> datetime:
     return ts
 
 
+def latest_finished_target(
+    targets: Iterable["StoredTargetRun"],
+) -> Optional["StoredTargetRun"]:
+    """Return the target that finished most recently, or None if there are none.
+
+    ``get_by_where`` returns rows in an undefined order, so callers narrowing to a
+    set that can hold more than one run of the same target (e.g. the SUCCESS runs
+    sharing a ``target_hash`` within one in-place-retried build) must not trust
+    the first row — the stale/older run would win. Ordering by ``finished_at``
+    keeps the newest, whose output artifacts are the ones to reuse.
+
+    Args:
+        targets: ``StoredTargetRun``s, in any order.
+
+    Returns:
+        The target with the greatest ``finished_at`` (unset sorts oldest), or
+        ``None`` when ``targets`` is empty.
+    """
+    targets = list(targets)
+    if not targets:
+        return None
+    return max(targets, key=_finished_key)
+
+
 def latest_success_per_target(
     targets: Iterable["StoredTargetRun"],
 ) -> list["StoredTargetRun"]:

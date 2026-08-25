@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from gbserver.storage.stored_target_run import (
     StoredTargetRun,
+    latest_finished_target,
     latest_success_per_target,
 )
 from gbserver.types.status import Status
@@ -19,6 +20,32 @@ def _run(uuid: str, name: str, finished_at) -> StoredTargetRun:
         status=Status.SUCCESS,
         finished_at=finished_at,
     )
+
+
+class TestLatestFinishedTarget:
+    """``latest_finished_target`` picks the newest run from an unordered set."""
+
+    def test_empty_input_is_none(self):
+        assert latest_finished_target([]) is None
+
+    def test_single_run_is_returned(self):
+        assert latest_finished_target([_run("t1", "targetA", _BASE)]).uuid == "t1"
+
+    def test_newest_wins_regardless_of_order(self):
+        # Model get_by_where's undefined order: newest is not first.
+        later = _BASE.replace(minute=5)
+        picked = latest_finished_target(
+            [_run("old", "targetA", _BASE), _run("new", "targetA", later)][::-1]
+        )
+        assert picked.uuid == "new"
+
+    def test_naive_and_aware_do_not_raise(self):
+        naive = datetime(2026, 1, 1, 0, 0, 0)
+        aware_later = datetime(2026, 1, 1, 0, 5, 0, tzinfo=timezone.utc)
+        picked = latest_finished_target(
+            [_run("naive", "targetA", naive), _run("aware", "targetA", aware_later)]
+        )
+        assert picked.uuid == "aware"
 
 
 class TestLatestSuccessPerTarget:

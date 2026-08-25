@@ -60,7 +60,10 @@ from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
-from gbserver.storage.stored_target_run import StoredTargetRun
+from gbserver.storage.stored_target_run import (
+    StoredTargetRun,
+    latest_finished_target,
+)
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.buildconfig import BuildConfig, BuildTargetConfig
 from gbserver.types.buildevent import (
@@ -1238,9 +1241,16 @@ Download : {download_msg}
                 "build_id": self.stored_build.uuid,
             }
         )
-        if not results:
+        # This runs only when target reuse is enabled (it is the skip function).
+        # With max_retries >= 2, or across a restart, the target can already hold
+        # more than one SUCCESS run sharing this hash: an earlier success whose
+        # output artifacts had not fully registered is re-run and succeeds again,
+        # and the old run is never demoted. get_by_where ordering is undefined, so
+        # pick the newest — its outputs are the current ones to reuse — never an
+        # arbitrary first row.
+        stored_target = latest_finished_target(results)
+        if stored_target is None:
             return None
-        stored_target = results[0]
         logger.info(
             "Found previously run target %s in build %s",
             stored_target.uuid,
