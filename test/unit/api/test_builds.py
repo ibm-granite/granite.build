@@ -46,6 +46,7 @@ from gbserver.api.builds import (
     BuildValidateRequest,
     BuildValidation,
     continue_build,
+    get_build_archive,
     read_build,
     submit_build,
     validate_build,
@@ -234,27 +235,32 @@ def test_validate_build_allows_admin_impersonation_via_space_name():
     assert resp.status_code == 200
 
 
-# ------------------------------------------------------------------ read_build
+# ------------------------------------------------------------------ read_build / get_build_archive
 #
-# Regression coverage for the asymmetry fixed here: read_build used to call
-# the owner/admin-only authorize_build_access (via #201's confirm_space_write_access),
-# while get_build_status/get_buildevents from that same PR correctly used the
-# broader authorize_build_read_access (any space member). A build's owner is
-# VICTIM throughout; MEMBER is a different user who is a member of SPACE but
-# not its owner, and OUTSIDER is a user with no relationship to SPACE at all.
+# Regression coverage for the asymmetry fixed here: read_build and
+# get_build_archive used to call the owner/admin-only authorize_build_access
+# (via #201's confirm_space_write_access), while get_build_status/
+# get_buildevents from that same PR correctly used the broader
+# authorize_build_read_access (any space member). A build's owner is VICTIM
+# throughout; MEMBER is a different user who is a member of SPACE but not its
+# owner, and OUTSIDER is a user with no relationship to SPACE at all.
 #
-# _mock_space_access stubs has_space_write_access to an unconditional pass,
-# same as the submit_build/validate_build tests above — _real_authz() restores
-# it so a build_id/get_build_archive still routed through the old owner-only
-# authorize_build_access would actually enforce it here. _mock_space_access
-# does not touch the member-access path (has_space_member_access/
-# confirm_space_member_access) at all, so that runs for real regardless —
-# only is_super_admin (patched True by the same autouse fixture) and
-# space_access_check (a live space-membership lookup, unsuitable for a unit
-# test) need explicit per-test control.
+# Both endpoints' current (fixed) path is authorize_build_read_access ->
+# confirm_space_member_access -> has_space_member_access, which only consults
+# is_super_admin and space_access_check — not confirm_space_write_access,
+# has_space_write_access, or is_space_admin. _real_authz() and the
+# is_space_admin patch below don't affect that path today; they're kept as a
+# tripwire so that if either endpoint ever regresses back onto the
+# owner/admin-only authorize_build_access, the non_owner_space_member case
+# (which _mock_space_access would otherwise mock into an unconditional pass)
+# fails instead of silently succeeding.
 
 MEMBER = "member_c"
 OUTSIDER = "outsider_d"
+
+# Base64 of an empty (but structurally valid) zip, so get_build_archive's
+# zipfile.ZipFile() call succeeds and returns {"files": {}}.
+_EMPTY_ZIP_B64 = "UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA=="
 
 
 def _stored_build(owner: str) -> StoredBuild:
@@ -263,7 +269,7 @@ def _stored_build(owner: str) -> StoredBuild:
         space_name=SPACE,
         source_uri="",
         username=owner,
-        build_archive="dGVzdA==",
+        build_archive=_EMPTY_ZIP_B64,
     )
 
 
@@ -274,6 +280,51 @@ def _patched_build_storage(build: StoredBuild):
         ),
     )
     return patch.object(builds_module, "get_admin_storage", return_value=fake_storage)
+
+
+def _assert_read_build_ok(resp, build: StoredBuild) -> None:
+    assert resp.build.uuid == build.uuid
+
+
+def _assert_get_build_archive_ok(resp, build: StoredBuild) -> None:
+    assert resp == {"files": {}}
+
+
+@pytest.mark.parametrize(
+    "endpoint,assert_ok",
+    [
+        (read_build, _assert_read_build_ok),
+        (get_build_archive, _assert_get_build_archive_ok),
+    ],
+    ids=["read_build", "get_build_archive"],
+)
+@pytest.mark.parametrize(
+    "caller,space_access,should_succeed",
+    [
+        (VICTIM, False, True),  # owner
+        (MEMBER, True, True),  # non-owner space member — the fix
+        (OUTSIDER, False, False),  # non-member
+    ],
+    ids=["owner", "non_owner_space_member", "non_member"],
+)
+def test_read_access_by_space_membership(
+    endpoint, assert_ok, caller, space_access, should_succeed
+):
+    build = _stored_build(VICTIM)
+    with (
+        _patched_build_storage(build),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=space_access),
+    ):
+        if should_succeed:
+            resp = endpoint(_fake_request(caller, f"{caller}@example.com"), build.uuid)
+            assert_ok(resp, build)
+        else:
+            with pytest.raises(HTTPException) as exc:
+                endpoint(_fake_request(caller, f"{caller}@example.com"), build.uuid)
+            assert exc.value.status_code == 401
 
 
 # ------------------------------------------------------------------ continue_build
@@ -307,47 +358,6 @@ def _patched_continue_storage(builds: dict):
         build_storage=_fake_build_storage(builds),
     )
     return patch.object(builds_module, "get_admin_storage", return_value=fake_storage)
-
-
-def test_read_build_owner_can_read():
-    build = _stored_build(VICTIM)
-    with (
-        _patched_build_storage(build),
-        _real_authz(),
-        patch("gbserver.api.utils.is_super_admin", return_value=False),
-        patch("gbserver.api.utils.is_space_admin", return_value=False),
-        patch("gbserver.api.utils.space_access_check", return_value=False),
-    ):
-        resp = read_build(_fake_request(VICTIM, f"{VICTIM}@example.com"), build.uuid)
-    assert resp.build.uuid == build.uuid
-
-
-def test_read_build_allows_non_owner_space_member():
-    """The fix: a space member who isn't the build's owner can still read it."""
-    build = _stored_build(VICTIM)
-    with (
-        _patched_build_storage(build),
-        _real_authz(),
-        patch("gbserver.api.utils.is_super_admin", return_value=False),
-        patch("gbserver.api.utils.is_space_admin", return_value=False),
-        patch("gbserver.api.utils.space_access_check", return_value=True),
-    ):
-        resp = read_build(_fake_request(MEMBER, f"{MEMBER}@example.com"), build.uuid)
-    assert resp.build.uuid == build.uuid
-
-
-def test_read_build_rejects_non_member():
-    build = _stored_build(VICTIM)
-    with (
-        _patched_build_storage(build),
-        _real_authz(),
-        patch("gbserver.api.utils.is_super_admin", return_value=False),
-        patch("gbserver.api.utils.is_space_admin", return_value=False),
-        patch("gbserver.api.utils.space_access_check", return_value=False),
-    ):
-        with pytest.raises(HTTPException) as exc:
-            read_build(_fake_request(OUTSIDER, f"{OUTSIDER}@example.com"), build.uuid)
-        assert exc.value.status_code == 401
 
 
 def _prior_build(username: str, status: Status = Status.FAILED) -> StoredBuild:
