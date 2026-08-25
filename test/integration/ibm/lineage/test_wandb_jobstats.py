@@ -346,6 +346,57 @@ class TestWandBLineageStore:
         )
         assert "model" in events_dict
 
+    def test_create_jobstats_for_target_skipped_artifact_less_original(self):
+        """A prerun-skipped target whose original is itself artifact-less still
+        emits one event.
+
+        ``select_recordable_targets`` exempts prerun-skipped targets from the
+        artifact-less skip, so emitting nothing here would leave the target
+        reported unrecorded on every scan -- writing a fresh duplicate run set
+        each time (run ids are random) while pinning the checkpoint forever.
+        """
+        build = _make_build()
+        original_target = _make_target(
+            uuid="orig-target",
+            input_artifacts={},
+            output_artifacts={},
+        )
+        skipped_target = _make_target(
+            uuid="skipped-target",
+            skipped_for_prerun_target_id="orig-target",
+        )
+        storage = _make_mock_storage(build, [original_target, skipped_target], {})
+
+        events_list, events_dict = self.storage_impl.create_jobstats_for_target(
+            storage, skipped_target, build
+        )
+
+        assert len(events_list) == 1
+        assert events_list[0]["outputs"] == []
+        assert events_list[0]["run"]["runId"] != "skipped-target"
+        assert (
+            events_list[0]["run"]["facets"]["job_details"]["job_id"] == "skipped-target"
+        )
+        assert list(events_dict) == ["no-output"]
+
+    def test_create_jobstats_for_target_skipped_missing_original(self):
+        """Same, when the original row is gone: the fallback uses the skipped
+        target's own always-empty dicts, which must not silence the event."""
+        build = _make_build()
+        skipped_target = _make_target(
+            uuid="skipped-target",
+            skipped_for_prerun_target_id="vanished-target",
+        )
+        storage = _make_mock_storage(build, [skipped_target], {})
+
+        events_list, events_dict = self.storage_impl.create_jobstats_for_target(
+            storage, skipped_target, build
+        )
+
+        assert len(events_list) == 1
+        assert events_list[0]["outputs"] == []
+        assert list(events_dict) == ["no-output"]
+
     def test_create_jobstats_for_target_build_not_found(self):
         target = _make_target(build_id="nonexistent")
         storage = MagicMock()

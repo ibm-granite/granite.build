@@ -200,6 +200,7 @@ class WandBLineageStore(ILineageStore):
         storage: SingletonAdminStorage,
         build: StoredBuild,
         targetrun: StoredTargetRun,
+        skipped_for_prerun: bool = False,
     ) -> Tuple[List[dict], Dict[str, List[dict]]]:
         event_type = _STATUS_TO_EVENT_TYPE.get(targetrun.status, "OTHER")
         event_time = (
@@ -405,7 +406,19 @@ class WandBLineageStore(ILineageStore):
         # whose input rows were pruned would emit nothing at all if gated on it.
         # The selector is not the primary gate either -- api/lineage.py reaches
         # this builder directly, without consulting it.
-        if not any(targetrun.output_artifacts.values()) and targetrun.input_artifacts:
+        #
+        # `skipped_for_prerun` mirrors the selector's exemption for prerun-skipped
+        # targets. Such a target reaches here having had the *original*'s artifacts
+        # swapped in by create_jobstats_for_target, so an empty result can mean
+        # either "the original really has no artifacts" or "the original row was
+        # missing and we fell back to the skipped target's own always-empty
+        # dicts". Both are cases the selector keeps, so emitting nothing would be
+        # the divergence this comment warns about; emit the no-output event
+        # instead. The flag cannot be read off `targetrun` here -- the swap copies
+        # the original's (empty) skipped_for_prerun_target_id.
+        if not any(targetrun.output_artifacts.values()) and (
+            targetrun.input_artifacts or skipped_for_prerun
+        ):
             event = {
                 **base_event,
                 "inputs": inputs,
@@ -510,6 +523,7 @@ class WandBLineageStore(ILineageStore):
                 f"target's build id ({targetrun.build_id}) does not match that of the given build ({build.uuid})"
             )
 
+        skipped_for_prerun = bool(targetrun.skipped_for_prerun_target_id)
         if targetrun.skipped_for_prerun_target_id:
             original = storage.target_storage.get_by_uuid(
                 targetrun.skipped_for_prerun_target_id
@@ -528,7 +542,9 @@ class WandBLineageStore(ILineageStore):
                     targetrun.skipped_for_prerun_target_id,
                 )
 
-        return self._build_events_for_target(storage, build, targetrun)
+        return self._build_events_for_target(
+            storage, build, targetrun, skipped_for_prerun=skipped_for_prerun
+        )
 
     def create_jobstats_for_original_artifact(
         self,

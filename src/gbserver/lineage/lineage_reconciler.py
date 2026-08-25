@@ -527,9 +527,13 @@ def expected_run_count(target: StoredTargetRun) -> int:
     one run per output artifact (summed across every output-artifact list), or a
     single "no-output" run when the target has inputs but no outputs. Inputs
     otherwise do not add runs — they are attached to each output's run — so only
-    outputs are counted when there are any. Only called for targets with at least
-    one input or output artifact; ``select_recordable_targets`` excludes fully
-    artifact-less targets entirely. This is derived from the in-memory
+    outputs are counted when there are any. ``select_recordable_targets`` excludes
+    fully artifact-less targets, *except* prerun-skipped ones, whose own empty
+    dicts say nothing about the original's artifacts; those are not counted here
+    either, because ``reconcile_build`` omits prerun-skipped targets from its
+    ``expected`` map (their runs carry the original's artifacts, which this
+    in-memory target does not have). Keep that omission and this exemption
+    together. This is derived from the in-memory
     ``StoredTargetRun`` (already loaded by the scan) to avoid any extra storage
     read. Keep this in lockstep with ``_build_events_for_target``; the
     count-vs-events coherence test guards drift.
