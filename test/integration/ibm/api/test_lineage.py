@@ -291,6 +291,9 @@ class TestLineageAPI(AbstractAPITest):
         targets_list = resp_json["targets"]
         assert len(targets_list) == 3
 
+        # Every entry is attributable: target_ids[i] owns targets[i].
+        assert resp_json["target_ids"] == [target1.uuid, target2.uuid, target3.uuid]
+
         # Validate each target response
         for jobstats_dict in targets_list:
             assert isinstance(jobstats_dict, dict)
@@ -304,6 +307,71 @@ class TestLineageAPI(AbstractAPITest):
                     assert "job_details" in stats
                     assert "sources" in stats
                     assert "targets" in stats
+
+    @pytest.mark.live("lineage")
+    def test_get_build_jobstats_target_ids_align_with_empty_entries(self):
+        """An artifact-less target's empty dict must stay attributable.
+
+        A target with neither input nor output artifacts contributes ``{}`` --
+        it has no lineage events. That makes ``targets`` unsafe to consume
+        positionally on its own: a client dropping the falsy entries shifts every
+        later entry onto the wrong target. ``target_ids`` is the fix, so pin that
+        it is index-aligned with ``targets`` *including* the empty slot, and that
+        the empty slot lands on the artifact-less target specifically.
+        """
+        bsts = BuildStorageTestSupport()
+        tsts = TargetStorageTestSupport()
+        ssts = StepStorageTestSupport()
+        asts = ArtifactStorageTestSupport()
+        stc = StorageCollection(
+            build_storage=self.storage.build_storage,
+            artifact_registry=self.storage.artifact_registry,
+            target_storage=self.storage.target_storage,
+            step_storage=self.storage.step_storage,
+        )
+
+        # Indices 10/11 and artifacts 20/21 are unused elsewhere in this file, so
+        # the fixture names do not collide with another test's rows.
+        build = bsts._get_test_item(10)
+        build.status = Status.SUCCESS
+
+        # Artifact-less: contributes an empty dict.
+        bare = tsts._get_test_item(10)
+        bare.status = Status.SUCCESS
+        bare_spec = TargetSpec(
+            target=bare,
+            step=ssts._get_test_item(10),
+            input_artifacts=[],
+            output_artifacts=[],
+        )
+
+        # With artifacts: contributes a non-empty dict.
+        full = tsts._get_test_item(11)
+        full.status = Status.SUCCESS
+        full_spec = TargetSpec(
+            target=full,
+            step=ssts._get_test_item(11),
+            input_artifacts=[asts._get_test_item(20)],
+            output_artifacts=[asts._get_test_item(21)],
+        )
+
+        build.targets = [bare.name, full.name]
+        connect_and_store_build(build, [bare_spec, full_spec], stc)
+
+        client = self.get_test_client()
+        response = client.get(f"{base_url}/build/{build.uuid}")
+
+        assert response.status_code == status.HTTP_200_OK
+        resp_json = response.json()
+
+        target_ids = resp_json["target_ids"]
+        targets_list = resp_json["targets"]
+        # The empty entry is still present and still counted, so the lists match.
+        assert len(target_ids) == len(targets_list)
+
+        by_id = dict(zip(target_ids, targets_list))
+        assert by_id[bare.uuid] == {}, "artifact-less target contributes no events"
+        assert by_id[full.uuid], "target with artifacts contributes events"
 
     @pytest.mark.live("lineage")
     def test_get_build_jobstats_no_outputs(self):

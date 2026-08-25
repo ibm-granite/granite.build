@@ -468,6 +468,21 @@ def select_recordable_targets(
     ``output_artifacts`` says nothing about whether it has lineage. Same reasoning
     as the ``expected_run_count`` exemption in ``reconcile_build``.
 
+    Note what the artifact-less skip does to state keyed on targets this function
+    no longer returns. Such a target never reaches ``candidates``, so it is also
+    absent from ``ReconcileResult.dropped`` -- meaning the watcher's
+    "permanently-dropped lineage" ERROR line stops naming an artifact-less target
+    that is still sitting in the durable drop set from before this skip existed.
+    The gap that line reports is therefore not exhaustive; an operator reading
+    only the logs would conclude the target's gap had been resolved. Nothing is
+    lost or mis-recorded (the target has no lineage to record, which is the whole
+    point of the skip), and the checkpoint is unaffected -- the build reports
+    ``all_confirmed`` with ``sink_unqueried`` and advances normally. The stale
+    ``gb_kv_pairs`` drop-set entry is dead weight only, clearable with
+    ``lineage-init --clear-dropped-targets``. Same for runs such a target already
+    has in wandb from before the skip: nothing selects it, so nothing revisits
+    them.
+
     Args:
         storage: Admin storage to read targets from.
         build_id: Build whose successful targets to select.
