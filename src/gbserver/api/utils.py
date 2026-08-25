@@ -16,11 +16,12 @@
 
 
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Union
 
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
 
+from gbserver.spaces.space_access_manager import get_space_access_manager
 from gbserver.spaces.user_spaces_list import space_access_check, space_admin_check
 from gbserver.storage.storage import Pagination, QueryControl, SortOrder, TaggedItem
 from gbserver.types.constants import PUBLIC_SPACE_NAME, SYSTEM_TAG_PREFIX
@@ -195,6 +196,47 @@ def confirm_space_member_access(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"User {user_id} does not have access to item in space {space_name}",
         )
+
+
+# Sentinel space_name value list endpoints scope to when the caller has no
+# accessible spaces (or requested one outside their access). Must not be an
+# empty list: get_row_filter() treats an empty list value as "no filter" and
+# would drop the key, silently returning every row instead of none.
+_NO_ACCESSIBLE_SPACE = "\x00--no-accessible-space--\x00"
+
+
+def scope_space_name_filter(
+    request: Request, requested_space_name: str = ""
+) -> Union[str, list[str]]:
+    """Narrow a list endpoint's space_name filter to the caller's accessible spaces.
+
+    GET /builds/, /artifacts/, /spaces/ and their /count and /tags variants
+    build their row_filter straight from query params and call
+    storage.get_by_where() with no per-row authorization check — unlike the
+    single-object GET routes, which load the row first and then call
+    confirm_space_member_access/confirm_space_write_access on it. Passing this
+    function's return value as the space_name filter is what scopes those list
+    routes to the caller's real space membership.
+
+    Super admins are unrestricted and get back whatever space_name (possibly
+    empty, meaning "no filter") they requested. Everyone else is restricted to
+    the spaces returned by get_space_access_manager().get_user_spaces_with_access,
+    intersected with any caller-supplied space_name. A requested space outside
+    that set, or an empty accessible set, resolves to a sentinel that can't
+    match a real space, rather than an empty list (see _NO_ACCESSIBLE_SPACE).
+    """
+    if is_super_admin(request):
+        return requested_space_name
+    username = request.state.data["user"].email
+    accessible = {
+        info.space.name
+        for info in get_space_access_manager().get_user_spaces_with_access(username)
+    }
+    if requested_space_name:
+        accessible &= {requested_space_name}
+    if not accessible:
+        return _NO_ACCESSIBLE_SPACE
+    return sorted(accessible)
 
 
 def split_tags(tags: Optional[list[str]]) -> tuple[list[str], list[str]]:

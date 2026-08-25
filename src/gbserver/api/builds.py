@@ -34,6 +34,7 @@ from gbserver.api.utils import (
     has_space_write_access,
     is_space_admin,
     is_super_admin,
+    scope_space_name_filter,
     split_tags,
 )
 from gbserver.buildrunner.validation import BuildValidation
@@ -212,6 +213,7 @@ class CancelBuildResponse(BaseModel):
 # Needed to list all
 @builds_api.get("/")
 def list_builds(
+    request: Request,
     name: str = "",
     space_name: str = "",
     source_uri: str = "",
@@ -230,7 +232,7 @@ def list_builds(
 ) -> ListBuildResponse:
     row_filter = get_row_filter(
         name=name,
-        space_name=space_name,
+        space_name=scope_space_name_filter(request, space_name),
         source_uri=source_uri,
         username=username,
         tags=tag,
@@ -258,6 +260,7 @@ def list_builds(
 
 @builds_api.get("/count")
 def count_builds(
+    request: Request,
     name: str = "",
     space_name: str = "",
     source_uri: str = "",
@@ -268,7 +271,7 @@ def count_builds(
     """Return the number of builds matching the filter criteria."""
     row_filter = get_row_filter(
         name=name,
-        space_name=space_name,
+        space_name=scope_space_name_filter(request, space_name),
         source_uri=source_uri,
         username=username,
         tags=tag,
@@ -470,6 +473,7 @@ def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
 
 @builds_api.get("/tags")
 def list_build_tags(
+    request: Request,
     name: str = "",
     space_name: str = "",
     source_uri: str = "",
@@ -478,7 +482,11 @@ def list_build_tags(
     """Return the sort list of unique tag strings for the builds that match the condition."""
     # In this version, it simply pulls all the builds and programatically takes a unique
     builds_response = list_builds(
-        name=name, space_name=space_name, source_uri=source_uri, username=username
+        request,
+        name=name,
+        space_name=space_name,
+        source_uri=source_uri,
+        username=username,
     )
     tags = set()  # type: ignore[var-annotated]
     for build in builds_response.builds:

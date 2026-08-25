@@ -19,7 +19,12 @@ from typing import List, Literal, cast
 from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel
 
-from gbserver.api.utils import is_space_admin, is_super_admin
+from gbserver.api.utils import (
+    get_row_filter,
+    is_space_admin,
+    is_super_admin,
+    scope_space_name_filter,
+)
 from gbserver.spaces.user_spaces_list import user_spaces_list
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_space import StoredSpace
@@ -75,13 +80,11 @@ def _require_member_management_access(request: Request, space_name: str) -> None
 
 @spaces_api.get("/")
 def list_spaces(
+    request: Request,
     name: str = "",
 ) -> ListSpacesResponse:
     storage = get_admin_storage()
-    if name is not None and len(name) > 0:
-        row_filter = {"name": name}
-    else:
-        row_filter = None
+    row_filter = get_row_filter(name=scope_space_name_filter(request, name))
     items = cast(List[StoredSpace], storage.space_storage.get_by_where(row_filter))
     resp = ListSpacesResponse(spaces=items)
     return resp

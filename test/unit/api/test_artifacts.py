@@ -37,12 +37,19 @@ import pytest
 from fastapi import HTTPException
 
 from gbserver.api import artifacts as artifacts_module
-from gbserver.api.artifacts import decode_uri, register_artifact
+from gbserver.api.artifacts import (
+    decode_uri,
+    list_artifact_tags,
+    list_artifacts,
+    register_artifact,
+)
 from gbserver.api.utils import (
     confirm_space_write_access as _real_confirm_space_write_access,
 )
 from gbserver.api.utils import has_space_write_access as _real_has_space_write_access
+from gbserver.spaces.space_access_manager import SpaceAccessInfo
 from gbserver.storage.artifact_registration import ArtifactRegistration
+from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.artifact import ArtifactType
 
 VICTIM_OWNER = "victim_b"
@@ -219,3 +226,122 @@ def test_register_artifact_allows_admin_impersonation():
             _new_artifact(VICTIM_OWNER),
         )
     assert resp.registered.username == VICTIM_OWNER
+
+
+# ------------------------------------------------------------------ list_artifacts / list_artifact_tags
+#
+# Regression coverage for the cross-space list-endpoint disclosure: list_artifacts
+# and list_artifact_tags built their row_filter straight from query params and
+# called storage.artifact_registry.get_by_where() with no authorization check at
+# all, so any authenticated user could enumerate artifacts (including internal
+# HuggingFace/Lakehouse URIs) from every space regardless of membership.
+# scope_space_name_filter() (api/utils.py) closes the gap.
+
+ALICE = "alice"
+ALICE_SPACE = "space-A"
+BOB_SPACE = "space-B"
+
+
+def _artifact_in(
+    space_name: str, owner: str, name: str, tags=None
+) -> ArtifactRegistration:
+    return ArtifactRegistration(
+        type=ArtifactType.MODEL,
+        uri=f"hf://huggingface.co/models/{space_name}/{name}",
+        space_name=space_name,
+        username=owner,
+        name=name,
+        tags=tags or [],
+    )
+
+
+def _row_matches(item, where: dict) -> bool:
+    for key, value in (where or {}).items():
+        actual = getattr(item, key)
+        if isinstance(value, (list, tuple, set)):
+            if actual not in value:
+                return False
+        elif actual != value:
+            return False
+    return True
+
+
+def _patched_list_registry(artifacts: list):
+    """A get_admin_storage() stand-in whose artifact_registry.get_by_where()
+    actually applies the row_filter, so the tests prove the space_name value
+    computed by scope_space_name_filter() is what narrows the result set."""
+    fake_storage = SimpleNamespace(
+        artifact_registry=SimpleNamespace(
+            get_by_where=lambda where=None: [
+                a for a in artifacts if _row_matches(a, where or {})
+            ]
+        )
+    )
+    return patch.object(
+        artifacts_module, "get_admin_storage", return_value=fake_storage
+    )
+
+
+def _set_alice_access(manager) -> None:
+    """alice is a non-admin member of ALICE_SPACE only."""
+    manager.return_value.get_user_spaces_with_access.return_value = [
+        SpaceAccessInfo(
+            space=StoredSpace(name=ALICE_SPACE, git_repo_uri=""), is_admin=False
+        )
+    ]
+
+
+def test_list_artifacts_excludes_other_spaces_for_non_admin():
+    alice_art = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    bob_art = _artifact_in(BOB_SPACE, "bob", "bob-dataset")
+    with (
+        _patched_list_registry([alice_art, bob_art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_artifacts(_fake_request(ALICE, f"{ALICE}@example.com"))
+    assert {a.space_name for a in resp.artifacts} == {ALICE_SPACE}
+
+
+def test_list_artifacts_rejects_explicit_cross_space_request():
+    """Even an explicit space_name=space-B (bob's space) must return nothing,
+    not bob's artifacts -- the PoC from the report leaked exactly this via
+    internal HuggingFace/Lakehouse URIs."""
+    bob_art = _artifact_in(BOB_SPACE, "bob", "bob-dataset")
+    with (
+        _patched_list_registry([bob_art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_artifacts(
+            _fake_request(ALICE, f"{ALICE}@example.com"), space_name=BOB_SPACE
+        )
+    assert resp.artifacts == []
+
+
+def test_list_artifacts_unrestricted_for_super_admin():
+    alice_art = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    bob_art = _artifact_in(BOB_SPACE, "bob", "bob-dataset")
+    with (
+        _patched_list_registry([alice_art, bob_art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=True),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        resp = list_artifacts(_fake_request("admin_x", "admin_x@example.com"))
+    assert {a.space_name for a in resp.artifacts} == {ALICE_SPACE, BOB_SPACE}
+    manager.assert_not_called()
+
+
+def test_list_artifact_tags_excludes_other_spaces_for_non_admin():
+    alice_art = _artifact_in(ALICE_SPACE, ALICE, "alice-model", tags=["alpha"])
+    bob_art = _artifact_in(BOB_SPACE, "bob", "bob-dataset", tags=["beta"])
+    with (
+        _patched_list_registry([alice_art, bob_art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        tags = list_artifact_tags(_fake_request(ALICE, f"{ALICE}@example.com"))
+    assert tags == ["alpha"]
