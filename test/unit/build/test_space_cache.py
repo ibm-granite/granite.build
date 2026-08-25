@@ -171,3 +171,36 @@ def test_disabled_cache_builds_fresh_each_call(monkeypatch):
     assert a is not b
     assert len(FakeSpace.instances) == 2
     assert a.force_fetch is True
+
+
+def test_lru_eviction_past_max_entries(monkeypatch):
+    """Past the cap, the least-recently-used entry is evicted; MRU survives."""
+    monkeypatch.setattr(space_cache, "GBSERVER_SPACE_CACHE_MAX_ENTRIES", 2)
+
+    get_cached_space("git://repo", "u-a")
+    b = get_cached_space("git://repo", "u-b")
+    # Touch 'u-b' so 'u-a' becomes the LRU, then add 'u-c' to force one eviction.
+    get_cached_space("git://repo", "u-b")
+    get_cached_space("git://repo", "u-c")
+
+    # Cache holds exactly the cap.
+    assert len(space_cache._cache) == 2
+    # 'u-b' (touched, MRU-ish) and 'u-c' (newest) survive; 'u-a' (LRU) evicted.
+    keys = set(space_cache._cache.keys())
+    assert ("git://repo", "u-b") in keys
+    assert ("git://repo", "u-c") in keys
+    assert ("git://repo", "u-a") not in keys
+
+    # A hit on the surviving 'u-b' does not rebuild.
+    n_before = len(FakeSpace.instances)
+    assert get_cached_space("git://repo", "u-b") is b
+    assert len(FakeSpace.instances) == n_before
+
+
+def test_zero_cap_disables_eviction(monkeypatch):
+    """A cap <= 0 means 'no limit' — entries are not evicted by count."""
+    monkeypatch.setattr(space_cache, "GBSERVER_SPACE_CACHE_MAX_ENTRIES", 0)
+    for u in ("a", "b", "c", "d", "e"):
+        get_cached_space("git://repo", u)
+    # All five distinct keys retained.
+    assert len(space_cache._cache) == 5

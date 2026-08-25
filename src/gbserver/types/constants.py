@@ -1090,19 +1090,34 @@ GBSERVER_EVENT_SUBSCRIBE_TTL: int = int(
 )
 
 # In-memory Space cache (rest-server). Amortizes per-request Space construction
-# (repo pull + space.yaml parse + secret sync) and bounds the /tmp checkout leak
-# that construction causes. The TTL doubles as the staleness bound: on expiry the
-# Space is rebuilt with a fresh (forced) pull so a long-running server picks up
-# remote space.yaml changes. Named "space cache" to avoid confusion with the
-# unrelated `gb space list --refresh` client-side profile cache.
+# (repo pull + space.yaml parse + a possibly-remote secret sync). The TTL doubles
+# as the staleness bound: on expiry the Space is rebuilt with a fresh (forced)
+# pull so a long-running server picks up remote space.yaml AND secret changes.
+# Named "space cache" to avoid confusion with the unrelated `gb space list
+# --refresh` client-side profile cache.
+#
+# 15 min balances the three tradeoffs: (1) reuse — avoid re-paying the pull +
+# remote secret fetch for a steadily-polling client; (2) staleness — a rotated
+# secret or edited space.yaml is picked up within the TTL (validation only, not
+# build execution, so a modest window is acceptable); (3) memory — bounded
+# separately by SPACE_CACHE_MAX_ENTRIES below.
 ENV_VAR_GBSERVER_SPACE_CACHE_TTL = ENV_VAR_PREFIX + "_SPACE_CACHE_TTL"
 GBSERVER_SPACE_CACHE_TTL: float = float(
-    os.getenv(ENV_VAR_GBSERVER_SPACE_CACHE_TTL, "300")
+    os.getenv(ENV_VAR_GBSERVER_SPACE_CACHE_TTL, "900")
 )
 
-# Kill switch: when disabled, get_cached_space builds a fresh Space per call and
-# still registers its temp dir for atexit cleanup (so disabling never reintroduces
-# the leak). Lets ops turn the cache off in prod without a rollback.
+# OOM backstop: cap the number of cached Space entries (keyed by (uri, username)).
+# Entries are small (parsed config + a secrets dict), so the risk is entry COUNT
+# from many distinct user/space pairs accumulating over the pod's life, not entry
+# size — an LRU cap on count bounds both memory and how many stale secret sets
+# linger. Generous by default; it is a safety limit, not an expected-steady-state.
+ENV_VAR_GBSERVER_SPACE_CACHE_MAX_ENTRIES = ENV_VAR_PREFIX + "_SPACE_CACHE_MAX_ENTRIES"
+GBSERVER_SPACE_CACHE_MAX_ENTRIES: int = int(
+    os.getenv(ENV_VAR_GBSERVER_SPACE_CACHE_MAX_ENTRIES, "128"), base=10
+)
+
+# Kill switch: when disabled, get_cached_space builds a fresh Space per call.
+# Lets ops turn the cache off in prod without a rollback.
 ENV_VAR_GBSERVER_SPACE_CACHE_ENABLED = ENV_VAR_PREFIX + "_SPACE_CACHE_ENABLED"
 GBSERVER_SPACE_CACHE_ENABLED: bool = getenv_boolean(
     ENV_VAR_GBSERVER_SPACE_CACHE_ENABLED, True

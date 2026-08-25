@@ -39,6 +39,11 @@ Design
   built Space is user-specific; keying by user prevents serving one user's
   resolved secrets to another. Repo-clone de-duplication happens a layer down in
   ``GitURI``'s clone cache, not here.
+* **TTL'd, count-bounded (LRU).** Entries expire after ``GBSERVER_SPACE_CACHE_TTL``
+  (default 15 min) and the total is capped at ``GBSERVER_SPACE_CACHE_MAX_ENTRIES``
+  (LRU eviction) as an OOM backstop — since the checkout is no longer tied to the
+  Space's lifetime, the TTL can be longer, so the cap is what bounds memory from
+  many distinct (space, user) pairs.
 * **Thread-local re-application on every hit (load-bearing).** ``Space``
   construction records resolution state in *thread-locals*
   (``URI.set_space_config`` / ``SpaceURI.set_baseuris``), and the ``/validate``
@@ -52,13 +57,15 @@ Design
 
 import threading
 import time
-from typing import Dict, Optional, Tuple
+from collections import OrderedDict
+from typing import Optional, Tuple
 
 from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
 from gbserver.build.space import Space
 from gbserver.types.constants import (
     GBSERVER_SPACE_CACHE_ENABLED,
+    GBSERVER_SPACE_CACHE_MAX_ENTRIES,
     GBSERVER_SPACE_CACHE_TTL,
 )
 from gbserver.utils.logger import get_logger
@@ -81,8 +88,31 @@ class _CacheEntry:  # pylint: disable=too-few-public-methods
         self.building: Optional[threading.Event] = None
 
 
-_cache: Dict[_CacheKey, _CacheEntry] = {}
+# OrderedDict for LRU: most-recently-used moved to the end, LRU evicted from the
+# front when the entry count exceeds GBSERVER_SPACE_CACHE_MAX_ENTRIES.
+_cache: "OrderedDict[_CacheKey, _CacheEntry]" = OrderedDict()
 _lock = threading.Lock()
+
+
+def _evict_over_cap() -> None:
+    """Evict least-recently-used entries past the cap. Caller holds ``_lock``.
+
+    Never evicts an entry that is mid-build (``building`` set) — dropping its
+    placeholder would strand threads waiting on the event. Entries are small
+    in-memory objects (no on-disk resource), so eviction is just dropping the
+    reference; GC reclaims it.
+    """
+    max_entries = GBSERVER_SPACE_CACHE_MAX_ENTRIES
+    if max_entries <= 0:
+        return
+    # Iterate from LRU end; skip in-flight builds so we never strand waiters.
+    for key in list(_cache.keys()):
+        if len(_cache) <= max_entries:
+            break
+        if _cache[key].building is not None:
+            continue
+        del _cache[key]
+        logger.info("space cache over cap (%d); evicted %r", max_entries, key)
 
 
 def _apply_thread_local_state(space: Space) -> None:
@@ -137,16 +167,18 @@ def get_cached_space(
                 and entry.space is not None
                 and (now - entry.built_at) < ttl
             ):
-                # Fresh hit: re-apply thread-local state on THIS thread, return.
+                # Fresh hit: mark MRU, re-apply thread-local state, return.
+                _cache.move_to_end(key)
                 space = entry.space
                 _apply_thread_local_state(space)
                 return space
             else:
-                # Miss or expired: claim the build slot for this key.
+                # Miss or expired: claim the build slot for this key (MRU).
                 building = threading.Event()
                 new_entry = _CacheEntry(space=None, built_at=now)
                 new_entry.building = building
                 _cache[key] = new_entry
+                _cache.move_to_end(key)
 
         if wait_event is not None:
             # Don't hold the lock while another thread builds; retry after.
@@ -170,6 +202,10 @@ def get_cached_space(
             new_entry.space = space
             new_entry.built_at = time.monotonic()
             new_entry.building = None
+            _cache.move_to_end(key)
+            # Now that this entry holds a real Space (building is cleared), it's
+            # eligible for eviction, so enforce the cap.
+            _evict_over_cap()
         building.set()
 
         _apply_thread_local_state(space)
