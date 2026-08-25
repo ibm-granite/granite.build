@@ -68,7 +68,12 @@ def _target(
     finished_at: datetime = None,
     output_artifacts: dict[str, list[str]] = None,
     retry_of_target_id: str = "",
+    name: str = "",
 ) -> StoredTargetRun:
+    # Default the target name to the uuid so distinct runs get distinct names;
+    # select_recordable_targets deduplicates SUCCESS runs *per target name*, so a
+    # shared/empty name would wrongly collapse unrelated runs. Pass name
+    # explicitly to model two runs of the *same* target.
     return StoredTargetRun(
         uuid=uuid,
         build_id=build_id,
@@ -77,6 +82,7 @@ def _target(
         finished_at=finished_at,
         output_artifacts=output_artifacts or {},
         retry_of_target_id=retry_of_target_id,
+        name=name or uuid,
     )
 
 
@@ -432,6 +438,30 @@ class TestSelectRecordableTargets:
         found = select_recordable_targets(storage, build_id="b1")
 
         assert len(found) == _SCAN_PAGE_SIZE + 1
+
+    def test_dedupes_repeated_success_runs_to_the_latest(self):
+        """In-place retry reuses one build id, so a target can have >1 SUCCESS run
+        (a prior success with unregistered artifacts is re-run; a reuse-disabled
+        build re-runs every target). Only the latest is recordable — otherwise the
+        target is written to the sink twice.
+        """
+        storage = _admin_storage_with(
+            [
+                _target("b1", "t-old", name="targetA", finished_at=_BASE),
+                _target(
+                    "b1",
+                    "t-new",
+                    name="targetA",
+                    finished_at=_BASE + timedelta(minutes=5),
+                ),
+                _target("b1", "t-other", name="targetB", finished_at=_BASE),
+            ]
+        )
+
+        found = select_recordable_targets(storage, build_id="b1")
+
+        # The superseded run is dropped; the other target is untouched.
+        assert sorted(t.uuid for t in found) == ["t-new", "t-other"]
 
 
 class TestReconcileBuild:

@@ -63,7 +63,10 @@ from gbserver.storage.storage import (
     SortOrder,
 )
 from gbserver.storage.stored_build import StoredBuild
-from gbserver.storage.stored_target_run import StoredTargetRun
+from gbserver.storage.stored_target_run import (
+    StoredTargetRun,
+    latest_success_per_target,
+)
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
@@ -471,7 +474,11 @@ def select_recordable_targets(
         if len(page) < _SCAN_PAGE_SIZE:
             break
         page_index += 1
-    return selected
+    # In-place retry reuses one build id, so a target can hold more than one
+    # SUCCESS run (a prior success with unregistered artifacts is re-run; a
+    # reuse-disabled build re-runs every target). Record only the latest per
+    # target — the pages are newest-finished first, so the winner stays first.
+    return latest_success_per_target(selected)
 
 
 def expected_run_count(target: StoredTargetRun) -> int:
