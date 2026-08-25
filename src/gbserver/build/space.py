@@ -40,6 +40,47 @@ logger = get_logger(__name__)
 SPACE_YAML = "space.yaml"
 
 
+def _uri_path_under(uri: str, root: Path) -> bool:
+    """True if ``uri`` is a local (file:// or bare) path inside ``root``.
+
+    Non-local schemes (git://, hf://, mem://, space://, …) never point at the
+    on-disk checkout, so they return False.
+    """
+    if not uri:
+        return False
+    parsed = urlparse(uri)
+    if parsed.scheme not in ("", "file"):
+        return False
+    path_str = (parsed.netloc or "") + (parsed.path or "") if parsed.scheme else uri
+    if not path_str:
+        return False
+    try:
+        candidate = Path(path_str).resolve()
+        root_resolved = root.resolve()
+    except OSError:
+        return False
+    return candidate == root_resolved or root_resolved in candidate.parents
+
+
+def _anything_references(
+    tmppath: Path, base_uris: List[str], assetstores: Dict[str, object]
+) -> bool:
+    """Whether any base_uri or bundled assetstore base_uri points inside tmppath.
+
+    Used to decide if the pulled checkout must be kept alive (something resolves
+    against it) or can be deleted immediately. The common remote-git space has
+    all-absolute non-file base_uris and remote stores, so this is False and the
+    checkout is dropped in __init__.
+    """
+    for b in base_uris:
+        if _uri_path_under(b, tmppath):
+            return True
+    for store_base_uri in assetstores:
+        if store_base_uri and _uri_path_under(store_base_uri, tmppath):
+            return True
+    return False
+
+
 def _resolve_base_uris(base_uris: List[str], space_uri: str) -> List[str]:
     """Resolve relative file:// base_uris against the space's source directory.
 
@@ -158,10 +199,19 @@ class Space:
         """
         self.uristr = URI.get_uristr(uri)
         self.secrets = {}
+        # Assetstores this space loaded, captured so the in-memory Space cache can
+        # re-seed them into a serving thread's thread-local dict on a cache hit
+        # (Assetstore keeps its store objects in a threading.local, and the sync
+        # /validate route serves hits on threadpool threads other than the one
+        # that built the Space). See space_cache._apply_thread_local_state.
+        self.assetstores: Dict[str, object] = {}
+        # Set to the retained checkout dir ONLY when something resolves against it
+        # (see below); the cache reclaims it on eviction. None => nothing points
+        # into the checkout, so it was deleted in __init__.
+        self.a_tmpdir: Optional[Path] = None
         uriobj = URI.get_uri(uri=uri, default_scheme="file")
-        # Throwaway checkout dir, deleted in the finally below. Not reused across
-        # constructions (each gets a fresh mkdtemp), so there is nothing to keep.
         tmppath = Path(tempfile.mkdtemp())
+        keep_checkout = False
         try:
             uriobj.pull(dest=tmppath, force=force_fetch)
             space_yamls = glob.glob(str(tmppath / "**" / SPACE_YAML), recursive=True)
@@ -175,20 +225,49 @@ class Space:
                     base_uris = base_uris + _resolve_base_uris(
                         self.space_config.base_uris, self.uristr
                     )
-                if self.space_config is not None:
-                    URI.set_space_config(self.space_config)
+                URI.set_space_config(self.space_config)
             self.base_uris = base_uris
             self.secrets = self._fetch_secrets(username=username)
 
             SpaceURI.set_baseuris(base_uris=base_uris, space_secrets=self.secrets)
+            # Snapshot the thread-local assetstore dict around the load so we can
+            # capture just the stores THIS space added (the dict is additive and
+            # per-thread; we must not clobber other spaces' stores).
+            before = dict(Assetstore.thread_local_assetstores())
             Assetstore.load_assetstores_from_dir(tmppath, secrets=self.secrets)
+            after = Assetstore.thread_local_assetstores()
+            self.assetstores = {k: v for k, v in after.items() if k not in before}
+
+            # Keep the checkout iff something resolved against it: a base_uri or a
+            # bundled assetstore whose base_uri is a file:// path inside tmppath.
+            # Otherwise nothing references it (the common git-space case) and it is
+            # safe to delete now.
+            keep_checkout = _anything_references(tmppath, base_uris, self.assetstores)
         finally:
-            # The checkout is not needed once the above has read out of it; drop
-            # the whole dir so it never accumulates on a long-lived server. In
-            # debug mode keep it for inspection (mirrors Step's convention) —
-            # debug is developer-only, so the leak is acceptable there.
-            if not is_debug_mode():
+            if is_debug_mode():
+                # Developer-only: retain for inspection (mirrors Step). Leaked,
+                # but debug is not a long-lived-server concern.
+                self.a_tmpdir = tmppath
+            elif keep_checkout:
+                # Something points inside the checkout; the cache owns it and
+                # reclaims it on eviction (see Space.reclaim / space_cache).
+                self.a_tmpdir = tmppath
+            else:
+                # Nothing references it — drop it now so it never accumulates on a
+                # long-lived server.
                 shutil.rmtree(tmppath, ignore_errors=True)
+
+    def reclaim(self: Self) -> None:
+        """Delete a retained checkout dir, if this Space kept one.
+
+        No-op unless a bundled local asset/store resolved inside the checkout, in
+        which case the dir was retained (``self.a_tmpdir``) and the in-memory
+        Space cache calls this on eviction. Safe to call more than once.
+        """
+        tmpdir = self.a_tmpdir
+        if tmpdir is not None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            self.a_tmpdir = None
 
     def get_secrets(self: Self) -> Dict[str, str]:
         """Returns the cached secrets for the space."""

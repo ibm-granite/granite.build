@@ -23,12 +23,17 @@ On the rest-server, ``POST /validate`` constructs a fresh ``Space`` per request
 ``space.yaml``, resolves base_uris, and syncs secrets — the secret sync in
 particular may hit a remote secrets manager (``Space._fetch_secrets`` ->
 ``get_secrets_with_groups``). Caching the built ``Space`` amortizes all of that,
-and the TTL doubles as the staleness bound: on expiry the Space is rebuilt with a
-fresh, forced pull so remote ``space.yaml`` changes are picked up.
+and the TTL doubles as the staleness bound: on expiry the Space is rebuilt (a
+rebuild reuses ``GitURI``'s clone cache rather than force-cloning; freshness comes
+from the rebuild happening at all), so remote ``space.yaml`` / secret changes are
+picked up within the TTL.
 
 (The ``/tmp`` checkout leak that first motivated this work is fixed in
-``Space.__init__`` itself, which now deletes its throwaway checkout before
-returning; the cache does not manage any on-disk directory.)
+``Space.__init__`` itself, which deletes its throwaway checkout before returning.
+Most Spaces therefore hold no on-disk resource; the exception is a Space that
+retained its checkout because a bundled local asset/store resolved inside it —
+that one is reclaimed via ``Space.reclaim`` when this cache evicts or replaces
+it.)
 
 Design
 ------
@@ -45,14 +50,16 @@ Design
   Space's lifetime, the TTL can be longer, so the cap is what bounds memory from
   many distinct (space, user) pairs.
 * **Thread-local re-application on every hit (load-bearing).** ``Space``
-  construction records resolution state in *thread-locals*
-  (``URI.set_space_config`` / ``SpaceURI.set_baseuris``), and the ``/validate``
-  route is a synchronous handler run in Starlette's threadpool — so the thread
-  that serves a cached hit is generally NOT the thread that built the Space, and
-  downstream build validation reads those thread-locals when resolving
-  ``space://`` URIs. Every hit therefore re-applies the stored resolution state
-  on the current thread before returning; otherwise validation silently resolves
-  against the default ``["file:"]`` base_uris.
+  construction records resolution state in *thread-locals* —
+  ``URI.set_space_config`` / ``SpaceURI.set_baseuris`` AND the loaded
+  ``Assetstore`` objects (``Assetstore``'s own thread-local dict) — and the
+  ``/validate`` route is a synchronous handler run in Starlette's threadpool, so
+  the thread that serves a cached hit is generally NOT the thread that built the
+  Space, and downstream build validation reads those thread-locals when resolving
+  ``space://`` URIs / assets. Every hit therefore re-applies the stored config,
+  base_uris, and assetstores on the current thread before returning; otherwise
+  validation silently resolves against the default ``["file:"]`` base_uris or
+  hits ``AttributeError`` on the missing assetstore dict.
 """
 
 import threading
@@ -62,6 +69,7 @@ from typing import Optional, Tuple
 
 from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
+from gbserver.asset.assetstore import Assetstore
 from gbserver.build.space import Space
 from gbserver.types.constants import (
     GBSERVER_SPACE_CACHE_ENABLED,
@@ -98,9 +106,9 @@ def _evict_over_cap() -> None:
     """Evict least-recently-used entries past the cap. Caller holds ``_lock``.
 
     Never evicts an entry that is mid-build (``building`` set) — dropping its
-    placeholder would strand threads waiting on the event. Entries are small
-    in-memory objects (no on-disk resource), so eviction is just dropping the
-    reference; GC reclaims it.
+    placeholder would strand threads waiting on the event. Most Spaces hold no
+    on-disk resource, but one that retained its checkout (a bundled local
+    asset/store resolved inside it) is reclaimed via ``Space.reclaim`` on evict.
     """
     max_entries = GBSERVER_SPACE_CACHE_MAX_ENTRIES
     if max_entries <= 0:
@@ -109,9 +117,12 @@ def _evict_over_cap() -> None:
     for key in list(_cache.keys()):
         if len(_cache) <= max_entries:
             break
-        if _cache[key].building is not None:
+        entry = _cache[key]
+        if entry.building is not None:
             continue
         del _cache[key]
+        if entry.space is not None:
+            entry.space.reclaim()
         logger.info("space cache over cap (%d); evicted %r", max_entries, key)
 
 
@@ -120,16 +131,30 @@ def _apply_thread_local_state(space: Space) -> None:
 
     Reproduces the thread-local side effects that ``Space.__init__`` had on its
     building thread, so a cache hit served on a different thread resolves assets
-    correctly. See the module docstring.
+    correctly. Three pieces of state, all thread-local:
+      - URI.set_space_config / SpaceURI.set_baseuris (space config + base_uris);
+      - Assetstore._thread_local.assetstores — the loaded store objects, without
+        which Asset.get_assetstore raises AttributeError on a fresh threadpool
+        thread (or resolves against the wrong stores on a stale one).
+    The assetstore dict is additive and per-thread, so we merge this space's
+    captured stores in (seeding the dict if the thread has none yet) rather than
+    replacing it.
     """
     if space.space_config is not None:
         URI.set_space_config(space.space_config)
     SpaceURI.set_baseuris(base_uris=space.base_uris, space_secrets=space.secrets)
+    Assetstore.merge_thread_local_assetstores(space.assetstores)
 
 
 def _build_space(uri: str, username: Optional[str]) -> Space:
-    """Build a fresh Space with a forced pull (so the definition is current)."""
-    return Space(uri, username=username, force_fetch=True)
+    """Build a fresh Space.
+
+    ``force_fetch=False``: reuse GitURI's clone cache rather than re-cloning on
+    every build. Freshness is provided by the cache TTL (an expired entry is
+    rebuilt), not by forcing a clone on each miss — matching the pre-cache
+    ``/validate`` behavior, which also did not force-fetch the space pull.
+    """
+    return Space(uri, username=username, force_fetch=False)
 
 
 def get_cached_space(
@@ -156,6 +181,9 @@ def get_cached_space(
         wait_event: Optional[threading.Event] = None
         new_entry: Optional[_CacheEntry] = None
         building: Optional[threading.Event] = None
+        # An expired Space we are replacing; its checkout (if any) is reclaimed
+        # after the rebuild succeeds.
+        superseded: Optional[Space] = None
         with _lock:
             entry = _cache.get(key)
 
@@ -174,6 +202,7 @@ def get_cached_space(
                 return space
             else:
                 # Miss or expired: claim the build slot for this key (MRU).
+                superseded = entry.space if entry is not None else None
                 building = threading.Event()
                 new_entry = _CacheEntry(space=None, built_at=now)
                 new_entry.building = building
@@ -208,11 +237,20 @@ def get_cached_space(
             _evict_over_cap()
         building.set()
 
+        # Reclaim the replaced Space's checkout, if it retained one. Done after
+        # the new build succeeds and outside the lock; the rebuilt Space has its
+        # own (or no) checkout, so this frees only the superseded one.
+        if superseded is not None:
+            superseded.reclaim()
+
         _apply_thread_local_state(space)
         return space
 
 
 def clear_space_cache() -> None:
-    """Drop all cached Spaces. For tests/shutdown."""
+    """Drop all cached Spaces (reclaiming any retained checkouts). Tests/shutdown."""
     with _lock:
+        for entry in _cache.values():
+            if entry.space is not None:
+                entry.space.reclaim()
         _cache.clear()

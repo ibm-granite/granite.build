@@ -18,11 +18,13 @@
 removed only the ``experiments/`` subtree and abandoned the rest, which on the
 long-lived rest-server filled ephemeral storage until the pod was evicted.
 
-Nothing reads the checkout after ``__init__`` returns (``space.yaml`` is parsed
-out of it, base_uris resolve against the original space URI, and assetstores load
-into config objects with no retained path), so the fix simply deletes the whole
-dir before the constructor returns. These tests pin that: no temp dir survives a
-completed construction, and the parsed state on the object is intact.
+For the common case nothing reads the checkout after ``__init__`` returns
+(``space.yaml`` is parsed out of it, base_uris resolve against the original space
+URI, and assetstores load into config objects with no retained path), so it is
+deleted before the constructor returns. The exception is a space that bundles a
+local ``file://`` asset/store resolving *inside* the checkout — then the dir is
+kept (``self.a_tmpdir``) and reclaimed by the cache on eviction. These tests pin
+both: no temp dir survives the common case, and the reference check that decides.
 """
 
 import tempfile
@@ -31,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from gbserver.build.space import Space
+from gbserver.build.space import Space, _anything_references, _uri_path_under
 
 SPACE_YAML = textwrap.dedent("""\
     name: test-space
@@ -97,7 +99,48 @@ def test_debug_mode_keeps_checkout_for_inspection(local_space, monkeypatch):
     before = _tempdir_count()
     space = Space(f"file://{local_space}")
     after = _tempdir_count()
-    # Debug keeps the dir around, so the count grows by one.
+    # Debug keeps the dir around, recorded on a_tmpdir for cleanup.
     assert after == before + 1
-    # And it still has the parsed config.
+    assert space.a_tmpdir is not None and space.a_tmpdir.exists()
     assert space.space_config.name == "test-space"
+    # reclaim() frees it (as the cache would on eviction).
+    space.reclaim()
+    assert space.a_tmpdir is None
+
+
+def test_common_space_does_not_retain_checkout(local_space):
+    """A space with no in-checkout references deletes the dir (a_tmpdir None)."""
+    space = Space(f"file://{local_space}")
+    assert space.a_tmpdir is None
+
+
+class TestReferenceCheck:
+    """The #4 guard: keep the checkout only when something resolves inside it."""
+
+    def test_uri_path_under_file_inside(self, tmp_path):
+        inside = tmp_path / "sub" / "store"
+        assert _uri_path_under(f"file://{inside}", tmp_path) is True
+
+    def test_uri_path_under_file_outside(self, tmp_path):
+        assert _uri_path_under("file:///etc/hosts", tmp_path) is False
+
+    def test_uri_path_under_non_file_scheme(self, tmp_path):
+        # Remote schemes never point at the on-disk checkout.
+        assert _uri_path_under("git+ssh://h/o/r.git", tmp_path) is False
+        assert _uri_path_under("space://steps/x", tmp_path) is False
+
+    def test_anything_references_git_only_false(self, tmp_path):
+        assert (
+            _anything_references(tmp_path, ["git+ssh://h/o/r.git", "space://x"], {})
+            is False
+        )
+
+    def test_anything_references_base_uri_inside_true(self, tmp_path):
+        inside = tmp_path / "assets"
+        assert _anything_references(tmp_path, [f"file://{inside}"], {}) is True
+
+    def test_anything_references_bundled_store_inside_true(self, tmp_path):
+        inside = tmp_path / "store"
+        assert (
+            _anything_references(tmp_path, [], {f"file://{inside}": object()}) is True
+        )

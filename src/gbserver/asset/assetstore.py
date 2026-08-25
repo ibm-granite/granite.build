@@ -103,6 +103,31 @@ class Assetstore(ABC):
             cls.load_asset_store(Path(store_yaml), context=context, secrets=secrets)
 
     @classmethod
+    def thread_local_assetstores(cls) -> Dict[str, "Assetstore"]:
+        """The current thread's loaded assetstores (base_uri -> store).
+
+        Returns the live dict (empty if none loaded yet on this thread). Used to
+        snapshot the stores a Space loaded so they can be re-seeded on another
+        thread — see merge_thread_local_assetstores.
+        """
+        return getattr(cls._thread_local, "assetstores", {})
+
+    @classmethod
+    def merge_thread_local_assetstores(cls, stores: Dict[str, "Assetstore"]) -> None:
+        """Merge ``stores`` into the current thread's assetstore dict.
+
+        The dict is thread-local and additive; this seeds it if empty and adds
+        the given stores without clobbering others already present. Lets the
+        in-memory Space cache restore a cached Space's stores onto whatever
+        threadpool thread serves a hit (the dict does not otherwise survive the
+        thread hop, and Asset.get_assetstore reads it unguarded)."""
+        if not stores:
+            return
+        if not hasattr(cls._thread_local, "assetstores"):
+            cls._thread_local.assetstores = {}
+        cls._thread_local.assetstores.update(stores)
+
+    @classmethod
     def load_asset_store(
         cls,
         path: Optional[Path] = None,

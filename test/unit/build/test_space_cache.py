@@ -35,7 +35,7 @@ class FakeSpace:
     """Stand-in for ``Space`` that records how it was built, without a git pull.
 
     Mirrors the attributes the cache reads: ``space_config``, ``base_uris``,
-    ``secrets``.
+    ``secrets``, ``assetstores``, and ``reclaim``.
     """
 
     instances: list = []
@@ -47,7 +47,13 @@ class FakeSpace:
         self.space_config = object()
         self.base_uris = [uri, "file://builtins"]
         self.secrets = {"user": username}
+        # One store this "space" loaded, keyed by base_uri (as the real dict is).
+        self.assetstores = {f"store://{uri}/{username}": object()}
+        self.reclaimed = 0
         FakeSpace.instances.append(self)
+
+    def reclaim(self):
+        self.reclaimed += 1
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +80,11 @@ def _isolate_cache(monkeypatch):
     monkeypatch.setattr(
         space_cache.SpaceURI, "set_baseuris", staticmethod(_fake_set_baseuris)
     )
+    # Give Assetstore a fresh thread-local per test so assetstore-restore is
+    # observable without touching the real (process-wide) class state.
+    import threading as _threading
+
+    monkeypatch.setattr(space_cache.Assetstore, "_thread_local", _threading.local())
     yield applied
     clear_space_cache()
 
@@ -83,8 +94,8 @@ def test_miss_builds_once_then_hit_reuses():
     b = get_cached_space("git://repo", "alice")
     assert a is b
     assert len(FakeSpace.instances) == 1
-    # Built with a forced pull (so the cached definition is current).
-    assert a.force_fetch is True
+    # Not a forced pull — reuse GitURI's clone cache; TTL provides freshness.
+    assert a.force_fetch is False
 
 
 def test_key_isolation_by_username():
@@ -107,11 +118,13 @@ def test_expiry_rebuilds(monkeypatch):
     assert same is first
     assert len(FakeSpace.instances) == 1
 
-    clock["t"] += 100  # past ttl -> rebuild with a fresh forced pull
+    clock["t"] += 100  # past ttl -> rebuild
     second = get_cached_space("git://repo", "alice", ttl=10)
     assert second is not first
     assert len(FakeSpace.instances) == 2
-    assert second.force_fetch is True
+    assert second.force_fetch is False
+    # The superseded Space is reclaimed (frees a retained checkout, if any).
+    assert first.reclaimed == 1
 
 
 def test_hit_reapplies_thread_local_state_on_serving_thread(_isolate_cache):
@@ -133,6 +146,36 @@ def test_hit_reapplies_thread_local_state_on_serving_thread(_isolate_cache):
     kinds = {k for (k, _tid, _v) in applied}
     assert kinds == {"space_config", "baseuris"}
     assert all(tid == serve_tid for (_k, tid, _v) in applied)
+
+
+def test_hit_restores_assetstores_on_serving_thread():
+    """A cache hit on a fresh thread must re-seed the space's assetstores into
+    that thread's Assetstore._thread_local dict (regression: cross-thread hit
+    otherwise leaves the dict missing -> AttributeError in Asset.get_assetstore)."""
+    built = get_cached_space("git://repo", "alice")
+    (store_key,) = built.assetstores.keys()
+
+    def serve_on_fresh_thread():
+        # Fresh thread: Assetstore._thread_local has no 'assetstores' yet.
+        space = get_cached_space("git://repo", "alice")
+        tl = space_cache.Assetstore._thread_local
+        present = getattr(tl, "assetstores", None)
+        return present
+
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        present = ex.submit(serve_on_fresh_thread).result()
+
+    assert present is not None, "assetstores dict must be seeded on the serving thread"
+    assert store_key in present, "the space's store must be restored on the hit"
+
+
+def test_eviction_reclaims_space(monkeypatch):
+    """Evicting an entry reclaims its Space (frees a retained checkout)."""
+    monkeypatch.setattr(space_cache, "GBSERVER_SPACE_CACHE_MAX_ENTRIES", 1)
+    a = get_cached_space("git://repo", "u-a")
+    # Second distinct key evicts 'u-a'.
+    get_cached_space("git://repo", "u-b")
+    assert a.reclaimed == 1
 
 
 def test_thundering_herd_builds_once(monkeypatch):
@@ -170,7 +213,7 @@ def test_disabled_cache_builds_fresh_each_call(monkeypatch):
     b = get_cached_space("git://repo", "alice")
     assert a is not b
     assert len(FakeSpace.instances) == 2
-    assert a.force_fetch is True
+    assert a.force_fetch is False
 
 
 def test_lru_eviction_past_max_entries(monkeypatch):

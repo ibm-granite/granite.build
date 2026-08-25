@@ -78,6 +78,19 @@ def test_clear_removes_all():
     assert cache.current_size() == 0
 
 
+def test_clear_removes_root_dir():
+    """clear() removes the mkdtemp root too, not just subdirs (no per-clear leak)."""
+    cache = BoundedThreadLocalCache("t", max_entries=4)
+    _populate(cache.path_for("a"))
+    root = cache.root_if_created()
+    assert root is not None and root.exists()
+    cache.clear()
+    assert not root.exists()
+    # Root is recreated lazily on next use, under a new path.
+    new_path = cache.path_for("b")
+    assert new_path.parent.exists()
+
+
 def test_per_thread_isolation():
     """Each thread must get its own root and its own entry set — the property
     that lets the real caches run lock-free across threadpool threads."""

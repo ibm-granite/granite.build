@@ -120,12 +120,18 @@ class BoundedThreadLocalCache:
             shutil.rmtree(path, ignore_errors=True)
 
     def clear(self) -> None:
-        """Drop and ``rmtree`` every subdir this thread has cached."""
-        if not hasattr(self._tl, "entries"):
-            return
-        for path in self._entries().values():
-            shutil.rmtree(path, ignore_errors=True)
-        self._entries().clear()
+        """Drop and ``rmtree`` everything this thread has cached, incl. the root.
+
+        Removing the whole root (not just the subdirs) avoids leaking an empty
+        mkdtemp root per thread per clear; the root is recreated lazily on the
+        next ``path_for``.
+        """
+        root = getattr(self._tl, "root", None)
+        if root is not None:
+            shutil.rmtree(root, ignore_errors=True)
+            del self._tl.root
+        if hasattr(self._tl, "entries"):
+            self._entries().clear()
 
     def current_size(self) -> int:
         """Number of tracked subdirs on the current thread (for tests/metrics)."""
