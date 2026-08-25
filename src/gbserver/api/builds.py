@@ -24,10 +24,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, model_validator
 
-from gbserver.api.build_files_paths import (
-    authorize_build_access,
-    authorize_build_read_access,
-)
+from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import (
     ListAppendOrSet,
     apply_tag_update,
@@ -501,7 +498,7 @@ def read_build(request: Request, build_id: str) -> GetBuildResponse:
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(item, StoredBuild), f"invalid item: {item}"
-    authorize_build_access(request, item)
+    authorize_build_read_access(request, item)
     resp = GetBuildResponse(build=item)
     return resp
 
@@ -520,7 +517,7 @@ def get_build_archive(request: Request, build_id: str) -> Dict[str, Dict[str, st
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(build, StoredBuild), f"invalid item: {build}"
-    authorize_build_access(request, build)
+    authorize_build_read_access(request, build)
     if not build.build_archive:
         return {"files": {}}
     raw = base64.b64decode(build.build_archive)
