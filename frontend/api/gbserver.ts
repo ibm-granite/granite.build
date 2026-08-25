@@ -20,6 +20,7 @@ import type {
   BuildStatusDetail,
   BuildTargetRun,
   BuildStepRun,
+  JobSummary,
   Artifact,
   Space,
 } from '@/types'
@@ -219,7 +220,14 @@ export async function describeBuild(buildId: string): Promise<Build> {
   return getBuild(buildId)
 }
 
-export async function getBuildStatus(buildId: string): Promise<BuildStatusDetail> {
+// follow_retries walks the whole retry chain to compute the `job` roll-up.
+// Only pass it where `.job` is actually consumed (the build detail page); other
+// callers (e.g. the artifact lineage panel) don't read it and shouldn't pay for
+// the extra chain traversal.
+export async function getBuildStatus(
+  buildId: string,
+  followRetries = false,
+): Promise<BuildStatusDetail> {
   const { data } = await client.get<{
     status: {
       build: Record<string, unknown>
@@ -228,7 +236,8 @@ export async function getBuildStatus(buildId: string): Promise<BuildStatusDetail
         steps: Record<string, unknown>[]
       }>
     }
-  }>(`/builds/${buildId}/status`)
+    job?: JobSummary
+  }>(`/builds/${buildId}/status`, { params: { follow_retries: followRetries } })
 
   const s = data.status
   const build = adaptBuild(s.build)
@@ -256,6 +265,7 @@ export async function getBuildStatus(buildId: string): Promise<BuildStatusDetail
     },
     history: [],
     targets,
+    job: data.job,
   }
 }
 

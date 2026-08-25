@@ -64,6 +64,40 @@ export interface BuildEvent {
   description: string
 }
 
+export interface JobTargetOutcome {
+  name: string
+  status: BuildStatus | null
+  build_id: string
+  target_run_id: string
+  reused_from_target_run_id: string
+  attempt: number
+}
+
+export interface JobTargetCounts {
+  total: number
+  succeeded: number
+  failed: number
+  running: number
+  not_run: number
+}
+
+/** One chain member with its own per-attempt status (root-first). */
+export interface AttemptBuild {
+  build_id: string
+  status: BuildStatus
+}
+
+/** A build and its retries aggregated into one job (see gbserver jobrollup). */
+export interface JobSummary {
+  job_id: string
+  status: BuildStatus
+  attempts: number
+  build_ids: string[]
+  attempt_builds: AttemptBuild[]
+  targets: JobTargetOutcome[]
+  counts: JobTargetCounts
+}
+
 export interface BuildStatusDetail {
   details: {
     build_id: string
@@ -75,6 +109,8 @@ export interface BuildStatusDetail {
   }
   history: BuildEvent[]
   targets: Record<string, BuildTargetRun>
+  /** Present when the status was fetched with follow_retries=true. */
+  job?: JobSummary
 }
 
 // ── Artifacts ────────────────────────────────────────────────────────────────

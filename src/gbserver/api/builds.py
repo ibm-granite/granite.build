@@ -39,6 +39,7 @@ from gbserver.api.utils import (
     is_super_admin,
     split_tags,
 )
+from gbserver.build.jobrollup import JobSummary, roll_up
 from gbserver.buildrunner.validation import BuildValidation
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
 from gbserver.storage.artifact_registration import ArtifactRegistration
@@ -206,6 +207,10 @@ class BuildStatusResponse(BaseModel):
     status: BuildStatus
     # Populated (root-first) only when the request sets follow_retries=true.
     retry_chain: Optional[list[BuildChainMember]] = None
+    # The chain aggregated into one job view: whether the build specification
+    # completed, regardless of which attempt did the work. Set alongside
+    # retry_chain, since it is derived from exactly the same records.
+    job: Optional[JobSummary] = None
 
 
 class CancelBuildResponse(BaseModel):
@@ -614,6 +619,13 @@ def get_build_status(
                 records = __build_target_records(storage, member.uuid)
             chain.append(BuildChainMember(build=member, target_runs=records))
         resp.retry_chain = chain
+        # Reuses the records already assembled above, so this adds no queries.
+        resp.job = roll_up(
+            [
+                (member.build, [tr.target for tr in member.target_runs])
+                for member in chain
+            ]
+        )
     return resp
 
 

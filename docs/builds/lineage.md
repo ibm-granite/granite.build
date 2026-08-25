@@ -67,6 +67,34 @@ get_lineage_store().add_jobstats_for_original_artifact(artifact, input_artifacts
 
 The `GET /api/v1/lineage/build/{build_id}` and `GET /api/v1/lineage/target/{target_id}` endpoints call `create_jobstats_for_target()` to build lineage data on the fly without persisting it.
 
+#### Chain-spanning lineage (`follow_retries`)
+
+`GET /api/v1/lineage/build/{build_id}` accepts an optional `follow_retries` query parameter.
+
+**`follow_retries=false` (the default)** — unchanged: one lineage entry per target run of the
+single build named in the path.
+
+**`follow_retries=true`** — the whole retry chain is reported as one job. Instead of a build's
+own target runs, the response has one entry per spec target, using the **winning run** — the
+run that actually produced that target's artifacts. A target that was reused (skipped) from an
+earlier attempt is dereferenced to the run that executed, so it never appears as an empty
+skipped run. Targets that failed or were never dispatched are omitted — they produced nothing,
+so there is no provenance to report. The response also carries a `job_id` field set to the
+chain root's UUID (the job identity), letting a consumer tell a unified graph from a single
+build's.
+
+Two notes for consumers comparing the two views:
+
+- **Cross-name reuse.** The definition hash excludes the target name (see
+  [target-reuse.md](target-reuse.md)), so a target can legitimately be skipped for an
+  identically-configured target under a *different* name. A unified-lineage entry may therefore
+  reference a winning run whose own target name differs from the spec target it stands in for.
+- **Attribution.** Each entry is stamped with the winning run's **own build** — the attempt
+  that did the work — so its namespace and source facets stay truthful to where the work
+  happened. A reused target is attributed to a different `run.runId` than single-build lineage
+  (`follow_retries=false`) would report for the same spec target. Anyone diffing the two views
+  should expect this shift for reused targets.
+
 ---
 
 ## WandB/OpenLineage Backend

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import os
+import random
 from typing import Dict, List, Optional, Tuple
 from unittest.mock import patch
 
@@ -24,6 +25,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
+from gbserver.storage import singleton_storage
+from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 
 pytestmark = pytest.mark.standalone
 
@@ -267,6 +270,16 @@ class TestOpenLineageAPI:
     @pytest.fixture(autouse=True)
     def _setup_client(self):
         self.mock_service = MockLineageService()
+        # The build/target endpoints query the process-global admin-storage
+        # singleton. Install an isolated, empty SQLite store so those endpoints
+        # deterministically return 404 for a missing id. Without this the test
+        # inherits whatever storage a prior test on this xdist worker left in the
+        # singleton, which may point at tables that have since been dropped and
+        # then surfaces as a 500 ("no such table") instead of a 404.
+        singleton_storage.set_storage_factory(SqliteStorageFactory())
+        singleton_storage.set_storage_prefix(
+            f"lineage_apitest_{random.randint(1, 1_000_000)}_"
+        )
         with (
             patch.dict(os.environ, _AUTH_ENV, clear=False),
             patch(

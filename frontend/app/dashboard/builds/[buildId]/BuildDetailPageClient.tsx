@@ -123,7 +123,7 @@ function BuildDetailContent() {
     error: statusError,
   } = useQuery({
     queryKey: ["build-status", buildId],
-    queryFn: () => getBuildStatus(buildId!),
+    queryFn: () => getBuildStatus(buildId!, true),
     refetchInterval: () =>
       build && ACTIVE_STATUSES.has(build.status) ? 30_000 : false,
     enabled: Boolean(buildId),

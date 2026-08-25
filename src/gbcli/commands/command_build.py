@@ -89,6 +89,55 @@ def get_status_emoji(status: str) -> str:
             return ""
 
 
+def _job_overview_lines(details: Any) -> tuple[str, str, str]:
+    """Build the status overview's headline plus, for a real retry chain, the
+    per-attempt and job-summary lines.
+
+    Returns ``(headline, attempt_line, summary_line)`` as markdown fragments.
+    For a single-attempt or job-less build the headline is just the build's own
+    status and the other two are empty, so the output is unchanged from before —
+    only a genuine multi-attempt job promotes the headline to the job status.
+    """
+    build_status = str(details["status"]).upper()
+    build_headline = f"{get_status_emoji(details['status'])} {build_status}"
+    job = details.get("job") or {}
+    if int(job.get("attempts") or 0) <= 1:
+        return build_headline, "", ""
+
+    job_status = str(job.get("status"))
+    headline = f"{get_status_emoji(job_status)} {job_status.upper()}"
+
+    build_ids = job.get("build_ids") or []
+    position = (
+        build_ids.index(details["build_id"]) + 1
+        if details["build_id"] in build_ids
+        else 0
+    )
+    # Omit the ordinal when the queried build isn't found in the chain (defensive
+    # — it always is in practice); "attempt 0 of N" would read like a bug.
+    attempt_ordinal = (
+        f" (attempt {position} of {job.get('attempts')})" if position else ""
+    )
+    attempt_line = f"\n- **This attempt**: {build_headline}{attempt_ordinal}"
+
+    counts = job.get("counts") or {}
+    extras = [
+        f"{counts.get(key, 0)} {label}"
+        for key, label in (
+            ("failed", "failed"),
+            ("running", "running"),
+            ("not_run", "never ran"),
+        )
+        if counts.get(key)
+    ]
+    suffix = f" — {', '.join(extras)}" if extras else ""
+    summary_line = (
+        f"\n- **Job result**: {counts.get('succeeded', 0)} of "
+        f"{counts.get('total', 0)} targets succeeded{suffix}"
+    )
+    return headline, attempt_line, summary_line
+
+
 def execution_status_plain_output(
     details: Any,
     targets: List[Any],
@@ -144,16 +193,17 @@ def execution_status_plain_output(
         if retried_by
         else ""
     )
+    headline, attempt_line, job_summary_line = _job_overview_lines(details)
     details_output = f"""
 # Build {details['build_id']}
 
 - **Build name**: {details['name']}
 - **Build description**: {details.get('description', '')}
-- **Status**: {get_status_emoji(details['status'])} {str(details['status']).upper()}
+- **Status**: {headline}{attempt_line}
 - **Started**: {datetime_to_string(details['started_at'])}
 - **Updated**: {datetime_to_string(details['updated_at'])}
 - **Status page**: <{WEB_UI_URL}/builds/{details['build_id']}>
-- **Build PR**: {source_pr}{retry_of_line}{retried_by_line}
+- **Build PR**: {source_pr}{retry_of_line}{retried_by_line}{job_summary_line}
 - **Targets**
 {"".join(targets_overview)}
     """

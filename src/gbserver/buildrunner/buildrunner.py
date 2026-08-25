@@ -331,6 +331,12 @@ class BuildRunner(AbstractBuildRunner):
             return None
         retry_build = StoredBuild(
             name=latest.name,
+            # A retry MUST inherit the original's space_name/username. The
+            # follow-retries status and lineage APIs authorize only the queried
+            # build and then read the rest of the chain unchecked, relying on
+            # every member sharing this owner/space. Changing this to retry into
+            # a different space or owner would turn that shortcut into a
+            # cross-tenant data leak.
             space_name=latest.space_name,
             source_uri="",
             username=latest.username,
