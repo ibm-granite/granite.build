@@ -614,7 +614,11 @@ def get_buildevents(request: Request, build_id: str):
 
 
 @builds_api.delete("/{build_id}")
-async def cancel_build(build_id: str, request: Request) -> CancelBuildResponse:
+# Sync endpoint (like submit/restart/validate): FastAPI runs it in a threadpool so
+# its blocking work stays off the event loop. request_cancellation reads storage
+# and, for a FAILED build, calls has_retries_remaining() -> get_build_config(),
+# which can extract the build archive from disk — must not run on the loop.
+def cancel_build(build_id: str, request: Request) -> CancelBuildResponse:
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
