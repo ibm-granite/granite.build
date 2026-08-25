@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel
 
 from gbserver.api.utils import (
+    NO_ACCESSIBLE_SPACE,
     get_row_filter,
     is_space_admin,
     is_super_admin,
@@ -83,8 +84,11 @@ def list_spaces(
     request: Request,
     name: str = "",
 ) -> ListSpacesResponse:
+    scoped_name = scope_space_name_filter(request, name)
+    if scoped_name is NO_ACCESSIBLE_SPACE:
+        return ListSpacesResponse(spaces=[])
     storage = get_admin_storage()
-    row_filter = get_row_filter(name=scope_space_name_filter(request, name))
+    row_filter = get_row_filter(name=scoped_name)
     items = cast(List[StoredSpace], storage.space_storage.get_by_where(row_filter))
     resp = ListSpacesResponse(spaces=items)
     return resp

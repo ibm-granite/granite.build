@@ -23,6 +23,7 @@ from gbcommon.uri.hf import HfType, HfURI
 from gbcommon.uri.lh import LhURI
 from gbcommon.uri.uri import URI
 from gbserver.api.utils import (
+    NO_ACCESSIBLE_SPACE,
     ListAppendOrSet,
     apply_tag_update,
     confirm_space_write_access,
@@ -553,12 +554,15 @@ def list_artifacts(
         list[str] | None, Query()
     ] = [],  # Specified as multiple tag=v1&tag=v2 in URI
 ) -> ListArtifactsResponse:
+    scoped_space_name = scope_space_name_filter(request, space_name)
+    if scoped_space_name is NO_ACCESSIBLE_SPACE:
+        return ListArtifactsResponse(artifacts=[])
 
     row_filter = get_row_filter(
         uri=uri,
         username=username,
         created_by_build_id=build_id,
-        space_name=scope_space_name_filter(request, space_name),
+        space_name=scoped_space_name,
         is_archived=is_archived,
         checksum=checksum,
         tags=tag,

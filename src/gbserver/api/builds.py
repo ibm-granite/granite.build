@@ -26,6 +26,7 @@ from pydantic import BaseModel, model_validator
 
 from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import (
+    NO_ACCESSIBLE_SPACE,
     ListAppendOrSet,
     apply_tag_update,
     confirm_space_write_access,
@@ -230,9 +231,12 @@ def list_builds(
     page_index: int = -1,
     page_size: int = 0,
 ) -> ListBuildResponse:
+    scoped_space_name = scope_space_name_filter(request, space_name)
+    if scoped_space_name is NO_ACCESSIBLE_SPACE:
+        return ListBuildResponse(builds=[])
     row_filter = get_row_filter(
         name=name,
-        space_name=scope_space_name_filter(request, space_name),
+        space_name=scoped_space_name,
         source_uri=source_uri,
         username=username,
         tags=tag,
@@ -269,9 +273,12 @@ def count_builds(
     status: Annotated[list[str] | None, Query()] = [],
 ) -> CountBuildsResponse:
     """Return the number of builds matching the filter criteria."""
+    scoped_space_name = scope_space_name_filter(request, space_name)
+    if scoped_space_name is NO_ACCESSIBLE_SPACE:
+        return CountBuildsResponse(count=0)
     row_filter = get_row_filter(
         name=name,
-        space_name=scope_space_name_filter(request, space_name),
+        space_name=scoped_space_name,
         source_uri=source_uri,
         username=username,
         tags=tag,

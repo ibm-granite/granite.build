@@ -198,21 +198,23 @@ def confirm_space_member_access(
         )
 
 
-# Sentinel space_name value list endpoints scope to when the caller has no
-# accessible spaces (or requested one outside their access). Must not be an
-# empty list: get_row_filter() treats an empty list value as "no filter" and
-# would drop the key, silently returning every row instead of none. Must also
-# be a plain string with no NUL bytes: this value is bound as a real SQL query
-# parameter, and psycopg2 raises ValueError on any string containing \x00
-# rather than just failing to match -- a NUL byte here turned "deny access"
-# into a request that fails after ten futile retries instead of returning
-# zero rows.
-_NO_ACCESSIBLE_SPACE = "__gb_no_accessible_space__c6f2b1d4-8e2a-4b7b-9b1a-7a6f6b6a5c4e"
+class _NoAccessibleSpace:
+    """Marker returned by scope_space_name_filter() when the caller has no
+    accessible space to query. Callers must check for this with `is` and
+    short-circuit to an empty result themselves -- it is never meant to reach
+    get_row_filter()/storage.get_by_where(), so it carries no SQL-compatible
+    value at all."""
+
+    def __repr__(self) -> str:
+        return "NO_ACCESSIBLE_SPACE"
+
+
+NO_ACCESSIBLE_SPACE = _NoAccessibleSpace()
 
 
 def scope_space_name_filter(
     request: Request, requested_space_name: str = ""
-) -> Union[str, list[str]]:
+) -> Union[str, list[str], _NoAccessibleSpace]:
     """Narrow a list endpoint's space_name filter to the caller's accessible spaces.
 
     GET /builds/, /artifacts/, /spaces/ and their /count and /tags variants
@@ -227,8 +229,9 @@ def scope_space_name_filter(
     empty, meaning "no filter") they requested. Everyone else is restricted to
     the spaces returned by get_space_access_manager().get_user_spaces_with_access,
     intersected with any caller-supplied space_name. A requested space outside
-    that set, or an empty accessible set, resolves to a sentinel that can't
-    match a real space, rather than an empty list (see _NO_ACCESSIBLE_SPACE).
+    that set, or an empty accessible set, returns NO_ACCESSIBLE_SPACE -- callers
+    must check for it with `is` and return an empty result without ever calling
+    get_row_filter()/storage.get_by_where() or count().
     """
     if is_super_admin(request):
         return requested_space_name
@@ -240,7 +243,7 @@ def scope_space_name_filter(
     if requested_space_name:
         accessible &= {requested_space_name}
     if not accessible:
-        return _NO_ACCESSIBLE_SPACE
+        return NO_ACCESSIBLE_SPACE
     return sorted(accessible)
 
 

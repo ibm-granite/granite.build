@@ -22,7 +22,9 @@ with no per-row authorization check at all -- unlike the single-object GET
 routes, which load the row and then call confirm_space_member_access /
 confirm_space_write_access on it. scope_space_name_filter() is what closes
 that gap: its return value is used as the space_name filter passed into
-get_row_filter() by every one of those list routes.
+get_row_filter() by every one of those list routes, except when it returns
+NO_ACCESSIBLE_SPACE -- callers check for that with `is` and return an empty
+result directly, without ever calling get_row_filter()/storage.get_by_where().
 
 test/conftest.py's autouse `_mock_space_access` fixture stubs
 gbserver.api.utils.is_super_admin to an unconditional True in mock mode,
@@ -33,7 +35,7 @@ fix under test. Each test overrides it explicitly.
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gbserver.api.utils import _NO_ACCESSIBLE_SPACE, scope_space_name_filter
+from gbserver.api.utils import NO_ACCESSIBLE_SPACE, scope_space_name_filter
 from gbserver.spaces.space_access_manager import SpaceAccessInfo
 from gbserver.storage.stored_space import StoredSpace
 
@@ -95,15 +97,16 @@ def test_non_admin_requesting_accessible_space_gets_it_back():
 def test_non_admin_requesting_inaccessible_space_gets_sentinel():
     """This is the actual leak this function closes: alice is only a member of
     space-A, but the caller-supplied space_name=space-B must not be honored --
-    it must resolve to something that matches no real row, not an empty list
-    (which get_row_filter() treats as "no filter", i.e. everything)."""
+    it must resolve to the NO_ACCESSIBLE_SPACE marker, which callers check for
+    with `is` and turn into an empty result themselves, rather than an empty
+    list (which get_row_filter() treats as "no filter", i.e. everything)."""
     with (
         patch("gbserver.api.utils.is_super_admin", return_value=False),
         patch("gbserver.api.utils.get_space_access_manager") as manager,
     ):
         manager.return_value.get_user_spaces_with_access.return_value = _access(SPACE_A)
         result = scope_space_name_filter(_fake_request("alice@example.com"), SPACE_B)
-    assert result == _NO_ACCESSIBLE_SPACE
+    assert result is NO_ACCESSIBLE_SPACE
 
 
 def test_non_admin_with_no_accessible_spaces_gets_sentinel_not_empty_list():
@@ -116,13 +119,4 @@ def test_non_admin_with_no_accessible_spaces_gets_sentinel_not_empty_list():
     ):
         manager.return_value.get_user_spaces_with_access.return_value = []
         result = scope_space_name_filter(_fake_request("alice@example.com"), "")
-    assert result == _NO_ACCESSIBLE_SPACE
-
-
-def test_sentinel_contains_no_nul_byte():
-    """The sentinel is bound as a real SQL query parameter by every list
-    endpoint's row_filter (get_row_filter() -> storage.get_by_where()/count()).
-    A NUL byte in it makes psycopg2 raise ValueError instead of the intended
-    "matches no row", turning every deny-access outcome into a slow, futile
-    retry loop followed by an unhandled 500 on the default Postgres backend."""
-    assert "\x00" not in _NO_ACCESSIBLE_SPACE
+    assert result is NO_ACCESSIBLE_SPACE
