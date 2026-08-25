@@ -32,7 +32,6 @@ from gbserver.asset.assetstore import Assetstore
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
 from gbserver.types.constants import GBSERVER_PROCEED_WITHOUT_SECRETS, is_debug_mode
 from gbserver.types.spaceconfig import SpaceConfig
-from gbserver.utils.filesystem import create_temp_subdir
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import write_local_secrets_file
 
@@ -137,79 +136,59 @@ class Space:
         uri: Union[URI, str],
         username: Optional[str] = None,
         force_fetch: bool = False,
-        manage_tmpdir: bool = True,
     ):
         """Create the instance.
 
-        The space repo is pulled into a temp dir (``self.a_tmpdir``) that must
-        outlive this constructor: the space's ``base_uris`` may point into it
-        (relative ``file://`` bases resolved by ``_resolve_base_uris``), and the
-        loaded assetstores reference it. Historically that temp dir was leaked —
-        only its ``experiments/`` subtree was pruned — which, on the long-lived
-        rest-server, filled the container's ephemeral storage until the pod was
-        evicted. Cleanup is now owned by the caller:
+        The space repo is pulled into a throwaway temp dir only for the duration
+        of this constructor: ``space.yaml`` is parsed out of it, base_uris are
+        resolved (against the *original* space URI, not this copy), and the
+        assetstores are loaded (into config objects that retain no path back into
+        the dir). Nothing reads the checkout after ``__init__`` returns — a git
+        space's re-clone avoidance lives one layer down in ``GitURI``'s clone
+        cache, not in this per-construction copy — so the whole dir is deleted
+        before returning. Previously only its ``experiments/`` subtree was pruned
+        and the rest was leaked, which on the long-lived rest-server filled the
+        container's ephemeral storage until the pod was evicted.
 
-        * ``manage_tmpdir=True`` (default, one-shot callers — build-runner/CLI):
-          register the temp dir for ``atexit`` cleanup so it is reclaimed on
-          process exit and never leaks even for longer-lived CLI runs.
-        * ``manage_tmpdir=False`` (the rest-server in-memory Space cache): the
-          cache takes ownership and reclaims ``self.a_tmpdir`` when it evicts
-          this Space, so the checkout stays valid for the Space's cached life.
-
-        ``self.base_uris`` is stored so the cache can re-apply the thread-local
-        resolution state (``SpaceURI.set_baseuris`` / ``URI.set_space_config``)
-        on whatever thread later serves a cached hit — the resolution state
-        lives in thread-locals, not on the object.
+        ``self.base_uris`` / ``self.space_config`` / ``self.secrets`` are stored
+        so the in-memory Space cache can re-apply the thread-local resolution
+        state (``SpaceURI.set_baseuris`` / ``URI.set_space_config``) on whatever
+        thread later serves a cached hit — that state lives in thread-locals, not
+        on the object, and downstream build validation reads it.
         """
         self.uristr = URI.get_uristr(uri)
         self.secrets = {}
         uriobj = URI.get_uri(uri=uri, default_scheme="file")
-        # Owned temp dir for the pulled checkout. Reclaimed by the cache
-        # (manage_tmpdir=False) or at process exit (manage_tmpdir=True) — never
-        # deleted here, since base_uris / assetstores reference it afterwards.
-        if manage_tmpdir:
-            tmppath = create_temp_subdir(tempfile.gettempdir(), autodelete=True)
-        else:
-            tmppath = Path(tempfile.mkdtemp())
-        self.a_tmpdir = tmppath
-        uriobj.pull(dest=tmppath, force=force_fetch)
-        space_yamls = glob.glob(str(tmppath / "**" / SPACE_YAML), recursive=True)
-        builtins_uri = (Path(__file__).parent.parent / "builtins").as_uri()
-        base_uris = [self.uristr, builtins_uri]
-        if space_yamls is None or len(space_yamls) == 0:
-            raise ValueError(f"No '{SPACE_YAML}' found at path: {tmppath}")
-        self.space_config: SpaceConfig = SpaceConfig.from_yaml(Path(space_yamls[0]))
-        if self.space_config is not None:
-            if self.space_config.base_uris is not None:
-                base_uris = base_uris + _resolve_base_uris(
-                    self.space_config.base_uris, self.uristr
-                )
+        # Throwaway checkout dir, deleted in the finally below. Not reused across
+        # constructions (each gets a fresh mkdtemp), so there is nothing to keep.
+        tmppath = Path(tempfile.mkdtemp())
+        try:
+            uriobj.pull(dest=tmppath, force=force_fetch)
+            space_yamls = glob.glob(str(tmppath / "**" / SPACE_YAML), recursive=True)
+            builtins_uri = (Path(__file__).parent.parent / "builtins").as_uri()
+            base_uris = [self.uristr, builtins_uri]
+            if space_yamls is None or len(space_yamls) == 0:
+                raise ValueError(f"No '{SPACE_YAML}' found at path: {tmppath}")
+            self.space_config: SpaceConfig = SpaceConfig.from_yaml(Path(space_yamls[0]))
             if self.space_config is not None:
-                URI.set_space_config(self.space_config)
-        self.base_uris = base_uris
-        self.secrets = self._fetch_secrets(username=username)
+                if self.space_config.base_uris is not None:
+                    base_uris = base_uris + _resolve_base_uris(
+                        self.space_config.base_uris, self.uristr
+                    )
+                if self.space_config is not None:
+                    URI.set_space_config(self.space_config)
+            self.base_uris = base_uris
+            self.secrets = self._fetch_secrets(username=username)
 
-        SpaceURI.set_baseuris(base_uris=base_uris, space_secrets=self.secrets)
-        Assetstore.load_assetstores_from_dir(tmppath, secrets=self.secrets)
-
-        if not is_debug_mode():
-            # Prune only experiments/ (can be large) from the retained checkout;
-            # the rest of the checkout is intentionally kept because base_uris /
-            # assetstores resolve against it for the Space's lifetime.
-            exp_dirs = glob.glob(str(tmppath / "**" / "experiments"), recursive=True)
-            for exp_dir in exp_dirs:
-                shutil.rmtree(exp_dir)
-
-    def reclaim(self: Self) -> None:
-        """Delete the pulled checkout temp dir backing this Space.
-
-        Called by the in-memory Space cache when it evicts this Space. Safe to
-        call more than once. Not used by ``manage_tmpdir=True`` callers, whose
-        temp dir is reclaimed via ``atexit`` instead.
-        """
-        tmpdir = getattr(self, "a_tmpdir", None)
-        if tmpdir is not None:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+            SpaceURI.set_baseuris(base_uris=base_uris, space_secrets=self.secrets)
+            Assetstore.load_assetstores_from_dir(tmppath, secrets=self.secrets)
+        finally:
+            # The checkout is not needed once the above has read out of it; drop
+            # the whole dir so it never accumulates on a long-lived server. In
+            # debug mode keep it for inspection (mirrors Step's convention) —
+            # debug is developer-only, so the leak is acceptable there.
+            if not is_debug_mode():
+                shutil.rmtree(tmppath, ignore_errors=True)
 
     def get_secrets(self: Self) -> Dict[str, str]:
         """Returns the cached secrets for the space."""

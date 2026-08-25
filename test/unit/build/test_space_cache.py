@@ -32,27 +32,22 @@ from gbserver.build.space_cache import clear_space_cache, get_cached_space
 
 
 class FakeSpace:
-    """Stand-in for ``Space`` that records how it was built and reclaimed.
+    """Stand-in for ``Space`` that records how it was built, without a git pull.
 
-    Mirrors the attributes the cache reads (``space_config``, ``base_uris``,
-    ``secrets``, ``reclaim``) without doing any git pull.
+    Mirrors the attributes the cache reads: ``space_config``, ``base_uris``,
+    ``secrets``.
     """
 
     instances: list = []
 
-    def __init__(self, uri, username=None, force_fetch=False, manage_tmpdir=True):
+    def __init__(self, uri, username=None, force_fetch=False):
         self.uri = uri
         self.username = username
         self.force_fetch = force_fetch
-        self.manage_tmpdir = manage_tmpdir
         self.space_config = object()
         self.base_uris = [uri, "file://builtins"]
         self.secrets = {"user": username}
-        self.reclaimed = False
         FakeSpace.instances.append(self)
-
-    def reclaim(self):
-        self.reclaimed = True
 
 
 @pytest.fixture(autouse=True)
@@ -88,9 +83,8 @@ def test_miss_builds_once_then_hit_reuses():
     b = get_cached_space("git://repo", "alice")
     assert a is b
     assert len(FakeSpace.instances) == 1
-    # Built with a forced pull and owned by the cache (not atexit).
+    # Built with a forced pull (so the cached definition is current).
     assert a.force_fetch is True
-    assert a.manage_tmpdir is False
 
 
 def test_key_isolation_by_username():
@@ -103,24 +97,21 @@ def test_key_isolation_by_username():
     assert b.secrets == {"user": "bob"}
 
 
-def test_expiry_rebuilds_and_reclaims_old(monkeypatch):
+def test_expiry_rebuilds(monkeypatch):
     clock = {"t": 1000.0}
     monkeypatch.setattr(space_cache.time, "monotonic", lambda: clock["t"])
 
     first = get_cached_space("git://repo", "alice", ttl=10)
-    clock["t"] += 100  # past ttl -> rebuild; old Space queued for grace reclaim
-    second = get_cached_space("git://repo", "alice", ttl=10)
+    # Within ttl: same object, no rebuild.
+    same = get_cached_space("git://repo", "alice", ttl=10)
+    assert same is first
+    assert len(FakeSpace.instances) == 1
 
+    clock["t"] += 100  # past ttl -> rebuild with a fresh forced pull
+    second = get_cached_space("git://repo", "alice", ttl=10)
     assert second is not first
     assert len(FakeSpace.instances) == 2
-    # Still within the grace period: the old checkout must NOT be reclaimed yet
-    # (an in-flight request could still hold it).
-    assert first.reclaimed is False
-
-    # Advance past the reclaim grace period; the next call sweeps the queue.
-    clock["t"] += space_cache._RECLAIM_GRACE_SECONDS + 1
-    get_cached_space("git://repo", "alice", ttl=10)
-    assert first.reclaimed is True
+    assert second.force_fetch is True
 
 
 def test_hit_reapplies_thread_local_state_on_serving_thread(_isolate_cache):
@@ -173,13 +164,10 @@ def test_thundering_herd_builds_once(monkeypatch):
     assert all(r is results[0] for r in results)
 
 
-def test_disabled_cache_builds_fresh_and_atexit_managed(monkeypatch):
+def test_disabled_cache_builds_fresh_each_call(monkeypatch):
     monkeypatch.setattr(space_cache, "GBSERVER_SPACE_CACHE_ENABLED", False)
     a = get_cached_space("git://repo", "alice")
     b = get_cached_space("git://repo", "alice")
     assert a is not b
     assert len(FakeSpace.instances) == 2
-    # Disabled path still owns cleanup via atexit (manage_tmpdir=True) so the
-    # leak never returns when the cache is off.
-    assert a.manage_tmpdir is True
     assert a.force_fetch is True
