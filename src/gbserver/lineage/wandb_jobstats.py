@@ -301,7 +301,8 @@ class WandBLineageStore(ILineageStore):
         events_dict: Dict[str, List[dict]] = {}
 
         # NOTE: the number of events emitted here (one per output artifact across
-        # all output-artifact lists) must stay in lockstep with
+        # all output-artifact lists, or one "no-output" event below when there are
+        # inputs but no outputs) must stay in lockstep with
         # lineage_reconciler.expected_run_count, which derives the same count from
         # the target in memory to detect partial records.
         for (
@@ -383,12 +384,32 @@ class WandBLineageStore(ILineageStore):
             events_list.extend(target_events)
             events_dict[target_artifact_name] = target_events
 
-        # A target with no output artifacts is not recorded to wandb: the
-        # standalone UI reads target nodes straight from admin storage regardless
-        # of artifacts, so a wandb run is no longer needed to make an
-        # artifact-less target appear as a node. select_recordable_targets in
-        # lineage_reconciler excludes these targets before this function is ever
-        # called, so this is a defensive no-op guard, not the primary gate.
+        # A target with no output artifacts but at least one input still has real
+        # lineage (an edge into it) and needs one event so that edge is recorded.
+        # A target with neither inputs nor outputs is not recorded to wandb at
+        # all: the standalone UI reads target nodes straight from admin storage
+        # regardless of artifacts, so a wandb run is no longer needed to make a
+        # fully artifact-less target appear as a node.
+        # select_recordable_targets in lineage_reconciler excludes fully
+        # artifact-less targets before this function is ever called, so the len
+        # check below is a defensive no-op guard, not the primary gate.
+        if len(targetrun.output_artifacts) == 0 and len(inputs) > 0:
+            event = {
+                **base_event,
+                "inputs": inputs,
+                "outputs": [],
+                # Explicit random runId: inheriting base_event's would reuse
+                # targetrun.uuid, the deterministic id this design replaced, and
+                # a re-record would silently resume that one run instead of
+                # writing a new one. The target_id tag comes along in
+                # base_event["run"]["facets"]["tags"], keeping this event
+                # dedupable like the per-output ones.
+                "run": {**base_event["run"], "runId": get_uuid()},
+            }
+            _add_jobstats_mirror_fields(event)
+            events_list.append(event)
+            events_dict["no-output"] = [event]
+
         return events_list, events_dict
 
     def add_jobstats_for_build(

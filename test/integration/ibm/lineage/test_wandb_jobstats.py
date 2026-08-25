@@ -275,10 +275,8 @@ class TestWandBLineageStore:
         assert events_list[0]["outputs"][0]["name"] == "model"
 
     def test_create_jobstats_for_target_no_outputs(self):
-        """A target with no output artifacts emits nothing: the standalone UI
-        shows target nodes from admin storage regardless of artifacts, so wandb no
-        longer needs a run just to make an artifact-less target appear as a node.
-        """
+        """A target with inputs but no outputs still has a real edge and gets one
+        "no-output" event so that edge is recorded."""
         input_art = _make_artifact("in-1", "data", "s3://b/data")
         build = _make_build()
         target = _make_target(
@@ -286,6 +284,26 @@ class TestWandBLineageStore:
             output_artifacts={},
         )
         storage = _make_mock_storage(build, [target], {"in-1": input_art})
+
+        events_list, events_dict = self.storage_impl.create_jobstats_for_target(
+            storage, target, build
+        )
+
+        assert len(events_list) == 1
+        assert "no-output" in events_dict
+        assert events_list[0]["outputs"] == []
+        assert len(events_list[0]["inputs"]) == 1
+
+    def test_create_jobstats_for_target_no_inputs_or_outputs(self):
+        """A fully artifact-less target emits nothing: the standalone UI shows
+        target nodes from admin storage regardless of artifacts, so wandb no
+        longer needs a run just to make it appear as a node."""
+        build = _make_build()
+        target = _make_target(
+            input_artifacts={},
+            output_artifacts={},
+        )
+        storage = _make_mock_storage(build, [target], {})
 
         events_list, events_dict = self.storage_impl.create_jobstats_for_target(
             storage, target, build

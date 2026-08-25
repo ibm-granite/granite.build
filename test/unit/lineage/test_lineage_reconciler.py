@@ -66,6 +66,7 @@ def _target(
     uuid: str,
     status: Status = Status.SUCCESS,
     finished_at: datetime = None,
+    input_artifacts: dict[str, str] = None,
     output_artifacts: dict[str, list[str]] = None,
     skipped_for_prerun_target_id: str = "",
 ) -> StoredTargetRun:
@@ -75,6 +76,7 @@ def _target(
         environment_uri="env://test",
         status=status,
         finished_at=finished_at,
+        input_artifacts=input_artifacts or {},
         output_artifacts=output_artifacts or {},
         skipped_for_prerun_target_id=skipped_for_prerun_target_id,
     )
@@ -461,13 +463,42 @@ class TestSelectRecordableTargets:
 
         assert len(found) == _SCAN_PAGE_SIZE + 1
 
-    def test_no_output_artifacts_is_skipped(self):
+    def test_no_input_or_output_artifacts_is_skipped(self):
         """The standalone UI shows target nodes from admin storage regardless of
-        artifacts, so an artifact-less target no longer needs a wandb run."""
+        artifacts, so a fully artifact-less target no longer needs a wandb run."""
         storage = _admin_storage_with(
             [
                 _target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]}),
-                _target("b1", "t2", finished_at=_BASE, output_artifacts={}),
+                _target("b1", "t2", finished_at=_BASE),
+            ]
+        )
+
+        found = select_recordable_targets(storage, build_id="b1")
+
+        assert [t.uuid for t in found] == ["t1"]
+
+    def test_inputs_only_target_is_still_recorded(self):
+        """A target with only inputs still has a real edge and must be kept."""
+        storage = _admin_storage_with(
+            [
+                _target(
+                    "b1",
+                    "t1",
+                    finished_at=_BASE,
+                    input_artifacts={"data": "in-1"},
+                ),
+            ]
+        )
+
+        found = select_recordable_targets(storage, build_id="b1")
+
+        assert [t.uuid for t in found] == ["t1"]
+
+    def test_outputs_only_target_is_still_recorded(self):
+        """A target with only outputs still has a real edge and must be kept."""
+        storage = _admin_storage_with(
+            [
+                _target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]}),
             ]
         )
 
@@ -768,6 +799,10 @@ class TestExpectedRunCount:
     def test_counts_all_output_artifacts_across_lists(self):
         t = _target("b1", "t1", output_artifacts={"a": ["o1"], "b": ["o2", "o3"]})
         assert expected_run_count(t) == 3
+
+    def test_no_outputs_expects_one_run(self):
+        t = _target("b1", "t1", input_artifacts={"data": "in-1"})
+        assert expected_run_count(t) == 1
 
 
 class TestRecordSelectedTargets:
