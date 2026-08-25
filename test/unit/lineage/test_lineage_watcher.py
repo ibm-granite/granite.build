@@ -19,14 +19,13 @@ interval; these tests stub the admin storage and the lineage store, then drive
 ``start()``/``_reconcile`` directly (bypassing the background thread). They run
 in CI without a cluster, PostgreSQL, or wandb credentials.
 
-They cover that the watcher records successful targets, persists its
-``finished_at``/``build_id`` checkpoint to ``gb_kv_pairs`` immediately after each
-successfully-recorded target so steady-state scans (and restarts) read only
-newly-finished targets, does not re-record what a sink already has (per-sink
-``filter_unrecorded``), retries a transiently-failing target, drops a
-persistently failing one after ``_MAX_RECORD_ATTEMPTS`` so it cannot wedge later
-scans, that ``start()`` loads and verifies the checkpoint correctly, and that a
-*missing* checkpoint records nothing at all rather than being seeded implicitly.
+They cover the build-scoped selection (the checkpoint's build plus everything
+created at or after it), the *contiguous* checkpoint advance that never steps over
+a build still running, the fail-closed dedup contract (an unanswered query aborts
+the whole pass and never advances the mark) including how a permanent sink failure
+switches recording off, the retry/drop budget for an individual target, checkpoint
+migration from the older target-shaped value, and that a *missing* checkpoint
+records nothing at all rather than being seeded implicitly.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -36,16 +35,18 @@ import pytest
 
 from gbserver.lineage.lineage_reconciler import (
     LINEAGE_WATCHER_CHECKPOINT_KEY,
+    LINEAGE_WATCHER_CHECKPOINT_VERSION,
     LINEAGE_WATCHER_DROPPED_KEY,
 )
+from gbserver.lineage.lineage_seeding import BACKFILL_BUILD_ID
 from gbserver.lineage.lineage_watcher import LineageWatcher
+from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 
-# Aware UTC, matching what a real finished_at carries: utils.get_time() stamps
-# them with datetime.now().astimezone(). A naive value here would be interpreted
-# as *local* (see as_aware), so the expected watermarks would shift by the
-# test machine's UTC offset and the suite would only pass in UTC.
+# Aware UTC, matching what a real created_time/finished_at carries. A naive value
+# here would be interpreted as *local* (see as_aware), so the expected cutoffs
+# would shift by the test machine's UTC offset and the suite would only pass in UTC.
 _BASE = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 
@@ -59,13 +60,27 @@ def _target(build_id: str, uuid: str, finished_at: datetime = None) -> StoredTar
     )
 
 
+def _build(uuid: str, created_time: datetime, status: Status) -> StoredBuild:
+    build = StoredBuild(
+        name=f"build-{uuid}",
+        space_name="sp",
+        source_uri="https://x",
+        username="u",
+    )
+    build.uuid = uuid
+    build.created_time = created_time
+    build.status = status
+    return build
+
+
 class _StubStore:
     """Lineage store stub: records into a set, dedupes per-sink, can be told to
-    fail specific targets."""
+    fail specific targets or to fail the dedup query itself."""
 
-    def __init__(self, fail: set = None):
+    def __init__(self, fail: set = None, query_error: Exception = None):
         self._recorded: set = set()
         self._fail: set = set(fail or set())
+        self.query_error = query_error
         self.calls: list = []
 
     def add_jobstats_for_build_target(self, storage, build_id, target_id):
@@ -74,12 +89,21 @@ class _StubStore:
         self.calls.append((build_id, target_id))
         self._recorded.add(target_id)
 
-    def filter_unrecorded(self, target_ids: set, expected_counts=None) -> set:
+    def filter_unrecorded(
+        self, target_ids: set, expected_counts=None, on_query_error=None
+    ) -> set:
+        if self.query_error is not None:
+            # Mirrors the real store: fail CLOSED (record nothing) and report the
+            # failure through the callback, so an empty set is never mistaken for
+            # "everything already recorded".
+            if on_query_error is not None:
+                on_query_error(self.query_error)
+            return set()
         return set(target_ids) - self._recorded
 
 
 class _StubKeyValuePairStorage:
-    """In-memory stand-in for ``kv_pair_storage`` (the ``gb_kv_pairs`` key-value store)."""
+    """In-memory stand-in for ``kv_pair_storage`` (the ``gb_kv_pairs`` store)."""
 
     def __init__(self):
         self._values: dict = {}
@@ -91,42 +115,24 @@ class _StubKeyValuePairStorage:
         self._values[key] = value
 
 
-def _seed(storage, build_id: str, finished_at: datetime) -> None:
-    """Write the lineage checkpoint, the way ``lineage-watch --base-build-id`` does."""
-    storage.kv_pair_storage.set_value(
-        LINEAGE_WATCHER_CHECKPOINT_KEY,
-        {"build_id": build_id, "finished_at": finished_at.isoformat()},
-    )
-
-
-def _watermark(storage) -> datetime | None:
-    """Read the checkpoint's watermark, or None if the key is unset.
-
-    The watcher keeps no in-memory copy — the checkpoint is the only place the
-    watermark lives — so assertions about "where the watcher got to" read it back
-    from the durable store, which is also what survives a restart.
-    """
-    checkpoint = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
-    return (
-        None
-        if checkpoint is None
-        else datetime.fromisoformat(checkpoint["finished_at"])
-    )
-
-
 @pytest.mark.live("storage", "lineage")
 class TestLineageWatcher:
-    """Reconciliation and retry behaviour of LineageWatcher._reconcile."""
+    """Selection, checkpoint advance and retry behaviour of ``_reconcile``."""
 
     @pytest.fixture(autouse=True)
     def _stub_storage(self):
-        """Stub admin storage whose target_storage returns configurable targets,
-        ordered newest-``finished_at``-first and honoring pagination and a
-        ``build_id`` filter (used by checkpoint verification on start())."""
+        """Stub admin storage over configurable builds and targets.
+
+        ``target_storage`` orders newest-``finished_at``-first and honors the
+        ``build_id`` filter and pagination; ``build_storage`` orders by the
+        ``created_time`` sort the build walk asks for, so the "stop at the cutoff"
+        logic is exercised rather than bypassed.
+        """
         self._targets: list[StoredTargetRun] = []
+        self._builds: list[StoredBuild] = []
         admin_storage = MagicMock()
 
-        def _get_by_where(where, query_control=None):
+        def _targets_by_where(where, query_control=None):
             matching = self._targets
             if where and "build_id" in where:
                 matching = [t for t in matching if t.build_id == where["build_id"]]
@@ -141,7 +147,23 @@ class TestLineageWatcher:
                 return ordered[start : start + p.size]
             return ordered
 
-        admin_storage.target_storage.get_by_where.side_effect = _get_by_where
+        def _builds_by_where(where=None, query_control=None):
+            ordered = sorted(
+                self._builds,
+                key=lambda b: (b.created_time is not None, b.created_time or _BASE),
+                reverse=True,
+            )
+            if query_control is not None and query_control.pagination is not None:
+                p = query_control.pagination
+                start = p.index * p.size
+                return ordered[start : start + p.size]
+            return ordered
+
+        admin_storage.target_storage.get_by_where.side_effect = _targets_by_where
+        admin_storage.build_storage.get_by_where.side_effect = _builds_by_where
+        admin_storage.build_storage.get_by_uuid.side_effect = lambda uuid: next(
+            (b for b in self._builds if b.uuid == uuid), None
+        )
         admin_storage.kv_pair_storage = _StubKeyValuePairStorage()
         self.storage = admin_storage
         with patch(
@@ -150,210 +172,1076 @@ class TestLineageWatcher:
         ):
             yield
 
-    def _make_watcher(
-        self, fail: set = None, since: datetime = None
-    ) -> tuple[LineageWatcher, _StubStore]:
-        """Build a watcher against an already-seeded checkpoint.
+    def _seed(self, build_id: str, created_time: datetime) -> None:
+        """Write a v2 checkpoint, the way ``lineage-watch --base-build-id`` does."""
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            {
+                "build_id": build_id,
+                "created_time": created_time.isoformat(),
+                "version": LINEAGE_WATCHER_CHECKPOINT_VERSION,
+            },
+        )
 
-        These tests exercise reconciliation/retry/drop behaviour, which only runs
-        once the checkpoint exists — an unseeded watcher records nothing by design
-        (see ``LineageWatcher._verify_checkpoint``). ``since`` defaults to a
-        watermark old enough that every ``_BASE``-era target in the fixture falls
-        within it, so a test that cares about recording rather than about where
-        the watermark starts need not set it.
+    def _checkpoint_build(self) -> str | None:
+        """The build id the durable checkpoint names, or None if unset.
+
+        Read back from storage rather than from the watcher: the checkpoint is the
+        only place the mark lives, and it is what survives a restart.
         """
+        value = self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+        return None if value is None else value.get("build_id")
+
+    def _make_watcher(
+        self, fail: set = None, query_error: Exception = None
+    ) -> tuple[LineageWatcher, _StubStore]:
         watcher = LineageWatcher()
-        store = _StubStore(fail=fail)
+        store = _StubStore(fail=fail, query_error=query_error)
         watcher._store = store
-        _seed(self.storage, "seed-build", since or _BASE - timedelta(days=1))
         return watcher, store
 
-    def test_unseeded_watcher_records_nothing(self):
-        """With no checkpoint, a scan is a no-op: the key is never created
-        implicitly and nothing is recorded, however many targets are waiting.
+    def _three_builds(self, middle_status: Status) -> tuple[str, str, str]:
+        """A(finished) -> B(``middle_status``) -> C(finished), one target each.
 
-        This is the requirement that keeps a fresh deployment from silently
-        backfilling the whole admin DB.
+        Returns their ids oldest-first. A is the seeded anchor.
         """
-        self._targets = [_target("build-1", "target-1", _BASE)]
+        a = _build("A", _BASE, Status.SUCCESS)
+        b = _build("B", _BASE + timedelta(minutes=1), middle_status)
+        c = _build("C", _BASE + timedelta(minutes=2), Status.SUCCESS)
+        self._builds = [a, b, c]
+        self._targets = [
+            _target("A", "t-a"),
+            _target("B", "t-b"),
+            _target("C", "t-c"),
+        ]
+        self._seed("A", _BASE)
+        return a.uuid, b.uuid, c.uuid
+
+    # ---- selection -------------------------------------------------------
+
+    def test_unseeded_watcher_records_nothing(self):
+        """No checkpoint means record nothing — never an implicit full backfill.
+
+        An unseeded deployment must not decide for the operator where recording
+        begins; the alternative (defaulting to "everything") would drive the
+        platform's whole history into the sink on first boot.
+        """
         watcher, store = self._make_watcher()
-        # Drop the seeded key: this is the unseeded state start() leaves behind.
-        self.storage.kv_pair_storage._values.clear()
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-a")]
 
         watcher._reconcile()
 
         assert store.calls == []
-        assert _watermark(self.storage) is None
+        assert self._checkpoint_build() is None
 
-    def test_backfill_anchor_checkpoint_still_records(self):
-        """A ``datetime.min`` checkpoint (the ``--all`` backfill anchor) records.
+    def test_anchor_build_is_included_in_the_range(self):
+        """The checkpoint's own build is re-selected, not skipped.
 
-        The anchor matches no real row, so ``select_recordable_targets`` walks the
-        whole table and returns everything — which is exactly what a full-history
-        backfill asks for. Previously this path did arithmetic on the watermark
-        (``datetime.min - _WATERMARK_OVERLAP``), which raised ``OverflowError``
-        before any recording and failed every scan forever; there is no such
-        subtraction left to overflow.
+        The cutoff is ``>=`` so a pass that crashed partway through the anchor
+        build can still finish it; excluding the anchor would strand those targets
+        with nothing to bring them back (this is what replaces the old start-up
+        verification sweep).
         """
-        self._targets = [_target("build-1", "target-1", _BASE)]
-        watcher, store = self._make_watcher(since=datetime.min)
+        watcher, store = self._make_watcher()
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-a")]
+        self._seed("A", _BASE)
 
-        # Must not raise (the loop catches, so assert on the effect too).
         watcher._reconcile()
 
-        assert store.calls == [("build-1", "target-1")]
-        assert _watermark(self.storage) == _BASE
+        assert ("A", "t-a") in store.calls
 
-    def test_concurrent_build_gap_is_recorded(self):
-        """The reviewer's case, end to end: a quick build behind the watermark.
+    def test_build_older_than_the_anchor_is_not_selected(self):
+        """History behind the anchor stays out of range.
 
-        Build C is long-running with targets at T and T+15; the T+15 one recorded
-        last, so C is the checkpoint's build. Build B started later and finished
-        *earlier* (T+5), landing between C's two targets. Under the old fixed
-        one-minute window B fell outside the query and, the watermark being
-        monotonic, was never re-surfaced — its lineage was lost silently. The
-        anchor is C's oldest target, so the walk reaches back past B.
+        The anchor is the operator's "start here" decision; walking behind it would
+        re-drive arbitrarily much old history into the sink.
         """
-        self._targets = [
-            _target("build-c", "t_c_early", _BASE),
-            _target("build-b", "t_b", _BASE + timedelta(seconds=5)),
-            _target("build-c", "t_c_late", _BASE + timedelta(seconds=15)),
+        watcher, store = self._make_watcher()
+        self._builds = [
+            _build("OLD", _BASE - timedelta(days=1), Status.SUCCESS),
+            _build("A", _BASE, Status.SUCCESS),
         ]
-        watcher, store = self._make_watcher()
-        _seed(self.storage, "build-c", _BASE + timedelta(seconds=15))
+        self._targets = [_target("OLD", "t-old"), _target("A", "t-a")]
+        self._seed("A", _BASE)
 
         watcher._reconcile()
 
-        assert "t_b" in {c[1] for c in store.calls}
+        recorded = {target_id for _build_id, target_id in store.calls}
+        assert recorded == {"t-a"}
 
-    def test_staggered_targets_within_checkpoint_build_are_not_lost(self):
-        """The checkpoint's build keeps its own earlier targets in scope.
+    def test_new_build_is_picked_up_on_a_later_scan(self):
+        """The build list is rebuilt every scan, so new builds need no registration."""
+        watcher, store = self._make_watcher()
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-a")]
+        self._seed("A", _BASE)
+        watcher._reconcile()
 
-        The checkpoint names whichever target recorded last (here C's T+15 one),
-        but a build's targets finish at staggered times. Anchoring on that row
-        would leave C's own T+5 target behind the stop point; anchoring on the
-        build's *oldest* target includes it.
+        self._builds.append(_build("B", _BASE + timedelta(minutes=1), Status.SUCCESS))
+        self._targets.append(_target("B", "t-b"))
+        watcher._reconcile()
+
+        assert ("B", "t-b") in store.calls
+
+    def test_already_recorded_target_is_not_re_recorded(self):
+        """Dedup is what prevents duplicates now that run ids are random."""
+        watcher, store = self._make_watcher()
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-a")]
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+        watcher._reconcile()
+
+        assert store.calls == [("A", "t-a")]
+
+    def test_finished_confirmed_build_is_not_re_read(self):
+        """A finished, confirmed build is skipped without re-reading its targets.
+
+        This is the mitigation for a pinned cutoff: without it, every scan would
+        re-read the targets of every build above the mark for as long as one build
+        stays stuck.
         """
-        self._targets = [
-            _target("build-c", "t_early", _BASE + timedelta(seconds=5)),
-            _target("build-c", "t_late", _BASE + timedelta(seconds=15)),
+        watcher, _store = self._make_watcher()
+        self._builds = [
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.RUNNING),
         ]
-        watcher, store = self._make_watcher()
-        _seed(self.storage, "build-c", _BASE + timedelta(seconds=15))
-        # Skip the start()-time sweep: it re-scans the checkpoint's whole build
-        # with no lower bound, which would record t_early regardless of the
-        # anchor and mask exactly what this test is about.
-        watcher._checkpoint_verified = True
-
+        self._targets = [_target("A", "t-a"), _target("B", "t-b")]
+        self._seed("A", _BASE)
         watcher._reconcile()
 
-        assert {c[1] for c in store.calls} == {"t_early", "t_late"}
+        self.storage.target_storage.get_by_where.reset_mock()
+        watcher._reconcile()
 
-    def test_target_behind_the_watermark_does_not_lower_it(self):
-        """Recording a target behind the watermark must not move it backward.
+        read_builds = {
+            call.args[0].get("build_id")
+            for call in self.storage.target_storage.get_by_where.call_args_list
+        }
+        assert "A" not in read_builds, "a confirmed finished build was re-read"
+        assert "B" in read_builds, "the unfinished build must still be re-read"
 
-        Regression: ``_on_checkpoint_advance`` wrote unconditionally, so a target
-        that legitimately finished behind the current watermark (its row became
-        visible late — see the anchor rationale in ``_reconcile``) dragged the
-        durable watermark below its prior high mark. With no newer target in the
-        same pass to push it back up it stayed lowered, and every later scan
-        re-read that range. The target is still recorded; only the watermark write
-        is suppressed.
+    # ---- contiguous checkpoint advance ------------------------------------
 
-        The checkpoint names ``build-1`` so the anchor resolves to that build's
-        oldest target, which is what brings the behind-the-watermark row into
-        scope in the first place.
+    def test_running_base_holds_the_mark_but_later_builds_still_record(self):
+        """The mark stops *on* a running build, and recording runs past it anyway.
+
+        A is complete, so the mark steps onto B; B is running, so it stays there.
+        Recording and advancing are deliberately separate: C's lineage is written
+        on this same pass, while the mark waits on B so B cannot fall out of range
+        while it can still produce targets.
         """
-        behind = _BASE - timedelta(seconds=30)
-        self._targets = [_target("build-1", "target-1", behind)]
         watcher, store = self._make_watcher()
-        _seed(self.storage, "build-1", _BASE)
+        _a, _b, _c = self._three_builds(middle_status=Status.RUNNING)
 
         watcher._reconcile()
 
-        assert store.calls == [("build-1", "target-1")]
-        assert _watermark(self.storage) == _BASE
+        recorded = {target_id for _build_id, target_id in store.calls}
+        assert recorded == {"t-a", "t-b", "t-c"}
+        assert self._checkpoint_build() == "B", "A is complete, so the mark leaves it"
 
-    def test_watermark_still_advances_for_a_newer_target(self):
-        """The monotonic guard must not block genuine forward progress."""
-        ahead = _BASE + timedelta(seconds=30)
-        self._targets = [_target("build-1", "target-1", ahead)]
-        watcher, store = self._make_watcher(since=_BASE)
-
+        # B still runs, so a further scan must not step over it onto C.
         watcher._reconcile()
+        assert self._checkpoint_build() == "B"
 
-        assert store.calls == [("build-1", "target-1")]
-        assert _watermark(self.storage) == ahead
+    def test_targets_appearing_after_an_empty_scan_are_still_recorded(self):
+        """A build scanned while it had no targets must be re-read once it has them.
 
-    def test_timezone_aware_checkpoint_watermark_records(self):
-        """A checkpoint seeded with a timezone-aware ``finished_at`` still records.
+        The real sequence from production: the watcher selects a build that is still
+        RUNNING and has no gb_targets rows yet. That pass has nothing to record, so
+        it reports all_confirmed -- a finished build with genuinely no lineage must
+        not pin the checkpoint. But the confirmation rests on an empty set; the sink
+        was never asked about anything.
 
-        Regression: the checkpoint is written straight from a stored target's
-        ``finished_at``, which a storage backend or DB driver may hand back
-        timezone-aware (this is why ``as_aware`` exists at all). An aware
-        watermark made ``_reconcile``'s ``watermark - datetime.min`` raise
-        ``TypeError: can't subtract offset-naive and offset-aware datetimes``
-        before any recording, so every scan failed and nothing was ever
-        recorded. The watermark is normalized to naive UTC on read instead.
+        Caching that as complete is the bug: the skip gate is "cached complete AND
+        finished", and when the build then succeeds and its target appears, both
+        halves hold and the build is skipped without ever re-reading its targets.
+        The lineage was recorded only after a service restart, which is the one
+        thing that clears the in-memory set.
         """
-        self._targets = [_target("build-1", "target-1", _BASE)]
         watcher, store = self._make_watcher()
-        # UTC+0 keeps the instant identical to the naive seed, so this isolates
-        # awareness itself rather than also shifting the watermark.
-        aware = (_BASE - timedelta(days=1)).replace(tzinfo=timezone.utc)
-        _seed(self.storage, "seed-build", aware)
+        build = _build("B1", _BASE, Status.RUNNING)
+        self._builds = [build]
+        self._targets = []
+        self._seed("B1", _BASE)
 
         watcher._reconcile()
-
-        assert store.calls == [("build-1", "target-1")]
-
-    def test_timezone_aware_target_finished_at_advances_the_checkpoint(self):
-        """An aware ``finished_at`` must still advance the checkpoint.
-
-        Regression: the monotonic guard in ``_on_checkpoint_advance`` compared the
-        target's ``finished_at`` — passed through raw by ``reconcile_once`` — against
-        the normalized watermark from ``_checkpoint_watermark``. In production
-        ``finished_at`` is aware (stamped from ``BuildEvent.timestamp``, i.e.
-        ``get_time()``), so the comparison raised ``TypeError: can't compare
-        offset-naive and offset-aware datetimes``.
-
-        The raise lands inside ``reconcile_once``'s per-target ``try``, so it was
-        misattributed to *recording* — which had already succeeded — blocking the
-        checkpoint and, after ``_MAX_RECORD_ATTEMPTS`` scans, dropping the target
-        durably. Hence both assertions: recording alone passed throughout, so only
-        the watermark catches this.
-
-        The sibling test above makes the *checkpoint* aware and the target naive,
-        which exercises the read path's normalization and never reaches this
-        comparison; this is the inverse case.
-        """
-        # UTC-03:00 rather than UTC so a naive-vs-aware mixup cannot coincidentally
-        # compare equal, and a day ahead so the watermark must genuinely move.
-        aware = (_BASE + timedelta(days=1)).replace(
-            tzinfo=timezone(timedelta(hours=-3))
+        assert store.calls == [], "nothing to record while the build has no targets"
+        assert "B1" not in watcher._complete_builds, (
+            "an empty pass must not be cached as complete: the sink was never asked "
+            "about any target, so there is nothing to skip re-reading later"
         )
-        self._targets = [_target("build-1", "target-1", aware)]
-        watcher, store = self._make_watcher()
-        _seed(self.storage, "seed-build", _BASE)
+
+        # By the time the build reads SUCCESS its target rows are already persisted
+        # (buildrunner finalizes children before the parent), so a later scan sees
+        # both -- provided the build was not cached as complete by the empty pass.
+        build.status = Status.SUCCESS
+        self._targets = [_target("B1", "t-b1")]
+
+        watcher._reconcile()
+        recorded = {target_id for _build_id, target_id in store.calls}
+        assert recorded == {"t-b1"}, (
+            "the target that appeared after the empty scan must be recorded without "
+            "needing a restart to clear the completed-build cache"
+        )
+
+    def test_checkpoint_never_steps_off_a_non_finished_build(self):
+        """The mark never leaves a running build, never jumping past it to C.
+
+        This is the safety invariant of the walk. Moving the cutoff beyond B while
+        B can still produce targets would lose them for good: nothing sweeps behind
+        the anchor, so a target B emits after the mark passed it is unreachable.
+        """
+        watcher, _store = self._make_watcher()
+        self._builds = [
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.RUNNING),
+            _build("C", _BASE + timedelta(minutes=2), Status.SUCCESS),
+        ]
+        self._targets = [_target("B", "t-b"), _target("C", "t-c")]
+        self._seed("B", _BASE + timedelta(minutes=1))
+
+        # Many scans, so a slow drift past B would show up rather than hide.
+        for _ in range(5):
+            watcher._reconcile()
+
+        assert self._checkpoint_build() == "B"
+
+    def test_checkpoint_advances_one_build_per_pass(self):
+        """The mark steps base -> next -> next, one build per scan.
+
+        Not a jump to the far end of an already-complete run: stepping keeps the
+        durable mark close to the work, so a process that dies mid-catch-up resumes
+        one build back instead of redoing the whole run.
+        """
+        watcher, _store = self._make_watcher()
+        self._three_builds(middle_status=Status.RUNNING)
+        # A is complete, so the mark steps onto B -- and stops there, because B is
+        # running, even though C is finished and confirmed.
+        watcher._reconcile()
+        assert self._checkpoint_build() == "B"
+        watcher._reconcile()
+        assert self._checkpoint_build() == "B", "a running base must hold the mark"
+
+        # B finishes and its lineage is confirmed, so the mark may leave it.
+        self._builds[1].status = Status.SUCCESS
+        watcher._reconcile()
+        assert self._checkpoint_build() == "C"
+
+        # Nothing left to move to; the mark stays put rather than drifting.
+        watcher._reconcile()
+        assert self._checkpoint_build() == "C"
+
+    def test_confirmations_are_pruned_to_the_builds_still_in_range(self):
+        """The confirmed-build set tracks the live window, not every build ever seen.
+
+        Selection is ">= the anchor", so once the mark has moved past a build that
+        build is never read again and its confirmation is dead weight. Without the
+        prune the set grows by one uuid per build ever confirmed and is cleared only
+        by a restart -- a slow leak in a long-lived daemon.
+        """
+        watcher, _store = self._make_watcher()
+        self._three_builds(middle_status=Status.SUCCESS)
+
+        watcher._reconcile()
+        assert self._checkpoint_build() == "B"
+        # A was confirmed this pass and is still selected (it is the anchor), so it
+        # is kept -- the prune must not drop the build the mark just left until the
+        # cutoff actually excludes it.
+        assert watcher._complete_builds == {"A", "B", "C"}
+
+        watcher._reconcile()
+        assert self._checkpoint_build() == "C"
+        # Now the cutoff is B, so A can never be selected again and is dropped.
+        assert watcher._complete_builds == {"B", "C"}
+
+        watcher._reconcile()
+        assert watcher._complete_builds == {"C"}, "only the live window survives"
+
+    def test_loop_does_not_wait_the_interval_while_it_is_advancing(self):
+        """A scan that moved the mark is followed immediately by the next one.
+
+        This is the catch-up path: with one advance per scan, sleeping between
+        steps would stretch a backlog of N builds over N intervals.
+        """
+        watcher, _store = self._make_watcher()
+        watcher.monitoring_interval = 3600.0
+        waits: list[float] = []
+        # Three advances, then no more progress -- which must end the catch-up and
+        # fall back to the interval.
+        results = iter([True, True, True, False])
+
+        def _reconcile():
+            try:
+                return next(results)
+            except StopIteration:
+                watcher.stop_event.set()
+                return False
+
+        def _wait(timeout=None):
+            waits.append(timeout)
+            # Let the loop exit once it reaches the real interval wait.
+            if timeout == watcher.monitoring_interval:
+                watcher.stop_event.set()
+            return watcher.stop_event.is_set()
+
+        with (
+            patch.object(watcher, "_reconcile", side_effect=_reconcile),
+            patch.object(watcher.stop_event, "wait", side_effect=_wait),
+        ):
+            watcher._run()
+
+        assert waits[:3] == [0, 0, 0], "advancing scans must not wait the interval"
+        assert (
+            waits[3] == watcher.monitoring_interval
+        ), "the first scan with nothing to do falls back to the interval"
+
+    def test_loop_waits_the_interval_after_a_crashed_scan(self):
+        """A scan that raised is not progress: back off instead of hot-looping."""
+        watcher, _store = self._make_watcher()
+        watcher.monitoring_interval = 3600.0
+        waits: list[float] = []
+
+        def _wait(timeout=None):
+            waits.append(timeout)
+            watcher.stop_event.set()
+            return True
+
+        with (
+            patch.object(watcher, "_reconcile", side_effect=RuntimeError("boom")),
+            patch.object(watcher.stop_event, "wait", side_effect=_wait),
+        ):
+            watcher._run()
+
+        assert waits == [watcher.monitoring_interval]
+
+    def test_reconcile_reports_whether_the_mark_moved(self):
+        """The return value is what lets the loop catch up without sleeping.
+
+        One build per scan means a backlog of N builds needs N scans; if those
+        scans were spaced by the full monitoring interval, catching up would take
+        N intervals. ``_reconcile`` reporting "the mark moved" is what lets the
+        loop run the next scan immediately (see ``_run``).
+        """
+        watcher, _store = self._make_watcher()
+        self._three_builds(middle_status=Status.SUCCESS)
+
+        # Two advances available (A -> B -> C), then nothing left to move to.
+        assert watcher._reconcile() is True
+        assert watcher._reconcile() is True
+        assert watcher._reconcile() is False, "no advance left is not progress"
+
+    def test_a_blocked_advance_is_not_reported_as_progress(self):
+        """A running build holding the mark must not spin the loop.
+
+        The interval is the only thing pacing the watcher while it waits for a
+        build to finish, so "could not advance" has to read as no progress.
+        """
+        watcher, _store = self._make_watcher()
+        self._three_builds(middle_status=Status.RUNNING)
+
+        # The first scan does progress: A is complete, so the mark steps onto B.
+        assert watcher._reconcile() is True
+        # B is running, so there is nowhere to go. That must read as no progress,
+        # or the loop would spin instead of waiting for B to finish.
+        assert watcher._reconcile() is False
+
+    def test_advance_ignores_a_build_sorting_ahead_of_the_anchor(self):
+        """A same-instant build ordering before the anchor is not the destination.
+
+        ``created_time`` is stamped in Python, so two builds created in the same
+        instant have no defined order between them and one can sort ahead of the
+        anchor. Advancing onto it would move the mark *backwards* in the list and
+        put the anchor's successor behind the new cutoff.
+        """
+        watcher, _store = self._make_watcher()
+        # X shares A's timestamp and is returned before it; B is genuinely newer.
+        self._builds = [
+            _build("X", _BASE, Status.SUCCESS),
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("X", "t-x"), _target("A", "t-a"), _target("B", "t-b")]
+        self._seed("A", _BASE)
 
         watcher._reconcile()
 
-        assert store.calls == [("build-1", "target-1")]
-        # Normalized to aware UTC on write: 2026-01-02T00:00-03:00 ->
-        # 2026-01-02T03:00+00:00 (the same instant, one unambiguous format).
-        assert _watermark(self.storage) == aware.astimezone(timezone.utc)
+        assert self._checkpoint_build() == "B", (
+            "the mark must step to the anchor's successor, not to a build "
+            "sorting ahead of it"
+        )
 
-    def test_malformed_checkpoint_records_nothing_instead_of_raising(self):
-        """A checkpoint missing ``finished_at`` turns recording off, not a crash.
+    def test_unconfirmed_finished_build_blocks_the_advance(self):
+        """A finished build whose target failed to record does not move the mark.
 
-        ``_reconcile`` used to index the key directly, so a hand-edited or
-        partially-written ``gb_kv_pairs`` row raised ``KeyError`` out of the scan.
-        Recording stays off until the key is corrected — the safe direction.
+        The gate is on the build being left: B is finished but its lineage never
+        reached the sink, so the mark stays on B. Stepping off would put it behind
+        the cutoff with its lineage still missing and no later scan able to reach
+        it -- the second half of the gate, alongside "still running".
         """
-        self._targets = [_target("build-1", "target-1", _BASE)]
+        watcher, _store = self._make_watcher(fail={"t-b"})
+        self._three_builds(middle_status=Status.SUCCESS)
+
+        # A is complete, so the mark reaches B; B's target keeps failing, so it
+        # stays there rather than drifting onto C. Kept under
+        # ``_MAX_RECORD_ATTEMPTS`` scans: once the target is *dropped* the build
+        # counts as confirmed on purpose (a dropped target must not pin the mark
+        # forever), which is a different behaviour, covered elsewhere.
+        assert watcher._MAX_RECORD_ATTEMPTS > 2, "scan count below relies on this"
+        watcher._reconcile()
+        assert self._checkpoint_build() == "B"
+        watcher._reconcile()
+        assert self._checkpoint_build() == "B"
+
+    def test_build_with_no_targets_still_advances_the_checkpoint(self):
+        """A build that produced no recordable target is trivially complete.
+
+        Treating "nothing to record" as unconfirmed would pin the mark forever
+        behind a build that will never have lineage.
+        """
+        watcher, _store = self._make_watcher()
+        self._builds = [
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("A", "t-a")]
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+
+        assert self._checkpoint_build() == "B"
+
+    def test_finished_no_target_anchor_does_not_wedge_the_checkpoint(self):
+        """The anchor itself has no targets: the mark must still step off it.
+
+        The previous test seeds an anchor that *has* a target, so the advance is
+        gated on a build that gets cached either way -- the no-target build is
+        only the destination and never the anchor. Here the empty build is the
+        anchor, which is the case that wedges: it is finished, so it will never
+        gain a target, but _advance_checkpoint requires the anchor in
+        _complete_builds. Refusing to cache it pins the mark on it forever and
+        blocks every newer build's lineage behind it.
+        """
+        watcher, store = self._make_watcher()
+        self._builds = [
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("B", "t-b")]
+        self._seed("A", _BASE)
+
+        # Two scans: the first advances off the empty anchor A, the second must
+        # then advance off B. A single scan passes even when wedged, because the
+        # first pass is the one that reads A while it is still the anchor.
+        watcher._reconcile()
+        assert self._checkpoint_build() == "B", "the mark wedged on empty anchor A"
+
+        watcher._reconcile()
+
+        assert {target_id for _build_id, target_id in store.calls} == {"t-b"}
+
+    def test_failed_anchor_with_no_targets_does_not_wedge_the_checkpoint(self):
+        """A FAILED build is the common shape of a finished build with no lineage.
+
+        ``select_builds_from_checkpoint`` has no status filter, so a FAILED build
+        does become an anchor -- and it records nothing by definition. If that
+        wedged the mark, one failed build would stop lineage for the platform.
+        """
+        watcher, _store = self._make_watcher()
+        self._builds = [
+            _build("A", _BASE, Status.FAILED),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("B", "t-b")]
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+
+        assert self._checkpoint_build() == "B"
+
+    def test_running_build_with_no_targets_is_not_cached_as_complete(self):
+        """The original bug: an empty pass on a RUNNING build must not be cached.
+
+        Caching it arms the skip gate ("cached complete AND finished") on a build
+        whose targets are written moments later, so they are never re-read and the
+        lineage appears only after a restart. Finished-and-empty is cached;
+        running-and-empty is not, and the build state is the whole distinction.
+        """
+        watcher, store = self._make_watcher()
+        self._builds = [_build("A", _BASE, Status.RUNNING)]
+        self._targets = []
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+        assert "A" not in watcher._complete_builds
+
+        # A finishes and its targets land: the next scan must re-read them.
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-a")]
+
+        watcher._reconcile()
+
+        assert {target_id for _build_id, target_id in store.calls} == {"t-a"}
+
+    def test_running_build_with_only_dropped_targets_is_not_cached_as_complete(self):
+        """The sibling of the bug above, on the all-targets-dropped path.
+
+        A RUNNING build whose only targets so far are all in the durable drop set
+        also confirms without a sink answer: every target is filtered out of
+        `candidates`, so filter_unrecorded is never called. That pass used to report
+        all_confirmed without flagging itself unqueried, so it was cached complete
+        and the skip gate ("cached complete AND finished") then swallowed the
+        non-dropped target that arrived before the build finished -- the same
+        restart-only recovery as the empty case.
+        """
         watcher, store = self._make_watcher()
         self.storage.kv_pair_storage.set_value(
-            LINEAGE_WATCHER_CHECKPOINT_KEY, {"build_id": "seed-build"}
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": ["t-dropped"]}
+        )
+        self._builds = [_build("A", _BASE, Status.RUNNING)]
+        self._targets = [_target("A", "t-dropped")]
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+        assert store.calls == [], "the only target is permanently dropped"
+        assert "A" not in watcher._complete_builds, (
+            "an all-dropped pass on a RUNNING build asked the sink nothing, so it "
+            "must not arm the skip gate against targets still to come"
+        )
+
+        # A gains a target that is *not* dropped, then finishes: the next scan must
+        # re-read its targets rather than skip the build.
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-dropped"), _target("A", "t-live")]
+
+        watcher._reconcile()
+
+        assert {target_id for _build_id, target_id in store.calls} == {"t-live"}
+
+    def test_finished_build_with_only_dropped_targets_is_cached_as_complete(self):
+        """The other half: a *finished* all-dropped build must still be cached.
+
+        _advance_checkpoint requires the anchor in _complete_builds, so refusing to
+        cache this build pins the mark on it forever and blocks every newer build's
+        lineage -- exactly what the durable drop set exists to prevent. Flagging the
+        pass unqueried must not cost that.
+        """
+        watcher, _store = self._make_watcher()
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": ["t-dropped"]}
+        )
+        self._builds = [
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("A", "t-dropped"), _target("B", "t-b")]
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+
+        assert "A" in watcher._complete_builds
+        assert self._checkpoint_build() == "B", "the mark must not wedge on A"
+
+    # ---- fail-closed dedup ------------------------------------------------
+
+    def test_dedup_failure_aborts_the_pass_and_records_nothing(self):
+        """An unanswered dedup query must not be read as "nothing recorded".
+
+        With random run ids, writing on an unanswered query duplicates runs rather
+        than resuming them, so the pass stops and the mark stays put.
+        """
+        watcher, store = self._make_watcher(query_error=RuntimeError("timeout"))
+        self._three_builds(middle_status=Status.SUCCESS)
+
+        watcher._reconcile()
+
+        assert store.calls == []
+        assert self._checkpoint_build() == "A"
+
+    def test_dedup_failure_does_not_process_later_builds(self):
+        """The abort is per-pass, not per-build.
+
+        A sink that cannot answer for one build will not answer for the next, so
+        continuing would just accumulate duplicate-risk writes.
+        """
+        watcher, store = self._make_watcher()
+        self._three_builds(middle_status=Status.SUCCESS)
+        store.query_error = RuntimeError("timeout")
+
+        watcher._reconcile()
+
+        assert store.calls == []
+
+    def test_pass_recovers_after_a_transient_dedup_failure(self):
+        """Nothing is lost by aborting: the next scan re-selects everything."""
+        watcher, store = self._make_watcher(query_error=RuntimeError("timeout"))
+        self._three_builds(middle_status=Status.SUCCESS)
+        watcher._reconcile()
+
+        store.query_error = None
+        watcher._reconcile()
+
+        recorded = {target_id for _build_id, target_id in store.calls}
+        assert recorded == {"t-a", "t-b", "t-c"}
+        # All three recorded on the recovery pass, but the mark still advances one
+        # build at a time, so it lands on B rather than C.
+        assert self._checkpoint_build() == "B"
+
+    def test_permanent_dedup_failure_disables_recording(self):
+        """A failure no retry can clear switches recording off instead of looping.
+
+        Retrying forever would leave the watcher aborting every pass in silence with
+        the mark frozen — indistinguishable from a healthy idle watcher.
+        """
+        watcher, store = self._make_watcher(
+            query_error=RuntimeError("permission denied for project")
+        )
+        self._three_builds(middle_status=Status.SUCCESS)
+
+        watcher._reconcile()
+
+        assert watcher._recording_disabled is True
+        assert store.calls == []
+        assert self._checkpoint_build() == "A"
+
+    def test_disabled_recording_stops_touching_the_sink(self):
+        """Once disabled, later scans do not query or write, and stay alive.
+
+        The process deliberately keeps running (rather than exiting) so the
+        CRITICAL log is the signal; it must not silently resume either.
+        """
+        watcher, store = self._make_watcher(query_error=RuntimeError("invalid api key"))
+        self._three_builds(middle_status=Status.SUCCESS)
+        watcher._reconcile()
+
+        store.query_error = None
+        watcher._reconcile()
+
+        assert store.calls == [], "a disabled watcher must not resume on its own"
+
+    def test_transient_failure_is_not_treated_as_permanent(self):
+        """An unrecognized failure counts as transient — the safe direction.
+
+        Misclassifying a network blip as permanent would switch off recording for a
+        condition that would have cleared on the next scan.
+        """
+        watcher, _store = self._make_watcher(
+            query_error=RuntimeError("connection reset by peer")
+        )
+        self._three_builds(middle_status=Status.SUCCESS)
+
+        watcher._reconcile()
+
+        assert watcher._recording_disabled is False
+
+    # ---- per-target retry and drop ---------------------------------------
+
+    def test_failure_does_not_abort_the_build(self):
+        """One failing target must not stop its build's other targets."""
+        watcher, store = self._make_watcher(fail={"t-1"})
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-1"), _target("A", "t-2")]
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+
+        assert ("A", "t-2") in store.calls
+
+    def test_transient_failure_is_retried_on_the_next_scan(self):
+        watcher, store = self._make_watcher(fail={"t-1"})
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-1")]
+        self._seed("A", _BASE)
+        watcher._reconcile()
+        assert store.calls == []
+
+        store._fail.clear()
+        watcher._reconcile()
+
+        assert store.calls == [("A", "t-1")]
+
+    def test_persistent_failure_is_dropped_after_max_attempts(self):
+        """A target that always fails is given up on, durably.
+
+        Otherwise it pins the checkpoint forever: the mark refuses to pass a build
+        with unrecorded lineage, so an un-droppable target wedges everything newer.
+        """
+        watcher, _store = self._make_watcher(fail={"t-1"})
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-1")]
+        self._seed("A", _BASE)
+
+        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS):
+            watcher._reconcile()
+
+        assert "t-1" in watcher._dropped
+        persisted = self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
+        assert persisted == {"target_ids": ["t-1"]}
+
+    def test_transient_failure_gets_its_full_retry_budget(self):
+        """Every failure is retryable: no rejection is treated as permanent here.
+
+        The one that used to be (a run id the sink had seen and deleted) cannot
+        occur now that ids are fresh random uuids.
+        """
+        watcher, _store = self._make_watcher(fail={"t-1"})
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-1")]
+        self._seed("A", _BASE)
+
+        watcher._reconcile()
+
+        assert "t-1" not in watcher._dropped
+        assert watcher._failed_attempts["t-1"] == 1
+
+    def test_dropped_target_does_not_pin_the_checkpoint(self):
+        """Once dropped, a target stops blocking the advance.
+
+        The build is confirmed *with a known gap* — logged at ERROR — rather than
+        holding the mark for lineage that will never land.
+        """
+        watcher, _store = self._make_watcher(fail={"t-a"})
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-a")]
+        self._seed("A", _BASE)
+
+        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS + 1):
+            watcher._reconcile()
+
+        assert "t-a" in watcher._dropped
+        assert self._checkpoint_build() == "A"
+
+    def test_clearing_the_row_retries_the_target_without_a_restart(self):
+        """The point of re-reading every scan: `lineage-init --clear` needs no restart.
+
+        Previously _dropped was loaded once in start(), so a cleared row was invisible
+        to a live watcher -- and worse, the next drop persisted the whole stale set,
+        undoing the operator's clear.
+        """
+        watcher, store = self._make_watcher(fail={"t-1"})
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-1")]
+        self._seed("A", _BASE)
+        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS):
+            watcher._reconcile()
+        assert "t-1" in watcher._dropped
+
+        # What the CLI writes, on the same live instance.
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": []}
+        )
+        store._fail = set()
+        watcher._reconcile()
+
+        assert "t-1" not in watcher._dropped, "the clear must take effect on this scan"
+        assert "t-1" in store._recorded, "the target must actually be retried"
+
+    def test_the_watcher_does_not_undo_a_clear_on_its_next_drop(self):
+        """A later drop must persist only what is still dropped, not a stale set."""
+        watcher, store = self._make_watcher(fail={"t-1", "t-2"})
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-1"), _target("A", "t-2")]
+        self._seed("A", _BASE)
+        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS):
+            watcher._reconcile()
+        assert watcher._dropped == {"t-1", "t-2"}
+
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": []}
+        )
+        # t-2 keeps failing and gets re-dropped; t-1 must not come back with it.
+        store._fail = {"t-2"}
+        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS + 1):
+            watcher._reconcile()
+
+        persisted = self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
+        assert "t-1" not in persisted["target_ids"], "the clear was undone"
+
+    def test_an_unpersisted_drop_survives_the_next_scans_reload(self):
+        """A drop whose persist failed must not be resurrected by the reload.
+
+        _persist_dropped is non-raising, so the decision can exist only in memory;
+        treating the row as authoritative without adding those back would re-record a
+        hopeless target on every scan.
+        """
+        watcher, _store = self._make_watcher()
+        watcher._dropped = {"t-9"}
+        failing = MagicMock()
+        failing.kv_pair_storage.set_value.side_effect = RuntimeError("kv down")
+        watcher._persist_dropped(failing)
+        assert watcher._dropped_unpersisted == {"t-9"}
+
+        # The durable row never got it, but the reload must not drop it.
+        watcher._load_dropped(self.storage)
+
+        assert "t-9" in watcher._dropped
+
+    def test_a_successful_persist_hands_ids_over_to_the_row(self):
+        """After a good persist the ids live in the row, so a clear can reach them."""
+        watcher, _store = self._make_watcher()
+        watcher._dropped = {"t-9"}
+        watcher._dropped_unpersisted = {"t-9"}
+        watcher._persist_dropped(self.storage)
+
+        assert watcher._dropped_unpersisted == set()
+
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": []}
+        )
+        watcher._load_dropped(self.storage)
+
+        assert watcher._dropped == set(), "a persisted id must follow the row"
+
+    def test_dropped_target_survives_a_restart(self):
+        """The drop decision is durable, so a restart does not resurrect it."""
+        watcher, _store = self._make_watcher(fail={"t-1"})
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-1")]
+        self._seed("A", _BASE)
+        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS):
+            watcher._reconcile()
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._load_dropped(self.storage)
+
+        assert "t-1" in fresh._dropped
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            "oops",
+            ["t-1"],
+            7,
+            {"target_ids": "t-1"},
+            {"target_ids": 3},
+            # These pass a container-only check but make _persist_dropped's sorted()
+            # raise on the next drop, which unwinds into _run and fails every scan.
+            {"target_ids": ["t-1", 7]},
+            {"target_ids": [1, 2]},
+            {"target_ids": [None]},
+        ],
+    )
+    def test_an_unusable_drop_set_starts_empty_instead_of_raising(self, bad_value):
+        """A corrupt row must not abort start(): a dead watcher records nothing.
+
+        Empty is the only readable fallback, but it is the wedge the drop set
+        exists to prevent, so it is logged at ERROR rather than swallowed.
+        """
+        self.storage.kv_pair_storage.set_value(LINEAGE_WATCHER_DROPPED_KEY, bad_value)
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._load_dropped(self.storage)
+
+        assert fresh._dropped == set()
+
+    def test_an_unusable_drop_set_is_left_on_disk_for_inspection(self):
+        """Loading never rewrites the bad row -- the operator still needs to see it."""
+        self.storage.kv_pair_storage.set_value(LINEAGE_WATCHER_DROPPED_KEY, "oops")
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._load_dropped(self.storage)
+
+        assert (
+            self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
+            == "oops"
+        )
+
+    def test_persisting_after_a_corrupt_load_does_not_raise(self):
+        """The load fallback must leave a persistable set, or the watcher wedges.
+
+        A mixed list loaded as-is makes ``_persist_dropped``'s sorted() raise on the
+        next drop; ``on_error`` runs outside ``reconcile_build``'s try/except, so that
+        unwinds into ``_run`` and fails every scan from then on -- worse than the
+        empty-set fallback the guard chooses.
+        """
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": ["t-1", 7]}
+        )
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._load_dropped(self.storage)
+        fresh._dropped.add("t-2")
+        fresh._persist_dropped(self.storage)
+
+        assert self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY) == {
+            "target_ids": ["t-2"]
+        }
+
+    def test_a_failing_persist_never_escapes_to_abort_the_scan(self):
+        """Durability is best-effort; the scan loop is not.
+
+        ``_on_record_error`` persists from inside ``reconcile_build``, so a raise here
+        would kill the iteration and every one after it.
+        """
+        storage = MagicMock()
+        storage.kv_pair_storage.set_value.side_effect = RuntimeError("kv down")
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._dropped = {"t-1"}
+        fresh._persist_dropped(storage)
+
+        assert fresh._dropped == {"t-1"}
+
+    def test_a_failing_drop_set_read_starts_empty_instead_of_raising(self):
+        """A storage error is treated the same as a corrupt shape."""
+        storage = MagicMock()
+        storage.kv_pair_storage.get_value.side_effect = RuntimeError("kv down")
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._load_dropped(storage)
+
+        assert fresh._dropped == set()
+
+    @pytest.mark.parametrize("bad_value", ["oops", {"target_ids": ["t-9", 7]}])
+    def test_an_unusable_row_keeps_the_current_set(self, bad_value):
+        """A bad row must not retry what this process knows is hopeless.
+
+        _load_dropped now runs every scan, so "clear on failure" would re-record a
+        dropped target on every pass for as long as the row stays corrupt. Keeping
+        the in-memory set is the conservative direction.
+        """
+        self.storage.kv_pair_storage.set_value(LINEAGE_WATCHER_DROPPED_KEY, bad_value)
+
+        fresh = LineageWatcher()
+        fresh._store = _StubStore()
+        fresh._dropped = {"t-known"}
+        fresh._load_dropped(self.storage)
+
+        assert fresh._dropped == {"t-known"}
+
+    def test_starting_resets_a_set_left_by_a_previous_run(self):
+        """start() re-reads from scratch, so a stale instance does not leak state."""
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": ["t-row"]}
+        )
+
+        fresh = LineageWatcher()
+        fresh._dropped = {"t-stale"}
+        fresh._dropped_unpersisted = {"t-stale"}
+        with (
+            patch(
+                "gbserver.lineage.lineage_watcher.get_lineage_store",
+                return_value=_StubStore(),
+            ),
+            patch(
+                "gbserver.lineage.lineage_watcher.get_admin_storage",
+                return_value=self.storage,
+            ),
+            patch.object(LineageWatcher, "_run"),
+        ):
+            fresh.start()
+            fresh.stop_event.set()
+
+        assert fresh._dropped == {"t-row"}, "the stale set must not survive start()"
+
+    # ---- checkpoint value handling ---------------------------------------
+
+    def test_backfill_anchor_records_everything(self):
+        """The backfill sentinel names no build and reaches all history."""
+        watcher, store = self._make_watcher()
+        self._builds = [_build("A", _BASE - timedelta(days=30), Status.SUCCESS)]
+        self._targets = [_target("A", "t-a")]
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            {
+                "build_id": BACKFILL_BUILD_ID,
+                "created_time": datetime.min.replace(tzinfo=timezone.utc).isoformat(),
+                "version": LINEAGE_WATCHER_CHECKPOINT_VERSION,
+            },
+        )
+
+        watcher._reconcile()
+
+        assert ("A", "t-a") in store.calls
+
+    def test_backfill_anchor_is_replaced_by_a_real_build(self):
+        """The sentinel must be stepped off, not kept forever.
+
+        It resolves to a UTC_MIN cutoff, so a checkpoint left on it re-selects the
+        platform's whole history on every single scan. Advancing onto the first
+        complete build is what retires it. The sentinel names no build, so it is
+        never in the selected list -- the advance must not depend on finding it
+        there.
+        """
+        watcher, _store = self._make_watcher()
+        self._builds = [
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("A", "t-a"), _target("B", "t-b")]
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            {
+                "build_id": BACKFILL_BUILD_ID,
+                "created_time": datetime.min.replace(tzinfo=timezone.utc).isoformat(),
+                "version": LINEAGE_WATCHER_CHECKPOINT_VERSION,
+            },
+        )
+
+        watcher._reconcile()
+
+        assert self._checkpoint_build() == "A", (
+            "the backfill sentinel was not retired; every later scan would "
+            "re-select all history"
+        )
+
+    def test_legacy_target_shaped_checkpoint_is_migrated(self):
+        """A v1 value keeps its place and is rewritten build-shaped.
+
+        Only its ``build_id`` is reused: the v1 timestamp measured a *target*'s
+        finish, so reusing it would put the cutoff at the wrong instant.
+        """
+        watcher, store = self._make_watcher()
+        self._builds = [
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", _BASE + timedelta(minutes=1), Status.SUCCESS),
+        ]
+        self._targets = [_target("A", "t-a"), _target("B", "t-b")]
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            {"build_id": "A", "finished_at": _BASE.isoformat()},
+        )
+
+        watcher._reconcile()
+
+        value = self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+        assert value["version"] == LINEAGE_WATCHER_CHECKPOINT_VERSION
+        assert "created_time" in value
+        recorded = {target_id for _build_id, target_id in store.calls}
+        assert recorded == {"t-a", "t-b"}
+
+    def test_legacy_checkpoint_for_a_missing_build_records_nothing(self):
+        """An unresolvable v1 anchor records nothing rather than everything.
+
+        Falling back to "no cutoff" would silently turn a broken checkpoint into a
+        full historical backfill.
+        """
+        watcher, store = self._make_watcher()
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-a")]
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            {"build_id": "GONE", "finished_at": _BASE.isoformat()},
+        )
+
+        watcher._reconcile()
+
+        assert store.calls == []
+
+    def test_malformed_checkpoint_records_nothing_instead_of_raising(self):
+        watcher, store = self._make_watcher()
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-a")]
+        self.storage.kv_pair_storage.set_value(
+            LINEAGE_WATCHER_CHECKPOINT_KEY, {"created_time": _BASE.isoformat()}
         )
 
         watcher._reconcile()
@@ -361,386 +1249,36 @@ class TestLineageWatcher:
         assert store.calls == []
 
     def test_unparseable_checkpoint_records_nothing_instead_of_raising(self):
-        """A non-ISO ``finished_at`` is reported and disables recording."""
-        self._targets = [_target("build-1", "target-1", _BASE)]
         watcher, store = self._make_watcher()
+        self._builds = [_build("A", _BASE, Status.SUCCESS)]
+        self._targets = [_target("A", "t-a")]
         self.storage.kv_pair_storage.set_value(
             LINEAGE_WATCHER_CHECKPOINT_KEY,
-            {"build_id": "seed-build", "finished_at": "not-a-timestamp"},
+            {"build_id": "A", "created_time": "not-a-timestamp", "version": 2},
         )
 
         watcher._reconcile()
 
         assert store.calls == []
 
-    def test_overflowing_aware_checkpoint_records_instead_of_wedging(self):
-        """An aware ``datetime.min`` checkpoint records rather than failing forever.
+    def test_checkpoint_keeps_the_build_timestamp_form(self):
+        """The stored timestamp matches the build row rather than being re-zoned.
 
-        Regression: ``--base-build-id all`` anchors the checkpoint at
-        ``datetime.min``, and a backend may hand that back timezone-aware with a
-        positive UTC offset.
-        Normalizing it shifts backwards past ``datetime.min``, raising
-        ``OverflowError`` — which the read guard did not catch (only ``TypeError``
-        and ``ValueError``), so it escaped to ``_run``'s blanket handler and every
-        scan failed, recording nothing at all. That is the same wedge the guard
-        already prevents for unparseable values, so it is handled the same way:
-        the value clamps to ``datetime.min`` and the backfill proceeds.
+        Rewriting offsets is what previously made the same row appear hours apart
+        depending on which table it was read from.
         """
-        self._targets = [_target("build-1", "target-1", _BASE)]
-        watcher, store = self._make_watcher()
-        _seed(
-            self.storage,
-            "seed-build",
-            datetime.min.replace(tzinfo=timezone(timedelta(hours=5))),
-        )
-
-        # Must not raise, and must still record (a clamped datetime.min anchor is
-        # a full backfill, not a disabled scan).
-        watcher._reconcile()
-
-        assert store.calls == [("build-1", "target-1")]
-
-    def test_successful_target_records_lineage(self):
-        self._targets = [_target("build-1", "target-1", _BASE)]
-        watcher, store = self._make_watcher()
-
-        watcher._reconcile()
-
-        assert store.calls == [("build-1", "target-1")]
-        assert _watermark(self.storage) == _BASE
-
-    def test_already_recorded_target_not_reprocessed(self):
-        self._targets = [_target("build-2", "target-2", _BASE)]
-        watcher, store = self._make_watcher()
-
-        watcher._reconcile()
-        assert len(store.calls) == 1
-
-        # A second scan over the same DB must not re-record (filter_unrecorded).
-        watcher._reconcile()
-        assert len(store.calls) == 1
-
-    def test_watermark_advances_and_steady_state_reads_only_new(self):
-        self._targets = [_target("b1", "t1", _BASE)]
-        watcher, store = self._make_watcher()
-
-        watcher._reconcile()
-        assert _watermark(self.storage) == _BASE
-
-        # A newer target appears; the next scan picks it up and advances.
-        new_at = _BASE + timedelta(seconds=30)
-        self._targets.append(_target("b2", "t2", new_at))
-        watcher._reconcile()
-
-        assert ("b2", "t2") in store.calls
-        assert _watermark(self.storage) == new_at
-
-    def test_failure_does_not_abort_batch(self):
-        self._targets = [
-            _target("build-a", "target-a", _BASE),
-            _target("build-b", "target-b", _BASE + timedelta(seconds=1)),
+        watcher, _store = self._make_watcher()
+        offset = timezone(timedelta(hours=-5))
+        created = datetime(2026, 1, 1, 6, 0, 0, tzinfo=offset)
+        self._builds = [
+            _build("A", _BASE, Status.SUCCESS),
+            _build("B", created, Status.SUCCESS),
         ]
-        watcher, store = self._make_watcher(fail={"target-a"})
+        self._targets = [_target("A", "t-a"), _target("B", "t-b")]
+        self._seed("A", _BASE)
 
         watcher._reconcile()
 
-        # target-b still recorded despite target-a failing.
-        assert ("build-b", "target-b") in store.calls
-
-    def test_transient_failure_is_retried_on_next_scan(self):
-        self._targets = [_target("build-r", "target-r", _BASE)]
-        watcher, store = self._make_watcher(fail={"target-r"})
-
-        # First scan: fails, target queued for retry, not recorded.
-        watcher._reconcile()
-        assert watcher._failed_attempts == {"target-r": 1}
-        assert "target-r" not in store._recorded
-
-        # Second scan: no longer failing, retried and clears (overlap guard
-        # re-surfaces it since the watermark did not pass it).
-        store._fail = set()
-        watcher._reconcile()
-        assert ("build-r", "target-r") in store.calls
-        # Recovery clears the retry counter (via on_success): the target drops
-        # out of the unrecorded set afterward, so on_error is never called for
-        # it again and a lingering entry would leak for the process lifetime.
-        assert watcher._failed_attempts == {}
-
-    def test_persistent_failure_is_dropped_after_max_attempts(self):
-        self._targets = [_target("build-p", "target-p", _BASE)]
-        watcher, store = self._make_watcher(fail={"target-p"})
-
-        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS + 2):
-            watcher._reconcile()
-
-        assert len(store.calls) == 0
-        assert watcher._failed_attempts == {}
-        # Dropped target is in the skip set so it stops wedging every scan.
-        assert "target-p" in watcher._dropped
-
-    def test_dropped_target_survives_restart_and_unblocks_checkpoint(self):
-        """A permanently-dropped target must not come back after a restart.
-
-        The checkpoint refuses to advance past an unrecorded target, so if the
-        drop set were in-memory only, a restart would resurrect the failing
-        target, block the watermark, exhaust its attempts again, and repeat
-        forever — wedging every newer target behind it.
-        """
-        self._targets = [_target("build-p", "target-p", _BASE)]
-        started_at = _BASE - timedelta(days=1)
-        watcher, store = self._make_watcher(fail={"target-p"}, since=started_at)
-
-        # Exhaust the attempts: target-p is dropped and the drop is persisted.
-        for _ in range(LineageWatcher._MAX_RECORD_ATTEMPTS):
-            watcher._reconcile()
-        assert "target-p" in watcher._dropped
-        assert self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY) == {
-            "target_ids": ["target-p"]
-        }
-        # It blocked the checkpoint while it was still being retried: the
-        # watermark never moved off where the watcher started.
-        assert _watermark(self.storage) == started_at
-
-        # Simulate a restart: fresh watcher, same durable gb_kv_pairs. It reloads
-        # the drop set the way start() does; the watermark needs no restoring
-        # since it is read from the checkpoint on each scan.
-        restarted = LineageWatcher()
-        restarted._store = store
-        restarted._load_dropped(self.storage)
-        assert restarted._dropped == {"target-p"}
-
-        # A newer target arrives. target-p stays skipped rather than being
-        # retried from zero, so it no longer blocks the checkpoint: the newer
-        # target records and the watermark advances past target-p.
-        newer_at = _BASE + timedelta(seconds=10)
-        self._targets.append(_target("build-q", "target-q", newer_at))
-        restarted._reconcile()
-
-        assert ("build-p", "target-p") not in store.calls
-        assert ("build-q", "target-q") in store.calls
-        assert _watermark(self.storage) == newer_at
-
-    def test_first_scan_after_load_and_verify_records_only_the_next_target(self):
-        """Starting from a seeded checkpoint, the checkpoint's own target is
-        recorded by the start()-time verification (not by the scan), and the
-        first ``_reconcile()`` only picks up anything newer than that.
-        """
-        checkpoint_at = _BASE + timedelta(seconds=1)
-        self._targets = [
-            _target("b1", "t1", _BASE),
-            _target("b2", "t2", checkpoint_at),
-        ]
-        watcher, store = self._make_watcher()
-        _seed(self.storage, "b2", checkpoint_at)
-        watcher._verify_checkpoint(self.storage)
-        # t2 is the checkpoint's target: verified and recorded at start()-time.
-        assert _watermark(self.storage) == checkpoint_at
-        assert ("b2", "t2") in store.calls
-
-        store.calls.clear()
-        # A genuinely newer target appears and is picked up. t1 is NOT: it
-        # finished *before* the anchor (b2's oldest target, which is the
-        # checkpointed t2 itself), and the anchored walk reaches back to the
-        # anchor row, not past it. That is the accepted bound of this design —
-        # the anchor covers stragglers between it and now, not lineage already
-        # behind it, which is what the start()-time verification sweep and an
-        # explicit re-seed are for.
-        self._targets.append(_target("b3", "t3", _BASE + timedelta(minutes=1)))
-        watcher._reconcile()
-        assert {c[1] for c in store.calls} == {"t3"}
-
-
-@pytest.mark.live("storage", "lineage")
-class TestLineageWatcherCheckpoint:
-    """``start()``'s checkpoint verification, driven directly via
-    ``_verify_checkpoint`` (bypassing the background thread)."""
-
-    @pytest.fixture(autouse=True)
-    def _stub_storage(self):
-        self._targets: list[StoredTargetRun] = []
-        admin_storage = MagicMock()
-
-        def _get_by_where(where, query_control=None):
-            matching = self._targets
-            if where and "build_id" in where:
-                matching = [t for t in matching if t.build_id == where["build_id"]]
-            ordered = sorted(
-                matching,
-                key=lambda t: (t.finished_at is not None, t.finished_at or _BASE),
-                reverse=True,
-            )
-            if query_control is not None and query_control.pagination is not None:
-                p = query_control.pagination
-                start = p.index * p.size
-                return ordered[start : start + p.size]
-            return ordered
-
-        admin_storage.target_storage.get_by_where.side_effect = _get_by_where
-        admin_storage.kv_pair_storage = _StubKeyValuePairStorage()
-        self.storage = admin_storage
-        yield
-
-    def _make_watcher(self, fail: set = None) -> tuple[LineageWatcher, _StubStore]:
-        watcher = LineageWatcher()
-        store = _StubStore(fail=fail)
-        watcher._store = store
-        return watcher, store
-
-    def test_missing_checkpoint_is_not_seeded_and_records_nothing(self):
-        """A missing checkpoint is never created implicitly.
-
-        Even with recordable targets sitting in the admin DB, start() must leave
-        the key absent and record nothing — so the following scans are no-ops
-        until the key is seeded explicitly. Seeding it from the newest successful
-        target would pick a starting point for the operator; that choice belongs
-        to whoever seeds the key.
-        """
-        self._targets = [_target("b1", "t1", _BASE)]
-        watcher, store = self._make_watcher()
-
-        watcher._verify_checkpoint(self.storage)
-
-        assert store.calls == []
-        assert _watermark(self.storage) is None
-
-    def test_checkpoint_without_build_id_skips_verification_without_raising(self):
-        """A checkpoint missing ``build_id`` skips the sweep instead of failing.
-
-        Regression: ``build_id`` was indexed directly, so a malformed
-        ``gb_kv_pairs`` row raised ``KeyError`` out of ``_verify_checkpoint`` —
-        and ``start()`` guards only per-target recording errors, so the watcher
-        would not start at all. Skipping the start-up sweep is strictly better:
-        steady-state scans still run off the watermark.
-        """
-        self._targets = [_target("b1", "t1", _BASE)]
-        watcher, store = self._make_watcher()
-        self.storage.kv_pair_storage.set_value(
-            LINEAGE_WATCHER_CHECKPOINT_KEY, {"finished_at": _BASE.isoformat()}
-        )
-
-        # Must not raise; the sweep is skipped rather than half-run.
-        watcher._verify_checkpoint(self.storage)
-
-        assert store.calls == []
-
-    def test_verify_checkpoint_already_recorded_is_a_no_op(self):
-        self._targets = [_target("b1", "t1", _BASE)]
-        watcher, store = self._make_watcher()
-        _seed(self.storage, "b1", _BASE)
-        store.calls.append(("b1", "t1"))  # Pre-record it in the stub store.
-        store._recorded.add("t1")
-
-        watcher._verify_checkpoint(self.storage)
-
-        # Already recorded: filter_unrecorded excludes it, no duplicate call.
-        assert store.calls == [("b1", "t1")]
-        assert _watermark(self.storage) == _BASE
-
-    def test_verify_checkpoint_reports_done_so_the_sweep_runs_once(self):
-        """The success path must return True, not fall off the end as None.
-
-        ``_reconcile`` gates the sweep on ``if not self._checkpoint_verified``
-        and stores this return value there. A None return is falsy, so the
-        build-scoped scan would re-run on every iteration of the monitoring
-        loop: a wasted sink round-trip per scan forever, and a log line that
-        repeats the checkpoint's own target endlessly, reading like a watcher
-        wedged on one target while the steady-state scan quietly makes progress
-        past it.
-        """
-        self._targets = [_target("b1", "t1", _BASE)]
-        watcher, store = self._make_watcher()
-        _seed(self.storage, "b1", _BASE)
-
-        assert watcher._verify_checkpoint(self.storage) is True
-
-    def test_failed_verification_leaves_the_checkpoint_intact(self):
-        """A verification failure at start() must not disturb the checkpoint.
-
-        The checkpoint is already durable, so a target that fails to re-record
-        here is re-surfaced by the next scan (its finished_at sits at the
-        watermark, inside the overlap window). Clearing or rewinding the key
-        instead would either re-drive lineage that is already recorded or, worse,
-        lose the resume point entirely. The failure is logged and swallowed.
-        """
-        self._targets = [_target("b1", "t1", _BASE)]
-        watcher, store = self._make_watcher(fail={"t1"})
-        checkpoint = {"build_id": "b1", "finished_at": _BASE.isoformat()}
-        self.storage.kv_pair_storage.set_value(
-            LINEAGE_WATCHER_CHECKPOINT_KEY, checkpoint
-        )
-
-        watcher._verify_checkpoint(self.storage)
-
-        assert store.calls == []
-        # Unchanged on disk, and the watermark still loads, so scans continue.
-        assert (
-            self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
-            == checkpoint
-        )
-        assert _watermark(self.storage) == _BASE
-
-        # The next scan retries it now that recording works. get_admin_storage is
-        # patched here because this class's fixture (unlike TestLineageWatcher's)
-        # does not: its other tests call _verify_checkpoint, which takes storage as
-        # an argument, while _reconcile looks it up itself.
-        store._fail = set()
-        with patch(
-            "gbserver.lineage.lineage_watcher.get_admin_storage",
-            return_value=self.storage,
-        ):
-            watcher._reconcile()
-        assert ("b1", "t1") in store.calls
-
-    def test_verification_is_scoped_to_the_checkpoint_build(self):
-        """Start-time verification only records the checkpoint's own build."""
-        self._targets = [
-            _target("b1", "t1", _BASE),
-            _target("b2", "t2", _BASE + timedelta(seconds=5)),
-        ]
-        watcher, store = self._make_watcher()
-        self.storage.kv_pair_storage.set_value(
-            LINEAGE_WATCHER_CHECKPOINT_KEY,
-            {"build_id": "b1", "finished_at": _BASE.isoformat()},
-        )
-
-        watcher._verify_checkpoint(self.storage)
-
-        # b2's target is newer but belongs to another build: the steady-state
-        # scan picks it up, not checkpoint verification.
-        assert store.calls == [("b1", "t1")]
-
-    def test_verification_handles_prerun_skipped_target(self):
-        """A prerun-skipped target in the checkpoint's build records cleanly.
-
-        It has no expected-run count of its own (it records the *original*
-        target's outputs), so it must fall back to the presence check rather than
-        being passed to filter_unrecorded with a missing count.
-        """
-        skipped = _target("b1", "t1", _BASE)
-        skipped.skipped_for_prerun_target_id = "orig-target"
-        self._targets = [skipped]
-        watcher, store = self._make_watcher()
-        self.storage.kv_pair_storage.set_value(
-            LINEAGE_WATCHER_CHECKPOINT_KEY,
-            {"build_id": "b1", "finished_at": _BASE.isoformat()},
-        )
-
-        watcher._verify_checkpoint(self.storage)
-
-        assert ("b1", "t1") in store.calls
-        assert _watermark(self.storage) == _BASE
-
-    def test_verify_checkpoint_not_actually_recorded_gets_recorded(self):
-        self._targets = [_target("b1", "t1", _BASE)]
-        watcher, store = self._make_watcher()
-        # Checkpoint says t1 is done, but the store never actually recorded it
-        # (e.g. a crash between recording and persisting the checkpoint).
-        self.storage.kv_pair_storage.set_value(
-            LINEAGE_WATCHER_CHECKPOINT_KEY,
-            {"build_id": "b1", "finished_at": _BASE.isoformat()},
-        )
-
-        watcher._verify_checkpoint(self.storage)
-
-        assert ("b1", "t1") in store.calls
-        assert _watermark(self.storage) == _BASE
+        value = self.storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+        assert value["build_id"] == "B"
+        assert value["created_time"] == created.isoformat()

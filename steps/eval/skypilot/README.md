@@ -31,14 +31,21 @@ Because a `Dockerfile` is present, this is an image step: `make all` runs
 [Makefile target conventions](../../README.md#makefile-target-conventions).
 
 To promote the step into the repo's committed assets tree
-(`configurations/assets/environments/skypilot/steps/eval/`) and copy its Docker
-build test into `test/steps/eval/skypilot/` so it is runnable from VSCode against
+(`configurations/assets/environments/skypilot/steps/eval/`) and copy its build
+test into `test/steps/eval/skypilot/` so it is runnable from VSCode against
 the published step, run `make publish-step`. Publishing also copies
 [USAGE.md](USAGE.md) to `README.md` beside the published `step.yaml`, so the released
 step ships user-facing docs. See
 [Two test modes](../../README.md#two-test-modes) for how the same test runs both
 against the locally rendered `space/` (Mode 1, `make test`) and against the
 published step (Mode 2, under `test/steps/`).
+
+With the local `Docker` launcher removed, there is **no longer a way to exercise
+the built image locally**: `make test` runs the cluster-agnostic `eval.sh` unit
+tests ([test/test_eval.py](test/test_eval.py)) plus the real-EC2 integration test
+([test/aws/](test/aws/)), and the latter **skips unless AWS credentials are
+present**. Running the image end to end now requires a reachable remote cluster
+(the Skypilot launcher).
 
 Eval-specific notes:
 
@@ -48,57 +55,17 @@ Eval-specific notes:
   `make publish-image` against the placeholder will fail auth — set a real
   registry first. `IMAGE_TAG` defaults to the git short SHA.
 - At `make space` time the image reference
-  `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)` is substituted into **both** launcher
-  blocks — the Skypilot `image_id: "docker:${IMAGE_REF}"` and the Docker
-  launcher's `image` (see below).
-
-### Running locally with no publish (the `Docker` launcher)
-
-The step's `step-template.yaml` also carries a **`Docker`** environment config
-(a `docker` launcher running the same image and `eval.sh`). This lets the image
-be **built and exercised locally with no registry publish**: `make test` renders
-the Space and builds the image locally (`make image`), then a docker build test
-under `test/docker/` (the per-cluster test dir the `Docker` launcher expects) runs
-it against the local Docker daemon. The
-`docker` environment's `pull_policy` is `if-not-present`, so the just-built local
-image is used as-is — no push, no pull, no container-capable cluster needed. Run
-it (with the repo-root `.venv` active) via:
-
-```sh
-make -C steps/eval/skypilot test
-```
-
-> **Running the *committed* Mode-2 docker test — tag coupling.** The Mode-1 flow
-> above always works because `make test` builds the image and renders the Space at
-> the same commit, so their tags agree. The **committed** Mode-2 test
-> (`test/steps/eval/skypilot/docker/`, created by `make publish-step`) instead runs
-> against the **published** `step.yaml` under
-> `configurations/assets/…/steps/eval/`, whose `image`/`image_id` bake in
-> `IMAGE_TAG` (the git short SHA by default) **as of the commit `make publish-step` was
-> last run at**. Because `pull_policy` is `if-not-present`, that test only resolves
-> if a local image at that exact tag exists — otherwise it tries to pull the
-> placeholder `quay.io/your-org` registry and fails. So before running it, rebuild
-> **and** re-publish at your current commit so both sides agree:
->
-> ```sh
-> make -C steps/eval/skypilot image publish-step   # builds gb-step-eval:<HEAD-sha> and re-renders the assets to match
-> ```
->
-> (Then commit the regenerated `step.yaml`.) Pin a stable `IMAGE_TAG` — e.g. `make
-> … image publish-step IMAGE_TAG=local` on both sides — if you would rather the
-> committed assets not drift per commit.
-
-- **Image is required at run time.** On a real remote cluster (the Skypilot
-  launcher) the image must be **published and reachable** — run `make
-  publish-image` (after `podman login`) before submitting such a build. The
-  `Docker` launcher is the exception: it uses the **local** image, so `make
-  image` (done for you by `make test`) is enough — no publish.
+  `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)` is substituted into the Skypilot
+  launcher's `image_id: "docker:${IMAGE_REF}"`.
+- **Image is required at run time.** On a real remote cluster the image must be
+  **published and reachable** — run `make publish-image` (after `podman login`)
+  before submitting a build.
 
 ## Running the AWS test (real EC2)
 
-`make -C steps/eval/skypilot test` runs the whole `test/` tree — the local
-`docker/` test (above) **and** `test/aws/test_skypilot_aws_eval.py`, which runs
-the eval step on a real EC2 node via SkyPilot. Like the [byoc AWS
+`make -C steps/eval/skypilot test` runs the whole `test/` tree, including
+`test/aws/test_skypilot_aws_eval.py`, which runs the eval step on a real EC2
+node via SkyPilot. Like the [byoc AWS
 test](../../byoc/skypilot/README.md#environment-variables-for-the-aws-test) it is
 **extended-suite only** (`@extended_testing_only` + the `skypilot_integration`
 marker) and **self-skips** unless AWS credentials are in the environment, so it
@@ -121,12 +88,35 @@ region must be configured — via the AWS profile / `~/.aws/config`, or
 `AWS_DEFAULT_REGION`. No `HF_TOKEN` is needed: the exemplar fixture uses `env://`
 I/O and downloads nothing.
 
+#### Where the build's AWS creds actually come from (`GB_AWS_*`)
+
+The env vars above are only the **skip gate** — they decide whether the test runs
+on this host. They are **not** how the build authenticates to AWS. The AWS
+`environment.yaml`
+(`configurations/assets/environments/skypilot/aws/environment.yaml`) resolves the
+secret *names* `GB_AWS_ACCESS_KEY_ID` / `GB_AWS_SECRET_ACCESS_KEY` through the
+space **secret manager** and materializes them into a non-default `gb-skypilot`
+profile that SkyPilot then selects:
+
+```yaml
+aws_credentials:
+  - profile: gb-skypilot
+    aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+    aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+cloud_config: { workspaces: { default: { aws: { profile: gb-skypilot } } } }
+```
+
+Selecting an explicit profile **disables the ambient `AWS_*` env-var provider**, so
+provisioning uses the materialized profile, not your shell. Standalone: seed those
+secret names (base64) into `~/.granite.build/space_secrets/`; shared: the
+server-managed secret store supplies them. Full runbook:
+[docs/environments/skypilot-aws.md](../../../docs/environments/skypilot-aws.md).
+
 ### The image must be published first (unlike byoc)
 
 eval bakes its evaluator into a **custom image**, and the EC2 node *pulls* that
 image by the `image_id` (`docker:${IMAGE_REF}`) frozen into the step at `make
-space` time. The `if-not-present` shortcut the `Docker` launcher uses does **not**
-apply on a remote node, so the aws test only passes once the image is pushed to a
+space` time. The aws test only passes once the image is pushed to a
 **public/pullable** registry — the committed default `quay.io/your-org` is a
 placeholder that fails auth. Build + publish at a real registry, then run the
 tests with that same `REGISTRY` so the rendered `image_id` points at the image you
@@ -134,5 +124,5 @@ pushed:
 
 ```sh
 make -C steps/eval/skypilot image publish-image REGISTRY=quay.io/<you>   # build + push (after `podman login`)
-make -C steps/eval/skypilot test REGISTRY=quay.io/<you>                  # renders image_id -> your ref, runs docker + aws tests
+make -C steps/eval/skypilot test REGISTRY=quay.io/<you>                  # renders image_id -> your ref, runs the aws test
 ```

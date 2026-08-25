@@ -18,6 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 from fastapi import HTTPException
+from jinja2 import UndefinedError
 from pydantic import BaseModel
 from requests import HTTPError
 from requests.exceptions import ConnectionError
@@ -25,6 +26,7 @@ from requests.exceptions import ConnectionError
 from gbcli.utils.buildutil import (
     apply_parameters,
     get_yaml_diff,
+    parse_params,
     process_build_validation_response,
 )
 from gbcli.utils.cli_config import get_local_build_cache
@@ -50,6 +52,7 @@ from gbcli.utils.gbconstants import (
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gbserver import (
     cancel_build,
+    continue_build,
     get_build,
     get_build_events,
     get_build_lineage,
@@ -277,6 +280,8 @@ def build_start(
     tags: list[str] = [],
     callback=None,
     validation_type: str = "static",
+    dry_run: bool = False,
+    save_build_file: Optional[str] = None,
 ) -> str:
 
     gbserver_build_update = gb_environment_config().feature_flags[
@@ -313,6 +318,46 @@ def build_start(
         return
 
     ignore_git_global_config()
+
+    # Build/branch name — derived up front because it needs neither auth nor a
+    # resolved space, so the offline --dry-run path below can run without them.
+    if filename:
+        filename_split = os.path.split(filename)[-1]
+        suffix = f".{filename_split.split('.', 1)[-1]}" if "." in filename_split else ""
+        build_name = remove_suffix(filename_split, suffix)
+    else:
+        build_name = os.path.split(os.getcwd())[-1]
+    branch_name = f"{build_name}-{generate_unique_id()}"
+
+    if dry_run:
+        # Offline resolution (issue #278): apply parameters and emit the
+        # executable build.yaml WITHOUT auth, space resolution, validation,
+        # archiving, or submission. Short-circuits before get_user/resolve_space
+        # so it works in CI with no credentials or reachable space.
+        experiment_folder = prepare_build_local_contents(
+            build_file_path, branch_name, filename
+        )
+        try:
+            _, resolved_path = parameters_helper(
+                quiet,
+                parameters_path,
+                build_file_path,
+                experiment_folder,
+                params,
+                callback,
+            )
+        except Exception as e:
+            if callback is not None:
+                callback(callback_event="clear", callback_args={})
+                callback(
+                    callback_event="error",
+                    callback_args={"reason": f"Error applying build parameters: {e}."},
+                )
+            return None
+        resolved_text = Path(resolved_path).read_text(encoding="utf-8")
+        if save_build_file:
+            Path(save_build_file).write_text(resolved_text, encoding="utf-8")
+        return resolved_text
 
     if is_standalone():
         creds = GBCredentials()
@@ -351,14 +396,6 @@ def build_start(
 
     if callback and not quiet:
         callback(callback_event="preparing_contents", callback_args={"steps": 1})
-
-    if filename:
-        filename_split = os.path.split(filename)[-1]
-        suffix = f".{filename_split.split('.', 1)[-1]}" if "." in filename_split else ""
-        build_name = remove_suffix(filename_split, suffix)
-    else:
-        build_name = os.path.split(os.getcwd())[-1]
-    branch_name = f"{build_name}-{generate_unique_id()}"
 
     experiment_folder = prepare_build_local_contents(
         build_file_path, branch_name, filename
@@ -462,6 +499,67 @@ def build_start(
         )
 
     return gbserver_build["build_id"]
+
+
+def build_continue(
+    github_token: str,
+    build_id: str,
+    id_format: Optional[str] = None,
+    callback=None,
+) -> Optional[dict]:
+    """Continue a previously-executed build.
+
+    Unlike build_start there is no local build folder to zip: the server sources
+    the build definition, space, and targets from the prior build. Only the prior
+    build's id (or URL) is needed.
+
+    Returns the server response dict augmented with ``continued_from`` — the
+    resolved uuid of the build that was continued (``build_id`` after any URL is
+    resolved to a uuid), alongside the server's ``build_id`` (new continuation)
+    and ``root_build_id`` (resolved chain root) — or None on a server/connection
+    error. Callers report ``continued_from`` rather than the raw identifier so a
+    passed URL never leaks into uuid-valued output or a uuid-vs-URL comparison.
+    """
+    if id_format == "url":
+        # get_build_id_from_url returns None when the URL matches no build; guard
+        # the deref so it surfaces the error message, not a raw IndexError/TypeError.
+        build_id_from_url = get_build_id_from_url(github_token, build_id, callback)
+        if not build_id_from_url:
+            if callback is not None:
+                callback(
+                    callback_event="error",
+                    callback_args={
+                        "reason": f"No build found for URL {build_id}.",
+                    },
+                )
+            return None
+        build_id = build_id_from_url[0]["uuid"]
+
+    if callback is not None:
+        callback(
+            callback_event="continuing_build",
+            callback_args={"steps": 1, "build_id": build_id},
+        )
+
+    gbserver_build = make_gbserver_call(
+        lambda: continue_build(build_id, github_token, GBSERVER_BUILD_API),
+        callback,
+    )
+
+    if not gbserver_build:
+        return None
+
+    if callback is not None:
+        callback(
+            callback_event="continued_build",
+            callback_args={"steps": 100, "build_id": gbserver_build["build_id"]},
+        )
+
+    # Report the resolved uuid, not the raw argument: build_id is now the uuid even
+    # when a URL was passed, so the CLI can compare it against root_build_id and
+    # emit it in JSON without a URL sneaking in.
+    gbserver_build["continued_from"] = build_id
+    return gbserver_build
 
 
 def build_validate(
@@ -1392,6 +1490,8 @@ def build_describe(
     build_id: Optional[str] = None,
     id_format: Optional[str] = None,
     space: Optional[str] = None,
+    params: Optional[List[str]] = None,
+    parameters_path: Optional[str] = None,
     callback=None,
 ) -> str:
     downloaded_build_file_path = False
@@ -1467,10 +1567,32 @@ def build_describe(
 
     try:
         if raw:
-            with open(build_yaml_path, "r", encoding="utf-8") as f:
-                # build_yaml_dict = yaml.safe_load(f)
-                file_str = f.read()
-            # return yaml.dump(build_yaml_dict, indent=2)
+            file_str = build_yaml_path.read_text(encoding="utf-8")
+            # When parameters are supplied, resolve the parameterized template
+            # through the same engine `gb build start` uses, so `gb` stays the
+            # single source of truth for rendering (issue #278). With no params
+            # this stays a verbatim dump of the (possibly parameterized) file.
+            # Only the local-file path is a template: a server-fetched build_id
+            # is already fully resolved (params were evaluated at submit time),
+            # so re-applying params there is meaningless and, under
+            # StrictUndefined, could spuriously fail on `$${...}`-looking text.
+            if (params or parameters_path) and not build_id:
+                params_file = (
+                    Path(parameters_path)
+                    if parameters_path
+                    else build_yaml_path.parent / BUILD_PARAMETERS_FILE
+                )
+                params_from_file = (
+                    get_params_from_file(str(params_file))
+                    if params_file.is_file()
+                    else {}
+                )
+                params_dict = parse_params(list(params or []), params_from_file)
+                with tempfile.TemporaryDirectory() as scratch:
+                    try:
+                        file_str = apply_parameters(file_str, [], params_dict, scratch)
+                    except UndefinedError as e:
+                        raise ValueError(f"missing parameter: {e.message}") from e
             return file_str
         else:
             targets = describe_build_yaml(

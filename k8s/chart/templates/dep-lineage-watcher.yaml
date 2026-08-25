@@ -14,7 +14,11 @@ metadata:
     'llmbuild/internal': '{{ $lineageWatcherName }}'
 spec:
   # Single replica: the lineage watcher is the single writer of centralized
-  # lineage. Recording is idempotent, but one replica keeps redundant I/O out.
+  # lineage, and that is now a correctness requirement rather than an I/O
+  # optimization. Run ids are random, so recording is NOT idempotent -- the dedup
+  # query is the only thing preventing duplicate runs, and two replicas would
+  # both read "unrecorded" before either wrote. The durable checkpoint in
+  # gb_kv_pairs assumes a single writer for the same reason.
   replicas: {{ .Values.deployments.lineageWatcher.replicas }}
   selector:
     matchLabels:

@@ -330,6 +330,40 @@ cp .env.example .env
 
 `/api/analytics/*` is served by gbserver itself, in-process — the browser only ever talks to port 8080; there's no separate port or process.
 
+### Chat assistant
+
+An in-dashboard assistant (`src/gb_ui_backend/services/chat_agents/`) answers questions about your
+builds, spaces, and artifacts, and can propose navigating to a page or starting/stopping the
+backend. It's a hand-rolled tool-calling loop — not the Claude Agent SDK, and not a "Claude Code"
+integration — that runs against either **the Anthropic Messages API** or **any OpenAI-compatible
+chat-completions API** (RITS, Ollama, self-hosted vLLM, OpenAI itself); both are the same shape, a
+plain model API with function-calling, so nothing about the security story below is
+Anthropic-specific. Provider selection is explicit via `GB_UI_CHAT_PROVIDER`
+(`openai_compatible` | `anthropic`); left unset, it auto-detects, preferring the OpenAI-compatible
+config (the self-hosted-first default) and falling back to Anthropic only if that's all that's
+configured. See `.env.example`.
+
+**The model never acts directly.** It only ever returns text or a tool-call *request*. Every real
+backend interaction runs through a local gbmcp subprocess (`mcp_session.call_tool(...)`), and every
+UI effect — navigation, a rendered confirmation card — is the frontend's own code reacting to a
+normalized event:
+
+- `suggest_navigation` only emits an event that renders a card; the actual navigation happens only
+  if the user clicks it, and only to a route in a static table — the model can't free-type a URL.
+- `build_start`/`gbserver_stop` are described with their real gbmcp schema, but calling them only
+  proposes the action and renders an Approve/Decline card; real execution happens later, outside
+  the model loop, only if the user approves.
+- Every other gbmcp tool is partitioned into exactly one of: executes directly (read-only, plus
+  secret operations that only ever return a shell command — never a real secret value), the
+  propose-then-confirm gate above, or never described to the model at all. A test asserts no
+  known-mutating tool can silently land in the auto-approved bucket.
+
+This is also the mitigation for the one place unsanitized context reaches the model: the page the
+user is currently viewing (including a raw `?id=` query value) is passed along as passive,
+clearly-labeled context. A crafted link's `id` could still reach the model, but since nothing
+mutating is ever auto-approved, that can at most trigger a read-only lookup or a proposal the user
+still has to click through — never a direct mutation.
+
 ### Frontend layout
 
 | Path | Description |

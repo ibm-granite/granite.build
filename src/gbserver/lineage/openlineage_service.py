@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Callable, Dict, List, Optional, Tuple, Type
 
 
 class LineageService(ABC):
@@ -48,6 +48,7 @@ class LineageService(ABC):
         self,
         target_ids: set[str],
         expected_counts: Optional[dict[str, int]] = None,
+        on_query_error: Optional[Callable[[Exception], None]] = None,
     ) -> set[str]:
         """Return the subset of ``target_ids`` not yet recorded in this backend.
 
@@ -103,6 +104,7 @@ class NoopLineageService(LineageService):
         self,
         target_ids: set[str],
         expected_counts: Optional[dict[str, int]] = None,
+        on_query_error: Optional[Callable[[Exception], None]] = None,
     ) -> set[str]:
         return target_ids
 

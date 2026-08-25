@@ -79,6 +79,12 @@ standalone = [
     # `make standalone-venv` both get the MCP server with no extra step. The
     # only deps beyond the analytics overlap are fastmcp + httpx.
     "granite.build[mcp]",
+    # Chat assistant — calls gbmcp's tools on the user's behalf. Ship the
+    # base extra by default alongside analytics/mcp for the same reason; this
+    # covers the OpenAI-compatible provider (RITS, Ollama, ...) out of the
+    # box. Anthropic support is opt-in — see `chat-anthropic` — not bundled
+    # here, so Claude isn't installed unless explicitly requested.
+    "granite.build[chat]",
 ]
 # Tier 2: Third-party open-source — installable from PyPI, testable in GH Actions
 thirdparty = [
@@ -120,6 +126,34 @@ analytics = [
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",
     "aiosqlite>=0.19",
+]
+# Chat assistant (gb_ui_backend's chat_agents package) — a hand-rolled
+# agentic tool-calling loop (services/chat_agents/tool_loop_backend.py) that
+# spawns gbmcp as a sibling console script, so this extra is only useful
+# alongside `mcp` (bundled together via `standalone`). `mcp` here is the
+# standalone MCP client used to talk to gbmcp directly (previously only a
+# transitive dep of claude-agent-sdk; now used directly, which also drops the
+# implicit Node.js/Claude Code CLI subprocess requirement claude-agent-sdk
+# carried). This base extra alone is enough for the OpenAI-compatible
+# provider (RITS, Ollama, ...), which only needs `httpx` (already pulled in
+# by `mcp`/`analytics`) — see `chat-anthropic` below for Claude support.
+chat = [
+    "mcp>=1.0",
+    # search_build_yaml compiles/matches model-chosen regex patterns against
+    # build.yaml content — stdlib re never releases the GIL during a match,
+    # so a catastrophically backtracking pattern would freeze the whole
+    # single-threaded server, not just that one call. The `regex` package's
+    # `timeout=` kwarg is a real, hard bound enforced inside its own
+    # matching loop.
+    "regex",
+]
+# Adds Claude support on top of `chat`, via the official `anthropic` package
+# (not a CLI subprocess). Deliberately NOT bundled into `chat` or
+# `standalone` — Anthropic is an opt-in provider, not the default; installing
+# `chat` alone is enough for RITS/Ollama/any OpenAI-compatible endpoint.
+chat-anthropic = [
+    "granite.build[chat]",
+    "anthropic>=0.40",
 ]
 # All optional dependencies
 all = [

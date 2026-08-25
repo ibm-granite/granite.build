@@ -94,6 +94,7 @@ def execution_status_plain_output(
     targets: List[Any],
     history: Any,
     show_events: bool,
+    show_skipped_targets: bool = False,
 ):
 
     def target_status_label(target_info: Any) -> str:
@@ -107,10 +108,31 @@ def execution_status_plain_output(
             return "⏩"
         return get_status_emoji(target_info["status"])
 
+    # A skipped target was reused from an earlier attempt (retry or continuation):
+    # it ran no steps and produced no artifacts, so hide it by default to keep the
+    # output short. --show-skipped-targets brings them back. Number targets by their
+    # position in the FULL list (captured before filtering) so hiding some does not
+    # renumber the rest — a displayed "Target #N" always matches the build's order.
+    total_target_count = len(targets)
+    target_number = {name: idx + 1 for idx, name in enumerate(targets)}
+    if not show_skipped_targets:
+        targets = {
+            name: info
+            for name, info in targets.items()
+            if not info.get("skipped_for_prerun_target_id")
+        }
+    hidden_skipped_count = total_target_count - len(targets)
+
     targets_overview = [
-        f"\n\tTarget #{index + 1} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"
-        for index, target in enumerate(targets)
+        f"\n\tTarget #{target_number[target]} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"
+        for target in targets
     ]
+    if hidden_skipped_count > 0:
+        targets_overview.append(
+            f"\n\t({hidden_skipped_count} skipped target"
+            f"{'s' if hidden_skipped_count != 1 else ''} hidden; "
+            "use --show-skipped-targets to show)\n"
+        )
     source_pr = f"<{details['source_pr']}>" if details["source_pr"] else "-"
     retry_of = details.get("retry_of_build_ids") or []
     retried_by = details.get("retried_by_build_ids") or []
@@ -137,7 +159,7 @@ def execution_status_plain_output(
     """
 
     target_outputs = []
-    for index, target in enumerate(targets):
+    for target in targets:
         input_artifacts_table = [
             [i["artifact_id"], i["uri"]] for i in targets[target]["input_artifacts"]
         ]
@@ -207,7 +229,7 @@ def execution_status_plain_output(
         target_output = f"""
 ---
 
-## Target #{index + 1} {target}
+## Target #{target_number[target]} {target}
 
 {target_status_emoji(targets[target])} **Status**: {status_line}{build_id_line}
 {sections}
@@ -493,6 +515,17 @@ def init(
 )
 @click.option("--skip-validation", is_flag=True, help="Skip build contents validation.")
 @click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Resolve parameters and output the executable build.yaml WITHOUT submitting (offline in standalone; no auth/space needed). Without --save-build-file the resolved build.yaml is written verbatim to stdout (pipe-friendly); status messages go to stderr.",
+)
+@click.option(
+    "--save-build-file",
+    type=click.Path(dir_okay=False, writable=True),
+    help="With --dry-run, write the resolved build.yaml here instead of stdout (a '✅ wrote ...' note goes to stderr).",
+)
+@click.option(
     "--parameters-path",
     type=click.Path(exists=True, readable=True, dir_okay=False),
     help="Path to parameters.yaml file.",
@@ -527,6 +560,8 @@ def start(
     tag: tuple,
     tags: str,
     skip_validation,
+    dry_run,
+    save_build_file,
     parameters_path,
     verbose_validation,
     format,
@@ -561,6 +596,33 @@ def start(
                     sys.exit(1)  # Exit with a non-zero status
             case _:
                 pass
+
+    if dry_run:
+        # Offline: resolve parameters and emit the executable build.yaml without
+        # contacting the server (no version check, banner, auth, or space needed).
+        build_client = GBClient.Build(get_user_token())
+        resolved = build_client.build_start(
+            True,
+            filename,
+            space,
+            param,
+            skip_validation,
+            parameters_path,
+            targets,
+            description,
+            [],
+            callback=echo_callback,
+            validation_type=validation_type,
+            dry_run=True,
+            save_build_file=save_build_file,
+        )
+        if resolved is None:
+            ctx.exit(1)
+        if save_build_file:
+            click.echo(f"✅ wrote {save_build_file}", err=True)
+        else:
+            click.echo(resolved, nl=False)
+        return
 
     if not skip_version_check and not is_standalone():
         try:
@@ -1115,6 +1177,111 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
         ctx.exit(1)  # Exit with a non-zero status
 
 
+@cli.command("continue")
+@click.pass_context
+@click.argument("build_id", required=True)
+@click.option(
+    "--format",
+    "format",
+    default="simple",
+    type=click.Choice(["simple", "json"], case_sensitive=True),
+    help="Output format: simple (default), json",
+)
+@common_options
+def continue_build_cmd(ctx, build_id, format, skip_version_check, quiet):
+    """
+    Continue a previously-executed build
+
+    Provide build ID or URL. A fresh build runner re-runs the build, skipping
+    targets that already succeeded and re-running the rest. The build must be
+    finished (not currently running). No local build folder is required — the
+    build definition is sourced from the previous build.
+    """
+    if format == "json":
+        quiet = True
+    if not skip_version_check:
+        try:
+            outdated_version = check_current_and_latest_versions()
+        except Exception as e:
+            click.echo(f"❌ {str(e)}.", err=True)
+            ctx.exit(1)  # Exit with a non-zero status
+        if outdated_version:
+            click.echo(outdated_version, err=True)
+            ctx.exit(1)  # Exit with a non-zero status
+
+    id_format = parse_build_identifier(build_id)
+    if id_format not in ["uuid", "url"]:
+        click.echo(
+            f"❌ Build identifier formatted incorrectly. Please try again with valid build ID or URL.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if id_format == "uuid" and len(build_id) < 36:
+        click.echo(
+            f"❌ Build ID formatted incorrectly. Please try again with a valid build ID.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if not quiet:
+        click.echo(f"🏁 {PROJECT_NAME} build continue")
+
+    build_client = GBClient.Build(get_user_token())
+
+    def echo_callback(callback_event: str, callback_args: Dict):
+        match callback_event:
+            case "error":
+                reason = callback_args.get("reason", "")
+                click.echo(
+                    f"\n❌ Build can't be continued at this moment... Reason: {reason}",
+                    err=True,
+                )
+                sys.exit(1)  # Exit with a non-zero status
+            case _:
+                pass
+
+    try:
+        result = build_client.build_continue(
+            build_id, id_format, callback=echo_callback
+        )
+
+        if result:
+            new_build_id = result["build_id"]
+            # The server resolves the chain root from whichever member was passed.
+            root_build_id = result.get("root_build_id")
+            # Resolved uuid of the continued build (service resolves any URL). Fall
+            # back to None, never the raw build_id (which may be a URL), so a URL
+            # can't leak into the uuid-only JSON/comparison.
+            continued_from = result.get("continued_from")
+            details_page = f"{WEB_UI_URL}/builds/{new_build_id}"
+            if not quiet:
+                continued_label = continued_from or build_id
+                click.echo(
+                    f"✅ Continuing build {continued_label} as new build: {details_page}"
+                )
+                if root_build_id and continued_from and root_build_id != continued_from:
+                    click.echo(f"   (continues build chain rooted at {root_build_id})")
+                click.echo(f"""To get the build status of the whole chain:
+```
+gb build status {new_build_id}
+```""")
+            if format == "json":
+                click.echo(
+                    json.dumps(
+                        {
+                            "build_id": new_build_id,
+                            "root_build_id": root_build_id,
+                            "continued_from": continued_from,
+                        }
+                    )
+                )
+
+    except Exception as e:
+        click.echo(str_exc_chain(e), err=True)
+        ctx.exit(1)  # Exit with a non-zero status
+
+
 @cli.command()
 @pass_context_and_reject_standalone("build lineage")
 @click.argument("build_id", required=True)
@@ -1659,6 +1826,14 @@ def list(
     default=True,
     help="Follow the build retry chain and show all targets across attempts (default: follow).",
 )
+@click.option(
+    "--show-skipped-targets",
+    is_flag=True,
+    default=False,
+    help="Show targets that were skipped because they already succeeded in an "
+    "earlier attempt (retry or continuation). Hidden by default since they run "
+    "no steps and produce no artifacts.",
+)
 @common_options
 def status(
     ctx,
@@ -1667,6 +1842,7 @@ def status(
     show_events,
     fetch_pr,
     follow_retries,
+    show_skipped_targets,
     skip_version_check,
     quiet,
 ):
@@ -1839,7 +2015,7 @@ def status(
         if details:
             if format == "plain":
                 status = execution_status_plain_output(
-                    details, targets, history, show_events
+                    details, targets, history, show_events, show_skipped_targets
                 )
             else:
                 if error:
@@ -2241,9 +2417,37 @@ def log(
     default=False,
     help="Output build file contents",
 )
+@click.option(
+    "--param",
+    multiple=True,
+    help="Build run parameter ('param_name=param_value'). Use this option again to provide multiple parameters.",
+)
+@click.option(
+    "--parameters-path",
+    type=click.Path(exists=True, readable=True, dir_okay=False),
+    help="Path to parameters.yaml file.",
+)
 @common_options
-def describe(ctx, build_id, filename, format, space, raw, skip_version_check, quiet):
-    """Describe targets steps, description of a build"""
+def describe(
+    ctx,
+    build_id,
+    filename,
+    format,
+    space,
+    raw,
+    param,
+    parameters_path,
+    skip_version_check,
+    quiet,
+):
+    """Describe targets steps, description of a build.
+
+    With --raw, prints the build file. Supply --param/--parameters-path to
+    resolve a parameterized ($${...}) build.yaml through the same engine
+    `gb build start` uses, e.g.:
+
+        gb build describe -f template/build.yaml --raw --param ENV=skypilot/aws
+    """
     if not skip_version_check:
         try:
             outdated_version = check_current_and_latest_versions()
@@ -2269,6 +2473,15 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
     if filename and build_id:
         click.echo(
             f"❌ build describe can not be run with both a build_id and a filename. Please select one of the two options",
+            err=True,
+        )
+        sys.exit(1)  # Exit with a non-zero status
+
+    if build_id and (param or parameters_path):
+        click.echo(
+            "❌ --param/--parameters-path cannot be combined with a build_id: a "
+            "stored build is already fully resolved (parameters were evaluated at "
+            "submit time). Pass a local -f build.yaml to render a parameterized template.",
             err=True,
         )
         sys.exit(1)  # Exit with a non-zero status
@@ -2329,6 +2542,8 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
                 build_id,
                 id_format,
                 space,
+                params=param,
+                parameters_path=parameters_path,
                 callback=echo_callback,
             )
             if build and build["build"]:
@@ -2430,6 +2645,8 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
                 build_id,
                 id_format,
                 space,
+                params=param,
+                parameters_path=parameters_path,
                 callback=echo_callback,
             )
             click.echo(yaml_str)
@@ -2651,8 +2868,24 @@ def diff(ctx, build_id_1, build_id_2, space, format, skip_version_check, quiet):
     default=False,
     help="Fetch build PR events.",
 )
+@click.option(
+    "--show-skipped-targets",
+    is_flag=True,
+    default=False,
+    help="Show targets that were skipped because they already succeeded in an "
+    "earlier attempt (retry or continuation). Hidden by default since they run "
+    "no steps and produce no artifacts.",
+)
 @common_options
-def monitor(ctx, build_id, show_events, fetch_pr, skip_version_check, quiet):
+def monitor(
+    ctx,
+    build_id,
+    show_events,
+    fetch_pr,
+    show_skipped_targets,
+    skip_version_check,
+    quiet,
+):
     """
     Monitor a build execution
 
@@ -2763,6 +2996,7 @@ def monitor(ctx, build_id, show_events, fetch_pr, skip_version_check, quiet):
                 targets,
                 history,
                 show_events,
+                show_skipped_targets,
             )
 
             click.echo(f"{erase_sequence}{monitor_obj}")

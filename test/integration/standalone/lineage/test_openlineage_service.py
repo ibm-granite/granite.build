@@ -176,7 +176,9 @@ class MockLineageService(LineageService):
             "truncated": max_depth <= 1,
         }
 
-    def filter_unrecorded(self, target_ids: set[str], expected_counts=None) -> set[str]:
+    def filter_unrecorded(
+        self, target_ids: set[str], expected_counts=None, on_query_error=None
+    ) -> set[str]:
         # Mirror the real service: count the distinct runs carrying each
         # ``target_id=<uuid>`` tag on emitted events, then treat a candidate as
         # recorded only when its run count meets its expected count. A ``None``

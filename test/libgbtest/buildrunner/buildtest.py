@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Self, Union
 
 import pytest
 import yaml
+from libgbtest.buildrunner.placeholder import PLACEHOLDER
 from libgbtest.buildrunner.utils import (
     ExceptionRaisingThread,
     cluster_logout,
@@ -119,11 +120,36 @@ class ExpectedTarget(BaseModel):
     """Number of input artifacts to be recorded in the recorded target record."""
     output_artifact_count: int
     """Number of output artifacts to be recorded in the recorded target record."""
-    jobstats_count: int
+    jobstats_count: int = -1
+    """Expected jobstats records. Defaults to -1 (skip): jobstats are not asserted
+    at run time yet (lineage verification is a no-op under async lineage), so the
+    `gbtest render` skeleton does not force a value for it."""
     expected_steps: list[ExpectedStep] = []
     """Optional per-step metadata/config assertions checked against the persisted
     StoredStepRun rows. Empty (default) means not checked, so existing fixtures are
     unaffected."""
+
+    @field_validator(
+        "step_count",
+        "input_artifact_count",
+        "output_artifact_count",
+        mode="before",
+    )
+    @classmethod
+    def _reject_placeholder(cls, v, info):
+        """Fail loudly if a `gbtest render` skeleton placeholder was left unreplaced.
+
+        The generator emits the shared ``PLACEHOLDER`` sentinel for values it
+        cannot derive; both modules import it from
+        ``libgbtest.buildrunner.placeholder`` so the token has a single source of
+        truth.
+        """
+        if isinstance(v, str) and v.strip() == PLACEHOLDER:
+            raise ValueError(
+                f"unreplaced FIXME placeholder for '{info.field_name}': edit the "
+                f"`gbtest render` skeleton before running it"
+            )
+        return v
 
 
 class BuildTestSpecification(BaseModel):
@@ -188,7 +214,9 @@ class BuildTestSpecification(BaseModel):
         return v
 
     @classmethod
-    def from_yaml(cls, path: Path) -> "BuildTestSpecification":
+    def from_yaml(
+        cls, path: Path, build_yaml_override: Optional[str] = None
+    ) -> "BuildTestSpecification":
         """Construct a BuildTestSpecification from a YAML file.
 
         Path-typed fields are resolved relative to the YAML file's directory so a
@@ -217,7 +245,12 @@ class BuildTestSpecification(BaseModel):
         assert isinstance(data, dict), f"expected a dict, actual: {data}"
 
         yaml_dir = path.parent
-        data["build_yaml"] = _resolve_build_yaml(data.get("build_yaml"), yaml_dir)
+        if build_yaml_override is not None:
+            # An explicit `-f` override resolves against CWD (where gbtest was
+            # run), not the buildtest.yaml dir.
+            data["build_yaml"] = str(Path(build_yaml_override).resolve())
+        else:
+            data["build_yaml"] = _resolve_build_yaml(data.get("build_yaml"), yaml_dir)
         if data.get("space_uri") is not None:
             data["space_uri"] = _resolve_space_uri(data["space_uri"], yaml_dir)
         return cls.model_validate(data)
@@ -1479,7 +1512,8 @@ class AbstractYamlBuildRunnerTest(AbstractBuildRunnerTest):
         ``_get_yaml_spec_dir``.
         """
         return BuildTestSpecification.from_yaml(
-            self._get_yaml_spec_dir() / "buildtest.yaml"
+            self._get_yaml_spec_dir() / "buildtest.yaml",
+            build_yaml_override=getattr(self, "_build_yaml_override", None),
         )
 
     def _run_yaml_spec(self: Self, test_key: str, test_cancel: bool) -> None:

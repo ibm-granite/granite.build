@@ -15,6 +15,7 @@
     "jszip": "^3.10.1",
     "react-markdown": "^10.1.0",
     "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
     "yaml": "^2.9.0"
   },
   "peerDependencies": {

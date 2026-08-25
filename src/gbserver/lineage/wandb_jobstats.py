@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN, is_public_github
 from gbserver.lineage.jobstats import ILineageStore
@@ -34,6 +34,7 @@ from gbserver.types.constants import (
 )
 from gbserver.types.status import Status
 from gbserver.utils.redaction import redact_sensitive, scrub_url_credentials
+from gbserver.utils.utils import get_uuid
 
 _LINEAGE_REPO_ORG = "ibm-granite" if is_public_github() else "granite-dot-build"
 LINEAGE_PRODUCER_URL = f"https://{DEFAULT_GH_DOMAIN}/{_LINEAGE_REPO_ORG}/granite.build"
@@ -301,7 +302,7 @@ class WandBLineageStore(ILineageStore):
 
         # NOTE: the number of events emitted here (one per output artifact across
         # all output-artifact lists, or one "no-output" event below) must stay in
-        # lockstep with lineage_reconciler._expected_run_count, which derives the
+        # lockstep with lineage_reconciler.expected_run_count, which derives the
         # same count from the target in memory to detect partial records.
         for (
             target_artifact_name,
@@ -335,10 +336,47 @@ class WandBLineageStore(ILineageStore):
                 # a single resumed run. Keeps counts aligned with the number
                 # of output artifacts. The job_id in job_details still points
                 # back to the logical target (targetrun.uuid).
-                job_id = base_event["run"]["facets"]["job_details"]["job_id"]
+                #
+                # The id is a fresh random uuid, not derived from the target and
+                # output uuids. Dedup is therefore carried entirely by the
+                # target_id tag in run.facets.tags (see LineageService.
+                # filter_unrecorded), which is why that tag must be present on
+                # EVERY emitted event: a run without it is invisible to the
+                # dedup query, cannot be counted toward expected_run_count, and
+                # is unreclaimable -- no later scan can find it or replace it.
+                #
+                # Random is REQUIRED here, not incidental. Deriving the id from
+                # the target/output (the scheme this replaced) means a run
+                # DELETED in wandb can never be re-created: wandb refuses a
+                # deleted run's id, and a derived id recomputes to that same
+                # tombstoned value on every later scan, so the target becomes
+                # permanently unrecordable. That happened with intentional
+                # deletions; see commit 5824ae99 and the extended note in
+                # WandBLineageService.filter_unrecorded, which also explains the
+                # partial-record trade-off this buys and why it is accepted.
+                #
+                # Tag the run with the output artifact it represents. base_event
+                # cannot carry this: its tags are shared by every event of the
+                # target, while output_uuid identifies just this one. Run ids are
+                # random and carry no output information, so without this tag the
+                # only way to find the run for a given output is to fetch the
+                # target's runs and inspect their outputs facet; with it the
+                # lookup is a tag filter like the target_id ones above.
+                #
+                # Additive only: it does not affect dedup. filter_unrecorded
+                # matches on "target_id=" tags and skips every other key, and
+                # tags serialize generically as "k=v"
+                # (WandBLineageService._process_event), so nothing else changes.
                 event["run"] = {
                     **base_event["run"],
-                    "runId": f"{job_id}-{output_uuid}",
+                    "runId": get_uuid(),
+                    "facets": {
+                        **base_event["run"]["facets"],
+                        "tags": {
+                            **base_event["run"]["facets"]["tags"],
+                            "output_id": output_uuid,
+                        },
+                    },
                 }
                 _add_jobstats_mirror_fields(event)
                 target_events.append(event)
@@ -356,6 +394,13 @@ class WandBLineageStore(ILineageStore):
                 **base_event,
                 "inputs": inputs,
                 "outputs": [],
+                # Explicit random runId: inheriting base_event's would reuse
+                # targetrun.uuid, the deterministic id this design replaced, and
+                # a re-record would silently resume that one run instead of
+                # writing a new one. The target_id tag comes along in
+                # base_event["run"]["facets"]["tags"], keeping this event
+                # dedupable like the per-output ones.
+                "run": {**base_event["run"], "runId": get_uuid()},
             }
             _add_jobstats_mirror_fields(event)
             events_list.append(event)
@@ -500,6 +545,7 @@ class WandBLineageStore(ILineageStore):
         self,
         target_ids: set[str],
         expected_counts: Optional[dict[str, int]] = None,
+        on_query_error: Optional[Callable[[Exception], None]] = None,
     ) -> set[str]:
         # Drop candidates whose "fully recorded" verdict is still within its TTL,
         # so a steady-state scan that re-selects the same target does not re-ask
@@ -520,25 +566,69 @@ class WandBLineageStore(ILineageStore):
             tid for tid in target_ids if (tid, counts.get(tid)) in self._recorded_until
         }
         to_check = target_ids - cached_recorded
+        if cached_recorded:
+            # Debug, not info: in steady state this fires every monitoring
+            # interval with the same targets, which is the cache working as
+            # intended rather than an event worth a line in the default log.
+            logger.debug(
+                "Skipping wandb dedup query for %d target(s) already known "
+                "recorded (cached): %s",
+                len(cached_recorded),
+                sorted(cached_recorded),
+            )
         if not to_check:
             return set()
 
         # Delegate to the service, which checks the candidates against wandb run
         # metadata. ``expected_counts`` lets it require a *full* set of runs per
         # target rather than mere presence (see ILineageStore.filter_unrecorded).
-        # Never raises: returns the candidates unchanged on failure so the caller
-        # re-records them (a harmless idempotent no-op).
-        unrecorded = self._service.filter_unrecorded(to_check, expected_counts)
+        # Never raises: it fails CLOSED, returning an empty set and reporting the
+        # error through ``on_query_error``.
+        #
+        # The callback is wrapped rather than merely forwarded, because this layer
+        # must know whether the query was answered before it caches anything. A
+        # failed query now returns an EMPTY set, which is indistinguishable by
+        # value from "every candidate is already recorded" -- and caching that
+        # would turn one wandb outage into a TTL-long window in which real targets
+        # are skipped as recorded. The flag is the only thing separating the two.
+        query_failed = False
 
-        # Cache only the positive verdicts, and only for targets we actually
-        # asked about. A failed query returns its candidates unchanged, so those
-        # land in `unrecorded` and are never cached — a wandb outage cannot be
-        # mistaken for "recorded". An unrecorded target is likewise not cached:
-        # its verdict is expected to change as soon as recording succeeds, and a
-        # stale negative would be re-queried anyway.
+        def _note_failure(exc: Exception) -> None:
+            nonlocal query_failed
+            query_failed = True
+            if on_query_error is not None:
+                on_query_error(exc)
+
+        unrecorded = self._service.filter_unrecorded(
+            to_check, expected_counts, on_query_error=_note_failure
+        )
+
+        if query_failed:
+            # Cache nothing: there is no verdict to cache. Returning the empty set
+            # the service produced keeps this fail-closed -- the caller is expected
+            # to abort the pass (it heard about the failure through on_query_error)
+            # and retry, rather than read "nothing to record" as success.
+            return unrecorded
+
+        # Cache only the positive verdicts, and only for targets we actually asked
+        # about. An unrecorded target is not cached: its verdict is expected to
+        # change as soon as recording succeeds, and a stale negative would be
+        # re-queried anyway.
         deadline = now + _RECORDED_CACHE_TTL_SECONDS
-        for tid in to_check - unrecorded:
+        newly_recorded = to_check - unrecorded
+        for tid in newly_recorded:
             self._recorded_until[(tid, counts.get(tid))] = deadline
+        if newly_recorded:
+            # Info: this is the transition -- wandb was asked and answered "already
+            # recorded", and the verdict is now cached for the TTL. Once per target
+            # per TTL, not once per scan.
+            logger.info(
+                "wandb already holds lineage for %d target(s); caching the "
+                "verdict for %ds: %s",
+                len(newly_recorded),
+                _RECORDED_CACHE_TTL_SECONDS,
+                sorted(newly_recorded),
+            )
         return unrecorded
 
     def _prune_recorded_cache(self, now: float) -> None:

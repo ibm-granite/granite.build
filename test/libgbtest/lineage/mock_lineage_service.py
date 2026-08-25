@@ -47,7 +47,10 @@ class MockLineageService(LineageService):
         return total
 
     def filter_unrecorded(
-        self, target_ids: set, expected_counts: Optional[Dict[str, int]] = None
+        self,
+        target_ids: set,
+        expected_counts: Optional[Dict[str, int]] = None,
+        on_query_error=None,
     ) -> set:
         # Mirror the real service: count the distinct runs carrying each
         # ``target_id=<uuid>`` tag (emitted events are the in-memory stand-in for

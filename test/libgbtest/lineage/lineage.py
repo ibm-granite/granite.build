@@ -9,7 +9,7 @@ from libgbtest.storage.target_storage import TargetStorageTestSupport
 from libgbtest.utils import AbstractSingletonStorageUsingTest
 
 from gbcommon.uri.lh import LhURI
-from gbserver.lineage.lineage_reconciler import _expected_run_count
+from gbserver.lineage.lineage_reconciler import expected_run_count
 from gbserver.storage.singleton_storage import get_storage_factory
 
 
@@ -277,10 +277,10 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         assert events[0].get("inputs", []) == []
         assert events[0].get("outputs", []) == []
         # The reconciler's in-memory count must match what the builder emits.
-        assert _expected_run_count(targetrun) == len(events)
+        assert expected_run_count(targetrun) == len(events)
 
     def test_expected_run_count_matches_events_built(self):
-        """``_expected_run_count`` must equal the events the builder emits.
+        """``expected_run_count`` must equal the events the builder emits.
 
         The reconciler derives a target's expected run count from the in-memory
         ``StoredTargetRun`` (to avoid a storage read) while the sink emits one run
@@ -318,8 +318,185 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
             self.storage, targetrun, build
         )
 
-        assert _expected_run_count(targetrun) == 3
-        assert _expected_run_count(targetrun) == len(events)
+        assert expected_run_count(targetrun) == 3
+        assert expected_run_count(targetrun) == len(events)
+
+    def test_every_emitted_event_carries_the_target_id_tag(self):
+        """Every event must carry ``target_id``: it is the run's only identity.
+
+        Run ids are random uuids now, so nothing about a run points back to its
+        target except this tag. An event emitted without it produces a run that
+        ``filter_unrecorded`` cannot see, cannot count toward the expected run
+        count, and cannot reclaim -- the target is re-recorded and the untagged run
+        is orphaned in the sink forever. Checked across *both* emission branches
+        (one event per output artifact, and the single no-output event), because the
+        no-output branch inherits its run dict from base_event and is the easy one
+        to break.
+        """
+        build_storage = self.storage.build_storage
+        target_storage = self.storage.target_storage
+        artifact_registry = self.storage.artifact_registry
+
+        tsts, bsts, ssts, asts = get_test_support()
+
+        build = bsts._get_test_item(0)
+        build_storage.add(build)
+
+        out0 = asts._get_test_item(0)
+        out1 = asts._get_test_item(1)
+        for a in (out0, out1):
+            artifact_registry.add(a)
+
+        with_outputs = tsts._get_test_item(0)
+        with_outputs.build_id = build.uuid
+        with_outputs.input_artifacts = {}
+        with_outputs.output_artifacts = {"out0": [out0.uuid, out1.uuid]}
+        target_storage.add(with_outputs)
+
+        without_outputs = tsts._get_test_item(1)
+        without_outputs.build_id = build.uuid
+        without_outputs.input_artifacts = {}
+        without_outputs.output_artifacts = {}
+        target_storage.add(without_outputs)
+
+        lineage_storage = self._get_tested_lineage_storage()
+        for targetrun in (with_outputs, without_outputs):
+            events, _ = lineage_storage.create_jobstats_for_target(
+                self.storage, targetrun, build
+            )
+            assert events, f"no events built for target {targetrun.uuid}"
+            for event in events:
+                tags = event["run"]["facets"]["tags"]
+                assert tags.get("target_id") == targetrun.uuid, (
+                    f"an event for target {targetrun.uuid} lost its target_id tag; "
+                    "the run it creates would be unreclaimable"
+                )
+                assert tags.get("build_id") == build.uuid
+
+    def test_run_ids_are_random_per_recording(self):
+        """Ids must not be derived from the target, and must not repeat.
+
+        Derived ids were what made re-recording idempotent; they were replaced by
+        random ones, so this pins the property the sink now relies on. Two things
+        matter: ids are unique *within* one recording (otherwise two events collapse
+        into one run) and differ *across* recordings (a derived id would silently
+        resume the earlier run instead of writing a new one). Covers the no-output
+        branch too, since it inherits its run dict from base_event.
+        """
+        build_storage = self.storage.build_storage
+        target_storage = self.storage.target_storage
+        artifact_registry = self.storage.artifact_registry
+
+        tsts, bsts, ssts, asts = get_test_support()
+
+        build = bsts._get_test_item(0)
+        build_storage.add(build)
+
+        out0 = asts._get_test_item(0)
+        out1 = asts._get_test_item(1)
+        for a in (out0, out1):
+            artifact_registry.add(a)
+
+        with_outputs = tsts._get_test_item(0)
+        with_outputs.build_id = build.uuid
+        with_outputs.input_artifacts = {}
+        with_outputs.output_artifacts = {"out0": [out0.uuid, out1.uuid]}
+        target_storage.add(with_outputs)
+
+        without_outputs = tsts._get_test_item(1)
+        without_outputs.build_id = build.uuid
+        without_outputs.input_artifacts = {}
+        without_outputs.output_artifacts = {}
+        target_storage.add(without_outputs)
+
+        lineage_storage = self._get_tested_lineage_storage()
+        for targetrun in (with_outputs, without_outputs):
+            first, _ = lineage_storage.create_jobstats_for_target(
+                self.storage, targetrun, build
+            )
+            second, _ = lineage_storage.create_jobstats_for_target(
+                self.storage, targetrun, build
+            )
+            first_ids = [e["run"]["runId"] for e in first]
+            second_ids = [e["run"]["runId"] for e in second]
+
+            assert len(set(first_ids)) == len(first_ids), (
+                "two events in one recording shared a run id; their history rows "
+                "would collapse into a single run"
+            )
+            assert not set(first_ids) & set(second_ids), (
+                f"target {targetrun.uuid} reused a run id across recordings; a "
+                "re-record would resume the existing run instead of writing a new one"
+            )
+            # And specifically not the old derived form.
+            assert targetrun.uuid not in first_ids
+
+    def test_output_events_carry_their_output_id_tag(self):
+        """Each per-output event is tagged with the output artifact it represents.
+
+        Run ids are random and carry no output information, so this tag is the
+        only way to find the run for a given output by tag filter. Two things are
+        pinned: the tag matches the specific output (not shared across a target's
+        events, which is what would happen if it were set on base_event), and the
+        target_id/build_id tags still come along, since the per-output event now
+        rebuilds the tags dict rather than inheriting it wholesale.
+
+        The no-output event has no output to name and must NOT carry the tag --
+        an empty or bogus value there would make it look like a run for some
+        output.
+        """
+        build_storage = self.storage.build_storage
+        target_storage = self.storage.target_storage
+        artifact_registry = self.storage.artifact_registry
+
+        tsts, bsts, ssts, asts = get_test_support()
+
+        build = bsts._get_test_item(0)
+        build_storage.add(build)
+
+        out0 = asts._get_test_item(0)
+        out1 = asts._get_test_item(1)
+        for a in (out0, out1):
+            artifact_registry.add(a)
+
+        with_outputs = tsts._get_test_item(0)
+        with_outputs.build_id = build.uuid
+        with_outputs.input_artifacts = {}
+        with_outputs.output_artifacts = {"out0": [out0.uuid, out1.uuid]}
+        target_storage.add(with_outputs)
+
+        without_outputs = tsts._get_test_item(1)
+        without_outputs.build_id = build.uuid
+        without_outputs.input_artifacts = {}
+        without_outputs.output_artifacts = {}
+        target_storage.add(without_outputs)
+
+        lineage_storage = self._get_tested_lineage_storage()
+
+        events, _ = lineage_storage.create_jobstats_for_target(
+            self.storage, with_outputs, build
+        )
+        assert len(events) == 2, "expected one event per output artifact"
+        tagged = [e["run"]["facets"]["tags"].get("output_id") for e in events]
+        assert tagged == [out0.uuid, out1.uuid], (
+            f"per-output events carried output_id tags {tagged}, expected one "
+            f"event per output in order; a shared or missing value means the tag "
+            "cannot identify which run belongs to which output"
+        )
+        # The dedup tags must survive the rebuilt tags dict.
+        for event in events:
+            tags = event["run"]["facets"]["tags"]
+            assert tags.get("target_id") == with_outputs.uuid
+            assert tags.get("build_id") == build.uuid
+
+        no_output_events, _ = lineage_storage.create_jobstats_for_target(
+            self.storage, without_outputs, build
+        )
+        assert len(no_output_events) == 1
+        assert "output_id" not in no_output_events[0]["run"]["facets"]["tags"], (
+            "the no-output event has no output artifact to name, so tagging it "
+            "with an output_id would misrepresent it as a run for one"
+        )
 
     def test_filter_unrecorded_requires_full_run_count(self):
         """A partially-recorded target stays unrecorded until all its runs exist.
