@@ -104,7 +104,14 @@ class BuildJobStatsResponse(BaseModel):
 
 @lineage_api.get("/build/{build_id}")
 def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse:
-    """Get JobStats for all targets in a build."""
+    """Get JobStats for all targets in a build.
+
+    Every target of the build gets an entry, but a target with neither input nor
+    output artifacts contributes an empty dict: it has no lineage events to
+    report. This endpoint reaches ``create_jobstats_for_target`` directly, without
+    going through ``select_recordable_targets``, so the builder's own
+    artifact-less check is what produces that -- not a filter here.
+    """
     storage = get_admin_storage()
 
     from gbserver.lineage.jobstats import get_lineage_store
@@ -139,7 +146,11 @@ def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse
 
 @lineage_api.get("/target/{target_id}")
 def get_target_jobstats(request: Request, target_id: str) -> TargetJobStatsResponse:
-    """Get JobStats for a target run, grouped by output artifact name."""
+    """Get JobStats for a target run, grouped by output artifact name.
+
+    ``jobstats`` is empty for a target with neither input nor output artifacts --
+    it has no lineage events. See ``get_build_jobstats``.
+    """
     storage = get_admin_storage()
 
     # Get the target run

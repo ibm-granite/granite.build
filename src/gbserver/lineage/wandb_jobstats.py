@@ -390,10 +390,22 @@ class WandBLineageStore(ILineageStore):
         # all: the standalone UI reads target nodes straight from admin storage
         # regardless of artifacts, so a wandb run is no longer needed to make a
         # fully artifact-less target appear as a node.
-        # select_recordable_targets in lineage_reconciler excludes fully
-        # artifact-less targets before this function is ever called, so the len
-        # check below is a defensive no-op guard, not the primary gate.
-        if len(targetrun.output_artifacts) == 0 and len(inputs) > 0:
+        # The condition below must stay identical to the skip in
+        # select_recordable_targets (lineage_reconciler) and to the branch in
+        # expected_run_count. If the selector keeps a target that this branch
+        # then declines to emit for, the target is reported unrecorded on every
+        # scan and -- since run ids are random -- each scan writes a fresh
+        # duplicate run set while pinning the checkpoint forever.
+        #
+        # Hence the *raw* dicts, not `inputs` and not the output_artifacts keys:
+        # `output_artifacts={"model": []}` has a key but no artifact, so the
+        # per-output loop above emitted nothing and this branch must cover it;
+        # and `inputs` is post-filter (only uuids that resolve in
+        # artifact_registry as an ArtifactRegistration), so an inputs-only target
+        # whose input rows were pruned would emit nothing at all if gated on it.
+        # The selector is not the primary gate either -- api/lineage.py reaches
+        # this builder directly, without consulting it.
+        if not any(targetrun.output_artifacts.values()) and targetrun.input_artifacts:
             event = {
                 **base_event,
                 "inputs": inputs,

@@ -456,7 +456,17 @@ def select_recordable_targets(
     artifacts (see ``__build_target_records`` in ``api/builds.py``), so wandb no
     longer needs to carry a run for a fully artifact-less target just to make it
     appear as a node. A target with only inputs, or only outputs, is still
-    recorded -- it still has real lineage (an edge) to represent.
+    recorded -- it still has real lineage (an edge) to represent. An output-artifact
+    name mapped to an empty list does not count as an output, which is why the
+    check reads the dict's *values*; ``_build_events_for_target`` emits nothing for
+    such a name, and a selector that kept the target would leave it permanently
+    unconfirmable.
+
+    A target skipped for a prerun match is exempt from that skip: it records the
+    *original* target's artifacts (see ``WandBJobStats.create_jobstats_for_target``,
+    which swaps in the original before building events), so its own empty
+    ``output_artifacts`` says nothing about whether it has lineage. Same reasoning
+    as the ``expected_run_count`` exemption in ``reconcile_build``.
 
     Args:
         storage: Admin storage to read targets from.
@@ -466,6 +476,7 @@ def select_recordable_targets(
         The build's recordable target runs, newest-finished first.
     """
     selected: list[StoredTargetRun] = []
+    artifact_less = 0
     page_index = 0
     while True:
         page = _successful_targets_page(storage, page_index, build_id=build_id)
@@ -474,10 +485,13 @@ def select_recordable_targets(
         for target in page:
             if target.finished_at is None:
                 continue
-            if not target.input_artifacts and not any(
-                target.output_artifacts.values()
+            if (
+                not target.skipped_for_prerun_target_id
+                and not target.input_artifacts
+                and not any(target.output_artifacts.values())
             ):
-                logger.info(
+                artifact_less += 1
+                logger.debug(
                     "Skipping wandb lineage recording for target %s (build %s): "
                     "no input or output artifacts.",
                     target.uuid,
@@ -488,6 +502,21 @@ def select_recordable_targets(
         if len(page) < _SCAN_PAGE_SIZE:
             break
         page_index += 1
+    # One aggregate line per build rather than one per skipped target, and only
+    # when something was actually skipped. This function re-runs for the same
+    # build on every scan -- the watcher's build cutoff is inclusive, so the
+    # anchor build stays in range indefinitely in steady state -- so a per-target
+    # info line means a build with many artifact-less targets reprints its whole
+    # skip list every monitoring interval, forever. The per-target detail is
+    # still available at debug, same tradeoff as the recorded-cache hit log in
+    # WandBLineageStore.filter_unrecorded.
+    if artifact_less:
+        logger.info(
+            "Skipped wandb lineage recording for %d target(s) of build %s: "
+            "no input or output artifacts.",
+            artifact_less,
+            build_id,
+        )
     return selected
 
 

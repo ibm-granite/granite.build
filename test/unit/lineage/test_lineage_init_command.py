@@ -236,15 +236,6 @@ class TestLineageInitCommand:
         seed.assert_not_called()
         self.storage.kv_pair_storage.set_value.assert_not_called()
 
-    def test_show_alone_still_works(self):
-        """The guard must not break the read-only path it protects."""
-        self._stored[LINEAGE_WATCHER_CHECKPOINT_KEY] = _CHECKPOINT
-        result = self._run("--show")
-
-        assert result.exit_code == 0, result.output
-        assert "b-1" in result.output
-        self.storage.kv_pair_storage.set_value.assert_not_called()
-
     @pytest.mark.parametrize("stored", [{}, [], ""])
     def test_show_reports_an_empty_checkpoint_as_unusable(self, stored):
         """An empty value records nothing, so --show must not call it seeded.

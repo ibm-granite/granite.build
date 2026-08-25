@@ -804,6 +804,22 @@ class TestExpectedRunCount:
         t = _target("b1", "t1", input_artifacts={"data": "in-1"})
         assert expected_run_count(t) == 1
 
+    def test_empty_output_lists_with_inputs_expects_one_run(self):
+        """An output name holding no artifacts is not an output.
+
+        The emitter's per-output loop yields nothing for it and its no-output
+        branch covers the target instead, so the count must be 1 rather than 0.
+        Counting output *keys* here would disagree with the emitter and leave the
+        target permanently unconfirmable.
+        """
+        t = _target(
+            "b1",
+            "t1",
+            input_artifacts={"data": "in-1"},
+            output_artifacts={"model": []},
+        )
+        assert expected_run_count(t) == 1
+
 
 class TestRecordSelectedTargets:
     def test_selected_push_uses_the_same_leaf(self):

@@ -57,6 +57,11 @@ def _target(build_id: str, uuid: str, finished_at: datetime = None) -> StoredTar
         environment_uri="env://test",
         status=Status.SUCCESS,
         finished_at=finished_at if finished_at is not None else _BASE,
+        # One output artifact so the target is recordable: these tests exercise
+        # watcher/checkpoint mechanics, and select_recordable_targets drops
+        # targets with no input and no output artifacts. The uuid need not
+        # resolve in the registry -- nothing here reads the artifact itself.
+        output_artifacts={"out0": [f"artifact-{uuid}"]},
     )
 
 
