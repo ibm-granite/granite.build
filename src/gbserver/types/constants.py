@@ -1108,5 +1108,28 @@ GBSERVER_SPACE_CACHE_ENABLED: bool = getenv_boolean(
     ENV_VAR_GBSERVER_SPACE_CACHE_ENABLED, True
 )
 
+# Per-thread LRU caps for the on-disk clone/asset caches that were previously
+# unbounded thread-local mkdtemp roots (BoundedThreadLocalCache). Each caps the
+# number of most-recently-used subdirs kept per thread; older ones are reclaimed.
+# GIT_REPO_CACHE: GitURI clone cache (keyed by repo#ref).
+# ENV_CACHE: Environment.load_environment_config asset cache (keyed by env URI).
+# STEP_CACHE: Step asset cache (keyed by step URI).
+ENV_VAR_GBSERVER_GIT_REPO_CACHE_MAX_ENTRIES = (
+    ENV_VAR_PREFIX + "_GIT_REPO_CACHE_MAX_ENTRIES"
+)
+GIT_REPO_CACHE_MAX_ENTRIES: int = int(
+    os.getenv(ENV_VAR_GBSERVER_GIT_REPO_CACHE_MAX_ENTRIES, "8"), base=10
+)
+
+ENV_VAR_GBSERVER_ENV_CACHE_MAX_ENTRIES = ENV_VAR_PREFIX + "_ENV_CACHE_MAX_ENTRIES"
+ENV_CACHE_MAX_ENTRIES: int = int(
+    os.getenv(ENV_VAR_GBSERVER_ENV_CACHE_MAX_ENTRIES, "8"), base=10
+)
+
+ENV_VAR_GBSERVER_STEP_CACHE_MAX_ENTRIES = ENV_VAR_PREFIX + "_STEP_CACHE_MAX_ENTRIES"
+STEP_CACHE_MAX_ENTRIES: int = int(
+    os.getenv(ENV_VAR_GBSERVER_STEP_CACHE_MAX_ENTRIES, "8"), base=10
+)
+
 # Tags that begin with this are only editable via the super admin
 SYSTEM_TAG_PREFIX = "sys-"

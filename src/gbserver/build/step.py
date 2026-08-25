@@ -21,7 +21,6 @@ The step.
 import glob
 import os
 import shutil
-import tempfile
 import threading
 from pathlib import Path
 from typing import Optional, Self, Union
@@ -29,8 +28,9 @@ from typing import Optional, Self, Union
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.build.entity import Entity
-from gbserver.types.constants import is_debug_mode
+from gbserver.types.constants import STEP_CACHE_MAX_ENTRIES, is_debug_mode
 from gbserver.types.stepconfig import StepConfig
+from gbserver.utils.bounded_cache import BoundedThreadLocalCache
 from gbserver.utils.filesystem import find_files_shallowest_first
 from gbserver.utils.logger import get_logger
 
@@ -44,6 +44,9 @@ class Step(Entity):
     """A single step in a target of a build."""
 
     _thread_local = threading.local()
+    # Per-thread, LRU-bounded on-disk cache of synced step assets (keyed by step
+    # URI hash). Previously an unbounded thread-local mkdtemp root.
+    _step_asset_cache = BoundedThreadLocalCache("step-asset", STEP_CACHE_MAX_ENTRIES)
 
     def __init__(
         self: Self,
@@ -53,9 +56,6 @@ class Step(Entity):
         **kwargs: dict,
     ):
         self.stepasset = Asset(stepuri, context=context)
-
-        if not hasattr(self._thread_local, "stepcache_dir"):
-            self._thread_local.stepcache_dir = Path(tempfile.mkdtemp())
 
         # We make 2 calls to the Step() in the targetstep, we want to
         # persist the information of whether step fallback to basestep was
@@ -68,9 +68,8 @@ class Step(Entity):
 
         self.step_fallback_used = self._thread_local.step_fallback_used
 
-        th_stepcache_dir = self._thread_local.stepcache_dir
-        assert isinstance(th_stepcache_dir, Path)
-        stepasset_dir = th_stepcache_dir / self.urihash()
+        # Resolve (and LRU-refresh) this thread's cache slot for the step asset.
+        stepasset_dir = self._step_asset_cache.path_for(self.urihash())
         self.stepasset.sync(dest=stepasset_dir, force=force_fetch)
         files = find_files_shallowest_first(stepasset_dir, STEP_FILE_NAME)
 

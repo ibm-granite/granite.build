@@ -26,7 +26,6 @@ import inspect
 import json
 import os
 import re
-import tempfile
 import threading
 import traceback
 from abc import ABC, abstractmethod
@@ -74,6 +73,7 @@ from gbserver.types.buildevent import (
 )
 from gbserver.types.config import Config
 from gbserver.types.constants import (
+    ENV_CACHE_MAX_ENTRIES,
     FULL_CONFIG_RUN_METADATA_KEY,
     GBSERVER_ENABLE_STEP_RETRY,
 )
@@ -86,6 +86,7 @@ from gbserver.types.environmentconfig import (
     StorePush,
 )
 from gbserver.types.status import Status
+from gbserver.utils.bounded_cache import BoundedThreadLocalCache
 from gbserver.utils.logger import get_logger
 from gbserver.utils.template import fill_template
 from gbserver.utils.utils import get_uuid
@@ -254,6 +255,11 @@ class Environment(ABC):
 
     # class attributes
     _thread_local = threading.local()
+    # Per-thread, LRU-bounded on-disk cache of synced environment assets (keyed
+    # by environment-URI hash). Previously an unbounded thread-local mkdtemp root
+    # that grew for the process lifetime; reachable on the rest-server via the
+    # environment-file API (load_environment_config).
+    _env_asset_cache = BoundedThreadLocalCache("env-asset", ENV_CACHE_MAX_ENTRIES)
     environment_types: Dict[str, Type[Self]] = {}
     # instance attributes
     __setup_done_events: Dict[str, Event]
@@ -837,12 +843,11 @@ class Environment(ABC):
         Shared by get_environment (buildwatcher) and the build-files REST API,
         which only needs the parsed config and not a constructed Environment.
         """
-        if not hasattr(cls._thread_local, "environmentcache_dir"):
-            cls._thread_local.environmentcache_dir = Path(tempfile.mkdtemp())
         environment_asset = Asset(environment_uri, context=context)
-        th_env_dir = cls._thread_local.environmentcache_dir
-        assert isinstance(th_env_dir, Path)
-        environmentasset_dir = th_env_dir / environment_asset.urihash()
+        # Resolve (and LRU-refresh) this thread's cache slot for the env asset.
+        environmentasset_dir = cls._env_asset_cache.path_for(
+            environment_asset.urihash()
+        )
         environment_asset.sync(dest=environmentasset_dir, force=force_fetch)
         files = glob.glob(
             str(environmentasset_dir / "**" / ENVIRONMENT_FILENAME), recursive=True

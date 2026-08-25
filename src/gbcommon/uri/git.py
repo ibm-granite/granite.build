@@ -19,8 +19,6 @@ URI for git repos.
 """
 
 import shutil
-import tempfile
-import threading
 import urllib.parse
 from pathlib import Path
 from typing import List, Optional, Self, Tuple, Type
@@ -31,8 +29,10 @@ from gbcommon.uri.uri import URI
 from gbserver.github.myghapi import MyGHApi
 from gbserver.types.constants import (
     GBSERVER_GITHUB_TOKEN,
+    GIT_REPO_CACHE_MAX_ENTRIES,
     SPACE_REPO_CONFIG_BRANCH_NAME,
 )
+from gbserver.utils.bounded_cache import BoundedThreadLocalCache
 from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.git_retry import git_clone_retry
 from gbserver.utils.logger import get_logger
@@ -100,7 +100,11 @@ def get_uri_parts(uri: str) -> Tuple[str, str, str, str, str]:
 class GitURI(URI):
     """URI that deals with git repos (especially remote repos)."""
 
-    _thread_local = threading.local()
+    # Per-thread, LRU-bounded on-disk clone cache (keyed by repo#ref hash).
+    # Thread-local so no locking is needed across the rest-server's worker
+    # processes and threadpool threads; bounded so it no longer grows without
+    # limit over the process lifetime.
+    _repo_cache = BoundedThreadLocalCache("git-repo", GIT_REPO_CACHE_MAX_ENTRIES)
 
     def __init__(
         self: Self,
@@ -254,8 +258,6 @@ class GitURI(URI):
         Otherwise we clone the repo and cache the location.
         If force is True then this always clones the repo.
         """
-        if not hasattr(self._thread_local, "repo_cache"):
-            self._thread_local.repo_cache = Path(tempfile.mkdtemp())
         repo_url = self.get_repo_url()
         if repo_url == "":
             logger.error("Invalid Git Repo URI (%s).", self.uri)
@@ -267,11 +269,11 @@ class GitURI(URI):
         if len(splits) > 1:
             ref = splits[1]
         logger.info("repo ref: %s", ref)
-        th_repo_cache = self._thread_local.repo_cache
-        assert isinstance(th_repo_cache, Path)
-        repo_cache_path = th_repo_cache / short_alphanumeric_lower_hash(
-            repo_url + ("#" + ref if ref else "")
-        )
+        # Resolve (and LRU-refresh) this thread's cache slot for repo#ref. The
+        # cache manages the set of clone dirs; we populate/reuse the returned
+        # path below exactly as before.
+        cache_key = short_alphanumeric_lower_hash(repo_url + ("#" + ref if ref else ""))
+        repo_cache_path = self._repo_cache.path_for(cache_key)
         if repo_cache_path.is_dir():
             if not force:
                 logger.info("force is False, reusing repo at '%s'", repo_cache_path)
@@ -330,12 +332,13 @@ class GitURI(URI):
 
     @classmethod
     def clear_repo_cache(cls: Type[Self]) -> None:
+        """Delete every clone cached on the current thread.
+
+        The clone cache is otherwise bounded automatically by an LRU cap
+        (``GIT_REPO_CACHE_MAX_ENTRIES``); this remains for explicit teardown
+        (e.g. tests) that wants to drop the whole thread's cache at once.
         """
-        Delete any existing clone of the repo.
-        TODO: Invoke this appropriately to clean up.
-        """
-        if hasattr(cls._thread_local, "repo_cache"):
-            shutil.rmtree(cls._thread_local.repo_cache)
+        cls._repo_cache.clear()
 
     def append_path(self: Self, path: str) -> None:
         assert self.uri is not None, "self.uri is None"
