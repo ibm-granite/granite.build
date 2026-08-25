@@ -29,7 +29,6 @@ from fastapi.responses import JSONResponse
 
 from gbserver.spaces.space_access_manager import ISpaceAccessManager, SpaceAccessInfo
 from gbserver.storage.singleton_storage import get_admin_storage
-from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import PUBLIC_SPACE_NAME
 from gbserver.utils.logger import get_logger
 
@@ -77,16 +76,9 @@ class StorageSpaceAccessManager(ISpaceAccessManager):
 
             has_public = any(s.space.name == PUBLIC_SPACE_NAME for s in result)
             if not has_public:
-                # has_space_access() grants every authenticated user implicit
-                # access to the public space unconditionally, even if no
-                # StoredSpace row for it exists yet. Match that here with a
-                # placeholder row, so a missing public-space row doesn't make
-                # list endpoints (which scope via this method) disagree with
-                # single-object reads (which scope via has_space_access()).
                 public_space = storage.space_storage.get_by_name(PUBLIC_SPACE_NAME)
-                if public_space is None:
-                    public_space = StoredSpace(name=PUBLIC_SPACE_NAME, git_repo_uri="")
-                result.append(SpaceAccessInfo(space=public_space, is_admin=False))
+                if public_space is not None:
+                    result.append(SpaceAccessInfo(space=public_space, is_admin=False))
 
             return result
         except Exception as e:
