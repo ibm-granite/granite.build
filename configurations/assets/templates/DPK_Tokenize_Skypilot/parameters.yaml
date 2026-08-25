@@ -28,18 +28,28 @@ VALIDATE_SCRIPT: "configurations/assets/templates/DPK_Tokenize_Skypilot/scripts/
 
 # --- Artifact handoff --------------------------------------------------------
 # How the `tokens` artifact travels from `tokenize` to `validate`. The two are
-# SEPARATE workloads: on skypilot/aws (and any endpoint without a shared
-# filesystem) they land on different nodes, so a node-local env:// path does not
-# survive the hop — `validate` would read an empty/absent directory. Endpoints
-# WITH a shared filesystem (skypilot/slurm and skypilot/lsf define shared_workdir
-# /shared) can keep env://.
-#   shared-FS endpoints : env:///tmp/dpk-tokenize-output    (default below)
+# SEPARATE workloads that may land on different nodes. env:// moves no bytes and
+# the consumer's binding path is the declared URI's path, so the tokens survive
+# the hop only if `tokenize` physically writes them onto a filesystem `validate`
+# can read. The tokenize command derives its output dir from TOKENS_URI to
+# guarantee this (see build.yaml): for env:// it writes to the URI's path, for
+# s3:// it stages locally and the s3 assetstore pushes/pulls the bytes.
+#   shared-FS endpoints : env:///shared/dpk-tokenize-output  (default below)
+#                         skypilot/slurm and skypilot/lsf mount shared_workdir
+#                         /shared on every node, so an env:// path under /shared
+#                         is cross-node safe. A node-local env:///tmp/... path
+#                         does NOT survive when the targets land on different
+#                         nodes ("No such file or directory" on validate).
 #   skypilot/aws        : s3://<your-bucket>/dpk-tokenize/tokens
+#                         each target is a separate EC2 with no shared FS, so the
+#                         local output is PUSHED to s3 and PULLED back on validate
 #                         (needs the S3 assetstore secrets COS_ACCESS_KEY_ID and
-#                         COS_SECRET_ACCESS_KEY; the aws env already lists the
-#                         s3 assetstore). Override at submit time:
+#                         COS_SECRET_ACCESS_KEY; the aws env already lists the s3
+#                         assetstore). Override at submit time:
 #                           --param TOKENS_URI=s3://<your-bucket>/dpk-tokenize/tokens
-TOKENS_URI: "env:///tmp/dpk-tokenize-output"
+# NOTE: the default is a fixed /shared path; concurrent runs on the same shared
+# cluster should override TOKENS_URI with a per-run-unique path to avoid collision.
+TOKENS_URI: "env:///shared/dpk-tokenize-output"
 
 # --- Tokenizer ---------------------------------------------------------------
 # Any HuggingFace AutoTokenizer-compatible name or path. The default is a small

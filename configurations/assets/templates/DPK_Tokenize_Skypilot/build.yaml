@@ -30,16 +30,17 @@ granite.build:
       outputs:
         # Cross-target handoff to `validate`, controlled by TOKENS_URI so it
         # survives on every endpoint (see parameters.yaml + README "Cross-node
-        # handoff"). The command always writes the local dir /tmp/dpk-tokenize-
-        # output and emits it as the LLMB_ARTIFACT marker; the assetstore then
-        # routes it per the URI scheme:
-        #   env:// — no-op registration of the local path. Works only when
-        #            `validate` shares a filesystem with `tokenize` (a shared_
-        #            workdir endpoint, or co-located targets). `type` is required.
-        #   s3://  — the local dir is PUSHED to S3 and `validate` PULLS it locally.
-        #            Required on skypilot/aws, where each target is a separate EC2
-        #            instance with no shared FS (env:// there leaves validate with
-        #            an absent path).
+        # handoff"). The command derives its output dir from TOKENS_URI (below)
+        # and emits it as the LLMB_ARTIFACT marker; the assetstore then routes it
+        # per the URI scheme:
+        #   env:// — no-op registration; the command writes directly to the URI's
+        #            path, so it must be on a filesystem `validate` can reach — a
+        #            shared_workdir endpoint's /shared (slurm/lsf), NOT a
+        #            node-local /tmp. `type` is required.
+        #   s3://  — the command writes a local staging dir which is PUSHED to S3
+        #            and `validate` PULLS it locally. Required on skypilot/aws,
+        #            where each target is a separate EC2 instance with no shared
+        #            FS (env:// there leaves validate with an absent path).
         tokens:
           uri: "$${TOKENS_URI}"
           type: dataset
@@ -57,14 +58,26 @@ granite.build:
               # The run script starts in $GB_BUILD_WORKDIR (per-run isolation).
               # --data_local_config takes a python-literal dict, so the outer
               # quoting must survive the shell: single quotes around it.
+              #
+              # Derive the output dir from TOKENS_URI so the artifact physically
+              # lands where `validate` reads it (env:// moves no bytes and the
+              # consumer's binding path is the URI's path):
+              #   env://  -> write to the URI's path (e.g. /shared on slurm/lsf),
+              #              so a cross-node validate on a shared FS can read it.
+              #   s3://    -> write to a local staging dir; the s3 assetstore
+              #              pushes it and validate pulls it back.
               command: >-
                 set -euo pipefail;
+                TOKENS_URI="$${TOKENS_URI}";
+                case "$TOKENS_URI" in
+                env://*) OUT="${TOKENS_URI#env://}" ;;
+                *) OUT=/tmp/dpk-tokenize-output ;;
+                esac;
                 python -m venv /tmp/dpk-venv;
                 . /tmp/dpk-venv/bin/activate;
                 pip install --quiet --no-cache-dir --index-url https://pypi.org/simple
                 'data-prep-toolkit-transforms==$${DPK_TRANSFORMS_VERSION}'
                 'transformers$${TRANSFORMERS_VERSION}' python-dotenv;
-                OUT=/tmp/dpk-tokenize-output;
                 rm -rf "$OUT"; mkdir -p "$OUT";
                 python -m dpk_tokenization2arrow.runtime
                 --data_local_config "{ 'input_folder': '/tmp/dpk-input', 'output_folder': '$OUT' }"
