@@ -31,7 +31,7 @@ from gbserver.types.environmentconfig import (
     AwsCredentialProfile,
     ClusterSshConfigs,
 )
-from gbserver.types.errors import SkypilotConfigCollisionError
+from gbserver.types.errors import SkypilotConfigCollisionError, StepCertExpiredError
 
 
 def _host(alias="clusterA", **directives):
@@ -484,6 +484,136 @@ class TestIdentityKey:
                 tmp_path, {"BV_KEY": self._PEM}, HostName="h", IdentityKey="BV_KEY"
             )
         assert "abc123" not in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# IdentityStepCert: check-only against already-loaded Smallstep SSH certs
+# --------------------------------------------------------------------------- #
+def _cert_text(valid_to, principals):
+    """Build fake ``ssh-keygen -L -f -`` output text (the real field shapes)."""
+    principal_lines = "\n".join(f"\t\t{p}" for p in principals)
+    return (
+        "        Type: ecdsa-sha2-nistp256-cert-v01@openssh.com user certificate\n"
+        '        Key ID: "someone@ibm.com"\n'
+        "        Serial: 123\n"
+        f"        Valid: from 2026-08-24T09:41:46 to {valid_to}\n"
+        "        Principals: \n"
+        f"{principal_lines}\n"
+    )
+
+
+class TestStepCert:
+    def _materialize(self, tmp_path, cert_descriptions, **directives):
+        ssh = ClusterSshConfigs(lsf=[_host("bluevela", **directives)])
+        return self._materialize_multi(tmp_path, ssh, cert_descriptions)
+
+    def _materialize_multi(self, tmp_path, ssh, cert_descriptions, monkeypatch=None):
+        # Patch the low-level cert-loading call, not subprocess directly, so tests
+        # stay independent of the exact step/ssh-keygen invocation shape.
+        import gbserver.environment.skypilot_config as sc_mod
+
+        orig = sc_mod._step_loaded_certs
+        sc_mod._step_loaded_certs = lambda: cert_descriptions
+        try:
+            sc.materialize("sky-lsf", ssh, None, None, {}, home=tmp_path)
+        finally:
+            sc_mod._step_loaded_certs = orig
+        return tmp_path / ".lsf" / "config"
+
+    def test_valid_cert_passes_and_drops_directive(self, tmp_path):
+        future = "2099-01-01T00:00:00"
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text(future, ["herbertwoisetschlaeger"])],
+            HostName="h",
+            User="hew",
+            IdentityStepCert=True,
+        )
+        text = _read(dest)
+        assert "IdentityStepCert" not in text
+        assert "IdentityFile" not in text
+        assert "Host bluevela" in text and "User hew" in text
+
+    def test_no_certs_loaded_raises(self, tmp_path):
+        with pytest.raises(StepCertExpiredError):
+            self._materialize(
+                tmp_path, [], HostName="h", User="hew", IdentityStepCert=True
+            )
+
+    def test_expired_cert_raises(self, tmp_path):
+        past = "2000-01-01T00:00:00"
+        with pytest.raises(StepCertExpiredError):
+            self._materialize(
+                tmp_path,
+                [_cert_text(past, ["hew"])],
+                HostName="h",
+                User="hew",
+                IdentityStepCert=True,
+            )
+
+    def test_one_expired_one_valid_cert_passes(self, tmp_path):
+        past = "2000-01-01T00:00:00"
+        future = "2099-01-01T00:00:00"
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text(past, ["x"]), _cert_text(future, ["y"])],
+            HostName="h",
+            User="hew",
+            IdentityStepCert=True,
+        )
+        text = _read(dest)
+        assert "Host bluevela" in text
+
+    def test_both_identitykey_and_stepcert_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            self._materialize(
+                tmp_path,
+                [],
+                User="hew",
+                IdentityKey="BV_KEY",
+                IdentityStepCert=True,
+            )
+
+    def test_both_identityfile_and_stepcert_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            self._materialize(
+                tmp_path,
+                [],
+                User="hew",
+                IdentityFile="~/.ssh/k",
+                IdentityStepCert=True,
+            )
+
+    def test_identities_only_and_stepcert_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            self._materialize(
+                tmp_path,
+                [],
+                HostName="h",
+                User="hew",
+                IdentityStepCert=True,
+                IdentitiesOnly="yes",
+            )
+
+    def test_idempotent_rerender(self, tmp_path):
+        future = "2099-01-01T00:00:00"
+        ssh = ClusterSshConfigs(
+            lsf=[_host("bluevela", HostName="h", User="hew", IdentityStepCert=True)]
+        )
+        certs = [_cert_text(future, ["hew"])]
+        dest = self._materialize_multi(tmp_path, ssh, certs)
+        first = _read(dest)
+        # Re-materializing (as a different env) with the same valid cert must not
+        # raise SkypilotConfigCollisionError — the rendered block is stable.
+        self._materialize_multi(tmp_path, ssh, certs)
+        assert _read(dest) == first
+
+    def test_error_message_names_remediation(self, tmp_path):
+        with pytest.raises(StepCertExpiredError) as exc:
+            self._materialize(
+                tmp_path, [], HostName="h", User="hew", IdentityStepCert=True
+            )
+        assert "step ssh login" in str(exc.value)
 
 
 # --------------------------------------------------------------------------- #

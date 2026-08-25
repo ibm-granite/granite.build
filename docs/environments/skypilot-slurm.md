@@ -40,6 +40,11 @@ Keys are the **exact OpenSSH directive names**, so the env mirrors `~/.slurm/con
 via a secret — gbserver writes a `0600` file and points `IdentityFile` at it); specifying both is an
 error. The SSH private key and the cluster itself stay out-of-band — gbserver does not provision them.
 
+A host can instead authenticate via an already-issued rotating SSH cert (e.g. Smallstep `step`) with
+`IdentityStepCert: true` in place of `IdentityFile`/`IdentityKey` — see
+[LSF: rotating SSH cert](skypilot-lsf.md#clusterssh_configslsf--reachability) for the full explanation;
+the same check applies to SLURM hosts.
+
 gbserver merges this block into `~/.slurm/config` with last-writer-wins semantics: a differing
 gbserver-managed block for the same alias is **overwritten** (so a stale or re-keyed entry self-heals
 — no manual `rm ~/.slurm/config`); a *foreign* (non-gbserver) entry for the same alias is refused
