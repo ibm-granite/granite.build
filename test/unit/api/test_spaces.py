@@ -26,31 +26,23 @@ own membership. scope_space_name_filter() (api/utils.py) closes the gap.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from unit.api._space_scoping_test_helpers import (
+    ALICE,
+    ALICE_SPACE,
+    BOB_SPACE,
+)
+from unit.api._space_scoping_test_helpers import row_matches as _row_matches
+from unit.api._space_scoping_test_helpers import set_alice_access as _set_alice_access
+
 from gbserver.api import spaces as spaces_module
 from gbserver.api.spaces import list_spaces
-from gbserver.spaces.space_access_manager import SpaceAccessInfo
 from gbserver.storage.stored_space import StoredSpace
-
-ALICE = "alice"
-ALICE_SPACE = "space-A"
-BOB_SPACE = "space-B"
 
 
 def _fake_request(login: str, email: str) -> SimpleNamespace:
     return SimpleNamespace(
         state=SimpleNamespace(data={"user": SimpleNamespace(login=login, email=email)})
     )
-
-
-def _row_matches(space: StoredSpace, where: dict) -> bool:
-    for key, value in (where or {}).items():
-        actual = getattr(space, key)
-        if isinstance(value, (list, tuple, set)):
-            if actual not in value:
-                return False
-        elif actual != value:
-            return False
-    return True
 
 
 def _patched_list_storage(spaces: list):
@@ -65,15 +57,6 @@ def _patched_list_storage(spaces: list):
         )
     )
     return patch.object(spaces_module, "get_admin_storage", return_value=fake_storage)
-
-
-def _set_alice_access(manager) -> None:
-    """alice is a non-admin member of ALICE_SPACE only."""
-    manager.return_value.get_user_spaces_with_access.return_value = [
-        SpaceAccessInfo(
-            space=StoredSpace(name=ALICE_SPACE, git_repo_uri=""), is_admin=False
-        )
-    ]
 
 
 def test_list_spaces_excludes_other_spaces_for_non_admin():

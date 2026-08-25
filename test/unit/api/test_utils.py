@@ -117,3 +117,12 @@ def test_non_admin_with_no_accessible_spaces_gets_sentinel_not_empty_list():
         manager.return_value.get_user_spaces_with_access.return_value = []
         result = scope_space_name_filter(_fake_request("alice@example.com"), "")
     assert result == _NO_ACCESSIBLE_SPACE
+
+
+def test_sentinel_contains_no_nul_byte():
+    """The sentinel is bound as a real SQL query parameter by every list
+    endpoint's row_filter (get_row_filter() -> storage.get_by_where()/count()).
+    A NUL byte in it makes psycopg2 raise ValueError instead of the intended
+    "matches no row", turning every deny-access outcome into a slow, futile
+    retry loop followed by an unhandled 500 on the default Postgres backend."""
+    assert "\x00" not in _NO_ACCESSIBLE_SPACE

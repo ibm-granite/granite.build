@@ -201,8 +201,13 @@ def confirm_space_member_access(
 # Sentinel space_name value list endpoints scope to when the caller has no
 # accessible spaces (or requested one outside their access). Must not be an
 # empty list: get_row_filter() treats an empty list value as "no filter" and
-# would drop the key, silently returning every row instead of none.
-_NO_ACCESSIBLE_SPACE = "\x00--no-accessible-space--\x00"
+# would drop the key, silently returning every row instead of none. Must also
+# be a plain string with no NUL bytes: this value is bound as a real SQL query
+# parameter, and psycopg2 raises ValueError on any string containing \x00
+# rather than just failing to match -- a NUL byte here turned "deny access"
+# into a request that fails after ten futile retries instead of returning
+# zero rows.
+_NO_ACCESSIBLE_SPACE = "__gb_no_accessible_space__c6f2b1d4-8e2a-4b7b-9b1a-7a6f6b6a5c4e"
 
 
 def scope_space_name_filter(

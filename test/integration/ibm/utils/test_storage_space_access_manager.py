@@ -190,3 +190,18 @@ class TestStorageSpaceAccessManager(AbstractSingletonStorageUsingTest):
         assert PUBLIC_SPACE_NAME in names
         public_entry = next(s for s in result if s.space.name == PUBLIC_SPACE_NAME)
         assert public_entry.is_admin is False
+
+    def test_get_user_spaces_includes_public_space_without_a_public_space_row(self):
+        """has_space_access() grants every authenticated user implicit access
+        to the public space even when no StoredSpace row for it exists (see
+        test_has_space_access_true_for_public_space_without_membership above).
+        get_user_spaces_with_access() must agree, or list endpoints scoped via
+        scope_space_name_filter() would hide public-space rows that
+        single-object reads (scoped via has_space_access()) still allow."""
+        manager = self._setup_spaces_and_manager()
+        # Deliberately do NOT add _PUBLIC_SPACE to storage.
+        result = manager.get_user_spaces_with_access(_FAKE_EMAIL)
+        names = [s.space.name for s in result]
+        assert PUBLIC_SPACE_NAME in names
+        public_entry = next(s for s in result if s.space.name == PUBLIC_SPACE_NAME)
+        assert public_entry.is_admin is False

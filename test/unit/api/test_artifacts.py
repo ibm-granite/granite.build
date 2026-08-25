@@ -35,6 +35,13 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
+from unit.api._space_scoping_test_helpers import (
+    ALICE,
+    ALICE_SPACE,
+    BOB_SPACE,
+)
+from unit.api._space_scoping_test_helpers import row_matches as _row_matches
+from unit.api._space_scoping_test_helpers import set_alice_access as _set_alice_access
 
 from gbserver.api import artifacts as artifacts_module
 from gbserver.api.artifacts import (
@@ -47,9 +54,7 @@ from gbserver.api.utils import (
     confirm_space_write_access as _real_confirm_space_write_access,
 )
 from gbserver.api.utils import has_space_write_access as _real_has_space_write_access
-from gbserver.spaces.space_access_manager import SpaceAccessInfo
 from gbserver.storage.artifact_registration import ArtifactRegistration
-from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.artifact import ArtifactType
 
 VICTIM_OWNER = "victim_b"
@@ -237,10 +242,6 @@ def test_register_artifact_allows_admin_impersonation():
 # HuggingFace/Lakehouse URIs) from every space regardless of membership.
 # scope_space_name_filter() (api/utils.py) closes the gap.
 
-ALICE = "alice"
-ALICE_SPACE = "space-A"
-BOB_SPACE = "space-B"
-
 
 def _artifact_in(
     space_name: str, owner: str, name: str, tags=None
@@ -253,17 +254,6 @@ def _artifact_in(
         name=name,
         tags=tags or [],
     )
-
-
-def _row_matches(item, where: dict) -> bool:
-    for key, value in (where or {}).items():
-        actual = getattr(item, key)
-        if isinstance(value, (list, tuple, set)):
-            if actual not in value:
-                return False
-        elif actual != value:
-            return False
-    return True
 
 
 def _patched_list_registry(artifacts: list):
@@ -280,15 +270,6 @@ def _patched_list_registry(artifacts: list):
     return patch.object(
         artifacts_module, "get_admin_storage", return_value=fake_storage
     )
-
-
-def _set_alice_access(manager) -> None:
-    """alice is a non-admin member of ALICE_SPACE only."""
-    manager.return_value.get_user_spaces_with_access.return_value = [
-        SpaceAccessInfo(
-            space=StoredSpace(name=ALICE_SPACE, git_repo_uri=""), is_admin=False
-        )
-    ]
 
 
 def test_list_artifacts_excludes_other_spaces_for_non_admin():

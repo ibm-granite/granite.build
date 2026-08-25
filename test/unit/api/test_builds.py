@@ -39,6 +39,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from unit.api._space_scoping_test_helpers import (
+    ALICE,
+    ALICE_SPACE,
+    BOB_SPACE,
+)
+from unit.api._space_scoping_test_helpers import row_matches as _row_matches
+from unit.api._space_scoping_test_helpers import set_alice_access as _set_alice_access
 
 from gbserver.api import builds as builds_module
 from gbserver.api.builds import (
@@ -59,7 +66,6 @@ from gbserver.api.utils import (
     confirm_space_write_access as _real_confirm_space_write_access,
 )
 from gbserver.api.utils import has_space_write_access as _real_has_space_write_access
-from gbserver.spaces.space_access_manager import SpaceAccessInfo
 from gbserver.storage.stored_build import (
     StoredBuild,
     create_continuation_build,
@@ -658,10 +664,6 @@ def test_continue_build_authz_precedes_status_disclosure():
 # by intersecting the space_name filter with the caller's real space
 # memberships; these tests exercise it through the three endpoints that call it.
 
-ALICE = "alice"
-ALICE_SPACE = "space-A"
-BOB_SPACE = "space-B"
-
 
 def _stored_build_in(
     space_name: str, owner: str, tags: Optional[list] = None
@@ -676,17 +678,6 @@ def _stored_build_in(
         targets=[],
         tags=tags or [],
     )
-
-
-def _row_matches(build: StoredBuild, where: dict) -> bool:
-    for key, value in (where or {}).items():
-        actual = getattr(build, key)
-        if isinstance(value, (list, tuple, set)):
-            if actual not in value:
-                return False
-        elif actual != value:
-            return False
-    return True
 
 
 def _filtering_build_storage(builds: list):
@@ -708,15 +699,6 @@ def _filtering_build_storage(builds: list):
 def _patched_list_storage(builds: list):
     fake_storage = SimpleNamespace(build_storage=_filtering_build_storage(builds))
     return patch.object(builds_module, "get_admin_storage", return_value=fake_storage)
-
-
-def _set_alice_access(manager) -> None:
-    """alice is a non-admin member of ALICE_SPACE only."""
-    manager.return_value.get_user_spaces_with_access.return_value = [
-        SpaceAccessInfo(
-            space=StoredSpace(name=ALICE_SPACE, git_repo_uri=""), is_admin=False
-        )
-    ]
 
 
 def test_list_builds_excludes_other_spaces_for_non_admin():
