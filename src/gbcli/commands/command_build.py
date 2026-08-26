@@ -1237,7 +1237,7 @@ def restart_build_cmd(ctx, build_id, format, skip_version_check, quiet):
 ```
 gb build status {restarted_build_id}
 ```"""
-                click.echo(parse_markdown_str(markdown_str))
+                click.echo(f"\n{parse_markdown_str(markdown_str)}")
             if format == "json":
                 click.echo(json.dumps({"build_id": restarted_build_id}))
 
