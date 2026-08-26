@@ -1,4 +1,5 @@
 import asyncio
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -255,6 +256,28 @@ class TestSkypilotClusterNaming:
 
         name = Skypilot._cluster_name_for("short")
         assert name == "gb-short"
+
+    def test_cluster_name_teardown_trailing_hyphen(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        # setup_id is a UUID; teardown prefixes it with "td-", which shifts the
+        # 12-char truncation onto the UUID's first hyphen -> trailing "-".
+        setup_id = "3168aa02-1234-5678-9abc-def012345678"
+        name = Skypilot._cluster_name_for(f"td-{setup_id}")
+        assert name == "gb-td-3168aa02"
+
+    def test_cluster_name_is_skypilot_valid(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        # SkyPilot: must start and end with an alphanumeric char.
+        valid = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]")
+        for launch_id in (
+            "td-3168aa02-1234-5678-9abc-def012345678",
+            "abcdef123456789",
+            "short",
+        ):
+            name = Skypilot._cluster_name_for(launch_id)
+            assert valid.fullmatch(name), f"invalid name: {name!r}"
 
 
 class TestLaunchSkypilot:
