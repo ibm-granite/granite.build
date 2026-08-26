@@ -646,7 +646,7 @@ class Skypilot(Environment):
             that may still be draining on the backend (slurm/lsf).
         :returns: The deterministic cluster name for this launch + attempt.
         """
-        base = f"gb-{launch_id[:12]}"
+        base = f"gb-{launch_id[:12]}".rstrip("-_.")
         return base if attempt <= 0 else f"{base}-r{attempt}"
 
     async def setup_skypilot(

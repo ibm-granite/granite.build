@@ -324,7 +324,7 @@ class TestLaunchSkypilot:
             )
 
         assert launch_id in skypilot_env._cluster_names
-        assert skypilot_env._cluster_names[launch_id] == "gb-test-launch-"
+        assert skypilot_env._cluster_names[launch_id] == "gb-test-launch"
         assert skypilot_env._job_ids[launch_id] == 42
         assert skypilot_env._get_launch_ready_event(launch_id).is_set()
         mock_sky.launch.assert_called_once()
