@@ -141,31 +141,43 @@ class Space:
         self.uristr = URI.get_uristr(uri)
         self.secrets = {}
         uriobj = URI.get_uri(uri=uri, default_scheme="file")
+        # A fresh, private checkout dir we own. pull() copies the space into it
+        # (FileURI.pull -> sync_or_copy copies a local space folder in; git/hf/etc.
+        # clone in), so it is always a throwaway copy under a new mkdtemp root,
+        # never the caller's original files. We delete exactly this dir below.
         tmppath = Path(tempfile.mkdtemp())
-        uriobj.pull(dest=tmppath, force=force_fetch)
-        space_yamls = glob.glob(str(tmppath / "**" / SPACE_YAML), recursive=True)
-        builtins_uri = (Path(__file__).parent.parent / "builtins").as_uri()
-        base_uris = [self.uristr, builtins_uri]
-        if space_yamls is None or len(space_yamls) == 0:
-            raise ValueError(f"No '{SPACE_YAML}' found at path: {tmppath}")
-        self.space_config: SpaceConfig = SpaceConfig.from_yaml(Path(space_yamls[0]))
-        if self.space_config is not None:
-            if self.space_config.base_uris is not None:
-                base_uris = base_uris + _resolve_base_uris(
-                    self.space_config.base_uris, self.uristr
-                )
+        try:
+            uriobj.pull(dest=tmppath, force=force_fetch)
+            space_yamls = glob.glob(str(tmppath / "**" / SPACE_YAML), recursive=True)
+            builtins_uri = (Path(__file__).parent.parent / "builtins").as_uri()
+            base_uris = [self.uristr, builtins_uri]
+            if space_yamls is None or len(space_yamls) == 0:
+                raise ValueError(f"No '{SPACE_YAML}' found at path: {tmppath}")
+            self.space_config: SpaceConfig = SpaceConfig.from_yaml(Path(space_yamls[0]))
             if self.space_config is not None:
+                if self.space_config.base_uris is not None:
+                    base_uris = base_uris + _resolve_base_uris(
+                        self.space_config.base_uris, self.uristr
+                    )
                 URI.set_space_config(self.space_config)
-        self.secrets = self._fetch_secrets(username=username)
+            self.secrets = self._fetch_secrets(username=username)
 
-        SpaceURI.set_baseuris(base_uris=base_uris, space_secrets=self.secrets)
-        Assetstore.load_assetstores_from_dir(tmppath, secrets=self.secrets)
-
-        if not is_debug_mode():
-            # TODO: for now only remove the experiments directory to be safe, but longterm we should be removing the whole tmppath dir
-            exp_dirs = glob.glob(str(tmppath / "**" / "experiments"), recursive=True)
-            for exp_dir in exp_dirs:
-                shutil.rmtree(exp_dir)
+            SpaceURI.set_baseuris(base_uris=base_uris, space_secrets=self.secrets)
+            Assetstore.load_assetstores_from_dir(tmppath, secrets=self.secrets)
+        finally:
+            # Nothing reads the checkout after construction: space.yaml is parsed
+            # out, base_uris resolve against the original space URI (not this copy),
+            # and assetstores load into config objects that keep no path back here.
+            # On the long-lived rest-server (one Space per request) this checkout
+            # would otherwise leak and fill ephemeral storage (see issue #300), so
+            # remove it before returning. tmppath is always the fresh mkdtemp dir
+            # we own and pull() only ever copies/clones *into* it, so deleting it
+            # never touches the caller's originals. Retained only in debug mode
+            # for inspection, mirroring Step. (If a future pull() ever symlinked
+            # the source in rather than copying, this would need a guard — no
+            # current pull does.)
+            if not is_debug_mode():
+                shutil.rmtree(tmppath, ignore_errors=True)
 
     def get_secrets(self: Self) -> Dict[str, str]:
         """Returns the cached secrets for the space."""
