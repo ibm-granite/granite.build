@@ -29,7 +29,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gbcli.services.service_artifact import update_artifact
+from gbcli.services.service_artifact import register_artifact_hf, update_artifact
 
 pytestmark = pytest.mark.standalone
 
@@ -274,3 +274,67 @@ class TestUpdateArtifactStatus:
             )
 
         mock_update_gserver.assert_not_called()
+
+
+class TestRegisterArtifactHFRepoId:
+    """The HF repo id (model_id/dataset_id/bucket_id) comes from `label` when
+    given, else falls back to `artifact_name`; `name` stays the registry name."""
+
+    def _call(self, mock_request, mock_get_user, *, type, artifact_name, label):
+        mock_get_user.return_value = MagicMock(login="test_user")
+        mock_request.return_value = {"registered": {"uuid": "uuid-1", "uri": "hf://x"}}
+        register_artifact_hf(
+            github_token=_TOKEN,
+            artifact_name=artifact_name,
+            type=type,
+            label=label,
+            description="",
+            checksum="",
+            tags=[],
+            status="success",
+            revision="main",
+            space_name="public",
+            env="staging",
+            hf_organization="org",
+            server_api="https://example/",
+        )
+        return mock_request.call_args.kwargs["body"]
+
+    @patch("gbcli.services.service_artifact.gb_server_request")
+    @patch("gbcli.services.service_artifact.get_user")
+    def test_label_becomes_repo_id_for_model(self, mock_get_user, mock_request):
+        body = self._call(
+            mock_request,
+            mock_get_user,
+            type="model",
+            artifact_name="my-artifact",
+            label="my-model",
+        )
+        assert body["model_id"] == "my-model"
+        assert body["name"] == "my-artifact"
+
+    @patch("gbcli.services.service_artifact.gb_server_request")
+    @patch("gbcli.services.service_artifact.get_user")
+    def test_repo_id_falls_back_to_artifact_name(self, mock_get_user, mock_request):
+        body = self._call(
+            mock_request,
+            mock_get_user,
+            type="model",
+            artifact_name="my-artifact",
+            label=None,
+        )
+        assert body["model_id"] == "my-artifact"
+        assert body["name"] == "my-artifact"
+
+    @patch("gbcli.services.service_artifact.gb_server_request")
+    @patch("gbcli.services.service_artifact.get_user")
+    def test_label_becomes_dataset_id(self, mock_get_user, mock_request):
+        body = self._call(
+            mock_request,
+            mock_get_user,
+            type="dataset",
+            artifact_name="my-artifact",
+            label="my-dataset",
+        )
+        assert body["dataset_id"] == "my-dataset"
+        assert body["name"] == "my-artifact"

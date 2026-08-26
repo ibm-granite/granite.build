@@ -308,6 +308,7 @@ class GBClient:
                     self.github_token,
                     artifact_name=artifact_name,
                     type=type,
+                    label=label,
                     description=description,
                     checksum=checksum,
                     tags=tags,

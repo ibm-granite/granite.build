@@ -730,6 +730,7 @@ def register_artifact_hf(
     revision: str,
     space_name: Optional[str],
     env: str,
+    label: Optional[str] = None,
     origin_uris: Optional[list[str]] = None,
     certified_no_restrictions: bool = False,
     hf_organization: Optional[str] = None,
@@ -749,6 +750,12 @@ def register_artifact_hf(
     if hf_organization is None:
         hf_organization = HF_ORGANIZATION_DEFAULT
 
+    # The HF repo id (the "repo" in organization/repo) is the model name. It is
+    # carried by --label/--repo; when omitted it falls back to the
+    # registered artifact name, preserving prior behavior. `name` stays the
+    # registry artifact name so the two can differ.
+    repo_id = label or artifact_name
+
     payload = {
         "space_name": space_name,
         "username": username,
@@ -765,11 +772,11 @@ def register_artifact_hf(
     }
 
     if type == "model":
-        payload["model_id"] = artifact_name
+        payload["model_id"] = repo_id
     elif type == "bucket":
-        payload["bucket_id"] = artifact_name
+        payload["bucket_id"] = repo_id
     else:
-        payload["dataset_id"] = artifact_name
+        payload["dataset_id"] = repo_id
     try:
         response = gb_server_request(
             user_token=github_token,
@@ -806,6 +813,7 @@ def register_artifact_gbserver_hf(
     checksum: str,
     tags: list[str],
     status: str,
+    label: Optional[str] = None,
     revision: Optional[str] = None,
     env: Optional[str] = None,
     origin_uris: Optional[list[str]] = None,
@@ -828,6 +836,7 @@ def register_artifact_gbserver_hf(
         github_token=github_token,
         artifact_name=artifact_name,
         type=type,
+        label=label,
         description=description,
         checksum=checksum,
         tags=tags,

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict
 
 import click
+from click.core import ParameterSource
 from fastapi import HTTPException
 from tqdm import tqdm
 
@@ -24,6 +25,7 @@ from gbcli.utils.gbconstants import (
     CLIPBOARD_CHAR,
     DEFAULT_CHECKSUM_CONCURRENCY,
     HF_ORGANIZATION_DEFAULT,
+    HF_REVISION_DEFAULT,
     LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
     LAKEHOUSE_FILESET_TABLE_NAME,
     LAKEHOUSE_MODEL_SHARED_TABLE,
@@ -55,6 +57,7 @@ from gbcli.utils.utils import (
     validate_tags,
 )
 from gbcli.utils.versionutil import check_current_and_latest_versions
+from gbcommon.uri.uri import URI
 from gbcommon.utils.hf_utils import (
     convert_hf_uri_to_url,
     parse_hf_uri,
@@ -831,7 +834,7 @@ def push(
 )
 @click.option(
     "--uri",
-    help="Lakehouse URI of the artifact.",
+    help="Lakehouse (lh://) or HuggingFace (hf://) URI of the artifact. The store is inferred from the scheme, so --store must not be combined with --uri.",
 )
 @click.option(
     "-t",
@@ -851,7 +854,9 @@ def push(
 )
 @click.option(
     "--label",
-    help="Artifact label. If model, model label. If fileset, fileset label.",
+    "--repo",
+    "label",
+    help="Artifact label, aka --repo. For a Lakehouse model this is the model label; for a fileset, the fileset label. For a HuggingFace artifact (model, dataset or bucket) it is the 'repo' portion of the owner/repo id. Distinct from --artifact-name, which is the registered artifact name.",
 )
 @click.option(
     "--revision",
@@ -1008,44 +1013,107 @@ def register(
                 )
                 ctx.exit(1)
 
-    # === Lakehouse-specific URI decoding ===
+    # === URI decoding ===
+    # The store is derived from the URI scheme (lh:// or hf://); the two are
+    # decoded differently and only the Lakehouse branch has an "environment".
     uri_env = None
     if uri:
-        decoded_artifact = decode_uri(uri)
-
-        uri_env, cli_env = compare_env_uri(uri)
-
-        if uri_env == "prod" and cli_env != "prod":
+        # The URI already determines the store, so an explicit --store conflicts.
+        if ctx.get_parameter_source("store") == ParameterSource.COMMANDLINE:
             click.echo(
-                f"⚠️{' '} Warning: You are registering a '{uri_env}' artifact in the '{cli_env}' environment."
-            )
-            force = True
-        elif uri_env != cli_env:
-            click.echo(
-                f"❌ The environment '{uri_env}' doesn't match the CLI environment '{cli_env}'. CLI doesn't support artifact register across environments except for 'prod' artifacts."
+                "❌ Error: --store cannot be combined with --uri; the store is inferred from the URI scheme (lh:// or hf://).",
+                err=True,
             )
             ctx.exit(1)
 
-        if type or table or label or revision or version or dataset or namespace:
-            click.echo(
-                f"❌ Error: artifact URI cannot be used along with type, namespace, table, label, revision, version or dataset arguments."
-            )
-            ctx.exit(1)
+        if uri.startswith("hf://"):
+            store = "hf"
+            try:
+                metadata = URI.get_uri(uri).get_metadata()
+            except ValueError as e:
+                click.echo(f"❌ Error: invalid HuggingFace URI '{uri}': {e}", err=True)
+                ctx.exit(1)
+            hf_type = str(metadata["hf_type"])
+            hf_owner = metadata["owner"]
+            hf_repo = metadata["repo"]
+            # An HF URI without an explicit revision decodes to the default
+            # ("main"); treat that as "unspecified" so an explicit --revision
+            # is honored rather than reported as a conflict.
+            hf_revision = metadata["revision"]
+            uri_has_revision = bool(hf_revision) and hf_revision != HF_REVISION_DEFAULT
 
-        type = decoded_artifact.type
-        namespace = decoded_artifact.namespace
-        table = decoded_artifact.table_name
+            # HF URIs carry no Lakehouse concepts.
+            if table or namespace or version or dataset:
+                click.echo(
+                    "❌ Error: a HuggingFace (hf://) URI cannot be used along with the namespace, table, version or dataset arguments.",
+                    err=True,
+                )
+                ctx.exit(1)
 
-        if type == "model":
-            label = decoded_artifact.model_label
-            revision = decoded_artifact.model_revision
+            # Owner, repo and (when present) revision are encoded in the URI;
+            # if the matching flag was also supplied it must agree.
+            if hf_organization and hf_organization != hf_owner:
+                click.echo(
+                    f"❌ Error: --hf-organization ('{hf_organization}') conflicts with the organization in the URI ('{hf_owner}').",
+                    err=True,
+                )
+                ctx.exit(1)
+            if label and label != hf_repo:
+                click.echo(
+                    f"❌ Error: --label/--repo ('{label}') conflicts with the repo in the URI ('{hf_repo}').",
+                    err=True,
+                )
+                ctx.exit(1)
+            if uri_has_revision and revision and revision != hf_revision:
+                click.echo(
+                    f"❌ Error: --revision ('{revision}') conflicts with the revision in the URI ('{hf_revision}').",
+                    err=True,
+                )
+                ctx.exit(1)
 
-        if type == "fileset":
-            label = decoded_artifact.fileset_label
-            version = decoded_artifact.fileset_version
+            type = hf_type
+            hf_organization = hf_owner
+            label = hf_repo
+            # Keep an explicit --revision when the URI did not specify one.
+            if uri_has_revision:
+                revision = hf_revision
+        else:
+            store = "lh"
+            decoded_artifact = decode_uri(uri)
 
-        if type == "dataset":
-            dataset = decoded_artifact.dataset_name
+            uri_env, cli_env = compare_env_uri(uri)
+
+            if uri_env == "prod" and cli_env != "prod":
+                click.echo(
+                    f"⚠️{' '} Warning: You are registering a '{uri_env}' artifact in the '{cli_env}' environment."
+                )
+                force = True
+            elif uri_env != cli_env:
+                click.echo(
+                    f"❌ The environment '{uri_env}' doesn't match the CLI environment '{cli_env}'. CLI doesn't support artifact register across environments except for 'prod' artifacts."
+                )
+                ctx.exit(1)
+
+            if type or table or label or revision or version or dataset or namespace:
+                click.echo(
+                    f"❌ Error: artifact URI cannot be used along with type, namespace, table, label, revision, version or dataset arguments."
+                )
+                ctx.exit(1)
+
+            type = decoded_artifact.type
+            namespace = decoded_artifact.namespace
+            table = decoded_artifact.table_name
+
+            if type == "model":
+                label = decoded_artifact.model_label
+                revision = decoded_artifact.model_revision
+
+            if type == "fileset":
+                label = decoded_artifact.fileset_label
+                version = decoded_artifact.fileset_version
+
+            if type == "dataset":
+                dataset = decoded_artifact.dataset_name
 
     if not uri and not type:
         click.echo(
@@ -1062,63 +1130,68 @@ def register(
         )
         ctx.exit(1)
 
-    # === Lakehouse-specific type handling ===
+    # === Type-specific handling (revision/table are Lakehouse-only) ===
     if type == "model":
         dataset = None
         version = None
-        showRevisionPrompt = not revision or revision.strip() == ""
         showLabelPrompt = not label or label.strip() == ""
 
-        label = (
-            click.prompt("Model label", show_default=True).strip()
-            if showLabelPrompt
-            else label
-        )
+        # The model label (the model name / HF repo) is required for both stores.
+        # For Lakehouse we prompt interactively; for HF we rely on the check below
+        # so scripted `--store hf` runs fail cleanly instead of blocking on stdin.
+        if showLabelPrompt and store == "lh":
+            label = click.prompt("Model label", show_default=True).strip()
 
-        revision = (
-            click.prompt(
-                "Revision", default=revision or "", show_default=False, type=str
-            ).strip()
-            if showRevisionPrompt
-            else revision
-        )
-        if not table or table.strip() == "":
-            table = click.prompt(
-                "Model table",
-                default=LAKEHOUSE_MODEL_SHARED_TABLE,
-                show_default=True,
-                type=click.Choice(
-                    [LAKEHOUSE_MODEL_SHARED_TABLE, LAKEHOUSE_MODEL_TABLE],
-                    case_sensitive=True,
-                ),
-            ).strip()
-        elif table not in [LAKEHOUSE_MODEL_SHARED_TABLE, LAKEHOUSE_MODEL_TABLE]:
-            click.echo(
-                f"❌ '{table}' is not a valid table for models. Please try again with a model from the '{LAKEHOUSE_MODEL_SHARED_TABLE}' or '{LAKEHOUSE_MODEL_TABLE}' tables.",
-                err=True,
+        if store == "lh":
+            showRevisionPrompt = not revision or revision.strip() == ""
+            revision = (
+                click.prompt(
+                    "Revision", default=revision or "", show_default=False, type=str
+                ).strip()
+                if showRevisionPrompt
+                else revision
             )
-            ctx.exit(1)
+            if not table or table.strip() == "":
+                table = click.prompt(
+                    "Model table",
+                    default=LAKEHOUSE_MODEL_SHARED_TABLE,
+                    show_default=True,
+                    type=click.Choice(
+                        [LAKEHOUSE_MODEL_SHARED_TABLE, LAKEHOUSE_MODEL_TABLE],
+                        case_sensitive=True,
+                    ),
+                ).strip()
+            elif table not in [LAKEHOUSE_MODEL_SHARED_TABLE, LAKEHOUSE_MODEL_TABLE]:
+                click.echo(
+                    f"❌ '{table}' is not a valid table for models. Please try again with a model from the '{LAKEHOUSE_MODEL_SHARED_TABLE}' or '{LAKEHOUSE_MODEL_TABLE}' tables.",
+                    err=True,
+                )
+                ctx.exit(1)
 
-        if label == "":
+        if not label or label == "":
             click.echo(f"\n❌ Error: Please provide model label", err=True)
             ctx.exit(1)  # Exit with a non-zero status
 
     if type == "dataset":
-        label = None
-        revision = None
         version = None
 
-        if not dataset or dataset.strip() == "":
-            dataset = click.prompt("Dataset name").strip()
+        # Dataset name, table and revision are Lakehouse concepts; the HF store
+        # does not use dataset/table (the HF dataset is identified by
+        # organization/repo, carried in `label`) but does honor a revision.
+        if store == "lh":
+            revision = None
+            label = None
+            if not dataset or dataset.strip() == "":
+                dataset = click.prompt("Dataset name").strip()
 
-        if not table or table.strip() == "":
-            table = click.prompt("Table").strip()
+            if not table or table.strip() == "":
+                table = click.prompt("Table").strip()
 
-        if dataset == "" or table == "":
-            click.echo(
-                f"\n❌ Error: Please provide both table and dataset name", err=True
-            )
-            ctx.exit(1)  # Exit with a non-zero status
+            if dataset == "" or table == "":
+                click.echo(
+                    f"\n❌ Error: Please provide both table and dataset name", err=True
+                )
+                ctx.exit(1)  # Exit with a non-zero status
 
     if type == "fileset":
         revision = None
