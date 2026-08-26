@@ -18,6 +18,7 @@ config:
       type: ''
   compute_config:
     total_memory_per_node: 10Gi
+    num_gpus_per_node: 0
 environment_configs:
   Lsf:
     launchers:
