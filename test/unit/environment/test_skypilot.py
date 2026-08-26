@@ -269,14 +269,20 @@ class TestSkypilotClusterNaming:
     def test_cluster_name_is_skypilot_valid(self):
         from gbserver.environment.skypilot import Skypilot
 
-        # SkyPilot: must start and end with an alphanumeric char.
+        # SkyPilot requires the name to start and end with an alphanumeric char.
+        # This asserts exactly that (start/end alphanumeric); it does not assert
+        # SkyPilot's other rules (e.g. no triple dashes), which the current
+        # inputs cannot trigger.
         valid = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]")
-        for launch_id in (
-            "td-3168aa02-1234-5678-9abc-def012345678",
-            "abcdef123456789",
-            "short",
-        ):
-            name = Skypilot._cluster_name_for(launch_id)
+        cases = [
+            ("td-3168aa02-1234-5678-9abc-def012345678", 0),
+            ("td-3168aa02-1234-5678-9abc-def012345678", 2),
+            ("abcdef123456789", 0),
+            ("short", 0),
+            ("short", 1),
+        ]
+        for launch_id, attempt in cases:
+            name = Skypilot._cluster_name_for(launch_id, attempt)
             assert valid.fullmatch(name), f"invalid name: {name!r}"
 
 
