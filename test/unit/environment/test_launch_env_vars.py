@@ -30,7 +30,6 @@ import pytest
 from gbserver.environment import environment as environment_module
 from gbserver.environment.environment import Environment
 
-
 # ---------------------------------------------------------------------------
 # Base Environment.get_launch_env_vars (the standard cross-environment set)
 # ---------------------------------------------------------------------------
@@ -129,9 +128,7 @@ class TestBashOverride:
         assert env["GB_BUILD_ID"] == "real-build"
 
     def test_output_dir_absent_when_not_provided(self):
-        env = self._bash().get_launch_env_vars(
-            run_metadata=RUN_META, launch_id="lid"
-        )
+        env = self._bash().get_launch_env_vars(run_metadata=RUN_META, launch_id="lid")
         assert "LLMB_BASH_OUTPUT_DIR" not in env
 
 
