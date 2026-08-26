@@ -92,10 +92,11 @@ def test_get_user_spaces_with_access_batches_space_lookup():
     assert by_name["space-b"].is_admin is False
 
 
-def test_get_user_spaces_with_access_no_memberships_skips_batch_query_result():
-    """Zero memberships -> the batched lookup is called with an empty name
-    list (must not be skipped/treated as "no filter") and contributes no
-    spaces; only the public-space fallback can still add a row."""
+def test_get_user_spaces_with_access_no_memberships_skips_batch_query():
+    """Zero memberships -> the batched lookup is skipped entirely rather than
+    run with an empty name list (a wasted column.in_([]) round trip on this
+    now-hot-path method for every list/count/tags request); only the
+    public-space fallback can still add a row."""
     space_user_storage = SimpleNamespace(get_by_username=MagicMock(return_value=[]))
     get_by_where = MagicMock(return_value=[])
     get_by_name = MagicMock(return_value=None)
@@ -104,5 +105,6 @@ def test_get_user_spaces_with_access_no_memberships_skips_batch_query_result():
     with _patched_storage(space_user_storage, space_storage):
         result = StorageSpaceAccessManager().get_user_spaces_with_access(_EMAIL)
 
-    get_by_where.assert_called_once_with(where={"name": []})
+    get_by_where.assert_not_called()
+    get_by_name.assert_called_once_with(PUBLIC_SPACE_NAME)
     assert result == []

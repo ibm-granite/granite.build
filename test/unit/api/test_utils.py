@@ -33,8 +33,16 @@ fix under test. Each test overrides it explicitly.
 """
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from gbserver.api import artifacts as artifacts_module
+from gbserver.api import builds as builds_module
+from gbserver.api import spaces as spaces_module
+from gbserver.api.artifacts import list_artifacts
+from gbserver.api.builds import count_builds, list_builds
+from gbserver.api.spaces import list_spaces
 from gbserver.api.utils import NO_ACCESSIBLE_SPACE, scope_space_name_filter
 from gbserver.spaces.space_access_manager import SpaceAccessInfo
 from gbserver.storage.stored_space import StoredSpace
@@ -120,3 +128,66 @@ def test_non_admin_with_no_accessible_spaces_gets_sentinel_not_empty_list():
         manager.return_value.get_user_spaces_with_access.return_value = []
         result = scope_space_name_filter(_fake_request("alice@example.com"), "")
     assert result is NO_ACCESSIBLE_SPACE
+
+
+# Every list-style route that scopes via scope_space_name_filter(), and how to
+# drive + verify it. `space_kwarg` is the route's own query-param name for the
+# space filter (list_spaces calls it `name`, not `space_name`). `get_empty`
+# extracts the collection/count from the response to compare against `empty`.
+# Adding a NEW route here is the reason this table exists: forgetting the
+# NO_ACCESSIBLE_SPACE check (see _NoAccessibleSpace's docstring in
+# api/utils.py) would make this test fail loudly instead of the omission
+# going unnoticed.
+_SCOPED_ROUTES = [
+    pytest.param(
+        builds_module,
+        list_builds,
+        "space_name",
+        lambda resp: resp.builds,
+        [],
+        id="list_builds",
+    ),
+    pytest.param(
+        builds_module,
+        count_builds,
+        "space_name",
+        lambda resp: resp.count,
+        0,
+        id="count_builds",
+    ),
+    pytest.param(
+        artifacts_module,
+        list_artifacts,
+        "space_name",
+        lambda resp: resp.artifacts,
+        [],
+        id="list_artifacts",
+    ),
+    pytest.param(
+        spaces_module,
+        list_spaces,
+        "name",
+        lambda resp: resp.spaces,
+        [],
+        id="list_spaces",
+    ),
+]
+
+
+@pytest.mark.parametrize("module, route, space_kwarg, get_empty, empty", _SCOPED_ROUTES)
+def test_all_scoped_routes_short_circuit_on_no_accessible_space(
+    module, route, space_kwarg, get_empty, empty
+):
+    """Every route in _SCOPED_ROUTES must check for NO_ACCESSIBLE_SPACE and
+    return its empty response WITHOUT ever calling get_admin_storage() --
+    i.e. without reaching get_row_filter()/storage.get_by_where()/count()."""
+    storage = MagicMock(name="get_admin_storage")
+    with (
+        patch.object(
+            module, "scope_space_name_filter", return_value=NO_ACCESSIBLE_SPACE
+        ),
+        patch.object(module, "get_admin_storage", storage),
+    ):
+        resp = route(_fake_request("alice@example.com"), **{space_kwarg: "space-B"})
+    assert get_empty(resp) == empty
+    storage.assert_not_called()

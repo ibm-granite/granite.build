@@ -514,6 +514,13 @@ def decode_uri(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Artifact with id {id} not found",
             )
+        # Deliberately stricter than read_artifact()/list_artifacts() below,
+        # which only require confirm_space_member_access: decoding resolves
+        # the URI into metadata NOT already present on the stored artifact
+        # object those two expose to any space member -- notably
+        # resource_group_id for hf:// URIs (see __get_hf_decoded_uri_response)
+        # -- so member-level access here would leak more than the read paths
+        # already do, not just duplicate what they show.
         confirm_space_write_access(
             request=request,
             username_on_target=artifact.username,
@@ -608,6 +615,12 @@ def read_artifact(request: Request, artifact_id: str) -> GetArtifactResponse:
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
         )
     assert isinstance(item, ArtifactRegistration)
+    # Member access (not write access): list_artifacts() already returns this
+    # exact object -- including its uri -- to any space member, so requiring
+    # write access here protected nothing the list endpoint didn't already
+    # expose; it was just an inconsistent extra 401. decode_uri(id=) below
+    # stays at write access deliberately -- it resolves additional metadata
+    # (e.g. resource_group_id) not present on this object.
     confirm_space_member_access(
         request=request,
         username_on_target=item.username,

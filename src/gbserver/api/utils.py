@@ -203,7 +203,21 @@ class _NoAccessibleSpace:
     accessible space to query. Callers must check for this with `is` and
     short-circuit to an empty result themselves -- it is never meant to reach
     get_row_filter()/storage.get_by_where(), so it carries no SQL-compatible
-    value at all."""
+    value at all.
+
+    Any NEW list-style endpoint that calls scope_space_name_filter() MUST add
+    this exact check before touching storage:
+
+        scoped_space_name = scope_space_name_filter(request, space_name)
+        if scoped_space_name is NO_ACCESSIBLE_SPACE:
+            return <the route's empty response>
+
+    See list_builds()/count_builds() (api/builds.py), list_artifacts()
+    (api/artifacts.py), and list_spaces() (api/spaces.py) for the pattern in
+    place today, and test/unit/api/test_utils.py's
+    test_all_scoped_routes_short_circuit_on_no_accessible_space for the
+    regression test that enumerates them -- add the new route there too.
+    """
 
     def __repr__(self) -> str:
         return "NO_ACCESSIBLE_SPACE"
@@ -231,7 +245,28 @@ def scope_space_name_filter(
     intersected with any caller-supplied space_name. A requested space outside
     that set, or an empty accessible set, returns NO_ACCESSIBLE_SPACE -- callers
     must check for it with `is` and return an empty result without ever calling
-    get_row_filter()/storage.get_by_where() or count().
+    get_row_filter()/storage.get_by_where() or count() (see _NoAccessibleSpace's
+    docstring for the required call-site pattern).
+
+    Args:
+        request: The current request; used to resolve the caller's identity
+            and super-admin status.
+        requested_space_name: The caller-supplied space_name filter, if any
+            (empty string means "no specific space requested").
+
+    Returns:
+        The space_name value to pass into get_row_filter(): a single space
+        name (str), a sorted list of accessible space names, or the
+        NO_ACCESSIBLE_SPACE marker if the caller has no accessible space (or
+        requested one outside their access).
+
+    Raises:
+        Exception: propagates uncaught from
+            get_space_access_manager().get_user_spaces_with_access() -- e.g. a
+            storage/DB error -- rather than being swallowed into an empty
+            result. A caller-visible failure (5xx) is the correct outcome for
+            a storage error here; treating it as "no access" would mask an
+            outage as a silent empty list / zero count.
     """
     if is_super_admin(request):
         return requested_space_name

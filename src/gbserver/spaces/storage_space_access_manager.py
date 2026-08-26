@@ -64,13 +64,21 @@ class StorageSpaceAccessManager(ISpaceAccessManager):
         memberships = storage.space_user_storage.get_by_username(username)
 
         # One batched lookup for all membership rows' spaces instead of one
-        # get_by_name() round trip per membership.
-        spaces_by_name = {
-            space.name: space
-            for space in storage.space_storage.get_by_where(
-                where={"name": [m.space_name for m in memberships]}
-            )
-        }
+        # get_by_name() round trip per membership. Skipped entirely (rather
+        # than passed an empty name list) when there are no memberships --
+        # this is now on the hot path for every list/count/tags request, and
+        # an empty list still means a real column.in_([]) query and round
+        # trip to the DB for a result we already know is empty.
+        spaces_by_name = (
+            {
+                space.name: space
+                for space in storage.space_storage.get_by_where(
+                    where={"name": [m.space_name for m in memberships]}
+                )
+            }
+            if memberships
+            else {}
+        )
 
         result = []
         for membership in memberships:
@@ -131,6 +139,14 @@ class StorageSpaceAccessManager(ISpaceAccessManager):
         test_user_spaces_list and was reverted. The asymmetry is fail-closed
         (public content is never over-exposed, only under-listed), so it's
         left as-is rather than re-attempted.
+
+        In practice the "no row yet" state is a pre-setup condition, not a
+        steady-state early-deployment risk: registering the public space via
+        `gbserver create-spaces` (docs/spaces/README.md) -- or automatically,
+        for a standalone server, via `gbserver standalone --space-dir` -- is a
+        documented one-time deployment step. A deployment that has completed
+        that step never hits this divergence; one that hasn't will see list
+        endpoints under-report until it does, which is the accepted trade-off.
 
         Args:
             username: User email address.

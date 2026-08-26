@@ -14,19 +14,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for GET /artifacts/decode?id= per-object authorization.
+"""Unit tests for GET /artifacts/decode?id= and GET /artifacts/{id} per-object
+authorization.
 
 decode_uri(id=...) is an alternate read path to the same artifact
 read_artifact protects (both load by uuid via get_admin_storage, which
-bypasses row-level security). This exercises the real confirm_space_write_access
-check directly, mocking only storage and the space-role lookups — no DB
-required. The uri= mode never touches storage and must stay open to anyone.
+bypasses row-level security) -- but the two are deliberately NOT at the same
+access level. decode_uri(id=) stays at write access (confirm_space_write_access)
+because it resolves additional metadata (e.g. resource_group_id for hf://
+URIs) not present on the stored object; read_artifact was loosened to member
+access (confirm_space_member_access) because list_artifacts() already returns
+that exact object -- including its uri -- to any space member, so write
+access there wasn't protecting anything the list didn't already expose. Both
+checks are exercised directly here, mocking only storage and the space-role
+lookups — no DB required. decode_uri's uri= mode never touches storage and
+must stay open to anyone.
 
 test/conftest.py's autouse `_mock_space_access` fixture stubs
-gbserver.api.artifacts.confirm_space_write_access to an unconditional no-op in
-mock mode (so unrelated tests don't need real space setup), which would make
+gbserver.api.artifacts.confirm_space_write_access to an unconditional no-op,
+and gbserver.api.utils.is_super_admin to an unconditional True, in mock mode
+(so unrelated tests don't need real space setup) — either of which would make
 every test here trivially pass regardless of the fix under test. `_real_authz`
-restores the real function for the duration of each test below.
+restores confirm_space_write_access/has_space_write_access for the
+decode_uri(id=)/register_artifact tests; the read_artifact tests patch
+is_super_admin and space_access_check directly instead, since
+confirm_space_member_access is never stubbed by conftest.
 """
 
 from contextlib import contextmanager
@@ -49,6 +61,7 @@ from gbserver.api.artifacts import (
     decode_uri,
     list_artifact_tags,
     list_artifacts,
+    read_artifact,
     register_artifact,
 )
 from gbserver.api.utils import (
@@ -162,6 +175,49 @@ def test_decode_uri_by_uri_requires_no_auth_and_touches_no_storage():
         )
     get_storage.assert_not_called()
     assert resp.uri == "hf://huggingface.co/models/anyone/anything"
+
+
+# ------------------------------------------------------------------ read_artifact
+
+
+def test_read_artifact_allows_owner():
+    art = _victim_artifact()
+    with (
+        _patched_storage(art),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=False),
+    ):
+        resp = read_artifact(
+            _fake_request(VICTIM_OWNER, f"{VICTIM_OWNER}@example.com"), art.uuid
+        )
+    assert resp.artifact.uuid == art.uuid
+
+
+def test_read_artifact_allows_non_owner_space_member():
+    """The behavior change under review: a non-owner, non-admin member of the
+    artifact's space is now allowed, matching list_artifacts()."""
+    art = _victim_artifact()
+    with (
+        _patched_storage(art),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=True),
+    ):
+        resp = read_artifact(
+            _fake_request("teammate_c", "teammate_c@example.com"), art.uuid
+        )
+    assert resp.artifact.uuid == art.uuid
+
+
+def test_read_artifact_rejects_non_member():
+    art = _victim_artifact()
+    with (
+        _patched_storage(art),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            read_artifact(_fake_request(ATTACKER, f"{ATTACKER}@example.com"), art.uuid)
+        assert exc.value.status_code == 401
 
 
 # ------------------------------------------------------------------ register_artifact
