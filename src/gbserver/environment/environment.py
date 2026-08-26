@@ -926,7 +926,7 @@ class Environment(ABC):
         every environment gets, regardless of launcher:
 
         1. The ``GBTEST_`` test-control vars currently set in the server's own
-           environment (e.g. GBTEST_MOCKED_HF_OPS), forwarded so a step running
+           environment (e.g. GBTEST_MOCK_HF), forwarded so a step running
            in a detached env — remote pod/job, container, or the clean-env bash
            subprocess — mocks the same HF ops the server would.
         2. The run_metadata-derived standard vars (currently GB_BUILD_ID; see

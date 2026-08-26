@@ -332,6 +332,13 @@ def pytest_sessionstart(session):
             os.environ[key] = value
         for key, value in MOCK_ENV_DEFAULTS.items():
             os.environ.setdefault(key, value)
+        # A whole-run live-HF opt-in (GBTEST_LIVE_HF=true) lifts the forced HF
+        # mock so the entire mock-mode run can exercise real HuggingFace. Per-test
+        # opt-in is handled by the _hf_mock fixture via @pytest.mark.live("hf").
+        from libgbtest.mode import is_live
+
+        if is_live("hf"):
+            os.environ.pop("GBTEST_MOCK_HF", None)
         logger.info(
             "Mock mode: applied placeholder env vars. "
             "Set GBTEST_MODE=live or per-service GBTEST_LIVE_<SERVICE>=true for real connections."
@@ -797,13 +804,23 @@ def _mock_kubernetes(request):
 
 
 @pytest.fixture(autouse=True)
-def _mock_huggingface(request):
-    """In mock mode, patch HuggingFace Hub downloads."""
-    if should_use_live(request, "hf"):
-        yield
-        return
+def _hf_mock(request):
+    """Bridge the ``live("hf")`` marker to the GBTEST_MOCK_HF guard.
 
-    with patch("huggingface_hub.snapshot_download", return_value="/tmp/fake-model"):
+    In mock mode GBTEST_MOCK_HF=true is forced at session start, so every HF op
+    (push/pull/exists/delete) short-circuits in HfURI without touching the Hub —
+    no per-test setup needed. A test marked ``@pytest.mark.live("hf")`` (or a run
+    with GBTEST_LIVE_HF=true) exercises real HF instead, so lift the guard for its
+    duration and restore it afterwards.
+    """
+    if should_use_live(request, "hf"):
+        prior = os.environ.pop("GBTEST_MOCK_HF", None)
+        try:
+            yield
+        finally:
+            if prior is not None:
+                os.environ["GBTEST_MOCK_HF"] = prior
+    else:
         yield
 
 

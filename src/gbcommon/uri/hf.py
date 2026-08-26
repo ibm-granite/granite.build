@@ -36,14 +36,7 @@ from huggingface_hub import (
 )
 
 from gbcommon.types.constants import GB_TEST_STANDALONE_ENVIRONMENT
-from gbcommon.types.testing import (
-    HF_OP_DELETE,
-    HF_OP_EXISTS,
-    HF_OP_PULL,
-    HF_OP_PUSH,
-    HF_OP_RESOURCE_GROUP,
-    is_hf_mocked,
-)
+from gbcommon.types.testing import is_hf_mocked
 from gbcommon.uri.uri import URI
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.constants import GB_ENVIRONMENT
@@ -328,7 +321,7 @@ class HfURI(URI):
         The latter are dangerous here: the resource may actually exist but we
         would still report it missing, so they must be visible in logs.
         """
-        if is_hf_mocked(HF_OP_EXISTS):
+        if is_hf_mocked():
             return True
         repo_id = "<unparsed>"
         try:
@@ -605,8 +598,8 @@ class HfURI(URI):
         so all repo files land directly in *dest*.  For buckets, uses
         ``HfApi.sync_bucket`` to download bucket contents to *dest*.
 
-        Returns ``True`` immediately without network calls when ``pull`` is
-        listed in ``GBTEST_MOCKED_HF_OPS``.
+        Returns ``True`` immediately without network calls when HF mocking is
+        enabled via ``GBTEST_MOCK_HF``.
 
         Token is resolved from ``self.secrets['HF_TOKEN']`` or the ``HF_TOKEN``
         environment variable.  For non-default hosts the ``endpoint`` kwarg is
@@ -619,7 +612,7 @@ class HfURI(URI):
         Returns:
             True if the download succeeded, False on any error.
         """
-        if is_hf_mocked(HF_OP_PULL):
+        if is_hf_mocked():
             return True
         try:
             p = self._parts()
@@ -762,7 +755,7 @@ class HfURI(URI):
         Returns:
             True if deletion succeeded, False on any error.
         """
-        if is_hf_mocked(HF_OP_DELETE):
+        if is_hf_mocked():
             return True
         p = self._parts()
         try:
@@ -898,7 +891,7 @@ class HfURI(URI):
             ValueError: If any of the provided inputs disagree, or if name/space
                 resolution fails.
         """
-        if is_hf_mocked(HF_OP_RESOURCE_GROUP):
+        if is_hf_mocked():
             # When this op is mocked there is no live Hub to query; skip the
             # resource-group lookup (which would hit the /resource-groups list
             # endpoint and require a token) and keep any explicit id, else None.
@@ -1138,7 +1131,7 @@ class HfURI(URI):
                 resulting empty commit, leaving the push a silent no-op).
             Exception: Any error from the HuggingFace Hub API is re-raised.
         """
-        if is_hf_mocked(HF_OP_PUSH):
+        if is_hf_mocked():
             return
         p = self._parts()
         repo_id = f"{p.owner}/{p.repo}"

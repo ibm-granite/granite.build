@@ -54,7 +54,7 @@ class TestBaseStandardEnv:
     @pytest.fixture(autouse=True)
     def _no_gbtest(self, monkeypatch):
         """Isolate the run_metadata-derived set from any GBTEST_ vars the test
-        environment may export (e.g. a suite-level GBTEST_MOCKED_HF_OPS)."""
+        environment may export (e.g. a suite-level GBTEST_MOCK_HF)."""
         monkeypatch.setattr(
             environment_module, "get_exported_gbtest_env_vars", lambda: {}
         )
@@ -92,10 +92,10 @@ class TestBaseGbtestForwarding:
         monkeypatch.setattr(
             environment_module,
             "get_exported_gbtest_env_vars",
-            lambda: {"GBTEST_MOCKED_HF_OPS": "push"},
+            lambda: {"GBTEST_MOCK_HF": "true"},
         )
         assert _base_env_vars({"build_id": "b1"}) == {
-            "GBTEST_MOCKED_HF_OPS": "push",
+            "GBTEST_MOCK_HF": "true",
             "GB_BUILD_ID": "b1",
         }
 
@@ -176,12 +176,12 @@ class TestDockerOverride:
         monkeypatch.setattr(
             environment_module,
             "get_exported_gbtest_env_vars",
-            lambda: {"GBTEST_MOCKED_HF_OPS": "all"},
+            lambda: {"GBTEST_MOCK_HF": "true"},
         )
         env = self._docker().get_launch_env_vars(
             run_metadata=RUN_META, launch_id="lid", container_name="c"
         )
-        assert env["GBTEST_MOCKED_HF_OPS"] == "all"
+        assert env["GBTEST_MOCK_HF"] == "true"
 
 
 class TestRunpodOverride:
@@ -343,11 +343,11 @@ class TestK8sOverride:
         monkeypatch.setattr(
             environment_module,
             "get_exported_gbtest_env_vars",
-            lambda: {"GB_BUILD_ID": "from-gbtest", "GBTEST_MOCKED_HF_OPS": "1"},
+            lambda: {"GB_BUILD_ID": "from-gbtest", "GBTEST_MOCK_HF": "true"},
         )
         env = self._k8s().get_launch_env_vars(run_metadata=RUN_META)
         assert env["GB_BUILD_ID"] == "real-build"
-        assert env["GBTEST_MOCKED_HF_OPS"] == "1"
+        assert env["GBTEST_MOCK_HF"] == "true"
 
 
 class TestAddGbAliases:

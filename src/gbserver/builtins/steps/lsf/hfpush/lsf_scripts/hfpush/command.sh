@@ -22,16 +22,13 @@ HF_TYPE='{{ hfp.hf.type }}'
 HF_RESOURCE_GROUP_ID='{{ hfp.hf.resource_group_id }}'
 BINDING_ID='{{ hfp.binding_id }}'
 
-# Mocked iff the op (or "all") is listed in GBTEST_MOCKED_HF_OPS;
-# tolerant of spaces/case to match gbcommon.types.testing.hf_mocked_ops.
+# Mocked when GBTEST_MOCK_HF is "true" (case-insensitive), matching
+# gbcommon.types.testing.is_hf_mocked. Forwarded as a worker env var.
 hf_mocked() {
-    local ops=",${GBTEST_MOCKED_HF_OPS:-},"
-    ops=${ops// /}
-    ops=${ops,,}
-    case "$ops" in *,"$1",*|*,all,*) return 0 ;; *) return 1 ;; esac
+    [[ "${GBTEST_MOCK_HF:-}" == [Tt][Rr][Uu][Ee] ]]
 }
-if hf_mocked push; then
-    echo "[GBTEST_MOCKED_HF_OPS] mocking hfpush — skipping create_repo and upload"
+if hf_mocked; then
+    echo "[GBTEST_MOCK_HF] mocking hfpush — skipping create_repo and upload"
     echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
     echo 'hfpush end'
     exit 0

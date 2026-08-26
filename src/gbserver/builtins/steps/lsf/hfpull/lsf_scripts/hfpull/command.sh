@@ -17,16 +17,13 @@ HF_REPO='{{ hfp.owner }}/{{ hfp.repo }}'
 HF_REVISION='{{ hfp.revision }}'
 HF_TYPE='{{ hfp.hf.type }}'
 
-# Mocked iff the op (or "all") is listed in GBTEST_MOCKED_HF_OPS;
-# tolerant of spaces/case to match gbcommon.types.testing.hf_mocked_ops.
+# Mocked when GBTEST_MOCK_HF is "true" (case-insensitive), matching
+# gbcommon.types.testing.is_hf_mocked. Forwarded as a worker env var.
 hf_mocked() {
-    local ops=",${GBTEST_MOCKED_HF_OPS:-},"
-    ops=${ops// /}
-    ops=${ops,,}
-    case "$ops" in *,"$1",*|*,all,*) return 0 ;; *) return 1 ;; esac
+    [[ "${GBTEST_MOCK_HF:-}" == [Tt][Rr][Uu][Ee] ]]
 }
-if hf_mocked pull; then
-    echo "[GBTEST_MOCKED_HF_OPS] mocking hfpull — skipping real download"
+if hf_mocked; then
+    echo "[GBTEST_MOCK_HF] mocking hfpull — skipping real download"
     mkdir -p "${HF_DEST}"
     echo mock > "${HF_DEST}/.gbtest_mock_hfpull"
     echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
