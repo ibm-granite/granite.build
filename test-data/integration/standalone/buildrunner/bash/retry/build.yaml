@@ -1,21 +1,43 @@
 granite.build:
-  name: bash-retry-skip-test
-  # Build-level retry: when a SUCCEEDED build is later marked FAILED and re-run,
-  # the BuildRunner creates a linked retry build.  Because the single target
-  # already succeeded in the same retry chain, the retry SKIPS it (reuse).
+  name: bash-retry-inplace-test
+  # In-place build retry: the single target FAILS on its first attempt and
+  # SUCCEEDS when the build retries in place (same build id). The command keys a
+  # /tmp marker file off this build's id: absent -> touch it and fail; present ->
+  # remove it and succeed. Because the marker name carries the (per-run-unique)
+  # build id, a stale marker from a crashed prior run can never collide, so no
+  # external setup/teardown cleanup is needed.
   retries:
     max_retries: 1
   targets:
-    succeed-target:
+    flaky-target:
       allow_unknown: true
       environment_uri: space://environments/bash
+      outputs:
+        # An env:// output the command emits on BOTH attempts. env:// push/pull are
+        # shared-FS no-ops (no file or existence check needed), so this registers in
+        # mock mode without any real store. The point is artifact re-association:
+        # the FAILED attempt first registers this artifact under the FAILED target
+        # run; on the in-place retry the SUCCESS run re-emits the same output, and
+        # the buildrunner re-associates the registration's created_by_target_id to
+        # the SUCCESS run. The test asserts it ends up attributed to that run.
+        env_output:
+          # Arbitrary fixed path; env push is a no-op so no file is created and the
+          # path value itself is not tested — only the registration's attribution.
+          uri: "env:///tmp/gb-retry-env-output.txt"
+          type: fileset
       steps:
-        # The general-purpose `command` bash step runs an arbitrary shell command.
-        # `exit 0` SUCCEEDS the target, leaving a reusable SUCCESS target run that
-        # the retry can skip via skipped_for_prerun_target_id.
+        # The general-purpose `command` bash step runs an arbitrary shell command
+        # via `sh -c`. GB_BUILD_ID (injected by the bash environment) is the build
+        # id — unique per build yet stable across its in-place retry attempts — so
+        # the marker path is unique to this build. The command first emits the
+        # env_output LLMB_ARTIFACT marker (parsed by the log monitor into an
+        # artifact registration), then: first attempt: marker absent -> `touch` and
+        # `exit 1` (FAIL); retry attempt: marker present -> `rm -f` and `exit 0`
+        # (SUCCESS). POSIX sh only. NOTE: single-quoted scalar, so keep `#` out of
+        # the command line (it would shell-comment out the rest, dropping markers).
         - step_uri: space://steps/command
           config:
             command_config:
-              command: "exit 0"
+              command: 'echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-retry-env-output.txt"; m=/tmp/gb_retry_marker_$GB_BUILD_ID; if [ -f "$m" ]; then echo retry-attempt-succeeding; rm -f "$m"; exit 0; else echo first-attempt-failing; touch "$m"; exit 1; fi'
             compute_config:
               num_nodes: 1

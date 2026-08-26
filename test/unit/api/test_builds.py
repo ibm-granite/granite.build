@@ -41,13 +41,14 @@ from fastapi import HTTPException
 
 from gbserver.api import builds as builds_module
 from gbserver.api.builds import (
-    BuildContinueRequest,
+    BuildRestartRequest,
     BuildSubmitRequest,
     BuildValidateRequest,
     BuildValidation,
-    continue_build,
     get_build_archive,
     read_build,
+    request_cancellation,
+    restart_build,
     submit_build,
     validate_build,
 )
@@ -55,11 +56,7 @@ from gbserver.api.utils import (
     confirm_space_write_access as _real_confirm_space_write_access,
 )
 from gbserver.api.utils import has_space_write_access as _real_has_space_write_access
-from gbserver.storage.stored_build import (
-    StoredBuild,
-    create_continuation_build,
-    get_retry_chain_members,
-)
+from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.status import Status
 
@@ -327,35 +324,107 @@ def test_read_access_by_space_membership(
             assert exc.value.status_code == 401
 
 
-# ------------------------------------------------------------------ continue_build
+# --- request_cancellation: FAILED-with-retries window (regression) ------------
+#
+# After an attempt fails, the build sits in FAILED until the retry loop flips it
+# back to RUNNING. A cancel landing in that window must be honored (set to
+# CANCELLED) rather than rejected as "already finished". See
+# gbserver.api.builds.request_cancellation.
 
 
-def _fake_build_storage(builds: dict):
-    """A build_storage mock backed by a {uuid: StoredBuild} dict that supports
-    the get_by_uuid / add / update surface create_continuation_build uses."""
-
-    def _add(b):
-        builds[b.uuid] = b
-        return b.uuid
-
-    def _update(b):
-        builds[b.uuid] = b
-        return b
-
+def _cancel_build(status: Status, has_retries: bool, uuid: str = "build-1"):
+    """A minimal stand-in for StoredBuild exposing only what request_cancellation
+    reads: uuid, status, and has_retries_remaining()."""
     return SimpleNamespace(
-        get_by_uuid=builds.get,
-        add=_add,
-        update=_update,
+        uuid=uuid,
+        status=status,
+        has_retries_remaining=lambda: has_retries,
     )
 
 
-def _patched_continue_storage(builds: dict):
+class _FakeBuildStorage:
+    """Fake IStoredBuildStorage whose update_fields honors the should_update guard
+    against the build as it currently exists in storage (stored_status)."""
+
+    def __init__(self, stored_status: Status):
+        self._stored_status = stored_status
+
+    def update_fields(self, uuid, fields, should_update=None):
+        # Emulate the atomic guard: check against the live stored status.
+        current = SimpleNamespace(status=self._stored_status)
+        if should_update is not None and not should_update(current):
+            return None
+        return SimpleNamespace(uuid=uuid, status=fields["status"])
+
+
+def test_cancel_failed_with_retries_sets_cancelled():
+    build = _cancel_build(Status.FAILED, has_retries=True)
+    storage = _FakeBuildStorage(stored_status=Status.FAILED)
+    result = request_cancellation(storage, build)  # type: ignore[arg-type]
+    assert result.status == Status.CANCELLED
+
+
+def test_cancel_failed_without_retries_rejected_412():
+    build = _cancel_build(Status.FAILED, has_retries=False)
+    storage = _FakeBuildStorage(stored_status=Status.FAILED)
+    with pytest.raises(HTTPException) as exc:
+        request_cancellation(storage, build)  # type: ignore[arg-type]
+    assert exc.value.status_code == 412
+
+
+def test_cancel_failed_with_retries_races_running_409():
+    # The runner flipped FAILED -> RUNNING (re-running the retry in place) before
+    # the cancel's write, so the should_update guard rejects the CANCELLED write
+    # and the client gets a 409.
+    build = _cancel_build(Status.FAILED, has_retries=True)
+    storage = _FakeBuildStorage(stored_status=Status.RUNNING)
+    with pytest.raises(HTTPException) as exc:
+        request_cancellation(storage, build)  # type: ignore[arg-type]
+    assert exc.value.status_code == 409
+
+
+def test_cancel_running_sets_cancel_requested():
+    build = _cancel_build(Status.RUNNING, has_retries=True)
+    storage = _FakeBuildStorage(stored_status=Status.RUNNING)
+    result = request_cancellation(storage, build)  # type: ignore[arg-type]
+    assert result.status == Status.CANCEL_REQUESTED
+
+
+# ------------------------------------------------------------------ restart_build
+#
+# Option A: a restart reuses the SAME build id. restart_build re-opens a
+# finished build in place (status -> SUBMITTED, retry_count reset) so the
+# BuildWatcher re-dispatches it onto a fresh runner. There is no retry chain and
+# no new build id.
+
+
+def _restart_build_storage(builds: dict):
+    """A build_storage mock backed by a {uuid: StoredBuild} dict, supporting the
+    get_by_uuid / update_fields surface restart_build + reopen_finished_build
+    use. update_fields honors the should_update guard against the build as it
+    currently exists in storage (so a race can be simulated by pre-seeding a
+    non-finished status)."""
+
+    def _update_fields(uuid, fields, should_update=None):
+        current = builds.get(uuid)
+        if current is None:
+            return None
+        if should_update is not None and not should_update(current):
+            return None
+        updated = current.model_copy(update=fields)
+        builds[uuid] = updated
+        return updated
+
+    return SimpleNamespace(get_by_uuid=builds.get, update_fields=_update_fields)
+
+
+def _patched_restart_storage(builds: dict):
     space = StoredSpace(name=SPACE, git_repo_uri="")
     fake_storage = SimpleNamespace(
         space_storage=SimpleNamespace(
             get_by_name=lambda name: space if name == SPACE else None
         ),
-        build_storage=_fake_build_storage(builds),
+        build_storage=_restart_build_storage(builds),
     )
     return patch.object(builds_module, "get_admin_storage", return_value=fake_storage)
 
@@ -369,274 +438,148 @@ def _prior_build(username: str, status: Status = Status.FAILED) -> StoredBuild:
         build_archive="dGVzdA==",
         status=status,
         targets=["a", "b"],
+        retry_count=3,
     )
 
 
-def test_continue_build_missing_build_returns_404():
-    with _patched_continue_storage({}):
+def test_restart_build_missing_build_returns_404():
+    with _patched_restart_storage({}):
         with pytest.raises(HTTPException) as exc:
-            continue_build(
+            restart_build(
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-                BuildContinueRequest(build_id="does-not-exist"),
+                BuildRestartRequest(build_id="does-not-exist"),
             )
     assert exc.value.status_code == 404
 
 
-def test_continue_build_rejects_active_build_409():
+def test_restart_build_rejects_active_build_409():
     prior = _prior_build(ATTACKER, status=Status.RUNNING)
-    with _patched_continue_storage({prior.uuid: prior}):
+    with _patched_restart_storage({prior.uuid: prior}):
         with pytest.raises(HTTPException) as exc:
-            continue_build(
+            restart_build(
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-                BuildContinueRequest(build_id=prior.uuid),
+                BuildRestartRequest(build_id=prior.uuid),
             )
     assert exc.value.status_code == 409
 
 
-def test_continue_build_rejects_when_chain_tip_still_active():
-    """The finished-check applies to the chain TIP, not the passed-in member:
-    continuing a finished root while a newer attempt is still RUNNING is a 409,
-    so a fresh runner is never attached to a live tip."""
-    root = _prior_build(ATTACKER, status=Status.FAILED)
-    tip = _prior_build(ATTACKER, status=Status.RUNNING)
-    tip.retry_of_build_id = root.uuid
-    root.retry_build_id = tip.uuid
-    with _patched_continue_storage({root.uuid: root, tip.uuid: tip}):
-        with pytest.raises(HTTPException) as exc:
-            # Pass the (finished) ROOT; the tip is still running.
-            continue_build(
-                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-                BuildContinueRequest(build_id=root.uuid),
-            )
-    assert exc.value.status_code == 409
-    # The 409 names the actual live attempt (the tip), not the passed-in build.
-    assert tip.uuid in exc.value.detail
-
-
-def test_continue_build_creates_linked_continuation():
+def test_restart_build_reopens_same_build_in_place():
     prior = _prior_build(ATTACKER, status=Status.FAILED)
     builds = {prior.uuid: prior}
     with (
-        _patched_continue_storage(builds),
+        _patched_restart_storage(builds),
         _real_authz(),
         patch("gbserver.api.utils.is_super_admin", return_value=False),
         patch("gbserver.api.utils.is_space_admin", return_value=False),
     ):
-        resp = continue_build(
+        resp = restart_build(
             _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-            BuildContinueRequest(build_id=prior.uuid),
+            BuildRestartRequest(build_id=prior.uuid),
         )
-    assert resp.build_id and resp.build_id != prior.uuid
-    # The response reports the resolved chain root (here the prior build itself).
-    assert resp.root_build_id == prior.uuid
-    continuation = builds[resp.build_id]
-    # Fresh build, linked to the prior chain root, fresh retry budget, SUBMITTED.
-    assert continuation.retry_of_build_id == prior.uuid
-    assert continuation.retry_count == 0
-    assert continuation.status == Status.SUBMITTED
-    assert continuation.build_archive == prior.build_archive
-    assert continuation.targets == prior.targets
-    # Back-link set on the prior (chain tip) so the chain advances.
-    assert builds[prior.uuid].retry_build_id == resp.build_id
+    # Same build id — no new build created.
+    assert resp.build_id == prior.uuid
+    reopened = builds[prior.uuid]
+    # Re-opened in place: SUBMITTED for re-dispatch, fresh retry budget.
+    assert reopened.status == Status.SUBMITTED
+    assert reopened.retry_count == 0
+    # Definition/targets are untouched (already on the build).
+    assert reopened.build_archive == prior.build_archive
+    assert reopened.targets == prior.targets
 
 
-def test_continue_build_accepts_mid_chain_member_and_links_to_root():
-    # root -> tip (any member may be continued; continuation links to the root
-    # and the back-link lands on the chain tip, not the passed-in member).
-    root = _prior_build(ATTACKER, status=Status.FAILED)
-    tip = _prior_build(ATTACKER, status=Status.FAILED)
-    tip.retry_of_build_id = root.uuid
-    root.retry_build_id = tip.uuid
-    # Give the tip a distinct definition to prove the continuation is seeded from
-    # the tip (latest attempt), not from the passed-in root.
-    tip.targets = ["tip-target"]
-    root.targets = ["root-target"]
-    builds = {root.uuid: root, tip.uuid: tip}
+def test_restart_build_rejects_succeeded_build_409():
+    """A fully-succeeded build has nothing to restart (every target already
+    succeeded), so it is rejected with 409 and left untouched — even for an
+    authorized owner. This is the SUCCESS carve-out on top of is_finished()."""
+    prior = _prior_build(ATTACKER, status=Status.SUCCESS)
+    builds = {prior.uuid: prior}
     with (
-        _patched_continue_storage(builds),
-        _real_authz(),
-        patch("gbserver.api.utils.is_super_admin", return_value=False),
-        patch("gbserver.api.utils.is_space_admin", return_value=False),
-    ):
-        resp = continue_build(
-            _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-            BuildContinueRequest(build_id=root.uuid),
-        )
-    continuation = builds[resp.build_id]
-    assert continuation.retry_of_build_id == root.uuid
-    # The response reports the resolved root even though a mid-chain member was passed.
-    assert resp.root_build_id == root.uuid
-    # Definition is sourced from the tip (latest attempt), not the passed-in root.
-    assert continuation.targets == ["tip-target"]
-    # Tip gets the back-link; root's existing link is untouched.
-    assert builds[tip.uuid].retry_build_id == resp.build_id
-    assert builds[root.uuid].retry_build_id == tip.uuid
-
-
-def test_repeated_continuations_linearize_into_one_chain():
-    """Continuing the same root repeatedly appends to the current tip, so the
-    chain stays linear (A -> B -> C) rather than branching into multiple chains
-    sharing a root. `gb build status --follow-retries` then shows every
-    continuation in a single walk."""
-    root = _prior_build(ATTACKER, status=Status.FAILED)
-    builds = {root.uuid: root}
-    bs = _fake_build_storage(builds)
-
-    # Continue root -> B, then continue root again -> C. Both attach to the tip.
-    b = create_continuation_build(bs, builds[root.uuid])
-    c = create_continuation_build(bs, builds[root.uuid])
-
-    chain = [m.uuid for m in get_retry_chain_members(bs, builds[root.uuid])]
-    assert chain == [root.uuid, b.uuid, c.uuid]
-    # No back-link was overwritten: root -> B -> C, each single forward hop.
-    assert builds[root.uuid].retry_build_id == b.uuid
-    assert builds[b.uuid].retry_build_id == c.uuid
-    # Every continuation links to the same resolved root.
-    assert b.retry_of_build_id == root.uuid
-    assert c.retry_of_build_id == root.uuid
-
-
-def test_create_continuation_build_uses_passed_chain_without_rewalking():
-    """When the caller (the /continue endpoint) has already resolved the chain, it
-    passes it in and create_continuation_build must NOT walk it again — each member
-    is an unindexed point read, so re-walking would double the reads."""
-    root = _prior_build(ATTACKER, status=Status.FAILED)
-    tip = _prior_build(ATTACKER, status=Status.FAILED)
-    tip.retry_of_build_id = root.uuid
-    root.retry_build_id = tip.uuid
-    builds = {root.uuid: root, tip.uuid: tip}
-    bs = _fake_build_storage(builds)
-    chain = get_retry_chain_members(bs, root)
-
-    with patch("gbserver.storage.stored_build.get_retry_chain_members") as walk:
-        cont = create_continuation_build(bs, root, chain=chain)
-
-    walk.assert_not_called()
-    # Same linkage as the walk-it-yourself path: linked to root, back-link on tip.
-    assert cont.retry_of_build_id == root.uuid
-    assert builds[tip.uuid].retry_build_id == cont.uuid
-
-
-def test_create_continuation_build_rejects_chain_missing_prior():
-    """create_continuation_build must refuse to link off a chain that does not
-    contain `prior`. This guards get_retry_chain_members' `members or [build]`
-    fallback (root row unreadable) and a stale/mismatched passed-in chain, either
-    of which would otherwise link to the wrong root and orphan the chain tail."""
-    root = _prior_build(ATTACKER, status=Status.FAILED)
-    mid = _prior_build(ATTACKER, status=Status.FAILED)
-    mid.retry_of_build_id = root.uuid
-    root.retry_build_id = mid.uuid
-    bs = _fake_build_storage({root.uuid: root, mid.uuid: mid})
-    # A chain that does not contain `mid` (e.g. resolved before mid was linked, or
-    # the fallback returned just [root]).
-    with pytest.raises(ValueError, match="does not contain"):
-        create_continuation_build(bs, mid, chain=[root])
-    # The valid mid is untouched — no back-link overwritten.
-    assert root.retry_build_id == mid.uuid
-
-
-def test_create_continuation_build_rewalk_fallback_does_not_corrupt_chain():
-    """If get_retry_chain_members can only see `prior` (root row unreadable, so it
-    hits `members or [build]`), the guard fires rather than silently treating a
-    mid-chain member as its own root and overwriting its forward link."""
-    root = _prior_build(ATTACKER, status=Status.FAILED)
-    mid = _prior_build(ATTACKER, status=Status.FAILED)
-    mid.retry_of_build_id = root.uuid
-    root.retry_build_id = mid.uuid
-    # Only `mid` is readable; the root read fails, so get_retry_chain_members
-    # returns [mid] via its fallback — mid would wrongly be its own root/tip.
-    bs = _fake_build_storage({mid.uuid: mid})
-    with pytest.raises(ValueError, match="does not contain|could not be resolved"):
-        create_continuation_build(bs, mid)
-    # mid's forward link is NOT clobbered (it never pointed anywhere, and stays so).
-    assert mid.retry_build_id is None
-
-
-def test_continue_build_authorizes_tip_space_not_just_prior():
-    """Authz is checked against the tip's space/user (what the continuation runs
-    as), not only the passed-in member. A caller authorized on the passed-in
-    build's space but NOT the tip's is rejected with the not-found 404."""
-    # prior (passed-in) is in SPACE and owned by the caller; the tip diverges to a
-    # different owner the caller has no access to.
-    prior = _prior_build(ATTACKER, status=Status.FAILED)
-    tip = _prior_build(VICTIM, status=Status.FAILED)
-    tip.retry_of_build_id = prior.uuid
-    prior.retry_build_id = tip.uuid
-    with (
-        _patched_continue_storage({prior.uuid: prior, tip.uuid: tip}),
+        _patched_restart_storage(builds),
         _real_authz(),
         patch("gbserver.api.utils.is_super_admin", return_value=False),
         patch("gbserver.api.utils.is_space_admin", return_value=False),
     ):
         with pytest.raises(HTTPException) as exc:
-            continue_build(
+            restart_build(
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-                BuildContinueRequest(build_id=prior.uuid),
+                BuildRestartRequest(build_id=prior.uuid),
             )
-    # Same 404 as every other "you may not see this" path — no oracle.
-    assert exc.value.status_code == 404
+    assert exc.value.status_code == 409
+    # Not re-opened: the build stays SUCCESS, no flip to SUBMITTED.
+    assert builds[prior.uuid].status == Status.SUCCESS
 
 
-def test_chain_walk_includes_intermediate_members_from_any_member():
-    """get_retry_chain_members must return EVERY member of a flat-to-root chain
-    (root -> mid -> tip), not just [self, root], regardless of which member it is
-    called from. Target reuse (BuildRunner.__get_retry_chain_build_ids) relies on
-    this: retry_of_build_id points every member at the root, so a backward walk
-    would miss `mid` and re-run a target that first succeeded there."""
-    root = _prior_build(ATTACKER, status=Status.FAILED)
-    mid = _prior_build(ATTACKER, status=Status.FAILED)
-    tip = _prior_build(ATTACKER, status=Status.FAILED)
-    # Flat-to-root: mid and tip both point their retry_of_build_id at the root.
-    mid.retry_of_build_id = root.uuid
-    tip.retry_of_build_id = root.uuid
-    root.retry_build_id = mid.uuid
-    mid.retry_build_id = tip.uuid
-    bs = _fake_build_storage({root.uuid: root, mid.uuid: mid, tip.uuid: tip})
+def test_restart_build_reopen_race_returns_409():
+    # The build read as FAILED, but a concurrent writer flipped it to RUNNING
+    # before the guarded flip's write, so the should_update guard rejects it and
+    # the client gets a 409 rather than a fresh runner attaching to a live build.
+    prior = _prior_build(ATTACKER, status=Status.FAILED)
 
-    expected = [root.uuid, mid.uuid, tip.uuid]
-    # The full chain is recovered from any starting member, and always includes mid.
-    for member in (root, mid, tip):
-        chain = [m.uuid for m in get_retry_chain_members(bs, member)]
-        assert chain == expected
-        assert mid.uuid in chain
+    class _RacingStorage:
+        def get_by_uuid(self, uuid):
+            return prior if uuid == prior.uuid else None
+
+        def update_fields(self, uuid, fields, should_update=None):
+            live = SimpleNamespace(status=Status.RUNNING)
+            if should_update is not None and not should_update(live):
+                return None
+            return prior.model_copy(update=fields)
+
+    space = StoredSpace(name=SPACE, git_repo_uri="")
+    storage = SimpleNamespace(
+        space_storage=SimpleNamespace(
+            get_by_name=lambda name: space if name == SPACE else None
+        ),
+        build_storage=_RacingStorage(),
+    )
+    with (
+        patch.object(builds_module, "get_admin_storage", return_value=storage),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            restart_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                BuildRestartRequest(build_id=prior.uuid),
+            )
+    assert exc.value.status_code == 409
 
 
-def test_continue_build_rejects_forged_username_as_404():
+def test_restart_build_rejects_forged_username_as_404():
     """An unauthorized caller gets 404, identical to a nonexistent build — not a
-    401 that would confirm the id is real. Collapsing the two removes the id
-    oracle: a caller without space access cannot tell a build id they may not
-    reach from one that does not exist, so cannot enumerate ids across spaces."""
+    401/409 that would confirm the id is real or leak its liveness. Collapsing
+    them removes the id oracle across spaces the caller cannot reach."""
     prior = _prior_build(VICTIM, status=Status.FAILED)
     with (
-        _patched_continue_storage({prior.uuid: prior}),
+        _patched_restart_storage({prior.uuid: prior}),
         _real_authz(),
         patch("gbserver.api.utils.is_super_admin", return_value=False),
         patch("gbserver.api.utils.is_space_admin", return_value=False),
     ):
         with pytest.raises(HTTPException) as exc:
-            continue_build(
+            restart_build(
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-                BuildContinueRequest(build_id=prior.uuid),
+                BuildRestartRequest(build_id=prior.uuid),
             )
     assert exc.value.status_code == 404
-    # Same detail as the missing-build 404, so the two are indistinguishable.
     assert exc.value.detail == f"Build {prior.uuid} not found"
 
 
-def test_continue_build_authz_precedes_status_disclosure():
-    """An unauthorized caller must not learn a prior build's liveness: authz is
-    enforced BEFORE the is_finished() 409, so continuing another user's *active*
-    build returns the not-found 404, not a 409 that would leak that it is live."""
+def test_restart_build_authz_precedes_status_disclosure():
+    """An unauthorized caller must not learn a build's liveness: authz is enforced
+    BEFORE the is_finished() 409, so restarting another user's *active* build
+    returns the not-found 404, not a 409 that would leak that it is live."""
     prior = _prior_build(VICTIM, status=Status.RUNNING)
     with (
-        _patched_continue_storage({prior.uuid: prior}),
+        _patched_restart_storage({prior.uuid: prior}),
         _real_authz(),
         patch("gbserver.api.utils.is_super_admin", return_value=False),
         patch("gbserver.api.utils.is_space_admin", return_value=False),
     ):
         with pytest.raises(HTTPException) as exc:
-            continue_build(
+            restart_build(
                 _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
-                BuildContinueRequest(build_id=prior.uuid),
+                BuildRestartRequest(build_id=prior.uuid),
             )
     assert exc.value.status_code == 404

@@ -63,7 +63,10 @@ from gbserver.storage.storage import (
     SortOrder,
 )
 from gbserver.storage.stored_build import StoredBuild
-from gbserver.storage.stored_target_run import StoredTargetRun
+from gbserver.storage.stored_target_run import (
+    StoredTargetRun,
+    latest_success_per_target,
+)
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
@@ -462,12 +465,6 @@ def select_recordable_targets(
     such a name, and a selector that kept the target would leave it permanently
     unconfirmable.
 
-    A target skipped for a prerun match is exempt from that skip: it records the
-    *original* target's artifacts (see ``WandBJobStats.create_jobstats_for_target``,
-    which swaps in the original before building events), so its own empty
-    ``output_artifacts`` says nothing about whether it has lineage. Same reasoning
-    as the ``expected_run_count`` exemption in ``reconcile_build``.
-
     Note what the artifact-less skip does to state keyed on targets this function
     no longer returns. Such a target never reaches ``candidates``, so it is also
     absent from ``ReconcileResult.dropped`` -- meaning the watcher's
@@ -500,11 +497,7 @@ def select_recordable_targets(
         for target in page:
             if target.finished_at is None:
                 continue
-            if (
-                not target.skipped_for_prerun_target_id
-                and not target.input_artifacts
-                and not any(target.output_artifacts.values())
-            ):
+            if not target.input_artifacts and not any(target.output_artifacts.values()):
                 artifact_less += 1
                 logger.debug(
                     "Skipping wandb lineage recording for target %s (build %s): "
@@ -532,7 +525,11 @@ def select_recordable_targets(
             artifact_less,
             build_id,
         )
-    return selected
+    # In-place retry reuses one build id, so a target can hold more than one
+    # SUCCESS run (a prior success with unregistered artifacts is re-run; a
+    # reuse-disabled build re-runs every target). Record only the latest per
+    # target — the pages are newest-finished first, so the winner stays first.
+    return latest_success_per_target(selected)
 
 
 def expected_run_count(target: StoredTargetRun) -> int:
@@ -543,12 +540,8 @@ def expected_run_count(target: StoredTargetRun) -> int:
     single "no-output" run when the target has inputs but no outputs. Inputs
     otherwise do not add runs — they are attached to each output's run — so only
     outputs are counted when there are any. ``select_recordable_targets`` excludes
-    fully artifact-less targets, *except* prerun-skipped ones, whose own empty
-    dicts say nothing about the original's artifacts; those are not counted here
-    either, because ``reconcile_build`` omits prerun-skipped targets from its
-    ``expected`` map (their runs carry the original's artifacts, which this
-    in-memory target does not have). Keep that omission and this exemption
-    together. This is derived from the in-memory
+    fully artifact-less targets, so every target reaching here has at least one
+    real edge. This is derived from the in-memory
     ``StoredTargetRun`` (already loaded by the scan) to avoid any extra storage
     read. Keep this in lockstep with ``_build_events_for_target``; the
     count-vs-events coherence test guards drift.
@@ -676,20 +669,10 @@ def reconcile_build(
     # Expected run count per candidate, so ``filter_unrecorded`` can tell a
     # fully-recorded target from one whose runs were only partially emitted by a
     # prior crashed scan. Derived in memory from the already-loaded targets — no
-    # extra storage read.
-    #
-    # A skipped-for-prerun target is omitted: it records the *original* target's
-    # outputs (see WandBJobStats.create_jobstats_for_target, which swaps in the
-    # original before building events), so its own output_artifacts would give the
-    # wrong count. Omitting it falls back to the presence check (>=1), which is
-    # the conservative direction: a too-high count would report the target
-    # unrecorded on every scan and, since run ids are random, write a fresh
-    # duplicate run set each time while pinning the checkpoint forever.
-    expected = {
-        t.uuid: expected_run_count(t)
-        for t in targets
-        if t.uuid in candidates and not t.skipped_for_prerun_target_id
-    }
+    # extra storage read. Every candidate is a real run whose own output_artifacts
+    # give the correct count (there is no skip concept: an in-place retry keeps
+    # both the FAILED and the SUCCESS run in one build).
+    expected = {t.uuid: expected_run_count(t) for t in targets if t.uuid in candidates}
 
     failure: Optional[Exception] = None
 

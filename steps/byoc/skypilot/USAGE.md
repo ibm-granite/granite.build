@@ -98,28 +98,45 @@ Use relative paths from there; when you need an absolute path — e.g. for an
 
 ## Example build.yaml
 
-This example wires **two inputs** (one direct `uri:`, one `binding:` to an upstream
-target's output) and **two outputs** (one of which receives two artifacts via repeated
-markers). The `command` reads each input via `{{ bindings.<name>.binding.path }}` and
-registers each artifact via a marker line:
+This example declares **two byoc targets**: an upstream `pretrain` producer whose
+`model` output the downstream `run` target binds to. `run` wires **two inputs** (one
+direct `uri:`, one `binding:` to `pretrain`'s output) and **two outputs** (one of which
+receives two artifacts via repeated markers). The `command` reads each input via
+`{{ bindings.<name>.binding.path }}` and registers each artifact via a marker line:
 
 ```yaml
 granite.build:
   name: byoc-example
   version: 0.0.1
   targets:
+    pretrain:
+      environment_uri: space://environments/skypilot/aws
+      outputs:
+        model:
+          uri: hf://huggingface.co/my-org/byoc-pretrain-{{ run_metadata.targetsteprun_id | short_hash }}
+      steps:
+        - step_uri: space://steps/byoc
+          config:
+            compute_config: { num_nodes: 1, num_gpus_per_node: 1 }
+            byoc_config:
+              image: "python:3.12-slim"
+              repo: "https://github.com/org/repo"
+              command: >-
+                cd code;
+                python pretrain.py --out-dir "$(pwd)/out";
+                echo "LLMB_ARTIFACT_ID:model LLMB_ARTIFACT_PATH:$(pwd)/out/model.ckpt"
     run:
       environment_uri: space://environments/skypilot/aws
       inputs:
         dataset:
           uri: hf:///datasets/org/my-dataset
-        upstream_model:
+        init_model:
           binding: pretrain.model   # <upstream-target>.<output-id>
       outputs:
         checkpoints:
-          uri: lh://prod/myspace/models/shared/byoc-out-{{ run_metadata.targetsteprun_id | short_hash }}/1
+          uri: hf://huggingface.co/my-org/byoc-out-{{ run_metadata.targetsteprun_id | short_hash }}
         report:
-          uri: lh://prod/myspace/reports/shared/byoc-report-{{ run_metadata.targetsteprun_id | short_hash }}/1
+          uri: hf://huggingface.co/datasets/my-org/byoc-report-{{ run_metadata.targetsteprun_id | short_hash }}
       steps:
         - step_uri: space://steps/byoc
           config:
@@ -134,7 +151,7 @@ granite.build:
                 cd code;
                 python main.py
                 --dataset "{{ bindings.dataset.binding.path }}"
-                --init-model "{{ bindings.upstream_model.binding.path }}"
+                --init-model "{{ bindings.init_model.binding.path }}"
                 --out-dir "$(pwd)/out";
                 echo "LLMB_ARTIFACT_ID:checkpoints LLMB_ARTIFACT_PATH:$(pwd)/out/epoch-1.ckpt";
                 echo "LLMB_ARTIFACT_ID:checkpoints LLMB_ARTIFACT_PATH:$(pwd)/out/epoch-2.ckpt";

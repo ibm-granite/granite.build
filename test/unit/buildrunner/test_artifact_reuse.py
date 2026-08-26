@@ -16,10 +16,11 @@
 
 """Tests for artifact-reuse handling in ``BuildRunner.__process_artifact_event``.
 
-These cover the retry-chain reuse logic added in PR #103: an artifact already
-registered by an *ancestor* build (a build retry) must be reused with its
-existing status preserved, while an artifact owned by an unrelated build must be
-rejected.
+With in-place retry a build keeps a single build id across attempts, so the same
+artifact URI can legitimately be re-emitted within the one build (by a retried
+step or a re-run target). When that happens the existing registration is reused
+(its status is preserved) and re-associated to the run that just produced it. An
+artifact owned by a *different* build id is rejected.
 """
 
 from datetime import datetime
@@ -48,41 +49,25 @@ _USER = "testuser"
 _BINDING = "model_out"
 
 
-def _make_runner(retry_chain_ids):
+def _make_runner(build_id):
     """Build a BuildRunner with mocked storage, bypassing __init__.
 
-    ``retry_chain_ids[0]`` is the current (tip/retry) build; the rest are
-    ancestors toward the root, so ``retry_chain_ids[-1]`` is the root. The mocks
-    model the real linkage the chain walk relies on: every non-root member's
-    ``retry_of_build_id`` points at the root (flat-to-root), and each member's
-    ``retry_build_id`` forward-links to the next-newer member. All members are
-    resolvable via ``get_by_uuid`` (get_retry_chain_members walks forward from
-    the root).
+    Args:
+        build_id: the single build id this runner is running (in-place retry
+            reuses this id across attempts).
+
+    Returns:
+        A BuildRunner whose storage and target-linking side effect are mocked.
     """
     runner = object.__new__(BuildRunner)
 
-    root_id = retry_chain_ids[-1]
-    # Order root -> ... -> tip for building the forward retry_build_id links.
-    ordered = list(reversed(retry_chain_ids))
+    stored_build = MagicMock(spec=StoredBuild)
+    stored_build.uuid = build_id
+    stored_build.space_name = _SPACE
+    stored_build.username = _USER
+    runner.stored_build = stored_build
 
-    members = {}
-    for idx, bid in enumerate(ordered):
-        member = MagicMock(spec=StoredBuild)
-        member.uuid = bid
-        member.space_name = _SPACE
-        member.username = _USER
-        # Flat-to-root: non-root members point at the root; the root has none.
-        member.retry_of_build_id = "" if bid == root_id else root_id
-        # Forward link to the next-newer member (None on the tip).
-        member.retry_build_id = ordered[idx + 1] if idx + 1 < len(ordered) else None
-        members[bid] = member
-
-    runner.stored_build = members[retry_chain_ids[0]]
-
-    storage = MagicMock()
-    storage.build_storage.get_by_uuid.side_effect = members.get
-    runner.storage = storage
-
+    runner.storage = MagicMock()
     runner.build_run = None
     runner.build_message_logger = MagicMock()
     # Isolate the target-linking side effect; exercised separately elsewhere.
@@ -115,56 +100,72 @@ def _existing_artifact(created_by_build_id, created_by_target_id, status):
     )
 
 
-class TestArtifactReuseAcrossRetryChain:
+class TestArtifactReuseWithinBuild:
     """``__process_artifact_event`` reuse behavior for the non-pushed path."""
 
-    def test_reuses_ancestor_artifact_and_preserves_success_status(self):
-        """A build retry re-emitting an ancestor's artifact reuses it without
+    def test_reuses_same_build_artifact_and_preserves_success_status(self):
+        """A re-run target re-emitting the same build's artifact reuses it without
         resetting a SUCCESS status back to PENDING."""
-        retry_build = "build-retry-2"
-        original_build = "build-original-1"
-        runner = _make_runner([retry_build, original_build])
+        build_id = "build-1"
+        runner = _make_runner(build_id)
 
         existing = _existing_artifact(
-            created_by_build_id=original_build,
-            created_by_target_id="target-orig",
+            created_by_build_id=build_id,
+            created_by_target_id="target-attempt-1",
             status=ArtifactRegistrationStatus.SUCCESS,
         )
         runner.storage.artifact_registry.get_by_uri.return_value = existing
 
-        event = _make_event(build_id=retry_build, targetrun_id="target-retry")
+        event = _make_event(build_id=build_id, targetrun_id="target-attempt-1")
         runner._BuildRunner__process_artifact_event(event, pushed=False)
 
-        # The reused artifact keeps its SUCCESS status (the bug was resetting it
-        # to PENDING, which would never be restored since the step is skipped).
+        # The reused artifact keeps its SUCCESS status (a reset to PENDING would
+        # never be restored since the step is not re-run).
         assert existing.status == ArtifactRegistrationStatus.SUCCESS
-        # A reused record must NOT be re-written to storage...
+        # Same target: no re-association write, and no new record inserted.
+        runner.storage.artifact_registry.update_fields.assert_not_called()
         runner.storage.artifact_registry.update.assert_not_called()
-        # ...but the current target must still be linked to it.
+        # The current target must still be linked to it.
         runner._BuildRunner__update_target_with_artifact.assert_called_once()
         _, kwargs = runner._BuildRunner__update_target_with_artifact.call_args
         assert kwargs["artifact"] is existing
 
-    def test_reuses_same_build_artifact_from_retried_step(self):
-        """A retried step within the same build reuses its own prior artifact."""
+    def test_reassociates_artifact_to_the_rerun_target(self):
+        """A re-run target that re-emits an artifact first produced by an earlier
+        (failed) target run re-associates it via created_by_target_id."""
         build_id = "build-1"
-        runner = _make_runner([build_id])
+        runner = _make_runner(build_id)
+
         existing = _existing_artifact(
             created_by_build_id=build_id,
-            created_by_target_id="target-1",
+            created_by_target_id="target-failed",
             status=ArtifactRegistrationStatus.PENDING,
         )
         runner.storage.artifact_registry.get_by_uri.return_value = existing
+        reassociated = _existing_artifact(
+            created_by_build_id=build_id,
+            created_by_target_id="target-success",
+            status=ArtifactRegistrationStatus.PENDING,
+        )
+        runner.storage.artifact_registry.update_fields.return_value = reassociated
 
-        event = _make_event(build_id=build_id, targetrun_id="target-1")
+        event = _make_event(build_id=build_id, targetrun_id="target-success")
         runner._BuildRunner__process_artifact_event(event, pushed=False)
 
+        # The registration is re-pointed at the successful re-run target.
+        runner.storage.artifact_registry.update_fields.assert_called_once_with(
+            existing.uuid, {"created_by_target_id": "target-success"}
+        )
+        # No brand-new record is inserted.
         runner.storage.artifact_registry.update.assert_not_called()
         runner._BuildRunner__update_target_with_artifact.assert_called_once()
+        _, kwargs = runner._BuildRunner__update_target_with_artifact.call_args
+        assert kwargs["artifact"] is reassociated
 
-    def test_rejects_artifact_from_build_outside_retry_chain(self):
-        """An existing artifact owned by an unrelated build is rejected."""
-        runner = _make_runner(["build-retry-2", "build-original-1"])
+    def test_rejects_artifact_from_another_build(self):
+        """An existing artifact owned by a different build id is rejected."""
+        build_id = "build-1"
+        runner = _make_runner(build_id)
 
         existing = _existing_artifact(
             created_by_build_id="some-unrelated-build",
@@ -173,16 +174,17 @@ class TestArtifactReuseAcrossRetryChain:
         )
         runner.storage.artifact_registry.get_by_uri.return_value = existing
 
-        event = _make_event(build_id="build-retry-2", targetrun_id="target-retry")
-        with pytest.raises(ValueError, match="not in this retry chain"):
+        event = _make_event(build_id=build_id, targetrun_id="target-1")
+        with pytest.raises(ValueError, match="another build"):
             runner._BuildRunner__process_artifact_event(event, pushed=False)
 
         runner.storage.artifact_registry.update.assert_not_called()
+        runner.storage.artifact_registry.update_fields.assert_not_called()
 
     def test_registers_new_artifact_when_none_exists(self):
         """With no existing record, a new artifact is created and persisted."""
         build_id = "build-1"
-        runner = _make_runner([build_id])
+        runner = _make_runner(build_id)
         runner.storage.artifact_registry.get_by_uri.return_value = None
 
         event = _make_event(build_id=build_id, targetrun_id="target-1")

@@ -200,7 +200,6 @@ class WandBLineageStore(ILineageStore):
         storage: SingletonAdminStorage,
         build: StoredBuild,
         targetrun: StoredTargetRun,
-        skipped_for_prerun: bool = False,
     ) -> Tuple[List[dict], Dict[str, List[dict]]]:
         event_type = _STATUS_TO_EVENT_TYPE.get(targetrun.status, "OTHER")
         event_time = (
@@ -406,19 +405,7 @@ class WandBLineageStore(ILineageStore):
         # whose input rows were pruned would emit nothing at all if gated on it.
         # The selector is not the primary gate either -- api/lineage.py reaches
         # this builder directly, without consulting it.
-        #
-        # `skipped_for_prerun` mirrors the selector's exemption for prerun-skipped
-        # targets. Such a target reaches here having had the *original*'s artifacts
-        # swapped in by create_jobstats_for_target, so an empty result can mean
-        # either "the original really has no artifacts" or "the original row was
-        # missing and we fell back to the skipped target's own always-empty
-        # dicts". Both are cases the selector keeps, so emitting nothing would be
-        # the divergence this comment warns about; emit the no-output event
-        # instead. The flag cannot be read off `targetrun` here -- the swap copies
-        # the original's (empty) skipped_for_prerun_target_id.
-        if not any(targetrun.output_artifacts.values()) and (
-            targetrun.input_artifacts or skipped_for_prerun
-        ):
+        if not any(targetrun.output_artifacts.values()) and targetrun.input_artifacts:
             event = {
                 **base_event,
                 "inputs": inputs,
@@ -487,14 +474,8 @@ class WandBLineageStore(ILineageStore):
             # targets out before the reconciler ever gets here. Any *other*
             # empty result is a silent no-op: the caller marks the target
             # recorded while nothing reaches the backend, so warn on that.
-            # Read the flag off `targetrun` (pre-swap) deliberately: a
-            # prerun-skipped target is exempt in `_build_events_for_target` and so
-            # always emits, meaning an empty result for one is unexpected and
-            # belongs in the warning branch rather than here.
-            artifact_less = (
-                not targetrun.skipped_for_prerun_target_id
-                and not targetrun.input_artifacts
-                and not any(targetrun.output_artifacts.values())
+            artifact_less = not targetrun.input_artifacts and not any(
+                targetrun.output_artifacts.values()
             )
             if artifact_less:
                 logger.debug(
@@ -545,28 +526,10 @@ class WandBLineageStore(ILineageStore):
                 f"target's build id ({targetrun.build_id}) does not match that of the given build ({build.uuid})"
             )
 
-        skipped_for_prerun = bool(targetrun.skipped_for_prerun_target_id)
-        if targetrun.skipped_for_prerun_target_id:
-            original = storage.target_storage.get_by_uuid(
-                targetrun.skipped_for_prerun_target_id
-            )
-            if original is not None and isinstance(original, StoredTargetRun):
-                targetrun = original.model_copy(
-                    update={
-                        "uuid": targetrun.uuid,
-                        "build_id": targetrun.build_id,
-                    }
-                )
-            else:
-                logger.warning(
-                    "Skipped target %s references unknown original %s",
-                    targetrun.uuid,
-                    targetrun.skipped_for_prerun_target_id,
-                )
-
-        return self._build_events_for_target(
-            storage, build, targetrun, skipped_for_prerun=skipped_for_prerun
-        )
+        # Every SUCCESS run is a real run with its own outputs (in-place retry keeps
+        # both the FAILED and the SUCCESS run in one build), so lineage is built
+        # directly from the target's own outputs.
+        return self._build_events_for_target(storage, build, targetrun)
 
     def create_jobstats_for_original_artifact(
         self,

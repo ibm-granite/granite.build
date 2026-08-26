@@ -44,7 +44,6 @@ class BaseStoredTargetRunStorage(
             "build_id",
             "status",
             "target_hash",
-            "skipped_for_prerun_target_id",
             # Exposed as a column so lineage reconciliation can sort/paginate
             # successful targets newest-first by completion time and stop at its
             # watermark, fetching only newly-finished targets each scan.

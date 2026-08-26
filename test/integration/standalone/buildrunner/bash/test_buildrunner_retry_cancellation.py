@@ -14,18 +14,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Cancellation of a build-level retry chain.
+"""Cancellation of an in-place build retry.
 
-Cancelling any member of a retry chain — including the already-FAILED original —
-must stop the active retry and mark every build in the chain CANCELLED, and the
-chain must not spawn further retries.
+With in-place retry a build keeps a single build id across attempts. Cancelling
+the build while a retry is in flight must stop the active run, mark the one build
+CANCELLED, and prevent any further retries. There is no retry chain to walk.
 """
 
 import threading
-from pathlib import Path
 from time import sleep, time
 
 import pytest
+from fastapi import HTTPException
 from libgbtest.buildrunner.buildtest import (
     AbstractBuildTest,
     BuildTestSpecification,
@@ -37,7 +37,7 @@ from libgbtest.constants import GBTEST_SPACE_NAME, GBTEST_USER_NAME
 from gbserver.api.builds import request_cancellation
 from gbserver.buildrunner.buildrunner import BuildRunner
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
-from gbserver.storage.stored_build import StoredBuild, get_retry_chain_members
+from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.status import Status
 
 pytestmark = pytest.mark.standalone
@@ -47,13 +47,12 @@ _IN_FLIGHT = {
     Status.PENDING,
     Status.RUNNING,
     Status.CANCEL_REQUESTED,
-    Status.RETRY_PENDING,
 }
 
 
 @pytest.mark.xdist_group(name="buildwatcher_bash_cancel")
-class TestRetryChainCancellation(AbstractBuildTest):
-    """Cancelling a retry chain stops it and marks all members CANCELLED."""
+class TestInPlaceRetryCancellation(AbstractBuildTest):
+    """Cancelling an in-place retry stops it and marks the one build CANCELLED."""
 
     def setup_method(self, method):
         self.run_locally = True
@@ -64,8 +63,8 @@ class TestRetryChainCancellation(AbstractBuildTest):
             get_test_data_dir_for(__file__) / "retry-cancel" / "buildtest.yaml"
         )
 
-    def _make_build(self, status, retry_count, retry_of_build_id=None) -> StoredBuild:
-        """Create a bare StoredBuild for chain-routing assertions (not executed)."""
+    def _make_build(self, status, retry_count) -> StoredBuild:
+        """Create a bare StoredBuild for cancellation-routing assertions (not executed)."""
         return StoredBuild(
             name="test",
             space_name=GBTEST_SPACE_NAME,
@@ -73,7 +72,6 @@ class TestRetryChainCancellation(AbstractBuildTest):
             username=GBTEST_USER_NAME,
             status=status,
             retry_count=retry_count,
-            retry_of_build_id=retry_of_build_id,
         )
 
     def _bare_runner(self, build: StoredBuild) -> BuildRunner:
@@ -85,8 +83,6 @@ class TestRetryChainCancellation(AbstractBuildTest):
         runner.stop_event = threading.Event()
         runner._stop_requested = threading.Event()
         runner._finalize_lock = threading.Lock()
-        runner._retry_chain_build_ids = [build.uuid]
-        runner._retry_chain_lock = threading.Lock()
         return runner
 
     def test_stop_after_success_does_not_cancel(self):
@@ -103,40 +99,43 @@ class TestRetryChainCancellation(AbstractBuildTest):
             self.storage.build_storage.get_by_uuid(build.uuid).status == Status.SUCCESS
         ), "A cleanup stop() must not cancel a build that already succeeded"
 
-    def test_cancel_failed_root_is_accepted_when_chain_active(self):
-        """Deterministic: a FAILED root with an active retry can be cancelled.
+    def test_request_cancellation_routes_by_status(self):
+        """request_cancellation maps each build status to the right outcome.
 
-        The request sets CANCEL_REQUESTED on the root itself (a durable signal the
-        runner detects chain-wide); the active retry is left for the runner to act
-        on. With no active member, cancellation is rejected.
+        In-place retry keeps one build id, so cancellation is decided purely by
+        the build's current status: an in-flight RUNNING build (including one the
+        retry loop re-ran in place) becomes CANCEL_REQUESTED for the runner to act
+        on; a not-yet-started (SUBMITTED/PENDING) build is cancelled outright; a
+        finished build (a FAILED build with retries exhausted, or SUCCESS/CANCELLED)
+        is not cancellable.
         """
-        root = self._make_build(Status.FAILED, 0)
-        retry1 = self._make_build(Status.FAILED, 1, retry_of_build_id=root.uuid)
-        retry2 = self._make_build(Status.RUNNING, 2, retry_of_build_id=root.uuid)
-        root.retry_build_id = retry1.uuid
-        retry1.retry_build_id = retry2.uuid
-        for b in (root, retry1, retry2):
-            self.storage.build_storage.add(b)
+        # In-flight: RUNNING defers to the runner via CANCEL_REQUESTED.
+        build = self._make_build(Status.RUNNING, 1)
+        self.storage.build_storage.add(build)
+        updated = request_cancellation(self.storage.build_storage, build)
+        assert (
+            updated.status == Status.CANCEL_REQUESTED
+        ), f"RUNNING should route to CANCEL_REQUESTED, got {updated.status}"
 
-        members = get_retry_chain_members(self.storage.build_storage, root)
-        assert [m.uuid for m in members] == [root.uuid, retry1.uuid, retry2.uuid]
+        # Not yet started: cancelled outright.
+        for pre_run in (Status.SUBMITTED, Status.PENDING):
+            build = self._make_build(pre_run, 0)
+            self.storage.build_storage.add(build)
+            updated = request_cancellation(self.storage.build_storage, build)
+            assert (
+                updated.status == Status.CANCELLED
+            ), f"{pre_run} should route to CANCELLED, got {updated.status}"
 
-        # Cancelling the FAILED root is accepted because retry2 is still active.
-        updated = request_cancellation(self.storage.build_storage, root)
-        assert updated.uuid == root.uuid
-        assert updated.status == Status.CANCEL_REQUESTED
+        # Finished (retries exhausted / already done): not cancellable -> 412.
+        for finished in (Status.FAILED, Status.SUCCESS, Status.CANCELLED):
+            build = self._make_build(finished, 2)
+            self.storage.build_storage.add(build)
+            with pytest.raises(HTTPException) as exc_info:
+                request_cancellation(self.storage.build_storage, build)
+            assert exc_info.value.status_code == 412
 
-        # With every member finished (no active retry), cancellation is rejected.
-        self.storage.build_storage.update_fields(root.uuid, {"status": Status.FAILED})
-        self.storage.build_storage.update_fields(retry2.uuid, {"status": Status.FAILED})
-        done_root = self.storage.build_storage.get_by_uuid(root.uuid)
-        from fastapi import HTTPException
-
-        with pytest.raises(HTTPException):
-            request_cancellation(self.storage.build_storage, done_root)
-
-    def test_cancel_stops_retry_chain(self):
-        """E2E: cancel the FAILED root mid-chain; all chain builds end CANCELLED."""
+    def test_cancel_stops_in_flight_retry(self):
+        """E2E: cancel the build mid-retry; the one build ends CANCELLED."""
         spec = self._get_spec()
         space = self._check_and_setup_space(spec)
 
@@ -148,7 +147,7 @@ class TestRetryChainCancellation(AbstractBuildTest):
             build_yaml_path=spec.build_yaml,
             status=Status.SUBMITTED,
         )
-        root_id = stored_build.uuid
+        build_id = stored_build.uuid
         self.storage.build_storage.add(stored_build)
 
         watcher = BuildWatcher(gh_token="", all_build_space_uri=spec.space_uri)
@@ -162,47 +161,51 @@ class TestRetryChainCancellation(AbstractBuildTest):
         try:
             timeout = spec.timeout_minutes * 60
             # Wait until the first attempt has failed and a retry is in flight.
-            self._wait_for_active_retry(timeout)
-            # Cancel via the FAILED root — routes to the active retry.
-            root = self.storage.build_storage.get_by_uuid(root_id)
-            request_cancellation(self.storage.build_storage, root)
-            self._wait_until_chain_settles(timeout)
+            self._wait_for_active_retry(build_id, timeout)
+            build = self.storage.build_storage.get_by_uuid(build_id)
+            request_cancellation(self.storage.build_storage, build)
+            self._wait_until_settled(build_id, timeout)
         finally:
             watcher.stop()
             thread.join(timeout=60)
 
         builds = self.storage.build_storage.get_by_uuid(None) or []
-        statuses = [b.status for b in builds]
-        assert all(s == Status.CANCELLED for s in statuses), (
-            f"Every build in the chain should be CANCELLED after cancellation, "
-            f"got {statuses}"
-        )
-        # The chain stopped well short of exhausting max_retries (5).
-        assert max(b.retry_count for b in builds) < 5, (
-            f"Chain kept retrying after cancellation: retry_counts="
-            f"{sorted(b.retry_count for b in builds)}"
-        )
+        assert (
+            len(builds) == 1
+        ), f"In-place retry must reuse one build id, found {len(builds)} builds"
+        build = builds[0]
+        assert build.uuid == build_id
+        assert (
+            build.status == Status.CANCELLED
+        ), f"Build should be CANCELLED after cancellation, got {build.status}"
+        # Cancellation stopped it well short of exhausting max_retries (5).
+        assert (
+            build.retry_count < 5
+        ), f"Build kept retrying after cancellation: retry_count={build.retry_count}"
 
-    def _wait_for_active_retry(self, timeout_seconds: float) -> None:
-        """Block until a build with retry_count >= 1 is in flight (a retry is running)."""
+    def _wait_for_active_retry(self, build_id: str, timeout_seconds: float) -> None:
+        """Block until the build has retried at least once and is in flight."""
         start = time()
         while time() - start <= timeout_seconds:
             builds = self.storage.build_storage.get_by_uuid(None) or []
-            if any(b.retry_count >= 1 and b.status in _IN_FLIGHT for b in builds):
+            build = next((b for b in builds if b.uuid == build_id), None)
+            if (
+                build is not None
+                and build.retry_count >= 1
+                and build.status in _IN_FLIGHT
+            ):
                 return
             sleep(1)
         assert False, f"No active retry appeared within {timeout_seconds}s."
 
-    def _wait_until_chain_settles(self, timeout_seconds: float) -> None:
-        """Block until no build is in flight and the count is stable across two polls."""
+    def _wait_until_settled(self, build_id: str, timeout_seconds: float) -> None:
+        """Block until the build is no longer in flight."""
         poll = 2.0
-        prev_count = -1
         start = time()
         while time() - start <= timeout_seconds:
             builds = self.storage.build_storage.get_by_uuid(None) or []
-            in_flight = [b for b in builds if b.status in _IN_FLIGHT]
-            if builds and not in_flight and len(builds) == prev_count:
+            build = next((b for b in builds if b.uuid == build_id), None)
+            if build is not None and build.status not in _IN_FLIGHT:
                 return
-            prev_count = len(builds)
             sleep(poll)
-        assert False, f"Retry chain did not settle within {timeout_seconds}s."
+        assert False, f"Build {build_id} did not settle within {timeout_seconds}s."
