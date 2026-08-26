@@ -9,7 +9,7 @@ The gbserver process does not need to stay running for jobs to complete.
 import asyncio
 import glob
 import os
-from typing import Dict, List, Optional, Self
+from typing import Any, Dict, List, Optional, Self
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -94,6 +94,41 @@ class Skypilot_managed(Environment):
         """Generate a unique managed job name from a launch_id."""
         return f"gb-{launch_id[:12]}"
 
+    def get_launch_env_vars(
+        self: Self,
+        run_metadata: Optional[Dict[str, Any]] = None,
+        launcher_config: Optional[Dict] = None,
+        launch_id: str = "",
+        job_name: str = "",
+        **kwargs: Any,
+    ) -> Dict[str, str]:
+        """Build the full env dict for a skypilot managed-job launch.
+
+        Precedence (lowest->highest): secrets < launcher ``envs`` < the
+        built-in ``GB_SKYPILOT_*`` vars < the standard cross-environment set
+        from ``super()`` (GBTEST_ test-control vars + e.g. GB_BUILD_ID), which
+        is authoritative.
+
+        :param run_metadata: launch run_metadata; forwarded to ``super()`` and
+            the source of GB_TARGETRUN_ID.
+        :param launcher_config: step.yaml launcher config (its ``envs``).
+        :param launch_id: unique id for this launch (GB_SKYPILOT_LAUNCH_ID).
+        :param job_name: the managed job name (GB_SKYPILOT_JOB_NAME).
+        :returns: the complete ``{name: value}`` env dict for the sky.Task.
+        """
+        launcher_config = launcher_config or {}
+        run_metadata = run_metadata or {}
+        env: Dict[str, str] = {}
+        if self.secrets:
+            env.update(self.secrets)
+        env.update(launcher_config.get("envs", {}))
+        env["GB_SKYPILOT_LAUNCH_ID"] = launch_id
+        env["GB_SKYPILOT_JOB_NAME"] = job_name
+        if run_metadata.get("targetrun_id"):
+            env["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
+        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
+        return env
+
     async def launch_skypilot_managed(
         self: Self,
         launch_id: str,
@@ -111,6 +146,8 @@ class Skypilot_managed(Environment):
 
             launcher_config = kwargs.get("launcher_config", {}) or {}
             config = kwargs.get("config", {}) or {}
+            # Kept as a local: reused by the post-launch-failure event below.
+            run_metadata = kwargs.get("run_metadata", {})
 
             job_name = self._job_name_for(launch_id)
             cloud = (
@@ -143,19 +180,15 @@ class Skypilot_managed(Environment):
                 _cluster_config_overrides=cluster_config_overrides or None,
             )
 
-            # Build environment variables
-            env_vars: Dict[str, str] = {}
-            if self.secrets:
-                env_vars.update(self.secrets)
-            env_vars.update(launcher_config.get("envs", {}))
-            env_vars["GB_SKYPILOT_LAUNCH_ID"] = launch_id
-            env_vars["GB_SKYPILOT_JOB_NAME"] = job_name
-            # Expose run metadata so steps in the same target can share state
-            run_metadata = kwargs.get("run_metadata", {})
-            if run_metadata.get("targetrun_id"):
-                env_vars["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
-            if run_metadata.get("build_id"):
-                env_vars["GB_BUILD_ID"] = run_metadata["build_id"]
+            # Build the full env for the sky.Task. GB_BUILD_ID (and any future
+            # standard var) comes from Environment.get_launch_env_vars() and is
+            # authoritative over launcher/config env.
+            env_vars = self.get_launch_env_vars(
+                run_metadata=run_metadata,
+                launcher_config=launcher_config,
+                launch_id=launch_id,
+                job_name=job_name,
+            )
 
             # Build sky.Task
             task = sky.Task(

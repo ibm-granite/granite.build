@@ -60,7 +60,6 @@ import kubernetes_asyncio
 import yaml
 from kubernetes_asyncio import client, config, watch
 
-from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.cos import CosURI
 from gbcommon.uri.hf import HfURI
 from gbcommon.uri.lh import LhURI
@@ -756,11 +755,17 @@ class K8s(Environment):
                 (f"k8s.env.{env_var.env_name}.valueFrom.secretKeyRef.key", secret_key)
             )
 
-        # Propagate GBTEST_ env vars as strings — must use --set-string to prevent
-        # Helm from parsing "true"/"false" as booleans, which would render as
-        # `value: true` (boolean) in the pod spec and fail Kubernetes validation.
+        # Propagate the standard cross-environment vars (GBTEST_ test-control
+        # vars + GB_BUILD_ID; from Environment.get_launch_env_vars) as strings —
+        # must use --set-string to prevent Helm from parsing "true"/"false" as
+        # booleans, which would render as `value: true` (boolean) in the pod
+        # spec and fail Kubernetes validation. Secret-backed env vars are handled
+        # separately above via valueFrom.secretKeyRef.
         extra_runmetadata_string_values = [
-            (f"k8s.env.{k}.value", v) for k, v in get_exported_gbtest_env_vars().items()
+            (f"k8s.env.{k}.value", v)
+            for k, v in self.get_launch_env_vars(
+                run_metadata=kwargs.get("run_metadata", {})
+            ).items()
         ]
 
         # --- Build --set overrides ---

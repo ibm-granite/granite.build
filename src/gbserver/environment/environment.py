@@ -53,7 +53,10 @@ if TYPE_CHECKING:
 
 from pydantic import Field
 
-from gbcommon.types.testing import is_failure_simulated
+from gbcommon.types.testing import (
+    get_exported_gbtest_env_vars,
+    is_failure_simulated,
+)
 from gbcommon.uri.file import absolutize_file_uri
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
@@ -93,6 +96,15 @@ from gbserver.utils.utils import get_uuid
 logger = get_logger(__name__)
 
 BINDING_KEY = "binding"
+
+# Standard env vars injected into EVERY launched step, keyed by the run_metadata
+# field they read. Add a line here (e.g. "GB_TARGETRUN_ID": "targetrun_id") to
+# roll a var out to all environments at once. Each is emitted only when its
+# run_metadata value is non-empty, and str-coerced. Subclass launch methods
+# obtain these (and their own env) via Environment.get_launch_env_vars().
+STANDARD_STEP_ENV_FROM_RUN_METADATA: Dict[str, str] = {
+    "GB_BUILD_ID": "build_id",
+}
 
 # ANSI escape sequences (colour codes, cursor moves, etc.). Some environments'
 # retrieved logs colourise their line prefixes — SkyPilot, for example, wraps its
@@ -902,6 +914,46 @@ class Environment(ABC):
     def __cancel_monitoring(self, launch_id: str):
         """Tells monitors that launch has stopped and they should not proceed."""
         self._get_launch_stopped_event(launch_id).set()
+
+    def get_launch_env_vars(
+        self: Self,
+        run_metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, str]:
+        """Return the env vars to inject into a launched step.
+
+        The base implementation returns the standard cross-environment set that
+        every environment gets, regardless of launcher:
+
+        1. The ``GBTEST_`` test-control vars currently set in the server's own
+           environment (e.g. GBTEST_MOCKED_HF_OPS), forwarded so a step running
+           in a detached env — remote pod/job, container, or the clean-env bash
+           subprocess — mocks the same HF ops the server would.
+        2. The run_metadata-derived standard vars (currently GB_BUILD_ID; see
+           STANDARD_STEP_ENV_FROM_RUN_METADATA).
+
+        Subclasses OVERRIDE this to build their full env dict (config env,
+        secrets, launcher envs, LLMB_*/GB_* vars) and then merge the result of
+        ``super().get_launch_env_vars(...)`` LAST, so this standard set wins over
+        any config/secret/launcher value of the same name.
+
+        :param run_metadata: the launch's run_metadata dict; the source of the
+            run_metadata-derived standard values. May be None/empty, in which
+            case no run_metadata-derived vars are emitted.
+        :param kwargs: ignored by the base; accepted so subclass overrides can
+            forward their own launch-time context to ``super()`` without the
+            base signature drifting.
+        :returns: a ``{name: str_value}`` dict; each run_metadata-derived var is
+            included only when its value is truthy, coerced with ``str()``.
+        """
+        rm = run_metadata or {}
+        # (1) Forward GBTEST_ test-control vars from the server's environment.
+        env: Dict[str, str] = dict(get_exported_gbtest_env_vars())
+        # (2) run_metadata-derived standard vars (e.g. GB_BUILD_ID).
+        for env_name, meta_key in STANDARD_STEP_ENV_FROM_RUN_METADATA.items():
+            if rm.get(meta_key):
+                env[env_name] = str(rm[meta_key])
+        return env
 
     def launch(
         self: Self,
