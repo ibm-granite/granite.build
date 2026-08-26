@@ -717,6 +717,9 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
         if (
             not self._does_table_exist()
         ):  # Try and avoid needlessly creating the table only to delete it, seen in setup/teardown of tests.
+            # Table is gone: reset the flag even here, so the get_by_*() guards
+            # don't trust a stale "initialized" and query a dropped table.
+            self.__is_storage_initialized = False
             self.logger.debug(f"Done deleting table: table does not exist.")
             return
 
