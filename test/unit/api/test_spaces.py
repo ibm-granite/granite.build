@@ -31,18 +31,13 @@ from unit.api._space_scoping_test_helpers import (
     ALICE_SPACE,
     BOB_SPACE,
 )
+from unit.api._space_scoping_test_helpers import fake_request as _fake_request
 from unit.api._space_scoping_test_helpers import row_matches as _row_matches
 from unit.api._space_scoping_test_helpers import set_alice_access as _set_alice_access
 
 from gbserver.api import spaces as spaces_module
 from gbserver.api.spaces import list_spaces
 from gbserver.storage.stored_space import StoredSpace
-
-
-def _fake_request(login: str, email: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        state=SimpleNamespace(data={"user": SimpleNamespace(login=login, email=email)})
-    )
 
 
 def _patched_list_storage(spaces: list):

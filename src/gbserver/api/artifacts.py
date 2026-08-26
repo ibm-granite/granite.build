@@ -26,6 +26,7 @@ from gbserver.api.utils import (
     NO_ACCESSIBLE_SPACE,
     ListAppendOrSet,
     apply_tag_update,
+    confirm_space_member_access,
     confirm_space_write_access,
     get_row_filter,
     is_super_admin,
@@ -607,7 +608,7 @@ def read_artifact(request: Request, artifact_id: str) -> GetArtifactResponse:
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
         )
     assert isinstance(item, ArtifactRegistration)
-    confirm_space_write_access(
+    confirm_space_member_access(
         request=request,
         username_on_target=item.username,
         space_name=item.space_name,

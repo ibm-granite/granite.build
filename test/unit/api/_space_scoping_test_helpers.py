@@ -21,6 +21,7 @@ row_filter-aware storage, so they share the same alice/bob space setup and
 row-matching logic.
 """
 
+from types import SimpleNamespace
 from typing import Any
 
 from gbserver.spaces.space_access_manager import SpaceAccessInfo
@@ -29,6 +30,12 @@ from gbserver.storage.stored_space import StoredSpace
 ALICE = "alice"
 ALICE_SPACE = "space-A"
 BOB_SPACE = "space-B"
+
+
+def fake_request(login: str, email: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        state=SimpleNamespace(data={"user": SimpleNamespace(login=login, email=email)})
+    )
 
 
 def row_matches(item: Any, where: dict) -> bool:
