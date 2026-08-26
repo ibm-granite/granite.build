@@ -21,4 +21,4 @@ target_expectations:
 # against this YAML's directory.
 space_uri: ../../../../../../configurations/spaces/local
 simulate_step_failure: true
-timeout_minutes: 10 # Seems sufficient on mac running local slurm cluster
+timeout_minutes: 15 # 15 vs 10 for ci in github. 

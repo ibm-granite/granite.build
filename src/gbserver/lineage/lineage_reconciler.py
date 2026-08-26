@@ -63,7 +63,10 @@ from gbserver.storage.storage import (
     SortOrder,
 )
 from gbserver.storage.stored_build import StoredBuild
-from gbserver.storage.stored_target_run import StoredTargetRun
+from gbserver.storage.stored_target_run import (
+    StoredTargetRun,
+    latest_success_per_target,
+)
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
@@ -471,7 +474,11 @@ def select_recordable_targets(
         if len(page) < _SCAN_PAGE_SIZE:
             break
         page_index += 1
-    return selected
+    # In-place retry reuses one build id, so a target can hold more than one
+    # SUCCESS run (a prior success with unregistered artifacts is re-run; a
+    # reuse-disabled build re-runs every target). Record only the latest per
+    # target — the pages are newest-finished first, so the winner stays first.
+    return latest_success_per_target(selected)
 
 
 def expected_run_count(target: StoredTargetRun) -> int:
@@ -608,20 +615,10 @@ def reconcile_build(
     # Expected run count per candidate, so ``filter_unrecorded`` can tell a
     # fully-recorded target from one whose runs were only partially emitted by a
     # prior crashed scan. Derived in memory from the already-loaded targets — no
-    # extra storage read.
-    #
-    # A skipped-for-prerun target is omitted: it records the *original* target's
-    # outputs (see WandBJobStats.create_jobstats_for_target, which swaps in the
-    # original before building events), so its own output_artifacts would give the
-    # wrong count. Omitting it falls back to the presence check (>=1), which is
-    # the conservative direction: a too-high count would report the target
-    # unrecorded on every scan and, since run ids are random, write a fresh
-    # duplicate run set each time while pinning the checkpoint forever.
-    expected = {
-        t.uuid: expected_run_count(t)
-        for t in targets
-        if t.uuid in candidates and not t.skipped_for_prerun_target_id
-    }
+    # extra storage read. Every candidate is a real run whose own output_artifacts
+    # give the correct count (there is no skip concept: an in-place retry keeps
+    # both the FAILED and the SUCCESS run in one build).
+    expected = {t.uuid: expected_run_count(t) for t in targets if t.uuid in candidates}
 
     failure: Optional[Exception] = None
 

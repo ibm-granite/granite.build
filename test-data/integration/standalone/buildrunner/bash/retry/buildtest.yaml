@@ -1,22 +1,30 @@
-# Fixture for the build-level retry-with-target-reuse test
+# Fixture for the in-place build-retry test
 # (test/integration/standalone/buildrunner/bash/test_buildrunner_retry.py).
 #
-# build_yaml defaults to ./build.yaml (sibling) when omitted.  The build's single
-# target succeeds, so Phase 1 ends SUCCESS; the test then marks it FAILED and
-# re-runs to exercise the retry/skip path.
+# build_yaml defaults to ./build.yaml (sibling) when omitted. The build's single
+# target FAILS on its first attempt and SUCCEEDS on the in-place retry (same build
+# id), so the build ends SUCCESS with retry_count == 1 and the target has a FAILED
+# run plus a linked SUCCESS run (retry_of_target_id).
 expected_status: success
-# The target succeeds on its own; no step-failure simulation.
+# The command self-fails on attempt 1 via a marker file; no framework step-failure
+# simulation is used.
 simulate_step_failure: false
 # Use the shared standalone space at <repo>/configurations/spaces/local so the
 # BuildRunner resolves space:// URIs (the bash environment and the command step)
-# without cloning from GitHub.  Relative path resolves against this YAML's
+# without cloning from GitHub. Relative path resolves against this YAML's
 # directory and is returned as an absolute file:// URI by from_yaml.
 space_uri: ../../../../../../configurations/spaces/local
-# A single bash target with one command step and no input/output artifacts.
+# A single bash target with one command step and one env:// output artifact. The
+# target fails once and then succeeds on the in-place retry, so it has one FAILED
+# run (target_failure_count) plus the winning SUCCESS run. Artifact counts are
+# checked only against the SUCCESS run, which owns the single env_output artifact;
+# the FAILED run's incidental outputs are not asserted. The test also verifies the
+# artifact is re-associated (created_by_target_id) to the SUCCESS run.
 target_expectations:
-  - target_name: succeed-target
+  - target_name: flaky-target
     step_count: 1
     input_artifact_count: 0
-    output_artifact_count: 0
-    jobstats_count: 0
+    output_artifact_count: 1
+    target_failure_count: 1
+    jobstats_count: 1
 timeout_minutes: 10

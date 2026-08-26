@@ -192,6 +192,13 @@ class Bash(Environment):
                 run_metadata, dict
             ), f"invalid run_metadata: {run_metadata}"
             build_id = run_metadata.get("build_id", "")
+            # Expose the build id to the workload as GB_BUILD_ID, matching the name
+            # the skypilot environment already injects (the eventual cross-
+            # environment standard). It is stable across a build's in-place retry
+            # attempts (same build id) yet unique per build, so a step can use it to
+            # key per-build state (e.g. a marker file) without parsing it out of a
+            # path.
+            env["GB_BUILD_ID"] = build_id
             final_asset_dir = await self._copy_assets(
                 launch_id=launch_id,
                 asset_dir=targetsteprun_asset_dir,  # type: ignore[arg-type]

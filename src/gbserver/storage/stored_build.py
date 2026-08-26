@@ -26,12 +26,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Self, Tuple, Type
 from urllib.parse import urlparse
 
-if TYPE_CHECKING:
-    from gbserver.storage.build_storage import IStoredBuildStorage
-
 from pydantic import Field
 
 from gbserver.storage.storage import BaseStoredItem, TaggedItem
+
+if TYPE_CHECKING:
+    # Imported for typing only — build_storage imports StoredBuild, so a runtime
+    # import here would be circular.
+    from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.types.buildconfig import BUILD_FILENAME, BuildConfig
 from gbserver.types.status import Status
 from gbserver.utils import archive
@@ -66,12 +68,6 @@ class StoredBuild(BaseStoredItem, TaggedItem):
         default_factory=get_utc_time, description="Time at which it last updated"
     )
     build_config_cache: Dict[str, BuildConfig] = Field(default_factory=dict)
-    retry_of_build_id: Optional[str] = (
-        None  # UUID of the build this is a retry of (None if original)
-    )
-    retry_build_id: Optional[str] = (
-        None  # UUID of the build that is retrying this build (None if not retried)
-    )
     retry_count: int = (
         0  # Number of automatic retries that have been submitted for this build
     )
@@ -194,6 +190,33 @@ class StoredBuild(BaseStoredItem, TaggedItem):
         self.build_config_cache[checksum] = build_config
         return build_config
 
+    def has_retries_remaining(self: Self) -> bool:
+        """Return True if this build is still eligible for another automatic retry.
+
+        True when the build config specifies a positive ``max_retries`` and fewer
+        retries have been attempted so far than that limit. This is independent of
+        the build's current status — callers combine it with a status check as
+        needed (e.g. the retry loop only retries a FAILED build). Reading the build
+        config can fail (e.g. a missing/corrupt archive); any such failure is
+        treated conservatively as "no retries remaining".
+
+        Returns:
+            bool: whether another retry attempt is permitted.
+        """
+        try:
+            build_config = self.get_build_config()
+        except Exception as e:
+            logger.warning(
+                "Could not read build config for build %s, treating as no retries "
+                "remaining: %s",
+                self.uuid,
+                e,
+            )
+            return False
+        if build_config.retries.max_retries <= 0:
+            return False
+        return self.retry_count < build_config.retries.max_retries
+
     def __hash__(self) -> int:
         """Make StoredBuild hashable using all fields."""
         return hash(
@@ -233,115 +256,45 @@ class StoredBuild(BaseStoredItem, TaggedItem):
         )
 
 
-def get_retry_chain_members(
+def reopen_finished_build(
     build_storage: "IStoredBuildStorage", build: StoredBuild
-) -> List[StoredBuild]:
-    """Return all builds in ``build``'s retry chain, root first.
+) -> Optional[StoredBuild]:
+    """Re-open a finished, non-SUCCESS build in place so it can be restarted.
 
-    The chain is walked with repeated point reads (``get_by_uuid``) rather than a
-    column query, since ``retry_of_build_id``/``retry_build_id`` are not indexed
-    columns on gb_builds. The root is resolved via ``retry_of_build_id`` (a retry
-    points at the original), then the chain is followed forward via
-    ``retry_build_id`` (each build points at the build retrying it).
+    A restart reuses the **same** build id: the finished build is flipped
+    back to ``SUBMITTED`` so the BuildWatcher re-dispatches it through the ordinary
+    submission path onto a fresh runner (the watcher's status-scoped, garbage-
+    collected seen-set treats the re-``SUBMITTED`` id as newly unseen). The retry
+    budget is reset (``retry_count -> 0``) so the build.yaml ``max_retries`` is
+    counted fresh for the restart, and any prior ``failure_reason`` is cleared.
+
+    A build that finished with status ``SUCCESS`` is **not** re-openable: every
+    target already succeeded, so a restart would reuse them all and do no work.
+    Only a finished build that did not fully succeed (``FAILED``, ``INVALID``, or
+    ``CANCELLED``) can be restarted.
+
+    Target reuse is driven by the build's existing SUCCESS target runs (see
+    ``BuildRunner.__is_target_already_run``), not by ``retry_count``, so targets
+    that already succeeded are skipped and only the failed/unfinished ones re-run.
+
+    The flip is atomically guarded on the build still being finished-and-not-
+    SUCCESS, so a restart racing an already-live runner, a second concurrent
+    restart, or a run that just succeeded is rejected rather than attaching a
+    fresh runner or re-opening a completed build.
 
     Args:
-        build_storage: storage used to read builds by uuid.
-        build: any member of the chain (the original or a retry).
+        build_storage: storage used to atomically update the build.
+        build: the finished build to restart (its status must satisfy
+            ``is_finished()`` and must not be ``SUCCESS``).
 
     Returns:
-        The chain members ordered from root to the most recent retry. Returns just
-        ``build`` if it cannot be re-read from storage.
+        The re-opened ``StoredBuild``, or ``None`` if the guard rejected the flip
+        because the build was no longer finished, or had become ``SUCCESS`` (a
+        concurrent writer won the race).
     """
-    root_id = build.retry_of_build_id or build.uuid
-    members: List[StoredBuild] = []
-    seen: set[str] = set()
-    current = build_storage.get_by_uuid(root_id)
-    while isinstance(current, StoredBuild) and current.uuid not in seen:
-        members.append(current)
-        seen.add(current.uuid)
-        next_id = current.retry_build_id
-        current = build_storage.get_by_uuid(next_id) if next_id else None
-    return members or [build]
-
-
-def create_continuation_build(
-    build_storage: "IStoredBuildStorage",
-    prior: StoredBuild,
-    chain: Optional[List[StoredBuild]] = None,
-) -> StoredBuild:
-    """Create, store, and return a new build that continues ``prior``.
-
-    A continuation is a *fresh* build (new uuid) that extends ``prior``'s retry
-    chain, so the runner's existing target-reuse machinery
-    (``BuildRunner.__is_target_already_run``, which is enabled whenever
-    ``retry_of_build_id`` is set) skips targets that already succeeded anywhere in
-    the chain. Unlike an automatic retry (see ``BuildRunner.__prepare_retry``):
-
-    - ``retry_count`` is reset to ``0`` so the build.yaml ``max_retries`` budget is
-      counted fresh for the continuation.
-    - the new build starts as ``SUBMITTED`` (not ``RETRY_PENDING``) so it flows
-      through the ordinary BuildWatcher dispatch path and gets its own fresh
-      runner, rather than being owned by an in-process retry loop.
-
-    ``prior`` may be *any* member of an existing chain; the continuation is linked
-    to the chain root via ``retry_of_build_id`` (matching ``__prepare_retry``'s
-    flat-to-root convention) and the back-link (``retry_build_id``) is set on the
-    chain *tip* so an existing chain is never corrupted.
-
-    This helper is the single place that decides how a continuation links to its
-    predecessor. If build-retry ever switches to reusing a single/shared build id,
-    this is the one function that changes.
-
-    ``chain`` may be passed by a caller that already resolved ``prior``'s chain
-    (each member is an unindexed point read, so re-walking is not free); when
-    omitted it is walked here. It must be the full chain of ``prior`` root-first.
-    """
-    if chain is None:
-        chain = get_retry_chain_members(build_storage, prior)
-    # This is the single linkage authority, so fail loudly rather than corrupt the
-    # chain when it can't be trusted: a passed-in chain missing ``prior``, or
-    # get_retry_chain_members' `members or [build]` fallback returning just [prior]
-    # when the root row was unreadable (a mid-chain member wrongly treated as its
-    # own root would link off the wrong root and orphan the tail).
-    if not chain or prior.uuid not in {member.uuid for member in chain}:
-        raise ValueError(
-            f"cannot continue build {prior.uuid}: its retry chain could not be "
-            "resolved (chain does not contain the build)"
-        )
-    root = chain[0]
-    if prior.retry_of_build_id and root.uuid != prior.retry_of_build_id:
-        raise ValueError(
-            f"cannot continue build {prior.uuid}: its retry chain could not be "
-            f"resolved (chain root {root.uuid} does not match the build's "
-            f"recorded root {prior.retry_of_build_id})"
-        )
-    tip = chain[-1]
-    # Seed the continuation from the chain *tip* (the most recent attempt), not the
-    # arbitrary member that was passed: the continuation extends the tip, so its
-    # definition/targets should match the latest attempt. (Today every member
-    # shares the same build_archive, but sourcing from the tip keeps that true even
-    # if attempts ever diverge.)
-    continuation = StoredBuild(
-        name=tip.name,
-        space_name=tip.space_name,
-        source_uri="",
-        username=tip.username,
-        build_archive=tip.build_archive,
-        status=Status.SUBMITTED,
-        targets=tip.targets,
-        description=tip.description,
-        tags=tip.tags,
-        retry_of_build_id=root.uuid,
-        retry_count=0,
+    return build_storage.update_fields(
+        build.uuid,
+        {"status": Status.SUBMITTED, "retry_count": 0, "failure_reason": ""},
+        should_update=lambda item: item.status.is_finished()
+        and item.status != Status.SUCCESS,
     )
-    build_storage.add(continuation)
-    tip.retry_build_id = continuation.uuid
-    build_storage.update(tip)
-    logger.info(
-        "Continuing build %s (chain root %s, tip %s) as new build %s",
-        prior.uuid,
-        root.uuid,
-        tip.uuid,
-        continuation.uuid,
-    )
-    return continuation

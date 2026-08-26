@@ -37,10 +37,10 @@ Most-used group. Submit, monitor, and inspect builds.
 | `gb build start [-f <build.yaml>] [TARGETS...]` | Submit a build. Optionally name specific targets. |
 | `gb build validate [TARGETS...]` | Validate without submitting. |
 | `gb build list` | List builds. |
-| `gb build status <build-id>` | Show status and per-step state. Skipped (reused) targets are hidden unless `--show-skipped-targets` is passed. |
+| `gb build status <build-id>` | Show status and per-step state. |
 | `gb build log <build-id>` | Stream or fetch build logs. |
 | `gb build cancel <build-id>` | Cancel a running build. |
-| `gb build continue <build-id>` | Continue a finished build in a fresh runner, skipping succeeded targets. |
+| `gb build restart <build-id>` | Restart a finished build in a fresh runner, skipping succeeded targets. |
 | `gb build describe [<build-id> \| -f <build.yaml>]` | Describe targets and steps. |
 | `gb build diff <build-id-1> [<build-id-2>]` | Diff two builds (or one against its `build.yaml`). |
 | `gb build lineage <build-id>` | Show build lineage. |

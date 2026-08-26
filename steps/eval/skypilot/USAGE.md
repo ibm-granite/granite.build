@@ -49,21 +49,25 @@ All fields live under the step's `config.eval_config` and are templated into the
 
 | Field | Type | Required | Purpose |
 |---|---|---|---|
-| `model_path` | string | **required** | Model to evaluate (path or hub id). Passed as `--model-path`. |
+| `model_path` | string | **required** | Model to evaluate. Passed as `--model-path`. Usually set from a bound `model` input via Jinja — `"{{ bindings.model.binding.path }}"` — so the resolved artifact path is templated in before `run`; a literal path or hub id also works. |
 | `tasks` | string | optional (default empty ⇒ a `placeholder` task) | Comma-separated benchmark/task names. Passed as `--tasks`. |
 | `output_dir` | string | optional (default `output`) | Directory the results file is written into; `results.json` is created here. Passed as `--output-dir`. |
 | `per_device_eval_batch_size` | int | optional (default `8`) | Per-device eval batch size. Passed as `--batch-size`. |
 
 ## Inputs and outputs
 
-- **Inputs** — the exemplar takes the model to evaluate as the `model_path`
-  *config* string rather than a bound artifact input, so it declares no target
-  `inputs:`. (To consume a resolved artifact instead, add a target input and
-  reference its path in the `run` block.)
+- **Inputs** — the model to evaluate is a target `inputs.model` artifact. Its
+  resolved filesystem path is templated into `eval_config.model_path` via
+  `"{{ bindings.model.binding.path }}"` (`step.config` values are Jinja-rendered
+  with `bindings.*` in scope before `run`), so no change to the step is needed to
+  consume it. The input can be a direct `uri:` (e.g. `hf:///models/<org>/<repo>`)
+  or a `binding:` to an upstream target's model output. A literal path or hub id
+  in `model_path` also works if you prefer not to declare an input.
 - **Outputs** — declared on the step as `outputs.optional.results` (`type:
   dataset`), a single file at `<output_dir>/results.json`. It is registered by the
   `run:` block (see [Who emits the artifact line?](#who-emits-the-artifact-line)),
-  not by `eval.sh`. Bind a matching `outputs.results` on the target to persist it.
+  not by `eval.sh`. Bind a matching `outputs.results` on the target — with an
+  `hf://` dataset `uri` to persist it to the Hub, as in the example below.
 
 ## Working directory and paths
 
@@ -80,15 +84,20 @@ granite.build:
   targets:
     evaluate:
       environment_uri: space://environments/skypilot/aws
+      inputs:
+        model:
+          uri: hf:///models/ibm-granite/granite-4.0-h-350m
       outputs:
         results:
-          uri: lh://prod/myspace/datasets/shared/eval-{{ run_metadata.targetsteprun_id | short_hash }}/1
+          uri: hf://huggingface.co/datasets/my-org/eval-{{ run_metadata.targetsteprun_id | short_hash }}
       steps:
         - step_uri: space://steps/eval
           config:
             compute_config: { num_nodes: 1, num_gpus_per_node: 1 }
             eval_config:
-              model_path: "ibm-granite/granite-4.0-h-350m"
+              # The model to evaluate is the target's `model` input; its resolved
+              # filesystem path is templated into model_path before `run`.
+              model_path: "{{ bindings.model.binding.path }}"
               tasks: "hellaswag,arc_easy"
               output_dir: "output"
               per_device_eval_batch_size: 8

@@ -119,7 +119,13 @@ class ExpectedTarget(BaseModel):
     input_artifact_count: int
     """Number of input artifacts to be recorded in the recorded target record."""
     output_artifact_count: int
-    """Number of output artifacts to be recorded in the recorded target record."""
+    """Number of output artifacts to be recorded in the recorded target record.
+    Only checked for SUCCESS-status runs (see ``_verify_target_and_steps``)."""
+    target_failure_count: int = 0
+    """Number of FAILED runs expected for this target across the build. An in-place
+    retry re-runs a failed target under the same build id, so a target that fails
+    N times before succeeding leaves N FAILED StoredTargetRun records. Defaults to
+    0 (no failures), so non-retry fixtures are unaffected."""
     jobstats_count: int = -1
     """Expected jobstats records. Defaults to -1 (skip): jobstats are not asserted
     at run time yet (lineage verification is a no-op under async lineage), so the
@@ -173,8 +179,6 @@ class BuildTestSpecification(BaseModel):
     """If set, overrides the space's git_repo_uri so the BuildRunner resolves space:// URIs
     from this local path instead of cloning from GitHub.  PR creation and verification are
     automatically skipped when this is set (no GitHub repo available)."""
-    skip_target_names: list[str] = []
-    """Target names expected to be skipped on a second run (used by _run_two_builds_sequential)."""
     tests: list[str] = ["runner", "runner_cancellation"]
     """Which test methods on AbstractYamlBuildRunnerTest run for this spec.
     Each value <key> maps to a method test_<key> on the base class.  Default
@@ -606,38 +610,6 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         finally:
             disable_failure_simulation()
 
-    def _run_two_builds_sequential(
-        self: Self,
-        tested_class: ClassTestedEnum,
-        test_spec: BuildTestSpecification,
-        second_run_spec: BuildTestSpecification,
-    ) -> None:
-        """
-        Runs the build twice to verify target-skip behaviour:
-        1. First run: all targets execute normally and register their output artifacts.
-        2. Second run: uses second_run_spec's build_yaml and targets; targets in
-           skip_target_names are expected to be skipped because their target_hash already
-           exists in gb_targets from the first run. Exercises downstream binding
-           propagation from a skipped target.
-
-        The artifact registry is NOT cleared between runs so first-run output artifacts
-        remain visible to the second run's skip check.
-        """
-        assert (
-            tested_class == ClassTestedEnum.TEST_BUILDRUNNER
-        ), "_run_two_builds_sequential only supports TEST_BUILDRUNNER"
-
-        # First run: run normally, verify expectations.
-        self._run_build_test(tested_class=tested_class, test_spec=test_spec)
-
-        # Second run: the first run stored a target_hash in gb_targets; the BuildRunner's
-        # target_already_run_fn will find it and skip matching targets.
-        # Output artifacts from the first run remain in the registry for the second run's skip check.
-        self._run_build_test(
-            tested_class=tested_class,
-            test_spec=second_run_spec,
-        )
-
     def _verify_build_cancellations(self: Self, build_ids: list[str]) -> None:
         for build_id in build_ids:
             self._verify_build_cancellation(build_id)
@@ -891,6 +863,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         statuses: list[Status],
         timeout: float,
         failed_statuses: Optional[list[Status]] = [],
+        transient_statuses: Optional[list[Status]] = None,
     ) -> None:
         return self._wait_for_status(
             build_id=build_id,
@@ -900,6 +873,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             statuses=statuses,
             timeout=timeout,
             failed_statuses=failed_statuses,
+            transient_statuses=transient_statuses,
         )
 
     def _wait_for_target_status(
@@ -946,6 +920,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         statuses: list[Status],
         timeout: float,
         failed_statuses: Optional[list[Status]] = [],
+        transient_statuses: Optional[list[Status]] = None,
     ) -> None:
         """Wait for one of the status values in the item in the given storage.
 
@@ -981,18 +956,27 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 if last_status in statuses:
                     is_success = True
                     break
-                if last_status in failed_statuses:
+                # Statuses the caller expects the item to pass *through* transiently
+                # (e.g. a FAILED build that will retry in place under the same id):
+                # neither succeed nor fast-fail on them — keep polling until a target
+                # or genuinely terminal status is reached.
+                if transient_statuses and last_status in transient_statuses:
+                    pass
+                elif last_status in failed_statuses:
                     is_success = False
                     break
-                match last_status:
-                    case Status.FAILED | Status.CANCELLED | Status.INVALID:
-                        # And fail the is_success assert below
-                        break
-                    case Status.CANCEL_REQUESTED if Status.CANCELLED not in statuses:
-                        # Unexpected cancellation — fail fast instead of looping until timeout
-                        break
-                    case _:
-                        pass
+                else:
+                    match last_status:
+                        case Status.FAILED | Status.CANCELLED | Status.INVALID:
+                            # And fail the is_success assert below
+                            break
+                        case Status.CANCEL_REQUESTED if (
+                            Status.CANCELLED not in statuses
+                        ):
+                            # Unexpected cancellation — fail fast instead of looping until timeout
+                            break
+                        case _:
+                            pass
             else:
                 logger.info(f"Looping on {item_name}:{item_id} status.  Not found yet.")
             sleep(sleep_time)
@@ -1083,7 +1067,6 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             assert isinstance(target, StoredTargetRun)
             target_dict[target.name] = target
 
-        skip_set = set(test_spec.skip_target_names)
         expected_targets = test_spec.target_expectations
         for index in range(0, len(expected_targets)):
             expected_target = expected_targets[index]
@@ -1092,14 +1075,9 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 build_id,
                 f"Did not find expected target named {expected_target.target_name}",
             )
-            if expected_target.target_name in skip_set:
-                self._verify_skipped_target_and_steps(
-                    build_id, target, [Status.SUCCESS], expected_target
-                )
-            else:
-                self._verify_unskipped_target_and_steps(
-                    build_id, target, [Status.SUCCESS], expected_target
-                )
+            self._verify_target_and_steps(
+                build_id, target, [Status.SUCCESS], expected_target
+            )
 
         # Do this after in case there are extra targets
         assert len(target_list) == len(expected_targets), self._failed_build_msg(
@@ -1134,56 +1112,35 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 uri.exists()
             ), f"URI {artifact.uri} does not exist in artifact storage"
 
-    def _verify_skipped_target_and_steps(
+    def _verify_target_artifacts(
         self: Self,
         build_id: str,
         built_target: StoredTargetRun,
-        status_list: list[Status],
         expected: ExpectedTarget,
-    ):
-        self._verify_target_status(build_id, built_target, status_list)
-        assert len(built_target.input_artifacts) == 0, self._failed_build_msg(
-            build_id,
-            f"Skipped target '{built_target.name}' should have 0 input artifacts but has {len(built_target.input_artifacts)}",
-        )
-        assert len(built_target.output_artifacts) == 0, self._failed_build_msg(
-            build_id,
-            f"Skipped target '{built_target.name}' should have 0 output artifacts but has {len(built_target.output_artifacts)}",
-        )
-        step_list = self.storage.step_storage.get_by_where(
-            {"target_id": built_target.uuid}
-        )
-        assert len(step_list) == 0, self._failed_build_msg(
-            build_id,
-            f"Skipped target '{built_target.name}' should have 0 steps but has {len(step_list)}",
-        )
-        # Lineage record count is no longer asserted: recording now happens
-        # asynchronously in the out-of-band lineage-watch process, so the count
-        # is not a synchronous product of the build. See _verify_lineage.
+    ) -> None:
+        """Verify a SUCCESS run's input/output artifact counts and each output.
 
-    def _verify_unskipped_target_and_steps(
-        self: Self,
-        build_id: str,
-        built_target: StoredTargetRun,
-        status_list: list[Status],
-        expected: ExpectedTarget,
-    ):
-        self._verify_target_status(build_id, built_target, status_list)
+        Asserts the number of input and output artifacts match the expectation and
+        that every recorded output artifact exists, is SUCCESS-status, and is typed
+        (except opaque ``mem://`` artifacts, which legitimately have no type).
 
-        # Check the number of input and output artifacts
+        Args:
+            build_id: the build under test (used only for failure messages).
+            built_target: the SUCCESS target run whose artifacts are checked.
+            expected: expected input/output artifact counts for the target.
+        """
         assert (
             len(built_target.input_artifacts) == expected.input_artifact_count
         ), self._failed_build_msg(
             build_id,
-            f"actual: {built_target.input_artifacts} expected: {expected.input_artifact_count}",
+            f"input artifacts! actual: {built_target.input_artifacts} expected: {expected.input_artifact_count}",
         )
         assert (
             len(built_target.output_artifacts) == expected.output_artifact_count
         ), self._failed_build_msg(
             build_id,
-            f"actual: {len(built_target.output_artifacts)} expected: {expected.output_artifact_count}",
+            f"output artifacts! actual: {len(built_target.output_artifacts)} expected: {expected.output_artifact_count}",
         )
-        # Verify each artifact is present and has the expected status
         for name, uuids in built_target.output_artifacts.items():
             for uuid in uuids:
                 artifact = self.storage.artifact_registry.get_by_uuid(uuid)
@@ -1208,6 +1165,57 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                         build_id, f"stored artifact {uuid} has an undefined type"
                     )
 
+    def _verify_target_failure_count(
+        self: Self,
+        build_id: str,
+        target_name: str,
+        expected: ExpectedTarget,
+    ) -> None:
+        """Assert the target produced the expected number of FAILED runs.
+
+        An in-place retry re-runs a failed target under the same build id, so a
+        target that fails N times before succeeding leaves N FAILED
+        ``StoredTargetRun`` records (plus the final SUCCESS run). This checks that
+        the number of FAILED runs for ``target_name`` in the build matches
+        ``expected.target_failure_count``.
+
+        Args:
+            build_id: the build whose target runs to inspect.
+            target_name: the target name to count failures for.
+            expected: expectation carrying ``target_failure_count``.
+        """
+        runs = self.storage.target_storage.get_by_where(
+            {"build_id": build_id, "name": target_name}
+        )
+        failed = [r for r in runs if r.status == Status.FAILED]
+        assert len(failed) == expected.target_failure_count, self._failed_build_msg(
+            build_id,
+            f"target {target_name} failure count! actual: {len(failed)} "
+            f"expected: {expected.target_failure_count}",
+        )
+
+    def _verify_target_and_steps(
+        self: Self,
+        build_id: str,
+        built_target: StoredTargetRun,
+        status_list: list[Status],
+        expected: ExpectedTarget,
+    ):
+        self._verify_target_status(build_id, built_target, status_list)
+        self._verify_run_timestamps(build_id, built_target)
+
+        # Artifact checks apply only to a SUCCESS run. A target that FAILED (e.g. a
+        # failed attempt of an in-place retry) may have bound partial or incidental
+        # outputs that vary by environment, so its artifacts are not asserted — the
+        # winning SUCCESS run owns the meaningful inputs and outputs.
+        if built_target.status == Status.SUCCESS:
+            self._verify_target_artifacts(build_id, built_target, expected)
+        else:
+            logger.warning(
+                f"Not verifying artifacts for target {built_target.name} because its "
+                f"run status is {built_target.status}, not SUCCESS"
+            )
+
         # Verify the number of expected steps and their status values
         step_list = self.storage.step_storage.get_by_where(
             {"target_id": built_target.uuid}
@@ -1218,7 +1226,8 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             )
         else:
             assert len(step_list) == expected.step_count, self._failed_build_msg(
-                build_id, f"actual: {len(step_list)} expected: {expected.step_count}"
+                build_id,
+                f"step count! actual: {len(step_list)} expected: {expected.step_count}",
             )
         self._verify_steplist_status(build_id, step_list, status_list)
 
@@ -1366,6 +1375,33 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             f"Status of target {target.name} is {target.status} but one of {status_list} was expected",
         )
         self._verify_target_steps(build_id, target.uuid, status_list)
+
+    def _verify_run_timestamps(
+        self: Self, build_id: str, target: StoredTargetRun
+    ) -> None:
+        """Assert a finished target run recorded both of its timestamps sanely.
+
+        A target that ran to a terminal status (SUCCESS or FAILED) must have both
+        ``started_at`` (stamped on first entry into RUNNING) and ``finished_at``
+        (stamped on first entry into a terminal status), and cannot have finished
+        before it started. Guards against the class of bug where a run reaches a
+        terminal status without its timestamps being stamped (e.g. a run created
+        directly terminal, or swept to terminal by build finalization).
+
+        :param build_id: id of the build under test (for failure messages).
+        :param target: the terminal target run to check.
+        """
+        assert target.started_at is not None, self._failed_build_msg(
+            build_id, f"target {target.name} has no started_at timestamp"
+        )
+        assert target.finished_at is not None, self._failed_build_msg(
+            build_id, f"target {target.name} has no finished_at timestamp"
+        )
+        assert target.finished_at >= target.started_at, self._failed_build_msg(
+            build_id,
+            f"target {target.name} finished_at ({target.finished_at}) is before "
+            f"started_at ({target.started_at})",
+        )
 
     def _verify_target_steps(
         self: Self, build_id: str, target_id, status_list: list[Status]

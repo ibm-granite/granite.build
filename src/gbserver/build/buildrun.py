@@ -295,43 +295,27 @@ class BuildRun(Run):
     async def __handle_skipped_target(
         self: Self,
         target: Target,
-        skipped_for_prerun_target_id: str,
         resolved_outputs: dict[str, list[str]],
         tg: Optional[TaskGroup],
     ) -> None:
         """
-        Handles a target that has been run before with the same configuration:
-        skips execution, notifies BuildRunner via STATUS_EVENT (type=Target, status=SUCCESS), and
-        pre-resolves the input bindings of any downstream targets so they can proceed.
+        Handles a target that already succeeded earlier in this same build (in-place
+        retry reuses the build id): skips execution and pre-resolves the input
+        bindings of any downstream targets so they can proceed. No StoredTargetRun
+        is created — the existing SUCCESS run from the earlier attempt is what the
+        API/CLI report.
 
-        resolved_outputs maps binding_id to the list of artifact URIs from the original run.
+        resolved_outputs maps binding_id to the list of artifact URIs from that run.
         """
         target_name = target.name
         logger.info(
-            "Skipping target '%s' — previously executed with same configuration",
+            "Skipping target '%s' — already succeeded earlier in this build",
             target_name,
         )
         target_config = target.config
         assert isinstance(target_config, BuildTargetConfig)
 
-        # Notify BuildRunner so it can persist a StoredTargetRun for this skipped target.
-        self_entity = self.entity
-        assert isinstance(self_entity, Build)
-        skip_event = BuildEvent(
-            run_metadata=EntityRunMetadata(
-                build_id=self_entity.build_id,
-                username=self_entity.username,
-                type="Target",
-                target_name=target_name,
-                targetrun_id=get_uuid(),
-                skipped_for_prerun_target_id=skipped_for_prerun_target_id,
-            ),
-            type=BuildEventType.STATUS_EVENT,
-            payload=BuildEventStatusPayload(status=Status.SUCCESS),
-        )
-        self.dispatch_event(skip_event)
-
-        # Pre-resolve downstream bindings using the original run's artifact URIs.
+        # Pre-resolve downstream bindings using the earlier run's artifact URIs.
         async with self.input_status_update_lock:
             for binding_id, uris in resolved_outputs.items():
                 out_config = (target_config.outputs or {}).get(binding_id)
@@ -394,12 +378,10 @@ class BuildRun(Run):
         )
         asyncio_runner = tg if tg is not None else asyncio
         if skip_result is not None:
-            skipped_for_prerun_target_id, resolved_outputs = skip_result
+            resolved_outputs = skip_result
             self.tasks.add(
                 asyncio_runner.create_task(
-                    self.__handle_skipped_target(
-                        target, skipped_for_prerun_target_id, resolved_outputs, tg
-                    )
+                    self.__handle_skipped_target(target, resolved_outputs, tg)
                 )
             )
             return

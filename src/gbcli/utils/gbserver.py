@@ -189,7 +189,7 @@ def get_artifact_body(
 
 
 def get_build_status_with_targets_runs(
-    user_token: str, build_id: str, gbserver_api: str, follow_retries: bool = False
+    user_token: str, build_id: str, gbserver_api: str
 ) -> Any:
     build_url = f"{gbserver_api}{build_id}/status"
 
@@ -198,7 +198,7 @@ def get_build_status_with_targets_runs(
         url=build_url,
         http_method="get",
         body=None,
-        params={"follow_retries": str(follow_retries).lower()},
+        params=None,
     )
 
 
@@ -362,12 +362,12 @@ def cancel_build(build_id: str, token: str, gbserver_api: str) -> Any:
     )
 
 
-def continue_build(build_id: str, token: str, gbserver_api: str) -> Any:
-    continue_build_url = f"{gbserver_api}continue"
+def restart_build(build_id: str, token: str, gbserver_api: str) -> Any:
+    restart_build_url = f"{gbserver_api}restart"
 
     return gb_server_request(
         user_token=token,
-        url=continue_build_url,
+        url=restart_build_url,
         http_method="post",
         body={"build_id": build_id},
         params=None,
