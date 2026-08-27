@@ -16,11 +16,13 @@
 
 """Tests for Lsf._build_cmd_to_run_with_ssh command redaction.
 
-The redacted command string is surfaced into build lineage (space-member readable),
-so a secret env-var value must never appear there. These guard the switch from
-value-substring matching to key-name masking — in particular the empty-value case
-that previously spliced the placeholder between every character and, as a side
-effect, left a genuinely secret value unmasked.
+The redacted command string is surfaced into build lineage (space-member readable)
+and posted to the space via Slack, so a secret env-var value must never appear
+there. These guard the switch from value-substring matching to masking by
+env-var name — via the caller-supplied ``secret_keys`` (injected space secrets,
+whatever the user named them) and ``SENSITIVE_KEY_RE`` — in particular the
+empty-value case that previously spliced the placeholder between every character
+and, as a side effect, left a genuinely secret value unmasked.
 """
 
 from pathlib import Path
@@ -65,7 +67,7 @@ class TestBuildCmdRedaction:
 
         This is the security core of the regression: previously an empty value in
         ``to_redact`` shattered the command before the secret's own replace ran, so
-        the secret leaked. Masking by key name is independent of any value.
+        the secret leaked. Masking is now independent of the value text.
         """
         lsf = _make_lsf()
         _, redacted = lsf._build_cmd_to_run_with_ssh(
@@ -93,6 +95,43 @@ class TestBuildCmdRedaction:
         )
         assert FAKE_SECRET not in redacted
         assert redacted.count(REDACTED) == 4
+
+    def test_injected_secret_masked_under_non_secret_name(self: Self) -> None:
+        """A space secret injected under an arbitrary name is masked via secret_keys.
+
+        Injected space-secret env-var names are user-chosen and need not look
+        secret (``GH_PAT``, ``DB_PASS``, ``DEPLOY_KEY``, ...). The caller marks
+        those names in ``secret_keys`` so their values are masked even though
+        ``SENSITIVE_KEY_RE`` would not match the name. Without this, such a secret
+        would leak into the redacted command surfaced to space-readable lineage and
+        Slack.
+        """
+        lsf = _make_lsf()
+        env = {
+            "GH_PAT": FAKE_SECRET,
+            "DB_PASS": FAKE_SECRET,
+            "DEPLOY_KEY": FAKE_SECRET,
+        }
+        _, redacted = lsf._build_cmd_to_run_with_ssh(JOBSUB, env, secret_keys=set(env))
+        assert FAKE_SECRET not in redacted
+        assert redacted.count(REDACTED) == 3
+
+    def test_secret_keys_and_key_name_masking_combine(self: Self) -> None:
+        """secret_keys and SENSITIVE_KEY_RE both mask; non-secret vars survive."""
+        lsf = _make_lsf()
+        _, redacted = lsf._build_cmd_to_run_with_ssh(
+            JOBSUB,
+            {
+                "CUSTOM_CRED": FAKE_SECRET,  # masked via secret_keys only
+                "HF_TOKEN": FAKE_SECRET,  # masked via key-name only
+                "BUILD_ID": "abc-123",  # not secret, preserved
+            },
+            secret_keys={"CUSTOM_CRED"},
+        )
+        assert FAKE_SECRET not in redacted
+        assert "CUSTOM_CRED=<redacted>" in redacted
+        assert f"HF_TOKEN={REDACTED}" in redacted
+        assert "BUILD_ID=abc-123" in redacted
 
     def test_non_secret_values_preserved(self: Self) -> None:
         """Operational (non-secret) env vars survive into the redacted command."""
