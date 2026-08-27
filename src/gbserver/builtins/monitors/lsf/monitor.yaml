@@ -9,11 +9,13 @@
 #     keys, so shipping them would be inert config. See lsf.py / lsf_bsub_monitor.py.
 #
 #   * The two artifact rules are NOT anchored to the start of line — matching the
-#     skypilot/docker monitors, and kept unanchored for forward compatibility with
-#     future/wrapped LSF log sources. The STEP_METADATA_UPDATE rule, by contrast,
-#     IS anchored with a plain `^` (see the security note below). (ANSI is stripped
-#     centrally in Environment.get_events_from_log_line, so no ANSI handling
-#     belongs here.)
+#     skypilot/docker monitors, and kept unanchored for backwards compatibility
+#     with artifact markers already emitted mid-line by existing steps/workloads.
+#     The STEP_METADATA_UPDATE rule, by contrast, IS anchored with a plain `^`
+#     (see the security note below): it is a new marker with no legacy emissions
+#     to preserve, so it can require column-0 emission from day one. (ANSI is
+#     stripped centrally in Environment.get_events_from_log_line, so no ANSI
+#     handling belongs here.)
 #
 # Marker convention (shared with the bash/docker/skypilot monitors):
 #   * filesystem-path artifact — LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>
@@ -75,7 +77,10 @@ config:
     # <key>. Both fields are top-level, so they are splatted into
     # StepMetadataUpdateEventPayload.
     # Anchored with a plain `^` — provenance must not be injectable (see security
-    # note in the header).
+    # note in the header). EMISSION CONTRACT: whatever emits this marker must echo
+    # it bare at column 0 (like the artifact lines in llmb_lsf_wrapper.sh), NOT with
+    # the `${LLMB_LSF_JOB_NAME}: ` prefix the wrapper uses for its status/info
+    # lines — a leading prefix would make `^` silently drop the event.
     - event_type: STEP_METADATA_UPDATE_EVENT
       line_regex: '^LLMB_STEP_METADATA_KEY:.* LLMB_STEP_METADATA_VALUE:.*'
       event_fields:
