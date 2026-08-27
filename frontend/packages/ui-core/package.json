@@ -1,6 +1,5 @@
 {
   "name": "@granite-build/ui-core",
-  "private": true,
   "version": "0.0.0",
   "dependencies": {
     "@carbon/charts": "^1.27.11",

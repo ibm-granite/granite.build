@@ -5,8 +5,8 @@
  */
 import axios from 'axios'
 
-import { apiBase } from '@/api/client'
-import { parseSSEStream } from '@/lib/sse'
+import { apiBase } from './client'
+import { parseSSEStream } from '../lib/sse'
 
 export type ChatEventType =
   | 'text_delta'

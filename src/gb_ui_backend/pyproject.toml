@@ -17,10 +17,6 @@ dependencies = [
     "aiosqlite>=0.19",
 ]
 
-[project.optional-dependencies]
-chat = ["mcp>=1.0", "regex"]
-chat-anthropic = ["granite-build-analytics[chat]", "anthropic>=0.40"]
-
 [project.scripts]
 gb-ui-backend = "gb_ui_backend.__main__:main"
 
@@ -37,6 +33,12 @@ build-backend = "setuptools.build_meta"
 # gbcommon.types.{gbenvconfig,constants} (stdlib + pydantic only, no gbserver
 # dependency), so bundling the whole namespace package is safe and inert for
 # the parts it doesn't use.
+#
+# `where = [".."]` only resolves because pip clones the whole repo before
+# building a git+subdirectory install — the actual, only install path used
+# today. Building this directory alone as a standalone sdist/wheel (e.g. from
+# a subdirectory-only archive) would find no gbcommon* to include and ship a
+# wheel that fails at import time.
 where = [".."]
 include = ["gb_ui_backend*", "gbcommon*"]
 namespaces = true

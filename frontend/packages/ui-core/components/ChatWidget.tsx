@@ -9,7 +9,7 @@ import remarkGfm from "remark-gfm";
 import { Button, InlineNotification, Tag, TextInput, Tile } from "@carbon/react";
 import { ChatBot, Close, Send, StopFilledAlt } from "@carbon/icons-react";
 
-import { ChatStatus, confirmAction, getChatStatus, stopChat, streamChat } from "@/api/chat";
+import { ChatStatus, confirmAction, getChatStatus, stopChat, streamChat } from "../api/chat";
 import styles from "./ChatWidget.module.scss";
 
 interface UiActionState {

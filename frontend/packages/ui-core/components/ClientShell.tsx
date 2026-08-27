@@ -4,9 +4,9 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Theme } from "@carbon/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useTheme } from "@/hooks/useTheme";
-import { AppHeader } from "@/components/AppHeader";
-import { ChatWidget } from "@/components/ChatWidget";
+import { useTheme } from "../hooks/useTheme";
+import { AppHeader } from "./AppHeader";
+import { ChatWidget } from "./ChatWidget";
 
 const queryClient = new QueryClient({
   defaultOptions: {

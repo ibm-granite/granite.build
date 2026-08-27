@@ -19,9 +19,9 @@ import {
 
 import React from "react";
 import { useRouter } from "next/navigation";
-import type { Build, BuildStatus } from "@/types";
-import { BuildStatusBadge } from "@/components/BuildStatusBadge";
-import { TagsCell } from "@/components/TagsCell";
+import type { Build, BuildStatus } from "../types";
+import { BuildStatusBadge } from "./BuildStatusBadge";
+import { TagsCell } from "./TagsCell";
 
 interface Props {
   builds: Build[];

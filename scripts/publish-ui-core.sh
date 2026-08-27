@@ -12,7 +12,7 @@
 #   "@granite-build/ui-core": "ibm-granite/granite.build#ui-core-v0.3.4"
 set -euo pipefail
 
-tag=$1
+tag=${1:-}
 if [ -z "$tag" ]; then
     echo "usage: $0 <tag>"
     exit 1
@@ -21,7 +21,7 @@ fi
 ui_core_tag="ui-core-${tag}"
 tmp_branch="dist/ui-core-tmp-${tag}"
 
-git subtree split --prefix=frontend/packages/ui-core -b "$tmp_branch"
+git subtree split --prefix=frontend/packages/ui-core "$tag" -b "$tmp_branch"
 git tag "$ui_core_tag" "$tmp_branch"
 git push origin "$ui_core_tag"
 git branch -D "$tmp_branch"

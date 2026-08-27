@@ -28,7 +28,7 @@ import {
   Pipelines,
   Switcher as SwitcherIcon,
 } from "@carbon/icons-react";
-import { useTheme } from "@/hooks/useTheme";
+import { useTheme } from "../hooks/useTheme";
 import styles from "./AppHeader.module.scss";
 
 export function AppHeader() {
