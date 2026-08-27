@@ -9,6 +9,7 @@ require it unless a Skypilot environment is actually configured.
 import asyncio
 import glob
 import os
+import re
 import shlex
 import threading
 import time
@@ -563,6 +564,9 @@ class Skypilot(Environment):
         # uniquely-named cluster instead of reusing the draining original.
         self._relaunch_attempts: Dict[str, int] = {}
         self._setup_workdirs: Dict[str, str] = {}  # setup_id -> per-run workdir
+        # setup_id -> {"target_name","build_id"} so teardown can name its
+        # cleanup cluster the same human-identifiable way as the launch cluster.
+        self._setup_run_meta: Dict[str, Dict[str, str]] = {}
         # launch_id -> kwargs replayed by retry_workload
         self._launch_kwargs: Dict[str, Dict] = {}
         self._skypilot_retry_complete_events: Dict[str, asyncio.Event] = {}
@@ -635,18 +639,63 @@ class Skypilot(Environment):
         return self.config.config.get("idle_minutes_to_autostop", 10)
 
     @staticmethod
-    def _cluster_name_for(launch_id: str, attempt: int = 0) -> str:
-        """Generate a unique cluster name from a launch_id.
+    def _slugify(text: str, max_len: int = 20) -> str:
+        """Reduce ``text`` to a lowercase, SkyPilot-safe slug.
+
+        Lowercases, collapses every run of non-``[a-z0-9]`` characters into a
+        single ``-``, strips leading/trailing ``-``, and truncates to
+        ``max_len`` (re-stripping any ``-`` left at the truncation boundary).
+        Returns ``""`` when nothing usable remains.
+
+        :param text: Free-form text (e.g. a target name).
+        :param max_len: Maximum slug length.
+        :returns: A slug matching ``[a-z0-9]([a-z0-9-]*[a-z0-9])?`` or ``""``.
+        """
+        slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+        return slug[:max_len].strip("-")
+
+    @staticmethod
+    def _cluster_name_for(
+        launch_id: str,
+        attempt: int = 0,
+        *,
+        target_name: str = "",
+        build_id: str = "",
+    ) -> str:
+        """Generate a unique, human-identifiable cluster name.
+
+        The name embeds the target name and a short build id so the cluster is
+        recognizable in ``sky status``, while ``launch_id[:12]`` keeps it unique
+        per launch::
+
+            gb-[<slug(target_name)>-][<build_id[:8]>-]<launch_id[:12]>[-r<attempt>]
+
+        Empty ``target_name``/``build_id`` are omitted, so with neither the
+        result is exactly ``gb-<launch_id[:12]>`` (unchanged legacy behavior).
+        Parts are joined with single dashes (empties skipped, so no triple
+        dashes) and trailing separators are stripped, so the name always starts
+        (``gb``) and ends on an alphanumeric — satisfying SkyPilot's rule.
 
         :param launch_id: The launch identifier the cluster belongs to.
-        :param attempt: Relaunch attempt number. ``0`` (the initial launch)
-            yields the bare ``gb-<launch_id>`` name for backward compatibility;
-            ``> 0`` appends an ``-r<attempt>`` suffix so a retry provisions a
-            distinct cluster/allocation instead of colliding with the original
+        :param attempt: Relaunch attempt number. ``0`` (initial launch) yields
+            the bare name; ``> 0`` appends ``-r<attempt>`` so a retry provisions
+            a distinct cluster/allocation instead of colliding with the original
             that may still be draining on the backend (slurm/lsf).
+        :param target_name: Human-readable target name (e.g. ``"train"``);
+            slugified and capped. Optional.
+        :param build_id: Build UUID; only its first 8 hex chars (dashes removed)
+            are used. Optional.
         :returns: The deterministic cluster name for this launch + attempt.
         """
-        base = f"gb-{launch_id[:12]}".rstrip("-_.")
+        parts = ["gb"]
+        slug = Skypilot._slugify(target_name)
+        if slug:
+            parts.append(slug)
+        bid = build_id.replace("-", "")[:8]
+        if bid:
+            parts.append(bid)
+        parts.append(launch_id[:12])
+        base = "-".join(parts).rstrip("-_.")
         return base if attempt <= 0 else f"{base}-r{attempt}"
 
     async def setup_skypilot(
@@ -685,6 +734,10 @@ class Skypilot(Environment):
             runmetadata.targetrun_id or "",
         )
         self._setup_workdirs[setup_id] = workdir
+        self._setup_run_meta[setup_id] = {
+            "target_name": runmetadata.target_name or "",
+            "build_id": runmetadata.build_id or "",
+        }
         logger.info(
             "setup_skypilot: per-run workdir for setup_id=%s -> %s",
             setup_id,
@@ -704,10 +757,15 @@ class Skypilot(Environment):
             ``Environment.setup``; used to look up the stashed path.
         """
         workdir = self._setup_workdirs.pop(setup_id, None)
+        run_meta = self._setup_run_meta.pop(setup_id, {})
         if not workdir:
             return
         _require_skypilot()
-        cluster_name = self._cluster_name_for(f"td-{setup_id}")
+        cluster_name = self._cluster_name_for(
+            f"td-{setup_id}",
+            target_name=run_meta.get("target_name", ""),
+            build_id=run_meta.get("build_id", ""),
+        )
         logger.info(
             "teardown_skypilot: removing per-run workdir %s (setup_id=%s)",
             workdir,
@@ -902,7 +960,17 @@ class Skypilot(Environment):
             config = kwargs.get("config", {}) or {}
 
             attempt = self._relaunch_attempts.get(launch_id, 0)
-            cluster_name = self._cluster_name_for(launch_id, attempt)
+            run_metadata = kwargs.get("run_metadata") or {}
+            if not isinstance(run_metadata, dict):
+                run_metadata = (
+                    run_metadata.to_dict() if hasattr(run_metadata, "to_dict") else {}
+                )
+            cluster_name = self._cluster_name_for(
+                launch_id,
+                attempt,
+                target_name=run_metadata.get("target_name", "") or "",
+                build_id=run_metadata.get("build_id", "") or "",
+            )
             cloud = (
                 launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
             )
@@ -1521,8 +1589,10 @@ class Skypilot(Environment):
             # so a poll seeing it "gone" (FAILED above) is success, not a crash.
             # The teardown runs in a DIFFERENT Skypilot instance (one per target),
             # so we match on the process-global set of torn-down cluster names --
-            # cluster_name here is gb-<launch_id[:12]>, the same name the teardown
-            # recorded. Exit cleanly before any FAILED event or raise so the step
+            # cluster_name here may carry optional gb-[<target>-][<build8>-]
+            # prefixes but still ends with launch_id[:12], the same name the
+            # teardown recorded. Exit cleanly before any FAILED event or raise so
+            # the step
             # is marked SUCCESS. Checked after the poll (not only at the loop top)
             # to close the race where teardown fires while this poll is in flight.
             if cluster_name in Skypilot._intentionally_torn_down_clusters:
@@ -2019,7 +2089,9 @@ class Skypilot(Environment):
             # Record BEFORE downing so the SERVICE's monitor -- which runs in a
             # different Skypilot instance and may be mid-poll -- treats the
             # cluster going away as success, not a WorkloadFailedException. Keyed
-            # by cluster name (gb-<launch_id[:12]>), the name the monitor sees.
+            # by cluster name (may carry optional gb-[<target>-][<build8>-]
+            # prefixes but still ends with launch_id[:12]), the name the monitor
+            # sees.
             Skypilot._intentionally_torn_down_clusters.add(name)
             try:
                 target_launch_id = name_to_launch.get(name)
