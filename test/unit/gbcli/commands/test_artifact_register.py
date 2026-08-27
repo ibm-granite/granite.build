@@ -318,8 +318,12 @@ def test_repo_is_a_synonym_for_label(register_env):
     assert register_env.call_args.kwargs["label"] == "a"
 
 
-def test_hf_model_requires_label(register_env):
-    """`--store hf -t model` with no label/repo must fail cleanly (no prompt)."""
+def test_hf_model_without_repo_is_ok(register_env):
+    """`--store hf -t model` with no --repo succeeds; repo falls back in the service.
+
+    The CLI leaves `label` unset (no prompt, no requirement for the HF store) and
+    the service layer applies `repo_id = label or artifact_name`.
+    """
     result = _invoke(
         [
             "--store",
@@ -333,6 +337,91 @@ def test_hf_model_requires_label(register_env):
             "--certify-no-restrictions",
         ]
     )
+    assert result.exit_code == 0, result.output
+    # No interactive "Model label" prompt on the HF path.
+    assert "Model label" not in result.output
+    assert register_env.call_args.kwargs["store"] == "hf"
+
+
+def test_hf_dataset_without_repo_is_ok(register_env):
+    """HF dataset without --repo succeeds too (symmetric with model/bucket)."""
+    result = _invoke(
+        [
+            "--store",
+            "hf",
+            "-t",
+            "dataset",
+            "--hf-organization",
+            "org",
+            "--artifact-name",
+            "x",
+            "--certify-no-restrictions",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Dataset name" not in result.output
+    assert register_env.call_args.kwargs["store"] == "hf"
+
+
+def test_hf_bucket_without_repo_is_ok(register_env):
+    result = _invoke(
+        [
+            "--store",
+            "hf",
+            "-t",
+            "bucket",
+            "--hf-organization",
+            "org",
+            "--artifact-name",
+            "x",
+            "--certify-no-restrictions",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert register_env.call_args.kwargs["store"] == "hf"
+
+
+def test_hf_store_rejects_lakehouse_table_flag(register_env):
+    """`--store hf --table ...` errors — HF has no table concept (finding #1).
+
+    Guards the parity between the two entry paths: the --uri path already
+    rejected Lakehouse-only flags; the explicit --store hf path must too.
+    """
+    result = _invoke(
+        [
+            "--store",
+            "hf",
+            "-t",
+            "dataset",
+            "--hf-organization",
+            "org",
+            "--repo",
+            "ds",
+            "--table",
+            "some_table",
+            "--artifact-name",
+            "x",
+            "--certify-no-restrictions",
+        ]
+    )
     assert result.exit_code != 0
-    assert "provide model label" in result.output
+    assert "Lakehouse-only" in result.output
+    register_env.assert_not_called()
+
+
+def test_hf_uri_rejects_lakehouse_table_flag(register_env):
+    """The --uri HF path rejects a Lakehouse-only flag via the same store check."""
+    result = _invoke(
+        [
+            "--uri",
+            "hf:///datasets/org/ds",
+            "--table",
+            "some_table",
+            "--artifact-name",
+            "x",
+            "--certify-no-restrictions",
+        ]
+    )
+    assert result.exit_code != 0
+    assert "Lakehouse-only" in result.output
     register_env.assert_not_called()

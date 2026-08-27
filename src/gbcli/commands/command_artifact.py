@@ -1042,14 +1042,6 @@ def register(
             hf_revision = metadata["revision"]
             uri_has_revision = bool(hf_revision) and hf_revision != HF_REVISION_DEFAULT
 
-            # HF URIs carry no Lakehouse concepts.
-            if table or namespace or version or dataset:
-                click.echo(
-                    "❌ Error: a HuggingFace (hf://) URI cannot be used along with the namespace, table, version or dataset arguments.",
-                    err=True,
-                )
-                ctx.exit(1)
-
             # Owner, repo and (when present) revision are encoded in the URI;
             # if the matching flag was also supplied it must agree.
             if hf_organization and hf_organization != hf_owner:
@@ -1122,6 +1114,17 @@ def register(
         )
         ctx.exit(1)
 
+    # HuggingFace has no namespace/table/version/dataset notion (only models,
+    # datasets and buckets); reject those flags for the HF store regardless of
+    # whether the store came from --uri or an explicit --store hf.
+    if store == "hf" and (table or namespace or version or dataset):
+        click.echo(
+            "❌ Error: --namespace, --table, --version and --dataset are Lakehouse-only "
+            "and cannot be used with --store hf.",
+            err=True,
+        )
+        ctx.exit(1)
+
     # Validate store type compatibility with artifact type
     if store == "hf" and type not in ["model", "dataset", "bucket"]:
         click.echo(
@@ -1136,13 +1139,14 @@ def register(
         version = None
         showLabelPrompt = not label or label.strip() == ""
 
-        # The model label (the model name / HF repo) is required for both stores.
-        # For Lakehouse we prompt interactively; for HF we rely on the check below
-        # so scripted `--store hf` runs fail cleanly instead of blocking on stdin.
-        if showLabelPrompt and store == "lh":
-            label = click.prompt("Model label", show_default=True).strip()
-
+        # The model label is the Lakehouse model name; we prompt for it and
+        # require it. For HF, --label/--repo is the repo id and is optional
+        # (it falls back to the artifact name in the service layer), so no
+        # prompt and no requirement here.
         if store == "lh":
+            if showLabelPrompt:
+                label = click.prompt("Model label", show_default=True).strip()
+
             showRevisionPrompt = not revision or revision.strip() == ""
             revision = (
                 click.prompt(
@@ -1168,9 +1172,9 @@ def register(
                 )
                 ctx.exit(1)
 
-        if not label or label == "":
-            click.echo(f"\n❌ Error: Please provide model label", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+            if not label:
+                click.echo(f"\n❌ Error: Please provide model label", err=True)
+                ctx.exit(1)  # Exit with a non-zero status
 
     if type == "dataset":
         version = None

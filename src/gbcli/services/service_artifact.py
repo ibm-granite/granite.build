@@ -750,10 +750,10 @@ def register_artifact_hf(
     if hf_organization is None:
         hf_organization = HF_ORGANIZATION_DEFAULT
 
-    # The HF repo id (the "repo" in organization/repo) is the model name. It is
-    # carried by --label/--repo; when omitted it falls back to the
-    # registered artifact name, preserving prior behavior. `name` stays the
-    # registry artifact name so the two can differ.
+    # The HF repo id (the "repo" in organization/repo) identifies the model,
+    # dataset or bucket on HuggingFace. It is carried by --label/--repo; when
+    # omitted it falls back to the registered artifact name, preserving prior
+    # behavior. `name` stays the registry artifact name so the two can differ.
     repo_id = label or artifact_name
 
     payload = {
