@@ -222,6 +222,7 @@ class Build(BuildEntity):
                     build_id=self.build_id,
                     event_q=self.event_q,
                     target_name=target_name,
+                    build_name=self_config.name,
                     config=target_config,
                     build_workspace_dir=self.build_workspace_dir,
                     space=self.space,
