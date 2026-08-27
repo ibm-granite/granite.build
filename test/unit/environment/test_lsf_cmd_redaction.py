@@ -27,8 +27,6 @@ from pathlib import Path
 from typing import Self
 from unittest.mock import patch
 
-import pytest
-
 from gbserver.environment.lsf import Lsf
 from gbserver.utils.redaction import REDACTED
 
