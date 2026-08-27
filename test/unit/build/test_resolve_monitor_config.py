@@ -447,7 +447,10 @@ class TestBuiltinLsfMonitor:
     ) -> None:
         """A step (e.g. lhpush) that refs the LSF monitor and appends its own
         ARTIFACT_PUSHED_EVENT via extra_event_configs keeps the three base rules."""
-        push = {"event_type": "ARTIFACT_PUSHED_EVENT", "line_regex": r"Pushed\sURI:\s.+"}
+        push = {
+            "event_type": "ARTIFACT_PUSHED_EVENT",
+            "line_regex": r"Pushed\sURI:\s.+",
+        }
         _, cfg = resolve_monitor_config(
             StepMonitorConfig(
                 ref="space://monitors/lsf",
