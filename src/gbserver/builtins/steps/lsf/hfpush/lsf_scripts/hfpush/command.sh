@@ -24,8 +24,10 @@ BINDING_ID='{{ hfp.binding_id }}'
 
 # Mocked when GBTEST_MOCK_HF is "true" (case-insensitive), matching
 # gbcommon.types.testing.is_hf_mocked. Forwarded as a worker env var.
+# Keep this identical to the other hfpull/hfpush step scripts (lsf + skypilot):
+# the `case` form is portable across bash and sh so the four copies can't drift.
 hf_mocked() {
-    [[ "${GBTEST_MOCK_HF:-}" == [Tt][Rr][Uu][Ee] ]]
+    case "${GBTEST_MOCK_HF:-}" in [Tt][Rr][Uu][Ee]) return 0 ;; *) return 1 ;; esac
 }
 if hf_mocked; then
     echo "[GBTEST_MOCK_HF] mocking hfpush — skipping create_repo and upload"

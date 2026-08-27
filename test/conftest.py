@@ -818,6 +818,11 @@ def _hf_mock(request):
         try:
             yield
         finally:
+            # Restore exactly the entry state: always clear first (in case the
+            # test body set the var), then put back the prior value if there was
+            # one. Guards against leaking GBTEST_MOCK_HF into later tests in the
+            # same worker when it was unset on entry (e.g. a GBTEST_LIVE_HF run).
+            os.environ.pop("GBTEST_MOCK_HF", None)
             if prior is not None:
                 os.environ["GBTEST_MOCK_HF"] = prior
     else:

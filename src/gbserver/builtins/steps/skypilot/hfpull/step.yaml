@@ -45,6 +45,9 @@ environment_configs:
 
             # Mocked when GBTEST_MOCK_HF is "true" (case-insensitive), matching
             # gbcommon.types.testing.is_hf_mocked. Forwarded as a worker env var.
+            # Keep identical to the other hfpull/hfpush step scripts (lsf + skypilot);
+            # skypilot embeds this inline (no shared file on the worker), so the copies
+            # are kept byte-identical to prevent behavioral drift.
             hf_mocked() {
                 case "${GBTEST_MOCK_HF:-}" in [Tt][Rr][Uu][Ee]) return 0 ;; *) return 1 ;; esac
             }

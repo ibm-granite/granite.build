@@ -525,16 +525,15 @@ class TestHfURIPartsUnit:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.live("hf")
 def test_pull_downloads_tiny_public_model(tmp_path):
     """Download a tiny public model from huggingface.co and verify files land in dest.
 
     Uses hf-internal-testing/tiny-random-bert — a minimal fixture model
     maintained by HuggingFace specifically for CI/testing (< 1 MB).
-    No token is required; the repo is public. Marked ``live("hf")`` because it
-    verifies real downloaded files, which is meaningless when HF is mocked — so
-    it never runs in the mock/CI suite. Skipped when HF is not live or the Hub
-    is unreachable.
+    No token is required; the repo is public. This is a pure HF-API integration
+    test (it verifies real downloaded files), so it runs only under a live-HF
+    run (GBTEST_LIVE_HF=true or GBTEST_MODE=live) and is skipped otherwise —
+    it belongs to the extended/live suite, not mock CI.
     """
     from libgbtest.mode import is_live
 
@@ -563,17 +562,16 @@ def test_pull_downloads_tiny_public_model(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.live("hf")
 def test_push_uploads_file_to_huggingface(tmp_path):
     """Upload a small file to a temporary HF repo and verify it lands there.
 
-    Marked ``live("hf")`` because it does a real push and then asserts the file
-    exists on the Hub — that verification is meaningless (and would fail) when
-    HF is mocked, so it never runs in the mock/CI suite. It also requires
-    HF_TOKEN with write access to the authenticated user's namespace. The test
-    creates a throwaway repo, pushes one file, asserts it appears in the repo's
-    file listing, then deletes the repo. Skipped automatically when HF is not
-    live, HF_TOKEN is absent, or the Hub is unreachable.
+    This is a pure HF-API integration test: it does a real push and then asserts
+    the file exists on the Hub, which is meaningless (and would fail) when HF is
+    mocked. It runs only under a live-HF run (GBTEST_LIVE_HF=true or
+    GBTEST_MODE=live) and requires HF_TOKEN with write access to the
+    authenticated user's namespace; otherwise it is skipped. It creates a
+    throwaway repo, pushes one file, asserts it appears in the repo's file
+    listing, then deletes the repo. Belongs to the extended/live suite.
     """
     import os
 
