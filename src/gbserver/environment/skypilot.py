@@ -961,6 +961,8 @@ class Skypilot(Environment):
 
             attempt = self._relaunch_attempts.get(launch_id, 0)
             run_metadata = kwargs.get("run_metadata") or {}
+            # run_metadata is normally a dict here; tolerate an
+            # EntityRunMetadata object defensively (codebase passes both shapes).
             if not isinstance(run_metadata, dict):
                 run_metadata = (
                     run_metadata.to_dict() if hasattr(run_metadata, "to_dict") else {}
@@ -1588,13 +1590,13 @@ class Skypilot(Environment):
             # launch_skypilot_teardown downs this SERVICE's cluster on purpose,
             # so a poll seeing it "gone" (FAILED above) is success, not a crash.
             # The teardown runs in a DIFFERENT Skypilot instance (one per target),
-            # so we match on the process-global set of torn-down cluster names --
+            # so we match on the process-global set of torn-down cluster names.
             # cluster_name here may carry optional gb-[<target>-][<build8>-]
-            # prefixes but still ends with launch_id[:12], the same name the
-            # teardown recorded. Exit cleanly before any FAILED event or raise so
-            # the step
-            # is marked SUCCESS. Checked after the poll (not only at the loop top)
-            # to close the race where teardown fires while this poll is in flight.
+            # prefixes but still ends with launch_id[:12], which is the same name
+            # the teardown/monitor computes from the replayed metadata. Exit
+            # cleanly before any FAILED event or raise so the step is marked
+            # SUCCESS. Checked after the poll (not only at the loop top) to close
+            # the race where teardown fires while this poll is in flight.
             if cluster_name in Skypilot._intentionally_torn_down_clusters:
                 logger.info(
                     "Cluster %s (launch_id %s) was intentionally torn down; "

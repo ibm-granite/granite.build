@@ -350,6 +350,18 @@ class TestSkypilotClusterNaming:
         assert name.endswith("-r2")
         assert valid.fullmatch(name), f"invalid name: {name!r}"
 
+    def test_cluster_name_retry_shares_prefix_with_initial(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        kwargs = dict(
+            target_name="My Eval: Run #2",
+            build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+        )
+        launch_id = "3168aa02-1234-5678-9abc-def012345678"
+        base = Skypilot._cluster_name_for(launch_id, 0, **kwargs)
+        retry = Skypilot._cluster_name_for(launch_id, 2, **kwargs)
+        assert retry == f"{base}-r2"
+
 
 class TestLaunchSkypilot:
     @pytest.fixture
