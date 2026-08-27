@@ -1,0 +1,80 @@
+# Base monitor for the `bsub_monitor` type, shared by all LSF steps. A step
+# references this via `ref: space://monitors/lsf` and overrides only what
+# differs (e.g. appends extra event_configs). Modeled on
+# builtins/monitors/skypilot/monitor.yaml, but adapted for LSF:
+#
+#   * No poll_interval_seconds / log_retrieval keys. Unlike SkyPilot (which
+#     polls job status and retrieves logs on a schedule), the LSF runtime
+#     (LSFBsubMonitor + a live LogFileMonitor tail) has no consumer for these
+#     keys, so shipping them would be inert config. See lsf.py / lsf_bsub_monitor.py.
+#
+#   * Regexes are NOT anchored to the start of line. SkyPilot's retrieved logs
+#     prefix each line with a `(name, pid=N) ` group, so its artifact rules are
+#     unanchored and its metadata rule permits only that prefix. LSF tails the
+#     job's raw stdout log (no worker prefix), but these rules are deliberately
+#     left unanchored anyway for forward compatibility with future/wrapped LSF
+#     log sources. (ANSI is stripped centrally in
+#     Environment.get_events_from_log_line, so no ANSI handling belongs here.)
+#
+# Marker convention (shared with the bash/docker/skypilot monitors):
+#   * env:// artifact — LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path> registers
+#     <path> for the named output. The artifact event emits a `binding` payload
+#     ({"path": <path>}) that downstream targets dereference as
+#     {{ bindings.<x>.binding.path }}; it enables retry-transparent NEWARTIFACT
+#     deduplication.
+#   * mem:// artifact — LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_STATE:<value>
+#     registers <value> as the output's `state` (no path normalisation). PATH and
+#     STATE markers are mutually exclusive per line.
+#   * step metadata — LLMB_STEP_METADATA_KEY:<key> LLMB_STEP_METADATA_VALUE:<value>
+#     merges <value> into the step's StoredStepRun.metadata under <key> (e.g. a
+#     git commit_hash resolved at runtime), surfacing as build provenance in lineage.
+#
+# To extend the events a step listens for (rather than replace these), a
+# referencing step MUST use the reserved `extra_event_configs` key — a plain
+# `event_configs` overlay is rejected because it would drop the base rules below.
+#
+# SECURITY NOTE: The SkyPilot monitor anchors its STEP_METADATA_UPDATE rule so
+# that build-provenance metadata cannot be injected by arbitrary mid-line output
+# from cloned-repo (byoc) code echoing the marker substring. This LSF rule is
+# intentionally left unanchored (see the anchoring note above). If LSF later
+# grows a byoc-style step that runs untrusted code, revisit this rule.
+type: bsub_monitor
+config:
+  event_configs:
+    # env:// artifact: registers <path> for the named output.
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+      event_fields:
+        - field_name: binding_id
+          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+        - field_name: path
+          field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "path": "{{ fields.data.path }}" }'
+          is_json: true
+    # mem:// artifact: registers <value> as the output's `state`, passed verbatim
+    # to a consumer via {{ bindings.<x>.binding.state }} (no path normalisation).
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_STATE:.*"
+      event_fields:
+        - field_name: binding_id
+          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+        - field_name: state
+          field_regex: "(?<=LLMB_ARTIFACT_STATE:).*"
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "state": "{{ fields.data.state }}" }'
+          is_json: true
+    # step metadata: merges <value> into the step's StoredStepRun.metadata under
+    # <key>. Both fields are top-level, so they are splatted into
+    # StepMetadataUpdateEventPayload.
+    - event_type: STEP_METADATA_UPDATE_EVENT
+      line_regex: 'LLMB_STEP_METADATA_KEY:.* LLMB_STEP_METADATA_VALUE:.*'
+      event_fields:
+        - field_name: metadata_key
+          field_regex: "(?<=LLMB_STEP_METADATA_KEY:)[^ ]+"
+        - field_name: metadata_value
+          # Trim trailing whitespace/carriage-return (CRLF logs) so it is not
+          # folded into the value; internal spaces are preserved.
+          field_regex: '(?<=LLMB_STEP_METADATA_VALUE:).*?(?=\s*$)'

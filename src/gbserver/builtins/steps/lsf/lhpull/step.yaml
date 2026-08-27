@@ -32,4 +32,4 @@ environment_configs:
         - bsub_monitor
     monitors:
       bsub_monitor:
-        type: bsub_monitor
+        ref: space://monitors/lsf
