@@ -30,9 +30,6 @@ from gbserver.spaces.user_spaces_list import user_spaces_list
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.storage.stored_space_user import StoredSpaceUser
-from gbserver.utils.logger import get_logger
-
-logger = get_logger(__name__)
 
 spaces_api = FastAPI()
 
@@ -96,19 +93,16 @@ def list_spaces(
 
 @spaces_api.get("/spaces_for_user")
 def spaces_for_user(request: Request):
-    """Get a user's spaces with admin details"""
-    try:
-        username = request.state.data["user"].email
+    """Get a user's spaces with admin details.
 
-        list = user_spaces_list(username)
-
-        return {"spaces": list}
-
-    except Exception as e:
-        logger.error("Failed to get a users spaces list error: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="secret not found!"
-        )
+    No try/except here on purpose: there's no legitimate "not found" case for
+    this route (a user with zero spaces just gets an empty list), and a real
+    storage error must surface as a 5xx rather than being caught and turned
+    into a wrong status code -- the previous broad except did exactly that,
+    converting a transient DB error into a misleading 404.
+    """
+    username = request.state.data["user"].email
+    return {"spaces": user_spaces_list(username)}
 
 
 @spaces_api.get("/{space_name}/members")

@@ -26,6 +26,7 @@ own membership. scope_space_name_filter() (api/utils.py) closes the gap.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from unit.api._space_scoping_test_helpers import (
     ALICE,
     ALICE_SPACE,
@@ -36,7 +37,7 @@ from unit.api._space_scoping_test_helpers import row_matches as _row_matches
 from unit.api._space_scoping_test_helpers import set_alice_access as _set_alice_access
 
 from gbserver.api import spaces as spaces_module
-from gbserver.api.spaces import list_spaces
+from gbserver.api.spaces import list_spaces, spaces_for_user
 from gbserver.storage.stored_space import StoredSpace
 
 
@@ -92,3 +93,15 @@ def test_list_spaces_unrestricted_for_super_admin():
         resp = list_spaces(_fake_request("admin_x", "admin_x@example.com"))
     assert {s.name for s in resp.spaces} == {ALICE_SPACE, BOB_SPACE}
     manager.assert_not_called()
+
+
+def test_spaces_for_user_propagates_storage_error():
+    """spaces_for_user() must not turn a real storage error into a 404 --
+    there's no legitimate "not found" case for this route (a user with zero
+    spaces just gets an empty list), so a broad except here can only ever
+    mask a real failure behind a misleading status code."""
+    with patch.object(
+        spaces_module, "user_spaces_list", side_effect=RuntimeError("db unavailable")
+    ):
+        with pytest.raises(RuntimeError, match="db unavailable"):
+            spaces_for_user(_fake_request(ALICE, f"{ALICE}@example.com"))

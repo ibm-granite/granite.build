@@ -268,6 +268,22 @@ def scope_space_name_filter(
             a storage error here; treating it as "no access" would mask an
             outage as a silent empty list / zero count.
     """
+    # Known inefficiency, deliberately not fixed here: when requested_space_name
+    # is given, this still runs is_super_admin() (one round trip) and then, if
+    # false, the FULL get_user_spaces_with_access() -- memberships + batched
+    # spaces + public-space fallback -- just to intersect it down to one name
+    # below, on what's now a hot path for every list/count/tags request with an
+    # explicit space_name filter. A targeted single-space check would be
+    # cheaper, but the obvious shortcut is unsafe: has_space_access() grants
+    # the public space unconditionally with no row required, while
+    # get_user_spaces_with_access() row-gates it (see
+    # StorageSpaceAccessManager.has_space_access()'s docstring) -- reusing it
+    # here would silently reintroduce that asymmetry into the list-scoping
+    # path specifically. A safe fix needs get_user_spaces_with_access() itself
+    # extended with an optional space_name param, so both implementations can
+    # answer the single-space case with one targeted lookup while still
+    # sharing the same row-gated public-space logic -- a real interface
+    # change, not attempted in this pass.
     if is_super_admin(request):
         return requested_space_name
     username = request.state.data["user"].email
