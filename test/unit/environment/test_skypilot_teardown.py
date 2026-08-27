@@ -140,7 +140,7 @@ class TestSkypilotTeardown:
             await env.teardown_skypilot(setup_id)
 
         cluster_name = mock_sky.launch.call_args.kwargs["cluster_name"]
-        assert cluster_name.startswith("gb-train-9f3ac1d2-")
+        assert cluster_name.startswith("gb-9f3ac1d2-train-")
 
 
 class TestMonitorTreatsTeardownAsSuccess:

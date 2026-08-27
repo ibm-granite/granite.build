@@ -293,7 +293,7 @@ class TestSkypilotClusterNaming:
             target_name="train",
             build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
         )
-        assert name == "gb-train-9f3ac1d2-3168aa02-123"
+        assert name == "gb-9f3ac1d2-train-3168aa02-123"
 
     def test_cluster_name_slugifies_target(self):
         from gbserver.environment.skypilot import Skypilot
@@ -303,7 +303,7 @@ class TestSkypilotClusterNaming:
             target_name="My Eval: Run #2",
             build_id="9f3ac1d2aaaa",
         )
-        assert name.startswith("gb-my-eval-run-2-")
+        assert name.startswith("gb-9f3ac1d2-my-eval-run-2-")
         assert name == name.lower()
 
     def test_cluster_name_truncates_long_target(self):
@@ -315,7 +315,7 @@ class TestSkypilotClusterNaming:
             build_id="9f3ac1d2aaaa",
         )
         # slug segment is capped at 20 chars
-        assert name.startswith("gb-" + "x" * 20 + "-")
+        assert name.startswith("gb-9f3ac1d2-" + "x" * 20 + "-")
 
     def test_cluster_name_omits_empty_target_keeps_build(self):
         from gbserver.environment.skypilot import Skypilot
@@ -436,7 +436,7 @@ class TestLaunchSkypilot:
                 },
             )
         assert (
-            skypilot_env._cluster_names[launch_id] == "gb-train-9f3ac1d2-3168aa02-123"
+            skypilot_env._cluster_names[launch_id] == "gb-9f3ac1d2-train-3168aa02-123"
         )
 
     @pytest.mark.asyncio

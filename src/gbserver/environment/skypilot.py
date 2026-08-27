@@ -668,7 +668,7 @@ class Skypilot(Environment):
         recognizable in ``sky status``, while ``launch_id[:12]`` keeps it unique
         per launch::
 
-            gb-[<slug(target_name)>-][<build_id[:8]>-]<launch_id[:12]>[-r<attempt>]
+            gb-[<build_id[:8]>-][<slug(target_name)>-]<launch_id[:12]>[-r<attempt>]
 
         Empty ``target_name``/``build_id`` are omitted, so with neither the
         result is exactly ``gb-<launch_id[:12]>`` (unchanged legacy behavior).
@@ -688,12 +688,12 @@ class Skypilot(Environment):
         :returns: The deterministic cluster name for this launch + attempt.
         """
         parts = ["gb"]
-        slug = Skypilot._slugify(target_name)
-        if slug:
-            parts.append(slug)
         bid = build_id.replace("-", "")[:8]
         if bid:
             parts.append(bid)
+        slug = Skypilot._slugify(target_name)
+        if slug:
+            parts.append(slug)
         parts.append(launch_id[:12])
         base = "-".join(parts).rstrip("-_.")
         return base if attempt <= 0 else f"{base}-r{attempt}"
@@ -1591,7 +1591,7 @@ class Skypilot(Environment):
             # so a poll seeing it "gone" (FAILED above) is success, not a crash.
             # The teardown runs in a DIFFERENT Skypilot instance (one per target),
             # so we match on the process-global set of torn-down cluster names.
-            # cluster_name here may carry optional gb-[<target>-][<build8>-]
+            # cluster_name here may carry optional gb-[<build8>-][<target>-]
             # prefixes but still ends with launch_id[:12], which is the same name
             # the teardown/monitor computes from the replayed metadata. Exit
             # cleanly before any FAILED event or raise so the step is marked
@@ -2091,7 +2091,7 @@ class Skypilot(Environment):
             # Record BEFORE downing so the SERVICE's monitor -- which runs in a
             # different Skypilot instance and may be mid-poll -- treats the
             # cluster going away as success, not a WorkloadFailedException. Keyed
-            # by cluster name (may carry optional gb-[<target>-][<build8>-]
+            # by cluster name (may carry optional gb-[<build8>-][<target>-]
             # prefixes but still ends with launch_id[:12]), the name the monitor
             # sees.
             Skypilot._intentionally_torn_down_clusters.add(name)
