@@ -293,7 +293,7 @@ class TestSkypilotClusterNaming:
             target_name="train",
             build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
         )
-        assert name == "gb-9f3ac1d2-train-3168aa02-123"
+        assert name == "gb-9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff-train-3168aa02-123"
 
     def test_cluster_name_slugifies_target(self):
         from gbserver.environment.skypilot import Skypilot
@@ -303,7 +303,7 @@ class TestSkypilotClusterNaming:
             target_name="My Eval: Run #2",
             build_id="9f3ac1d2aaaa",
         )
-        assert name.startswith("gb-9f3ac1d2-my-eval-run-2-")
+        assert name.startswith("gb-9f3ac1d2aaaa-my-eval-run-2-")
         assert name == name.lower()
 
     def test_cluster_name_truncates_long_target(self):
@@ -314,8 +314,9 @@ class TestSkypilotClusterNaming:
             target_name="x" * 50,
             build_id="9f3ac1d2aaaa",
         )
-        # slug segment is capped at 20 chars
-        assert name.startswith("gb-9f3ac1d2-" + "x" * 20 + "-")
+        # slug segment is capped at 20 chars (build_id short here, so budget
+        # still hits the 20-char cap)
+        assert name.startswith("gb-9f3ac1d2aaaa-" + "x" * 20 + "-")
 
     def test_cluster_name_omits_empty_target_keeps_build(self):
         from gbserver.environment.skypilot import Skypilot
@@ -325,7 +326,7 @@ class TestSkypilotClusterNaming:
             target_name="",
             build_id="9f3ac1d2-aaaa",
         )
-        assert name == "gb-9f3ac1d2-3168aa02-123"
+        assert name == "gb-9f3ac1d2-aaaa-3168aa02-123"
 
     def test_cluster_name_no_metadata_matches_legacy(self):
         from gbserver.environment.skypilot import Skypilot
@@ -353,14 +354,57 @@ class TestSkypilotClusterNaming:
     def test_cluster_name_retry_shares_prefix_with_initial(self):
         from gbserver.environment.skypilot import Skypilot
 
+        # Short build_id so the target-slug budget is not near the length
+        # ceiling; the -r suffix then just appends to the initial name.
         kwargs = dict(
             target_name="My Eval: Run #2",
-            build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+            build_id="9f3ac1d2aaaa",
         )
         launch_id = "3168aa02-1234-5678-9abc-def012345678"
         base = Skypilot._cluster_name_for(launch_id, 0, **kwargs)
         retry = Skypilot._cluster_name_for(launch_id, 2, **kwargs)
         assert retry == f"{base}-r2"
+
+    def test_cluster_name_prefers_build_name_over_build_id(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        name = Skypilot._cluster_name_for(
+            "3168aa02-1234-5678-9abc-def012345678",
+            target_name="train",
+            build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+            build_name="Helloworld Job",
+        )
+        assert name == "gb-helloworld-job-train-3168aa02-123"
+
+    def test_cluster_name_falls_back_to_full_build_id(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        bid = "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff"
+        name = Skypilot._cluster_name_for(
+            "3168aa02-1234-5678-9abc-def012345678",
+            target_name="train",
+            build_id=bid,
+            build_name="",
+        )
+        # full build id (dashes kept) present verbatim
+        assert bid in name
+        assert name.startswith(f"gb-{bid}-train-")
+
+    def test_cluster_name_within_length_ceiling(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        bid = "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff"  # 36 chars
+        for attempt in (0, 2, 99):
+            name = Skypilot._cluster_name_for(
+                "3168aa02-1234-5678-9abc-def012345678",
+                attempt,
+                target_name="x" * 50,
+                build_id=bid,
+            )
+            assert len(name) <= 63, f"{name!r} is {len(name)} chars"
+            assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]", name)
+            if attempt:
+                assert name.endswith(f"-r{attempt}")
 
 
 class TestLaunchSkypilot:
@@ -436,7 +480,8 @@ class TestLaunchSkypilot:
                 },
             )
         assert (
-            skypilot_env._cluster_names[launch_id] == "gb-9f3ac1d2-train-3168aa02-123"
+            skypilot_env._cluster_names[launch_id]
+            == "gb-9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff-train-3168aa02-123"
         )
 
     @pytest.mark.asyncio
