@@ -692,6 +692,10 @@ class Skypilot(Environment):
         """
         launch = launch_id[:12]
         retry = f"-r{attempt}" if attempt > 0 else ""
+        # `build` is the slug of the build.yaml name, else the full build_id
+        # (kept verbatim so it matches the id gbcli users reference). Only the
+        # target slug is length-budgeted below; the <=_MAX_CLUSTER_NAME_LEN
+        # guarantee therefore assumes build_id is UUID-length (<=36).
         build = Skypilot._slugify(build_name) or build_id
         fixed = ["gb"]
         if build:
