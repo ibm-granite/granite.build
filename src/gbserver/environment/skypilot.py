@@ -640,9 +640,14 @@ class Skypilot(Environment):
 
     # k8s RFC1123 label ceiling for pod names derived from the cluster name.
     _MAX_CLUSTER_NAME_LEN = 63
+    # Cosmetic cap on each human-readable slug (build / target name): keeps a
+    # long name from dominating the cluster name. It is NOT a correctness
+    # limit — the only hard constraint is ``_MAX_CLUSTER_NAME_LEN`` above,
+    # enforced by the length budget in ``_cluster_name_for``.
+    _MAX_SLUG_LEN = 20
 
     @staticmethod
-    def _slugify(text: str, max_len: int = 20) -> str:
+    def _slugify(text: str, max_len: int = _MAX_SLUG_LEN) -> str:
         """Reduce ``text`` to a lowercase, SkyPilot-safe slug.
 
         Lowercases, collapses every run of non-``[a-z0-9]`` characters into a
@@ -702,7 +707,10 @@ class Skypilot(Environment):
             fixed.append(build)
         # Budget the optional target slug so the full name fits the ceiling.
         without_slug = len("-".join(fixed)) + 1 + len(launch) + len(retry)
-        slug_budget = min(20, Skypilot._MAX_CLUSTER_NAME_LEN - without_slug - 1)
+        slug_budget = min(
+            Skypilot._MAX_SLUG_LEN,
+            Skypilot._MAX_CLUSTER_NAME_LEN - without_slug - 1,
+        )
         slug = Skypilot._slugify(target_name, max_len=max(0, slug_budget))
         parts = list(fixed)
         if slug:
