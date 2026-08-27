@@ -29,6 +29,7 @@ the *current* ``sys.stderr`` at emit time rather than pin a transient stream.
 import logging
 import sys
 
+import click
 from click.testing import CliRunner
 
 from gbserver.utils import logger as logger_mod
@@ -54,7 +55,9 @@ def test_console_handler_does_not_retain_clirunner_captured_stream():
     isolation exits and the buffer is abandoned. The fix makes the handler track
     the live ``sys.stderr``.
     """
-    saved_handlers = logging.getLogger().handlers[:]
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
     try:
         runner = CliRunner()
         with runner.isolation():
@@ -72,5 +75,32 @@ def test_console_handler_does_not_retain_clirunner_captured_stream():
         assert handler.stream is not captured_stream
         assert handler.stream is sys.stderr
     finally:
-        root = logging.getLogger()
         root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
+
+
+def test_log_output_is_captured_during_clirunner_invoke():
+    """A record logged during invoke() must still land in ``result.output``.
+
+    Guards against a naive "fix" that pins the handler to ``sys.__stderr__``:
+    that would stop the flaky-close failure but silently break log capture,
+    since CliRunner only redirects ``sys.stdout``/``sys.stderr``.
+    """
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    try:
+        logger_mod.configure_logging(level="INFO", skip_if_already_configured=False)
+        log = logging.getLogger("gbserver.test.capture")
+
+        @click.command()
+        def emit():
+            log.warning("captured-during-invoke")
+
+        result = CliRunner().invoke(emit, [])
+
+        assert result.exit_code == 0, result.output
+        assert "captured-during-invoke" in result.output
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)

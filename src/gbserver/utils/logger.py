@@ -109,18 +109,18 @@ class _ConsoleStreamHandler(logging.StreamHandler):
     a closed file, producing flaky ``I/O operation on closed file`` failures under
     parallel test runs (issue #315). Resolving ``sys.stderr`` on each access keeps
     the handler on the live stream and never retains a closed one.
+
+    This mirrors the standard library's ``logging._StderrHandler`` (used for
+    ``logging.lastResort``): skip ``StreamHandler.__init__`` so nothing snapshots
+    a stream into ``self.stream``, and expose ``stream`` as a read-only property.
     """
+
+    def __init__(self):
+        logging.Handler.__init__(self)
 
     @property
     def stream(self):
         return sys.stderr
-
-    @stream.setter
-    def stream(self, value):
-        # StreamHandler.__init__/setStream assign self.stream; ignore the
-        # assignment so the handler stays bound to the live sys.stderr rather
-        # than a captured snapshot.
-        pass
 
 
 def configure_logging(
@@ -145,6 +145,10 @@ def configure_logging(
             force=True,
         )
     else:
+        # NOTE: this explicit-format branch lets basicConfig build its own bare
+        # StreamHandler, which still snapshots sys.stderr (the issue #315 hazard).
+        # It is left as-is because no caller passes `format`; the CLI paths that
+        # reconfigure logging under CliRunner all take the `format is None` branch.
         logging.basicConfig(
             format=format,
             level=get_log_level(level),
