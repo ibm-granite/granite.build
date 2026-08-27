@@ -9,7 +9,10 @@
 #
 # The artifact event emits a `binding` payload ({"path": <artifact path>}) — this
 # is what downstream targets dereference as `{{ bindings.<x>.binding.path }}`, and
-# it enables retry-transparent NEWARTIFACT deduplication. Every {{ config.* }}
+# it enables retry-transparent NEWARTIFACT deduplication. This PATH form is NOT
+# env://-specific: it is consumed by every filesystem-backed store — file://,
+# hf://, cos://, lh://, env:// — with the output's uri scheme in build.yaml (not
+# this marker) selecting the handler. Every {{ config.* }}
 # carries a `| default(...)` so a referencing step that omits the key still
 # renders under strict templating.
 #
@@ -28,10 +31,12 @@ config:
   log_retrieval:
     mode: "{{ config.log_retrieval_mode | default('on_completion') }}"
   event_configs:
-    # env:// artifact: registers <path> for the named output. NOT anchored:
-    # SkyPilot's retrieved job logs prefix stdout lines, so the marker is not at
-    # column 0 — a `^` anchor would fail to match. (Contrast bash, which reads
-    # raw stdout and anchors to avoid matching its own command echo.)
+    # filesystem-path artifact: registers <path> for the named output. Consumed by
+    # any filesystem-backed store (file://, hf://, cos://, lh://, env://); the
+    # output's uri scheme in build.yaml picks the handler, not this marker. NOT
+    # anchored: SkyPilot's retrieved job logs prefix stdout lines, so the marker is
+    # not at column 0 — a `^` anchor would fail to match. (Contrast bash, which
+    # reads raw stdout and anchors to avoid matching its own command echo.)
     - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
       line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
       event_fields:

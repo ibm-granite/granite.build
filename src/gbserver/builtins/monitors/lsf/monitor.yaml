@@ -16,11 +16,13 @@
 #     belongs here.)
 #
 # Marker convention (shared with the bash/docker/skypilot monitors):
-#   * env:// artifact — LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path> registers
-#     <path> for the named output. The artifact event emits a `binding` payload
-#     ({"path": <path>}) that downstream targets dereference as
+#   * filesystem-path artifact — LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>
+#     registers <path> for the named output. The artifact event emits a `binding`
+#     payload ({"path": <path>}) that downstream targets dereference as
 #     {{ bindings.<x>.binding.path }}; it enables retry-transparent NEWARTIFACT
-#     deduplication.
+#     deduplication. This form is NOT env://-specific: it is consumed by every
+#     filesystem-backed store — file://, hf://, cos://, lh://, env:// — with the
+#     output's uri scheme in build.yaml (not this marker) selecting the handler.
 #   * mem:// artifact — LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_STATE:<value>
 #     registers <value> as the output's `state` (no path normalisation). PATH and
 #     STATE markers are mutually exclusive per line.
@@ -42,7 +44,9 @@
 type: bsub_monitor
 config:
   event_configs:
-    # env:// artifact: registers <path> for the named output.
+    # filesystem-path artifact: registers <path> for the named output. Consumed by
+    # any filesystem-backed store (file://, hf://, cos://, lh://, env://); the
+    # output's uri scheme in build.yaml picks the handler, not this marker.
     - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
       line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
       event_fields:
