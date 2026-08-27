@@ -12,6 +12,7 @@
 #
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Self
 
@@ -96,6 +97,32 @@ class CustomFormatter(logging.Formatter):
         return formatter.format(record)
 
 
+class _ConsoleStreamHandler(logging.StreamHandler):
+    """StreamHandler that resolves ``sys.stderr`` at emit time.
+
+    A bare ``logging.StreamHandler()`` captures whatever ``sys.stderr`` is at
+    construction and holds that reference for the life of the handler. When
+    logging is (re)configured inside ``click.testing.CliRunner.invoke()`` — which
+    swaps ``sys.stdout``/``sys.stderr`` for an in-memory buffer and later
+    closes/garbage-collects it — the handler would pin that transient buffer, and
+    a later cross-boundary write (or CliRunner's own ``getvalue()``) would land on
+    a closed file, producing flaky ``I/O operation on closed file`` failures under
+    parallel test runs (issue #315). Resolving ``sys.stderr`` on each access keeps
+    the handler on the live stream and never retains a closed one.
+    """
+
+    @property
+    def stream(self):
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, value):
+        # StreamHandler.__init__/setStream assign self.stream; ignore the
+        # assignment so the handler stays bound to the live sys.stderr rather
+        # than a captured snapshot.
+        pass
+
+
 def configure_logging(
     level: str = DEFAULT_LOG_LEVEL,
     format: Optional[str] = None,
@@ -107,7 +134,7 @@ def configure_logging(
     if skip_if_already_configured and __LOGGER_CONFIGURED:
         return
     if format is None:
-        handler: logging.Handler = logging.StreamHandler()
+        handler: logging.Handler = _ConsoleStreamHandler()
         if log_file is not None:
             handler = logging.FileHandler(filename=log_file, encoding="utf-8", mode="w")
         handler.setFormatter(CustomFormatter())
