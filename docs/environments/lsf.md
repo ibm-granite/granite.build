@@ -81,6 +81,25 @@ assetstores:
 The `bsub` launcher takes no launcher-level config — job-submission options come from the step
 `config` section below.
 
+### Referencing the shared LSF monitor
+
+Rather than spell out the artifact rules in every step, reference the shipped LSF monitor
+library — [`builtins/monitors/lsf/monitor.yaml`](../../src/gbserver/builtins/monitors/lsf/monitor.yaml).
+It is a `bsub_monitor` carrying the standard `LLMB_ARTIFACT_*` (both `PATH` and `STATE`) and
+`LLMB_STEP_METADATA_KEY/VALUE` rules, so a step that references it gets artifact capture and
+step-metadata (lineage) events for free:
+
+```yaml
+    monitors:
+      bsub_monitor:
+        ref: space://monitors/lsf
+```
+
+To add step-specific rules (e.g. an `ARTIFACT_PUSHED_EVENT`, or a `WORKLOAD_STATUS_EVENT`)
+without discarding the inherited ones, append them via `extra_event_configs` — see
+[Overriding a referenced monitor](../steps/monitoring-and-artifact-events.md#overriding-a-referenced-monitor).
+The inline form below remains valid when a step needs a bespoke rule set.
+
 ## Step `config` blocks read by Lsf
 
 ```yaml
@@ -144,6 +163,10 @@ assetstores:
 ```
 
 ### `step.yaml`
+
+This example uses the **inline** monitor form to show the `event_configs` schema in context;
+most steps instead `ref: space://monitors/lsf` (see [above](#referencing-the-shared-lsf-monitor))
+and append only what they add.
 
 ```yaml
 name: my-lsf-step

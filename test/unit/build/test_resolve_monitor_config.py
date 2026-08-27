@@ -435,12 +435,19 @@ class TestBuiltinLsfMonitor:
         assert m_type == "bsub_monitor"
         assert "poll_interval_seconds" not in cfg
         assert "log_retrieval" not in cfg
+        rules = {e["event_type"]: e for e in cfg["event_configs"]}
         event_types = [e["event_type"] for e in cfg["event_configs"]]
         assert event_types == [
             "NEWARTIFACT_IN_ENVIRONMENT_EVENT",  # env:// PATH
             "NEWARTIFACT_IN_ENVIRONMENT_EVENT",  # mem:// STATE
             "STEP_METADATA_UPDATE_EVENT",
         ]
+        # Artifact rules are unanchored (raw-log forward-compat); the provenance
+        # rule is `^`-anchored so it cannot be injected mid-line.
+        assert rules["STEP_METADATA_UPDATE_EVENT"]["line_regex"].startswith("^")
+        for e in cfg["event_configs"]:
+            if e["event_type"] == "NEWARTIFACT_IN_ENVIRONMENT_EVENT":
+                assert not e["line_regex"].startswith("^")
 
     def test_lsf_step_overlay_appends_push_event(
         self: Self, builtin_monitor_space

@@ -8,13 +8,12 @@
 #     (LSFBsubMonitor + a live LogFileMonitor tail) has no consumer for these
 #     keys, so shipping them would be inert config. See lsf.py / lsf_bsub_monitor.py.
 #
-#   * Regexes are NOT anchored to the start of line. SkyPilot's retrieved logs
-#     prefix each line with a `(name, pid=N) ` group, so its artifact rules are
-#     unanchored and its metadata rule permits only that prefix. LSF tails the
-#     job's raw stdout log (no worker prefix), but these rules are deliberately
-#     left unanchored anyway for forward compatibility with future/wrapped LSF
-#     log sources. (ANSI is stripped centrally in
-#     Environment.get_events_from_log_line, so no ANSI handling belongs here.)
+#   * The two artifact rules are NOT anchored to the start of line — matching the
+#     skypilot/docker monitors, and kept unanchored for forward compatibility with
+#     future/wrapped LSF log sources. The STEP_METADATA_UPDATE rule, by contrast,
+#     IS anchored with a plain `^` (see the security note below). (ANSI is stripped
+#     centrally in Environment.get_events_from_log_line, so no ANSI handling
+#     belongs here.)
 #
 # Marker convention (shared with the bash/docker/skypilot monitors):
 #   * env:// artifact — LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path> registers
@@ -33,11 +32,13 @@
 # referencing step MUST use the reserved `extra_event_configs` key — a plain
 # `event_configs` overlay is rejected because it would drop the base rules below.
 #
-# SECURITY NOTE: The SkyPilot monitor anchors its STEP_METADATA_UPDATE rule so
-# that build-provenance metadata cannot be injected by arbitrary mid-line output
-# from cloned-repo (byoc) code echoing the marker substring. This LSF rule is
-# intentionally left unanchored (see the anchoring note above). If LSF later
-# grows a byoc-style step that runs untrusted code, revisit this rule.
+# SECURITY NOTE: Step metadata surfaces in lineage as authoritative build
+# provenance, so its marker must not be injectable by arbitrary mid-line output
+# from cloned-repo (byoc) code echoing the marker substring. The
+# STEP_METADATA_UPDATE rule is therefore anchored with a plain `^`, as on the
+# bash/docker monitors. LSF tails the job's raw stdout log (no worker prefix), so
+# `^` matches a real emission at column 0 while rejecting an embedded one. Do not
+# un-anchor it to match the artifact rules — the trade-off is deliberate.
 type: bsub_monitor
 config:
   event_configs:
@@ -69,8 +70,10 @@ config:
     # step metadata: merges <value> into the step's StoredStepRun.metadata under
     # <key>. Both fields are top-level, so they are splatted into
     # StepMetadataUpdateEventPayload.
+    # Anchored with a plain `^` — provenance must not be injectable (see security
+    # note in the header).
     - event_type: STEP_METADATA_UPDATE_EVENT
-      line_regex: 'LLMB_STEP_METADATA_KEY:.* LLMB_STEP_METADATA_VALUE:.*'
+      line_regex: '^LLMB_STEP_METADATA_KEY:.* LLMB_STEP_METADATA_VALUE:.*'
       event_fields:
         - field_name: metadata_key
           field_regex: "(?<=LLMB_STEP_METADATA_KEY:)[^ ]+"

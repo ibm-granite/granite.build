@@ -73,7 +73,7 @@ shipped **monitor library** and referenced by name. A library monitor lives at
 
 `space://monitors/<name>` resolves to the library directory whose `monitor.yaml` holds the
 monitor; a same-named directory under a configuration's own `monitors/` tree overrides the
-built-in. The shipped monitors — `bash`, `docker`, `skypilot` — all carry the standard
+built-in. The shipped monitors — `bash`, `docker`, `skypilot`, `lsf` — all carry the standard
 `LLMB_ARTIFACT_*` artifact rules (both the `PATH` and `STATE` variants below), so a step that
 just references one gets artifact capture for free.
 
@@ -182,9 +182,9 @@ and the rule is identical except it emits `state` instead of `path`:
 
 **Which environments can produce a `mem://` output.** Consuming a `mem://` input works everywhere — the
 transport is host-side and environment-agnostic. Producing one additionally needs the step's monitor to
-carry this STATE rule. The shipped `space://monitors/bash`, `space://monitors/skypilot`, and
-`space://monitors/docker` monitors already include it (referencing one gives it for free); the k8s / lsf
-/ runpod monitors do not yet. To add it to a step whose monitor lacks it, append the rule via
+carry this STATE rule. The shipped `space://monitors/bash`, `space://monitors/skypilot`,
+`space://monitors/docker`, and `space://monitors/lsf` monitors already include it (referencing
+one gives it for free); the k8s / runpod monitors do not yet. To add it to a step whose monitor lacks it, append the rule via
 `extra_event_configs` (see [Overriding a referenced monitor](#overriding-a-referenced-monitor)) or inline
 it. (RunPod's `pod_status_monitor` applies no `event_configs` at all — see below — so it cannot register
 `mem://` outputs by marker.)
@@ -263,6 +263,7 @@ delivers logs**, not a universal best practice — the shipped monitors differ d
 | `bash` (`space://monitors/bash`) | **Yes** (`^LLMB_ARTIFACT_ID:...`) | The bash launcher echoes the command back (`command step start: <cmd>`); anchoring stops the rule from matching that echo. Steps print the real marker at column 0, so the anchor still matches them. |
 | `skypilot` (`space://monitors/skypilot`) | **No** | SkyPilot's *retrieved* job logs prefix stdout lines (e.g. `(worker1, rank=0) …`), so the marker is not at column 0 and a `^` anchor would never match. |
 | `docker` (`space://monitors/docker`) | **No** | Docker streams raw stdout so either works; kept unanchored to match SkyPilot. |
+| `lsf` (`space://monitors/lsf`) | **No** | LSF tails the job's raw stdout log (no worker prefix), so either works; kept unanchored for forward compatibility with future/wrapped LSF log sources. |
 
 Anchoring `space://monitors/skypilot` "for consistency" once caused a real regression — the
 markers stopped matching and the job registered **zero** artifacts. If you author a new monitor,
@@ -271,8 +272,8 @@ anchor only when the environment injects a line you must avoid matching.
 > **Exception — the step-metadata marker is anchored on every monitor.** Unlike the artifact
 > rules above, `LLMB_STEP_METADATA_KEY/VALUE` surfaces in lineage as *authoritative build
 > provenance* (e.g. a byoc step's resolved `commit_hash`), so it must not be injectable by
-> arbitrary mid-stream output from cloned-repo code. Bash and Docker anchor it with a plain
-> `^`; SkyPilot anchors it too but permits only its own `(name, pid=N) ` log prefix before the
+> arbitrary mid-stream output from cloned-repo code. Bash, Docker, and LSF anchor it with a
+> plain `^`; SkyPilot anchors it too but permits only its own `(name, pid=N) ` log prefix before the
 > marker (`^(\([^)]*\)\s+)?LLMB_STEP_METADATA_KEY:...`), so a marker embedded after other text
 > on the line is ignored. Do **not** un-anchor these to match the artifact rules — the trade-off
 > is deliberate. (Caveat: because SkyPilot prefixes every line, a *deliberate* clean-line echo of
