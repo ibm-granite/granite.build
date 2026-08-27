@@ -50,6 +50,11 @@ else:
 
 _DEFAULT_POLL_INTERVAL_SECONDS = 300
 
+# URI of the built-in ``command`` step. Its inline relative file_mounts sources
+# are authored relative to the gbserver working dir (repo root) rather than the
+# per-run staging dir, since it ships no step assets into that staging dir.
+BUILTIN_COMMAND_STEP_URI = "space://steps/command"
+
 
 def _require_skypilot():
     """Raise a clear error if the sky SDK is not installed.
@@ -442,6 +447,7 @@ def _build_skypilot_mounts(
     file_mounts_raw: dict,
     asset_dir: Union[Path, str, None],
     build_workdir: Optional[str] = None,
+    source_base_dir: Union[Path, str, None] = None,
 ) -> Tuple[Dict, Dict]:
     """Split a raw ``file_mounts`` mapping into file mounts and storage mounts.
 
@@ -457,9 +463,16 @@ def _build_skypilot_mounts(
     :param asset_dir: ``targetsteprun_asset_dir`` used to resolve relative sources.
     :param build_workdir: per-run workdir for relative-destination remap, or
         ``None`` to leave destinations unchanged.
+    :param source_base_dir: base dir for resolving relative *sources*; when
+        ``None`` (the default) it falls back to ``asset_dir``. The built-in
+        command step passes the gbserver working dir here.
     :returns: a ``(file_mounts, storage_mounts)`` tuple of dicts, either of which
         may be empty.
     """
+    # Relative SOURCES resolve against source_base_dir when provided (the built-in
+    # command step passes the gbserver working dir); otherwise against asset_dir
+    # (custom file:// steps — unchanged). Destinations are unaffected.
+    source_base = source_base_dir if source_base_dir is not None else asset_dir
     file_mounts: Dict[str, str] = {}
     storage_mounts: Dict[str, Any] = {}
     for raw_path, mount_val in file_mounts_raw.items():
@@ -479,11 +492,13 @@ def _build_skypilot_mounts(
                     storage_kwargs["source"] = source
             else:  # local path: resolve relative to the step.yaml dir
                 storage_kwargs["source"] = _resolve_local_mount_source(
-                    source, asset_dir
+                    source, source_base
                 )
             storage_mounts[mount_path] = sky.Storage(**storage_kwargs)
         else:
-            file_mounts[mount_path] = _resolve_local_mount_source(mount_val, asset_dir)
+            file_mounts[mount_path] = _resolve_local_mount_source(
+                mount_val, source_base
+            )
     return file_mounts, storage_mounts
 
 
@@ -1077,17 +1092,30 @@ class Skypilot(Environment):
             # path; the fork's backend wrap-exemption keeps these shared-root
             # destinations un-wrapped. Relative local sources resolve against
             # targetsteprun_asset_dir (the dir holding the rendered step.yaml +
-            # siblings). See _build_skypilot_mounts / _resolve_local_mount_source.
+            # siblings) for custom file:// steps; the built-in command step
+            # instead resolves them against the gbserver working dir (see the
+            # source_base_dir selection below). See _build_skypilot_mounts /
+            # _resolve_local_mount_source.
             file_mounts_raw = launcher_config.get("file_mounts") or config.get(
                 "file_mounts"
             )
             file_mounts: Dict[str, str] = {}
             storage_mounts: Dict[str, Any] = {}
             if file_mounts_raw:
+                # The built-in command step ships no step assets into the per-run
+                # staging dir, so its inline relative file_mounts sources are
+                # authored relative to the gbserver working dir (repo root).
+                # Custom file:// steps keep resolving against the staging dir.
+                source_base_dir = (
+                    Path.cwd()
+                    if run_metadata.get("targetstep_uri") == BUILTIN_COMMAND_STEP_URI
+                    else None
+                )
                 file_mounts, storage_mounts = _build_skypilot_mounts(
                     file_mounts_raw,
                     targetsteprun_asset_dir,
                     build_workdir,
+                    source_base_dir=source_base_dir,
                 )
 
             # The prefix always leads with `set -eu` (fail fast). When a per-run

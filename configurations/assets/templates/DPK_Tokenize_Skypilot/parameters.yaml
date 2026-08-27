@@ -1,0 +1,78 @@
+# Default parameters for the DPK tokenization + validation build.
+# Override any of these at submit time:
+#   gb build start -f build.yaml --param KEY=VALUE
+
+# --- Environment -------------------------------------------------------------
+# Which SkyPilot endpoint to run on. Any environment of class `Skypilot`
+# resolves the builtin `command` step, so all four endpoints work unchanged:
+#   skypilot/slurm            — local Docker SLURM cluster (make slurm-setup)
+#   skypilot/kubernetes       — existing K8s cluster (~/.kube/config)
+#   skypilot/aws              — EC2 (~/.aws/credentials)
+#   skypilot/lsf/ibm-bluevela — LSF via SkyPilot
+ENVIRONMENT: "skypilot/slurm"
+
+# --- DPK package versions ----------------------------------------------------
+# data-prep-toolkit-transforms ships the dpk_tokenization / dpk_tokenization2arrow
+# modules; the pure-python runtime needs no Ray and no GPU.
+DPK_TRANSFORMS_VERSION: "1.1.8"
+TRANSFORMERS_VERSION: ">=4.38.2"
+
+# --- Input data --------------------------------------------------------------
+# Local directory rsync'd to the worker via SkyPilot file_mounts. Relative paths
+# resolve against the gbserver working directory (the repo root).
+INPUT_LOCAL_DIR: "samples/data/dpk-tokenization/input"
+
+# Validation script shipped to the worker the same way. Relative to the gbserver
+# working directory; override if you instantiate the template elsewhere.
+VALIDATE_SCRIPT: "configurations/assets/templates/DPK_Tokenize_Skypilot/scripts/validate_tokens.py"
+
+# --- Artifact handoff --------------------------------------------------------
+# How the `tokens` artifact travels from `tokenize` to `validate`. The two are
+# SEPARATE workloads that may land on different nodes. env:// moves no bytes and
+# the consumer's binding path is the declared URI's path, so the tokens survive
+# the hop only if `tokenize` physically writes them onto a filesystem `validate`
+# can read. The tokenize command derives its output dir from TOKENS_URI to
+# guarantee this (see build.yaml): for env:// it writes to the URI's path, for
+# s3:// it stages locally and the s3 assetstore pushes/pulls the bytes.
+#   shared-FS endpoints : env:///shared/dpk-tokenize-output  (default below)
+#                         skypilot/slurm and skypilot/lsf mount shared_workdir
+#                         /shared on every node, so an env:// path under /shared
+#                         is cross-node safe. A node-local env:///tmp/... path
+#                         does NOT survive when the targets land on different
+#                         nodes ("No such file or directory" on validate).
+#   skypilot/aws        : s3://<your-bucket>/dpk-tokenize/tokens
+#                         each target is a separate EC2 with no shared FS, so the
+#                         local output is PUSHED to s3 and PULLED back on validate
+#                         (needs the S3 assetstore secrets COS_ACCESS_KEY_ID and
+#                         COS_SECRET_ACCESS_KEY; the aws env already lists the s3
+#                         assetstore). Override at submit time:
+#                           --param TOKENS_URI=s3://<your-bucket>/dpk-tokenize/tokens
+# NOTE: the default is a fixed /shared path; concurrent runs on the same shared
+# cluster should override TOKENS_URI with a per-run-unique path to avoid collision.
+TOKENS_URI: "env:///shared/dpk-tokenize-output"
+
+# --- Tokenizer ---------------------------------------------------------------
+# Any HuggingFace AutoTokenizer-compatible name or path. The default is a small
+# public tokenizer that needs no HF token.
+TOKENIZER: "hf-internal-testing/llama-tokenizer"
+
+# Column names in the input Parquet files.
+DOC_ID_COLUMN: "document_id"
+DOC_CONTENT_COLUMN: "contents"
+
+# Language hint used for text splitting.
+TEXT_LANG: "en"
+
+# Tokenize each document in chunks of N characters. 0 = whole document at once.
+# For English, 20000 (~15 pages) is recommended for very long documents.
+CHUNK_SIZE: 0
+
+# --- Compute -----------------------------------------------------------------
+# The pure-python runtime is single-node CPU-only. Bump memory for large inputs;
+# DPK recommends 64Gi for its own sample datasets at scale.
+NUM_GPUS_PER_NODE: 0
+TOTAL_MEMORY_PER_NODE: "4Gi"
+
+# How often to poll for job completion. The skypilot monitor default is 300s,
+# which dominates wall-clock for a fast job like this one.
+POLL_INTERVAL_SECONDS: 30

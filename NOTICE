@@ -105,3 +105,15 @@ Copyright 2016-2021, Andrew Svetlov and aio-libs team
 yarl - Apache 2.0
 ========================================
 Copyright 2016-2021, Andrew Svetlov and aio-libs team
+
+========================================
+Data Prep Kit - Apache 2.0
+========================================
+Data Prep Kit
+Copyright IBM Corp. 2024
+
+https://github.com/data-prep-kit/data-prep-kit
+
+The sample Parquet files under samples/data/dpk-tokenization/input/ are
+copied verbatim from the Data Prep Kit project, release 1.1.8:
+transforms/universal/tokenization/test-data/tkn2arrow-ds01/input/

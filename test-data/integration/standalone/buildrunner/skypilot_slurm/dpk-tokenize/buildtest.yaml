@@ -1,0 +1,42 @@
+# YAML-driven spec for
+# test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_slurm_dpk_tokenize.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# DPK tokenize -> validate on the local Docker SLURM cluster (via SkyPilot).
+# `tokenize` runs Data Prep Kit over the committed sample Parquet and registers
+# the output under /shared (env://); `validate` reads it on whatever node it
+# lands on and runs validate_tokens.py, failing the build on any inconsistency.
+# Reaching SUCCESS proves the template runs end to end on skypilot/slurm AND that
+# the env:// cross-node handoff works over the shared filesystem (3 arrow files,
+# 6 documents, 85 tokens).
+targets:
+  - tokenize
+  - validate
+target_expectations:
+  # env:// moves no bytes (no push/pull steps queued), unlike the aws s3://
+  # fixture — so step_count is 1 per target (just the command step), matching the
+  # sibling mem:// 2target fixture. Confirmed against a real Docker SLURM run:
+  # tokenize and validate landed on different sky clusters (different nodes) and
+  # the cross-node env:///shared handoff worked — both targets SUCCESS, 1 passed.
+  - target_name: tokenize
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    jobstats_count: 1
+  - target_name: validate
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+# Resolve space:// URIs (the slurm environment + the shared `command` step) from
+# the repo's local space without cloning from GitHub. Relative to this YAML's
+# directory — same depth as the sibling skypilot_slurm fixtures.
+space_uri: ../../../../../../configurations/spaces/local
+# Happy-path handoff test — no simulated failure, skip the cancellation run.
+simulate_step_failure: false
+tests:
+  - runner
+# Two sequential SLURM jobs (validate waits for tokenize's binding), each with a
+# runtime pip install (DPK/transformers on tokenize, pyarrow on validate) plus a
+# tokenizer download — give generous headroom.
+timeout_minutes: 30

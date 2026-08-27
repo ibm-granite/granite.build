@@ -1,0 +1,66 @@
+granite.build:
+  name: skypilot-aws-dpk-tokenize-1step
+  # Single-instance DPK tokenize+validate on AWS EC2 (via SkyPilot). ONE target,
+  # ONE command step: tokenize and validate run in the same shell on the same
+  # instance, so /tmp is shared and there is NO artifact handoff — hence no
+  # env://-vs-s3:// cross-node concern and no S3 bucket / COS_* secrets. This is
+  # the cheap smoke variant of the dpk-tokenize fixture (which exercises the real
+  # 2-target s3:// handoff). Reaching SUCCESS proves DPK installs and runs on real
+  # EC2 and validate_tokens.py passes on the committed sample.
+  #
+  # (This shape is a TEST convenience, not the template's production shape: the
+  # single instance discards the tokens, so it produces no reusable artifact —
+  # real tokenization must persist its output. See the DPK_Tokenize_Skypilot
+  # README "Cross-node handoff".)
+  targets:
+    dpk-tokenize-validate:
+      environment_uri: space://environments/skypilot/aws
+      outputs:
+        # env:// report registered inline from the marker — a no-op on the single
+        # instance (no push step). `type` is required for env:// outputs.
+        report:
+          uri: "env:///tmp/dpk-validate-report"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 15
+            file_mounts:
+              # Relative sources resolve against the gbserver working dir (repo root).
+              /tmp/dpk-input: "samples/data/dpk-tokenization/input"
+              /tmp/dpk-scripts/validate_tokens.py: "configurations/assets/templates/DPK_Tokenize_Skypilot/scripts/validate_tokens.py"
+            command_config:
+              # Tokenize into /tmp/dpk-tokenize-output, then validate it in the same
+              # shell (same instance) — no cross-target/cross-node handoff.
+              command: >-
+                set -euo pipefail;
+                echo "RUN host: $(hostname)";
+                python -m venv /tmp/dpk-venv;
+                . /tmp/dpk-venv/bin/activate;
+                pip install --quiet --no-cache-dir --index-url https://pypi.org/simple
+                'data-prep-toolkit-transforms==1.1.8' 'transformers>=4.38.2' python-dotenv pyarrow;
+                OUT=/tmp/dpk-tokenize-output;
+                rm -rf "$OUT"; mkdir -p "$OUT";
+                python -m dpk_tokenization2arrow.runtime
+                --data_local_config "{ 'input_folder': '/tmp/dpk-input', 'output_folder': '$OUT' }"
+                --tkn_tokenizer 'hf-internal-testing/llama-tokenizer'
+                --tkn_doc_id_column 'document_id'
+                --tkn_doc_content_column 'contents'
+                --tkn_text_lang 'en'
+                --tkn_chunk_size 0;
+                echo "--- tokenize output tree ---";
+                find "$OUT" -type f | sort;
+                REPORT=/tmp/dpk-validate-report;
+                rm -rf "$REPORT"; mkdir -p "$REPORT";
+                echo "--- validating ---";
+                python /tmp/dpk-scripts/validate_tokens.py "$OUT" "$REPORT";
+                echo "LLMB_ARTIFACT_ID:report LLMB_ARTIFACT_PATH:$REPORT"
+            launcher_config:
+              resources:
+                infra: "aws/{{ space.variables.AWS_REGION | default('us-east-2') }}"
+                # t3.medium = 2 vCPU / 4 GiB: headroom for the transformers import
+                # and tokenizer download.
+                instance_type: t3.medium
+                disk_size: 40
+            compute_config:
+              num_gpus_per_node: 0

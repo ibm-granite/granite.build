@@ -1,0 +1,116 @@
+granite.build:
+  name: skypilot-slurm-dpk-tokenize
+  # DPK tokenization + validation on the local Docker SLURM cluster (via SkyPilot),
+  # exercising the DPK_Tokenize_Skypilot template's two-target pipeline with an
+  # env:// cross-node handoff — the shared-filesystem counterpart to the aws
+  # fixture's s3:// handoff.
+  #
+  # `tokenize` installs Data Prep Kit from public PyPI and runs the pure-python
+  # `dpk_tokenization2arrow.runtime` over the committed sample Parquet, then
+  # registers the output directory as the `tokens` artifact. `validate` binds
+  # `tokenize.tokens`, reads it, and runs validate_tokens.py against it, failing
+  # the build on any inconsistency.
+  #
+  # CROSS-NODE HANDOFF (the whole reason this fixture exists):
+  #   tokenize and validate are SEPARATE workloads and may be scheduled on
+  #   different SLURM compute nodes (c1..c4). env:// moves no bytes and the
+  #   consumer's `{{ bindings.tokens.binding.path }}` resolves to the declared
+  #   URI's path — so the bytes only survive the hop if `tokenize` physically
+  #   writes them onto a filesystem `validate` can read. On this cluster /tmp is
+  #   per-node but /shared (the slurm environment's shared_workdir) is mounted on
+  #   every node, so the tokens are written under /shared and the env:/// URI
+  #   points at that same absolute path. (The shipped template default
+  #   env:///tmp/... fails here across nodes: produce=c4 / consume=c3 ->
+  #   "No such file or directory".)
+  #
+  # file_mounts ship the input Parquet and the validator script from the repo to
+  # each node (relative sources resolve against the gbserver working dir = repo
+  # root — requires the #295 command-step file_mounts fix). The validate `report`
+  # stays env:///tmp (a no-op) since nothing downstream consumes it.
+  targets:
+
+    tokenize:
+      environment_uri: space://environments/skypilot/slurm
+      outputs:
+        tokens:
+          # env:// on the shared filesystem: no bytes are moved; validate reads
+          # this exact absolute path on whichever node it lands on. The
+          # short_hash keys the path per run so concurrent runs don't collide;
+          # it is rendered from THIS target's run metadata, and the command below
+          # writes to the identical rendered path.
+          uri: "env:///shared/dpk-tokenize-output/{{ run_metadata.targetsteprun_id | short_hash }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection (base skypilot default is 300s, which
+            # would dominate wall-clock for this quick job).
+            poll_interval_seconds: 5
+            file_mounts:
+              # Committed DPK test fixture (5 Parquet files, 2 deliberately empty).
+              /tmp/dpk-input: "samples/data/dpk-tokenization/input"
+            command_config:
+              # The run script starts in $GB_BUILD_WORKDIR (under /shared on
+              # slurm). Write the tokens to the SAME absolute /shared path the
+              # `tokens` output URI declares, so the env:// handoff is cross-node
+              # safe. Install DPK's pure-python runtime (no Ray, no GPU).
+              command: >-
+                set -euo pipefail;
+                OUT=/shared/dpk-tokenize-output/{{ run_metadata.targetsteprun_id | short_hash }};
+                python -m venv /tmp/dpk-venv;
+                . /tmp/dpk-venv/bin/activate;
+                pip install --quiet --no-cache-dir --index-url https://pypi.org/simple
+                'data-prep-toolkit-transforms==1.1.8'
+                'transformers>=4.38.2' python-dotenv;
+                rm -rf "$OUT"; mkdir -p "$OUT";
+                python -m dpk_tokenization2arrow.runtime
+                --data_local_config "{ 'input_folder': '/tmp/dpk-input', 'output_folder': '$OUT' }"
+                --tkn_tokenizer 'hf-internal-testing/llama-tokenizer'
+                --tkn_doc_id_column 'document_id'
+                --tkn_doc_content_column 'contents'
+                --tkn_text_lang 'en'
+                --tkn_chunk_size 0;
+                echo "--- tokenize output tree ---";
+                find "$OUT" -type f | sort;
+                echo "LLMB_ARTIFACT_ID:tokens LLMB_ARTIFACT_PATH:$OUT"
+            compute_config:
+              num_gpus_per_node: 0
+              # DPK needs headroom for the transformers import + tokenizer
+              # download (aws uses t3.medium = 4 GiB; t3.small's 2 GiB was tight).
+              # CALIBRATE against the Docker SLURM nodes' advertised RealMemory —
+              # if a node advertises less, lower this or the job will stay PENDING.
+              total_memory_per_node: 4Gi
+
+    validate:
+      environment_uri: space://environments/skypilot/slurm
+      inputs:
+        tokens:
+          # Binds tokenize.tokens (an env:// artifact): binding.path resolves to
+          # the declared /shared path, readable on any node via the shared FS.
+          binding: tokenize.tokens
+      outputs:
+        report:
+          # Terminal no-op: nothing downstream consumes it, so /tmp is fine.
+          uri: "env:///tmp/dpk-validate-report"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            file_mounts:
+              # Ship the validator so it can be linted/unit-tested on its own.
+              /tmp/dpk-scripts/validate_tokens.py: "configurations/assets/templates/DPK_Tokenize_Skypilot/scripts/validate_tokens.py"
+            command_config:
+              command: >-
+                set -euo pipefail;
+                python -m venv /tmp/dpk-validate-venv;
+                . /tmp/dpk-validate-venv/bin/activate;
+                pip install --quiet --no-cache-dir --index-url https://pypi.org/simple pyarrow;
+                REPORT=/tmp/dpk-validate-report;
+                rm -rf "$REPORT"; mkdir -p "$REPORT";
+                python /tmp/dpk-scripts/validate_tokens.py
+                '{{ bindings.tokens.binding.path }}' "$REPORT";
+                echo "LLMB_ARTIFACT_ID:report LLMB_ARTIFACT_PATH:$REPORT"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 4Gi

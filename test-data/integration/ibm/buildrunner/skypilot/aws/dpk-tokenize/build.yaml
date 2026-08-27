@@ -1,0 +1,115 @@
+granite.build:
+  name: skypilot-aws-dpk-tokenize
+  # DPK tokenization + validation on AWS EC2 (via SkyPilot), exercising the
+  # DPK_Tokenize_Skypilot template end to end on a real cloud backend.
+  #
+  # `tokenize` installs Data Prep Kit from public PyPI and runs the pure-python
+  # `dpk_tokenization2arrow.runtime` over the committed sample Parquet, then
+  # registers the output directory as the `tokens` artifact. `validate` binds
+  # `tokenize.tokens`, pulls it, and runs validate_tokens.py against it, failing
+  # the build on any inconsistency.
+  #
+  # CROSS-NODE HANDOFF (the whole reason this fixture differs from the shipped
+  # template): on AWS each target provisions its OWN EC2 instance and there is no
+  # shared filesystem, and env:// moves no bytes. The shipped template registers
+  # tokens as env:///tmp/dpk-tokenize-output, which works on slurm ONLY when both
+  # targets co-locate — on aws (or any different-node placement) validate reads an
+  # absent path and the build fails. This fixture routes `tokens` through the S3
+  # assetstore instead: tokenize's local output is PUSHED to s3://, and validate
+  # PULLS it locally, so {{ bindings.tokens.binding.path }} resolves on the
+  # validate node regardless of placement.
+  #
+  # file_mounts ship the input Parquet and the validator script from the repo to
+  # the instance (relative sources resolve against the gbserver working dir = repo
+  # root). tokens crosses via S3; the validate `report` stays env:// (a no-op)
+  # since nothing downstream consumes it.
+  targets:
+
+    tokenize:
+      environment_uri: space://environments/skypilot/aws
+      outputs:
+        tokens:
+          # S3 output: after the command emits the LLMB_ARTIFACT marker below, the
+          # aws env's S3 assetstore PUSHES the local dir to this URI. Bucket comes
+          # from the S3_TEST_BUCKET space variable (override per environment);
+          # short_hash keys the path per run so concurrent runs don't collide.
+          uri: "s3://{{ space.variables.S3_TEST_BUCKET | default('gb-dpk-test') }}/dpk-tokenize/{{ run_metadata.targetsteprun_id | short_hash }}/tokens"
+          type: dataset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection (base skypilot default is 300s, which
+            # would dominate wall-clock for this quick job).
+            poll_interval_seconds: 15
+            file_mounts:
+              # Committed DPK test fixture (5 Parquet files, 2 deliberately empty).
+              /tmp/dpk-input: "samples/data/dpk-tokenization/input"
+            command_config:
+              # The run script starts in $GB_BUILD_WORKDIR. Install DPK's
+              # pure-python runtime (no Ray, no GPU) and tokenize the input.
+              command: >-
+                set -euo pipefail;
+                python -m venv /tmp/dpk-venv;
+                . /tmp/dpk-venv/bin/activate;
+                pip install --quiet --no-cache-dir --index-url https://pypi.org/simple
+                'data-prep-toolkit-transforms==1.1.8'
+                'transformers>=4.38.2' python-dotenv;
+                OUT=/tmp/dpk-tokenize-output;
+                rm -rf "$OUT"; mkdir -p "$OUT";
+                python -m dpk_tokenization2arrow.runtime
+                --data_local_config "{ 'input_folder': '/tmp/dpk-input', 'output_folder': '$OUT' }"
+                --tkn_tokenizer 'hf-internal-testing/llama-tokenizer'
+                --tkn_doc_id_column 'document_id'
+                --tkn_doc_content_column 'contents'
+                --tkn_text_lang 'en'
+                --tkn_chunk_size 0;
+                echo "--- tokenize output tree ---";
+                find "$OUT" -type f | sort;
+                echo "LLMB_ARTIFACT_ID:tokens LLMB_ARTIFACT_PATH:$OUT"
+            launcher_config:
+              resources:
+                infra: "aws/{{ space.variables.AWS_REGION | default('us-east-2') }}"
+                # t3.medium = 2 vCPU / 4 GiB: headroom for the transformers import
+                # and tokenizer download (t3.small's 2 GiB is tight).
+                instance_type: t3.medium
+                disk_size: 40
+            compute_config:
+              num_gpus_per_node: 0
+
+    validate:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        tokens:
+          # Binds tokenize.tokens (an s3:// artifact): the aws env's S3 assetstore
+          # PULLS it to a local dir on THIS instance, and the binding path below
+          # resolves to that local pull path — the cross-node-safe handoff.
+          binding: tokenize.tokens
+      outputs:
+        report:
+          uri: "env:///tmp/dpk-validate-report"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 15
+            file_mounts:
+              # Ship the validator so it can be linted/unit-tested on its own.
+              /tmp/dpk-scripts/validate_tokens.py: "configurations/assets/templates/DPK_Tokenize_Skypilot/scripts/validate_tokens.py"
+            command_config:
+              command: >-
+                set -euo pipefail;
+                python -m venv /tmp/dpk-validate-venv;
+                . /tmp/dpk-validate-venv/bin/activate;
+                pip install --quiet --no-cache-dir --index-url https://pypi.org/simple pyarrow;
+                REPORT=/tmp/dpk-validate-report;
+                rm -rf "$REPORT"; mkdir -p "$REPORT";
+                python /tmp/dpk-scripts/validate_tokens.py
+                '{{ bindings.tokens.binding.path }}' "$REPORT";
+                echo "LLMB_ARTIFACT_ID:report LLMB_ARTIFACT_PATH:$REPORT"
+            launcher_config:
+              resources:
+                infra: "aws/{{ space.variables.AWS_REGION | default('us-east-2') }}"
+                instance_type: t3.medium
+                disk_size: 40
+            compute_config:
+              num_gpus_per_node: 0

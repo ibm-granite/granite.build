@@ -1,0 +1,139 @@
+#####
+# DPK tokenization + validation on SkyPilot.
+#
+# Tokenizes Parquet documents into Arrow token files using the Data Prep Kit
+# `tokenization2arrow` transform, then validates the result. Both targets run via
+# the builtin `command` step, which is resolved by every environment of class
+# `Skypilot` — so this one build.yaml runs unchanged on skypilot/slurm,
+# skypilot/kubernetes, skypilot/aws, and skypilot/lsf/ibm-bluevela. Switch
+# endpoints with --param ENVIRONMENT=<name> (see parameters.yaml).
+#
+# DPK is installed from public PyPI (data-prep-toolkit-transforms) and run through
+# its PURE-PYTHON runtime — no Ray cluster, no GPU, no private repo. The Ray
+# runtime (dpk_tokenization2arrow.ray.runtime) is faster on large corpora but
+# needs a Ray cluster, which has no SkyPilot equivalent here.
+#
+# Input data is shipped to the worker with SkyPilot file_mounts (an rsync of a
+# local directory), so no object store or credentials are required to run it.
+#
+# Docs: docs/environments/skypilot.md, docs/builds/build-yaml-reference.md
+#####
+granite.build:
+  name: dpk-tokenize-validate
+  targets:
+
+    # -------------------------------------------------------------------------
+    # tokenize — Parquet documents -> Arrow token files (+ .docs / .docs.ids meta)
+    # -------------------------------------------------------------------------
+    tokenize:
+      environment_uri: space://environments/$${ENVIRONMENT}
+      outputs:
+        # Cross-target handoff to `validate`, controlled by TOKENS_URI so it
+        # survives on every endpoint (see parameters.yaml + README "Cross-node
+        # handoff"). The command derives its output dir from TOKENS_URI (below)
+        # and emits it as the LLMB_ARTIFACT marker; the assetstore then routes it
+        # per the URI scheme:
+        #   env:// — no-op registration; the command writes directly to the URI's
+        #            path, so it must be on a filesystem `validate` can reach — a
+        #            shared_workdir endpoint's /shared (slurm/lsf), NOT a
+        #            node-local /tmp. `type` is required.
+        #   s3://  — the command writes a local staging dir which is PUSHED to S3
+        #            and `validate` PULLS it locally. Required on skypilot/aws,
+        #            where each target is a separate EC2 instance with no shared
+        #            FS (env:// there leaves validate with an absent path).
+        tokens:
+          uri: "$${TOKENS_URI}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            # Ship the local input directory to the worker. A string value maps to
+            # SkyPilot's set_file_mounts (rsync); a dict value would map to a
+            # cloud storage mount instead. Relative source paths resolve against
+            # the gbserver working directory.
+            file_mounts:
+              /tmp/dpk-input: "$${INPUT_LOCAL_DIR}"
+            command_config:
+              # The run script starts in $GB_BUILD_WORKDIR (per-run isolation).
+              # --data_local_config takes a python-literal dict, so the outer
+              # quoting must survive the shell: single quotes around it.
+              #
+              # Derive the output dir from TOKENS_URI so the artifact physically
+              # lands where `validate` reads it (env:// moves no bytes and the
+              # consumer's binding path is the URI's path):
+              #   env://  -> write to the URI's path (e.g. /shared on slurm/lsf),
+              #              so a cross-node validate on a shared FS can read it.
+              #   s3://    -> write to a local staging dir; the s3 assetstore
+              #              pushes it and validate pulls it back.
+              command: >-
+                set -euo pipefail;
+                TOKENS_URI="$${TOKENS_URI}";
+                case "$TOKENS_URI" in
+                env://*) OUT="${TOKENS_URI#env://}" ;;
+                *) OUT=/tmp/dpk-tokenize-output ;;
+                esac;
+                python -m venv /tmp/dpk-venv;
+                . /tmp/dpk-venv/bin/activate;
+                pip install --quiet --no-cache-dir --index-url https://pypi.org/simple
+                'data-prep-toolkit-transforms==$${DPK_TRANSFORMS_VERSION}'
+                'transformers$${TRANSFORMERS_VERSION}' python-dotenv;
+                rm -rf "$OUT"; mkdir -p "$OUT";
+                python -m dpk_tokenization2arrow.runtime
+                --data_local_config "{ 'input_folder': '/tmp/dpk-input', 'output_folder': '$OUT' }"
+                --tkn_tokenizer '$${TOKENIZER}'
+                --tkn_doc_id_column '$${DOC_ID_COLUMN}'
+                --tkn_doc_content_column '$${DOC_CONTENT_COLUMN}'
+                --tkn_text_lang '$${TEXT_LANG}'
+                --tkn_chunk_size $${CHUNK_SIZE};
+                echo "--- tokenize output tree ---";
+                find "$OUT" -type f | sort;
+                echo "LLMB_ARTIFACT_ID:tokens LLMB_ARTIFACT_PATH:$OUT"
+            compute_config:
+              num_gpus_per_node: $${NUM_GPUS_PER_NODE}
+              total_memory_per_node: "$${TOTAL_MEMORY_PER_NODE}"
+
+    # -------------------------------------------------------------------------
+    # validate — assert the tokenize output is well-formed and self-consistent
+    #
+    # Bound to tokenize.tokens, so this target is dispatched only after the
+    # tokenize artifact is registered. Exits non-zero on any check failure, which
+    # fails the target and therefore the build.
+    # -------------------------------------------------------------------------
+    validate:
+      environment_uri: space://environments/$${ENVIRONMENT}
+      inputs:
+        tokens:
+          binding: tokenize.tokens
+      outputs:
+        report:
+          uri: "env:///tmp/dpk-validate-report"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            # Ship the validation script itself to the worker. Keeping it in a
+            # real .py file (rather than a heredoc inside `command`) means it can
+            # be linted and unit-tested on its own — see scripts/validate_tokens.py
+            # and test/unit/templates/test_dpk_validate_tokens.py.
+            file_mounts:
+              /tmp/dpk-scripts/validate_tokens.py: "$${VALIDATE_SCRIPT}"
+            command_config:
+              # `tokens` is bound from tokenize.tokens, so this target only runs
+              # once that artifact is registered. The venv from the tokenize step
+              # is not guaranteed to be on the same node, so install what the
+              # validator needs (pyarrow) rather than reusing it.
+              command: >-
+                set -euo pipefail;
+                python -m venv /tmp/dpk-validate-venv;
+                . /tmp/dpk-validate-venv/bin/activate;
+                pip install --quiet --no-cache-dir --index-url https://pypi.org/simple pyarrow;
+                REPORT=/tmp/dpk-validate-report;
+                rm -rf "$REPORT"; mkdir -p "$REPORT";
+                python /tmp/dpk-scripts/validate_tokens.py
+                '{{ bindings.tokens.binding.path }}' "$REPORT";
+                echo "LLMB_ARTIFACT_ID:report LLMB_ARTIFACT_PATH:$REPORT"
+            compute_config:
+              num_gpus_per_node: $${NUM_GPUS_PER_NODE}
+              total_memory_per_node: "$${TOTAL_MEMORY_PER_NODE}"
