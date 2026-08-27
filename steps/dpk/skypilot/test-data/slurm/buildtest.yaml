@@ -1,0 +1,59 @@
+# YAML-driven spec for test_skypilot_slurm_dpk.py (located by the test/ <-> test-data/
+# helper, so this pairing holds in both test modes; see steps/README.md).
+#
+# Two targets on the local Docker SLURM cluster, exercising BOTH dpk step modes:
+#   tokenize  transform mode — `transform: tokenization2arrow` only; the step derives
+#                              the module and the pip extra.
+#   validate  command mode   — the step's bundled src/validate_tokens.py.
+# `validate` binds `tokenize.tokens`, so reaching SUCCESS also proves the env://
+# cross-node handoff over /shared works (3 arrow files, 6 documents, 85 tokens on
+# the published sample).
+targets:
+  - tokenize
+  - validate
+target_expectations:
+  # step_count is 2 per target: the queued hfpull for the hf:// input, plus the dpk
+  # step itself. The skypilot/slurm environment does NOT set `inline: true` on its
+  # hf assetstore pull (unlike skypilot/aws), so the download is a separate step
+  # rather than injected into the main step's setup. The env:// output moves no
+  # bytes, so it queues no push step.
+  #
+  # jobstats_count is not asserted under standalone's NoopLineageStore but is kept
+  # accurate. CALIBRATE all four numbers against the first green run.
+  - target_name: tokenize
+    step_count: 2              # hfpull(docs) + dpk
+    input_artifact_count: 1    # docs
+    output_artifact_count: 1   # tokens (env://, registered inline from the marker)
+    jobstats_count: 1
+    # Pin the contract this fixture exists to prove: the build named ONE DPK
+    # detail (the transform) and the step derived the rest. Read from
+    # step_storage, so it holds under NoopLineageStore.
+    expected_steps:
+      - step_uri: space://steps/dpk
+        config:
+          dpk_config:
+            transform: tokenization2arrow
+  - target_name: validate
+    step_count: 2              # hfpull(docs) + dpk
+    input_artifact_count: 2    # tokens (bound) + docs
+    output_artifact_count: 1   # report
+    jobstats_count: 1
+# The Space this test resolves space://steps/dpk (and the environment + monitors)
+# through. In the step dir (Mode 1) that is the local Space rendered by
+# `make space` two levels up (steps/dpk/skypilot/space/), which carries
+# steps/dpk/step.yaml + its bundled src/ and chains (base_uris) to
+# configurations/assets. When `make publish-step` copies this fixture into
+# test-data/steps/ (Mode 2) it rewrites this line to configurations/spaces/local,
+# resolving the PUBLISHED step instead. Either way the build says space://steps/dpk.
+space_uri: ../../space
+# Happy-path handoff run only — skip the cancellation variant: both workloads
+# finish quickly, so there is no stable RUNNING window to cancel in.
+tests:
+  - runner
+# No injected synthetic failure: the validator exits non-zero on any
+# inconsistency and `set -euo pipefail` fails the target, so reaching SUCCESS
+# means the transform ran AND its output validated.
+simulate_step_failure: false
+# Two sequential SLURM jobs (validate waits on tokenize's binding), each doing a
+# runtime pip install plus a tokenizer download — generous headroom.
+timeout_minutes: 30

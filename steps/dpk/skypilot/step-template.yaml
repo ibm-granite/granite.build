@@ -139,12 +139,18 @@ environment_configs:
             # backslash-continued lines: a trailing "\" on the final flag would
             # splice whatever follows into the command, so building argv
             # explicitly keeps the invocation robust regardless of args content.
+            # Values are single-quoted for the shell, with any embedded single
+            # quote escaped as '"'"' — several DPK transforms take python-literal
+            # values that contain quotes (pii_redactor's --pii_redactor_entities is
+            # ast.literal_eval'd, so it needs "['PERSON','EMAIL_ADDRESS']" to reach
+            # python intact). Without the escape, bash strips the inner quotes and
+            # literal_eval raises ValueError on the bare names.
             DPK_ARGS=()
             {%- for k, v in config.dpk_config.args.items() %}
             {%- if v is sameas true %}
             DPK_ARGS+=(--{{ k }})
             {%- elif v is not none and v is not sameas false %}
-            DPK_ARGS+=(--{{ k }} '{{ v }}')
+            DPK_ARGS+=(--{{ k }} '{{ v | string | replace("'", "'\"'\"'") }}')
             {%- endif %}
             {%- endfor %}
             python -m {{ module }} \

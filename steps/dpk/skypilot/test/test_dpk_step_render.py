@@ -215,6 +215,29 @@ class TestTransformArgs:
         assert "--run_locally" in run
         assert "--run_locally '" not in run
 
+    def test_value_with_single_quotes_survives_the_shell(self, launcher, defaults):
+        """Regression guard for a real bug found by the pii_redactor fixture.
+
+        Several DPK transforms take python-literal values: pii_redactor's
+        --pii_redactor_entities is ``ast.literal_eval``'d, so it must reach python
+        as ``['PERSON','EMAIL_ADDRESS']``. Naive single-quoting emitted
+        ``'['PERSON',...]'``, which bash collapses to ``[PERSON,...]`` — bare names
+        that literal_eval rejects with ValueError. The value must be re-quoted.
+        """
+        value = "['PERSON','EMAIL_ADDRESS']"
+        cfg = _transform_cfg(defaults, args={"pii_redactor_entities": value})
+        run = _render(launcher["run"], cfg, _BINDINGS)
+
+        # Ask bash what it would actually pass, rather than eyeballing the quoting.
+        line = next(
+            l
+            for l in run.splitlines()
+            if "pii_redactor_entities" in l and l.strip().startswith("DPK_ARGS+=")
+        )
+        probe = f'DPK_ARGS=()\n{line.strip()}\nprintf "%s" "${{DPK_ARGS[1]}}"'
+        out = subprocess.run(["bash", "-c", probe], capture_output=True, text=True)
+        assert out.stdout == value, f"bash mangled it to {out.stdout!r}"
+
     def test_false_and_none_are_omitted(self, launcher, defaults):
         cfg = _transform_cfg(defaults, args={"off": False, "unset": None})
         run = _render(launcher["run"], cfg, _BINDINGS)
