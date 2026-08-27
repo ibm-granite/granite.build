@@ -126,6 +126,7 @@ class TestSkypilotTeardown:
         assert env._setup_run_meta[setup_id] == {
             "target_name": "train",
             "build_id": "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+            "build_name": "",
         }
 
         mock_sky = MagicMock()
@@ -140,7 +141,7 @@ class TestSkypilotTeardown:
             await env.teardown_skypilot(setup_id)
 
         cluster_name = mock_sky.launch.call_args.kwargs["cluster_name"]
-        assert cluster_name.startswith("gb-9f3ac1d2-train-")
+        assert cluster_name.startswith("gb-9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff-train-")
 
 
 class TestMonitorTreatsTeardownAsSuccess:
