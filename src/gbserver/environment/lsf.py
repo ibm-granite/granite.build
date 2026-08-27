@@ -410,7 +410,7 @@ class Lsf(Environment):
         self: Self,
         jobsub_path: Path,
         env_vars: Optional[Dict] = None,
-        secret_keys: Optional[set] = None,
+        secret_keys: Optional[set[str]] = None,
     ) -> Tuple[str, str]:
         """
         Build ``[KEY=val ...] /path/jobsub.sh`` as a remote command string.
@@ -427,6 +427,10 @@ class Lsf(Environment):
         ``str.replace("", ...)`` splice the placeholder between every character of
         the command, and an empty or short value could also shatter a genuinely
         secret value so it survived unmasked. Rebuilding from parts avoids both.
+
+        Masking is by name, so a secret duplicated inside a different
+        non-secret-named var's value is not caught (accepted tradeoff; callers here
+        never do that).
 
         :param secret_keys: env-var names whose value must be masked regardless of
             whether the name looks secret — the caller passes the names it injected
