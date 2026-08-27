@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gbserver.environment.skypilot import Skypilot
+from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.environmentconfig import EnvironmentConfig
 
 
@@ -100,6 +101,46 @@ class TestSkypilotTeardown:
             )
         assert {"gb-rm", "gb-code"} <= Skypilot._intentionally_torn_down_clusters
         Skypilot._intentionally_torn_down_clusters.clear()
+
+    @pytest.mark.asyncio
+    async def test_teardown_cluster_name_embeds_target_and_build(self):
+        # setup_skypilot stashes target_name/build_id (keyed by setup_id) so
+        # teardown_skypilot names its cleanup cluster the same human-identifiable
+        # way as the launch cluster: gb-<target>-<build8>-...
+        event_q = asyncio.Queue()
+        config = EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={"default_cloud": "k8s", "shared_workdir": "/shared"},
+        )
+        env = Skypilot(event_q=event_q, environment_config=config)
+        setup_id = "3168aa02-1234-5678-9abc-def012345678"
+        await env.setup_skypilot(
+            setup_id,
+            runmetadata=EntityRunMetadata(
+                build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+                target_name="train",
+                targetrun_id="run-1",
+            ),
+        )
+        assert env._setup_run_meta[setup_id] == {
+            "target_name": "train",
+            "build_id": "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+        }
+
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-td")
+        mock_sky.stream_and_get = MagicMock(return_value=None)
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            await env.teardown_skypilot(setup_id)
+
+        cluster_name = mock_sky.launch.call_args.kwargs["cluster_name"]
+        assert cluster_name.startswith("gb-train-9f3ac1d2-")
 
 
 class TestMonitorTreatsTeardownAsSuccess:
