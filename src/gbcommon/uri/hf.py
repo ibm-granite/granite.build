@@ -27,6 +27,7 @@ from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, List, Optional, Self
 
+from filelock import FileLock, Timeout
 from huggingface_hub import (
     HfApi,
     repo_exists,
@@ -63,6 +64,41 @@ URLSEGMENT_SPACES = "spaces"
 URLSEGMENT_BUCKETS = "buckets"
 
 DEFAULT_REVISION = "main"
+
+# hfpull download serialization (issue #320). HfApi.sync_bucket / snapshot_download
+# are not multi-process safe: concurrent hfpull containers sharing a cache dir race
+# on HuggingFace's ``.cache/huggingface/download/*.incomplete`` files. pull()
+# serializes the download behind a cross-process FileLock keyed to the destination,
+# so pulls of the same repo/revision run one at a time while different destinations
+# proceed in parallel.
+HFPULL_LOCK_TIMEOUT_ENV = "GB_HFPULL_LOCK_TIMEOUT"
+DEFAULT_HFPULL_LOCK_TIMEOUT_S = 3600.0
+
+
+def _hfpull_lock_timeout() -> float:
+    """Seconds to wait for the hfpull download lock before failing.
+
+    Overridable via ``GB_HFPULL_LOCK_TIMEOUT``; defaults to one hour so a peer
+    legitimately downloading a large model has time to finish.
+    """
+    raw = os.getenv(HFPULL_LOCK_TIMEOUT_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_HFPULL_LOCK_TIMEOUT_S
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; using default %ss",
+            HFPULL_LOCK_TIMEOUT_ENV,
+            raw,
+            DEFAULT_HFPULL_LOCK_TIMEOUT_S,
+        )
+        return DEFAULT_HFPULL_LOCK_TIMEOUT_S
+
+
+def _hfpull_lock_path(dest: Path) -> Path:
+    """Sibling lock file for a pull into *dest* (never placed inside *dest*)."""
+    return dest.parent / f"{dest.name}.lock"
 
 
 class HfType(StrEnum):
@@ -627,47 +663,65 @@ class HfURI(URI):
             endpoint = f"https://{p.host}" if p.host != HF_HOST else None
             token = self._resolve_token()
 
-            if p.hf_type == HfType.BUCKET:
-                bucket_hf_path = f"hf://buckets/{repo_id}"
-                if p.path_in_repo:
-                    bucket_hf_path += f"/{p.path_in_repo}"
-                logger.info("Downloading HF bucket %s to %s", repo_id, dest)
-                api = HfApi(endpoint=endpoint, token=token)
-                api.sync_bucket(source=bucket_hf_path, dest=str(dest))
-                logger.debug("Completed HF pull of bucket %s to %s", repo_id, dest)
-                return True
+            # Serialize the download so concurrent hfpull processes sharing this
+            # destination don't corrupt each other's HF download cache (issue #320).
+            lock_path = _hfpull_lock_path(dest)
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_timeout = _hfpull_lock_timeout()
+            try:
+                with FileLock(str(lock_path), timeout=lock_timeout):
+                    if p.hf_type == HfType.BUCKET:
+                        bucket_hf_path = f"hf://buckets/{repo_id}"
+                        if p.path_in_repo:
+                            bucket_hf_path += f"/{p.path_in_repo}"
+                        logger.info("Downloading HF bucket %s to %s", repo_id, dest)
+                        api = HfApi(endpoint=endpoint, token=token)
+                        api.sync_bucket(source=bucket_hf_path, dest=str(dest))
+                        logger.debug(
+                            "Completed HF pull of bucket %s to %s", repo_id, dest
+                        )
+                        return True
 
-            hf_type = p.hf_type
-            repo_type = (
-                _HF_TYPE_TO_REPO_TYPE.get(hf_type, "model")
-                if hf_type is not None
-                else "model"
-            )
+                    hf_type = p.hf_type
+                    repo_type = (
+                        _HF_TYPE_TO_REPO_TYPE.get(hf_type, "model")
+                        if hf_type is not None
+                        else "model"
+                    )
 
-            logger.info(
-                "Downloading HF repo %s (type=%s, rev=%s) to %s",
-                repo_id,
-                repo_type,
-                p.revision,
-                dest,
-            )
-            snapshot_download(
-                repo_id=repo_id,
-                repo_type=repo_type,
-                revision=p.revision,
-                local_dir=str(dest),
-                token=token,
-                force_download=force,
-                endpoint=endpoint,
-            )
-            logger.debug(
-                "Completed HF pull of %s (type=%s, rev=%s) to %s",
-                repo_id,
-                repo_type,
-                p.revision,
-                dest,
-            )
-            return True
+                    logger.info(
+                        "Downloading HF repo %s (type=%s, rev=%s) to %s",
+                        repo_id,
+                        repo_type,
+                        p.revision,
+                        dest,
+                    )
+                    snapshot_download(
+                        repo_id=repo_id,
+                        repo_type=repo_type,
+                        revision=p.revision,
+                        local_dir=str(dest),
+                        token=token,
+                        force_download=force,
+                        endpoint=endpoint,
+                    )
+                    logger.debug(
+                        "Completed HF pull of %s (type=%s, rev=%s) to %s",
+                        repo_id,
+                        repo_type,
+                        p.revision,
+                        dest,
+                    )
+                    return True
+            except Timeout:
+                logger.error(
+                    "HF pull for %s could not acquire download lock %s within %ss; "
+                    "failing",
+                    self,
+                    lock_path,
+                    lock_timeout,
+                )
+                return False
         except Exception as e:
             _log_hf_api_error("pull", str(self), e)
             return False
