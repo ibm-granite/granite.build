@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "autotunex-api-bridge"
+version = "0.3.0"
+description = "AutoTuneX REST API for logging fine-tuning runs"
+requires-python = ">=3.10,<4.0"
+license = "Apache-2.0"
+authors = [{ name = "IBM Research" }]
+dependencies = [
+  "fastapi==0.141.1",
+  "pydantic==2.11.10",
+  "uvicorn==0.52.2",
+  "SQLAlchemy>=2.0",
+  "pymysql==1.1.1",
+  "python-dotenv==1.2.2",
+  "email-validator==2.3.0",
+  "python-multipart==0.0.32",
+  "PyJWT>=2.8.0",
+  "requests==2.34.2",
+  "pytz==2026.3.post1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+# Synchronous PostgreSQL driver (psycopg 3). Optional so the base install carries
+# no LGPL dependency; the bridge coerces any Postgres URL to postgresql+psycopg.
+# Verify/lock the exact version at install time.
+postgres = ["psycopg[binary]==3.2.10"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/api_bridge"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+# Mechanical, auto-fixable rules + formatting are enforced (F/E/I/W stay fully
+# active — they catch real bugs). The codes below are relaxed: this is a
+# relocation/tidy of a legacy synchronous service, not a rewrite, so rules that
+# would force logic/typing changes or behavior-risky modernizations are off.
+# ANN (full typing) and D (docstrings) are likewise not selected.
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+  "B008",   # FastAPI Depends() in defaults is idiomatic (matches the main service's ignore)
+  "B904",   # raise-without-from in legacy except blocks; behavior-neutral, not reflowed here
+  "B007",   # unused loop control variable: legacy, low value
+  "E501",   # long lines in legacy strings/messages; not reflowed
+  "UP042",  # str+Enum -> StrEnum changes str() semantics; unsafe for a no-behavior-change move
+  "UP031",  # printf -> str.format: unsafe modernization of legacy format strings
+  "RUF012", # mutable class defaults want ClassVar annotations (typing; relaxed like ANN/D)
+  "RUF013", # implicit Optional (typing; relaxed like ANN/D)
+  "SIM401", # dict.get() refactor: not refactoring legacy branch logic
+  "SIM117", # combine nested with-statements: not refactoring legacy control flow
+]
+
+[tool.pytest.ini_options]
+# Self-contained: with this section present, pytest uses THIS file as rootdir when
+# run from src/api-bridge, so it does not inherit the main service's pytest-asyncio
+# config (which requires plugins this subproject doesn't install).
+testpaths = ["tests"]

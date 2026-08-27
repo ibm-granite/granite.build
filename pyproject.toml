@@ -237,9 +237,18 @@ namespaces = true
 profile = "black"
 known_first_party = ["gbserver", "gbcli", "gbcommon"]
 known_third_party = ["huggingface_hub", "wandb"]
+# The vendored autotunex/ subtree uses ruff (format + import sorting) and has its
+# own CI (.github/workflows/autotunex-ci.yml); keep the repo-wide isort profile off
+# it (AutoTuneX import, PR #297).
+extend_skip_glob = ["autotunex/*"]
 
 [tool.black]
 target-version = ["py311"]
+# See the isort note above: exclude the autotunex/ subtree from repo-wide black so
+# its ruff-formatted (line-length 100) tree is not reflowed (AutoTuneX PR #297).
+extend-exclude = '''
+/autotunex/
+'''
 
 [tool.pytest.ini_options]
 log_cli = true
