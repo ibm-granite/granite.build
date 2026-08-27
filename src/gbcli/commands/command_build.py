@@ -89,6 +89,33 @@ def get_status_emoji(status: str) -> str:
             return ""
 
 
+def _number_logical_targets(targets: Any) -> dict:
+    """Map each target-run key to a number shared by all runs of one target.
+
+    In-place retry keeps every run on the one build id, so ``targets`` is keyed by
+    "name (uuid)" and a target that FAILED then re-ran to SUCCESS contributes two
+    keys. Numbering the keys directly (``enumerate``) would give the failed run and
+    its retry different numbers and shift every later target as runs accumulate.
+    Numbering by the logical target name instead keeps a target's runs on one
+    number, assigned in the order each target first appears.
+
+    Args:
+        targets: the ordered target-run mapping from ``process_target_runs`` —
+            keyed by "name (uuid)", each value carrying its plain ``name``.
+
+    Returns:
+        A dict from each target-run key to its 1-based logical target number.
+    """
+    logical_numbers: dict = {}
+    key_to_number: dict = {}
+    for key in targets:
+        name = targets[key]["name"]
+        if name not in logical_numbers:
+            logical_numbers[name] = len(logical_numbers) + 1
+        key_to_number[key] = logical_numbers[name]
+    return key_to_number
+
+
 def execution_status_plain_output(
     details: Any,
     targets: List[Any],
@@ -97,31 +124,18 @@ def execution_status_plain_output(
 ):
 
     def target_status_label(target_info: Any) -> str:
-        # A target reused from a previous attempt is presented as "Skipped".
-        if target_info.get("skipped_for_prerun_target_id"):
-            return "SKIPPED"
         return str(target_info["status"]).upper()
 
     def target_status_emoji(target_info: Any) -> str:
-        if target_info.get("skipped_for_prerun_target_id"):
-            return "⏩"
         return get_status_emoji(target_info["status"])
 
+    target_number = _number_logical_targets(targets)
+
     targets_overview = [
-        f"\n\tTarget #{index + 1} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"
-        for index, target in enumerate(targets)
+        f"\n\tTarget #{target_number[target]} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"
+        for target in targets
     ]
     source_pr = f"<{details['source_pr']}>" if details["source_pr"] else "-"
-    retry_of = details.get("retry_of_build_ids") or []
-    retried_by = details.get("retried_by_build_ids") or []
-    retry_of_line = (
-        f"\n- **Retry of Original Build(s)**: {', '.join(retry_of)}" if retry_of else ""
-    )
-    retried_by_line = (
-        f"\n- **Retried by Subsequent Build(s)**: {', '.join(retried_by)}"
-        if retried_by
-        else ""
-    )
     details_output = f"""
 # Build {details['build_id']}
 
@@ -131,13 +145,13 @@ def execution_status_plain_output(
 - **Started**: {datetime_to_string(details['started_at'])}
 - **Updated**: {datetime_to_string(details['updated_at'])}
 - **Status page**: <{WEB_UI_URL}/builds/{details['build_id']}>
-- **Build PR**: {source_pr}{retry_of_line}{retried_by_line}
+- **Build PR**: {source_pr}
 - **Targets**
 {"".join(targets_overview)}
     """
 
     target_outputs = []
-    for index, target in enumerate(targets):
+    for target in targets:
         input_artifacts_table = [
             [i["artifact_id"], i["uri"]] for i in targets[target]["input_artifacts"]
         ]
@@ -173,26 +187,16 @@ def execution_status_plain_output(
             tablefmt="github",
         )
 
-        prerun_target_id = targets[target].get("skipped_for_prerun_target_id")
-        status_line = (
-            f"Skipped for previously ran target {prerun_target_id}"
-            if prerun_target_id
-            else str(targets[target]["status"]).upper()
-        )
-        # Targets that ran in a different attempt (a prior or subsequent build in
-        # the retry chain) note which build they belong to.
-        target_build_id = targets[target].get("build_id", "")
-        build_id_line = (
-            f"\n\n**Build ID**: {target_build_id}"
-            if target_build_id and target_build_id != details["build_id"]
+        status_line = str(targets[target]["status"]).upper()
+        # A re-run FAILED target that later succeeds produces a new SUCCESS run
+        # linked back to the failed one; surface that linkage as a note.
+        retry_of_target_id = targets[target].get("retry_of_target_id", "")
+        retry_of_line = (
+            f"\n\n**Retry of failed run**: {retry_of_target_id}"
+            if retry_of_target_id
             else ""
         )
-        # A skipped target was reused from a previous attempt: it ran no steps and
-        # produced no artifacts of its own, so those sections are omitted.
-        if prerun_target_id:
-            sections = ""
-        else:
-            sections = f"""
+        sections = f"""
 ### ⚙️  Steps
 
 {steps_output if len(targets[target]["steps"]) > 0 else ""}
@@ -207,9 +211,9 @@ def execution_status_plain_output(
         target_output = f"""
 ---
 
-## Target #{index + 1} {target}
+## Target #{target_number[target]} {target}
 
-{target_status_emoji(targets[target])} **Status**: {status_line}{build_id_line}
+{target_status_emoji(targets[target])} **Status**: {status_line}{retry_of_line}
 {sections}
         """
 
@@ -1155,6 +1159,92 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
         ctx.exit(1)  # Exit with a non-zero status
 
 
+@cli.command("restart")
+@click.pass_context
+@click.argument("build_id", required=True)
+@click.option(
+    "--format",
+    "format",
+    default="simple",
+    type=click.Choice(["simple", "json"], case_sensitive=True),
+    help="Output format: simple (default), json",
+)
+@common_options
+def restart_build_cmd(ctx, build_id, format, skip_version_check, quiet):
+    """
+    Restart a previously-executed build
+
+    Provide build ID or URL. The same build is re-opened and a fresh build runner
+    re-runs it, skipping targets that already succeeded and re-running the rest.
+    The build must be finished (not currently running). No local build folder is
+    required — the build definition is already on the build.
+    """
+    if format == "json":
+        quiet = True
+    if not skip_version_check:
+        try:
+            outdated_version = check_current_and_latest_versions()
+        except Exception as e:
+            click.echo(f"❌ {str(e)}.", err=True)
+            ctx.exit(1)  # Exit with a non-zero status
+        if outdated_version:
+            click.echo(outdated_version, err=True)
+            ctx.exit(1)  # Exit with a non-zero status
+
+    id_format = parse_build_identifier(build_id)
+    if id_format not in ["uuid", "url"]:
+        click.echo(
+            f"❌ Build identifier formatted incorrectly. Please try again with valid build ID or URL.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if id_format == "uuid" and len(build_id) < 36:
+        click.echo(
+            f"❌ Build ID formatted incorrectly. Please try again with a valid build ID.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if not quiet:
+        click.echo(f"🏁 {PROJECT_NAME} build restart")
+
+    build_client = GBClient.Build(get_user_token())
+
+    def echo_callback(callback_event: str, callback_args: Dict):
+        match callback_event:
+            case "error":
+                reason = callback_args.get("reason", "")
+                click.echo(
+                    f"\n❌ Build can't be restarted at this moment... Reason: {reason}",
+                    err=True,
+                )
+                sys.exit(1)  # Exit with a non-zero status
+            case _:
+                pass
+
+    try:
+        result = build_client.build_restart(build_id, id_format, callback=echo_callback)
+
+        if result:
+            # Restart reuses the same build id, so the server returns the same
+            # uuid that was restarted.
+            restarted_build_id = result["build_id"]
+            details_page = f"{WEB_UI_URL}/builds/{restarted_build_id}"
+            if not quiet:
+                click.echo(f"✅ Restarting build {restarted_build_id}: {details_page}")
+                click.echo(f"""To get the build status:
+```
+gb build status {restarted_build_id}
+```""")
+            if format == "json":
+                click.echo(json.dumps({"build_id": restarted_build_id}))
+
+    except Exception as e:
+        click.echo(str_exc_chain(e), err=True)
+        ctx.exit(1)  # Exit with a non-zero status
+
+
 @cli.command()
 @pass_context_and_reject_standalone("build lineage")
 @click.argument("build_id", required=True)
@@ -1693,12 +1783,6 @@ def list(
     default=False,
     help="Fetch build PR events.",
 )
-@click.option(
-    "--follow-retries/--no-follow-retries",
-    "follow_retries",
-    default=True,
-    help="Follow the build retry chain and show all targets across attempts (default: follow).",
-)
 @common_options
 def status(
     ctx,
@@ -1706,7 +1790,6 @@ def status(
     format,
     show_events,
     fetch_pr,
-    follow_retries,
     skip_version_check,
     quiet,
 ):
@@ -1771,7 +1854,6 @@ def status(
                 show_events,
                 fetch_pr,
                 format,
-                follow_retries=follow_retries,
                 callback=echo_callback_error,
             )
         else:
@@ -1872,7 +1954,6 @@ def status(
                     show_events,
                     fetch_pr,
                     format,
-                    follow_retries=follow_retries,
                     callback=update_bar,
                 )
 
@@ -2733,7 +2814,14 @@ def diff(ctx, build_id_1, build_id_2, space, format, skip_version_check, quiet):
     help="Fetch build PR events.",
 )
 @common_options
-def monitor(ctx, build_id, show_events, fetch_pr, skip_version_check, quiet):
+def monitor(
+    ctx,
+    build_id,
+    show_events,
+    fetch_pr,
+    skip_version_check,
+    quiet,
+):
     """
     Monitor a build execution
 

@@ -494,24 +494,9 @@ class WandBLineageStore(ILineageStore):
                 f"target's build id ({targetrun.build_id}) does not match that of the given build ({build.uuid})"
             )
 
-        if targetrun.skipped_for_prerun_target_id:
-            original = storage.target_storage.get_by_uuid(
-                targetrun.skipped_for_prerun_target_id
-            )
-            if original is not None and isinstance(original, StoredTargetRun):
-                targetrun = original.model_copy(
-                    update={
-                        "uuid": targetrun.uuid,
-                        "build_id": targetrun.build_id,
-                    }
-                )
-            else:
-                logger.warning(
-                    "Skipped target %s references unknown original %s",
-                    targetrun.uuid,
-                    targetrun.skipped_for_prerun_target_id,
-                )
-
+        # Every SUCCESS run is a real run with its own outputs (in-place retry keeps
+        # both the FAILED and the SUCCESS run in one build), so lineage is built
+        # directly from the target's own outputs.
         return self._build_events_for_target(storage, build, targetrun)
 
     def create_jobstats_for_original_artifact(

@@ -31,6 +31,7 @@ from gbserver.storage.target_run_storage import IStoredTargetRunStorage
 from gbserver.types.metrics import Metric, MetricMetadata, MetricName
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
+from gbserver.utils.utils import get_time
 
 logger = get_logger(__name__)
 
@@ -196,7 +197,15 @@ def _finalize_target_or_step_status(
                 status,
                 target_or_step,
             )
-            storage.update_fields(target_or_step.uuid, {"status": target_or_step.status})  # type: ignore[arg-type]
+            # Stamp finished_at for a run swept to a terminal status by build
+            # finalization (it never went through the event-driven timestamp path,
+            # so finished_at would otherwise stay unset). Guard on None so a run
+            # that already recorded its own finish keeps that timestamp.
+            updates: dict = {"status": target_or_step.status}
+            if target_or_step.finished_at is None:
+                target_or_step.finished_at = get_time()
+                updates["finished_at"] = target_or_step.finished_at
+            storage.update_fields(target_or_step.uuid, updates)  # type: ignore[arg-type]
 
 
 def _finalize_artifact_status(

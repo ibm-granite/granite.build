@@ -16,22 +16,23 @@
 
 """Regression test for build-level retry exhaustion under the BuildWatcher.
 
-A build whose only target hard-fails should be retried exactly ``max_retries``
-times — producing ``1 + max_retries`` build records total, all FAILED — and then
-stop.
+With in-place retry a build keeps a single build id across attempts. A build
+whose only target hard-fails should be retried exactly ``max_retries`` times —
+all on the *same* build record — and then stop, leaving one FAILED build whose
+``retry_count == max_retries``.
 
-This must run through the *BuildWatcher* (not a directly-driven BuildRunner):
-the bug being guarded against is that ``BuildRunner.__prepare_retry`` persists
-each retry build as PENDING, while the BuildRunner's in-process retry loop *also*
-runs it.  The watcher polls for PENDING builds and dispatches a *second* runner
-for that same retry build, so each failure spawns more than one next-level retry
-— a branching tree of retries instead of a linear chain.  Driving the build
-directly via a BuildRunner would never expose this, because no watcher is polling.
+This must run through the *BuildWatcher* (not a directly-driven BuildRunner): the
+bug being guarded against is that ``BuildRunner.__prepare_retry`` could leave the
+build in a status the watcher re-dispatches. Retries are re-run in place as
+``RUNNING`` (never ``PENDING``) precisely so the watcher — which polls
+``SUBMITTED``/``PENDING`` only — does not launch a *second* runner for the build
+the in-process retry loop is already running. A second runner would race the first
+and push ``retry_count`` past ``max_retries``. Driving the build directly via a
+BuildRunner would never expose this, because no watcher is polling.
 
 The build runs in the local Bash environment, so no Docker/cluster is required.
 """
 
-from pathlib import Path
 from time import sleep, time
 
 import pytest
@@ -49,15 +50,14 @@ from gbserver.types.status import Status
 
 pytestmark = pytest.mark.standalone
 
-# Statuses that mean a build (or its retry) is still in flight; the retry chain
-# has "settled" only once no build is in any of these. RETRY is in-flight: it is
-# a retry build the in-process loop is about to run.
+# Statuses that mean the build is still in flight; it has "settled" only once it
+# is in none of these. A retry re-runs the same build in place as RUNNING, so
+# RUNNING already covers the between-attempts window.
 _IN_FLIGHT = {
     Status.SUBMITTED,
     Status.PENDING,
     Status.RUNNING,
     Status.CANCEL_REQUESTED,
-    Status.RETRY_PENDING,
 }
 
 
@@ -78,9 +78,10 @@ class TestBuildWatcherRetryExhaustion(AbstractBuildTest):
     def test_build_watcher_stops_after_max_retries(self):
         """Submit a build whose target always fails and let the BuildWatcher run it.
 
-        Expectation: exactly ``1 + max_retries`` build records exist, all FAILED,
-        with retry_count values 0..max_retries (a linear chain).  The bug produces
-        *more* than that because the watcher double-dispatches each PENDING retry.
+        Expectation: exactly ONE build record (in-place retry reuses the build
+        id), FAILED, with ``retry_count == max_retries``. A count above that — or
+        more than one build — indicates the watcher double-dispatched the build
+        while its in-process retry loop was still running.
         """
         spec = self._get_spec()
         space = self._check_and_setup_space(spec)
@@ -95,13 +96,14 @@ class TestBuildWatcherRetryExhaustion(AbstractBuildTest):
         )
         max_retries = stored_build.get_build_config().retries.max_retries
         assert max_retries > 0, "fixture must set retries.max_retries > 0"
+        build_id = stored_build.uuid
         self.storage.build_storage.add(stored_build)
 
         watcher = BuildWatcher(gh_token="", all_build_space_uri=spec.space_uri)
         # Thread runner (no cluster) and fast (1s) polling so the watcher reliably
-        # observes retry builds during their brief PENDING window. 1s is the minimum
-        # interval (sub-second values busy-loop and are floored); the chain-settle
-        # wait below gives it up to spec.timeout_minutes to observe everything.
+        # observes the build during its PENDING window. 1s is the minimum interval
+        # (sub-second values busy-loop and are floored); the settle wait below
+        # gives it up to spec.timeout_minutes to observe everything.
         watcher.config.buildrunner_type = "thread"
         watcher.config.monitoring_interval = 1
 
@@ -110,7 +112,8 @@ class TestBuildWatcherRetryExhaustion(AbstractBuildTest):
         )
         thread.start()
         try:
-            self._wait_until_chain_settles(
+            self._wait_until_retries_settle(
+                build_id=build_id,
                 timeout_seconds=spec.timeout_minutes * 60,
                 max_retries=max_retries,
             )
@@ -119,62 +122,61 @@ class TestBuildWatcherRetryExhaustion(AbstractBuildTest):
             thread.join(timeout=60)
 
         builds = self.storage.build_storage.get_by_uuid(None) or []
-        retry_counts = sorted(b.retry_count for b in builds)
-        statuses = [b.status for b in builds]
-
-        assert len(builds) == 1 + max_retries, (
-            f"Expected a linear retry chain of {1 + max_retries} builds "
-            f"(1 original + {max_retries} retries), but found {len(builds)} "
-            f"with retry_counts={retry_counts}. More than expected indicates the "
-            f"BuildWatcher is double-dispatching PENDING retry builds."
+        assert len(builds) == 1, (
+            f"In-place retry must reuse one build id, but found {len(builds)} "
+            f"builds. More than one indicates the watcher created/double-dispatched "
+            f"extra build records."
         )
-        assert all(
-            s == Status.FAILED for s in statuses
-        ), f"Every build in the chain should be FAILED, got statuses={statuses}"
-        assert retry_counts == list(range(0, max_retries + 1)), (
-            f"Retry chain should have one build per retry_count 0..{max_retries}, "
-            f"got {retry_counts}"
+        build = builds[0]
+        assert build.uuid == build_id
+        assert (
+            build.status == Status.FAILED
+        ), f"Build should end FAILED after exhausting retries, got {build.status}"
+        assert build.retry_count == max_retries, (
+            f"Build should have retried exactly {max_retries} times, but "
+            f"retry_count={build.retry_count}. A higher value indicates the "
+            f"watcher double-dispatched the in-flight retry."
         )
 
-    def _wait_until_chain_settles(
-        self, timeout_seconds: float, max_retries: int
+    def _wait_until_retries_settle(
+        self, build_id: str, timeout_seconds: float, max_retries: int
     ) -> None:
-        """Block until the retry chain has genuinely exhausted its retries.
+        """Block until the build has genuinely exhausted its retries.
 
-        The chain is settled only once the final allowed attempt
-        (``retry_count == max_retries``) has reached a terminal state and no
-        build is still in flight.
+        The build is settled only once it has reached ``retry_count ==
+        max_retries``, is in a terminal state, and is no longer in flight.
 
         Keying on the exhausting attempt is required to avoid a race: between a
-        build's ``RUNNING -> FAILED`` finalization and the next retry being
-        persisted as ``RETRY_PENDING`` there is a brief window where every build
-        looks terminal and the count is momentarily stable.  A "no in-flight +
-        stable count" heuristic can return during that window — before the last
-        retry runs — and the subsequent ``watcher.stop()`` then tears down the
-        BuildRunner mid-chain, cancelling the pending retry (and re-marking the
-        whole chain CANCELLED). Waiting for the ``max_retries`` attempt to become
-        terminal removes that window, since no further retry can be spawned.
+        build's ``RUNNING -> FAILED`` finalization and the next retry being re-run
+        in place as ``RUNNING`` there is a brief window where the build looks
+        terminal. A plain "not in flight" heuristic can return during that window —
+        before the last retry runs — and the subsequent ``watcher.stop()`` then
+        tears down the BuildRunner mid-retry, cancelling the pending attempt.
+        Waiting for the ``max_retries`` attempt to become terminal removes that
+        window, since no further retry can be staged.
 
         Args:
-            timeout_seconds: Maximum time to wait for the chain to settle.
-            max_retries: The configured retry ceiling; the chain is exhausted
-                once a build with this ``retry_count`` is terminal.
+            build_id: The single build id being retried in place.
+            timeout_seconds: Maximum time to wait for the build to settle.
+            max_retries: The configured retry ceiling; retries are exhausted once
+                the build reaches this ``retry_count`` and is terminal.
 
         Raises:
-            AssertionError: if the chain has not settled before the timeout.
+            AssertionError: if the build has not settled before the timeout.
         """
         poll = 1.0
         start = time()
         while time() - start <= timeout_seconds:
             builds = self.storage.build_storage.get_by_uuid(None) or []
-            in_flight = [b for b in builds if b.status in _IN_FLIGHT]
-            exhausted = any(
-                b.retry_count == max_retries and b.status.is_finished() for b in builds
-            )
-            if exhausted and not in_flight:
-                return
+            build = next((b for b in builds if b.uuid == build_id), None)
+            if build is not None:
+                exhausted = (
+                    build.retry_count == max_retries and build.status.is_finished()
+                )
+                if exhausted and build.status not in _IN_FLIGHT:
+                    return
             sleep(poll)
         assert False, (
-            f"Retry chain did not exhaust {max_retries} retries within "
-            f"{timeout_seconds}s; last seen {len(builds)} build(s)."
+            f"Build {build_id} did not exhaust {max_retries} retries within "
+            f"{timeout_seconds}s."
         )

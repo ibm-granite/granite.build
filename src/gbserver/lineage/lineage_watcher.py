@@ -377,8 +377,8 @@ class LineageWatcher:
             #
             #   1. Once a build is finished, no new target appears for it. So a
             #      confirmed build's recordable set cannot grow. (is_finished()
-            #      excludes RETRY_PENDING, which is the one state that can still
-            #      produce targets -- such a build fails this gate and is
+            #      excludes RUNNING -- a build re-running in place for a retry is
+            #      RUNNING, not finished, so it fails this gate and is
             #      re-reconciled.)
             #   2. Lineage already in the sink is not deleted out from under us.
             #

@@ -62,7 +62,7 @@ def _make_target(
     name: str = "train",
     input_artifacts: Optional[dict] = None,
     output_artifacts: Optional[dict] = None,
-    skipped_for_prerun_target_id: str = "",
+    retry_of_target_id: str = "",
 ) -> StoredTargetRun:
     return StoredTargetRun(
         uuid=uuid,
@@ -74,7 +74,7 @@ def _make_target(
         output_artifacts=output_artifacts or {},
         started_at=datetime.datetime(2024, 4, 15, 10, 0, 0),
         finished_at=datetime.datetime(2024, 4, 15, 11, 0, 0),
-        skipped_for_prerun_target_id=skipped_for_prerun_target_id,
+        retry_of_target_id=retry_of_target_id,
     )
 
 
@@ -292,34 +292,43 @@ class TestWandBLineageStore:
         assert events_list[0]["outputs"] == []
         assert len(events_list[0]["inputs"]) == 1
 
-    def test_create_jobstats_for_target_skipped(self):
+    def test_create_jobstats_for_retried_target(self):
+        """A re-run (retry) target records lineage from its OWN outputs.
+
+        With in-place retry there is no skip/swap: a target that failed and then
+        re-ran to success is a real SUCCESS run with its own real outputs. Its
+        events are keyed by its own uuid and reference its own artifacts, exactly
+        like a first-attempt run — ``retry_of_target_id`` only records the linkage
+        and does not redirect lineage to the prior failed run.
+        """
         input_art = _make_artifact("in-1", "data", "s3://b/data")
         output_art = _make_artifact("out-1", "model", "s3://b/model")
         build = _make_build()
-        original_target = _make_target(
-            uuid="orig-target",
+        retried_target = _make_target(
+            uuid="retried-target",
             input_artifacts={"data": "in-1"},
             output_artifacts={"model": ["out-1"]},
-        )
-        skipped_target = _make_target(
-            uuid="skipped-target",
-            skipped_for_prerun_target_id="orig-target",
+            retry_of_target_id="orig-target",
         )
         storage = _make_mock_storage(
             build,
-            [original_target, skipped_target],
+            [retried_target],
             {"in-1": input_art, "out-1": output_art},
         )
 
         events_list, events_dict = self.storage_impl.create_jobstats_for_target(
-            storage, skipped_target, build
+            storage, retried_target, build
         )
 
+        # Lineage is built from the retried target's own uuid and outputs — no
+        # swap to a prior run. (runId itself is a random uuid by design; assert on
+        # the stable job_id/target_id/output identity instead.)
         assert len(events_list) == 1
-        assert events_list[0]["run"]["runId"] == "skipped-target-out-1"
         assert (
-            events_list[0]["run"]["facets"]["job_details"]["job_id"] == "skipped-target"
+            events_list[0]["run"]["facets"]["job_details"]["job_id"] == "retried-target"
         )
+        assert events_list[0]["run"]["facets"]["tags"]["target_id"] == "retried-target"
+        assert events_list[0]["outputs"][0]["facets"]["artifact_id"] == "out-1"
         assert "model" in events_dict
 
     def test_create_jobstats_for_target_build_not_found(self):

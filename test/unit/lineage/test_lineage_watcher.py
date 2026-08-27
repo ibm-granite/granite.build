@@ -50,10 +50,21 @@ from gbserver.types.status import Status
 _BASE = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 
-def _target(build_id: str, uuid: str, finished_at: datetime = None) -> StoredTargetRun:
+def _target(
+    build_id: str,
+    uuid: str,
+    finished_at: datetime = None,
+    name: str = "",
+) -> StoredTargetRun:
+    # Default ``name`` to ``uuid`` so each distinct uuid is a distinct *logical*
+    # target: select_recordable_targets dedupes SUCCESS runs by name (in-place
+    # retry can leave more than one SUCCESS run for one logical target), so
+    # targets sharing a name collapse to one. These tests use distinct uuids to
+    # mean distinct targets; pass ``name`` explicitly to model two runs of one.
     return StoredTargetRun(
         uuid=uuid,
         build_id=build_id,
+        name=name or uuid,
         environment_uri="env://test",
         status=Status.SUCCESS,
         finished_at=finished_at if finished_at is not None else _BASE,

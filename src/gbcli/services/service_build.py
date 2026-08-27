@@ -59,6 +59,7 @@ from gbcli.utils.gbserver import (
     get_builds,
     get_builds_count,
     make_gbserver_call,
+    restart_build,
     submit_build,
     update_build_gserver,
     validate_build,
@@ -498,6 +499,66 @@ def build_start(
         )
 
     return gbserver_build["build_id"]
+
+
+def build_restart(
+    github_token: str,
+    build_id: str,
+    id_format: Optional[str] = None,
+    callback=None,
+) -> Optional[dict]:
+    """Restart a previously-executed build.
+
+    Unlike build_start there is no local build folder to zip: the build
+    definition, space, and targets already live on the build. Only the build's id
+    (or URL) is needed. A restart reuses the same build id, so the server's
+    ``build_id`` equals the restarted build.
+
+    Returns the server response dict augmented with ``restarted_from`` — the
+    resolved uuid of the build that was restarted (``build_id`` after any URL is
+    resolved to a uuid) — or None on a server/connection error. Callers report
+    ``restarted_from`` rather than the raw identifier so a passed URL never leaks
+    into uuid-valued output.
+    """
+    if id_format == "url":
+        # get_build_id_from_url returns None when the URL matches no build; guard
+        # the deref so it surfaces the error message, not a raw IndexError/TypeError.
+        build_id_from_url = get_build_id_from_url(github_token, build_id, callback)
+        if not build_id_from_url:
+            if callback is not None:
+                callback(
+                    callback_event="error",
+                    callback_args={
+                        "reason": f"No build found for URL {build_id}.",
+                    },
+                )
+            return None
+        build_id = build_id_from_url[0]["uuid"]
+
+    if callback is not None:
+        callback(
+            callback_event="restarting_build",
+            callback_args={"steps": 1, "build_id": build_id},
+        )
+
+    gbserver_build = make_gbserver_call(
+        lambda: restart_build(build_id, github_token, GBSERVER_BUILD_API),
+        callback,
+    )
+
+    if not gbserver_build:
+        return None
+
+    if callback is not None:
+        callback(
+            callback_event="restarted_build",
+            callback_args={"steps": 100, "build_id": gbserver_build["build_id"]},
+        )
+
+    # Report the resolved uuid, not the raw argument: build_id is now the uuid even
+    # when a URL was passed, so a URL never sneaks into uuid-valued output.
+    gbserver_build["restarted_from"] = build_id
+    return gbserver_build
 
 
 def build_validate(
@@ -1251,7 +1312,6 @@ def build_status(
     show_events: bool,
     fetch_pr: bool,
     result_format: str,
-    follow_retries: bool = True,
     callback=None,
 ) -> List[Any]:
     gbserver_build_events = gb_environment_config().feature_flags[
@@ -1299,7 +1359,7 @@ def build_status(
     # TODO: use global_space to properly scope the build ID
     status_response = make_gbserver_call(
         lambda: get_build_status_with_targets_runs(
-            github_token, build_id, GBSERVER_BUILD_API, follow_retries
+            github_token, build_id, GBSERVER_BUILD_API
         ),
         callback,
         stop_spinner,
@@ -1309,7 +1369,6 @@ def build_status(
     if status_response is None:
         return None, None, None, "Build status could not be retrieved."
     build_status = status_response["status"]
-    retry_chain = status_response.get("retry_chain") if follow_retries else None
 
     if id_format != "url":
         resolved_space_name = global_space.get("name")
@@ -1339,29 +1398,9 @@ def build_status(
                 callback_event="processing_status_artifacts", callback_args={"steps": 1}
             )
 
-    # When following the retry chain, merge every chain member's target runs
-    # (oldest -> newest, as ordered root-first by the API) into one view, and
-    # derive the predecessor/successor build IDs relative to the queried build.
-    retry_of_build_ids: List[str] = []
-    retried_by_build_ids: List[str] = []
-    if retry_chain:
-        target_runs = []
-        before_queried = True
-        for chain_index, member in enumerate(retry_chain):
-            member_id = member["build"]["uuid"]
-            if member_id == build_id:
-                before_queried = False
-            elif before_queried:
-                retry_of_build_ids.append(member_id)
-            else:
-                retried_by_build_ids.append(member_id)
-            for target_run in member["target_runs"]:
-                # Stamp the attempt's position so the flat list sorts by build
-                # attempt (oldest -> newest) then by start time within an attempt.
-                target_run["_chain_index"] = chain_index
-                target_runs.append(target_run)
-    else:
-        target_runs = build_status.get("target_runs") or []
+    # In-place retry keeps a single build id, so every target run — including a
+    # re-run FAILED target's new SUCCESS run — already lives on this build.
+    target_runs = build_status.get("target_runs") or []
 
     targets = (
         process_target_runs(target_runs)
@@ -1413,8 +1452,6 @@ def build_status(
         "status": build_status["build"]["status"],
         "source_pr": build_status["build"]["source_uri"],
         "description": build_status["build"]["description"],
-        "retry_of_build_ids": retry_of_build_ids,
-        "retried_by_build_ids": retried_by_build_ids,
     }
 
     return build_details, targets, build_history, None
@@ -1946,8 +1983,8 @@ def build_notification(
     return notification["subscribed"], space_output_message
 
 
-# Skipped (prerun-reused) targets have no started_at. They sort first via this
-# epoch sentinel, which is timezone-aware so it compares cleanly against the
+# A target run that has not started yet has no started_at. It sorts first via
+# this epoch sentinel, which is timezone-aware so it compares cleanly against the
 # (possibly offset-aware) timestamps parsed from the server.
 _SORT_EPOCH = datetime.fromtimestamp(0, tz=timezone.utc)
 
@@ -1961,13 +1998,10 @@ def _parse_started_at(started_at: Optional[str]) -> datetime:
     return parsed
 
 
-def _target_sort_key(target_run: Any) -> Tuple[int, datetime]:
-    # Order oldest -> newest by build attempt first (_chain_index, stamped during
-    # the chain merge), then by start time within an attempt. A skipped target has
-    # no started_at, so it sorts ahead of the re-run targets of the same attempt
-    # rather than jumping to the front of the whole list.
-    chain_index = target_run.get("_chain_index", 0)
-    return (chain_index, _parse_started_at(target_run["target"].get("started_at")))
+def _target_sort_key(target_run: Any) -> datetime:
+    # In-place retry keeps all runs on one build, so ordering by start time alone
+    # lays out a target's FAILED run ahead of its later SUCCESS retry run.
+    return _parse_started_at(target_run["target"].get("started_at"))
 
 
 def _step_sort_key(step: Any) -> datetime:
@@ -2008,11 +2042,10 @@ def process_target_runs(target_runs: List[Any]) -> Dict[str, Any]:
             )
 
         targets[f"{target['name']} ({target['uuid']})"] = {
+            "name": target["name"],
             "status": target["status"],
             "build_id": target.get("build_id", ""),
-            "skipped_for_prerun_target_id": target.get(
-                "skipped_for_prerun_target_id", ""
-            ),
+            "retry_of_target_id": target.get("retry_of_target_id", ""),
             "input_artifacts": input_artifacts,
             "output_artifacts": output_artifacts,
             "steps": sorted(steps, key=_step_sort_key),
@@ -2061,9 +2094,7 @@ def process_target_runs_to_json(target_runs: List[Any]) -> List[Any]:
                 "build_id": target.get("build_id", ""),
                 "target_id": target.get("uuid"),
                 "status": target.get("status"),
-                "skipped_for_prerun_target_id": target.get(
-                    "skipped_for_prerun_target_id", ""
-                ),
+                "retry_of_target_id": target.get("retry_of_target_id", ""),
                 "input_artifacts": input_artifacts,
                 "output_artifacts": output_artifacts,
                 "steps": sorted(steps, key=_step_sort_key),

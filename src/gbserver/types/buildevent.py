@@ -136,7 +136,6 @@ class EntityRunMetadata:
     targetstep_uri: Optional[str] = field(default="")
     target_step_index: Optional[int] = None
     target_hash: str = ""
-    skipped_for_prerun_target_id: str = ""
 
     @classmethod
     def from_dict(cls: Type[Self], xs: dict) -> Self:
@@ -151,7 +150,6 @@ class EntityRunMetadata:
             targetstep_uri=xs.get("targetstep_uri", ""),
             target_step_index=xs.get("target_step_index", None),
             target_hash=xs.get("target_hash", ""),
-            skipped_for_prerun_target_id=xs.get("skipped_for_prerun_target_id", ""),
         )
 
     def to_dict(self: Self) -> dict:

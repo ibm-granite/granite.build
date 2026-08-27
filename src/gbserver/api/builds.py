@@ -24,16 +24,14 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, model_validator
 
-from gbserver.api.build_files_paths import (
-    authorize_build_access,
-    authorize_build_read_access,
-)
+from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import (
     ListAppendOrSet,
     apply_tag_update,
     confirm_space_write_access,
     get_query_control,
     get_row_filter,
+    has_space_write_access,
     is_space_admin,
     is_super_admin,
     split_tags,
@@ -44,7 +42,7 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.space_storage import IStoredSpaceStorage
-from gbserver.storage.stored_build import StoredBuild, get_retry_chain_members
+from gbserver.storage.stored_build import StoredBuild, reopen_finished_build
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -91,8 +89,39 @@ class BuildSubmitRequest(BaseModel):
         return self
 
 
+class BuildRestartRequest(BaseModel):
+    """
+    A build restart request.
+
+    Restarts a previously-executed build: the **same** build is re-opened and a
+    fresh build runner re-runs it, skipping targets that already succeeded and
+    re-running the rest. The build definition, space, and targets are already on
+    the build, so only its id is required.
+
+        build_id: uuid of the finished build to restart.
+    """
+
+    build_id: str
+
+    @model_validator(mode="after")
+    def validate_build_id(self: Self) -> Self:
+        if self.build_id == "":
+            raise ValueError("build_id cannot be empty")
+        return self
+
+
 class BuildSubmitResponse(BaseModel):
     """Response to a build submission."""
+
+    build_id: str
+
+
+class BuildRestartResponse(BaseModel):
+    """Response to a build restart.
+
+    build_id: uuid of the restarted build. Restart reuses the same build id, so
+        this equals the requested build_id.
+    """
 
     build_id: str
 
@@ -158,15 +187,8 @@ class BuildStatus(BaseModel):
     target_runs: list[TargetRecord]
 
 
-class BuildChainMember(BaseModel):
-    build: StoredBuild
-    target_runs: list[TargetRecord]
-
-
 class BuildStatusResponse(BaseModel):
     status: BuildStatus
-    # Populated (root-first) only when the request sets follow_retries=true.
-    retry_chain: Optional[list[BuildChainMember]] = None
 
 
 class CancelBuildResponse(BaseModel):
@@ -290,6 +312,84 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
     )
 
 
+@builds_api.post("/restart")
+def restart_build(request: Request, req: BuildRestartRequest) -> BuildRestartResponse:
+    """Restart a previously-executed build in a fresh runner.
+
+    Re-opens the **same** build (reusing its build id) by flipping its finished
+    status back to SUBMITTED, so the BuildWatcher re-dispatches it onto a fresh
+    runner that skips targets which already succeeded and re-runs the rest. The
+    build must be finished — restarting a build that is still active (there may be
+    a live runner) is rejected.
+    """
+    storage = get_admin_storage()
+    build_storage: IStoredBuildStorage = storage.build_storage
+    space_storage: IStoredSpaceStorage = storage.space_storage
+
+    # Every "you may not see this build" path (missing build, missing space, no
+    # write access) must return the SAME 404: otherwise a caller lacking access
+    # could tell a real build id (401) from a nonexistent one (404) and enumerate
+    # ids across spaces they cannot reach. Authorize before disclosing the build's
+    # existence or (below) its liveness.
+    not_found = HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Build {req.build_id} not found",
+    )
+    build = build_storage.get_by_uuid(req.build_id)
+    if not isinstance(build, StoredBuild):
+        raise not_found
+
+    # Authorize before disclosing the build's liveness (the is_finished 409 below).
+    stored_space = space_storage.get_by_name(build.space_name)
+    if stored_space is None:
+        raise not_found
+    has_access, _ = has_space_write_access(
+        request, username_on_target=build.username, space_name=stored_space.name
+    )
+    if not has_access:
+        raise not_found
+
+    # Only a finished build can be restarted: re-opening a build with a live runner
+    # would attach a second runner to it. There is no runner-liveness table; the
+    # build status is the signal.
+    if not build.status.is_finished():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Build {build.uuid} has status {build.status}; only a finished "
+                "build (FAILED, INVALID, or CANCELLED) can be restarted"
+            ),
+        )
+
+    # A fully-succeeded build has nothing to restart: every target already
+    # succeeded, so target reuse would skip all of them and the fresh runner would
+    # do no work. Reject it rather than re-open a completed build. (reopen's atomic
+    # guard also rejects SUCCESS, covering a build that succeeds after this check.)
+    if build.status == Status.SUCCESS:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Build {build.uuid} already succeeded; a SUCCESS build cannot be "
+                "restarted (all targets have already completed)"
+            ),
+        )
+
+    # Atomic guarded flip finished -> SUBMITTED; None means the build stopped being
+    # finished between the check above and the write (a concurrent restart or a
+    # runner that just picked it up) — reject rather than double-dispatch.
+    reopened = reopen_finished_build(build_storage, build)
+    if reopened is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Build {build.uuid} cannot be restarted: its status changed "
+                "concurrently"
+            ),
+        )
+    logger.info("re-opened build %s for restart (was %s)", build.uuid, build.status)
+    return BuildRestartResponse(build_id=reopened.uuid)
+
+
 @builds_api.post("/validate")
 def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
     # req.username drives real per-user secret resolution inside Space (see
@@ -367,7 +467,7 @@ def read_build(request: Request, build_id: str) -> GetBuildResponse:
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(item, StoredBuild), f"invalid item: {item}"
-    authorize_build_access(request, item)
+    authorize_build_read_access(request, item)
     resp = GetBuildResponse(build=item)
     return resp
 
@@ -386,7 +486,7 @@ def get_build_archive(request: Request, build_id: str) -> Dict[str, Dict[str, st
             status_code=status.HTTP_404_NOT_FOUND, detail="build not found!"
         )
     assert isinstance(build, StoredBuild), f"invalid item: {build}"
-    authorize_build_access(request, build)
+    authorize_build_read_access(request, build)
     if not build.build_archive:
         return {"files": {}}
     raw = base64.b64decode(build.build_archive)
@@ -451,9 +551,7 @@ def __build_target_records(
 
 
 @builds_api.get("/{build_id}/status", response_model=BuildStatusResponse)
-def get_build_status(
-    request: Request, build_id: str, follow_retries: bool = False
-) -> BuildStatusResponse:
+def get_build_status(request: Request, build_id: str) -> BuildStatusResponse:
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
@@ -466,29 +564,13 @@ def get_build_status(
     build_status = BuildStatus(
         build=build, target_runs=__build_target_records(storage, build_id)
     )
-    resp = BuildStatusResponse(status=build_status)
-    if follow_retries:
-        members = get_retry_chain_members(storage.build_storage, build)
-        chain = []
-        for member in members:
-            if member.uuid == build_id:
-                # Reuse the records already assembled for the queried build
-                # instead of re-querying its targets/steps/artifacts.
-                records = build_status.target_runs
-            else:
-                member.build_archive = ""
-                records = __build_target_records(storage, member.uuid)
-            chain.append(BuildChainMember(build=member, target_runs=records))
-        resp.retry_chain = chain
-    return resp
+    return BuildStatusResponse(status=build_status)
 
 
 @builds_api.get("/{build_id}/status2", response_model=BuildStatusResponse)
-def get_build_status2(
-    request: Request, build_id: str, follow_retries: bool = False
-) -> BuildStatusResponse:
+def get_build_status2(request: Request, build_id: str) -> BuildStatusResponse:
     # Retained as a backward-compatible alias of the primary /status endpoint.
-    return get_build_status(request, build_id, follow_retries)
+    return get_build_status(request, build_id)
 
 
 @builds_api.get("/{build_id}/events")
@@ -529,7 +611,11 @@ def get_buildevents(request: Request, build_id: str):
 
 
 @builds_api.delete("/{build_id}")
-async def cancel_build(build_id: str, request: Request) -> CancelBuildResponse:
+# Sync endpoint (like submit/restart/validate): FastAPI runs it in a threadpool so
+# its blocking work stays off the event loop. request_cancellation reads storage
+# and, for a FAILED build, calls has_retries_remaining() -> get_build_config(),
+# which can extract the build archive from disk — must not run on the loop.
+def cancel_build(build_id: str, request: Request) -> CancelBuildResponse:
     storage: SingletonAdminStorage = get_admin_storage()
     build = storage.build_storage.get_by_uuid(build_id)
     if build is None:
@@ -559,59 +645,55 @@ async def cancel_build(build_id: str, request: Request) -> CancelBuildResponse:
     return response
 
 
-def _find_active_chain_member(
-    build_storage: IStoredBuildStorage, build: StoredBuild
-) -> Optional[StoredBuild]:
-    """Return the single non-finished member of ``build``'s retry chain, if any.
-
-    A retry chain is linear, so at most one member is in flight at a time.
-    """
-    for member in get_retry_chain_members(build_storage, build):
-        if not member.status.is_finished():
-            return member
-    return None
-
-
 def request_cancellation(
     build_storage: IStoredBuildStorage, build: StoredBuild
 ) -> StoredBuild:
-    """Apply a cancellation request to a build, routing into its retry chain.
+    """Apply a cancellation request to a build.
 
-    If the targeted build itself is in flight, it is set to CANCEL_REQUESTED (or
-    CANCELLED for SUBMITTED/PENDING). If the targeted build is already finished
-    (e.g. a FAILED original) but its retry chain still has an active member, the
-    request is routed to that active member instead — so cancelling a failed build
-    cancels the retry that is actually running.
+    With in-place retry there is a single build id across attempts: an in-flight
+    (possibly retrying) build is RUNNING and is set to CANCEL_REQUESTED; a
+    SUBMITTED/PENDING build is set to CANCELLED. A build that is FAILED but still
+    has retries remaining sits in a brief pre-retry window and is set directly to
+    CANCELLED. A genuinely finished build (SUCCESS/CANCELLED, or a FAILED build
+    whose retries are exhausted) is not cancellable.
 
     Args:
         build_storage: storage used to read/update builds.
         build: the build the cancellation was requested for.
 
     Returns:
-        The build whose status was updated (the active chain member when routed),
-        or the unchanged build if no update was needed.
+        The build whose status was updated, or the unchanged build if no update
+        was needed.
 
     Raises:
-        HTTPException: 412 if nothing in the chain is cancellable; 409 if the
-            status changed concurrently.
+        HTTPException: 412 if the build is not cancellable; 409 if the status
+            changed concurrently.
     """
     current_status = build.status
-    if not current_status.is_cancellable():
-        # The build itself is finished (e.g. a FAILED original). Allow cancelling
-        # it only if its retry chain still has an active member, and set
-        # CANCEL_REQUESTED on THIS build — a durable signal on a build that is not
-        # being re-run (so it can't be clobbered by a concurrent FAILED update).
-        # The runner detects it chain-wide and cancels the whole chain.
-        if _find_active_chain_member(build_storage, build) is None:
-            raise HTTPException(
-                status_code=status.HTTP_412_PRECONDITION_FAILED,
-                detail=f"Build {build.uuid} has status {current_status} and therefore can not be canceled.",
-            )
+    # A build sits in FAILED for a short window between a failed attempt and the
+    # retry loop flipping it back to RUNNING. If it still has retries remaining it
+    # is effectively in-flight, so a cancel landing in that window must be honored
+    # rather than rejected as "already finished".
+    failed_but_retrying = (
+        current_status == Status.FAILED and build.has_retries_remaining()
+    )
+    if not current_status.is_cancellable() and not failed_but_retrying:
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail=f"Build {build.uuid} has status {current_status} and therefore can not be canceled.",
+        )
+    # A RUNNING build (including one the retry loop re-ran in place) is in-flight
+    # and must be stopped by the runner.
+    if current_status == Status.RUNNING:
         target_status: Optional[Status] = Status.CANCEL_REQUESTED
-    # RETRY is treated like RUNNING: an in-flight build the runner must stop.
-    elif current_status in (Status.RUNNING, Status.RETRY_PENDING):
-        target_status = Status.CANCEL_REQUESTED
     elif current_status in (Status.SUBMITTED, Status.PENDING):
+        target_status = Status.CANCELLED
+    elif failed_but_retrying:
+        # The failed attempt already tore down; there is no running work to stop.
+        # Marking it CANCELLED both records the cancel and prevents the pending
+        # retry (the runner's _should_retry only retries a FAILED build). The
+        # should_update guard below yields 409 if the runner already advanced it to
+        # RUNNING, prompting the client to retry into the CANCEL_REQUESTED path.
         target_status = Status.CANCELLED
     else:  # CANCEL_REQUESTED (already requested) or anything else: no update
         target_status = None

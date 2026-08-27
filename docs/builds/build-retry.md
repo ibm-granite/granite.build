@@ -1,8 +1,12 @@
 # Build-level Retry
 
-When a build fails, gbserver can automatically create a new build and run it as a retry
-attempt. This is controlled by the `max_retries` field in `build.yaml` and is distinct from
-the step-level retry described in [step-retry-configuration.md](step-retry-configuration.md), which re-launches a single step within the same build run.
+When a build fails, gbserver can automatically re-run it as a retry attempt. This is controlled
+by the `max_retries` field in `build.yaml` and is distinct from the step-level retry described in
+[step-retry-configuration.md](step-retry-configuration.md), which re-launches a single step within
+the same build run.
+
+Retries happen **in place**: a retry reuses the *same* `StoredBuild` and build id rather than
+creating a new build. The one build accumulates its target-run history across attempts.
 
 ## Configuration
 
@@ -13,7 +17,7 @@ llm.build:
   name: my-build
   retries:
     max_retries: 2              # retry up to 2 times on failure (default: 0)
-    target_reuse_enabled: true  # reuse successful targets from earlier attempts (default: true)
+    target_reuse_enabled: true  # don't re-run targets that already succeeded (default: true)
   targets:
     my-target:
       environment_uri: space://environments/cpu
@@ -30,55 +34,63 @@ from scratch on every retry, even if they succeeded in an earlier attempt.
 
 When a build finishes with status `FAILED` and `retry_count < retries.max_retries`, gbserver:
 
-1. Creates a new `StoredBuild` with the same configuration (`build_archive`, targets, tags,
-   etc.) and status `RETRY_PENDING`.
-2. Sets `retry_count` on the new build to `original.retry_count + 1`.
-3. Sets `retry_of_build_id` on the new build to the UUID of the original (first) build — this
-   field always points to the root of the retry chain, not just the previous attempt.
-4. Updates `retry_build_id` on the failed build to point to the new retry build.
-5. Runs the new build immediately in the same `BuildRunner` session.
+1. Bumps `retry_count` on the same build to `retry_count + 1`.
+2. Sets the build's status back to `RUNNING` and clears its `failure_reason`.
+3. Re-runs the same build immediately in the same `BuildRunner` session, keeping the same
+   build id, `build_archive`, targets, tags, and PR.
 
-The retry build is created with status `RETRY_PENDING` rather than `PENDING` on purpose: the
-`BuildWatcher` only dispatches `PENDING` builds, so a distinct status keeps it from launching
-a *second* runner for a retry that the in-process loop is already running. The `RETRY_PENDING` build
-transitions to `RUNNING` as it executes, just like any other in-flight build.
+The build is re-run in place as `RUNNING` rather than moved back to `PENDING` on purpose: the
+retry loop re-runs it in the same thread, so it is genuinely in flight, and the `BuildWatcher`
+only dispatches `SUBMITTED`/`PENDING` builds — a `RUNNING` status therefore keeps it from
+launching a *second* runner for a retry the in-process loop is already running.
 
 Retries are only triggered for the `FAILED` status. Builds that end with `CANCELLED` or
 `INVALID` are never retried.
 
+## Target runs across attempts
+
+Because a retry reuses the same build, all of a target's runs live under the one build id and
+read as an honest history:
+
+- A target that **failed** on an attempt has a `StoredTargetRun` with status `FAILED`.
+- When that target re-runs and **succeeds** on a later attempt, a **new** `StoredTargetRun`
+  with status `SUCCESS` is created. Its `retry_of_target_id` points back to the prior FAILED
+  run in the same build.
+- Artifacts re-emitted by the successful re-run are **re-associated** to it: the
+  `ArtifactRegistration.created_by_target_id` is updated to the successful run.
+
+Target runs therefore only ever have status `FAILED` or `SUCCESS` — there is no "skipped"
+status. A target that already succeeded in an earlier attempt simply is not re-run (see
+[Target reuse](#target-reuse) below); its single existing SUCCESS run is what the API and CLI
+report.
+
 ## Cancellation
 
-Cancelling a build with `max_retries > 0` cancels the **entire retry chain**, not just one
-attempt. Because the whole chain is run by a single `BuildRunner`, cancelling any member of
-the chain stops the work that is actually running and marks every build in the chain
-`CANCELLED`.
+Because a retrying build keeps its one stable build id, cancelling it is just cancelling that
+build. There is no chain to walk.
 
 How a cancellation request is handled (`POST /builds/{id}/cancel`):
 
-- If the targeted build is **still in flight** (`PENDING`, `RUNNING`, or `RETRY_PENDING`), it is set to
-  `CANCEL_REQUESTED` (or directly `CANCELLED` if it had not started yet).
-- If the targeted build is **already finished** (for example the original, which is now
-  `FAILED`) **but its retry chain still has an active member**, the request is accepted — the
-  failed build is itself set to `CANCEL_REQUESTED`. This is a durable signal on a build that is
-  not being re-run, so it cannot be clobbered by a concurrent status update. (Cancelling a
-  finished build whose chain has **no** active member is still rejected with `412`.)
+- If the build is **in flight** (`RUNNING`, i.e. an attempt is running or is being re-run in
+  place for a retry), it is set to `CANCEL_REQUESTED`.
+- If the build has **not started yet** (`SUBMITTED` or `PENDING`), it is set directly to
+  `CANCELLED`.
+- If the build is **already finished** (`SUCCESS`, `FAILED` with retries exhausted, or
+  `CANCELLED`), the request is rejected with `412`.
 
-The `BuildRunner` checks the whole retry chain for a cancellation request after each attempt
-(and while a step is running, where the environment supports interrupting it). As soon as any
-member is `CANCEL_REQUESTED`/`CANCELLED`, it stops the active workload, **marks every build in
-the chain `CANCELLED`**, and does not create any further retries. Earlier attempts that had
-already failed are relabelled `CANCELLED` so the whole chain reflects the cancellation.
+The `BuildRunner` checks for a cancellation request after each attempt (and while a step is
+running, where the environment supports interrupting it). As soon as the build is
+`CANCEL_REQUESTED`/`CANCELLED`, it stops the active workload, marks the build `CANCELLED`, and
+does not create any further retries.
 
-This means you can cancel a retrying build using the original build id you submitted, even
-after that first attempt has failed and the chain has moved on to a later retry.
+You cancel a retrying build using the same build id you submitted — it never changes.
 
 ## Storage fields
 
 | Field | Where set | Meaning |
 |---|---|---|
-| `retry_count` | retry build | Number of retry attempts so far (1 on first retry, 2 on second, etc.) |
-| `retry_of_build_id` | retry build | UUID of the original failed build (root of the chain) |
-| `retry_build_id` | original/previous build | UUID of the next retry build created for this build |
+| `retry_count` | build | Number of retry attempts so far (1 on first retry, 2 on second, etc.) |
+| `retry_of_target_id` | re-run target's SUCCESS run | UUID of the prior FAILED `StoredTargetRun` in the same build that this run retried; empty if not a retry |
 
 ## Examples
 
@@ -96,7 +108,7 @@ llm.build:
         - step_uri: space://steps/my-training-step
 ```
 
-If the build fails, gbserver creates one retry. If that retry also fails, the build is marked
+If the build fails, gbserver retries it once. If that retry also fails, the build is marked
 `FAILED` with no further attempts (`retry_count == retries.max_retries`).
 
 ### No retry (default)
@@ -113,26 +125,20 @@ llm.build:
 
 `max_retries` defaults to `0`. A failure ends the build immediately with no retry.
 
-## Target reuse across the retry chain
+## Target reuse
 
-When a retry build runs, gbserver checks whether each target has already succeeded in any
-earlier build in the same retry chain. If a matching successful run is found, the target is
-**skipped** rather than re-executed, saving time and compute.
+When a build is retried, gbserver checks whether each target has already succeeded **in this
+same build** on an earlier attempt. If a matching successful run is found, the target is not
+re-executed, saving time and compute.
 
 A target is considered a match when its `target_hash` — a SHA-256 digest of the target
 definition (environment, steps, and input artifacts) — is identical to a previously successful
-run within the retry chain.
+run within the same build.
 
-When a target is skipped this way:
-
-- Its `StoredTargetRun.status` is set to `SUCCESS`.
-- Its `skipped_for_prerun_target_id` is set to the UUID of the original `StoredTargetRun`
-  whose hash matched.
-- No steps are dispatched and no new output artifacts are created for this build; the retry
-  build resolves inputs from the original run's output artifacts.
-
-This means a retry build only re-runs the targets that did not succeed in the original build,
-making retries as cheap as possible.
+When a target is reused this way, no new target run is written: its existing SUCCESS
+`StoredTargetRun` remains, no steps are dispatched, and downstream targets resolve their inputs
+from that run's output artifacts. Only the targets that did not yet succeed are re-run, making
+retries as cheap as possible.
 
 See [target-reuse.md](target-reuse.md) for the full architecture, hash correctness argument,
 and storage details.
@@ -144,9 +150,17 @@ These are two independent mechanisms:
 | | Step-level retry | Build-level retry |
 |---|---|---|
 | Configured in | `build.yaml` step / `step.yaml` / env var | `build.yaml` `max_retries` |
-| Scope | Re-launches a single failing step pod | Creates and runs a new build |
+| Scope | Re-launches a single failing step pod | Re-runs the build in place |
 | Triggered by | Pod eviction, node failure, transient errors | Build status `FAILED` after all step retries exhausted |
-| New build record created | No | Yes |
+| New build record created | No | No (same build id is reused) |
 
 A build-level retry only fires after the build has fully failed — i.e. after all step-level
 retries for that run have been exhausted.
+
+## Relationship to build restart
+
+Build-level retry runs automatically, in the same runner, only for a `FAILED` build, within the
+`max_retries` budget. To re-run a **finished build that did not fully succeed** (`FAILED`,
+`INVALID`, or `CANCELLED`, for any reason) in a **fresh** runner — skipping targets that already
+succeeded — use [build restart](build-restart.md) (`gb build restart <BUILD_ID>`), which reuses
+the same target-reuse machinery but on a fresh `max_retries` budget.

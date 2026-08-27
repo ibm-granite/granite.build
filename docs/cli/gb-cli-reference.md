@@ -40,6 +40,7 @@ Most-used group. Submit, monitor, and inspect builds.
 | `gb build status <build-id>` | Show status and per-step state. |
 | `gb build log <build-id>` | Stream or fetch build logs. |
 | `gb build cancel <build-id>` | Cancel a running build. |
+| `gb build restart <build-id>` | Restart a finished build in a fresh runner, skipping succeeded targets. |
 | `gb build describe [<build-id> \| -f <build.yaml>]` | Describe targets and steps. |
 | `gb build diff <build-id-1> [<build-id-2>]` | Diff two builds (or one against its `build.yaml`). |
 | `gb build lineage <build-id>` | Show build lineage. |

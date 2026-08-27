@@ -12,7 +12,6 @@ def _make_stored_build_with_config(
     build_config_yaml: str,
     status: Status = Status.FAILED,
     retry_count: int = 0,
-    retry_of_build_id: str = None,
 ) -> StoredBuild:
     """Create a StoredBuild whose build_archive encodes the given build.yaml content."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -27,7 +26,6 @@ def _make_stored_build_with_config(
             status=status,
         )
         build.retry_count = retry_count
-        build.retry_of_build_id = retry_of_build_id
         return build
 
 
@@ -97,15 +95,13 @@ class TestShouldRetry:
         )
         assert not self._runner()._should_retry(build)
 
-    def test_retry_build_preserves_lineage(self):
-        """The retry_of_build_id field should point to the original build UUID."""
-        original_id = "original-build-uuid"
+    def test_in_place_retry_bumps_count_and_still_retries(self):
+        """An in-place retry keeps the same build id; only retry_count advances,
+        and the build stays retryable until max_retries is reached."""
         build = _make_stored_build_with_config(
             _BUILD_YAML_MAX_RETRIES_2,
             status=Status.FAILED,
             retry_count=1,
-            retry_of_build_id=original_id,
         )
-        assert build.retry_of_build_id == original_id
         assert build.retry_count == 1
         assert self._runner()._should_retry(build)
