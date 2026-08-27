@@ -390,6 +390,18 @@ class TestSkypilotClusterNaming:
         assert bid in name
         assert name.startswith(f"gb-{bid}-train-")
 
+    def test_cluster_name_build_name_slugifies_empty_uses_build_id(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        bid = "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff"
+        name = Skypilot._cluster_name_for(
+            "3168aa02-1234-5678-9abc-def012345678",
+            target_name="train",
+            build_id=bid,
+            build_name="!!!",  # slugifies to "" -> falls back to build_id
+        )
+        assert name == f"gb-{bid}-train-3168aa02-123"
+
     def test_cluster_name_within_length_ceiling(self):
         from gbserver.environment.skypilot import Skypilot
 
