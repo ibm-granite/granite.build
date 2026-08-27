@@ -291,8 +291,13 @@ class TestLineageAPI(AbstractAPITest):
         targets_list = resp_json["targets"]
         assert len(targets_list) == 3
 
-        # Every entry is attributable: target_ids[i] owns targets[i].
-        assert resp_json["target_ids"] == [target1.uuid, target2.uuid, target3.uuid]
+        # Every entry is attributable: target_ids[i] owns targets[i]. Keyed by id
+        # rather than compared positionally -- the endpoint builds this from
+        # get_by_where with no ORDER BY, so insertion order is incidental and
+        # asserting it would fail on an unrelated storage change.
+        target_ids = resp_json["target_ids"]
+        assert len(target_ids) == len(targets_list)
+        assert set(target_ids) == {target1.uuid, target2.uuid, target3.uuid}
 
         # Validate each target response
         for jobstats_dict in targets_list:

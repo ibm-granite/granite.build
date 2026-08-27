@@ -548,6 +548,14 @@ class TestWandBLineageStore:
             ["build_id=b1"], required_tags=["target_id=t1"]
         )
 
+    def test_count_release_ids_no_results(self):
+        # Pins the 0-in -> 0-out passthrough: does_release_id_exist compares
+        # count == expected_count, so a non-zero/None return on an empty tag
+        # query would mis-report an artifact-less build as recorded.
+        self.mock_service.count_runs_by_tags.return_value = 0
+        count = self.storage_impl.count_release_ids("nonexistent")
+        assert count == 0
+
     def test_does_release_id_exist_true(self):
         self.mock_service.count_runs_by_tags.return_value = 1
         assert self.storage_impl.does_release_id_exist("b1", 1, target_id="t1") is True
