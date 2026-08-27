@@ -260,7 +260,9 @@ The step ships `src/` to `./src` on the node:
 - **Pure-python DPK.** The step runs the CPU-only pure-python runtime. DPK's Ray runtime is
   faster on large corpora; it is reachable via `module: dpk_<name>.ray.runtime` +
   `extras: ["ray"]`, but provisioning a multi-node Ray cluster is out of scope here.
-- **Runtime dependency install.** Dependencies are installed per cluster during `setup`, so
+- **Runtime dependency install.** Dependencies are installed per cluster during `setup` with
+  [`uv`](https://github.com/astral-sh/uv) (bootstrapped with `pip` first, as DPK's own
+  image does), so
   the worker needs outbound access to `pip_index_url`. For an air-gapped cluster, or to
   avoid the install cost (`pii_redactor` pulls presidio + flair, which is heavy), pre-bake an
   image and set `image`.

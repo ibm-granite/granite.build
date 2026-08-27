@@ -112,9 +112,26 @@ environment_configs:
             {%- set dpk_req = ("data-prep-toolkit-transforms[" ~ extras | join(",") ~ "]==" ~ config.dpk_config.dpk_version)
                               if extras
                               else (("data-prep-toolkit-transforms==" ~ config.dpk_config.dpk_version) if t else "") %}
-            python -m venv ./venv
+            # Installs go through uv, which DPK's own Dockerfile.python also uses.
+            # It resolves and installs far faster than pip, and it populates a venv
+            # by hard-linking from a shared cache instead of copying — which matters
+            # here because a heavyweight extra like [pii-redactor] pulls ~125
+            # packages (torch, flair, presidio) and a full copy costs ~6G per venv.
+            # uv is not preinstalled on a bare launcher node, so bootstrap it with
+            # pip first (same order as the DPK image).
+            # UV_CACHE_DIR must be (a) on the same filesystem as the venv, or uv
+            # silently copies instead of hard-linking, and (b) STABLE ACROSS RUNS, or
+            # there is nothing to link from and the cache is pure overhead. A cache
+            # inside the per-run workdir satisfies (a) but not (b) — measured: the
+            # venv shrank 5.8G -> 5.5G while a fresh 6.2G cache appeared, doubling
+            # the footprint. So anchor it at the environment-level shared root when
+            # there is one, falling back to the per-run dir where there is not
+            # (e.g. aws, where each step is its own instance anyway).
+            pip install --quiet --no-cache-dir uv
+            export UV_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.uv-cache"
+            uv venv ./venv
             . ./venv/bin/activate
-            pip install --quiet --no-cache-dir --index-url '{{ config.dpk_config.pip_index_url }}' \
+            uv pip install --quiet --index-url '{{ config.dpk_config.pip_index_url }}' \
               {% if dpk_req %}'{{ dpk_req }}' {% endif %}{% for p in config.dpk_config.packages %}'{{ p }}' {% endfor %}
             {%- endif %}
           # run starts in the same working directory as setup, so ./venv and

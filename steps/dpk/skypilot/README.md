@@ -6,7 +6,7 @@
 
 A general [Data Prep Kit](https://github.com/data-prep-kit/data-prep-kit) transform runner
 for SkyPilot clusters. Runs on the **bare launcher node** by default (or in a public
-container image), installing the transform's dependencies with pip during `setup` — no
+container image), installing the transform's dependencies with `uv` during `setup` — no
 custom image is built or published for this step.
 
 It is the public-image counterpart of the custom-image
@@ -22,7 +22,7 @@ changes three things:
 
 | | byoc | dpk |
 |---|---|---|
-| **Dependencies** | `git clone` + `setup_command` | `transform`/`packages` → pip into `./venv` |
+| **Dependencies** | `git clone` + `setup_command` | `transform`/`packages` → `uv pip install` into `./venv` |
 | **Invocation** | verbatim `command` only | `transform:` derives the module, flags, and data config; `command:` remains as an escape hatch |
 | **Dependency set** | whatever the image/repo provides | derived from `transform` via DPK's per-transform pip extras |
 

@@ -298,8 +298,41 @@ class TestCommandMode:
 class TestVenvHandling:
     def test_bare_node_builds_a_venv(self, launcher, defaults):
         cfg = _transform_cfg(defaults)
-        assert "python -m venv ./venv" in _render(launcher["setup"], cfg)
+        setup = _render(launcher["setup"], cfg)
+        assert "uv venv ./venv" in setup
         assert ". ./venv/bin/activate" in _render(launcher["run"], cfg, _BINDINGS)
+
+    def test_installs_go_through_uv(self, launcher, defaults):
+        """uv, not pip, does the resolving and installing.
+
+        Same choice DPK's own Dockerfile.python makes. It matters beyond speed: uv
+        populates a venv by hard-linking from its cache instead of copying, and a
+        heavyweight extra like [pii-redactor] is ~125 packages / ~6G per venv when
+        copied.
+        """
+        setup = _render(launcher["setup"], _transform_cfg(defaults))
+        assert "uv pip install" in setup
+        # pip appears only to bootstrap uv itself, which is absent on a bare node.
+        assert "pip install --quiet --no-cache-dir uv" in setup
+        assert "\npip install --quiet --no-cache-dir --index-url" not in setup
+
+    def test_uv_cache_shares_the_venv_filesystem(self, launcher, defaults):
+        """UV_CACHE_DIR must sit beside the venv or hard-linking silently degrades.
+
+        Two requirements. Same filesystem as the venv, or uv copies instead of
+        hard-linking. And stable across runs, or there is nothing to link from —
+        a per-run cache measured *worse* than pip (venv 5.8G->5.5G but a fresh
+        6.2G cache), so it anchors at GB_SHARED_WORKDIR where one exists.
+        """
+        setup = _render(launcher["setup"], _transform_cfg(defaults))
+        assert 'UV_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.uv-cache"' in setup
+        assert setup.index("UV_CACHE_DIR") < setup.index("uv venv")
+
+    def test_uv_install_keeps_its_cache(self, launcher, defaults):
+        """--no-cache-dir on the install would defeat hard-linking."""
+        setup = _render(launcher["setup"], _transform_cfg(defaults))
+        install = next(l for l in setup.splitlines() if l.startswith("uv pip install"))
+        assert "--no-cache-dir" not in install
 
     def test_image_mode_skips_venv_and_pip(self, launcher, defaults):
         """An image already provides DPK, so nothing is installed at run time."""
