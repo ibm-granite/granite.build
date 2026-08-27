@@ -7,9 +7,10 @@ The gbserver process does not need to stay running for jobs to complete.
 """
 
 import asyncio
+import contextlib
 import glob
 import os
-from typing import Dict, List, Optional, Self
+from typing import Any, Dict, List, Optional, Self
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -195,8 +196,24 @@ class Skypilot_managed(Environment):
                 res_config,
             )
 
-            request_id = sky.jobs.launch(task, name=job_name)
-            sky.stream_and_get(request_id)
+            # Both sky.jobs.launch and sky.stream_and_get are blocking calls.
+            # Running them directly on the event loop freezes it (defeating any
+            # enclosing wait_for) and makes cancellation impossible, so offload
+            # them to threads. stream_and_get blocks in an OS thread while the
+            # controller provisions, so a CancelledError delivered to this task
+            # would be deferred until it returns. Shield the future so the outer
+            # await observes the cancel *immediately* while the thread keeps
+            # running, letting us abort the request server-side (mirrors the
+            # unmanaged launcher's _provision_with_retry).
+            request_id = await asyncio.to_thread(sky.jobs.launch, task, name=job_name)
+            stream_fut = asyncio.ensure_future(
+                asyncio.to_thread(sky.stream_and_get, request_id)
+            )
+            try:
+                await asyncio.shield(stream_fut)
+            except asyncio.CancelledError:
+                await self._abort_managed_launch(request_id, job_name, stream_fut)
+                raise
 
             self._job_names[launch_id] = job_name
             logger.info(
@@ -261,6 +278,66 @@ class Skypilot_managed(Environment):
             raise
         finally:
             self._release_monitors(launch_id)
+
+    async def _abort_managed_launch(
+        self: Self,
+        request_id: Any,
+        job_name: str,
+        stream_fut: "asyncio.Future",
+    ) -> None:
+        """Abort an in-flight managed-job launch after cancellation.
+
+        Called when the task is cancelled while blocked in
+        ``sky.stream_and_get``. Aborts the launch request server-side (which
+        unblocks the shielded thread), drains that future, then cancels the
+        managed job by name so a job the controller already accepted does not
+        keep running. ``self._job_names`` is not populated until the launch
+        returns, so ``cleanup_skypilot_managed`` cannot find the job on the
+        cancel path — we cancel by the deterministic ``job_name`` here instead.
+
+        The current task is already flagged for cancellation, so every ``await``
+        here would re-raise ``CancelledError`` immediately. We temporarily clear
+        the cancellation with ``Task.uncancel()`` (mirroring the idiom in
+        ``skypilot.py`` / ``build/run.py``) so the cleanup awaits can block
+        normally, then re-arm it in the ``finally`` so the ``CancelledError``
+        keeps propagating.
+
+        Args:
+            request_id: The id returned by ``sky.jobs.launch``, passed to
+                ``sky.api_cancel`` to abort the request server-side.
+            job_name: Deterministic managed-job name to cancel.
+            stream_fut: The shielded ``sky.stream_and_get`` future to drain once
+                the request has been aborted.
+        """
+        current = asyncio.current_task()
+        cancels = current.cancelling() if current else 0
+        for _ in range(cancels):
+            current.uncancel()  # type: ignore[union-attr]
+        try:
+            logger.info(
+                "Cancellation requested; aborting managed job launch %s (%s)",
+                request_id,
+                job_name,
+            )
+            try:
+                abort_id = await asyncio.to_thread(sky.api_cancel, request_id)
+                await asyncio.to_thread(sky.get, abort_id)
+            except Exception as e:
+                logger.warning("api_cancel for %s failed: %s", request_id, e)
+            # Drain the now-unblocked stream_and_get thread; it may finish or
+            # raise (aborted/failed) — either is fine, we only want it retired.
+            with contextlib.suppress(BaseException):
+                await stream_fut
+            # Cancel the managed job by name in case the controller already
+            # accepted it before the launch request was aborted.
+            try:
+                cancel_id = await asyncio.to_thread(sky.jobs.cancel, name=job_name)
+                await asyncio.to_thread(sky.get, cancel_id)
+            except Exception as e:
+                logger.warning("jobs.cancel for %s failed: %s", job_name, e)
+        finally:
+            if cancels > 0 and current:
+                current.cancel()
 
     async def monitor_skypilot_managed_monitor(
         self: Self,

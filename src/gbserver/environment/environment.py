@@ -983,6 +983,19 @@ class Environment(ABC):
         TaskGroup) so that it survives cancellation of the caller's scope.
         This ensures destructive cleanup (e.g. sky.down) actually runs during
         build cancellation.
+
+        IDEMPOTENCY CONTRACT: every concrete ``cleanup_*`` implementation MUST
+        be idempotent and must tolerate a resource that was never created or is
+        already gone. Build cancellation now propagates promptly (see
+        ``BuildRun._cancel_inflight_run_tasks``), so a cleanup can fire *before*
+        the matching launch has recorded its backing resource, *during*
+        provisioning, or *after* the resource is already torn down. Treat
+        "resource does not exist" as success — do NOT raise or retry-storm on
+        it. Examples: k8s treats helm's "release: not found" as done rather than
+        retrying at backoff; SkyPilot cancels by a deterministic name because
+        its launch_id->resource map is only populated after provisioning
+        returns. When the launch_id->resource bookkeeping may be empty on the
+        cancel path, tear down by the deterministic resource name instead.
         """
         assert launch_type
         assert launch_id
@@ -1137,7 +1150,16 @@ class Environment(ABC):
         self.__teardown_started_events.pop(setup_id, None)
 
     def teardown(self: Self, type: str, setup_id: str, **kwargs) -> Task:
-        """Teardown the setup from the environment."""
+        """Teardown the setup from the environment.
+
+        IDEMPOTENCY CONTRACT: every concrete ``teardown_*`` implementation MUST
+        be idempotent and must tolerate a setup that was never fully created or
+        is already gone. Because build cancellation now propagates promptly, a
+        teardown can run after a setup was only partially provisioned (or after
+        a cleanup already removed the resource). Treat "resource does not exist"
+        as success — do NOT raise or retry-storm on it. See the ``cleanup``
+        docstring above for the same contract on the per-launch path.
+        """
 
         async def teardown_helper():
             logger.debug("Sync waiting on setup done")

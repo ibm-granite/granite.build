@@ -7,6 +7,7 @@ require it unless a Skypilot environment is actually configured.
 """
 
 import asyncio
+import contextlib
 import glob
 import os
 import shlex
@@ -1273,7 +1274,22 @@ class Skypilot(Environment):
                         cluster_name=cluster_name,
                         idle_minutes_to_autostop=autostop,
                     )
-                    return await asyncio.to_thread(sky.stream_and_get, request_id)
+                    # sky.stream_and_get blocks in an OS thread during
+                    # provisioning, so a CancelledError delivered to this task
+                    # is deferred until it returns (2-5 min). Shield the future
+                    # so the outer await observes the cancel *immediately* while
+                    # the thread keeps running, letting us abort the SkyPilot
+                    # request server-side rather than waiting out provisioning.
+                    stream_fut = asyncio.ensure_future(
+                        asyncio.to_thread(sky.stream_and_get, request_id)
+                    )
+                    try:
+                        return await asyncio.shield(stream_fut)
+                    except asyncio.CancelledError:
+                        await self._abort_provision(
+                            request_id, cluster_name, stream_fut
+                        )
+                        raise
                 except Exception as e:
                     # Clear the partial INIT/FAILED cluster record before the
                     # next attempt so the relaunch doesn't reuse the stale
@@ -1292,6 +1308,58 @@ class Skypilot(Environment):
         # Unreachable: AsyncRetrying with reraise=True either returns from the
         # `return` above or raises; this satisfies the type checker.
         raise AssertionError("unreachable: _provision_with_retry exited loop")
+
+    async def _abort_provision(
+        self: Self,
+        request_id: Any,
+        cluster_name: str,
+        stream_fut: "asyncio.Future",
+    ) -> None:
+        """Abort an in-flight SkyPilot provisioning request after cancellation.
+
+        Called when the task is cancelled while blocked in
+        ``sky.stream_and_get``. Tells the SkyPilot API server to abort the
+        request (unblocking the shielded thread), drains that future, then tears
+        down any partial cluster so the cancel does not leak resources.
+
+        The current task is already flagged for cancellation, so every ``await``
+        here would re-raise ``CancelledError`` immediately. We temporarily clear
+        the cancellation with ``Task.uncancel()`` (mirroring the idiom in
+        ``build/run.py``) so the cleanup awaits can block normally, then re-arm
+        it in the ``finally`` so the ``CancelledError`` keeps propagating.
+
+        Args:
+            request_id: The id returned by ``sky.launch``, passed to
+                ``sky.api_cancel`` to abort the request server-side.
+            cluster_name: Deterministic cluster name to tear down. The
+                ``self._cluster_names`` bookkeeping is not populated until
+                provisioning returns, so we tear down by name here.
+            stream_fut: The shielded ``sky.stream_and_get`` future to drain once
+                the request has been aborted.
+        """
+        current = asyncio.current_task()
+        cancels = current.cancelling() if current else 0
+        for _ in range(cancels):
+            current.uncancel()  # type: ignore[union-attr]
+        try:
+            logger.info(
+                "Cancellation requested; aborting SkyPilot request %s for %s",
+                request_id,
+                cluster_name,
+            )
+            try:
+                abort_id = await asyncio.to_thread(sky.api_cancel, request_id)
+                await asyncio.to_thread(sky.get, abort_id)
+            except Exception as e:
+                logger.warning("api_cancel for %s failed: %s", request_id, e)
+            # Drain the now-unblocked stream_and_get thread; it may finish or
+            # raise (aborted/failed) — either is fine, we only want it retired.
+            with contextlib.suppress(BaseException):
+                await stream_fut
+            await self._teardown(cluster_name)
+        finally:
+            if cancels > 0 and current:
+                current.cancel()
 
     async def monitor_skypilot_monitor(
         self: Self,

@@ -696,9 +696,44 @@ class BuildRun(Run):
         logger.info("BuildRun._cleanup start")
         self_entity = self.entity
         assert isinstance(self_entity, Build)
+        # On cancellation, abort any still-running target/step run tasks before
+        # tearing down. They are created detached (asyncio.create_task) so
+        # build_run.cancel() — which cancels only the BuildRun task — never
+        # reaches them; without this they run their environment launch (e.g.
+        # SkyPilot provisioning) to completion, and target.teardown() blocks on
+        # the launch-done barrier for the full provisioning time. On the success
+        # path these tasks are already done, so this is a no-op.
+        await self._cancel_inflight_run_tasks()
         teardown_tasks: set[Task] = set()
         for target in self_entity.targets.values():
             teardown_tasks.add(asyncio.create_task(target.teardown()))
         if len(teardown_tasks) > 0:
             await asyncio.wait(teardown_tasks)
         logger.info("BuildRun._cleanup end")
+
+    async def _cancel_inflight_run_tasks(self: Self) -> None:
+        """Cancel and drain any still-running target/step run tasks.
+
+        The per-target/step run tasks are created detached (``asyncio.create_task``
+        in ``__dispatch_target``/``_run_targets_of_build``), so cancelling the
+        BuildRun task does not propagate to them. During a build cancellation this
+        leaves them blocked in the environment launch (e.g. an uninterruptible
+        ``sky.stream_and_get`` provisioning call). Cancelling them here propagates
+        ``CancelledError`` down to that launch so it aborts promptly (SkyPilot
+        request api_cancel + partial-cluster teardown) instead of provisioning a
+        cluster only to tear it down.
+
+        Awaiting the cancelled tasks lets each run's own cleanup (e.g. ``sky.down``)
+        complete before the build finishes, so clusters are not leaked. Uses
+        ``return_exceptions=True`` so the expected ``CancelledError``/``RunFailed``
+        results do not mask each other.
+        """
+        inflight = [t for t in self.tasks if not t.done()]
+        if not inflight:
+            return
+        logger.info(
+            "BuildRun._cleanup cancelling %d in-flight run task(s)", len(inflight)
+        )
+        for t in inflight:
+            t.cancel()
+        await asyncio.gather(*inflight, return_exceptions=True)
