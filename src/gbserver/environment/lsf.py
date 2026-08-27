@@ -77,6 +77,7 @@ from gbserver.utils.launch import (
     launch_command_and_retry_or_raise_errors,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.redaction import REDACTED, SENSITIVE_KEY_RE, scrub_url_credentials
 from gbserver.utils.ssh_keys import write_private_key_file
 from gbserver.utils.ssh_tunnel import SshTunnel
 from gbserver.utils.utils import cmd_safe_join, get_uuid, short_alphanumeric_lower_hash
@@ -413,23 +414,32 @@ class Lsf(Environment):
         """
         Build ``[KEY=val ...] /path/jobsub.sh`` as a remote command string.
 
+        The redacted variant masks by *env-var name* (via
+        :data:`~gbserver.utils.redaction.SENSITIVE_KEY_RE`) rather than by matching
+        the value text. Value-substring matching was fragile: an empty-string value
+        caused ``str.replace("", ...)`` to splice the placeholder between every
+        character of the command, and an empty (or short) value could also shatter a
+        genuinely secret value so it survived unmasked. Masking by name sidesteps both.
+        A surviving value still has any embedded URL credentials scrubbed.
+
         Returns:
-            Tuple of (command_str, redacted_command_str) where secret values
-            in env_vars are replaced with ``<redacted>`` in the redacted version.
+            Tuple of (command_str, redacted_command_str) where the value of any
+            secret-looking env var is replaced with ``<redacted>`` in the redacted
+            version.
         """
         parts: List[str] = []
-        to_redact: set[str] = set()
+        redacted_parts: List[str] = []
         if env_vars:
             logger.info("injecting env_vars: %s", env_vars.keys())
             for k, v in env_vars.items():
                 parts.append(f"{k}={v}")
-                to_redact.add(str(v))
+                if isinstance(k, str) and SENSITIVE_KEY_RE.search(k):
+                    redacted_parts.append(f"{k}={REDACTED}")
+                else:
+                    redacted_parts.append(f"{k}={scrub_url_credentials(str(v))}")
         parts.append(str(jobsub_path))
-        cmd = " ".join(parts)
-        redacted = cmd
-        for v in to_redact:
-            redacted = redacted.replace(v, "'<redacted>'")
-        return cmd, redacted
+        redacted_parts.append(str(jobsub_path))
+        return " ".join(parts), " ".join(redacted_parts)
 
     def _get_local_bsub_command(
         self: Self,
