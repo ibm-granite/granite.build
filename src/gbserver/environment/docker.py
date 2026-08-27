@@ -400,6 +400,11 @@ class Docker(Environment):
         vars < the standard cross-environment set from ``super()`` (GBTEST_
         test-control vars + e.g. GB_BUILD_ID), which is authoritative.
 
+        The built-in launcher vars are standardized on the ``GB_`` prefix
+        (``GB_DOCKER_*``): ``_add_gb_aliases`` mirrors each ``LLMB_DOCKER_*``
+        onto a ``GB_DOCKER_*`` twin as the final step, keeping the
+        ``LLMB_DOCKER_*`` names for backwards compatibility.
+
         :param run_metadata: launch run_metadata, forwarded to ``super()``.
         :param launcher_config: the step.yaml launcher config (its ``env``).
         :param docker_config: ``config.docker`` (its ``env``).
@@ -416,7 +421,8 @@ class Docker(Environment):
         env["LLMB_DOCKER_LAUNCH_ID"] = launch_id
         env["LLMB_DOCKER_CONTAINER_NAME"] = container_name
         env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        return env
+        # Mirror LLMB_DOCKER_* onto GB_DOCKER_* twins (GB_ is the standard prefix).
+        return self._add_gb_aliases(env)
 
     async def launch_docker(
         self: Self,

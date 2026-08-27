@@ -124,12 +124,20 @@ class TestBashOverride:
         assert env["LLMB_BASH_ASSET_DIR"] == "/assets"
         assert env["LLMB_BASH_OUTPUT_DIR"] == "/out"
         assert "LLMB_BASH_PYTHON_DIR" in env
+        # Each LLMB_BASH_* launcher var is mirrored onto a GB_BASH_* twin
+        # (GB_ is the standard prefix; LLMB_ retained for compatibility).
+        assert env["GB_BASH_LAUNCH_ID"] == "lid"
+        assert env["GB_BASH_ASSET_DIR"] == "/assets"
+        assert env["GB_BASH_OUTPUT_DIR"] == "/out"
+        assert "GB_BASH_PYTHON_DIR" in env
         # standard var wins over the conflicting launcher env value
         assert env["GB_BUILD_ID"] == "real-build"
 
     def test_output_dir_absent_when_not_provided(self):
         env = self._bash().get_launch_env_vars(run_metadata=RUN_META, launch_id="lid")
+        # Absent under both the legacy and standardized prefixes.
         assert "LLMB_BASH_OUTPUT_DIR" not in env
+        assert "GB_BASH_OUTPUT_DIR" not in env
 
 
 class TestDockerOverride:
@@ -150,6 +158,9 @@ class TestDockerOverride:
         )
         assert env["LLMB_DOCKER_LAUNCH_ID"] == "lid"
         assert env["LLMB_DOCKER_CONTAINER_NAME"] == "cname"
+        # GB_DOCKER_* twins mirror the legacy LLMB_DOCKER_* launcher vars.
+        assert env["GB_DOCKER_LAUNCH_ID"] == "lid"
+        assert env["GB_DOCKER_CONTAINER_NAME"] == "cname"
         # Docker gains GB_BUILD_ID (previously unset), authoritative
         assert env["GB_BUILD_ID"] == "real-build"
 
@@ -182,6 +193,9 @@ class TestRunpodOverride:
         )
         assert env["LLMB_RUNPOD_LAUNCH_ID"] == "lid"
         assert env["LLMB_RUNPOD_POD_NAME"] == "pod"
+        # GB_RUNPOD_* twins mirror the legacy LLMB_RUNPOD_* launcher vars.
+        assert env["GB_RUNPOD_LAUNCH_ID"] == "lid"
+        assert env["GB_RUNPOD_POD_NAME"] == "pod"
         assert env["GB_BUILD_ID"] == "real-build"
 
 
@@ -278,3 +292,31 @@ class TestK8sOverride:
         env = self._k8s().get_launch_env_vars(run_metadata=RUN_META)
         assert env["GB_BUILD_ID"] == "real-build"
         assert env["GBTEST_MOCKED_HF_OPS"] == "1"
+
+
+class TestAddGbAliases:
+    """Direct tests for the shared ``Environment._add_gb_aliases`` helper."""
+
+    def test_mirrors_llmb_vars_to_gb_twins(self):
+        env = {"LLMB_BASH_LAUNCH_ID": "lid", "LLMB_BASH_ASSET_DIR": "/a"}
+        result = Environment._add_gb_aliases(env)
+        # Returns the same dict, mutated in place.
+        assert result is env
+        # Each LLMB_ var gains a same-value GB_ twin; the LLMB_ name stays.
+        assert env["GB_BASH_LAUNCH_ID"] == "lid"
+        assert env["GB_BASH_ASSET_DIR"] == "/a"
+        assert env["LLMB_BASH_LAUNCH_ID"] == "lid"
+        assert env["LLMB_BASH_ASSET_DIR"] == "/a"
+
+    def test_does_not_overwrite_existing_gb_key(self):
+        # A GB_ twin that is already present (e.g. the authoritative standard
+        # set) must win over the LLMB_ value.
+        env = {"LLMB_BUILD_ID": "from-llmb", "GB_BUILD_ID": "authoritative"}
+        Environment._add_gb_aliases(env)
+        assert env["GB_BUILD_ID"] == "authoritative"
+
+    def test_leaves_non_llmb_vars_untouched(self):
+        env = {"GB_SKYPILOT_LAUNCH_ID": "lid", "HF_TOKEN": "tok"}
+        Environment._add_gb_aliases(env)
+        # No LLMB_ keys -> no new keys added.
+        assert env == {"GB_SKYPILOT_LAUNCH_ID": "lid", "HF_TOKEN": "tok"}

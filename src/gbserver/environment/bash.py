@@ -98,6 +98,11 @@ class Bash(Environment):
         HF-op mocking reaches the step — and it needs ``LLMB_BASH_PYTHON_DIR``
         to find a python.
 
+        The built-in launcher vars are standardized on the ``GB_`` prefix
+        (``GB_BASH_*``): ``_add_gb_aliases`` mirrors each ``LLMB_BASH_*`` onto a
+        ``GB_BASH_*`` twin as the final step, keeping the ``LLMB_BASH_*`` names
+        for backwards compatibility.
+
         :param run_metadata: launch run_metadata, forwarded to ``super()`` for
             the standard vars.
         :param launcher_config: the step.yaml launcher config (its ``env``).
@@ -122,7 +127,8 @@ class Bash(Environment):
             env["LLMB_BASH_OUTPUT_DIR"] = str(final_asset_output_dir)
         # Standard cross-environment vars (e.g. GB_BUILD_ID) win over config.
         env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        return env
+        # Mirror LLMB_BASH_* onto GB_BASH_* twins (GB_ is the standard prefix).
+        return self._add_gb_aliases(env)
 
     async def launch_nohup(
         self: Self,

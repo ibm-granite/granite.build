@@ -142,6 +142,11 @@ class Runpod(Environment):
         e.g. GB_BUILD_ID), which is
         authoritative.
 
+        The built-in launcher vars are standardized on the ``GB_`` prefix
+        (``GB_RUNPOD_*``): ``_add_gb_aliases`` mirrors each ``LLMB_RUNPOD_*``
+        onto a ``GB_RUNPOD_*`` twin as the final step, keeping the
+        ``LLMB_RUNPOD_*`` names for backwards compatibility.
+
         :param run_metadata: launch run_metadata, forwarded to ``super()``.
         :param environment_config: the environment config (its ``env``).
         :param launcher_config: the step.yaml launcher config (its ``env``).
@@ -156,7 +161,8 @@ class Runpod(Environment):
         env["LLMB_RUNPOD_LAUNCH_ID"] = launch_id
         env["LLMB_RUNPOD_POD_NAME"] = pod_name
         env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        return env
+        # Mirror LLMB_RUNPOD_* onto GB_RUNPOD_* twins (GB_ is the standard prefix).
+        return self._add_gb_aliases(env)
 
     async def launch_runpod(
         self: Self,

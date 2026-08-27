@@ -935,7 +935,10 @@ class Environment(ABC):
         Subclasses OVERRIDE this to build their full env dict (config env,
         secrets, launcher envs, LLMB_*/GB_* vars) and then merge the result of
         ``super().get_launch_env_vars(...)`` LAST, so this standard set wins over
-        any config/secret/launcher value of the same name.
+        any config/secret/launcher value of the same name. Overrides that inject
+        legacy ``LLMB_``-prefixed launcher vars additionally call
+        ``_add_gb_aliases`` as their final step to mirror each onto a ``GB_``
+        twin (the standardized prefix) while keeping the ``LLMB_`` name.
 
         :param run_metadata: the launch's run_metadata dict; the source of the
             run_metadata-derived standard values. May be None/empty, in which
@@ -953,6 +956,28 @@ class Environment(ABC):
         for env_name, meta_key in STANDARD_STEP_ENV_FROM_RUN_METADATA.items():
             if rm.get(meta_key):
                 env[env_name] = str(rm[meta_key])
+        return env
+
+    @staticmethod
+    def _add_gb_aliases(env: Dict[str, str]) -> Dict[str, str]:
+        """Add a ``GB_``-prefixed twin for every ``LLMB_``-prefixed var.
+
+        Launcher-injected env vars are standardized on the ``GB_`` prefix, but
+        the legacy ``LLMB_`` names are kept for backwards compatibility with
+        existing/external step implementations that read them. Subclass
+        ``get_launch_env_vars`` overrides call this as their final step so every
+        ``LLMB_<X>`` they set gains a ``GB_<X>`` twin with the same value.
+
+        Uses ``setdefault`` so an already-present ``GB_`` key is never
+        overwritten — the authoritative standard set (e.g. ``GB_BUILD_ID`` from
+        ``STANDARD_STEP_ENV_FROM_RUN_METADATA``) always wins over a twin.
+
+        :param env: the assembled launch-env dict; mutated in place.
+        :returns: the same dict, with ``GB_`` twins added.
+        """
+        for name, value in list(env.items()):
+            if name.startswith("LLMB_"):
+                env.setdefault("GB_" + name[len("LLMB_") :], value)
         return env
 
     def launch(

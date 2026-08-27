@@ -127,7 +127,10 @@ class Skypilot_managed(Environment):
         if run_metadata.get("targetrun_id"):
             env["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
         env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        return env
+        # Uniform with the other environments; a no-op here since skypilot's
+        # launcher vars are already GB_-prefixed (GB_SKYPILOT_*), so there are no
+        # LLMB_ names to mirror.
+        return self._add_gb_aliases(env)
 
     async def launch_skypilot_managed(
         self: Self,

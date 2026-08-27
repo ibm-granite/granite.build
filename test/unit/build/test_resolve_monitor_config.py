@@ -45,7 +45,9 @@ _BASE = {
         "event_configs": [
             {
                 "event_type": "newartifact_in_environment_event",
-                "line_regex": "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+",
+                # Dual-accept form: markers are standardized on GB_, with the
+                # legacy LLMB_ prefix still recognized for compatibility.
+                "line_regex": "(?:GB_|LLMB_)ARTIFACT_ID:.+(?:GB_|LLMB_)ARTIFACT_PATH:.+",
             }
         ],
     },

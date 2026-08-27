@@ -660,7 +660,10 @@ class Lsf(Environment):
         env: Dict[str, str] = {}
         self._merge_secret_env_vars(env, config, setup_config)
         env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        return env
+        # Uniform with the other environments; a no-op here since the LSF env
+        # dict carries no LLMB_-prefixed launcher vars (those are derived in the
+        # jobsub shell script, not this dict).
+        return self._add_gb_aliases(env)
 
     async def launch_bsub(
         self: Self,

@@ -149,7 +149,7 @@ environment_configs:
           setup: |                # Optional. Run once at cluster bring-up (cached across reuse).
             pip install foo bar
           run: |                  # Required. The actual job each launch. CWD is the per-run workdir
-            echo "LLMB_ARTIFACT_ID:my_out LLMB_ARTIFACT_PATH:/tmp/out.json"   # (or $HOME).
+            echo "GB_ARTIFACT_ID:my_out GB_ARTIFACT_PATH:/tmp/out.json"   # (or $HOME).
           envs:                   # Optional. Extra env vars. Merged AFTER env-level secrets and
             FOO: bar              # BEFORE config.launcher_config.envs. GB_* vars are auto-injected.
           file_mounts:            # Optional. Two forms (see "file_mounts" below):
@@ -166,7 +166,7 @@ environment_configs:
                                                # Ignored on slurm/lsf (they don't support autostop).
     monitors:
       skypilot_monitor:
-        ref: space://monitors/skypilot   # shared monitor (LLMB_ARTIFACT_* rules, 300s default poll)
+        ref: space://monitors/skypilot   # shared monitor (GB_ARTIFACT_* rules, 300s default poll)
         config:
           # Optional overlay. Templated so a build.yaml step `config:` can override it.
           poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
@@ -213,9 +213,10 @@ bodies run under `set -eu` (see **Failure semantics** below).
   variables with `${VAR:-}` and append `|| true` where a non-zero exit is acceptable. `pipefail` is
   *not* enabled by default (it would change pipeline semantics for every step); add `set -o pipefail`
   yourself if a failing command *within a pipeline* should fail the step.
-- **Artifacts:** emit a line matching `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>` (or
-  `... LLMB_ARTIFACT_STATE:<value>` for an in-memory value) and the monitor registers it as the step's
-  output binding. The marker need not be at column 0 — retrieved SkyPilot logs prefix stdout lines.
+- **Artifacts:** emit a line matching `GB_ARTIFACT_ID:<id> GB_ARTIFACT_PATH:<path>` (or
+  `... GB_ARTIFACT_STATE:<value>` for an in-memory value; the legacy `LLMB_` prefix is still accepted)
+  and the monitor registers it as the step's output binding. The marker need not be at column 0 —
+  retrieved SkyPilot logs prefix stdout lines.
 - **Working directory:** `setup` and `run` always start in the **same** directory, so a relative path
   one phase writes (e.g. a repo `setup` clones) is read at the same place by the other. When the env
   defines `shared_workdir`, that directory is a per-target-run workdir, so relative output paths are
@@ -316,8 +317,8 @@ Added on top of (and overriding) anything in `envs`:
 
 ### `skypilot_monitor` config
 
-The monitor polls `sky.job_status()` and applies `event_configs` (the `LLMB_ARTIFACT_*` rules) to the
-job log. Two config keys shape its behavior:
+The monitor polls `sky.job_status()` and applies `event_configs` (the `GB_ARTIFACT_*` rules, which
+dual-accept the legacy `LLMB_` prefix) to the job log. Two config keys shape its behavior:
 
 - **`poll_interval_seconds`** — status-poll cadence. **This gates completion detection:** the monitor
   only notices a job finished on its next poll (it sleeps the interval between polls; success does not
@@ -344,7 +345,7 @@ Each pull resumes past the lines already parsed, so events are not re-emitted. A
 `log_retrieval`: `interval_seconds` (periodic/startup cadence) and `startup_window_seconds`.
 
 **Implications for artifact timing:** in the default `on_completion` mode, artifact lines
-(`LLMB_ARTIFACT_ID:...`) are captured reliably even if they scrolled past a poll interval (download is
+(`GB_ARTIFACT_ID:...`) are captured reliably even if they scrolled past a poll interval (download is
 offline, not tail-based), but they are not **registered until the job completes** — a long step's
 artifact events are batched at the end. Choose `periodic`/`stream` when a downstream step must consume
 an artifact mid-run.

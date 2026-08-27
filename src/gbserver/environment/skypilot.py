@@ -893,7 +893,10 @@ class Skypilot(Environment):
         if hf_token and "HF_TOKEN" not in env:
             env["HF_TOKEN"] = hf_token
         env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        return env
+        # Uniform with the other environments; a no-op here since skypilot's
+        # launcher vars are already GB_-prefixed (GB_SKYPILOT_*), so there are no
+        # LLMB_ names to mirror.
+        return self._add_gb_aliases(env)
 
     async def launch_skypilot(
         self: Self,
