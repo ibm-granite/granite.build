@@ -116,6 +116,10 @@ class _ConsoleStreamHandler(logging.StreamHandler):
     """
 
     def __init__(self):
+        # Intentionally skip StreamHandler.__init__ (which snapshots a stream
+        # into self.stream) and init only the Handler base, mirroring the stdlib
+        # logging._StderrHandler; the stream property below stays live.
+        # pylint: disable=super-init-not-called,non-parent-init-called
         logging.Handler.__init__(self)
 
     @property
