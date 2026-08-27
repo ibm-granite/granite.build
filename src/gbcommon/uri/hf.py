@@ -70,7 +70,9 @@ DEFAULT_REVISION = "main"
 # on HuggingFace's ``.cache/huggingface/download/*.incomplete`` files. pull()
 # serializes the download behind a cross-process FileLock keyed to the destination,
 # so pulls of the same repo/revision run one at a time while different destinations
-# proceed in parallel.
+# proceed in parallel. The lock file lives beside the destination on the shared
+# cache filesystem, so it relies on that mount honoring advisory locks (true for
+# local/most POSIX filesystems; some NFS configurations may not).
 HFPULL_LOCK_TIMEOUT_ENV = "GB_HFPULL_LOCK_TIMEOUT"
 DEFAULT_HFPULL_LOCK_TIMEOUT_S = 3600.0
 
@@ -658,6 +660,9 @@ class HfURI(URI):
         if is_hf_mocked(HF_OP_PULL):
             return True
         try:
+            # Normalize so the lock-path derivation below tolerates a str dest,
+            # matching the pre-lock behavior (downloads only ever used str(dest)).
+            dest = Path(dest)
             p = self._parts()
             repo_id = f"{p.owner}/{p.repo}"
             endpoint = f"https://{p.host}" if p.host != HF_HOST else None

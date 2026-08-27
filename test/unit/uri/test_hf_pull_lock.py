@@ -31,7 +31,13 @@ import pytest
 from filelock import FileLock, Timeout
 
 from gbcommon.types.testing import ENV_VAR_GBTEST_MOCKED_HF_OPS
-from gbcommon.uri.hf import HfType, HfURI
+from gbcommon.uri.hf import (
+    DEFAULT_HFPULL_LOCK_TIMEOUT_S,
+    HFPULL_LOCK_TIMEOUT_ENV,
+    HfType,
+    HfURI,
+    _hfpull_lock_timeout,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -115,3 +121,35 @@ def test_pull_returns_false_when_lock_cannot_be_acquired(tmp_path, monkeypatch):
 
     assert result is False
     mock_dl.assert_not_called()
+
+
+def test_different_dests_do_not_contend(tmp_path, monkeypatch):
+    """A lock held for one dest must not block a pull into a different dest."""
+    other = tmp_path / "org" / "repo-a" / "h1"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    held = FileLock(str(_expected_lock(other)))
+    held.acquire()
+    monkeypatch.setenv("GB_HFPULL_LOCK_TIMEOUT", "0.5")
+
+    dest = tmp_path / "org" / "repo-b" / "h2"
+    uri = HfURI.from_parts(owner="org", repo="repo-b", hf_type=HfType.MODEL)
+    try:
+        with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
+            result = uri.pull(dest)
+    finally:
+        held.release()
+
+    assert result is True
+    mock_dl.assert_called_once()
+
+
+def test_lock_timeout_reads_env_with_default(monkeypatch):
+    """_hfpull_lock_timeout parses GB_HFPULL_LOCK_TIMEOUT, falling back to default."""
+    monkeypatch.delenv(HFPULL_LOCK_TIMEOUT_ENV, raising=False)
+    assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
+
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "12.5")
+    assert _hfpull_lock_timeout() == 12.5
+
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "not-a-number")
+    assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
