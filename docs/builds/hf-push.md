@@ -203,10 +203,15 @@ outputs:
 ```
 
 Combining it with an explicit `resource_group_id`/`resource_group_name` **in the
-same push config** is contradictory and raises `ValueError`. Setting it on an
-output whose resource group is only *inherited* — from the environment-level
-`push` block — is not: the per-output opt-out wins, which is what makes the
-opt-out usable when `environment.yaml` supplies a group as the level-3 fallback.
+same push config** is contradictory and raises `ValueError`. Across levels the
+higher one wins, per the priority table above:
+
+| `environment.yaml` push | output `store_push` | Result |
+|---|---|---|
+| `resource_group_name: …` | `use_resource_group: false` | No resource group — the per-output opt-out wins, which is what makes it usable when the environment supplies a group as the level-3 fallback. |
+| `use_resource_group: false` | `resource_group_id: …` | That id — an output-level pin is priority 1, so it re-enables resource groups over an inherited opt-out. |
+| `use_resource_group: false` | `use_resource_group: true` | Resource group resolved from the space. |
+| `use_resource_group: false` | *(nothing)* | No resource group. |
 
 ### Errors
 

@@ -174,8 +174,13 @@ def merge_hf_push_config(
     Returns:
         The merged ``hf`` config dict (empty when neither source supplies one).
     """
+    return _merge_hf_levels(_hf_push_config_levels(storepush_config, output_config))
+
+
+def _merge_hf_levels(levels: Tuple[dict, dict]) -> dict:
+    """Merge already-parsed ``hf`` config levels, lowest priority first."""
     merged: dict = {}
-    for level in _hf_push_config_levels(storepush_config, output_config):
+    for level in levels:
         # A yaml null means "not set here", so it must not erase a lower level.
         merged.update({k: v for k, v in level.items() if v is not None})
     return merged
@@ -204,6 +209,11 @@ def _hf_push_config_levels(
         else {}
     )
     return env_level, output_level
+
+
+def _level_pin(level: dict) -> Optional[str]:
+    """Return the resource group pinned at one config level, if any."""
+    return level.get("resource_group_id") or level.get("resource_group_name") or None
 
 
 def _bool_or(value: Optional[object], default: bool) -> bool:
@@ -261,8 +271,9 @@ def resolve_hfpush_resource_group_id(
         ValueError: If a resource group is pinned for a non-Enterprise org, or
             if ``use_resource_group: false`` is combined with a pinned group.
     """
-    env_level, output_level = _hf_push_config_levels(storepush_config, output_config)
-    hf_cfg = merge_hf_push_config(storepush_config, output_config)
+    levels = _hf_push_config_levels(storepush_config, output_config)
+    env_level, output_level = levels
+    hf_cfg = _merge_hf_levels(levels)
     resource_group_id = hf_cfg.get("resource_group_id") or None
     resource_group_name = hf_cfg.get("resource_group_name") or None
     # _bool_or, not .get(key, default): a null is present, so the default would
@@ -287,40 +298,45 @@ def resolve_hfpush_resource_group_id(
         return None, private, hf_cfg
 
     if not use_resource_group:
-        # Only contradictory when the opt-out and the pinned group are written at
-        # the SAME level. A per-output `use_resource_group: false` deliberately
-        # overrides a group inherited from environment.yaml — otherwise an
-        # environment-level default (the documented level-3 fallback) would make
-        # the per-output opt-out impossible to use, and the error would tell the
-        # build author to remove a value they never wrote.
+        # Same-level opt-out plus pin is contradictory; across levels the higher
+        # one wins, per the precedence in docs/builds/hf-push.md.
         for level in (output_level, env_level):
-            if not level.get(USE_RESOURCE_GROUP_KEY, True) and (
-                level.get("resource_group_id") or level.get("resource_group_name")
+            if not _bool_or(level.get(USE_RESOURCE_GROUP_KEY), True) and _level_pin(
+                level
             ):
-                same_level_pin = level.get("resource_group_id") or level.get(
-                    "resource_group_name"
-                )
                 raise ValueError(
                     f"'{USE_RESOURCE_GROUP_KEY}: false' cannot be combined with "
-                    f"an explicit resource group ('{same_level_pin}') in the same "
-                    f"push config for organization '{organization}'. Remove one "
-                    "of them."
+                    f"an explicit resource group ('{_level_pin(level)}') in the "
+                    f"same push config for organization '{organization}'. Remove "
+                    "one of them."
                 )
-        if pinned:
+        output_pin = _level_pin(output_level)
+        if output_pin and _bool_or(output_level.get(USE_RESOURCE_GROUP_KEY), True):
+            # build.yaml outranks environment.yaml, so a pin here re-enables
+            # resource groups over an inherited opt-out.
             logger.info(
-                "'%s: false' overrides the inherited resource group '%s' for "
-                "organization '%s'",
+                "output-level resource group '%s' overrides the inherited "
+                "'%s: false' for organization '%s'",
+                output_pin,
                 USE_RESOURCE_GROUP_KEY,
-                pinned,
                 organization,
             )
-        logger.info(
-            "'%s: false' configured for organization '%s'; pushing without a "
-            "resource group",
-            USE_RESOURCE_GROUP_KEY,
-            organization,
-        )
-        return None, private, hf_cfg
+        else:
+            if pinned:
+                logger.info(
+                    "'%s: false' overrides the inherited resource group '%s' for "
+                    "organization '%s'",
+                    USE_RESOURCE_GROUP_KEY,
+                    pinned,
+                    organization,
+                )
+            logger.info(
+                "'%s: false' configured for organization '%s'; pushing without a "
+                "resource group",
+                USE_RESOURCE_GROUP_KEY,
+                organization,
+            )
+            return None, private, hf_cfg
 
     if resource_group_id:
         # A caller-pinned id is used verbatim and never routed through

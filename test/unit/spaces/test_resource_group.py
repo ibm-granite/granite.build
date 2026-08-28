@@ -445,6 +445,85 @@ class TestUseResourceGroupAcrossLevels:
                 ),
             )
 
+    def test_output_pinned_id_overrides_environment_opt_out(self):
+        """An output-level pin is priority 1, so it outranks an inherited opt-out.
+
+        Regression: the opt-out was evaluated off the merged config, so an
+        environment-level `use_resource_group: false` silently discarded an
+        explicit output-level `resource_group_id` — inverting the documented
+        precedence and dropping a pinned group with no error.
+        """
+        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+
+        with patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+        ) as mock_resolve:
+            rg_id, _, _ = resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="ibm-research"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                storepush_config=_storepush_config({"use_resource_group": False}),
+                output_config=_output_config({"resource_group_id": "rg-out"}),
+            )
+
+        assert rg_id == "rg-out"
+        # A pinned id is used verbatim, so the space resolver is never consulted.
+        mock_resolve.assert_not_called()
+
+    def test_output_pinned_name_overrides_environment_opt_out(self):
+        """Same for a pinned name, which does go through the resolver."""
+        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+
+        with patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            return_value="rg-from-name",
+        ) as mock_resolve:
+            rg_id, _, _ = resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="ibm-research"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                storepush_config=_storepush_config({"use_resource_group": False}),
+                output_config=_output_config({"resource_group_name": "team-group"}),
+            )
+
+        assert rg_id == "rg-from-name"
+        assert mock_resolve.call_args.kwargs["resource_group_name"] == "team-group"
+
+    def test_environment_pin_does_not_override_output_opt_out(self):
+        """The reverse: a lower-level pin must not defeat a higher-level opt-out."""
+        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+
+        with patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+        ) as mock_resolve:
+            rg_id, _, _ = resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="ibm-research"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                storepush_config=_storepush_config({"resource_group_id": "rg-env"}),
+                output_config=_output_config({"use_resource_group": False}),
+            )
+
+        assert rg_id is None
+        mock_resolve.assert_not_called()
+
+    def test_opt_out_at_both_levels_still_opts_out(self):
+        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+
+        with patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+        ) as mock_resolve:
+            rg_id, _, _ = resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="ibm-research"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                storepush_config=_storepush_config({"use_resource_group": False}),
+                output_config=_output_config({"use_resource_group": False}),
+            )
+
+        assert rg_id is None
+        mock_resolve.assert_not_called()
+
     def test_environment_opt_out_is_overridable_by_output(self):
         """The reverse direction: an output can turn resource groups back on."""
         with patch(

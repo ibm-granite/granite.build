@@ -2307,8 +2307,8 @@ class K8s(Environment):
             hf_resource_group_id=resource_group_id,
         )
         # Apply remaining hf fields from the merged push config (environment
-        # level, overridden by build.yaml store_push). Resolution-only keys are
-        # stripped so they never reach the step template, and the resolved
+        # level, overridden by build.yaml store_push). use_resource_group is
+        # stripped (it is consumed here, not by the template), and the resolved
         # resource_group_id is re-asserted afterwards so a pinned-but-skipped
         # value cannot be resurrected by the overlay.
         hfpush_config["hf"].update(sanitize_hf_step_overlay(_hf_cfg))
