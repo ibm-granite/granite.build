@@ -136,6 +136,10 @@ function adaptStepRun(raw: Record<string, unknown>): BuildStepRun {
     launcher: typeof launcher === 'string' ? launcher : undefined,
     status_msg: (raw.status_msg as string) || undefined,
     finished_at: (raw.finished_at as string) || undefined,
+    // Runtime metadata the step pushed at execution time (LLMB_STEP_METADATA
+    // hook). Serialized in the status row's JSON blob alongside config; safe to
+    // surface here because /builds/{id}/status is already read-gated.
+    metadata: (raw.metadata as Record<string, unknown>) ?? undefined,
   }
 }
 

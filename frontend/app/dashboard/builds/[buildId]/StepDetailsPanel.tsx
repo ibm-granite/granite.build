@@ -235,6 +235,29 @@ function buildConfigGroups(config: Record<string, unknown>): ConfigGroup[] {
   return groups
 }
 
+/**
+ * The step's runtime metadata as scalar rows. This is StoredStepRun.metadata —
+ * key/values the step pushed at execution time via the LLMB_STEP_METADATA hook
+ * (a resolved git `commit_hash` is the documented example), distinct from the
+ * declared `config`. `commit_hash` is pulled out separately for the Source
+ * block, so it is excluded here to avoid showing it twice.
+ */
+function metadataRows(
+  metadata: Record<string, unknown> | undefined
+): { key: string; value: string }[] {
+  if (!metadata) return []
+  return Object.entries(metadata)
+    .filter(([key]) => key !== 'commit_hash')
+    .filter(([, value]) => isScalar(value))
+    .map(([key, value]) => ({ key: humanizeKey(key), value: String(value) }))
+}
+
+/** The runtime-resolved commit SHA, if the step recorded one. */
+function commitHash(step: BuildStepRun): string | undefined {
+  const value = step.metadata?.commit_hash
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
 /** Row of a definition list; renders `—` for absent values rather than collapsing. */
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -322,6 +345,8 @@ function StepCard({
   const rest = remainingConfig(step.config, extracted?.sourceKey)
   const configGroups = React.useMemo(() => buildConfigGroups(rest), [rest])
   const restKeys = Object.keys(rest)
+  const metaRows = metadataRows(step.metadata)
+  const commit = commitHash(step)
   const message = step.status_msg ? cleanStatusMessage(step.status_msg) : ''
   const [showRaw, setShowRaw] = React.useState(false)
   const [showCommand, setShowCommand] = React.useState(false)
@@ -343,11 +368,13 @@ function StepCard({
           a nested, expandable subsection — the command *is* what was executed,
           so it reads as part of Execution rather than a peer of it. Collapsed by
           default; commands run to many lines and would otherwise push the rest
-          of the card below the fold. */}
+          of the card below the fold. Only shown when a command was actually
+          persisted in config; builtin steps carry no inline command, so the
+          subsection is omitted rather than showing an empty placeholder. */}
       <Section title="Execution">
         <ExecutionSummary step={step} />
 
-        {extracted ? (
+        {extracted && (
           <details
             className={styles.stepSubsection}
             open={showCommand}
@@ -363,13 +390,6 @@ function StepCard({
               <CopyButton value={extracted.command} />
             </div>
           </details>
-        ) : (
-          <div className={styles.stepSubsection}>
-            <div className={styles.stepSubsectionLabel}>Command</div>
-            <p className={styles.stepMuted}>
-              {NOT_RECORDED} — this step declares no inline command
-            </p>
-          </div>
         )}
       </Section>
 
@@ -394,23 +414,33 @@ function StepCard({
         <Field label="Definition URI">
           {step.uri ? <code className={styles.stepCode}>{step.uri}</code> : '—'}
         </Field>
-        <Field label="Container image">
-          {step.image ? (
-            <code className={styles.stepCode}>{step.image}</code>
-          ) : (
-            <span className={styles.stepMuted}>
-              {NOT_RECORDED} — resolved at launch
-            </span>
-          )}
-        </Field>
-        <Field label="Launcher">{step.launcher ?? '—'}</Field>
         <Field label="Step ID">
           {step.uuid ? <code className={styles.stepCode}>{step.uuid}</code> : '—'}
         </Field>
         <Field label="Build ID">
           {buildId ? <code className={styles.stepCode}>{buildId}</code> : '—'}
         </Field>
+        <Field label="Code commit">
+          {commit ? (
+            <code className={styles.stepCode}>{commit}</code>
+          ) : (
+            <span className={styles.stepMuted}>{NOT_RECORDED}</span>
+          )}
+        </Field>
       </Section>
+
+      {/* Runtime key/values the step reported at execution time (commit_hash is
+          pulled up into Metadata above). Persisted in StoredStepRun.metadata and
+          shown nowhere else, so it gets its own block when non-empty. */}
+      {metaRows.length > 0 && (
+        <Section title="Runtime metadata">
+          {metaRows.map((row) => (
+            <Field key={row.key} label={row.key}>
+              <code className={styles.stepCode}>{row.value}</code>
+            </Field>
+          ))}
+        </Section>
+      )}
 
       {/* Only rendered when the message carries something beyond the ids and
           status already shown above — otherwise it was pure duplication. */}
@@ -485,11 +515,6 @@ export default function StepDetailsPanel({
           ) : (
             <span className={styles.stepMuted}>{NOT_RECORDED}</span>
           )}
-        </Field>
-        <Field label="Code commit">
-          <span className={styles.stepMuted}>
-            {NOT_RECORDED} — gbserver does not persist a commit SHA for build sources
-          </span>
         </Field>
       </Section>
     </div>

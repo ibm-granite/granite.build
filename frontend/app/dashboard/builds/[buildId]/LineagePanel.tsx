@@ -593,6 +593,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
                   <IconButton
                     kind="ghost"
                     label="Close"
+                    align="bottom"
                     onClick={() => setStepDetailTarget(null)}
                   >
                     <Close />
