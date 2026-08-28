@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from gbcommon.types.testing import (
     ENV_VAR_GBTEST_MOCK_HF,
+    ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT,
     disable_hf_mocks,
     enable_hf_mocks,
 )
@@ -1069,13 +1070,85 @@ class TestSpaceNameToResourceGroupName:
 
     def test_standalone_uses_write_rg_suffix(self, monkeypatch):
         # STANDALONE test mode targets the configured write resource group
-        # (GB_TEST_STANDALONE_ENVIRONMENT, "STAGING" by default) so test
+        # (GBTEST_STANDALONE_ENVIRONMENT) so test
         # artifacts have a real RG to push to.
         monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STANDALONE")
-        monkeypatch.setattr("gbcommon.uri.hf.GB_TEST_STANDALONE_ENVIRONMENT", "STAGING")
+        monkeypatch.setenv(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, "STAGING")
         assert (
             HfURI.space_name_to_resource_group_name("public")
             == "gbspace-public-staging"
+        )
+
+    @pytest.mark.parametrize("alias", ["standalone", "local", "public"])
+    def test_standalone_space_resolves_to_gbspace_public(self, monkeypatch, alias):
+        """The behavior real standalone users get: "gbspace-public", no suffix.
+
+        Under GB_ENVIRONMENT=STANDALONE the three space names `gbserver
+        standalone --space-dir` registers ("public", "standalone", "local") are
+        one space sharing one resource group, and the group provisioned for it is
+        the production `gbspace-public`. Community and internal users have no
+        access to `gbspace-public-staging` / `-dev`, so resolution must not land
+        on those.
+
+        GBTEST_STANDALONE_ENVIRONMENT is set empty here deliberately. It
+        defaults to STAGING so a test run pushes into a group it owns; clearing
+        it asserts the core derivation independently of that redirection.
+        """
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STANDALONE")
+        monkeypatch.setenv(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, "")
+        assert HfURI.space_name_to_resource_group_name(alias) == "gbspace-public"
+
+    @pytest.mark.parametrize(
+        "redirect,expected",
+        [
+            ("STAGING", "gbspace-public-staging"),
+            ("DEV", "gbspace-public-dev"),
+        ],
+    )
+    def test_standalone_alias_honors_test_redirection(
+        self, monkeypatch, redirect, expected
+    ):
+        """A test run redirects the standalone space to a group it owns.
+
+        GBTEST_STANDALONE_ENVIRONMENT exists so a test run pushes into a
+        non-production group instead of the real one. Alias folding happens first,
+        so "standalone" redirects to that environment's *public* group.
+        """
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STANDALONE")
+        monkeypatch.setenv(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, redirect)
+        assert HfURI.space_name_to_resource_group_name("standalone") == expected
+
+    @pytest.mark.parametrize("alias", ["standalone", "local"])
+    def test_standalone_aliases_fold_onto_public(self, monkeypatch, alias):
+        """ "standalone"/"local" name the same space as "public".
+
+        `gbserver standalone --space-dir` registers all three as rows pointing at
+        one directory, and only "public" has a provisioned HF resource group, so
+        deriving "gbspace-standalone"/"gbspace-local" would name a group that
+        does not exist on the Hub.
+        """
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "PROD")
+        assert HfURI.space_name_to_resource_group_name(alias) == "gbspace-public"
+
+    @pytest.mark.parametrize("alias", ["STANDALONE", "Local", "  local  "])
+    def test_alias_match_is_case_and_whitespace_insensitive(self, monkeypatch, alias):
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "PROD")
+        assert HfURI.space_name_to_resource_group_name(alias) == "gbspace-public"
+
+    def test_alias_folding_still_gets_the_env_suffix(self, monkeypatch):
+        """Folding happens before the suffix, so the two compose."""
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "DEV")
+        assert (
+            HfURI.space_name_to_resource_group_name("standalone")
+            == "gbspace-public-dev"
+        )
+
+    def test_non_alias_space_name_is_not_rewritten(self, monkeypatch):
+        """Only the standalone aliases fold; a real space keeps its own group."""
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "PROD")
+        assert (
+            HfURI.space_name_to_resource_group_name("my-team-space")
+            == "gbspace-my-team-space"
         )
 
     def test_empty_space_name_returns_empty(self, monkeypatch):

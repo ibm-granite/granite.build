@@ -307,9 +307,11 @@ extended-tests-setup:
 	$(MAKE) slurm-setup
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
+# Set GBTEST_STANDALONE_ENVIRONMENT explicitly: it picks the HF resource group.
 .PHONY: extended-tests
 extended-tests: check-image-tag-not-dirty
 	export GB_ENVIRONMENT=STANDALONE &&			\
+	export GBTEST_STANDALONE_ENVIRONMENT=STAGING &&		\
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
@@ -334,9 +336,11 @@ ibm-quick-tests: check_ibm_sps_api_key
 ibm-extended-tests-setup: start-nats
 	$(MAKE) venv
 
+# GBTEST_STANDALONE_ENVIRONMENT is inert at GB_ENVIRONMENT=STAGING; set for parity.
 .PHONY: ibm-extended-tests
 ibm-extended-tests: check_ibm_sps_api_key check-image-tag-not-dirty
 	export GB_ENVIRONMENT=STAGING &&			\
+	export GBTEST_STANDALONE_ENVIRONMENT=STAGING &&		\
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="ibm" 			\
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\

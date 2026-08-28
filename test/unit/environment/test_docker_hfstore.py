@@ -669,3 +669,42 @@ async def test_docker_pushasset_forwards_push_configs(docker_env, tmp_path):
     kwargs = mock_helper.call_args.kwargs
     assert kwargs["storepush_config"] is storepush_config
     assert kwargs["output_config"] is output_config
+
+
+@pytest.mark.asyncio
+async def test_push_asset_hfstore_uses_the_resolved_space_name(tmp_path):
+    """The inline push must forward the space from the space config, not a literal.
+
+    This path used to overwrite the resolved name with a hardcoded "public", so
+    every bash/docker push to an Enterprise org resolved its resource group as if
+    the build lived in the `public` space. The standalone aliases are folded onto
+    "public" inside HfURI.space_name_to_resource_group_name instead, so a real
+    space name now survives.
+    """
+    from gbcommon.uri.uri import URI
+    from gbserver.types.assetstoreconfig import AssetStoreConfig
+
+    src = tmp_path / "model.bin"
+    src.write_bytes(b"weights")
+    store = Hfstore(
+        AssetStoreConfig(
+            base_uri="hf:/", config={"enterprise_organizations": ["ibm-research"]}
+        )
+    )
+    store.resolve_token = lambda uri: "tok"  # type: ignore[method-assign]
+    store.get_secrets = lambda: {"HF_TOKEN": "tok"}  # type: ignore[method-assign]
+
+    uri = HfURI.from_parts(owner="ibm-research", repo="repo", hf_type=HfType.MODEL)
+    with (
+        patch.object(
+            URI, "get_space_config", return_value={"space": {"name": "my-team-space"}}
+        ),
+        patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            return_value="rg-id",
+        ) as mock_resolve,
+        patch.object(HfURI, "push", return_value=True),
+    ):
+        push_asset_hfstore(src=str(src), binding_id="out", uri=uri, assetstore=store)
+
+    assert mock_resolve.call_args.kwargs["space_name"] == "my-team-space"

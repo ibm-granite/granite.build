@@ -35,8 +35,7 @@ from huggingface_hub import (
     snapshot_download,
 )
 
-from gbcommon.types.constants import GB_TEST_STANDALONE_ENVIRONMENT
-from gbcommon.types.testing import is_hf_mocked
+from gbcommon.types.testing import is_hf_mocked, standalone_rg_environment
 from gbcommon.uri.uri import URI
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.constants import GB_ENVIRONMENT
@@ -47,6 +46,11 @@ logger = get_logger(__name__)
 
 # Prefix applied to space names when defining the resource group name.
 _GB_RG_SPACE_NAME_PREFIX = "gbspace-"
+
+# Standalone registers "public", "standalone", and "local" as aliases for one
+# space dir (gbserver/commands/utils.py), but only "public" has a resource group
+# provisioned, so the other two derive from it.
+_GB_RG_SPACE_NAME_ALIASES = {"standalone": "public", "local": "public"}
 HF_HOST = "huggingface.co"
 HF_URI_SCHEME = "hf"
 
@@ -407,14 +411,18 @@ class HfURI(URI):
         """
         if not space_name:
             return ""
-        name = f"{_GB_RG_SPACE_NAME_PREFIX}{space_name}"
+        canonical = _GB_RG_SPACE_NAME_ALIASES.get(
+            space_name.strip().lower(), space_name
+        )
+        name = f"{_GB_RG_SPACE_NAME_PREFIX}{canonical}"
         upper_env = GB_ENVIRONMENT.upper() if GB_ENVIRONMENT else ""
         if upper_env in ("STAGING", "DEV"):
             name = f"{name}-{GB_ENVIRONMENT.lower()}"
-        elif upper_env == "STANDALONE":
-            # STANDALONE test mode targets the configured write resource group
-            # (staging by default) so test artifacts have a real RG to push to.
-            name = f"{name}-{GB_TEST_STANDALONE_ENVIRONMENT.lower()}"
+        elif upper_env == "STANDALONE" and (rg_env := standalone_rg_environment()):
+            # A test run can redirect the standalone group to one it owns; a real
+            # standalone user gets the production group (see
+            # GBTEST_STANDALONE_ENVIRONMENT).
+            name = f"{name}-{rg_env.lower()}"
         logger.debug(
             "Resolved resource group name '%s' from space '%s' (env=%s)",
             name,

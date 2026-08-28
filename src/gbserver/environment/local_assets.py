@@ -163,14 +163,12 @@ def push_asset_hfstore(
     )
 
     # Resolve the space name from the thread-local space config so the repo is
-    # created inside the correct Enterprise resource group automatically.
+    # created inside the correct Enterprise resource group automatically. The
+    # standalone aliases ("standalone", "local") are folded onto "public" by
+    # HfURI.space_name_to_resource_group_name, so this no longer needs to
+    # hardcode a space name to get a resolvable resource group.
     space_config = URI.get_space_config()
     space_name = space_config.get("space", {}).get("name") or None
-
-    # TODO: use the resolved space name above instead of hardcoding "public".
-    # Only *consulted* on the Enterprise path below (a non-Enterprise push never
-    # resolves a resource group), though it is still logged for either.
-    space_name = "public"
 
     # Resource groups exist only in HF Enterprise organizations, and which orgs
     # those are is configured on the asset store (store.yaml

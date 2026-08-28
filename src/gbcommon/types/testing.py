@@ -94,10 +94,33 @@ def disable_failure_simulation() -> None:
     os.environ.pop(ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO, None)
 
 
+# Which environment's HF resource group a STANDALONE run pushes to (e.g.
+# gbspace-public-staging). Defaults to STAGING so test artifacts land in a group
+# the CI token can write; set empty for the production gbspace-public.
+ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT = f"{_GBTEST_PREFIX}STANDALONE_ENVIRONMENT"
+DEFAULT_GBTEST_STANDALONE_ENVIRONMENT = "STAGING"
+
+
+def standalone_rg_environment() -> str:
+    """Return the environment whose HF resource group a STANDALONE run targets.
+
+    Read at call time (not import time) so a test can set/unset the env var
+    without patching.
+
+    Returns:
+        str: ``"STAGING"``/``"DEV"`` when redirection applies, or ``""`` when the
+        var is set empty, meaning the production resource group.
+    """
+    return os.getenv(
+        ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, DEFAULT_GBTEST_STANDALONE_ENVIRONMENT
+    ).strip()
+
+
 # The set of all GBTEST_ env var names defined in this module.
 _GBTEST_EXPORTED_ENV_VARS = {
     ENV_VAR_GBTEST_MOCK_HF,
     ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO,
+    ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT,
 }
 
 
