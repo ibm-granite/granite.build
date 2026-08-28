@@ -1130,7 +1130,7 @@ def register(
     if store == "hf" and (table or namespace or version or dataset):
         click.echo(
             "❌ Error: --namespace, --table, --version and --dataset are Lakehouse-only "
-            "and cannot be used with --store hf.",
+            "and cannot be used with the HuggingFace store.",
             err=True,
         )
         ctx.exit(1)
