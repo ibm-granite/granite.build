@@ -117,10 +117,17 @@ async def _abort_shielded_request(
         # The reclaim body, run as a shielded task so repeated cancels can't
         # interrupt it before on_abort() (the by-name reclaim) has run.
         local_id, local_fut = request_id, pending_fut
+        orphaned_submit = None  # set if the submit drain timed out (see below)
         if local_id is None and local_fut is not None:
             local_id = await Environment._drain_thread_future(
                 local_fut, f"{description} submit"
             )
+            if local_id is None and not local_fut.done():
+                # Submit drain timed out: the sky.(jobs.)launch thread is still
+                # running and could create the resource *after* the by-name
+                # reclaim below returns. Keep the future so we can retry the
+                # reclaim when it settles (closes the post-timeout leak window).
+                orphaned_submit = local_fut
             local_fut = None  # already drained above
         logger.info(
             "Cancellation requested; aborting %s (request %s)", description, local_id
@@ -134,6 +141,8 @@ async def _abort_shielded_request(
         if local_fut is not None:
             await Environment._drain_thread_future(local_fut, description)
         await on_abort()
+        if orphaned_submit is not None:
+            _reclaim_when_submit_settles(orphaned_submit, description, on_abort)
 
     abort_task = asyncio.ensure_future(_do_abort())
     current = asyncio.current_task()
@@ -154,6 +163,59 @@ async def _abort_shielded_request(
     finally:
         if cancels > 0 and current:
             current.cancel()
+
+
+def _reclaim_when_submit_settles(
+    submit_fut: "asyncio.Future",
+    description: str,
+    on_abort: Callable[[], Awaitable[None]],
+) -> None:
+    """Re-run the by-name reclaim once an orphaned submit thread finally settles.
+
+    When the submit drain in ``_abort_shielded_request`` times out, the
+    ``sky.(jobs.)launch`` thread keeps running and can create the cluster/job
+    *after* the first by-name reclaim has already returned — the exact leak the
+    reclaim exists to prevent, with no further attempt. This attaches a
+    done-callback that fires a *second* reclaim when the orphaned submit settles
+    (i.e. once the resource, if any, has actually been created), so it is reaped
+    best-effort. ``on_abort`` is idempotent (teardown/cancel-by-name tolerate an
+    already-gone resource), so the extra call is safe when nothing leaked.
+
+    :param submit_fut: the still-pending ``to_thread`` submit future to watch.
+    :param description: resource label used in the log messages.
+    :param on_abort: the idempotent by-name reclaim coroutine to re-run.
+    """
+
+    def _on_settled(fut: "asyncio.Future") -> None:
+        if fut.cancelled():
+            return
+        if fut.exception() is not None:
+            # The launch itself failed → no resource was created; nothing to reap.
+            logger.info(
+                "Orphaned %s submit failed after abort timeout (%s); "
+                "no second reclaim needed",
+                description,
+                fut.exception(),
+            )
+            return
+        logger.warning(
+            "Orphaned %s submit completed after abort timeout; running a second "
+            "by-name reclaim to reap the possibly-created resource",
+            description,
+        )
+        try:
+            asyncio.ensure_future(on_abort())
+        except RuntimeError as e:
+            # No running loop (e.g. a one-shot build already exited). Surface it
+            # loudly so the possible leak is actionable rather than silent.
+            logger.error(
+                "Could not schedule second reclaim for orphaned %s submit (%s); "
+                "a cluster/job may be leaked and need manual teardown",
+                description,
+                e,
+            )
+
+    submit_fut.add_done_callback(_on_settled)
 
 
 async def _run_sky_verb_off_loop(
