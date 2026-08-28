@@ -55,11 +55,17 @@ def k8s_env():
     # process-wide singleton, which lazily builds itself from admin storage and
     # errors when that is unreachable (as under xdist in CI).
     with patch("gbserver.environment.environment.Environment.__init__", new=fake_init):
-        k8s = K8s(
-            event_q=event_q,
-            environment_config=env_config,
-            node_health_tracker=MagicMock(),
-        )
+        try:
+            k8s = K8s(
+                event_q=event_q,
+                environment_config=env_config,
+                node_health_tracker=MagicMock(),
+            )
+        except BaseException:  # TEMP DIAGNOSTIC - surface the CI-only failure
+            import traceback
+
+            traceback.print_exc()
+            raise
     return k8s
 
 
