@@ -754,9 +754,19 @@ class BuildRun(Run):
         logger.info("BuildRun._cleanup cancelling %d in-flight task(s)", len(inflight))
         for t in inflight:
             t.cancel()
-        _, pending = await asyncio.wait(
+        done, pending = await asyncio.wait(
             inflight, timeout=_INFLIGHT_CANCEL_DRAIN_TIMEOUT
         )
+        # Consume each drained task's result. A child may finish carrying a real
+        # exception (Run.run raises RunFailed; TargetRun._run re-raises ValueError)
+        # rather than CancelledError; the previous gather(return_exceptions=True)
+        # retrieved those implicitly, but asyncio.wait does not — without this the
+        # exception is logged as an unretrieved task exception when the task is
+        # GC'd. Skip cancelled tasks: .exception() would re-raise their
+        # CancelledError, and a cancelled task never triggers that warning anyway.
+        for t in done:
+            if not t.cancelled():
+                t.exception()
         if pending:
             logger.warning(
                 "BuildRun._cleanup: %d in-flight task(s) did not drain within "
