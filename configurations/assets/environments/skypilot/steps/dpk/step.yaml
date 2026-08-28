@@ -130,27 +130,20 @@ environment_configs:
             {%- set dpk_req = ("data-prep-toolkit-transforms[" ~ extras | join(",") ~ "]==" ~ config.dpk_config.dpk_version)
                               if extras
                               else (("data-prep-toolkit-transforms==" ~ config.dpk_config.dpk_version) if t else "") %}
-            # Installs go through uv, which DPK's own Dockerfile.python also uses.
-            # It resolves and installs far faster than pip, and it populates a venv
-            # by hard-linking from a shared cache instead of copying — which matters
-            # here because a heavyweight extra like [pii-redactor] pulls ~125
-            # packages (torch, flair, presidio) and a full copy costs ~6G per venv.
-            # uv is not preinstalled on a bare launcher node, so bootstrap it with
-            # pip first (same order as the DPK image).
-            # UV_CACHE_DIR must be (a) on the same filesystem as the venv, or uv
-            # silently copies instead of hard-linking, and (b) STABLE ACROSS RUNS, or
-            # there is nothing to link from and the cache is pure overhead. A cache
-            # inside the per-run workdir satisfies (a) but not (b) — measured: the
-            # venv shrank 5.8G -> 5.5G while a fresh 6.2G cache appeared, doubling
-            # the footprint. So anchor it at the environment-level shared root when
-            # there is one, falling back to the per-run dir where there is not
-            # (e.g. aws, where each step is its own instance anyway).
-            pip install --quiet --no-cache-dir uv
-            export UV_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.uv-cache"
-            uv venv ./venv
-            . ./venv/bin/activate
-            uv pip install --quiet --index-url '{{ config.dpk_config.pip_index_url }}' \
-              {% if dpk_req %}'{{ dpk_req }}' {% endif %}{% for p in config.dpk_config.packages %}'{{ p }}' {% endfor %}
+            # The dependency install is delegated to the bundled src/dpk_setup.sh
+            # (file-mounted at ./src). Safe from `setup` because SkyPilot syncs
+            # file mounts first: its stage order is PROVISION -> SYNC_WORKDIR ->
+            # SYNC_FILE_MOUNTS -> SETUP -> PRE_EXEC -> EXEC. See that file's
+            # header for the uv/UV_CACHE_DIR rationale, and dpk_run.sh's for why
+            # the shell lives in scripts rather than inline.
+            #
+            # Jinja computes only the VALUES: the venv path, the index, and the
+            # pip requirements, passed as real argv after `--` so a specifier
+            # containing "[extra]" needs no shell re-quoting.
+            bash ./src/dpk_setup.sh \
+              --venv ./venv \
+              --index-url '{{ config.dpk_config.pip_index_url }}' \
+              --{% if dpk_req %} '{{ dpk_req }}'{% endif %}{% for p in config.dpk_config.packages %} '{{ p }}'{% endfor %}
             {%- endif %}
           # run starts in the same working directory as setup, so ./venv and
           # ./src are both relative.
@@ -167,44 +160,30 @@ environment_configs:
             {%- if config.dpk_config.transform %}
             {%- set module = config.dpk_config.module if config.dpk_config.module
                              else ("dpk_" ~ config.dpk_config.transform ~ ".runtime") %}
-            IN="$LLMB_INPUT_{{ config.dpk_config.input }}"
+            # Transform mode delegates the shell to the bundled src/dpk_run.sh
+            # (file-mounted at ./src). Jinja's job here is only to compute VALUES;
+            # the script creates and absolutizes the output dir, assembles DPK's
+            # --data_local_config, and emits the artifact marker. See that file's
+            # header for why the shell lives there rather than inline.
+            #
             # An omitted output_path defaults to ./output in the step's working
-            # directory. Both branches resolve to an ABSOLUTE path before the
-            # marker is emitted: the artifact path is consumed off-node, so a
-            # relative one would be meaningless to the server. `cd`-and-pwd runs
-            # after mkdir (the dir must exist to cd into it) and in a subshell, so
-            # the step's own working directory is left alone.
-            OUT='{{ config.dpk_config.output_path if config.dpk_config.output_path else "./output" }}'
-            mkdir -p "$OUT"
-            OUT="$(cd "$OUT" && pwd)"
-            # Flags are collected into an array rather than emitted as
-            # backslash-continued lines: a trailing "\" on the final flag would
-            # splice whatever follows into the command, so building argv
-            # explicitly keeps the invocation robust regardless of args content.
-            # Values are single-quoted for the shell, with any embedded single
-            # quote escaped as '"'"' — several DPK transforms take python-literal
-            # values that contain quotes (pii_redactor's --pii_redactor_entities is
-            # ast.literal_eval'd, so it needs "['PERSON','EMAIL_ADDRESS']" to reach
-            # python intact). Without the escape, bash strips the inner quotes and
-            # literal_eval raises ValueError on the bare names.
-            DPK_ARGS=()
-            {%- for k, v in config.dpk_config.args.items() %}
-            {%- if v is sameas true %}
-            DPK_ARGS+=(--{{ k }})
-            {%- elif v is not none and v is not sameas false %}
-            DPK_ARGS+=(--{{ k }} '{{ v | string | replace("'", "'\"'\"'") }}')
-            {%- endif %}
-            {%- endfor %}
-            # extra_args is injected OUTSIDE the quoted array expansion so the
-            # remote shell splits and expands it — the deliberate difference from
-            # `args`, whose values are quoted to survive verbatim. Empty renders
-            # to nothing, leaving the invocation byte-identical to args-only.
-            python -m {{ module }} \
-              --data_local_config "{'input_folder': '$IN', 'output_folder': '$OUT'}" \
-              "${DPK_ARGS[@]}"{% if config.dpk_config.extra_args %} {{ config.dpk_config.extra_args }}{% endif %}
-            # Register the transform's output for the declared `output`. The path
-            # must match that output's declared uri (see USAGE.md).
-            echo "LLMB_ARTIFACT_ID:{{ config.dpk_config.output }} LLMB_ARTIFACT_PATH:$OUT"
+            # directory; the script absolutizes whichever path it is given before
+            # the marker is emitted, since the server consumes it off-node.
+            #
+            # Flags are passed as REAL ARGV after `--`, one Jinja-rendered
+            # single-quoted word each, so the remote shell splits them exactly
+            # once and the script forwards them untouched via "$@". An embedded
+            # single quote is escaped as '"'"' because several DPK transforms take
+            # python-literal values containing quotes (pii_redactor's
+            # --pii_redactor_entities is ast.literal_eval'd, so it needs
+            # "['PERSON','EMAIL_ADDRESS']" to reach python intact).
+            # A `true` value renders as a bare flag; false/null are omitted.
+            bash ./src/dpk_run.sh \
+              --module '{{ module }}' \
+              --input-path "$LLMB_INPUT_{{ config.dpk_config.input }}" \
+              --output-path '{{ config.dpk_config.output_path if config.dpk_config.output_path else "./output" }}' \
+              --artifact-id '{{ config.dpk_config.output }}' \
+              --{% for k, v in config.dpk_config.args.items() %}{% if v is sameas true %} --{{ k }}{% elif v is not none and v is not sameas false %} --{{ k }} '{{ v | string | replace("'", "'\"'\"'") }}'{% endif %}{% endfor %}{% if config.dpk_config.extra_args %} {{ config.dpk_config.extra_args }}{% endif %}
             {%- else %}
             # Raw command mode: injected verbatim, like the byoc step. The command
             # is responsible for its own LLMB_ARTIFACT_ID/PATH marker(s):

@@ -61,9 +61,37 @@ beside the published `step.yaml`, so the released step ships user-facing docs. S
 locally rendered `space/` (Mode 1, `make test`) and against the published step (Mode 2,
 under `test/steps/`).
 
+### Where the step's shell lives: `src/*.sh`
+
+The `setup` and `run` blocks in `step-template.yaml` do **not** contain the step's shell.
+They compute *values* with Jinja and hand them to two bundled scripts as arguments:
+
+| Script | Invoked from | Does |
+|---|---|---|
+| `src/dpk_setup.sh` | `setup` (bare-node only) | bootstraps `uv`, anchors `UV_CACHE_DIR`, creates the venv, installs the requirements |
+| `src/dpk_run.sh` | `run` (transform mode only) | creates + absolutizes the output dir, builds `--data_local_config`, runs `python -m <module>`, emits the artifact marker |
+
+The reason is testability. Shell embedded in a YAML scalar behind Jinja can only be
+*rendered and pattern matched*; in a file it can be executed, `shellcheck`ed, and
+`bash -n`'d. That matters for this step specifically: every bug it has had was a
+shell/quoting bug invisible until a cluster run failed — a trailing `\` that swallowed the
+artifact marker, and single-quote escaping that broke a transform's `ast.literal_eval`'d
+value. It also collapses the escaping: flags now arrive as **real argv** after a `--`
+separator, so nothing re-quotes them (the old inline form needed
+`replace("'", "'\"'\"'")` to survive Jinja → YAML → shell).
+
+Calling a file-mounted script from `setup` is safe because SkyPilot syncs file mounts
+first: `sky/execution.py`'s stage order is `PROVISION → SYNC_WORKDIR → SYNC_FILE_MOUNTS →
+SETUP → PRE_EXEC → EXEC`, and `_execute` calls `sync_file_mounts()` before `setup()`
+unconditionally.
+
+**Command mode stays inline.** `config.dpk_config.command` is user-supplied shell injected
+verbatim; routing it through a script argument would add exactly the quoting layer this
+removes.
+
 ### A note on `src/` and `__pycache__`
 
-This is the first step whose `src/` is python rather than shell. `make test` imports
+`src/` holds python as well as shell. `make test` imports
 `src/validate_tokens.py`, which leaves a `src/__pycache__/` behind, and both `space` and
 `publish-step` copy `src/` verbatim — so the Makefile drops that cache first, keeping the
 tree shipped to a cluster to just the source. (It would never be *committed*:
@@ -83,14 +111,26 @@ Two kinds of test live here, following the framework's split:
 run everywhere. They are Mode-1 only (not copied by `publish-step`), the same placement as
 `eval/skypilot/test/test_eval.py`:
 
-- `test_dpk_step_render.py` — renders `step-template.yaml`'s `setup`/`run` blocks and pins
-  the contract: that `transform:` derives the right module and pip extra for a range of
-  transforms, that `args` render as full flag names in order (with `0`/`true`/`false`
-  handled correctly), that `image` switches between bare-node and `docker:` mode, that
-  command mode injects verbatim and skips the transform path, and that the rendered shell
-  parses under `bash -n`. The step emits shell, so a templating slip is otherwise invisible
-  until a cluster run fails — one regression guard covers a real bug where a trailing line
-  continuation swallowed the artifact marker.
+- `test_dpk_step_render.py` — pins what the *template* computes: that `transform:` derives
+  the right module and pip extra for a range of transforms, that `args` become the right
+  argv words in order (with `0`/`true`/`false` handled correctly), that `image` switches
+  between bare-node and `docker:` mode, that command mode injects verbatim and skips the
+  transform path, and that the rendered shell parses under `bash -n`. Because the blocks now
+  invoke the bundled scripts, most assertions run the rendered block with a stub script on
+  `PATH` and check **the argv bash actually built** (`_script_argv`) rather than matching
+  rendered text — bash is what splits and unquotes these words on the node, so a quoting
+  slip surfaces here exactly as it would in production.
+- `test_dpk_run_sh.py` — executes `src/dpk_run.sh` with a stub `python`: the
+  `--data_local_config` literal, the output dir being created and absolutized before the
+  marker, flags (including quote-bearing python literals) reaching `python` untouched, the
+  `--` separator shielding a transform flag that collides with one of the script's own
+  options, failure propagation under `set -e`, and the marker being exactly one
+  line-initial command.
+- `test_dpk_setup_sh.py` — executes `src/dpk_setup.sh` with stub `pip`/`uv` that record
+  their argv: that `uv` (not `pip`) installs and `pip` only bootstraps `uv`, that
+  `UV_CACHE_DIR` is exported before `uv venv` and anchors at `$GB_SHARED_WORKDIR` when
+  present, that the install keeps its cache, that a `[extra]` specifier arrives as one
+  argument, and that zero requirements still yields a venv.
 - `test_dpk_validate_tokens.py` — unit tests for the bundled `src/validate_tokens.py`,
   covering both of its axes: consistency (the Arrow token stream vs its `meta/` sidecars)
   and completeness (`--input`: every non-empty source Parquet produced output). Each

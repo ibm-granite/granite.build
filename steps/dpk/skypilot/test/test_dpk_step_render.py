@@ -90,6 +90,66 @@ def _transform_cfg(defaults: dict, **over) -> dict:
 
 _BINDINGS = {"docs": {"binding": {"path": "/staged/docs"}}}
 
+# The rendered blocks now invoke the bundled scripts rather than inlining the
+# shell, so the meaningful assertion is "what argv does the script receive?".
+# Ask bash, rather than parsing the rendered text with a regex: bash is the thing
+# that actually splits and unquotes these words on the node, so a quoting slip
+# shows up here exactly as it would in production.
+_SCRIPTS = {"run": "dpk_run.sh", "setup": "dpk_setup.sh"}
+
+
+def _script_argv(rendered: str, which: str) -> list[str]:
+    """Return the argv the rendered block passes to the bundled script.
+
+    Replaces the `bash ./src/<script>` invocation with a stub that prints one
+    argument per line, then executes the rendered block. Everything else in the
+    block (the venv activation, the LLMB_INPUT_ exports) is stubbed or harmless.
+    """
+    if shutil.which("bash") is None:  # pragma: no cover - bash is present in CI
+        pytest.skip("bash not available")
+    script = _SCRIPTS[which]
+    harness = "\n".join(
+        [
+            "set -e",
+            # Stub the venv activation the run block performs in bare-node mode.
+            "mkdir -p ./venv/bin && : > ./venv/bin/activate",
+            # Stand in for the real script: emit argv, one per line, NUL-free.
+            "mkdir -p ./src",
+            f'printf "%s\\n" \'#!/usr/bin/env bash\' \'for a in "$@"; do echo "ARG:$a"; done\''
+            f" > ./src/{script}",
+            f"chmod +x ./src/{script}",
+            rendered,
+        ]
+    )
+    proc = subprocess.run(
+        ["bash", "-c", harness], capture_output=True, text=True, cwd=_TMPDIR
+    )
+    assert proc.returncode == 0, f"rendered block failed: {proc.stderr}"
+    return [
+        line[len("ARG:") :]
+        for line in proc.stdout.splitlines()
+        if line.startswith("ARG:")
+    ]
+
+
+@pytest.fixture(autouse=True)
+def _tmp_cwd(tmp_path, monkeypatch):
+    """Give _script_argv a scratch dir, so stubs never touch the step tree."""
+    monkeypatch.setitem(globals(), "_TMPDIR", str(tmp_path))
+
+
+_TMPDIR = "."
+
+
+def _opt(argv: list[str], name: str) -> str | None:
+    """Return the value following ``name`` in an argv list, or None."""
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
+def _passthrough(argv: list[str]) -> list[str]:
+    """Return the transform flags: everything after the ``--`` separator."""
+    return argv[argv.index("--") + 1 :] if "--" in argv else []
+
 
 class TestStepContract:
     """The step declares what the framework and USAGE.md promise."""
@@ -154,10 +214,12 @@ class TestDerivations:
     ):
         """Adding a transform is a build.yaml change, never a step change."""
         cfg = _transform_cfg(defaults, transform=transform)
-        assert f"python -m {module}" in _render(launcher["run"], cfg, _BINDINGS)
-        assert f"'data-prep-toolkit-transforms[{extra}]==1.1.8'" in _render(
-            launcher["setup"], cfg
-        )
+        run_argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _opt(run_argv, "--module") == module
+        setup_argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        assert _passthrough(setup_argv) == [
+            f"data-prep-toolkit-transforms[{extra}]==1.1.8"
+        ]
 
     def test_dpk_version_is_honored(self, launcher, defaults):
         cfg = _transform_cfg(defaults, dpk_version="1.1.7")
@@ -166,9 +228,8 @@ class TestDerivations:
     def test_module_override_wins(self, launcher, defaults):
         """Needed for the *.ray.runtime variants."""
         cfg = _transform_cfg(defaults, module="dpk_tokenization2arrow.ray.runtime")
-        assert "python -m dpk_tokenization2arrow.ray.runtime" in _render(
-            launcher["run"], cfg, _BINDINGS
-        )
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _opt(argv, "--module") == "dpk_tokenization2arrow.ray.runtime"
 
     def test_extras_override_replaces_the_derived_extra(self, launcher, defaults):
         cfg = _transform_cfg(defaults, extras=["ray"])
@@ -191,29 +252,36 @@ class TestDerivations:
 
 
 class TestTransformArgs:
+    """`args` become real argv words handed to dpk_run.sh after the `--`."""
+
     def test_args_render_as_full_flag_names(self, launcher, defaults):
         """Keys are DPK's own spelling — the step never adds a prefix."""
         cfg = _transform_cfg(
             defaults, args={"tkn_tokenizer": "hf-internal-testing/llama-tokenizer"}
         )
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        assert "--tkn_tokenizer 'hf-internal-testing/llama-tokenizer'" in run
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _passthrough(argv) == [
+            "--tkn_tokenizer",
+            "hf-internal-testing/llama-tokenizer",
+        ]
 
     def test_arg_order_is_preserved(self, launcher, defaults):
         cfg = _transform_cfg(defaults, args={"a_one": 1, "b_two": 2, "c_three": 3})
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        assert run.index("--a_one") < run.index("--b_two") < run.index("--c_three")
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _passthrough(argv) == [
+            "--a_one", "1", "--b_two", "2", "--c_three", "3",
+        ]
 
     def test_zero_is_passed_not_dropped(self, launcher, defaults):
         """tkn_chunk_size: 0 is meaningful — falsy values must survive."""
         cfg = _transform_cfg(defaults, args={"tkn_chunk_size": 0})
-        assert "--tkn_chunk_size '0'" in _render(launcher["run"], cfg, _BINDINGS)
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _passthrough(argv) == ["--tkn_chunk_size", "0"]
 
     def test_true_renders_a_bare_flag(self, launcher, defaults):
         cfg = _transform_cfg(defaults, args={"run_locally": True})
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        assert "--run_locally" in run
-        assert "--run_locally '" not in run
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _passthrough(argv) == ["--run_locally"]
 
     def test_value_with_single_quotes_survives_the_shell(self, launcher, defaults):
         """Regression guard for a real bug found by the pii_redactor fixture.
@@ -222,83 +290,37 @@ class TestTransformArgs:
         --pii_redactor_entities is ``ast.literal_eval``'d, so it must reach python
         as ``['PERSON','EMAIL_ADDRESS']``. Naive single-quoting emitted
         ``'['PERSON',...]'``, which bash collapses to ``[PERSON,...]`` — bare names
-        that literal_eval rejects with ValueError. The value must be re-quoted.
+        that literal_eval rejects with ValueError.
+
+        Asserting on the argv bash actually built is strictly stronger than
+        matching the rendered text: this is the value the transform receives.
         """
         value = "['PERSON','EMAIL_ADDRESS']"
         cfg = _transform_cfg(defaults, args={"pii_redactor_entities": value})
-        run = _render(launcher["run"], cfg, _BINDINGS)
-
-        # Ask bash what it would actually pass, rather than eyeballing the quoting.
-        line = next(
-            l
-            for l in run.splitlines()
-            if "pii_redactor_entities" in l and l.strip().startswith("DPK_ARGS+=")
-        )
-        probe = f'DPK_ARGS=()\n{line.strip()}\nprintf "%s" "${{DPK_ARGS[1]}}"'
-        out = subprocess.run(["bash", "-c", probe], capture_output=True, text=True)
-        assert out.stdout == value, f"bash mangled it to {out.stdout!r}"
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _passthrough(argv) == ["--pii_redactor_entities", value]
 
     def test_false_and_none_are_omitted(self, launcher, defaults):
         cfg = _transform_cfg(defaults, args={"off": False, "unset": None})
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        assert "--off" not in run
-        assert "--unset" not in run
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _passthrough(argv) == []
 
 
 class TestOutputPathDefault:
     """`output_path` is optional and defaults to ./output in the step's workdir.
 
-    The invariant that matters in both branches: the path reaching the artifact
-    marker is ABSOLUTE, because the server consumes it off-node.
+    The template's job is to pass the right --output-path; making it ABSOLUTE is
+    dpk_run.sh's job, covered by test_dpk_run_sh.py.
     """
-
-    def _out_assignment(self, run: str) -> list[str]:
-        return [l.strip() for l in run.splitlines() if l.strip().startswith("OUT=")]
 
     def test_omitted_output_path_defaults_to_output(self, launcher, defaults):
         cfg = _transform_cfg(defaults, output_path="")
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        assert "OUT='./output'" in run
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _opt(argv, "--output-path") == "./output"
 
-    def test_explicit_output_path_is_used_verbatim(self, launcher, defaults):
-        run = _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
-        # Assert on the assignment, not the whole script: an explanatory comment
-        # in the template legitimately mentions the ./output default.
-        assert self._out_assignment(run)[0] == "OUT='/shared/tokens'"
-
-    @pytest.mark.parametrize("output_path", ["", "/shared/tokens"])
-    def test_marker_path_is_absolute_in_both_branches(
-        self, launcher, defaults, output_path
-    ):
-        """Whichever branch is taken, OUT is absolutized before it is emitted."""
-        cfg = _transform_cfg(defaults, output_path=output_path)
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        assert 'OUT="$(cd "$OUT" && pwd)"' in run
-        # The absolutize must happen after mkdir (cd needs the dir) and before
-        # the marker is printed, or the emitted path can be relative/nonexistent.
-        assert (
-            run.index('mkdir -p "$OUT"')
-            < run.index('OUT="$(cd "$OUT" && pwd)"')
-            < run.index("LLMB_ARTIFACT_PATH:$OUT")
-        )
-
-    def test_default_resolves_to_an_absolute_path_under_bash(
-        self, launcher, defaults, tmp_path
-    ):
-        """Run the rendered fragment for real: ./output must land in the CWD."""
-        cfg = _transform_cfg(defaults, output_path="")
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        lines = run.splitlines()
-        start = next(i for i, l in enumerate(lines) if l.strip().startswith("OUT="))
-        end = next(i for i, l in enumerate(lines) if 'cd "$OUT" && pwd' in l)
-        probe = "\n".join(l.strip() for l in lines[start : end + 1]) + '\nprintf "%s" "$OUT"'
-        out = subprocess.run(
-            ["bash", "-c", probe], capture_output=True, text=True, cwd=tmp_path
-        )
-        assert out.returncode == 0, out.stderr
-        # macOS resolves /var -> /private/var, so compare resolved paths.
-        assert pathlib.Path(out.stdout) == (tmp_path / "output").resolve()
-        assert (tmp_path / "output").is_dir()
+    def test_explicit_output_path_is_passed_through(self, launcher, defaults):
+        rendered = _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
+        assert _opt(_script_argv(rendered, "run"), "--output-path") == "/shared/tokens"
 
     def test_default_output_still_parses(self, launcher, defaults):
         cfg = _transform_cfg(defaults, output_path="")
@@ -309,50 +331,35 @@ class TestExtraArgs:
     """The verbatim escape hatch, for flags the `args` map cannot express."""
 
     def test_default_adds_nothing(self, launcher, defaults):
-        """Empty extra_args leaves the args-only invocation unchanged."""
-        run = _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
-        assert '"${DPK_ARGS[@]}"' in run
-        # No trailing whitespace artifact that would suggest a stray expansion.
-        invocation = next(
-            line for line in run.splitlines() if '"${DPK_ARGS[@]}"' in line
-        )
-        assert invocation.rstrip() == invocation
+        """Empty extra_args contributes no argv beyond what `args` rendered."""
+        argv = _script_argv(_render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run")
+        assert _passthrough(argv) == []
 
-    def test_extra_args_are_appended_verbatim(self, launcher, defaults):
-        cfg = _transform_cfg(defaults, extra_args="--tkn_tokenizer $MY_TOKENIZER")
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        assert '"${DPK_ARGS[@]}" --tkn_tokenizer $MY_TOKENIZER' in run
-
-    def test_extra_args_are_unquoted_so_the_shell_splits_them(
-        self, launcher, defaults
-    ):
-        """The contract that distinguishes extra_args from args.
-
-        `args` values are quoted to reach the transform byte-for-byte; extra_args
-        is expanded by the remote shell instead. Ask bash what it would actually
-        pass rather than eyeballing the quoting.
-        """
-        cfg = _transform_cfg(defaults, extra_args="--flag one --other two")
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        invocation = next(
-            line for line in run.splitlines() if '"${DPK_ARGS[@]}"' in line
-        )
-        tail = invocation.split('"${DPK_ARGS[@]}"', 1)[1]
-        probe = f'set -- {tail}\nprintf "%s\\n" "$#"'
-        out = subprocess.run(["bash", "-c", probe], capture_output=True, text=True)
-        assert out.stdout.strip() == "4", f"bash saw {out.stdout!r}"
-
-    def test_extra_args_coexist_with_args(self, launcher, defaults):
-        """Rendered args come first, so extra_args can override them downstream."""
+    def test_extra_args_are_appended_after_args(self, launcher, defaults):
         cfg = _transform_cfg(
             defaults, args={"tkn_chunk_size": 0}, extra_args="--tkn_text_lang en"
         )
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        assert run.index("--tkn_chunk_size") < run.index("--tkn_text_lang")
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _passthrough(argv) == [
+            "--tkn_chunk_size", "0", "--tkn_text_lang", "en",
+        ]
+
+    def test_extra_args_are_word_split_by_the_shell(self, launcher, defaults):
+        """The contract that distinguishes extra_args from args.
+
+        `args` values are quoted to reach the transform byte-for-byte; extra_args
+        is expanded by the remote shell instead, so it becomes several words.
+        """
+        cfg = _transform_cfg(defaults, extra_args="--flag one --other two")
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _passthrough(argv) == ["--flag", "one", "--other", "two"]
 
     def test_extra_args_render_valid_shell(self, launcher, defaults):
         cfg = _transform_cfg(defaults, extra_args="--flag 'a value' --bare")
-        assert _bash_ok(_render(launcher["run"], cfg, _BINDINGS))
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        # Single-quoting inside extra_args is honoured by the shell, so the
+        # spaced value arrives as ONE word.
+        assert _passthrough(argv) == ["--flag", "a value", "--bare"]
 
     def test_command_mode_ignores_extra_args(self, launcher, defaults):
         """extra_args belongs to the derived invocation, which command mode skips."""
@@ -372,17 +379,19 @@ class TestIoWiring:
         assert "export LLMB_INPUT_docs='/staged/docs'" in run
         assert "export LLMB_INPUT_extra='/staged/extra'" in run
 
-    def test_input_feeds_data_local_config(self, launcher, defaults):
-        run = _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
-        assert 'IN="$LLMB_INPUT_docs"' in run
-        assert "'input_folder': '$IN'" in run
-        assert "'output_folder': '$OUT'" in run
+    def test_input_is_passed_as_the_bindings_staged_path(self, launcher, defaults):
+        """--input-path resolves through $LLMB_INPUT_<input>, not a hardcoded path.
 
-    def test_output_path_is_created_and_marked(self, launcher, defaults):
-        run = _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
-        assert "OUT='/shared/tokens'" in run
-        assert 'mkdir -p "$OUT"' in run
-        assert 'echo "LLMB_ARTIFACT_ID:tokens LLMB_ARTIFACT_PATH:$OUT"' in run
+        Assembling DPK's --data_local_config from it is dpk_run.sh's job, covered
+        by test_dpk_run_sh.py.
+        """
+        rendered = _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
+        argv = _script_argv(rendered, "run")
+        assert _opt(argv, "--input-path") == "/staged/docs"
+
+    def test_artifact_id_is_the_declared_output(self, launcher, defaults):
+        rendered = _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
+        assert _opt(_script_argv(rendered, "run"), "--artifact-id") == "tokens"
 
 
 class TestCommandMode:
@@ -395,8 +404,8 @@ class TestCommandMode:
     def test_command_mode_skips_the_transform_invocation(self, launcher, defaults):
         cfg = dict(defaults, command="echo hi", packages=["pyarrow"])
         run = _render(launcher["run"], cfg, {})
-        assert "python -m dpk_" not in run
-        assert "--data_local_config" not in run
+        assert "dpk_run.sh" not in run
+        assert "--artifact-id" not in run
 
     def test_command_mode_still_exports_bindings(self, launcher, defaults):
         cfg = dict(defaults, command="echo hi")
@@ -406,60 +415,42 @@ class TestCommandMode:
     def test_command_mode_installs_only_its_packages(self, launcher, defaults):
         """No transform => no DPK requirement is synthesized."""
         cfg = dict(defaults, command="echo hi", packages=["pyarrow"])
-        setup = _render(launcher["setup"], cfg)
-        assert "'pyarrow'" in setup
-        assert "data-prep-toolkit-transforms" not in setup
+        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        assert _passthrough(argv) == ["pyarrow"]
 
 
 class TestVenvHandling:
     def test_bare_node_builds_a_venv(self, launcher, defaults):
+        """setup delegates the venv to dpk_setup.sh; run activates it."""
         cfg = _transform_cfg(defaults)
-        setup = _render(launcher["setup"], cfg)
-        assert "uv venv ./venv" in setup
+        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        assert _opt(argv, "--venv") == "./venv"
         assert ". ./venv/bin/activate" in _render(launcher["run"], cfg, _BINDINGS)
 
-    def test_installs_go_through_uv(self, launcher, defaults):
-        """uv, not pip, does the resolving and installing.
+    def test_requirements_are_passed_as_argv(self, launcher, defaults):
+        """The derived DPK requirement reaches the script as ONE argv word.
 
-        Same choice DPK's own Dockerfile.python makes. It matters beyond speed: uv
-        populates a venv by hard-linking from its cache instead of copying, and a
-        heavyweight extra like [pii-redactor] is ~125 packages / ~6G per venv when
-        copied.
+        The "[extra]" in data-prep-toolkit-transforms[tokenization2arrow] would be
+        a glob candidate if it were not quoted; asserting on bash-split argv proves
+        it arrives intact. The uv/UV_CACHE_DIR mechanics are the script's own
+        contract, covered by test_dpk_setup_sh.py.
         """
-        setup = _render(launcher["setup"], _transform_cfg(defaults))
-        assert "uv pip install" in setup
-        # pip appears only to bootstrap uv itself, which is absent on a bare node.
-        assert "pip install --quiet --no-cache-dir uv" in setup
-        assert "\npip install --quiet --no-cache-dir --index-url" not in setup
-
-    def test_uv_cache_shares_the_venv_filesystem(self, launcher, defaults):
-        """UV_CACHE_DIR must sit beside the venv or hard-linking silently degrades.
-
-        Two requirements. Same filesystem as the venv, or uv copies instead of
-        hard-linking. And stable across runs, or there is nothing to link from —
-        a per-run cache measured *worse* than pip (venv 5.8G->5.5G but a fresh
-        6.2G cache), so it anchors at GB_SHARED_WORKDIR where one exists.
-        """
-        setup = _render(launcher["setup"], _transform_cfg(defaults))
-        assert 'UV_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.uv-cache"' in setup
-        assert setup.index("UV_CACHE_DIR") < setup.index("uv venv")
-
-    def test_uv_install_keeps_its_cache(self, launcher, defaults):
-        """--no-cache-dir on the install would defeat hard-linking."""
-        setup = _render(launcher["setup"], _transform_cfg(defaults))
-        install = next(l for l in setup.splitlines() if l.startswith("uv pip install"))
-        assert "--no-cache-dir" not in install
+        argv = _script_argv(_render(launcher["setup"], _transform_cfg(defaults)), "setup")
+        assert _passthrough(argv) == [
+            "data-prep-toolkit-transforms[tokenization2arrow]==1.1.8"
+        ]
+        assert _opt(argv, "--index-url") == "https://pypi.org/simple"
 
     def test_image_mode_skips_venv_and_pip(self, launcher, defaults):
         """An image already provides DPK, so nothing is installed at run time."""
         cfg = _transform_cfg(defaults, image="quay.io/org/dpk:1")
         setup = _render(launcher["setup"], cfg)
         run = _render(launcher["run"], cfg, _BINDINGS)
+        assert "dpk_setup.sh" not in setup
         assert "venv" not in setup
-        assert "pip install" not in setup
         assert "venv" not in run
         # the transform still runs
-        assert "python -m dpk_tokenization2arrow.runtime" in run
+        assert "--module 'dpk_tokenization2arrow.runtime'" in run
 
 
 class TestRenderedShellIsValid:
@@ -484,20 +475,32 @@ class TestRenderedShellIsValid:
         assert _bash_ok(_render(launcher["setup"], cfg))
         assert _bash_ok(_render(launcher["run"], cfg, {}))
 
-    def test_artifact_marker_is_not_swallowed_by_a_continuation(
+    def test_no_trailing_continuation_swallows_what_follows(
         self, launcher, defaults
     ):
-        """Regression guard.
+        """Regression guard, retargeted to the new seam.
 
         An earlier draft emitted args as backslash-continued lines, so the final
         flag's trailing "\\" spliced the next line into the python invocation. The
-        marker must be its own command.
+        args now render on ONE line as argv to dpk_run.sh, so the equivalent risk
+        is that line ending in a stray "\\" and swallowing whatever follows.
+
+        The marker itself moved into dpk_run.sh (see test_dpk_run_sh.py, which
+        asserts it is emitted as its own command).
         """
         cfg = _transform_cfg(defaults, args={"tkn_chunk_size": 0})
         run = _render(launcher["run"], cfg, _BINDINGS)
-        marker_line = next(
-            line for line in run.splitlines() if "LLMB_ARTIFACT_ID" in line
+        invocation = next(
+            line
+            for line in run.splitlines()
+            if "dpk_run.sh" in line and not line.lstrip().startswith("#")
         )
-        assert marker_line.lstrip().startswith("echo ")
-        preceding = run.split(marker_line)[0].rstrip().splitlines()[-1]
-        assert not preceding.rstrip().endswith("\\")
+        # The invocation spans continuations by design; the LAST line of it (the
+        # argv line) must not continue into anything.
+        argv_line = next(
+            line for line in run.splitlines() if "--artifact-id" in line
+        )
+        tail_idx = run.splitlines().index(argv_line)
+        last = [l for l in run.splitlines()[tail_idx:] if l.strip()][-1]
+        assert not last.rstrip().endswith("\\")
+        assert invocation.strip().startswith("bash ./src/dpk_run.sh")

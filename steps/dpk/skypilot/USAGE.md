@@ -393,7 +393,20 @@ per-target workdir.
 
 ## Bundled scripts (`src/`)
 
-The step ships `src/` to `./src` on the node:
+The step ships `src/` to `./src` on the node. Two of the three scripts are the step's own
+machinery — you do not invoke them, but they are where the step's shell actually lives:
+
+- `src/dpk_setup.sh` — the bare-node dependency install (`uv venv` + `uv pip install`),
+  invoked from the step's `setup` phase. Skipped entirely when `image` is set.
+- `src/dpk_run.sh` — the transform-mode invocation: creates and absolutizes the output
+  directory, builds DPK's `--data_local_config`, runs `python -m <module>`, and emits the
+  artifact marker. Not used in command mode, where your `command` runs instead.
+
+The step.yaml computes the *values* (module, requirements, flags) and passes them to these
+as arguments; the scripts do the shell. That keeps the shell in real files — checkable with
+`shellcheck` and testable directly — rather than embedded in YAML behind Jinja.
+
+The remaining script is a helper you *do* call, from a command-mode `command`:
 
 - [`src/validate_tokens.py`](src/validate_tokens.py) — validates `tokenization2arrow`
   output. Checks that the Arrow token stream agrees with its `meta/*.docs` /
