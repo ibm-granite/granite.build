@@ -331,17 +331,6 @@
 
 /* The Command subsection is styled to match; both share these rules so the two
    disclosures cannot drift apart. */
-.stepRaw {
-  composes: stepSubsection;
-}
-
-.stepRawSummary {
-  composes: stepSubsectionSummary;
-
-  &:hover {
-    color: var(--cds-text-primary);
-  }
-}
 
 .stepCardName {
   font-size: 0.875rem;

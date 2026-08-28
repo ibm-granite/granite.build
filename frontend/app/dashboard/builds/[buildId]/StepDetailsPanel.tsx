@@ -199,21 +199,59 @@ function remainingConfig(
 }
 
 /**
- * Human labels for the config blocks worth surfacing as their own subgroup.
- * Anything not listed here stays in the Advanced/raw disclosure rather than
- * inventing a heading for a key we don't recognise.
+ * Nicer labels for the config blocks we recognise. Only an override table now:
+ * any block not listed still gets a heading (its key, humanized) rather than
+ * being dropped, so the section shows every block the step actually carried.
  */
 const CONFIG_GROUP_LABELS: Record<string, string> = {
+  // Launcher / environment blocks (see gbserver/environment/*.py).
   env: 'Environment',
+  k8s: 'Kubernetes',
+  kube_config: 'Kubernetes',
+  lsf: 'LSF',
+  docker: 'Docker',
+  skypilot: 'SkyPilot',
+  bash: 'Bash',
+  cloud_config: 'Cloud',
+  cos_config: 'COS',
+  environment_config: 'Environment',
+  launcher_config: 'Launcher',
+  // Lifecycle / IO blocks written into step config.
   compute_config: 'Compute',
   download_config: 'Download',
   monitor_config: 'Monitor',
+  setup_config: 'Setup',
+  teardown_config: 'Teardown',
+  input_values_config: 'Inputs',
+  hfpull_config: 'HF pull',
+  hfpush_config: 'HF push',
+  lhpull_config: 'LH pull',
+  lhpush_config: 'LH push',
+  // Common free-form model/training params.
+  tuning_config: 'Tuning',
+  fsdp_config: 'FSDP',
+}
+
+/** Heading for a config block: a curated label if we have one, else the humanized key. */
+function groupLabel(key: string): string {
+  return CONFIG_GROUP_LABELS[key] ?? humanizeKey(key)
 }
 
 /** `num_gpus_per_node` → `Num gpus per node`. */
 function humanizeKey(key: string): string {
   const spaced = key.replace(/[_-]+/g, ' ').trim()
   return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+}
+
+/**
+ * A scalar carrying an actual value — the only thing rendered as a row. Empty
+ * strings and null are treated as "no value" and dropped so the UI shows only
+ * the keys the step actually set, not blank placeholder rows.
+ */
+function hasValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false
+  if (typeof value === 'string') return value.trim() !== ''
+  return typeof value === 'number' || typeof value === 'boolean'
 }
 
 /** Scalars render as rows; objects/arrays are left to the raw disclosure. */
@@ -242,34 +280,46 @@ interface ConfigGroup {
 }
 
 /**
- * Reshape the leftover config into the drawer's Configuration section: a few
- * named subgroups of scalar rows. `env` is nested inside a launcher block
- * (config.bash.env, config.docker.env — see gbserver/environment/bash.py), so
- * both the top level and one level down are scanned.
+ * Reshape the config into the drawer's Configuration section: named subgroups
+ * of scalar rows. config is free-form from gbserver — a step carries whatever
+ * launcher/lifecycle blocks it ran with (`k8s`, `lsf`, `tuning_config`,
+ * `download_config`, …), so nothing is allowlisted: every block that holds
+ * scalars becomes a subgroup, and every top-level scalar goes under "General".
+ * CONFIG_GROUP_LABELS only supplies a nicer heading for the ones we recognise.
  *
- * Only scalars are promoted; nested objects stay in the raw disclosure, which
- * keeps this from trying to render arbitrary depth as a flat table.
+ * Only scalars become rows; a value that is itself a nested object/array stays
+ * in the raw disclosure, so this never tries to render arbitrary depth as a
+ * flat table. `env` is nested inside a launcher block (config.bash.env,
+ * config.docker.env — see gbserver/environment/bash.py), so one level down is
+ * scanned too.
  */
 function buildConfigGroups(config: Record<string, unknown>): ConfigGroup[] {
   const groups: ConfigGroup[] = []
 
-  const addGroup = (key: string, raw: unknown) => {
-    const label = CONFIG_GROUP_LABELS[key]
-    if (!label || !raw || typeof raw !== 'object' || Array.isArray(raw)) return
-    const rows = Object.entries(raw as Record<string, unknown>)
-      .filter(([, v]) => isScalar(v))
+  const addGroup = (label: string, raw: unknown) => {
+    if (!isPlainObject(raw)) return
+    const rows = Object.entries(raw)
+      .filter(([, v]) => hasValue(v))
       .map(([k, v]) => ({ key: humanizeKey(k), value: String(v) }))
     if (rows.length > 0) groups.push({ label, rows })
   }
 
+  const generalRows: { key: string; value: string }[] = []
+
   for (const [key, value] of Object.entries(config)) {
-    addGroup(key, value)
-    // Launcher blocks (bash/docker/skypilot/…) carry their own `env`.
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const nested = value as Record<string, unknown>
-      if (nested.env) addGroup('env', nested.env)
+    if (isScalar(value)) {
+      // A bare top-level param (`group`, `is_dry_run_compatible`, …) — collect
+      // these into one "General" group so they aren't stranded in the raw blob.
+      // Skip blank/null so only keys the step actually set show up.
+      if (hasValue(value)) generalRows.push({ key: humanizeKey(key), value: String(value) })
+      continue
     }
+    addGroup(groupLabel(key), value)
+    // Launcher blocks (bash/docker/skypilot/…) carry their own `env`.
+    if (isPlainObject(value) && value.env) addGroup(CONFIG_GROUP_LABELS.env, value.env)
   }
+
+  if (generalRows.length > 0) groups.unshift({ label: 'General', rows: generalRows })
 
   return groups
 }
@@ -285,7 +335,7 @@ function metadataRows(
 ): { key: string; value: string }[] {
   if (!metadata) return []
   return Object.entries(metadata)
-    .filter(([, value]) => isScalar(value))
+    .filter(([, value]) => hasValue(value))
     .map(([key, value]) => ({ key: humanizeKey(key), value: String(value) }))
 }
 
@@ -432,11 +482,13 @@ function StepCard({
         )}
       </Section>
 
-      {/* Recognised config blocks become labelled subgroups of scalar rows;
-          everything else stays in the raw disclosure at the foot of the card.
-          Always rendered — with a placeholder when no scalar groups were
-          recognised — so the section's absence never reads as "config missing".
-          Unrecognised/nested config still lives in the raw disclosure below. */}
+      {/* Config blocks become labelled subgroups of scalar rows; the full
+          verbatim config lives in a nested "Raw parameters" subsection so it
+          reads as part of Configuration rather than a peer of it — the escape
+          hatch for anything the grouped rows didn't promote (nested objects,
+          long value dumps). Always rendered — with a placeholder when no scalar
+          groups were recognised — so the section's absence never reads as
+          "config missing". */}
       <Section title="Configuration">
         {configGroups.length > 0 ? (
           configGroups.map((group) => (
@@ -451,6 +503,17 @@ function StepCard({
           ))
         ) : (
           <span className={styles.stepMuted}>{NOT_RECORDED}</span>
+        )}
+
+        {restKeys.length > 0 && (
+          <details
+            className={styles.stepSubsection}
+            open={showRaw}
+            onToggle={(e) => setShowRaw((e.currentTarget as HTMLDetailsElement).open)}
+          >
+            <summary className={styles.stepSubsectionSummary}>Raw parameters</summary>
+            <pre className={styles.stepParams}>{JSON.stringify(rest, null, 2)}</pre>
+          </details>
         )}
       </Section>
 
@@ -490,18 +553,6 @@ function StepCard({
         </Section>
       )}
 
-      {/* The full config, verbatim — the escape hatch for anything the grouped
-          rows above didn't promote (nested objects, unrecognised blocks). */}
-      {restKeys.length > 0 && (
-        <details
-          className={styles.stepRaw}
-          open={showRaw}
-          onToggle={(e) => setShowRaw((e.currentTarget as HTMLDetailsElement).open)}
-        >
-          <summary className={styles.stepRawSummary}>Advanced / Raw parameters</summary>
-          <pre className={styles.stepParams}>{JSON.stringify(rest, null, 2)}</pre>
-        </details>
-      )}
     </li>
   )
 }
