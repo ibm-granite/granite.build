@@ -54,6 +54,14 @@ from gbserver.utils.utils import get_uuid, short_alphanumeric_lower_hash
 # Matches {{ target_hash }} with any surrounding whitespace.
 _TARGET_HASH_RE = re.compile(r"\{\{\s*target_hash\s*\}\}")
 
+# Upper bound (seconds) for draining cancelled in-flight run tasks in _cleanup.
+# Generous: a child's cleanup chain can include sky.down, helm uninstall backoff
+# (~70s) and RayCluster deletion, all of which we want to let finish normally.
+# The bound only exists so a wedged cleanup (e.g. a hung sky.down) cannot block
+# the CANCELLED transition indefinitely — stragglers are left to finish in the
+# background, mirroring Environment._drain_thread_future.
+_INFLIGHT_CANCEL_DRAIN_TIMEOUT = 300.0
+
 logger = get_logger(__name__)
 
 
@@ -723,10 +731,13 @@ class BuildRun(Run):
         request api_cancel + partial-cluster teardown) instead of provisioning a
         cluster only to tear it down.
 
-        Awaiting the cancelled tasks lets each run's own cleanup (e.g. ``sky.down``)
-        complete before the build finishes, so clusters are not leaked. Uses
-        ``return_exceptions=True`` so the expected ``CancelledError``/``RunFailed``
-        results do not mask each other.
+        Draining the cancelled tasks lets each run's own cleanup (e.g. ``sky.down``)
+        complete before the build finishes, so clusters are not leaked. The drain
+        is *bounded* (``_INFLIGHT_CANCEL_DRAIN_TIMEOUT``): this runs ahead of
+        teardown in ``_cleanup``, so a wedged child cleanup (a hung ``sky.down``,
+        an endless helm backoff) would otherwise block the CANCELLED transition
+        indefinitely. ``asyncio.wait`` does not kill the tasks on timeout, so any
+        straggler keeps running in the background while the build proceeds.
         """
         inflight = [t for t in self.tasks if not t.done()]
         if not inflight:
@@ -736,4 +747,19 @@ class BuildRun(Run):
         )
         for t in inflight:
             t.cancel()
-        await asyncio.gather(*inflight, return_exceptions=True)
+        _, pending = await asyncio.wait(
+            inflight, timeout=_INFLIGHT_CANCEL_DRAIN_TIMEOUT
+        )
+        if pending:
+            logger.warning(
+                "BuildRun._cleanup: %d in-flight run task(s) did not drain within "
+                "%ss after cancel; proceeding with teardown",
+                len(pending),
+                _INFLIGHT_CANCEL_DRAIN_TIMEOUT,
+            )
+            # Consume each straggler's eventual result so it is not later logged
+            # as an unretrieved task exception when it finally completes.
+            for t in pending:
+                t.add_done_callback(
+                    lambda f: None if f.cancelled() else f.exception()
+                )
