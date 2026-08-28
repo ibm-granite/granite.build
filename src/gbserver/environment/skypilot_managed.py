@@ -7,7 +7,6 @@ The gbserver process does not need to stay running for jobs to complete.
 """
 
 import asyncio
-import contextlib
 import glob
 import os
 from typing import Any, Dict, List, Optional, Self
@@ -334,12 +333,14 @@ class Skypilot_managed(Environment):
         try:
             # Cancelled during the submit: recover the request_id from the
             # (shielded) submit future so the request can be aborted
-            # server-side. jobs.cancel-by-name below is the safety net when
-            # there is no request_id.
+            # server-side. Bounded so a slow/stuck submit does not gate the
+            # cancel-by-name below, which is the safety net when there is no
+            # request_id.
             if request_id is None:
                 assert pending_fut is not None  # submit-cancel path always passes it
-                with contextlib.suppress(BaseException):
-                    request_id = await pending_fut
+                request_id = await self._drain_thread_future(
+                    pending_fut, f"SkyPilot managed submit for {job_name}"
+                )
                 pending_fut = None  # already drained above
             logger.info(
                 "Cancellation requested; aborting managed job launch %s (%s)",
@@ -353,10 +354,13 @@ class Skypilot_managed(Environment):
                 except Exception as e:
                     logger.warning("api_cancel for %s failed: %s", request_id, e)
             # Drain the still-running future (the stream wait, or the submit if
-            # its recovery raised) so its OS thread is retired.
+            # its recovery raised) so its OS thread is retired. Bounded: if the
+            # abort above was rejected or did not unblock the thread, we must not
+            # wait out the full provisioning time before cancelling by name.
             if pending_fut is not None:
-                with contextlib.suppress(BaseException):
-                    await pending_fut
+                await self._drain_thread_future(
+                    pending_fut, f"SkyPilot managed stream_and_get for {job_name}"
+                )
             # Cancel the managed job by name in case the controller already
             # accepted it before the launch request was aborted.
             try:

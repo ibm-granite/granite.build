@@ -1180,6 +1180,52 @@ class Environment(ABC):
 
         return asyncio.create_task(teardown_helper())
 
+    @staticmethod
+    async def _drain_thread_future(
+        pending_fut: "asyncio.Future",
+        description: str,
+        timeout: float = 60.0,
+    ) -> Any:
+        """Wait up to ``timeout`` for a shielded ``to_thread`` future to finish
+        so its OS thread is retired, without blocking indefinitely.
+
+        A ``to_thread`` future only completes when its blocking call returns;
+        the thread cannot be interrupted. After a caller aborts an in-flight
+        request the thread should unblock quickly, but if the abort was rejected
+        or did not take effect the call would otherwise run to natural
+        completion (e.g. the full provisioning time, or never). Bounding the
+        wait ensures whatever runs next — teardown, cleanup — is never gated on
+        that. If the future is still pending at the deadline we stop waiting and
+        attach a callback that retrieves its eventual result, so asyncio does
+        not log "Future exception was never retrieved" when the orphaned thread
+        finally finishes (its result is discarded).
+
+        Args:
+            pending_fut: The shielded ``to_thread`` future to drain.
+            description: Human-readable label for the timeout log message.
+            timeout: Maximum seconds to wait for the thread to retire.
+
+        Returns:
+            The future's result if it completed within ``timeout``, else None.
+        """
+        _, pending = await asyncio.wait({pending_fut}, timeout=timeout)
+        if pending:
+            logger.warning(
+                "%s did not retire within %ss after abort; proceeding without it",
+                description,
+                timeout,
+            )
+            # Swallow the eventual result/exception (guard cancelled: .exception()
+            # would raise CancelledError on a cancelled future).
+            pending_fut.add_done_callback(
+                lambda f: None if f.cancelled() else f.exception()
+            )
+            return None
+        try:
+            return pending_fut.result()
+        except BaseException:
+            return None
+
     def _get_storeconfig(
         self: Self, uri: URI, raise_exceptions: bool = False
     ) -> Tuple[Optional[Assetstore], Optional[AssetStoreEnvironmentConfig]]:

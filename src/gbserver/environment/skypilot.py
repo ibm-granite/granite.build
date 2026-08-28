@@ -7,7 +7,6 @@ require it unless a Skypilot environment is actually configured.
 """
 
 import asyncio
-import contextlib
 import glob
 import os
 import shlex
@@ -1367,12 +1366,13 @@ class Skypilot(Environment):
         try:
             # Cancelled during the submit: recover the request_id from the
             # (shielded) submit future so the request can still be aborted
-            # server-side. If the drain raises, the submit never produced a
-            # request — the teardown-by-name below is the safety net either way.
+            # server-side. Bounded so a slow/stuck submit does not gate teardown;
+            # if we cannot recover it, teardown-by-name below is the safety net.
             if request_id is None:
                 assert pending_fut is not None  # submit-cancel path always passes it
-                with contextlib.suppress(BaseException):
-                    request_id = await pending_fut
+                request_id = await self._drain_thread_future(
+                    pending_fut, f"SkyPilot submit for {cluster_name}"
+                )
                 pending_fut = None  # already drained above
             logger.info(
                 "Cancellation requested; aborting SkyPilot request %s for %s",
@@ -1386,11 +1386,13 @@ class Skypilot(Environment):
                 except Exception as e:
                     logger.warning("api_cancel for %s failed: %s", request_id, e)
             # Drain the still-running future (the stream wait, or the submit if
-            # its recovery raised) so its OS thread is retired; it may finish or
-            # raise (aborted/failed) — either is fine, we only want it retired.
+            # its recovery raised) so its OS thread is retired. Bounded: if the
+            # abort above was rejected or did not unblock the thread, we must not
+            # wait out the full provisioning time before tearing down by name.
             if pending_fut is not None:
-                with contextlib.suppress(BaseException):
-                    await pending_fut
+                await self._drain_thread_future(
+                    pending_fut, f"SkyPilot stream_and_get for {cluster_name}"
+                )
             await self._teardown(cluster_name)
         finally:
             if cancels > 0 and current:
