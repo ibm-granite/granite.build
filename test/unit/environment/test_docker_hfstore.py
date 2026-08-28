@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gbcommon.uri.hf import HfType, HfURI
+from gbserver.asset.hfstore import Hfstore
 from gbserver.environment.docker import Docker
 from gbserver.environment.environment import BINDING_KEY
 from gbserver.environment.local_assets import (
@@ -596,3 +597,75 @@ async def test_push_asset_hfstore_tolerates_non_hfstore_assetstore(tmp_path):
     # None => treated as Enterprise, so resolution still runs (pre-split behavior).
     mock_resolve.assert_called_once()
     assert mock_push.call_args.kwargs["resource_group_id"] == "rg-id"
+
+
+@pytest.mark.asyncio
+async def test_push_asset_hfstore_honors_store_push_use_resource_group(tmp_path):
+    """The inline path must honor store_push, like the step-based environments.
+
+    bash/docker have no hfpush step, so `store_push.config.hf` reaches HF only if
+    they forward it into push_asset_hfstore. Without that, documented build.yaml
+    fields (use_resource_group / resource_group_id / resource_group_name) are
+    silently dropped on exactly the two environments where the non-Enterprise use
+    case lives.
+    """
+    from gbserver.types.assetstoreconfig import AssetStoreConfig
+
+    src = tmp_path / "model.bin"
+    src.write_bytes(b"weights")
+    store = Hfstore(
+        AssetStoreConfig(base_uri="hf:/", config={"enterprise_organizations": ["org"]})
+    )
+    store.resolve_token = lambda uri: "tok"  # type: ignore[method-assign]
+    store.get_secrets = lambda: {"HF_TOKEN": "tok"}  # type: ignore[method-assign]
+
+    output_config = MagicMock()
+    output_config.store_push = MagicMock()
+    output_config.store_push.config = {"hf": {"use_resource_group": False}}
+
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with (
+        patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            return_value="should-not-be-used",
+        ) as mock_resolve,
+        patch.object(HfURI, "push", return_value=True) as mock_push,
+    ):
+        push_asset_hfstore(
+            src=str(src),
+            binding_id="out",
+            uri=uri,
+            assetstore=store,
+            output_config=output_config,
+        )
+
+    assert mock_push.call_args.kwargs["resource_group_id"] is None
+    mock_resolve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_docker_pushasset_forwards_push_configs(docker_env, tmp_path):
+    """docker.pushasset_hfstore must forward both push configs to the helper."""
+    src = tmp_path / "m.bin"
+    src.write_bytes(b"w")
+    storepush_config = MagicMock()
+    storepush_config.mode = "default"
+    storepush_config.config = {"hf": {"private": False}}
+    output_config = MagicMock()
+    output_config.store_push = MagicMock()
+    output_config.store_push.config = {"hf": {"resource_group_id": "rg-out"}}
+
+    with patch(
+        "gbserver.environment.docker.push_asset_hfstore", return_value=None
+    ) as mock_helper:
+        await docker_env.pushasset_hfstore(
+            binding={"path": str(src)},
+            uri=HfURI.from_parts(owner="org", repo="r"),
+            assetstore=MagicMock(),
+            storepush_config=storepush_config,
+            output_config=output_config,
+        )
+
+    kwargs = mock_helper.call_args.kwargs
+    assert kwargs["storepush_config"] is storepush_config
+    assert kwargs["output_config"] is output_config

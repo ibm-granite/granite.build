@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from gbcommon.utils.hf_utils import is_enterprise_hf_org
-from gbserver.spaces.resource_group import resolve_space_resource_group_id
+from gbserver.spaces.resource_group import (
+    resolve_hfpush_resource_group_id,
+    resolve_space_resource_group_id,
+)
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -107,6 +109,8 @@ def push_asset_hfstore(
     uri: Optional[Any] = None,
     assetstore=None,
     run_metadata=None,
+    storepush_config=None,
+    output_config=None,
     **_kwargs,
 ) -> Any:
     """Upload a local file or directory to a HuggingFace repo.
@@ -175,35 +179,39 @@ def push_asset_hfstore(
     # entirely: no space lookup, no HF API call.
     from gbserver.asset.hfstore import Hfstore
 
-    organization = hfuri.get_owner()
-    # Only Hfstore declares the Enterprise org list; any other assetstore (or
-    # none) falls back to None, which is_enterprise_hf_org() treats as "every org
-    # is Enterprise" — the pre-split behavior. Guarded by isinstance rather than
-    # read directly, because a non-Hfstore would otherwise raise AttributeError:
-    # nothing in resource-group resolution on this best-effort path should be
-    # able to abort the push.
-    enterprise_orgs = (
-        assetstore.get_enterprise_organizations()
-        if isinstance(assetstore, Hfstore)
-        else None
-    )
-
+    # Route through the same helper the step-based environments use, so
+    # store_push settings (resource_group_id / resource_group_name /
+    # use_resource_group) are honored identically here. Only Hfstore declares the
+    # Enterprise org list; any other assetstore means we cannot classify, so fall
+    # back to the pre-split behavior of attempting resolution.
     resource_group_id = None
-    if not is_enterprise_hf_org(organization, enterprise_orgs):
-        logger.info(
-            "HuggingFace organization '%s' is not an Enterprise org; "
-            "pushing without a resource group",
-            organization,
-        )
-    else:
+    if isinstance(assetstore, Hfstore):
         # Best-effort: in standalone the local user's token typically CANNOT
         # resolve the resource group id via the HF API (that needs org-admin
         # scope), so a miss here is expected. Don't abort — log and push with
         # resource_group_id = None: HfURI.push -> create_repo(exist_ok=True)
         # succeeds for an existing repo, and surfaces its own error otherwise.
-        # Resolved here, not above: the non-Enterprise branch never needs a
-        # token, and get_hf_token() should not run for a push that skips
-        # resource groups entirely.
+        # A ValueError from the helper is a *configuration* error (a resource
+        # group pinned for a non-Enterprise org), so it is re-raised rather than
+        # swallowed — the push would otherwise silently ignore what was asked.
+        try:
+            resource_group_id, _private, _hf_cfg = resolve_hfpush_resource_group_id(
+                hfuri=hfuri,
+                assetstore=assetstore,
+                space_name=space_name,
+                storepush_config=storepush_config,
+                output_config=output_config,
+            )
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Could not resolve HuggingFace resource group id for space '%s' "
+                "(pushing without one): %s",
+                space_name,
+                e,
+            )
+    else:
         from gbserver.types.constants import get_hf_token
 
         token = (
@@ -214,7 +222,7 @@ def push_asset_hfstore(
         try:
             resource_group_id = resolve_space_resource_group_id(
                 space_name=space_name,
-                organization=organization,
+                organization=hfuri.get_owner(),
                 token=token,
                 host=hfuri.get_host(),
             )

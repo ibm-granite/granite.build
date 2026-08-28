@@ -202,8 +202,11 @@ outputs:
           use_resource_group: false
 ```
 
-Combining it with an explicit `resource_group_id`/`resource_group_name` is
-contradictory and raises `ValueError`.
+Combining it with an explicit `resource_group_id`/`resource_group_name` **in the
+same push config** is contradictory and raises `ValueError`. Setting it on an
+output whose resource group is only *inherited* — from the environment-level
+`push` block — is not: the per-output opt-out wins, which is what makes the
+opt-out usable when `environment.yaml` supplies a group as the level-3 fallback.
 
 ### Errors
 

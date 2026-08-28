@@ -175,15 +175,34 @@ def merge_hf_push_config(
         The merged ``hf`` config dict (empty when neither source supplies one).
     """
     merged: dict = {}
-    if storepush_config is not None and storepush_config.config:
-        hf_cfg = storepush_config.config.get("hf") or {}
-        if isinstance(hf_cfg, dict):
-            merged.update(hf_cfg)
-    if output_config is not None and output_config.store_push is not None:
-        hf_cfg = (output_config.store_push.config or {}).get("hf") or {}
-        if isinstance(hf_cfg, dict):
-            merged.update(hf_cfg)
+    for level in _hf_push_config_levels(storepush_config, output_config):
+        merged.update(level)
     return merged
+
+
+def _hf_push_config_levels(
+    storepush_config: Optional["StorePush"] = None,
+    output_config: Optional["BuildTargetOutputConfig"] = None,
+) -> Tuple[dict, dict]:
+    """Return the ``hf`` config from each level separately, lowest priority first.
+
+    ``(environment_level, output_level)``. Kept distinct from the merged view so
+    a per-output setting can be told apart from one inherited from the
+    environment — see the ``use_resource_group`` handling in
+    :func:`resolve_hfpush_resource_group_id`.
+    """
+
+    def _hf(config: Optional[dict]) -> dict:
+        hf_cfg = (config or {}).get("hf") or {}
+        return hf_cfg if isinstance(hf_cfg, dict) else {}
+
+    env_level = _hf(storepush_config.config) if storepush_config is not None else {}
+    output_level = (
+        _hf(output_config.store_push.config)
+        if output_config is not None and output_config.store_push is not None
+        else {}
+    )
+    return env_level, output_level
 
 
 def sanitize_hf_step_overlay(hf_cfg: dict) -> dict:
@@ -236,6 +255,7 @@ def resolve_hfpush_resource_group_id(
         ValueError: If a resource group is pinned for a non-Enterprise org, or
             if ``use_resource_group: false`` is combined with a pinned group.
     """
+    env_level, output_level = _hf_push_config_levels(storepush_config, output_config)
     hf_cfg = merge_hf_push_config(storepush_config, output_config)
     resource_group_id = hf_cfg.get("resource_group_id") or None
     resource_group_name = hf_cfg.get("resource_group_name") or None
@@ -259,11 +279,32 @@ def resolve_hfpush_resource_group_id(
         return None, private, hf_cfg
 
     if not use_resource_group:
+        # Only contradictory when the opt-out and the pinned group are written at
+        # the SAME level. A per-output `use_resource_group: false` deliberately
+        # overrides a group inherited from environment.yaml — otherwise an
+        # environment-level default (the documented level-3 fallback) would make
+        # the per-output opt-out impossible to use, and the error would tell the
+        # build author to remove a value they never wrote.
+        for level in (output_level, env_level):
+            if not level.get(USE_RESOURCE_GROUP_KEY, True) and (
+                level.get("resource_group_id") or level.get("resource_group_name")
+            ):
+                same_level_pin = level.get("resource_group_id") or level.get(
+                    "resource_group_name"
+                )
+                raise ValueError(
+                    f"'{USE_RESOURCE_GROUP_KEY}: false' cannot be combined with "
+                    f"an explicit resource group ('{same_level_pin}') in the same "
+                    f"push config for organization '{organization}'. Remove one "
+                    "of them."
+                )
         if pinned:
-            raise ValueError(
-                f"'{USE_RESOURCE_GROUP_KEY}: false' cannot be combined with an "
-                f"explicit resource group ('{pinned}') for organization "
-                f"'{organization}'. Remove one of them."
+            logger.info(
+                "'%s: false' overrides the inherited resource group '%s' for "
+                "organization '%s'",
+                USE_RESOURCE_GROUP_KEY,
+                pinned,
+                organization,
             )
         logger.info(
             "'%s: false' configured for organization '%s'; pushing without a "

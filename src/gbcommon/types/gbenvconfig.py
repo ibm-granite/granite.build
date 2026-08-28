@@ -151,7 +151,15 @@ def deep_merge(base: dict, override: dict) -> dict:
 
     Nested dicts are merged key-by-key so an environment can override a single
     ``feature_flags`` entry without restating the rest; any other value replaces
-    the base value outright. Neither input is mutated.
+    the base value outright.
+
+    Neither input is rebound, but the copy is **shallow**: a value the override
+    does not touch (a list, or a nested dict absent from the override) is carried
+    into the result by reference, so mutating it through the result would also
+    change ``base``. Every caller here feeds the result straight to
+    ``GBEnvConfig``, and pydantic deep-copies on validation, so the resolved
+    configs share no mutable state — but a caller that skips validation must copy
+    what it intends to mutate.
     """
     merged = dict(base)
     for key, value in override.items():

@@ -109,12 +109,16 @@ async def test_pushasset_hfstore_pushes_binding_path(bash_env):
         )
 
     # The bash binding path is already a host path — passed straight through.
+    # The push configs are forwarded (None here) so store_push settings reach the
+    # shared helper; bash/docker have no hfpush step to carry them otherwise.
     mock_push.assert_called_once_with(
         src="/workspace/output/model",
         binding_id="hf_output",
         uri=uri,
         assetstore=assetstore,
         run_metadata=run_metadata,
+        storepush_config=None,
+        output_config=None,
     )
     assert result is uri
 

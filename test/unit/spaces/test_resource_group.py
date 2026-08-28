@@ -395,3 +395,69 @@ class TestSanitizeHfStepOverlay:
     def test_handles_empty_and_none(self):
         assert sanitize_hf_step_overlay({}) == {}
         assert sanitize_hf_step_overlay(None) == {}
+
+
+class TestUseResourceGroupAcrossLevels:
+    """`use_resource_group: false` is per-level, not evaluated against the merge.
+
+    An environment-level resource group is a documented fallback (priority 3 in
+    docs/builds/hf-push.md). A build author who opts one output out of resource
+    groups cannot remove that inherited value from their build.yaml, so treating
+    the pair as contradictory would make the documented opt-out unusable.
+    """
+
+    def test_output_opt_out_overrides_inherited_group(self):
+        with patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+        ) as mock_resolve:
+            rg_id, _, _ = resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="ibm-research"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                storepush_config=_storepush_config(
+                    {"resource_group_name": "gbspace-public"}
+                ),
+                output_config=_output_config({"use_resource_group": False}),
+            )
+
+        assert rg_id is None
+        mock_resolve.assert_not_called()
+
+    def test_same_level_contradiction_still_raises_at_output(self):
+        with pytest.raises(ValueError, match="same push config"):
+            resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="ibm-research"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                output_config=_output_config(
+                    {"use_resource_group": False, "resource_group_id": "rg-1"}
+                ),
+            )
+
+    def test_same_level_contradiction_still_raises_at_environment(self):
+        with pytest.raises(ValueError, match="same push config"):
+            resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="ibm-research"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                storepush_config=_storepush_config(
+                    {"use_resource_group": False, "resource_group_name": "g"}
+                ),
+            )
+
+    def test_environment_opt_out_is_overridable_by_output(self):
+        """The reverse direction: an output can turn resource groups back on."""
+        with patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            return_value="rg-on",
+        ) as mock_resolve:
+            rg_id, _, _ = resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="ibm-research"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                storepush_config=_storepush_config({"use_resource_group": False}),
+                output_config=_output_config({"use_resource_group": True}),
+            )
+
+        assert rg_id == "rg-on"
+        mock_resolve.assert_called_once()

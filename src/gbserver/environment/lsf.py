@@ -1541,6 +1541,10 @@ class Lsf(Environment):
         # Enterprise/non-enterprise split + config precedence + table-first
         # resolution all live in the shared helper; a non-Enterprise org
         # resolves to None without any HF API call.
+        # NOTE: unlike k8s/skypilot, LSF applies no post-hoc overlay of the
+        # remaining `hf.*` keys onto hfpush_config — it never did, and the LSF
+        # command.sh template consumes only the keys build_hfpush_step_config
+        # emits. `_hf_cfg` is therefore unused here by design.
         resource_group_id, hf_private, _hf_cfg = resolve_hfpush_resource_group_id(
             hfuri=hfuri,
             assetstore=assetstore,
