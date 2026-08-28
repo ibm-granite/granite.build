@@ -77,6 +77,7 @@ from gbserver.utils.launch import (
     launch_command_and_retry_or_raise_errors,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.redaction import REDACTED, SENSITIVE_KEY_RE, scrub_url_credentials
 from gbserver.utils.ssh_keys import write_private_key_file
 from gbserver.utils.ssh_tunnel import SshTunnel
 from gbserver.utils.utils import cmd_safe_join, get_uuid, short_alphanumeric_lower_hash
@@ -409,27 +410,53 @@ class Lsf(Environment):
         self: Self,
         jobsub_path: Path,
         env_vars: Optional[Dict] = None,
+        secret_keys: Optional[set[str]] = None,
     ) -> Tuple[str, str]:
         """
         Build ``[KEY=val ...] /path/jobsub.sh`` as a remote command string.
 
+        The redacted variant is built by rebuilding the command from parts and
+        masking a value whenever its env-var name is in ``secret_keys`` (names the
+        caller knows carry injected space secrets, whatever the user chose to call
+        them) **or** its name matches
+        :data:`~gbserver.utils.redaction.SENSITIVE_KEY_RE` (defense-in-depth). A
+        surviving value still has any embedded URL credentials scrubbed.
+
+        This deliberately does not redact by matching the value *text* in the
+        assembled string, as an earlier version did: an empty-string value made
+        ``str.replace("", ...)`` splice the placeholder between every character of
+        the command, and an empty or short value could also shatter a genuinely
+        secret value so it survived unmasked. Rebuilding from parts avoids both.
+
+        Masking is by name, so a secret duplicated inside a different
+        non-secret-named var's value is not caught (accepted tradeoff; callers here
+        never do that).
+
+        :param secret_keys: env-var names whose value must be masked regardless of
+            whether the name looks secret — the caller passes the names it injected
+            space secrets under, since those names are user-chosen and arbitrary.
+
         Returns:
-            Tuple of (command_str, redacted_command_str) where secret values
-            in env_vars are replaced with ``<redacted>`` in the redacted version.
+            Tuple of (command_str, redacted_command_str) where the value of any
+            secret env var is replaced with ``<redacted>`` in the redacted version.
         """
+        secret_keys = secret_keys or set()
         parts: List[str] = []
-        to_redact: set[str] = set()
+        redacted_parts: List[str] = []
         if env_vars:
             logger.info("injecting env_vars: %s", env_vars.keys())
             for k, v in env_vars.items():
                 parts.append(f"{k}={v}")
-                to_redact.add(str(v))
+                is_secret = k in secret_keys or (
+                    isinstance(k, str) and SENSITIVE_KEY_RE.search(k) is not None
+                )
+                if is_secret:
+                    redacted_parts.append(f"{k}={REDACTED}")
+                else:
+                    redacted_parts.append(f"{k}={scrub_url_credentials(str(v))}")
         parts.append(str(jobsub_path))
-        cmd = " ".join(parts)
-        redacted = cmd
-        for v in to_redact:
-            redacted = redacted.replace(v, "'<redacted>'")
-        return cmd, redacted
+        redacted_parts.append(str(jobsub_path))
+        return " ".join(parts), " ".join(redacted_parts)
 
     def _get_local_bsub_command(
         self: Self,
@@ -628,6 +655,9 @@ class Lsf(Environment):
         )
         # Get useful env vars to inject for LhPull and LhPush
         env_vars = {}
+        # Names of env vars holding injected space secrets — their values must be
+        # masked in the redacted command regardless of what the user named them.
+        secret_env_keys: set[str] = set()
         # Forward GBTEST_ test-control vars (e.g. GBTEST_MOCKED_HF_OPS) to the LSF
         # job so hfpull/hfpush steps honor mocking on the remote node.
         env_vars.update(get_exported_gbtest_env_vars())
@@ -664,12 +694,13 @@ class Lsf(Environment):
                     secret_name in space_secrets
                 ), f"failed to find the secret {secret_name} in {all_keys}"
                 env_vars[env_var_name] = space_secrets[secret_name]
+                secret_env_keys.add(env_var_name)
         try:
             if self.use_ssh:
                 ssh_tunnel = self._ssh_tunnel
                 assert ssh_tunnel
                 remote_cmd, redacted_cmd = self._build_cmd_to_run_with_ssh(
-                    final_jobsub_path, env_vars
+                    final_jobsub_path, env_vars, secret_env_keys
                 )
                 msg = f"⚡ Launching LSF job with command:\n```\n{redacted_cmd}\n```"
                 self._send_message(msg=msg, **kwargs)

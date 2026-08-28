@@ -1,0 +1,159 @@
+# Minimal AutotuneConfig YAML used as a fixture.
+# Carries the two required sections (training_config, tune_config) plus the
+# optional sections (tuners_config, tuners_rl_config, training_rl_config,
+# tokenizer_config), with just enough hyperparameters for parsing tests.
+
+tune_config:
+  search_alg:
+    description: "Search algorithm"
+    default: "lds"
+    values: ["lds", "random", "hyperopt"]
+    type: str
+  scheduler:
+    description: "Scheduler"
+    default: "fifo"
+    values: ["fifo", "asha", "hyperbandforbohb"]
+    type: str
+  num_samples:
+    description: "Number of HPO samples"
+    default: 4
+    type: int
+  max_concurrent_trials:
+    description: "Max concurrent trials"
+    default: 2
+    type: int
+  max_discrepancy:
+    description: "Max LDS discrepancy"
+    default: 1
+    type: int
+  metric:
+    description: "Optimization metric"
+    default: "loss"
+    type: str
+  mode:
+    description: "Optimization mode"
+    default: "min"
+    values: ["min", "max"]
+    type: str
+
+training_config:
+  num_train_epochs:
+    description: "Epochs"
+    default: 1
+    type: int
+  num_gpus_per_trial:
+    description: "GPUs per trial"
+    default: 1
+    type: int
+  max_length:
+    description: "Max sequence length"
+    default: 128
+    type: int
+  precision:
+    description: "Precision"
+    default: "fp32"
+    values: ["fp32", "bf16", "int8", "int4"]
+    type: str
+  train_implementation:
+    description: "Distributed strategy"
+    default: "DeepSpeed"
+    values: ["DeepSpeed", "FSDP"]
+    type: str
+  ds_strategy:
+    description: "DeepSpeed strategy"
+    default: "zero2_gpu"
+    type: str
+  fsdp_strategy:
+    description: "FSDP strategy"
+    default: "no_shard"
+    type: str
+
+training_rl_config:
+  reward_function_path:
+    description: "Reward function path"
+    default: ""
+    type: str
+  rollout_temperature:
+    description: "Rollout temperature"
+    default: 1.0
+    type: float
+  max_prompt_length:
+    description: "Max prompt length"
+    default: 256
+    type: int
+  max_response_length:
+    description: "Max response length"
+    default: 128
+    type: int
+
+tuners_config:
+  lora:
+    description: "LoRA"
+    tuner_name: "tuner.lora"
+    title: "LoRA"
+    hyperparams:
+      r:
+        description: "LoRA rank"
+        strategy: "choice"
+        values: [4, 8, 16]
+        default: 8
+        type: int
+        for_tuner: true
+      lora_alpha:
+        description: "LoRA alpha"
+        strategy: "choice"
+        values: [8, 16, 32]
+        default: 16
+        type: int
+        for_tuner: true
+      learning_rate:
+        description: "Learning rate"
+        strategy: "loguniform"
+        values: [1.0e-5, 1.0e-3]
+        default: 1.0e-4
+        type: float
+        for_tuner: false
+  sft:
+    description: "SFT"
+    tuner_name: "tuner.sft"
+    title: "SFT"
+    hyperparams:
+      learning_rate:
+        description: "Learning rate"
+        strategy: "choice"
+        values: [1.0e-5, 5.0e-5, 1.0e-4]
+        default: 5.0e-5
+        type: float
+        for_tuner: true
+
+tuners_rl_config:
+  dpo:
+    description: "DPO"
+    tuner_name: "tuner.dpo"
+    title: "DPO"
+    hyperparams:
+      beta:
+        description: "DPO beta"
+        strategy: "choice"
+        values: [0.1, 1.0, 10.0]
+        default: 1.0
+        type: float
+        for_tuner: true
+  ppo:
+    description: "PPO"
+    tuner_name: "tuner.ppo"
+    title: "PPO"
+    hyperparams:
+      kl_coef:
+        description: "KL coefficient"
+        strategy: "choice"
+        values: [0.001, 0.01, 0.1]
+        default: 0.001
+        type: float
+        for_tuner: true
+
+tokenizer_config:
+  pad_token:
+    description: "Pad token"
+    default: null
+    type: str

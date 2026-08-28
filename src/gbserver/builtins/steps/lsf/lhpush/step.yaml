@@ -36,9 +36,9 @@ environment_configs:
         - bsub_monitor
     monitors:
       bsub_monitor:
-        type: bsub_monitor
+        ref: space://monitors/lsf
         config:
-          event_configs:
+          extra_event_configs:
           - event_type: ARTIFACT_PUSHED_EVENT
             line_regex: Pushed\sURI:\s.+
             is_json: false

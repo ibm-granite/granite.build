@@ -395,6 +395,80 @@ class TestResolveMonitorConfig:
             _reset_monitor_file_cache()
 
 
+@pytest.fixture
+def builtin_monitor_space():
+    """Point SpaceURI at the real shipped ``builtins/`` monitor library.
+
+    Unlike ``monitor_library`` (which synthesizes a temp library), this resolves
+    ``space://monitors/<name>`` against the monitor.yaml files actually shipped in
+    the repo, so a content regression in one is caught. Restores prior base URIs.
+    """
+    import gbserver.build.space as space_mod
+
+    builtins = Path(space_mod.__file__).parent.parent / "builtins"
+    prev = getattr(SpaceURI._thread_local, "base_uris", None)
+    prev_secrets = getattr(SpaceURI._thread_local, "space_secrets", None)
+    SpaceURI.set_baseuris(base_uris=[builtins.as_uri()], space_secrets={})
+    _reset_monitor_file_cache()
+    try:
+        yield builtins
+    finally:
+        SpaceURI.set_baseuris(
+            base_uris=prev if prev is not None else ["file:"],
+            space_secrets=prev_secrets or {},
+        )
+        _reset_monitor_file_cache()
+
+
+class TestBuiltinLsfMonitor:
+    """The shipped builtins/monitors/lsf/monitor.yaml resolves as expected."""
+
+    def test_lsf_monitor_resolves_to_bsub_type_and_rules(
+        self: Self, builtin_monitor_space
+    ) -> None:
+        """`ref: space://monitors/lsf` yields the bsub_monitor type with exactly the
+        three standard rules (artifact PATH, artifact STATE, step-metadata) and no
+        inert poll/log_retrieval keys (which have no LSF runtime consumer)."""
+        m_type, cfg = resolve_monitor_config(
+            StepMonitorConfig(ref="space://monitors/lsf")
+        )
+        assert m_type == "bsub_monitor"
+        assert "poll_interval_seconds" not in cfg
+        assert "log_retrieval" not in cfg
+        rules = {e["event_type"]: e for e in cfg["event_configs"]}
+        event_types = [e["event_type"] for e in cfg["event_configs"]]
+        assert event_types == [
+            "NEWARTIFACT_IN_ENVIRONMENT_EVENT",  # env:// PATH
+            "NEWARTIFACT_IN_ENVIRONMENT_EVENT",  # mem:// STATE
+            "STEP_METADATA_UPDATE_EVENT",
+        ]
+        # Artifact rules are unanchored (raw-log forward-compat); the provenance
+        # rule is `^`-anchored so it cannot be injected mid-line.
+        assert rules["STEP_METADATA_UPDATE_EVENT"]["line_regex"].startswith("^")
+        for e in cfg["event_configs"]:
+            if e["event_type"] == "NEWARTIFACT_IN_ENVIRONMENT_EVENT":
+                assert not e["line_regex"].startswith("^")
+
+    def test_lsf_step_overlay_appends_push_event(
+        self: Self, builtin_monitor_space
+    ) -> None:
+        """A step (e.g. lhpush) that refs the LSF monitor and appends its own
+        ARTIFACT_PUSHED_EVENT via extra_event_configs keeps the three base rules."""
+        push = {
+            "event_type": "ARTIFACT_PUSHED_EVENT",
+            "line_regex": r"Pushed\sURI:\s.+",
+        }
+        _, cfg = resolve_monitor_config(
+            StepMonitorConfig(
+                ref="space://monitors/lsf",
+                config={"extra_event_configs": [push]},
+            )
+        )
+        assert len(cfg["event_configs"]) == 4
+        assert cfg["event_configs"][-1] == push
+        assert "extra_event_configs" not in cfg
+
+
 def _env_cfg(monitors: dict) -> StepEnvironmentTypeConfig:
     """Build a StepEnvironmentTypeConfig with the given monitors map."""
     return StepEnvironmentTypeConfig(

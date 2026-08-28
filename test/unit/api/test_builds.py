@@ -34,10 +34,19 @@ restores both real functions for the duration of each test below.
 
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from unit.api._space_scoping_test_helpers import (
+    ALICE,
+    ALICE_SPACE,
+    BOB_SPACE,
+)
+from unit.api._space_scoping_test_helpers import fake_request as _fake_request
+from unit.api._space_scoping_test_helpers import row_matches as _row_matches
+from unit.api._space_scoping_test_helpers import set_alice_access as _set_alice_access
 
 from gbserver.api import builds as builds_module
 from gbserver.api.builds import (
@@ -45,7 +54,10 @@ from gbserver.api.builds import (
     BuildSubmitRequest,
     BuildValidateRequest,
     BuildValidation,
+    count_builds,
     get_build_archive,
+    list_build_tags,
+    list_builds,
     read_build,
     request_cancellation,
     restart_build,
@@ -80,12 +92,6 @@ def _real_authz():
         ),
     ):
         yield
-
-
-def _fake_request(login: str, email: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        state=SimpleNamespace(data={"user": SimpleNamespace(login=login, email=email)})
-    )
 
 
 def _submit_req(username: str) -> BuildSubmitRequest:
@@ -583,3 +589,121 @@ def test_restart_build_authz_precedes_status_disclosure():
                 BuildRestartRequest(build_id=prior.uuid),
             )
     assert exc.value.status_code == 404
+
+
+# ------------------------------------------------------------------ list_builds / count_builds / list_build_tags
+#
+# Regression coverage for the cross-space list-endpoint disclosure: list_builds,
+# count_builds, and list_build_tags built their row_filter straight from query
+# params and called storage.get_by_where()/count() with no authorization check
+# at all, so any authenticated user could enumerate builds from every space
+# regardless of membership -- unlike read_build/get_build_archive above, which
+# were already scoped. scope_space_name_filter() (api/utils.py) closes the gap
+# by intersecting the space_name filter with the caller's real space
+# memberships; these tests exercise it through the three endpoints that call it.
+
+
+def _stored_build_in(
+    space_name: str, owner: str, tags: Optional[list] = None
+) -> StoredBuild:
+    return StoredBuild.create(
+        name="poc",
+        space_name=space_name,
+        source_uri="",
+        username=owner,
+        build_archive="dGVzdA==",
+        status=Status.SUCCESS,
+        targets=[],
+        tags=tags or [],
+    )
+
+
+def _filtering_build_storage(builds: list):
+    """A build_storage stand-in whose get_by_where()/count() actually apply the
+    row_filter (list values match-any, scalar values match exactly) -- unlike a
+    plain MagicMock, this lets the tests prove the space_name value computed by
+    scope_space_name_filter() is what narrows the result set, not a mock that
+    would return everything regardless."""
+    return SimpleNamespace(
+        get_by_where=lambda where=None, query_control=None: [
+            b for b in builds if _row_matches(b, where or {})
+        ],
+        count=lambda where=None: len(
+            [b for b in builds if _row_matches(b, where or {})]
+        ),
+    )
+
+
+def _patched_list_storage(builds: list):
+    fake_storage = SimpleNamespace(build_storage=_filtering_build_storage(builds))
+    return patch.object(builds_module, "get_admin_storage", return_value=fake_storage)
+
+
+def test_list_builds_excludes_other_spaces_for_non_admin():
+    alice_build = _stored_build_in(ALICE_SPACE, ALICE)
+    bob_build = _stored_build_in(BOB_SPACE, "bob")
+    with (
+        _patched_list_storage([alice_build, bob_build]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_builds(_fake_request(ALICE, f"{ALICE}@example.com"))
+    assert {b.space_name for b in resp.builds} == {ALICE_SPACE}
+
+
+def test_list_builds_rejects_explicit_cross_space_request():
+    """Even an explicit space_name=space-B (bob's space, not alice's) must
+    return nothing -- not bob's builds. This is the exact PoC from the report:
+    the caller-supplied space_name must be checked against real membership,
+    not trusted outright."""
+    bob_build = _stored_build_in(BOB_SPACE, "bob")
+    with (
+        _patched_list_storage([bob_build]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_builds(
+            _fake_request(ALICE, f"{ALICE}@example.com"), space_name=BOB_SPACE
+        )
+    assert resp.builds == []
+
+
+def test_list_builds_unrestricted_for_super_admin():
+    alice_build = _stored_build_in(ALICE_SPACE, ALICE)
+    bob_build = _stored_build_in(BOB_SPACE, "bob")
+    with (
+        _patched_list_storage([alice_build, bob_build]),
+        patch("gbserver.api.utils.is_super_admin", return_value=True),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        resp = list_builds(_fake_request("admin_x", "admin_x@example.com"))
+    assert {b.space_name for b in resp.builds} == {ALICE_SPACE, BOB_SPACE}
+    manager.assert_not_called()
+
+
+def test_count_builds_excludes_other_spaces_for_non_admin():
+    alice_build = _stored_build_in(ALICE_SPACE, ALICE)
+    bob_build = _stored_build_in(BOB_SPACE, "bob")
+    with (
+        _patched_list_storage([alice_build, bob_build]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = count_builds(_fake_request(ALICE, f"{ALICE}@example.com"))
+    assert resp.count == 1
+
+
+def test_list_build_tags_excludes_other_spaces_for_non_admin():
+    alice_build = _stored_build_in(ALICE_SPACE, ALICE, tags=["alpha"])
+    bob_build = _stored_build_in(BOB_SPACE, "bob", tags=["beta"])
+    with (
+        _patched_list_storage([alice_build, bob_build]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        tags = list_build_tags(_fake_request(ALICE, f"{ALICE}@example.com"))
+    assert tags == ["alpha"]

@@ -218,3 +218,6 @@ frontend/*.tsbuildinfo
 # Compiled frontend served by gbserver — built by `make build-frontend`, not committed
 src/gbserver/static/ui/
 
+
+# autotunex SvelteKit source lives under autotunex/src/ux/src/lib; re-include it.
+!autotunex/**/lib/

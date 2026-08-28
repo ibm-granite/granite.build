@@ -301,9 +301,10 @@ class WandBLineageStore(ILineageStore):
         events_dict: Dict[str, List[dict]] = {}
 
         # NOTE: the number of events emitted here (one per output artifact across
-        # all output-artifact lists, or one "no-output" event below) must stay in
-        # lockstep with lineage_reconciler.expected_run_count, which derives the
-        # same count from the target in memory to detect partial records.
+        # all output-artifact lists, or one "no-output" event below when there are
+        # inputs but no outputs) must stay in lockstep with
+        # lineage_reconciler.expected_run_count, which derives the same count from
+        # the target in memory to detect partial records.
         for (
             target_artifact_name,
             output_artifact_list,
@@ -383,13 +384,28 @@ class WandBLineageStore(ILineageStore):
             events_list.extend(target_events)
             events_dict[target_artifact_name] = target_events
 
-        # A successful target with no output artifacts still represents a real
-        # job run and must produce one event so its run is recorded — even when
-        # it has no inputs either (e.g. a pure generation/compute target). Guard
-        # only on the absence of output-artifact events, not on having inputs;
-        # otherwise an artifact-less target emits nothing and the reconciler
-        # silently marks it "recorded" without ever contacting the backend.
-        if len(targetrun.output_artifacts) == 0:
+        # A target with no output artifacts but at least one input still has real
+        # lineage (an edge into it) and needs one event so that edge is recorded.
+        # A target with neither inputs nor outputs is not recorded to wandb at
+        # all: the standalone UI reads target nodes straight from admin storage
+        # regardless of artifacts, so a wandb run is no longer needed to make a
+        # fully artifact-less target appear as a node.
+        # The condition below must stay identical to the skip in
+        # select_recordable_targets (lineage_reconciler) and to the branch in
+        # expected_run_count. If the selector keeps a target that this branch
+        # then declines to emit for, the target is reported unrecorded on every
+        # scan and -- since run ids are random -- each scan writes a fresh
+        # duplicate run set while pinning the checkpoint forever.
+        #
+        # Hence the *raw* dicts, not `inputs` and not the output_artifacts keys:
+        # `output_artifacts={"model": []}` has a key but no artifact, so the
+        # per-output loop above emitted nothing and this branch must cover it;
+        # and `inputs` is post-filter (only uuids that resolve in
+        # artifact_registry as an ArtifactRegistration), so an inputs-only target
+        # whose input rows were pruned would emit nothing at all if gated on it.
+        # The selector is not the primary gate either -- api/lineage.py reaches
+        # this builder directly, without consulting it.
+        if not any(targetrun.output_artifacts.values()) and targetrun.input_artifacts:
             event = {
                 **base_event,
                 "inputs": inputs,
@@ -452,16 +468,32 @@ class WandBLineageStore(ILineageStore):
     ) -> None:
         events, _ = self.create_jobstats_for_target(storage, targetrun, build)
         if not events:
-            # No events means emit_event is never called, yet the caller
-            # (reconciler) will still mark the target recorded — a silent no-op
-            # that leaves nothing in the backend. Surface it rather than hide it.
-            logger.warning(
-                "No lineage events built for target %s (name=%s) in build %s; "
-                "nothing emitted to the lineage backend",
-                targetrun.uuid,
-                targetrun.name,
-                build.uuid,
+            # No events means emit_event is never called. For a fully
+            # artifact-less target that is the intended outcome — there is no
+            # lineage to record, and `select_recordable_targets` filters such
+            # targets out before the reconciler ever gets here. Any *other*
+            # empty result is a silent no-op: the caller marks the target
+            # recorded while nothing reaches the backend, so warn on that.
+            artifact_less = not targetrun.input_artifacts and not any(
+                targetrun.output_artifacts.values()
             )
+            if artifact_less:
+                logger.debug(
+                    "No lineage events for artifact-less target %s (name=%s) in "
+                    "build %s; nothing to record",
+                    targetrun.uuid,
+                    targetrun.name,
+                    build.uuid,
+                )
+            else:
+                logger.warning(
+                    "No lineage events built for target %s (name=%s) in build %s "
+                    "despite it having artifacts; nothing emitted to the lineage "
+                    "backend",
+                    targetrun.uuid,
+                    targetrun.name,
+                    build.uuid,
+                )
             return
         for event in events:
             self._service.emit_event(event)
