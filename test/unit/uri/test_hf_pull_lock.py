@@ -16,12 +16,13 @@
 
 """Download serialization and self-healing of ``HfURI.pull`` (issue #320).
 
-huggingface_hub already protects each file's ``.incomplete`` write with its own
-per-file lock inside the destination, so ``pull`` adds only a *best-effort*
-cross-process ``filelock.FileLock`` keyed to the destination: concurrent pulls
-of the same repo/revision run one at a time, but if the lock can't be acquired
-(timeout, or a mount that doesn't honor advisory locks) the pull proceeds and
-relies on HF's per-file locks rather than failing the build.
+``pull`` serializes concurrent pulls into the same destination behind a
+best-effort cross-process lock implemented with atomic ``os.mkdir`` (coherent
+across nodes on the shared GPFS/AFM cache, unlike BSD ``flock``). If the lock is
+held by a peer past ``GB_HFPULL_LOCK_TIMEOUT`` or cannot be set up, the pull
+proceeds anyway and relies on huggingface_hub's per-file locks rather than
+failing the build. The lock directory is removed on release, so it does not
+accumulate.
 
 Separately, when the HF download cache is corrupt (a ``.incomplete`` file whose
 parent dir was removed, or a size-mismatch "Consistency check failed"), ``pull``
@@ -33,7 +34,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from filelock import FileLock, Timeout
 
 from gbcommon.types.testing import ENV_VAR_GBTEST_MOCKED_HF_OPS
 from gbcommon.uri.hf import (
@@ -54,20 +54,9 @@ def _disable_hf_op_mocking(monkeypatch):
     monkeypatch.delenv("GB_HFPULL_FORCE", raising=False)
 
 
-def _expected_lock(dest: Path) -> Path:
-    """The lock file pull() is expected to use for *dest*."""
-    return _hfpull_lock_path(dest)
-
-
-def _is_locked(path: Path) -> bool:
-    """True if *path* is currently held by some other FileLock holder."""
-    probe = FileLock(str(path))
-    try:
-        probe.acquire(timeout=0)
-    except Timeout:
-        return True
-    probe.release()
-    return False
+def _lock_held(path: Path) -> bool:
+    """True while the mkdir lock directory exists (i.e. someone holds it)."""
+    return path.exists()
 
 
 def _incomplete_error(dest: Path) -> FileNotFoundError:
@@ -86,14 +75,14 @@ def test_lock_path_is_outside_the_revision_namespace(tmp_path):
     assert lock_path.name == "abc123.lock"
 
 
-def test_repo_pull_holds_lock_during_download_and_releases_after(tmp_path):
-    """snapshot_download runs while the per-dest lock is held; released after."""
+def test_repo_pull_holds_lock_during_download_and_removes_it_after(tmp_path):
+    """snapshot_download runs while the lock dir exists; removed after."""
     dest = tmp_path / "ibm-granite" / "granite-4.2-8b" / "abc123"
-    lock_path = _expected_lock(dest)
+    lock_path = _hfpull_lock_path(dest)
     observed = {}
 
     def fake_download(*_args, **_kwargs):
-        observed["locked_during"] = _is_locked(lock_path)
+        observed["held_during"] = _lock_held(lock_path)
 
     uri = HfURI.from_parts(
         owner="ibm-granite", repo="granite-4.2-8b", hf_type=HfType.MODEL
@@ -102,70 +91,60 @@ def test_repo_pull_holds_lock_during_download_and_releases_after(tmp_path):
         result = uri.pull(dest)
 
     assert result is True
-    assert observed.get("locked_during") is True, "lock not held during download"
-    # After a successful pull the lock must be released.
-    assert _is_locked(lock_path) is False
+    assert observed.get("held_during") is True, "lock dir not present during download"
+    # Released -> the lock dir must be gone (no accumulation on the shared cache).
+    assert not lock_path.exists()
 
 
 def test_bucket_pull_holds_lock_during_sync(tmp_path):
     """sync_bucket also runs under the lock (the bucket branch of pull)."""
     dest = tmp_path / "org" / "my-bucket" / "def456"
-    lock_path = _expected_lock(dest)
+    lock_path = _hfpull_lock_path(dest)
     observed = {}
 
     def fake_sync(*_args, **_kwargs):
-        observed["locked_during"] = _is_locked(lock_path)
+        observed["held_during"] = _lock_held(lock_path)
 
     uri = HfURI.from_parts(owner="org", repo="my-bucket", hf_type=HfType.BUCKET)
-    with patch("gbcommon.uri.hf.HfApi") as MockApi:
-        MockApi.return_value.sync_bucket.side_effect = fake_sync
+    with patch("gbcommon.uri.hf.HfApi") as mock_api:
+        mock_api.return_value.sync_bucket.side_effect = fake_sync
         result = uri.pull(dest)
 
     assert result is True
-    assert observed.get("locked_during") is True, "lock not held during sync_bucket"
-    assert _is_locked(lock_path) is False
+    assert (
+        observed.get("held_during") is True
+    ), "lock dir not present during sync_bucket"
+    assert not lock_path.exists()
 
 
-def test_pull_proceeds_when_lock_not_acquired(tmp_path, monkeypatch):
+def test_pull_proceeds_when_peer_holds_lock(tmp_path, monkeypatch):
     """A peer holding the lock past the timeout does NOT fail the pull.
 
-    The lock is best-effort: on timeout pull() falls through to the download
-    and relies on huggingface_hub's own per-file locks.
+    Best-effort: on timeout pull() falls through to the download. It must also
+    leave the peer's lock dir intact (it never acquired it).
     """
     dest = tmp_path / "org" / "repo" / "hash"
-    lock_path = _expected_lock(dest)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("GB_HFPULL_LOCK_TIMEOUT", "0.5")
+    lock_path = _hfpull_lock_path(dest)
+    lock_path.mkdir(parents=True)  # simulate a peer already holding the lock
+    monkeypatch.setenv("GB_HFPULL_LOCK_TIMEOUT", "0")
 
     uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
-    held = FileLock(str(lock_path))
-    held.acquire()
-    try:
-        with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
-            result = uri.pull(dest)
-    finally:
-        held.release()
+    with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
+        result = uri.pull(dest)
 
     assert result is True
     mock_dl.assert_called_once()
+    # We never acquired the peer's lock, so we must not have removed it.
+    assert lock_path.exists()
 
 
-@pytest.mark.parametrize(
-    "exc",
-    [
-        NotImplementedError("FileSystem does not appear to support flock"),
-        OSError("[Errno 30] Read-only file system"),
-    ],
-)
-def test_pull_proceeds_when_lock_acquire_raises(tmp_path, exc):
-    """A lock-infra failure at acquire time must not fail the pull (best-effort).
-
-    Covers the unsupported-mount (NotImplementedError) and flaky-mount (OSError)
-    branches: the download proceeds and relies on HF's per-file locks.
-    """
+def test_pull_proceeds_when_lock_setup_fails(tmp_path):
+    """A lock-infra failure (mkdir raises OSError) must not fail the pull."""
     dest = tmp_path / "org" / "repo" / "hash"
     uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
-    with patch("filelock.FileLock.acquire", side_effect=exc):
+    with patch(
+        "pathlib.Path.mkdir", side_effect=OSError("[Errno 30] Read-only file system")
+    ):
         with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
             result = uri.pull(dest)
 
@@ -176,19 +155,13 @@ def test_pull_proceeds_when_lock_acquire_raises(tmp_path, exc):
 def test_different_dests_do_not_contend(tmp_path, monkeypatch):
     """A lock held for one dest must not block a pull into a different dest."""
     other = tmp_path / "org" / "repo-a" / "h1"
-    other_lock = _expected_lock(other)
-    other_lock.parent.mkdir(parents=True, exist_ok=True)
-    held = FileLock(str(other_lock))
-    held.acquire()
-    monkeypatch.setenv("GB_HFPULL_LOCK_TIMEOUT", "0.5")
+    _hfpull_lock_path(other).mkdir(parents=True)  # peer holds a different dest's lock
+    monkeypatch.setenv("GB_HFPULL_LOCK_TIMEOUT", "0")
 
     dest = tmp_path / "org" / "repo-b" / "h2"
     uri = HfURI.from_parts(owner="org", repo="repo-b", hf_type=HfType.MODEL)
-    try:
-        with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
-            result = uri.pull(dest)
-    finally:
-        held.release()
+    with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
+        result = uri.pull(dest)
 
     assert result is True
     mock_dl.assert_called_once()
@@ -279,7 +252,7 @@ def test_lock_timeout_reads_env_with_default(monkeypatch):
     monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "not-a-number")
     assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
 
-    # A negative value would make FileLock.acquire block forever; reject it.
+    # A negative value would make the acquire loop wait forever; reject it.
     monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "-1")
     assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
 

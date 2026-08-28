@@ -22,6 +22,7 @@ import re
 import shutil
 import sys
 import threading
+import time
 import urllib.parse
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -29,7 +30,6 @@ from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, Iterator, List, Optional, Self
 
-from filelock import FileLock, Timeout
 from huggingface_hub import (
     HfApi,
     repo_exists,
@@ -77,36 +77,37 @@ DEFAULT_REVISION = "main"
 # was removed out from under a live writer, which no lock can prevent.
 #
 # pull() therefore does two things:
-#   1. Best-effort serialization: a cross-process FileLock keyed to the
-#      destination so two of our own pullers do not work the same tree at once.
-#      It is best-effort -- on timeout, or on a mount that does not honor
-#      advisory locks, we proceed with the download and rely on HF's own
-#      per-file locks rather than failing the build.
+#   1. Best-effort serialization: a cross-process lock keyed to the destination
+#      so two of our own pullers do not work the same tree at once. It is
+#      best-effort -- on timeout, or if the lock can't be set up, we proceed
+#      with the download and rely on HF's own per-file locks rather than
+#      failing the build.
 #   2. Self-healing: if a download hits the "removed dir" or "poisoned
 #      .incomplete" states, retry once with ``force_download=True`` (which
 #      unlinks the bad ``.incomplete``) and, failing that, drop HF's scratch
 #      download dir and retry -- turning a manual ``rm -rf`` into automatic
 #      recovery. This is the primary #320 fix and is filesystem-agnostic.
 #
-# NOTE: the FileLock is deliberately a *bare* ``filelock.FileLock`` (not
-# huggingface_hub's ``WeakFileLock``, which silently degrades to a
-# hostname-scoped ``SoftFileLock`` that can permanently wedge a shared cache).
-# ``filelock`` uses BSD ``flock(2)``, which on GPFS is node-local (verified on
-# Blue Vela: two nodes held the same exclusive flock simultaneously). So this
-# lock only serializes *same-node* pullers; it does not provide cross-node
-# mutual exclusion on the GPFS/AFM cache the cluster hfpull steps share. POSIX
-# byte-range locks (``fcntl.lockf``) *are* cluster-coherent on that GPFS, so a
-# real cross-node lock would have to use those (or serialize at the
-# orchestration layer / Redis) -- tracked as a follow-up. The fall-through
-# above keeps this safe either way.
+# The lock uses atomic directory creation (``os.mkdir``) rather than
+# ``flock``/``filelock``. Two-node probes showed BSD ``flock(2)`` is node-local
+# on the Blue Vela GPFS mount (two nodes held the same exclusive lock at once),
+# so a flock-based lock provides no cross-node mutual exclusion there; ``mkdir``
+# atomicity, by contrast, is coherent across nodes on every shared filesystem
+# tested (GPFS and the AFM/COS-backed CSI PVC the K8s hfpull steps mount). The
+# lock directory is removed on release, so it does not accumulate. mkdir has no
+# kernel auto-release on holder death, but the fall-through above bounds that: a
+# lock left by a crashed puller only makes peers wait out the timeout before
+# proceeding.
 HFPULL_LOCK_TIMEOUT_ENV = "GB_HFPULL_LOCK_TIMEOUT"
 HFPULL_FORCE_ENV = "GB_HFPULL_FORCE"
 DEFAULT_HFPULL_LOCK_TIMEOUT_S = 300.0
+# Poll interval while waiting for a peer to release the mkdir lock.
+HFPULL_LOCK_POLL_S = 1.0
 
 # Subdirectory (on the shared cache filesystem, beside the repo's revision
 # dirs but outside the ``<owner>/<repo>/<revision>`` namespace) holding hfpull
-# lock files, so a ``.lock`` never appears where revision dirs are globbed or
-# parsed by ``_hf_repo_id_from_cache_path``.
+# lock directories, so a ``.lock`` never appears where revision dirs are globbed
+# or parsed by ``_hf_repo_id_from_cache_path``.
 HFPULL_LOCK_DIRNAME = ".gb-hfpull-locks"
 
 # huggingface_hub's per-file scratch dir inside a ``local_dir`` snapshot pull.
@@ -139,8 +140,8 @@ def _hfpull_lock_timeout() -> float:
         )
         return DEFAULT_HFPULL_LOCK_TIMEOUT_S
     if value < 0:
-        # A negative timeout makes FileLock.acquire wait forever, which would
-        # reinstate the hang this best-effort lock is meant to avoid.
+        # A negative timeout would let the acquire loop wait forever, which
+        # would reinstate the hang this best-effort lock is meant to avoid.
         logger.warning(
             "%s=%r is negative (would block forever); using default %ss",
             HFPULL_LOCK_TIMEOUT_ENV,
@@ -152,7 +153,7 @@ def _hfpull_lock_timeout() -> float:
 
 
 def _hfpull_lock_path(dest: Path) -> Path:
-    """Lock file for a pull into *dest*.
+    """Lock directory for a pull into *dest*.
 
     Placed in a dedicated ``.gb-hfpull-locks`` subdirectory beside *dest* on
     the shared cache filesystem: co-located so peer containers contend on it,
@@ -167,62 +168,55 @@ def _hfpull_lock_path(dest: Path) -> Path:
 def _hfpull_download_lock(dest: Path) -> Iterator[None]:
     """Best-effort cross-process lock serializing pulls into *dest*.
 
-    Yields with the lock held when possible. If the lock cannot be set up
-    (permission/OS error), is not acquired within the timeout, or the mount
-    does not support ``flock``, logs distinctly and yields anyway so the caller
-    proceeds and relies on huggingface_hub's own per-file locks.
+    Acquires the lock by atomically creating a directory (``os.mkdir``), which
+    is coherent across nodes on the shared cache filesystems (unlike BSD
+    ``flock``; see the module comment). Polls until ``GB_HFPULL_LOCK_TIMEOUT``
+    seconds have passed; if the lock is held by a peer that whole time, or it
+    cannot be set up, logs and yields anyway so the caller proceeds and relies
+    on huggingface_hub's own per-file locks. The lock directory is removed on
+    release.
     """
-    lock_path = _hfpull_lock_path(dest)
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock = FileLock(str(lock_path))
-    except OSError as e:
-        logger.warning(
-            "hfpull: could not set up download lock at %s (%s); "
-            "proceeding without it",
-            lock_path,
-            e,
-        )
-        yield
-        return
-
+    lock_dir = _hfpull_lock_path(dest)
     timeout = _hfpull_lock_timeout()
+    held = False
     try:
-        lock.acquire(timeout=timeout)
-    except Timeout:
-        logger.warning(
-            "hfpull: did not acquire download lock %s within %ss; proceeding "
-            "and relying on huggingface_hub's per-file locks",
-            lock_path,
-            timeout,
-        )
-        yield
-        return
-    except NotImplementedError:
-        logger.warning(
-            "hfpull: filesystem for %s does not support flock; proceeding "
-            "without a cross-process lock (huggingface_hub's per-file locks "
-            "still apply)",
-            lock_path,
-        )
-        yield
-        return
+        lock_dir.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                lock_dir.mkdir()
+                held = True
+                break
+            except FileExistsError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "hfpull: did not acquire download lock %s within %ss; "
+                        "proceeding and relying on huggingface_hub's per-file "
+                        "locks",
+                        lock_dir,
+                        timeout,
+                    )
+                    break
+                time.sleep(min(HFPULL_LOCK_POLL_S, remaining))
     except OSError as e:
-        # e.g. EROFS/EIO/ENOSPC/stale handle from os.open() inside acquire on a
-        # flaky shared mount. The lock is best-effort, so never fail the build
-        # on lock infrastructure trouble -- proceed without it.
+        # e.g. EROFS/EIO/EACCES/stale handle on a flaky shared mount. The lock
+        # is best-effort, so never fail the build on lock infrastructure
+        # trouble -- proceed without it.
         logger.warning(
-            "hfpull: could not acquire download lock %s (%s); proceeding " "without it",
-            lock_path,
+            "hfpull: could not set up download lock %s (%s); proceeding " "without it",
+            lock_dir,
             e,
         )
-        yield
-        return
 
     try:
         yield
     finally:
-        lock.release()
+        if held:
+            try:
+                lock_dir.rmdir()
+            except OSError:
+                pass
 
 
 def _is_recoverable_hf_cache_error(e: BaseException) -> bool:
@@ -852,13 +846,11 @@ class HfURI(URI):
         ``HfApi.sync_bucket`` to download bucket contents to *dest*.
 
         Pulls into the same *dest* are serialized behind a best-effort
-        cross-process lock (issue #320): if it cannot be acquired within
-        ``GB_HFPULL_LOCK_TIMEOUT`` seconds (default 300), or the mount does not
-        honor advisory locks, the download proceeds anyway rather than failing.
-        Note this lock only serializes same-node pullers -- see the module
-        comment on ``flock`` being node-local on GPFS. Repo downloads also
-        self-heal a corrupt HF cache by retrying with ``force_download`` and, if
-        needed, clearing the scratch download dir.
+        cross-process ``mkdir`` lock (issue #320): if it cannot be acquired
+        within ``GB_HFPULL_LOCK_TIMEOUT`` seconds (default 300), or it cannot be
+        set up, the download proceeds anyway rather than failing. Repo downloads
+        also self-heal a corrupt HF cache by retrying with ``force_download``
+        and, if needed, clearing the scratch download dir.
 
         Returns ``True`` immediately without network calls when ``pull`` is
         listed in ``GBTEST_MOCKED_HF_OPS``.
