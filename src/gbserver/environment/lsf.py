@@ -720,9 +720,12 @@ class Lsf(Environment):
         env: Dict[str, str] = {}
         self._merge_secret_env_vars(env, config, setup_config)
         env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        # Uniform with the other environments; a no-op here since the LSF env
-        # dict carries no LLMB_-prefixed launcher vars (those are derived in the
-        # jobsub shell script, not this dict).
+        # Uniform with the other environments; a no-op for LSF *launcher* vars
+        # since those are derived in the jobsub shell script, not this dict. But
+        # NOT a no-op in general: a user may name a space secret with the legacy
+        # LLMB_ prefix, and aliasing then mints a GB_ twin holding that secret
+        # value. _get_secret_env_keys mirrors this so the twin is masked in
+        # redaction (see _build_cmd_to_run_with_ssh).
         return self._add_gb_aliases(env)
 
     async def launch_bsub(
