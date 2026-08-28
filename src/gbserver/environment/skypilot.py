@@ -7,6 +7,8 @@ require it unless a Skypilot environment is actually configured.
 """
 
 import asyncio
+import concurrent.futures
+import functools
 import glob
 import os
 import shlex
@@ -60,6 +62,57 @@ else:
     sky = None  # type: ignore[assignment]
 
 _DEFAULT_POLL_INTERVAL_SECONDS = 300
+
+# Dedicated thread pool for the blocking SkyPilot provisioning submits that a
+# cancel may *orphan* — the shielded sky.launch / sky.jobs.launch /
+# sky.stream_and_get calls whose futures _abort_shielded_request abandons when
+# its drain times out. asyncio.to_thread runs on the event loop's default
+# ThreadPoolExecutor (~min(32, cpu+4) workers), shared by every to_thread in
+# gbserver; an abandoned provisioning thread blocks until its SDK call returns
+# naturally (potentially the full provisioning time), holding a shared slot, so
+# a few aborted provisions could starve unrelated offloaded work. Running them
+# on their own pool bounds the blast radius to SkyPilot provisioning. Lazily
+# created so merely importing this module (or running without SkyPilot) does not
+# spin up threads.
+_SKY_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_SKY_EXECUTOR_LOCK = threading.Lock()
+
+
+def _get_sky_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Return the dedicated SkyPilot provisioning thread pool, creating it once.
+
+    :returns: the process-wide ThreadPoolExecutor used for orphanable SkyPilot
+        submit/stream calls (double-checked lazy singleton).
+    """
+    global _SKY_EXECUTOR
+    if _SKY_EXECUTOR is None:
+        with _SKY_EXECUTOR_LOCK:
+            if _SKY_EXECUTOR is None:
+                _SKY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                    thread_name_prefix="gb-sky-provision"
+                )
+    return _SKY_EXECUTOR
+
+
+async def _sky_submit_to_thread(
+    func: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    """Run a blocking, possibly-orphaned SkyPilot call on the dedicated pool.
+
+    Mirrors ``asyncio.to_thread`` but targets ``_get_sky_executor()`` instead of
+    the loop's shared default executor, so a thread abandoned after a cancel
+    (drain timeout) cannot starve unrelated ``to_thread`` work elsewhere in
+    gbserver.
+
+    :param func: the blocking SkyPilot SDK call (e.g. ``sky.launch``).
+    :param args: positional arguments forwarded to ``func``.
+    :param kwargs: keyword arguments forwarded to ``func``.
+    :returns: the call's result once the worker thread completes.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _get_sky_executor(), functools.partial(func, *args, **kwargs)
+    )
 
 
 def _require_skypilot():
@@ -1452,7 +1505,7 @@ class Skypilot(Environment):
                     # abort the SkyPilot request server-side and tear down any
                     # partial cluster rather than leaking it.
                     launch_fut = asyncio.ensure_future(
-                        asyncio.to_thread(
+                        _sky_submit_to_thread(
                             sky.launch,
                             task,
                             cluster_name=cluster_name,
@@ -1470,7 +1523,7 @@ class Skypilot(Environment):
                         await self._abort_provision(None, cluster_name, launch_fut)
                         raise
                     stream_fut = asyncio.ensure_future(
-                        asyncio.to_thread(sky.stream_and_get, request_id)
+                        _sky_submit_to_thread(sky.stream_and_get, request_id)
                     )
                     try:
                         return await asyncio.shield(stream_fut)

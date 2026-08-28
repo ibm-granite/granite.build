@@ -62,6 +62,7 @@ from gbserver.environment.skypilot import (
     _abort_shielded_request,
     _build_skypilot_mounts,
     _run_sky_verb_off_loop,
+    _sky_submit_to_thread,
 )
 
 
@@ -210,7 +211,7 @@ class Skypilot_managed(Environment):
             # abort the request server-side and cancel the job by name (mirrors
             # the unmanaged launcher's _provision_with_retry).
             launch_fut = asyncio.ensure_future(
-                asyncio.to_thread(sky.jobs.launch, task, name=job_name)
+                _sky_submit_to_thread(sky.jobs.launch, task, name=job_name)
             )
             try:
                 request_id = await asyncio.shield(launch_fut)
@@ -222,7 +223,7 @@ class Skypilot_managed(Environment):
                 await self._abort_managed_launch(None, job_name, launch_fut)
                 raise
             stream_fut = asyncio.ensure_future(
-                asyncio.to_thread(sky.stream_and_get, request_id)
+                _sky_submit_to_thread(sky.stream_and_get, request_id)
             )
             try:
                 await asyncio.shield(stream_fut)
