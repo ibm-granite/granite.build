@@ -19,13 +19,15 @@
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import urllib.parse
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from pathlib import Path
-from typing import Any, List, Optional, Self
+from typing import Any, Iterator, List, Optional, Self
 
 from filelock import FileLock, Timeout
 from huggingface_hub import (
@@ -65,29 +67,69 @@ URLSEGMENT_BUCKETS = "buckets"
 
 DEFAULT_REVISION = "main"
 
-# hfpull download serialization (issue #320). HfApi.sync_bucket / snapshot_download
-# are not multi-process safe: concurrent hfpull containers sharing a cache dir race
-# on HuggingFace's ``.cache/huggingface/download/*.incomplete`` files. pull()
-# serializes the download behind a cross-process FileLock keyed to the destination,
-# so pulls of the same repo/revision run one at a time while different destinations
-# proceed in parallel. The lock file lives beside the destination on the shared
-# cache filesystem, so it relies on that mount honoring advisory locks (true for
-# local/most POSIX filesystems; some NFS configurations may not).
+# hfpull download serialization + self-healing (issue #320).
+#
+# huggingface_hub wraps each file's ``.incomplete`` write in its own
+# cross-process ``WeakFileLock`` inside the destination, so concurrent
+# ``snapshot_download`` calls into a shared cache do not corrupt one another's
+# per-file writes -- *within a single node*. The failure in #320 was a
+# ``FileNotFoundError`` on an ``.incomplete`` file, i.e. the download directory
+# was removed out from under a live writer, which no lock can prevent.
+#
+# pull() therefore does two things:
+#   1. Best-effort serialization: a cross-process FileLock keyed to the
+#      destination so two of our own pullers do not work the same tree at once.
+#      It is best-effort -- on timeout, or on a mount that does not honor
+#      advisory locks, we proceed with the download and rely on HF's own
+#      per-file locks rather than failing the build.
+#   2. Self-healing: if a download hits the "removed dir" or "poisoned
+#      .incomplete" states, retry once with ``force_download=True`` (which
+#      unlinks the bad ``.incomplete``) and, failing that, drop HF's scratch
+#      download dir and retry -- turning a manual ``rm -rf`` into automatic
+#      recovery. This is the primary #320 fix and is filesystem-agnostic.
+#
+# NOTE: the FileLock is deliberately a *bare* ``filelock.FileLock`` (not
+# huggingface_hub's ``WeakFileLock``, which silently degrades to a
+# hostname-scoped ``SoftFileLock`` that can permanently wedge a shared cache).
+# ``filelock`` uses BSD ``flock(2)``, which on GPFS is node-local (verified on
+# Blue Vela: two nodes held the same exclusive flock simultaneously). So this
+# lock only serializes *same-node* pullers; it does not provide cross-node
+# mutual exclusion on the GPFS/AFM cache the cluster hfpull steps share. POSIX
+# byte-range locks (``fcntl.lockf``) *are* cluster-coherent on that GPFS, so a
+# real cross-node lock would have to use those (or serialize at the
+# orchestration layer / Redis) -- tracked as a follow-up. The fall-through
+# above keeps this safe either way.
 HFPULL_LOCK_TIMEOUT_ENV = "GB_HFPULL_LOCK_TIMEOUT"
-DEFAULT_HFPULL_LOCK_TIMEOUT_S = 3600.0
+HFPULL_FORCE_ENV = "GB_HFPULL_FORCE"
+DEFAULT_HFPULL_LOCK_TIMEOUT_S = 300.0
+
+# Subdirectory (on the shared cache filesystem, beside the repo's revision
+# dirs but outside the ``<owner>/<repo>/<revision>`` namespace) holding hfpull
+# lock files, so a ``.lock`` never appears where revision dirs are globbed or
+# parsed by ``_hf_repo_id_from_cache_path``.
+HFPULL_LOCK_DIRNAME = ".gb-hfpull-locks"
+
+# huggingface_hub's per-file scratch dir inside a ``local_dir`` snapshot pull.
+_HF_DOWNLOAD_SCRATCH = Path(".cache") / "huggingface" / "download"
+
+
+def _env_flag(name: str) -> bool:
+    """True when environment variable *name* is set to a truthy value."""
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _hfpull_lock_timeout() -> float:
-    """Seconds to wait for the hfpull download lock before failing.
+    """Seconds to wait for the hfpull download lock before proceeding anyway.
 
-    Overridable via ``GB_HFPULL_LOCK_TIMEOUT``; defaults to one hour so a peer
-    legitimately downloading a large model has time to finish.
+    Overridable via ``GB_HFPULL_LOCK_TIMEOUT``. On timeout the pull does not
+    fail; it proceeds and relies on huggingface_hub's own per-file locks, so
+    this only bounds how long we politely wait for a peer.
     """
     raw = os.getenv(HFPULL_LOCK_TIMEOUT_ENV)
     if raw is None or not raw.strip():
         return DEFAULT_HFPULL_LOCK_TIMEOUT_S
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         logger.warning(
             "Invalid %s=%r; using default %ss",
@@ -96,11 +138,177 @@ def _hfpull_lock_timeout() -> float:
             DEFAULT_HFPULL_LOCK_TIMEOUT_S,
         )
         return DEFAULT_HFPULL_LOCK_TIMEOUT_S
+    if value < 0:
+        # A negative timeout makes FileLock.acquire wait forever, which would
+        # reinstate the hang this best-effort lock is meant to avoid.
+        logger.warning(
+            "%s=%r is negative (would block forever); using default %ss",
+            HFPULL_LOCK_TIMEOUT_ENV,
+            raw,
+            DEFAULT_HFPULL_LOCK_TIMEOUT_S,
+        )
+        return DEFAULT_HFPULL_LOCK_TIMEOUT_S
+    return value
 
 
 def _hfpull_lock_path(dest: Path) -> Path:
-    """Sibling lock file for a pull into *dest* (never placed inside *dest*)."""
-    return dest.parent / f"{dest.name}.lock"
+    """Lock file for a pull into *dest*.
+
+    Placed in a dedicated ``.gb-hfpull-locks`` subdirectory beside *dest* on
+    the shared cache filesystem: co-located so peer containers contend on it,
+    but out of the ``<owner>/<repo>/<revision>`` namespace so it is never
+    mistaken for a revision directory. Never placed inside *dest*, which can be
+    removed mid-download (the #320 failure mode).
+    """
+    return dest.parent / HFPULL_LOCK_DIRNAME / f"{dest.name}.lock"
+
+
+@contextmanager
+def _hfpull_download_lock(dest: Path) -> Iterator[None]:
+    """Best-effort cross-process lock serializing pulls into *dest*.
+
+    Yields with the lock held when possible. If the lock cannot be set up
+    (permission/OS error), is not acquired within the timeout, or the mount
+    does not support ``flock``, logs distinctly and yields anyway so the caller
+    proceeds and relies on huggingface_hub's own per-file locks.
+    """
+    lock_path = _hfpull_lock_path(dest)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(str(lock_path))
+    except OSError as e:
+        logger.warning(
+            "hfpull: could not set up download lock at %s (%s); "
+            "proceeding without it",
+            lock_path,
+            e,
+        )
+        yield
+        return
+
+    timeout = _hfpull_lock_timeout()
+    try:
+        lock.acquire(timeout=timeout)
+    except Timeout:
+        logger.warning(
+            "hfpull: did not acquire download lock %s within %ss; proceeding "
+            "and relying on huggingface_hub's per-file locks",
+            lock_path,
+            timeout,
+        )
+        yield
+        return
+    except NotImplementedError:
+        logger.warning(
+            "hfpull: filesystem for %s does not support flock; proceeding "
+            "without a cross-process lock (huggingface_hub's per-file locks "
+            "still apply)",
+            lock_path,
+        )
+        yield
+        return
+    except OSError as e:
+        # e.g. EROFS/EIO/ENOSPC/stale handle from os.open() inside acquire on a
+        # flaky shared mount. The lock is best-effort, so never fail the build
+        # on lock infrastructure trouble -- proceed without it.
+        logger.warning(
+            "hfpull: could not acquire download lock %s (%s); proceeding " "without it",
+            lock_path,
+            e,
+        )
+        yield
+        return
+
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def _is_recoverable_hf_cache_error(e: BaseException) -> bool:
+    """True for the corrupt-cache states a force re-download can clear.
+
+    Two hard states (issue #320): a ``FileNotFoundError`` on an ``.incomplete``
+    file (the download dir was removed under a live writer), or
+    huggingface_hub's ``Consistency check failed`` size mismatch (a poisoned
+    ``.incomplete``). ``force_download=True`` unlinks the bad ``.incomplete``
+    before re-downloading, clearing both.
+    """
+    if isinstance(e, FileNotFoundError) and ".incomplete" in str(e):
+        return True
+    if isinstance(e, OSError) and "Consistency check failed" in str(e):
+        return True
+    return False
+
+
+def _clear_hf_download_scratch(dest: Path) -> None:
+    """Delete huggingface_hub's scratch download dir under *dest*.
+
+    ``<dest>/.cache/huggingface/download`` holds only transient
+    ``.incomplete`` / ``.metadata`` files, so dropping it forces a clean
+    re-download without touching already-materialized model files.
+    """
+    scratch = dest / _HF_DOWNLOAD_SCRATCH
+    shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _pull_hf_repo(
+    *,
+    repo_id: str,
+    repo_type: str,
+    revision: Optional[str],
+    dest: Path,
+    token: Optional[str],
+    endpoint: Optional[str],
+    force: bool,
+) -> None:
+    """snapshot_download into *dest*, self-healing a corrupt HF cache.
+
+    On a recoverable corruption (see ``_is_recoverable_hf_cache_error``) retry
+    once with ``force_download=True``; if that still fails, drop the scratch
+    download dir and retry once more. Non-recoverable errors propagate.
+    """
+
+    def _download(force_download: bool) -> None:
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            revision=revision,
+            local_dir=str(dest),
+            token=token,
+            force_download=force_download,
+            endpoint=endpoint,
+        )
+
+    try:
+        _download(force)
+        return
+    except Exception as first:
+        if not _is_recoverable_hf_cache_error(first):
+            raise
+        logger.warning(
+            "hfpull: HF download cache for %s looks corrupt (%s); retrying "
+            "with force_download=True",
+            repo_id,
+            first,
+        )
+
+    try:
+        _download(True)
+        return
+    except Exception as second:
+        if not _is_recoverable_hf_cache_error(second):
+            raise
+        logger.warning(
+            "hfpull: force_download retry for %s still failed (%s); clearing "
+            "scratch download cache %s and retrying once more",
+            repo_id,
+            second,
+            dest / _HF_DOWNLOAD_SCRATCH,
+        )
+
+    _clear_hf_download_scratch(dest)
+    _download(True)
 
 
 class HfType(StrEnum):
@@ -643,6 +851,15 @@ class HfURI(URI):
         so all repo files land directly in *dest*.  For buckets, uses
         ``HfApi.sync_bucket`` to download bucket contents to *dest*.
 
+        Pulls into the same *dest* are serialized behind a best-effort
+        cross-process lock (issue #320): if it cannot be acquired within
+        ``GB_HFPULL_LOCK_TIMEOUT`` seconds (default 300), or the mount does not
+        honor advisory locks, the download proceeds anyway rather than failing.
+        Note this lock only serializes same-node pullers -- see the module
+        comment on ``flock`` being node-local on GPFS. Repo downloads also
+        self-heal a corrupt HF cache by retrying with ``force_download`` and, if
+        needed, clearing the scratch download dir.
+
         Returns ``True`` immediately without network calls when ``pull`` is
         listed in ``GBTEST_MOCKED_HF_OPS``.
 
@@ -652,7 +869,8 @@ class HfURI(URI):
 
         Args:
             dest: Local directory to download files into.
-            force: Re-download even if files already exist locally.
+            force: Re-download even if files already exist locally, unlinking any
+                poisoned ``.incomplete`` files (repo pulls only).
 
         Returns:
             True if the download succeeded, False on any error.
@@ -668,65 +886,51 @@ class HfURI(URI):
             endpoint = f"https://{p.host}" if p.host != HF_HOST else None
             token = self._resolve_token()
 
-            # Serialize the download so concurrent hfpull processes sharing this
-            # destination don't corrupt each other's HF download cache (issue #320).
-            lock_path = _hfpull_lock_path(dest)
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            lock_timeout = _hfpull_lock_timeout()
-            try:
-                with FileLock(str(lock_path), timeout=lock_timeout):
-                    if p.hf_type == HfType.BUCKET:
-                        bucket_hf_path = f"hf://buckets/{repo_id}"
-                        if p.path_in_repo:
-                            bucket_hf_path += f"/{p.path_in_repo}"
-                        logger.info("Downloading HF bucket %s to %s", repo_id, dest)
-                        api = HfApi(endpoint=endpoint, token=token)
-                        api.sync_bucket(source=bucket_hf_path, dest=str(dest))
-                        logger.debug(
-                            "Completed HF pull of bucket %s to %s", repo_id, dest
-                        )
-                        return True
-
-                    hf_type = p.hf_type
-                    repo_type = (
-                        _HF_TYPE_TO_REPO_TYPE.get(hf_type, "model")
-                        if hf_type is not None
-                        else "model"
-                    )
-
-                    logger.info(
-                        "Downloading HF repo %s (type=%s, rev=%s) to %s",
-                        repo_id,
-                        repo_type,
-                        p.revision,
-                        dest,
-                    )
-                    snapshot_download(
-                        repo_id=repo_id,
-                        repo_type=repo_type,
-                        revision=p.revision,
-                        local_dir=str(dest),
-                        token=token,
-                        force_download=force,
-                        endpoint=endpoint,
-                    )
-                    logger.debug(
-                        "Completed HF pull of %s (type=%s, rev=%s) to %s",
-                        repo_id,
-                        repo_type,
-                        p.revision,
-                        dest,
-                    )
+            # Best-effort serialization of concurrent hfpull processes sharing
+            # this destination; falls through to the download if the lock can't
+            # be acquired (issue #320).
+            with _hfpull_download_lock(dest):
+                if p.hf_type == HfType.BUCKET:
+                    bucket_hf_path = f"hf://buckets/{repo_id}"
+                    if p.path_in_repo:
+                        bucket_hf_path += f"/{p.path_in_repo}"
+                    logger.info("Downloading HF bucket %s to %s", repo_id, dest)
+                    api = HfApi(endpoint=endpoint, token=token)
+                    api.sync_bucket(source=bucket_hf_path, dest=str(dest))
+                    logger.debug("Completed HF pull of bucket %s to %s", repo_id, dest)
                     return True
-            except Timeout:
-                logger.error(
-                    "HF pull for %s could not acquire download lock %s within %ss; "
-                    "failing",
-                    self,
-                    lock_path,
-                    lock_timeout,
+
+                hf_type = p.hf_type
+                repo_type = (
+                    _HF_TYPE_TO_REPO_TYPE.get(hf_type, "model")
+                    if hf_type is not None
+                    else "model"
                 )
-                return False
+
+                logger.info(
+                    "Downloading HF repo %s (type=%s, rev=%s) to %s",
+                    repo_id,
+                    repo_type,
+                    p.revision,
+                    dest,
+                )
+                _pull_hf_repo(
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    revision=p.revision,
+                    dest=dest,
+                    token=token,
+                    endpoint=endpoint,
+                    force=force,
+                )
+                logger.debug(
+                    "Completed HF pull of %s (type=%s, rev=%s) to %s",
+                    repo_id,
+                    repo_type,
+                    p.revision,
+                    dest,
+                )
+                return True
         except Exception as e:
             _log_hf_api_error("pull", str(self), e)
             return False
@@ -794,7 +998,7 @@ class HfURI(URI):
             return 1
 
     @staticmethod
-    def hfpull_step(uri_str: str, dest: str) -> int:
+    def hfpull_step(uri_str: str, dest: str, force: bool = False) -> int:
         """Parse a HF URI string, pull its contents to dest, and return an exit code.
 
         Intended as the single entry point called from the hfpull builtin step
@@ -803,12 +1007,17 @@ class HfURI(URI):
         Args:
             uri_str: HF URI string to download (e.g. ``hf:///owner/repo``).
             dest: Local filesystem path to download files into.
+            force: Re-download even if files already exist locally, unlinking any
+                poisoned ``.incomplete`` files. Also enabled by setting
+                ``GB_HFPULL_FORCE`` in the step environment, so an operator can
+                force a clean re-pull without editing the launch command.
 
         Returns:
             0 on success, 1 on failure.
         """
+        force = force or _env_flag(HFPULL_FORCE_ENV)
         uri = HfURI.parse(uri_str)
-        return 0 if uri.pull(Path(dest)) else 1
+        return 0 if uri.pull(Path(dest), force=force) else 1
 
     def delete(self: Self) -> bool:
         """Delete the resource referenced by this URI from the HuggingFace Hub.

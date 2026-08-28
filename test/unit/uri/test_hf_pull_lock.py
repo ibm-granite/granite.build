@@ -14,14 +14,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Cross-process file-lock behavior of ``HfURI.pull`` (issue #315/#320).
+"""Download serialization and self-healing of ``HfURI.pull`` (issue #320).
 
-``HfApi.sync_bucket`` / ``snapshot_download`` are not multi-process safe: when
-several hfpull containers pull the same hf:// URI into the same shared cache
-directory they race on HuggingFace's ``.cache/huggingface/download/*.incomplete``
-files. ``HfURI.pull`` therefore serializes the download behind a
-``filelock.FileLock`` keyed to the destination, so concurrent pulls of the same
-repo/revision run one at a time while different destinations proceed in parallel.
+huggingface_hub already protects each file's ``.incomplete`` write with its own
+per-file lock inside the destination, so ``pull`` adds only a *best-effort*
+cross-process ``filelock.FileLock`` keyed to the destination: concurrent pulls
+of the same repo/revision run one at a time, but if the lock can't be acquired
+(timeout, or a mount that doesn't honor advisory locks) the pull proceeds and
+relies on HF's per-file locks rather than failing the build.
+
+Separately, when the HF download cache is corrupt (a ``.incomplete`` file whose
+parent dir was removed, or a size-mismatch "Consistency check failed"), ``pull``
+self-heals: it retries with ``force_download=True`` and, failing that, drops
+HF's scratch download dir -- replacing the manual ``rm -rf`` recovery.
 """
 
 from pathlib import Path
@@ -36,6 +41,7 @@ from gbcommon.uri.hf import (
     HFPULL_LOCK_TIMEOUT_ENV,
     HfType,
     HfURI,
+    _hfpull_lock_path,
     _hfpull_lock_timeout,
 )
 
@@ -45,11 +51,12 @@ def _disable_hf_op_mocking(monkeypatch):
     """Run the real pull() path against a mocked HfApi / snapshot_download."""
     monkeypatch.delenv(ENV_VAR_GBTEST_MOCKED_HF_OPS, raising=False)
     monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("GB_HFPULL_FORCE", raising=False)
 
 
 def _expected_lock(dest: Path) -> Path:
-    """The sibling lock file pull() is expected to use for *dest*."""
-    return dest.parent / f"{dest.name}.lock"
+    """The lock file pull() is expected to use for *dest*."""
+    return _hfpull_lock_path(dest)
 
 
 def _is_locked(path: Path) -> bool:
@@ -61,6 +68,22 @@ def _is_locked(path: Path) -> bool:
         return True
     probe.release()
     return False
+
+
+def _incomplete_error(dest: Path) -> FileNotFoundError:
+    """The #320 failure: a vanished ``.incomplete`` under a held per-file lock."""
+    incomplete = dest / ".cache/huggingface/download/IO4x.etag123.incomplete"
+    return FileNotFoundError(2, "No such file or directory", str(incomplete))
+
+
+def test_lock_path_is_outside_the_revision_namespace(tmp_path):
+    """The lock lives in a dedicated subdir, not beside revision dirs."""
+    dest = tmp_path / "ibm-granite" / "granite-4.2-8b" / "abc123"
+    lock_path = _hfpull_lock_path(dest)
+    # Not a sibling of the revision dir (would pollute the owner/repo glob).
+    assert lock_path.parent != dest.parent
+    assert lock_path.parent.name == ".gb-hfpull-locks"
+    assert lock_path.name == "abc123.lock"
 
 
 def test_repo_pull_holds_lock_during_download_and_releases_after(tmp_path):
@@ -103,11 +126,15 @@ def test_bucket_pull_holds_lock_during_sync(tmp_path):
     assert _is_locked(lock_path) is False
 
 
-def test_pull_returns_false_when_lock_cannot_be_acquired(tmp_path, monkeypatch):
-    """A held lock past the timeout fails the pull without downloading."""
+def test_pull_proceeds_when_lock_not_acquired(tmp_path, monkeypatch):
+    """A peer holding the lock past the timeout does NOT fail the pull.
+
+    The lock is best-effort: on timeout pull() falls through to the download
+    and relies on huggingface_hub's own per-file locks.
+    """
     dest = tmp_path / "org" / "repo" / "hash"
-    dest.parent.mkdir(parents=True, exist_ok=True)
     lock_path = _expected_lock(dest)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("GB_HFPULL_LOCK_TIMEOUT", "0.5")
 
     uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
@@ -119,15 +146,39 @@ def test_pull_returns_false_when_lock_cannot_be_acquired(tmp_path, monkeypatch):
     finally:
         held.release()
 
-    assert result is False
-    mock_dl.assert_not_called()
+    assert result is True
+    mock_dl.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        NotImplementedError("FileSystem does not appear to support flock"),
+        OSError("[Errno 30] Read-only file system"),
+    ],
+)
+def test_pull_proceeds_when_lock_acquire_raises(tmp_path, exc):
+    """A lock-infra failure at acquire time must not fail the pull (best-effort).
+
+    Covers the unsupported-mount (NotImplementedError) and flaky-mount (OSError)
+    branches: the download proceeds and relies on HF's per-file locks.
+    """
+    dest = tmp_path / "org" / "repo" / "hash"
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with patch("filelock.FileLock.acquire", side_effect=exc):
+        with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
+            result = uri.pull(dest)
+
+    assert result is True
+    mock_dl.assert_called_once()
 
 
 def test_different_dests_do_not_contend(tmp_path, monkeypatch):
     """A lock held for one dest must not block a pull into a different dest."""
     other = tmp_path / "org" / "repo-a" / "h1"
-    other.parent.mkdir(parents=True, exist_ok=True)
-    held = FileLock(str(_expected_lock(other)))
+    other_lock = _expected_lock(other)
+    other_lock.parent.mkdir(parents=True, exist_ok=True)
+    held = FileLock(str(other_lock))
     held.acquire()
     monkeypatch.setenv("GB_HFPULL_LOCK_TIMEOUT", "0.5")
 
@@ -143,6 +194,80 @@ def test_different_dests_do_not_contend(tmp_path, monkeypatch):
     mock_dl.assert_called_once()
 
 
+def test_repo_pull_recovers_from_removed_incomplete_dir(tmp_path):
+    """A vanished ``.incomplete`` triggers a single force_download retry."""
+    dest = tmp_path / "ibm-granite" / "granite-4.2-8b" / "abc123"
+    forces = []
+
+    def fake_download(*_args, **kwargs):
+        forces.append(kwargs.get("force_download"))
+        if len(forces) == 1:
+            raise _incomplete_error(dest)
+        # second (forced) call succeeds
+
+    uri = HfURI.from_parts(
+        owner="ibm-granite", repo="granite-4.2-8b", hf_type=HfType.MODEL
+    )
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        result = uri.pull(dest)
+
+    assert result is True
+    assert forces == [False, True], "expected one normal then one forced download"
+
+
+def test_repo_pull_clears_scratch_when_force_retry_still_fails(tmp_path):
+    """If the force retry also fails, the scratch download dir is dropped."""
+    dest = tmp_path / "org" / "repo" / "h"
+    scratch = dest / ".cache" / "huggingface" / "download"
+    scratch.mkdir(parents=True)
+    (scratch / "leftover.incomplete").write_text("partial")
+    forces = []
+    seen = {}
+
+    def fake_download(*_args, **kwargs):
+        forces.append(kwargs.get("force_download"))
+        if len(forces) == 1:
+            raise _incomplete_error(dest)
+        if len(forces) == 2:
+            raise OSError(
+                "Consistency check failed: file should be of size 10 but has "
+                "size 5 (model-00001-of-00004.safetensors)."
+            )
+        # third call: scratch must have been cleared before this retry
+        seen["scratch_exists"] = scratch.exists()
+
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        result = uri.pull(dest)
+
+    assert result is True
+    assert forces == [False, True, True]
+    assert seen.get("scratch_exists") is False, "scratch dir not cleared"
+
+
+def test_repo_pull_does_not_retry_non_recoverable_error(tmp_path):
+    """An unrelated error is not treated as corruption; no retry, pull fails."""
+    dest = tmp_path / "org" / "repo" / "h"
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with patch(
+        "gbcommon.uri.hf.snapshot_download", side_effect=ValueError("boom")
+    ) as mock_dl:
+        result = uri.pull(dest)
+
+    assert result is False
+    mock_dl.assert_called_once()
+
+
+def test_hfpull_step_force_env_forces_pull(tmp_path, monkeypatch):
+    """GB_HFPULL_FORCE makes hfpull_step call pull(force=True)."""
+    monkeypatch.setenv("GB_HFPULL_FORCE", "1")
+    with patch.object(HfURI, "pull", return_value=True) as mock_pull:
+        rc = HfURI.hfpull_step("hf:///org/repo", str(tmp_path / "dest"))
+
+    assert rc == 0
+    assert mock_pull.call_args.kwargs.get("force") is True
+
+
 def test_lock_timeout_reads_env_with_default(monkeypatch):
     """_hfpull_lock_timeout parses GB_HFPULL_LOCK_TIMEOUT, falling back to default."""
     monkeypatch.delenv(HFPULL_LOCK_TIMEOUT_ENV, raising=False)
@@ -153,3 +278,11 @@ def test_lock_timeout_reads_env_with_default(monkeypatch):
 
     monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "not-a-number")
     assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
+
+    # A negative value would make FileLock.acquire block forever; reject it.
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "-1")
+    assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
+
+    # Zero is allowed (try-once, immediate fall-through).
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "0")
+    assert _hfpull_lock_timeout() == 0.0
