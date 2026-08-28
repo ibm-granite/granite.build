@@ -44,7 +44,7 @@ from libgbtest.constants import (
     GBTEST_USER_NAME,
     failed_build_assert_message,
 )
-from libgbtest.mode import is_mock_mode
+from libgbtest.mode import is_live, is_mock_mode
 from libgbtest.utils import (
     AbstractSingletonStorageUsingPreloadedSpaceTest,
     is_pytest_running_parallel,
@@ -349,7 +349,10 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
     def setup_method(self: Self, method):
         # breakpoint()
         # Only use real HF calls in live mode; mock artifact ops otherwise.
-        if is_mock_mode():
+        # is_live("hf") also covers the per-service opt-in (GBTEST_LIVE_HF=true),
+        # which conftest honors by lifting GBTEST_MOCK_HF at session start — so
+        # re-mocking here would silently override that opt-in.
+        if is_mock_mode() and not is_live("hf"):
             self._enable_artifact_mocks()
 
         self.class_tested = None
@@ -372,7 +375,10 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         super().setup_method(method)
 
     def teardown_method(self: Self, method):
-        if is_mock_mode():
+        # Must mirror setup_method's condition exactly: disable_hf_mocks() pops
+        # the stack entry enable_hf_mocks() pushed, so an asymmetric guard would
+        # pop an entry it never pushed.
+        if is_mock_mode() and not is_live("hf"):
             self._disable_artifact_mocks()
 
         if GBTEST_SKIP_BUILD_TEARDOWN:
