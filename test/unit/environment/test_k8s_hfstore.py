@@ -10,11 +10,10 @@ Two things are covered here:
    sources because ``helm`` is not available in every test environment.
 """
 
-import asyncio
 import re
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -37,36 +36,20 @@ CONTAINER_TEMPLATES = (
 
 @pytest.fixture
 def k8s_env():
-    """Create a minimal K8s environment instance for testing asset methods."""
+    """A stand-in exposing K8s.pullasset_hfstore, without constructing a K8s.
+
+    ``pullasset_hfstore`` never touches ``self`` -- it derives everything from its
+    arguments -- so binding the unbound method to a bare object exercises the real
+    code while avoiding ``Environment.__init__``, which pulls in storage, plugin
+    type discovery and the node-health singleton (all unavailable or unreliable
+    under xdist in CI).
+    """
     from gbserver.environment.k8s import K8s
 
-    event_q = asyncio.Queue()
-    env_config = MagicMock()
-    env_config.config = {"namespace": "gb-test"}
-    env_config.type = "K8s"
+    class _K8sStandin:
+        pullasset_hfstore = K8s.pullasset_hfstore
 
-    # K8s.__init__ reads self.config/self.secrets (normally set by
-    # Environment.__init__, patched out here to avoid touching storage).
-    def fake_init(self, *_args, **_kwargs):
-        self.config = env_config
-        self.secrets = {}
-
-    # Pass node_health_tracker explicitly: otherwise __init__ falls back to the
-    # process-wide singleton, which lazily builds itself from admin storage and
-    # errors when that is unreachable (as under xdist in CI).
-    with patch("gbserver.environment.environment.Environment.__init__", new=fake_init):
-        try:
-            k8s = K8s(
-                event_q=event_q,
-                environment_config=env_config,
-                node_health_tracker=MagicMock(),
-            )
-        except BaseException:  # TEMP DIAGNOSTIC - surface the CI-only failure
-            import traceback
-
-            traceback.print_exc()
-            raise
-    return k8s
+    return _K8sStandin()
 
 
 @pytest.fixture
